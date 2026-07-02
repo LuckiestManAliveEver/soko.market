@@ -934,20 +934,22 @@ A feature is complete only when:
 - English and Swahili user-facing paths are considered.
 - Documentation is updated.
 
-## Open Planning Items
+## Planning Decision Status
 
-These decisions should be recorded before CP1 or CP2:
+The original CP1/CP2 planning list has been resolved or assigned to later checkpoints:
 
-- Final monorepo tooling.
-- Whether the first implementation uses React, Preact, or Solid.
-- Whether local data uses raw IndexedDB, Dexie, or another wrapper.
-- Whether Pi/OpenClaw-style harness is embedded, sidecar, or deferred.
-- Which llama.cpp integration path is first: server, native wrapper, or deferred.
-- Initial model candidates and minimum supported device class.
-- Production hosting choice.
-- SMS provider.
-- M-Pesa integration provider and webhook requirements.
-- Tax rules for first launch country.
+| Item                                          | Status                                                                                                       | Source                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Final monorepo tooling                        | Resolved: `pnpm` workspace.                                                                                  | `documentation/checkpoints/cp1/DECISION_LOG.md` |
+| First frontend framework                      | Resolved: React.                                                                                             | `documentation/checkpoints/cp1/DECISION_LOG.md` |
+| Local data wrapper                            | Deferred to CP3/CP7.                                                                                         | `documentation/checkpoints/cp1/DECISION_LOG.md` |
+| Pi/OpenClaw-style harness path                | Deferred to CP10.                                                                                            | `documentation/checkpoints/cp1/DECISION_LOG.md` |
+| llama.cpp first integration path              | Deferred to CP11; local model provider remains behind `ModelProviderAdapter`.                                | `documentation/checkpoints/cp1/DECISION_LOG.md` |
+| Initial model candidates and device class     | Resolved: Qwen3-1.7B GGUF Q4 primary local text candidate, Qwen3-4B higher-end candidate, Gemma 3n research. | `documentation/checkpoints/cp0/DECISION_LOG.md` |
+| Production hosting choice                     | Resolved: AWS CloudFront/S3, ECS on Fargate, RDS PostgreSQL, ElastiCache, S3, CloudWatch.                    | `documentation/checkpoints/cp0/DECISION_LOG.md` |
+| SMS provider                                  | Deferred to CP16.                                                                                            | `documentation/checkpoints/cp2/DECISION_LOG.md` |
+| M-Pesa integration provider and webhook rules | Deferred to CP8.                                                                                             | `documentation/checkpoints/cp2/DECISION_LOG.md` |
+| Tax rules for first launch country            | Deferred to CP6/CP14.                                                                                        | `documentation/checkpoints/cp1/DECISION_LOG.md` |
 
 ## Recommended Immediate Next Step
 
