@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Open CP4:
+Continue CP4:
 
-1. Create the CP4 baseline and decision log.
-2. Implement the rule-based parser behind the CP3 chat shell.
-3. Keep low-confidence or state-changing commands behind clarification, confirmation, and business runtime checks.
+1. Implement the rule-based parser behind the CP3 chat shell.
+2. Add the CP4 intent taxonomy, confidence thresholds, clarification behavior, and evaluation dataset.
+3. Keep state-changing commands as parsed drafts until later business checkpoints provide deterministic execution paths.
