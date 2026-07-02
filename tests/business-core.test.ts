@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { productDraftedEvent, validateProductDraft } from "../packages/business-core/src";
+import {
+  businessActionProposedEvent,
+  validateBusinessActionDraft
+} from "../packages/business-core/src";
 
 describe("business core foundation", () => {
-  it("validates a product draft deterministically", () => {
+  it("validates a business action draft deterministically", () => {
     expect(
-      validateProductDraft({
-        name: "Maize flour",
-        priceMinor: 18000,
-        currency: "KES"
+      validateBusinessActionDraft({
+        actionType: "foundation.check",
+        actorId: "owner-1",
+        aggregateId: "foundation-1",
+        aggregateType: "foundation",
+        requiresConfirmation: false
       })
     ).toEqual({
       ok: true,
@@ -16,20 +21,21 @@ describe("business core foundation", () => {
   });
 
   it("creates immutable business events", () => {
-    const event = productDraftedEvent({
+    const event = businessActionProposedEvent({
       id: "00000000-0000-4000-8000-000000000001",
-      actorId: "owner-1",
-      productId: "product-1",
       occurredAt: "2026-07-02T00:00:00.000Z",
       draft: {
-        name: "Beans",
-        priceMinor: 25000,
-        currency: "KES"
+        actionType: "foundation.check",
+        actorId: "owner-1",
+        aggregateId: "foundation-1",
+        aggregateType: "foundation",
+        requiresConfirmation: false
       }
     });
 
-    expect(event.type).toBe("product.drafted");
+    expect(event.type).toBe("business_action.proposed");
     expect(Object.isFrozen(event)).toBe(true);
     expect(Object.isFrozen(event.payload)).toBe(true);
+    expect(Object.isFrozen(event.payload.draft)).toBe(true);
   });
 });
