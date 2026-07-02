@@ -1,7 +1,8 @@
 # CP0 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-01
+Date passed: 2026-07-01
 
 This file records planning decisions accepted at CP0. Future changes should append new decisions rather than rewriting history.
 
@@ -36,6 +37,10 @@ This file records planning decisions accepted at CP0. Future changes should appe
 | CP0-O09 | SMS provider | provider to be selected | CP16 |
 | CP0-O10 | M-Pesa provider path | direct Daraja, payment aggregator, staged manual-first | CP8 |
 | CP0-O11 | Git repository setup | initialize here, move docs to another repo, repair current `.git` | CP1 |
+
+## CP1 Transition Notes
+
+On 2026-07-02, CP1 was formally opened. Decisions required before CP1 are resolved in `documentation/checkpoints/cp1/DECISION_LOG.md`.
 
 ## Decision Change Procedure
 

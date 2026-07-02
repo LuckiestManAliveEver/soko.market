@@ -15,7 +15,7 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | Checkpoint | Name | Status | Date Opened | Date Passed | Git Tag | Notes |
 |---|---|---:|---:|---:|---|---|
 | CP0 | Planning Baseline | passed | 2026-07-01 | 2026-07-01 | `checkpoint/cp0-planning-baseline` | Formal CP0 packet created. Tag stored in alternate Git directory `.repo.git` because `.git` is a read-only environment mount. |
-| CP1 | Repository and Engineering Foundation | planned | pending | pending | `checkpoint/cp1-engineering-foundation` | Starts after CP0 decisions are accepted. |
+| CP1 | Repository and Engineering Foundation | active | 2026-07-02 | pending | `checkpoint/cp1-engineering-foundation` | Opened after CP0 acceptance. Foundation stack and exit criteria are recorded in `documentation/checkpoints/cp1/`. |
 | CP2 | Account, Auth, and Business Creation | planned | pending | pending | `checkpoint/cp2-auth-business` | Starts after CP1. |
 | CP3 | Mobile Shell and Chat Shell | planned | pending | pending | `checkpoint/cp3-mobile-chat-shell` | Starts after CP1 or in parallel with CP2 if team capacity allows. |
 | CP4 | Rule-Based AI Entry Point | planned | pending | pending | `checkpoint/cp4-rule-parser` | Starts after CP3 shell exists. |

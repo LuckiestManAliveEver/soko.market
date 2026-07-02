@@ -1,7 +1,8 @@
 # CP0 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-01
+Date passed: 2026-07-01
 
 ## Created CP0 Artifacts
 

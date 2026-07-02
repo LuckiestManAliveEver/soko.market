@@ -1,7 +1,8 @@
 # CP0: Planning Baseline
 
-Status: active
+Status: passed
 Date opened: 2026-07-01
+Date passed: 2026-07-01
 Target tag: `checkpoint/cp0-planning-baseline`
 Actual tag: `checkpoint/cp0-planning-baseline` in `.repo.git`
 

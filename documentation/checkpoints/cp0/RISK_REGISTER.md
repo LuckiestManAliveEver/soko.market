@@ -1,7 +1,8 @@
 # CP0 Risk Register
 
-Status: active
+Status: passed
 Date opened: 2026-07-01
+Date passed: 2026-07-01
 
 ## Risk Ratings
 
@@ -22,7 +23,7 @@ Date opened: 2026-07-01
 | CP0-R07 | Low-end Android performance target is missed. | medium | high | open | Keep PWA shell small. Test early on 1 GB/2 GB devices or emulators. Delay heavy local AI. |
 | CP0-R08 | Swahili and mixed-language support is treated as late polish. | medium | high | open | Include Swahili in parser/eval datasets from CP4 onward. |
 | CP0-R09 | Duplicate and stale documents confuse implementation. | high | medium | mitigated | `documentation/README.md` now defines source authority and excludes broken placeholder. |
-| CP0-R10 | Current folder cannot create Git checkpoint tags. | high | high | open | Resolve before CP1 by initializing, repairing, or moving to a real repository. |
+| CP0-R10 | Current folder cannot create Git checkpoint tags through the normal `.git` path. | high | high | mitigated | Use `.repo.git` as the Git directory for checkpoint commits and tags until the project is moved to a normal checkout. |
 | CP0-R11 | Marketplace work starts before product-market fit. | medium | high | open | Enforce Master Control trigger conditions before CP17. |
 | CP0-R12 | TIEL blocks core commerce delivery. | medium | high | open | Treat TIEL as post-core-commerce hardening unless a specific payment/compliance dependency requires earlier work. |
 | CP0-R13 | General-purpose agent tools create security exposure. | medium | critical | open | Disable shell/filesystem/browser tools for merchant-facing agents. Expose only Soko-owned tools. |
@@ -30,7 +31,7 @@ Date opened: 2026-07-01
 
 ## Immediate Risk Actions
 
-Before CP1:
+Carried into CP1:
 
 1. Resolve Git repository status.
 2. Choose implementation stack.
