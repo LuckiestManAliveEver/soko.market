@@ -1,8 +1,8 @@
 # CP3 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 
 This file records mobile shell and chat shell decisions for CP3.
 

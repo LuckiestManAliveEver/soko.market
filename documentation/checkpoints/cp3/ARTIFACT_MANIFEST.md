@@ -1,8 +1,8 @@
 # CP3 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 
 ## Created CP3 Artifacts
 
@@ -12,15 +12,17 @@ Date passed: pending
 | `documentation/checkpoints/cp3/DECISION_LOG.md`      | Mobile shell, chat shell, quick action, and placeholder decisions.    |
 | `documentation/checkpoints/cp3/ARTIFACT_MANIFEST.md` | This manifest.                                                        |
 
-## Planned CP3 Implementation Artifacts
+## Implemented CP3 Artifacts
 
 | Path                                   | Purpose                                                        |
 | -------------------------------------- | -------------------------------------------------------------- |
 | `apps/web/public/manifest.webmanifest` | PWA install metadata.                                          |
+| `apps/web/public/icons/soko-icon.svg`  | Lightweight app icon for install metadata and browser tab.     |
+| `apps/web/index.html`                  | Links PWA manifest and app icon.                               |
+| `apps/web/src/cp3-shell.ts`            | CP3 quick action, empty state, and chat placeholder contract.  |
 | `apps/web/src/main.tsx`                | Authenticated mobile shell, home, chat, and placeholder views. |
 | `apps/web/src/styles.css`              | Mobile-first shell styling.                                    |
-| `apps/web/src/vite-env.d.ts`           | Web app environment typing if changed by CP3.                  |
-| `tests/*cp3*.test.ts`                  | Focused CP3 shell behavior tests where practical.              |
+| `tests/cp3-shell.test.ts`              | Focused CP3 shell behavior tests.                              |
 
 ## CP3 Opening Checklist
 
@@ -34,18 +36,18 @@ Date passed: pending
 
 ## CP3 Completion Checklist
 
-- [ ] PWA manifest implemented.
-- [ ] Authenticated mobile shell implemented.
-- [ ] Home surface implemented.
-- [ ] Chat shell implemented.
-- [ ] Quick actions grid implemented.
-- [ ] Offline status indicator implemented.
-- [ ] Sync status placeholder implemented.
-- [ ] Commerce empty states implemented.
-- [ ] Small Android viewport layout checked.
-- [ ] CP3 tests added or existing tests updated.
-- [ ] Existing CP1 and CP2 checks pass.
-- [ ] `checkpoint/cp3-mobile-chat-shell` tag created.
+- [x] PWA manifest implemented.
+- [x] Authenticated mobile shell implemented.
+- [x] Home surface implemented.
+- [x] Chat shell implemented.
+- [x] Quick actions grid implemented.
+- [x] Offline status indicator implemented.
+- [x] Sync status placeholder implemented.
+- [x] Commerce empty states implemented.
+- [x] Small Android viewport layout checked.
+- [x] CP3 tests added or existing tests updated.
+- [x] Existing CP1 and CP2 checks pass.
+- [x] `checkpoint/cp3-mobile-chat-shell` tag created.
 
 ## Verification
 

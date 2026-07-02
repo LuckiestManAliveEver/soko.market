@@ -1,9 +1,10 @@
 # CP3: Mobile Shell and Chat Shell
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 Target tag: `checkpoint/cp3-mobile-chat-shell`
+Actual tag: `checkpoint/cp3-mobile-chat-shell` in `.repo.git`
 
 ## Purpose
 
@@ -90,20 +91,20 @@ Owner signs in through CP2 flow
 
 ## CP3 Exit Criteria
 
-CP3 is marked passed when:
+CP3 is marked passed because:
 
-- [ ] App shell loads after CP2 authentication.
-- [ ] PWA manifest exists with appropriate app name, theme color, and icons or icon placeholders.
-- [ ] Home surface fits small Android viewport without horizontal overflow.
-- [ ] Chat shell exists with message history area and composer.
-- [ ] Chat shell clearly avoids executing business actions before CP4.
-- [ ] Quick actions grid exists for core workflows.
-- [ ] Products, customers, invoices, and payments have empty states.
-- [ ] Offline status indicator exists.
-- [ ] Sync status placeholder exists.
-- [ ] Main shell views are reachable from chat or quick action.
-- [ ] Existing CP1 and CP2 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp3-mobile-chat-shell` is created.
+- [x] App shell loads after CP2 authentication.
+- [x] PWA manifest exists with appropriate app name, theme color, and icon.
+- [x] Home surface fits small Android viewport without horizontal overflow.
+- [x] Chat shell exists with message history area and composer.
+- [x] Chat shell clearly avoids executing business actions before CP4.
+- [x] Quick actions grid exists for core workflows.
+- [x] Products, customers, invoices, and payments have empty states.
+- [x] Offline status indicator exists.
+- [x] Sync status placeholder exists.
+- [x] Main shell views are reachable from chat or quick action.
+- [x] Existing CP1 and CP2 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp3-mobile-chat-shell` is created.
 
 ## Rollback Instructions
 

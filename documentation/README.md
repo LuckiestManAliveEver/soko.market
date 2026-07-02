@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Continue CP3:
+Open CP4:
 
-1. Implement the installable mobile PWA shell.
-2. Add the chat shell, quick actions grid, offline indicator, sync placeholder, and commerce empty states.
-3. Verify the shell on small Android viewport conditions before opening CP4 parser work.
+1. Create the CP4 baseline and decision log.
+2. Implement the rule-based parser behind the CP3 chat shell.
+3. Keep low-confidence or state-changing commands behind clarification, confirmation, and business runtime checks.

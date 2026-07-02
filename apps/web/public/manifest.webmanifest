@@ -1,0 +1,18 @@
+{
+  "name": "Soko.market",
+  "short_name": "Soko",
+  "description": "Mobile-first business shell for Soko.market merchants.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f2",
+  "theme_color": "#117a4f",
+  "icons": [
+    {
+      "src": "/icons/soko-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
