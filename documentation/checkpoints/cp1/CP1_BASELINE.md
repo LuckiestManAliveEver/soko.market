@@ -1,8 +1,10 @@
 # CP1: Repository and Engineering Foundation
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
+Date passed: 2026-07-02
 Target tag: `checkpoint/cp1-engineering-foundation`
+Actual tag: `checkpoint/cp1-engineering-foundation` in `.repo.git`
 
 ## Purpose
 
@@ -75,19 +77,19 @@ tests
 
 ## CP1 Exit Criteria
 
-CP1 can be marked passed when:
+CP1 is marked passed because:
 
-- Workspace package manager installs from a fresh clone.
-- Expected monorepo directories exist.
-- Local development stack is documented and can boot.
-- PostgreSQL and Redis are available through local Docker Compose or an equivalent documented path.
-- API health check endpoint works.
-- Formatting, linting, type checking, and unit test commands exist.
-- CI skeleton runs lint, type check, and tests.
-- Initial migration structure exists as `000_initial` or equivalent.
-- Environment variable conventions are documented.
-- No business feature code depends on AI infrastructure.
-- Checkpoint tag `checkpoint/cp1-engineering-foundation` is created.
+- [x] Workspace package manager installs from a fresh clone.
+- [x] Expected monorepo directories exist.
+- [x] Local development stack is documented and can boot.
+- [x] PostgreSQL and Redis are available through local Docker Compose or an equivalent documented path.
+- [x] API health check endpoint works.
+- [x] Formatting, linting, type checking, and unit test commands exist.
+- [x] CI skeleton runs lint, type check, and tests.
+- [x] Initial migration structure exists as `000_initial` or equivalent.
+- [x] Environment variable conventions are documented.
+- [x] No business feature code depends on AI infrastructure.
+- [x] Checkpoint tag `checkpoint/cp1-engineering-foundation` is created.
 
 ## Rollback Instructions
 

@@ -1,0 +1,10 @@
+.repo.git
+coverage
+dist
+**/dist
+MORE
+node_modules
+pnpm-lock.yaml
+documentation/*.pdf
+documentation/*.docx
+documentation/*.png

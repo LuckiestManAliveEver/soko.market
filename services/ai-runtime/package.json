@@ -1,0 +1,19 @@
+{
+  "name": "@soko/ai-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/app.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "pnpm build && node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@soko/shared-types": "workspace:*",
+    "fastify": "^5.2.1"
+  }
+}

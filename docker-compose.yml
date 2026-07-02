@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: soko_market
+      POSTGRES_PASSWORD: soko_dev_password
+      POSTGRES_USER: soko
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soko -d soko_market"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - soko-postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+    volumes:
+      - soko-redis-data:/data
+
+volumes:
+  soko-postgres-data:
+  soko-redis-data:

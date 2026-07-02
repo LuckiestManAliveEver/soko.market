@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "services/**/*.ts",
+    "tests/**/*.ts",
+    "drizzle.config.ts",
+    "infra/**/*.ts",
+    "scripts/**/*.mjs",
+    "eslint.config.js",
+    "vitest.config.ts"
+  ]
+}

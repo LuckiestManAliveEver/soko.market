@@ -1,2 +1,11 @@
 .repo.git/
 MORE/
+node_modules/
+dist/
+**/dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
