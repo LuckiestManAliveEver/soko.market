@@ -1,8 +1,12 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  parseMerchantCommand,
+  shouldUseStructuredFallback,
+  type ParseResult
+} from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import {
-  createCp3PlaceholderReply,
   createInitialChatMessages,
   getEmptyState,
   quickActions,
@@ -72,6 +76,7 @@ function App() {
   const [view, setView] = useState<ShellView>("home");
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [chatDraft, setChatDraft] = useState("");
+  const [clarificationCount, setClarificationCount] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
     createInitialChatMessages(readStoredBusiness()?.name ?? "Soko.market")
   );
@@ -223,6 +228,8 @@ function App() {
   }
 
   function sendChatDraft() {
+    const parserResult = parseMerchantCommand(chatDraft);
+    const useFallback = shouldUseStructuredFallback(parserResult, clarificationCount);
     const merchantMessage: ChatMessage = {
       id: `merchant-${Date.now()}`,
       author: "merchant",
@@ -231,9 +238,16 @@ function App() {
     const reply: ChatMessage = {
       id: `sokoclaw-${Date.now()}`,
       author: "sokoclaw",
-      body: createCp3PlaceholderReply(chatDraft)
+      body: useFallback
+        ? createStructuredFallbackReply(parserResult)
+        : createParserReply(parserResult)
     };
 
+    if (parserResult.nextAction.type === "navigate") {
+      setView(parserResult.nextAction.view);
+    }
+
+    setClarificationCount(parserResult.nextAction.type === "clarify" ? clarificationCount + 1 : 0);
     setChatMessages((messages) => [...messages, merchantMessage, reply]);
     setChatDraft("");
   }
@@ -640,6 +654,42 @@ function getErrorMessage(error: unknown): string {
 function viewLabel(view: ShellView): string {
   const action = quickActions.find((item) => item.id === view);
   return action?.label ?? "Business home";
+}
+
+function createParserReply(result: ParseResult): string {
+  if (result.nextAction.type === "clarify") {
+    return `${result.nextAction.question} Intent: ${result.intent}. Confidence: ${formatConfidence(
+      result.confidence
+    )}.`;
+  }
+
+  if (result.nextAction.type === "navigate") {
+    return `Opening ${viewLabel(result.nextAction.view)}. Intent: ${result.intent}. Confidence: ${formatConfidence(
+      result.confidence
+    )}. No business record was changed.`;
+  }
+
+  return `Draft parsed as ${result.intent}. Confidence: ${formatConfidence(
+    result.confidence
+  )}. ${formatSlots(result.slots)}No business record was changed.`;
+}
+
+function createStructuredFallbackReply(result: ParseResult): string {
+  return `I still need a clearer command. Use quick actions for Products, Customers, Invoices, or Payments, or try a direct command like "show products". Intent: ${result.intent}. No business record was changed.`;
+}
+
+function formatConfidence(confidence: number): string {
+  return `${Math.round(confidence * 100)}%`;
+}
+
+function formatSlots(slots: ParseResult["slots"]): string {
+  const entries = Object.entries(slots);
+
+  if (entries.length === 0) {
+    return "";
+  }
+
+  return `Slots: ${entries.map(([key, value]) => `${key}=${String(value)}`).join(", ")}. `;
 }
 
 const root = document.getElementById("root");

@@ -50,6 +50,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@soko/tool-core':
+        specifier: workspace:*
+        version: link:../../packages/tool-core
       '@soko/ui':
         specifier: workspace:*
         version: link:../../packages/ui

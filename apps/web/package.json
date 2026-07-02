@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@soko/tool-core": "workspace:*",
     "@soko/ui": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

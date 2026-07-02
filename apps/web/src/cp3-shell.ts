@@ -83,17 +83,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP3 chat can capture drafts, but business actions start after CP4 parser checks.`
+      body: `${businessName} is ready. CP4 parser checks are active. State-changing commands stay as drafts until business tools exist.`
     }
   ];
-}
-
-export function createCp3PlaceholderReply(input: string): string {
-  const normalizedInput = input.trim();
-
-  if (normalizedInput.length === 0) {
-    return "Type a draft instruction first.";
-  }
-
-  return `Draft saved for CP4 parser work: "${normalizedInput}". No business record was changed.`;
 }

@@ -1,8 +1,8 @@
 # CP4 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 
 ## Created CP4 Artifacts
 
@@ -12,15 +12,18 @@ Date passed: pending
 | `documentation/checkpoints/cp4/DECISION_LOG.md`      | Rule parser, confidence, clarification, and boundary decisions.       |
 | `documentation/checkpoints/cp4/ARTIFACT_MANIFEST.md` | This manifest.                                                        |
 
-## Planned CP4 Implementation Artifacts
+## Implemented CP4 Artifacts
 
-| Path                             | Purpose                                                               |
-| -------------------------------- | --------------------------------------------------------------------- |
-| `packages/tool-core/src/*`       | Parser contracts or safe tool-intent types if shared.                 |
-| `apps/web/src/*cp4*`             | Rule parser integration behind the CP3 chat shell.                    |
-| `tests/ai-eval/*`                | Internal command dataset for parser evaluation.                       |
-| `tests/*cp4*.test.ts`            | Parser, confidence, clarification, and non-mutation tests.            |
-| `scripts/*` or package utilities | Optional parser evaluation script if plain unit tests are not enough. |
+| Path                              | Purpose                                                               |
+| --------------------------------- | --------------------------------------------------------------------- |
+| `packages/tool-core/src/index.ts` | Parser contract, intent taxonomy, confidence scoring, and slot logic. |
+| `apps/web/package.json`           | Adds the web app dependency on `@soko/tool-core`.                     |
+| `apps/web/src/main.tsx`           | Integrates parser output into the CP3 chat shell.                     |
+| `apps/web/src/cp3-shell.ts`       | Updates initial chat copy for CP4 parser behavior.                    |
+| `tests/ai-eval/cp4-commands.ts`   | Internal command dataset for parser evaluation.                       |
+| `tests/cp4-rule-parser.test.ts`   | Parser, confidence, clarification, and non-mutation tests.            |
+| `tests/cp3-shell.test.ts`         | Updated shell contract test for CP4 chat copy.                        |
+| `pnpm-lock.yaml`                  | Records the new web-to-tool-core workspace dependency.                |
 
 ## CP4 Opening Checklist
 
@@ -34,19 +37,19 @@ Date passed: pending
 
 ## CP4 Completion Checklist
 
-- [ ] Rule-based parser implemented.
-- [ ] Intent taxonomy implemented.
-- [ ] Confidence scoring implemented.
-- [ ] Slot extraction implemented.
-- [ ] Clarification behavior implemented.
-- [ ] Structured fallback behavior implemented.
-- [ ] Chat shell integration implemented.
-- [ ] Safe command completion implemented.
-- [ ] State-changing intents remain drafts only.
-- [ ] AI evaluation dataset contains at least 50 commands.
-- [ ] Parser tests meet acceptance threshold.
-- [ ] Existing CP1, CP2, and CP3 checks pass.
-- [ ] `checkpoint/cp4-rule-parser` tag created.
+- [x] Rule-based parser implemented.
+- [x] Intent taxonomy implemented.
+- [x] Confidence scoring implemented.
+- [x] Slot extraction implemented.
+- [x] Clarification behavior implemented.
+- [x] Structured fallback behavior implemented.
+- [x] Chat shell integration implemented.
+- [x] Safe command completion implemented.
+- [x] State-changing intents remain drafts only.
+- [x] AI evaluation dataset contains at least 50 commands.
+- [x] Parser tests meet acceptance threshold.
+- [x] Existing CP1, CP2, and CP3 checks pass.
+- [x] `checkpoint/cp4-rule-parser` tag created.
 
 ## Verification
 

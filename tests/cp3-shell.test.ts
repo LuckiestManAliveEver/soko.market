@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  createCp3PlaceholderReply,
   createInitialChatMessages,
   emptyStates,
   getEmptyState,
@@ -31,12 +30,7 @@ describe("CP3 shell contract", () => {
   it("keeps chat behavior as a non-executing CP4 draft placeholder", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("CP4 parser checks")
+      body: expect.stringContaining("State-changing commands stay as drafts")
     });
-
-    expect(createCp3PlaceholderReply("add sugar")).toBe(
-      'Draft saved for CP4 parser work: "add sugar". No business record was changed.'
-    );
-    expect(createCp3PlaceholderReply("   ")).toBe("Type a draft instruction first.");
   });
 });

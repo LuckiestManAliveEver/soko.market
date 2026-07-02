@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Continue CP4:
+Open CP5:
 
-1. Implement the rule-based parser behind the CP3 chat shell.
-2. Add the CP4 intent taxonomy, confidence thresholds, clarification behavior, and evaluation dataset.
-3. Keep state-changing commands as parsed drafts until later business checkpoints provide deterministic execution paths.
+1. Create the CP5 baseline and decision log.
+2. Implement deterministic product, customer, supplier, inventory, and event foundations.
+3. Keep CP4 parsed drafts non-mutating until CP5 business tools validate and persist records.

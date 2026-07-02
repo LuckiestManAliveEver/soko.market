@@ -1,9 +1,10 @@
 # CP4: Rule-Based AI Entry Point
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 Target tag: `checkpoint/cp4-rule-parser`
+Actual tag: `checkpoint/cp4-rule-parser` in `.repo.git`
 
 ## Purpose
 
@@ -96,19 +97,19 @@ Owner types a message in CP3 chat
 
 ## CP4 Exit Criteria
 
-CP4 is marked passed when:
+CP4 is marked passed because:
 
-- [ ] Rule-based parser module exists.
-- [ ] Initial intent taxonomy exists.
-- [ ] Parser returns structured intent, confidence, slots, and next action.
-- [ ] At least 50 internal test commands exist under `tests/ai-eval`.
-- [ ] Parser handles predefined product and customer commands with at least 80 percent accuracy.
-- [ ] Low-confidence behavior asks for clarification and does not execute business actions.
-- [ ] Chat shell shows parser results or clarification prompts.
-- [ ] At least one safe simple command can complete from chat without mutating business records.
-- [ ] State-changing commands are drafts only.
-- [ ] Existing CP1, CP2, and CP3 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp4-rule-parser` is created.
+- [x] Rule-based parser module exists.
+- [x] Initial intent taxonomy exists.
+- [x] Parser returns structured intent, confidence, slots, and next action.
+- [x] At least 50 internal test commands exist under `tests/ai-eval`.
+- [x] Parser handles predefined product and customer commands with at least 80 percent accuracy.
+- [x] Low-confidence behavior asks for clarification and does not execute business actions.
+- [x] Chat shell shows parser results or clarification prompts.
+- [x] At least one safe simple command can complete from chat without mutating business records.
+- [x] State-changing commands are drafts only.
+- [x] Existing CP1, CP2, and CP3 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp4-rule-parser` is created.
 
 ## Rollback Instructions
 

@@ -1,8 +1,8 @@
 # CP4 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 
 This file records rule-based AI entry point decisions for CP4.
 
