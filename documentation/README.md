@@ -953,10 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Start CP0 formally:
+Continue CP3:
 
-1. Rename or index source documents without deleting originals.
-2. Keep the Master Control Document as authority.
-3. Choose the MVP stack.
-4. Create the monorepo skeleton.
-5. Implement only enough AI in CP4 to prove chat-first workflows before adding heavier model infrastructure.
+1. Implement the installable mobile PWA shell.
+2. Add the chat shell, quick actions grid, offline indicator, sync placeholder, and commerce empty states.
+3. Verify the shell on small Android viewport conditions before opening CP4 parser work.
