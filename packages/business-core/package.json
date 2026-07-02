@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@soko/event-core": "workspace:*",
+    "@soko/shared-types": "workspace:*",
     "@soko/tool-core": "workspace:*"
   }
 }

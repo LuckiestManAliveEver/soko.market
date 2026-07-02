@@ -72,6 +72,9 @@ importers:
       '@soko/event-core':
         specifier: workspace:*
         version: link:../event-core
+      '@soko/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       '@soko/tool-core':
         specifier: workspace:*
         version: link:../tool-core
@@ -123,6 +126,12 @@ importers:
 
   services/api:
     dependencies:
+      '@soko/business-core':
+        specifier: workspace:*
+        version: link:../../packages/business-core
+      '@soko/event-core':
+        specifier: workspace:*
+        version: link:../../packages/event-core
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

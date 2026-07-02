@@ -13,6 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@soko/business-core": "workspace:*",
+    "@soko/event-core": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "fastify": "^5.2.1"
   }

@@ -1,8 +1,10 @@
 # CP2: Account, Auth, and Business Creation
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
+Date passed: 2026-07-02
 Target tag: `checkpoint/cp2-auth-business`
+Actual tag: `checkpoint/cp2-auth-business` in `.repo.git`
 
 ## Purpose
 
@@ -115,22 +117,22 @@ Rules:
 
 ## CP2 Exit Criteria
 
-CP2 can be marked passed when:
+CP2 is marked passed because:
 
-- Account, user, business, membership, OTP, session, and audit schemas exist through committed migration(s).
-- Owner can request and verify an OTP in local development.
-- Owner can create or resume an account.
-- Owner can create a first business.
-- Owner role membership is created deterministically.
-- Language preference is stored.
-- Auth state survives refresh.
-- Logout invalidates the session.
-- Role checks exist for owner, manager, sales_agent, cashier, and view_only.
-- Auth and business creation emit immutable audit events.
-- API tests cover successful and rejected auth/business creation paths.
-- Web flow exercises account creation, OTP verification, business creation, language selection, and refresh-surviving auth.
-- Existing CP1 checks still pass.
-- Checkpoint tag `checkpoint/cp2-auth-business` is created.
+- [x] Account, user, business, membership, OTP, session, and audit schemas exist through committed migration(s).
+- [x] Owner can request and verify an OTP in local development.
+- [x] Owner can create or resume an account.
+- [x] Owner can create a first business.
+- [x] Owner role membership is created deterministically.
+- [x] Language preference is stored.
+- [x] Auth state survives refresh.
+- [x] Logout invalidates the session.
+- [x] Role checks exist for owner, manager, sales_agent, cashier, and view_only.
+- [x] Auth and business creation emit immutable audit events.
+- [x] API tests cover successful and rejected auth/business creation paths.
+- [x] Web flow exercises account creation, OTP verification, business creation, language selection, and refresh-surviving auth.
+- [x] Existing CP1 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp2-auth-business` is created.
 
 ## Rollback Instructions
 

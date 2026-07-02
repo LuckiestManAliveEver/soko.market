@@ -1,4 +1,5 @@
 import { createEvent, type BusinessEvent } from "@soko/event-core";
+import type { BusinessRole } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
 export interface BusinessActionDraft {
@@ -48,4 +49,25 @@ export function businessActionProposedEvent(input: {
       draft: input.draft
     }
   });
+}
+
+export const businessRoles = ["owner", "manager", "sales_agent", "cashier", "view_only"] as const;
+
+export type BusinessPermission =
+  "business:create" | "business:read" | "membership:read" | "membership:manage";
+
+const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
+  owner: new Set(["business:create", "business:read", "membership:read", "membership:manage"]),
+  manager: new Set(["business:read", "membership:read"]),
+  sales_agent: new Set(["business:read"]),
+  cashier: new Set(["business:read"]),
+  view_only: new Set(["business:read"])
+};
+
+export function isBusinessRole(value: string): value is BusinessRole {
+  return businessRoles.includes(value as BusinessRole);
+}
+
+export function roleCan(role: BusinessRole, permission: BusinessPermission): boolean {
+  return rolePermissions[role]?.has(permission) ?? false;
 }

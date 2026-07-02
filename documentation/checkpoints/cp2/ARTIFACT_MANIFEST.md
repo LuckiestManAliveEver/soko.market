@@ -1,7 +1,8 @@
 # CP2 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
+Date passed: 2026-07-02
 
 ## Created CP2 Artifacts
 
@@ -10,6 +11,22 @@ Date opened: 2026-07-02
 | `documentation/checkpoints/cp2/CP2_BASELINE.md`      | Formal CP2 baseline, scope, exit criteria, and rollback instructions. |
 | `documentation/checkpoints/cp2/DECISION_LOG.md`      | Account, auth, business, role, language, and audit decisions.         |
 | `documentation/checkpoints/cp2/ARTIFACT_MANIFEST.md` | This manifest.                                                        |
+
+## Implemented CP2 Artifacts
+
+| Path                                            | Purpose                                                                            |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `infra/db/migrations/001_cp2_auth_business.sql` | Account, user, business, membership, OTP, and session migration.                   |
+| `infra/db/schema.ts`                            | Drizzle schema for CP2 account and business records.                               |
+| `packages/shared-types/src/index.ts`            | Shared CP2 auth, account, business, membership, session, role, and language types. |
+| `packages/business-core/src/index.ts`           | Baseline role values and permission helper.                                        |
+| `services/api/src/cp2/store.ts`                 | Provider-neutral local OTP, session, business, role, and audit store.              |
+| `services/api/src/cp2/routes.ts`                | CP2 Fastify routes for OTP, session, logout, business creation, and role checks.   |
+| `services/api/src/app.ts`                       | Registers CP2 API routes.                                                          |
+| `apps/web/src/main.tsx`                         | Minimal owner account and business creation flow.                                  |
+| `apps/web/src/styles.css`                       | Mobile-first CP2 form layout.                                                      |
+| `apps/web/src/vite-env.d.ts`                    | Vite environment typing for web build.                                             |
+| `tests/cp2-auth-business.test.ts`               | CP2 success and rejection-path API tests.                                          |
 
 ## CP2 Opening Checklist
 
@@ -22,22 +39,31 @@ Date opened: 2026-07-02
 
 ## CP2 Completion Checklist
 
-- [ ] Account schema implemented.
-- [ ] User schema implemented.
-- [ ] Business schema implemented.
-- [ ] Membership and role schema implemented.
-- [ ] OTP challenge schema implemented.
-- [ ] Session schema or equivalent server-side session store implemented.
-- [ ] Audit event linkage implemented.
-- [ ] OTP request API implemented.
-- [ ] OTP verification API implemented.
-- [ ] Account creation/resume API implemented.
-- [ ] First business creation API implemented.
-- [ ] Language preference saved.
-- [ ] Logout invalidates active session.
-- [ ] Refresh-surviving auth state verified.
-- [ ] Server-side role checks implemented.
-- [ ] Minimal web flow implemented.
-- [ ] API tests cover success and rejection paths.
-- [ ] Existing CP1 checks pass.
-- [ ] `checkpoint/cp2-auth-business` tag created.
+- [x] Account schema implemented.
+- [x] User schema implemented.
+- [x] Business schema implemented.
+- [x] Membership and role schema implemented.
+- [x] OTP challenge schema implemented.
+- [x] Session schema or equivalent server-side session store implemented.
+- [x] Audit event linkage implemented.
+- [x] OTP request API implemented.
+- [x] OTP verification API implemented.
+- [x] Account creation/resume API implemented.
+- [x] First business creation API implemented.
+- [x] Language preference saved.
+- [x] Logout invalidates active session.
+- [x] Refresh-surviving auth state verified.
+- [x] Server-side role checks implemented.
+- [x] Minimal web flow implemented.
+- [x] API tests cover success and rejection paths.
+- [x] Existing CP1 checks pass.
+- [x] `checkpoint/cp2-auth-business` tag created.
+
+## Verification
+
+- `pnpm install --frozen-lockfile`
+- `pnpm run ci`
+- `pnpm build`
+- `docker compose ps`
+- `pnpm --filter @soko/api start`
+- `pnpm health:api`

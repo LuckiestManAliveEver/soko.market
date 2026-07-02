@@ -18,7 +18,7 @@ body {
 .soko-surface {
   box-sizing: border-box;
   min-height: 100vh;
-  padding: 24px;
+  padding: 20px;
 }
 
 .soko-surface h1 {
@@ -30,5 +30,103 @@ body {
 .soko-surface p {
   font-size: 16px;
   line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.cp2-shell {
+  display: grid;
+  gap: 12px;
+  max-width: 880px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #dfe5dd;
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.panel h2 {
+  font-size: 18px;
+  letter-spacing: 0;
   margin: 0;
+}
+
+.panel label {
+  color: #405246;
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.panel input,
+.panel select {
+  background: #ffffff;
+  border: 1px solid #b9c8bf;
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: #17211b;
+  font: inherit;
+  min-height: 44px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.panel button {
+  background: #117a4f;
+  border: 0;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 10px 12px;
+}
+
+.panel button:disabled {
+  background: #9cad9f;
+  cursor: not-allowed;
+}
+
+.segmented {
+  background: #e9efe9;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr;
+  padding: 4px;
+}
+
+.segmented button {
+  background: transparent;
+  color: #26362c;
+}
+
+.segmented button.active {
+  background: #ffffff;
+  color: #117a4f;
+}
+
+.status-panel {
+  background: #eef5ef;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (min-width: 760px) {
+  .cp2-shell {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .status-panel {
+    grid-column: 1 / -1;
+  }
 }
