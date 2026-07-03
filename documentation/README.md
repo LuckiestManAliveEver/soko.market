@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Open CP5:
+Implement CP5:
 
-1. Create the CP5 baseline and decision log.
-2. Implement deterministic product, customer, supplier, inventory, and event foundations.
-3. Keep CP4 parsed drafts non-mutating until CP5 business tools validate and persist records.
+1. Implement deterministic product, customer, supplier, inventory, and event foundations.
+2. Keep CP4 parsed drafts non-mutating until CP5 business tools validate and persist records.
+3. Preserve CP1 through CP4 checks while CP5 is active.
