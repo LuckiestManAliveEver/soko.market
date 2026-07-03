@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   businessActionProposedEvent,
+  calculateInvoicePaymentStatus,
   createInvoicePreview,
+  createInvoicePaymentSummary,
+  createSupplierImportPreview,
   customerCreatedEvent,
+  documentImportConfirmedEvent,
   invoiceConfirmedEvent,
   normalizeProductInput,
+  paymentRecordedEvent,
   productCreatedEvent,
   roleCan,
   stockAdjustedEvent,
   validateBusinessActionDraft,
+  validateDocumentImportSource,
   validateInvoiceInput,
+  validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput
 } from "../packages/business-core/src";
@@ -221,5 +228,156 @@ describe("business core foundation", () => {
     expect(event.type).toBe("invoice.confirmed");
     expect(event.risk).toBe("high");
     expect(Object.isFrozen(event.payload.invoice)).toBe(true);
+  });
+
+  it("validates CP8 payment inputs and permissions", () => {
+    expect(
+      validatePaymentInput({
+        invoiceId: "invoice-1",
+        amount: 25,
+        method: "cash"
+      })
+    ).toEqual({
+      ok: true,
+      errors: []
+    });
+    expect(
+      validatePaymentInput({
+        invoiceId: "",
+        amount: 0,
+        method: "cash"
+      }).ok
+    ).toBe(false);
+    expect(roleCan("owner", "payment:write")).toBe(true);
+    expect(roleCan("manager", "payment:write")).toBe(true);
+    expect(roleCan("cashier", "payment:write")).toBe(true);
+    expect(roleCan("sales_agent", "payment:write")).toBe(false);
+    expect(roleCan("sales_agent", "payment:read")).toBe(true);
+  });
+
+  it("calculates CP8 settlement status and creates immutable payment events", () => {
+    const invoice = {
+      id: "invoice-1",
+      businessId: "business-1",
+      invoiceNumber: "INV-00001",
+      status: "confirmed" as const,
+      customerId: "customer-1",
+      customerName: "Amina",
+      items: [],
+      subtotal: 100,
+      taxRate: 0,
+      taxTotal: 0,
+      total: 100,
+      confirmedAt: "2026-07-03T00:00:00.000Z",
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z"
+    };
+    const payment = {
+      id: "payment-1",
+      businessId: "business-1",
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      customerId: invoice.customerId,
+      customerName: invoice.customerName,
+      method: "cash" as const,
+      amount: 40,
+      reference: null,
+      note: null,
+      actorId: "owner-1",
+      createdAt: "2026-07-03T00:00:00.000Z"
+    };
+    const summary = createInvoicePaymentSummary({
+      invoice,
+      payments: [payment]
+    });
+    const event = paymentRecordedEvent({
+      id: "event-payment",
+      payment,
+      invoicePayment: summary,
+      actorId: "owner-1",
+      occurredAt: "2026-07-03T00:00:00.000Z"
+    });
+
+    expect(calculateInvoicePaymentStatus({ invoiceTotal: 100, paidTotal: 0 })).toBe("unpaid");
+    expect(summary).toMatchObject({
+      paidTotal: 40,
+      balanceDue: 60,
+      status: "partially_paid"
+    });
+    expect(calculateInvoicePaymentStatus({ invoiceTotal: 100, paidTotal: 100 })).toBe("paid");
+    expect(event.type).toBe("payment.recorded");
+    expect(Object.isFrozen(event.payload.payment)).toBe(true);
+    expect(Object.isFrozen(event.payload.invoicePayment)).toBe(true);
+  });
+
+  it("previews CP9 supplier CSV imports without confirmed writes", () => {
+    const preview = createSupplierImportPreview({
+      content:
+        "name,phone,email,notes\nWholesale Depot,+254700000010,SUPPLY@example.com,Main\nx,,bad-email,Fix"
+    });
+
+    expect(validateDocumentImportSource({ fileName: "suppliers.csv", content: "name\nA" })).toEqual(
+      {
+        ok: true,
+        errors: []
+      }
+    );
+    expect(validateDocumentImportSource({ fileName: "suppliers.txt", content: "name\nA" }).ok).toBe(
+      false
+    );
+    expect(preview.fieldMapping).toMatchObject({
+      name: "name",
+      phone: "phone",
+      email: "email",
+      notes: "notes"
+    });
+    expect(preview.rows[0]).toMatchObject({
+      rowNumber: 1,
+      selected: true,
+      mapped: {
+        name: "Wholesale Depot",
+        email: "supply@example.com"
+      },
+      errors: []
+    });
+    expect(preview.rows[1].selected).toBe(false);
+    expect(preview.rows[1].errors.length).toBeGreaterThan(0);
+  });
+
+  it("creates immutable CP9 import lifecycle events", () => {
+    const importJob = {
+      id: "import-1",
+      businessId: "business-1",
+      source: {
+        id: "source-1",
+        businessId: "business-1",
+        fileName: "suppliers.csv",
+        contentType: "text/csv",
+        sizeBytes: 16,
+        checksum: "checksum",
+        createdAt: "2026-07-03T00:00:00.000Z"
+      },
+      target: "supplier" as const,
+      status: "confirmed" as const,
+      fieldMapping: {
+        name: "name" as const
+      },
+      rows: [],
+      confirmedCount: 1,
+      errorMessage: null,
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+      confirmedAt: "2026-07-03T00:00:00.000Z"
+    };
+    const event = documentImportConfirmedEvent({
+      id: "event-import",
+      importJob,
+      actorId: "owner-1",
+      occurredAt: "2026-07-03T00:00:00.000Z"
+    });
+
+    expect(event.type).toBe("document_import.confirmed");
+    expect(event.risk).toBe("medium");
+    expect(Object.isFrozen(event.payload.importJob)).toBe(true);
   });
 });

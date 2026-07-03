@@ -121,6 +121,50 @@ interface ConfirmInvoiceResponse {
   invoice: InvoiceSummary;
 }
 
+type PaymentMethod =
+  "cash" | "bank_transfer" | "mobile_money_manual" | "card_manual" | "other_manual";
+
+interface PaymentSummary {
+  id: string;
+  businessId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  method: PaymentMethod;
+  amount: number;
+  reference: string | null;
+  note: string | null;
+  actorId: string;
+  createdAt: string;
+}
+
+interface InvoicePaymentSummary {
+  invoiceId: string;
+  businessId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  invoiceTotal: number;
+  paidTotal: number;
+  balanceDue: number;
+  status: "unpaid" | "partially_paid" | "paid";
+}
+
+interface CustomerDebtSummary {
+  customerId: string;
+  customerName: string;
+  invoiceCount: number;
+  totalInvoiced: number;
+  totalPaid: number;
+  balanceDue: number;
+}
+
+interface RecordPaymentResponse {
+  payment: PaymentSummary;
+  invoicePayment: InvoicePaymentSummary;
+}
+
 interface SyncQueueSummary {
   businessId: string;
   pending: number;
@@ -148,6 +192,46 @@ interface SyncQueueResponse {
   items: SyncQueueItem[];
 }
 
+interface SupplierImportDraft {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+}
+
+interface DocumentImportPreviewRow {
+  rowNumber: number;
+  raw: Record<string, string>;
+  mapped: SupplierImportDraft;
+  errors: string[];
+  warnings: string[];
+  selected: boolean;
+}
+
+interface DocumentImportJobSummary {
+  id: string;
+  businessId: string;
+  source: {
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+    checksum: string;
+    createdAt: string;
+  };
+  target: "supplier";
+  status: "previewed" | "confirmed" | "failed";
+  rows: DocumentImportPreviewRow[];
+  confirmedCount: number;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+}
+
+interface DocumentImportConfirmResult {
+  job: DocumentImportJobSummary;
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -172,6 +256,19 @@ interface InvoiceFormState {
   quantity: string;
   unitPrice: string;
   taxRate: string;
+}
+
+interface PaymentFormState {
+  invoiceId: string;
+  amount: string;
+  method: PaymentMethod;
+  reference: string;
+  note: string;
+}
+
+interface ImportFormState {
+  fileName: string;
+  content: string;
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
@@ -201,6 +298,19 @@ const emptyInvoiceForm: InvoiceFormState = {
   quantity: "1",
   unitPrice: "0",
   taxRate: "0"
+};
+
+const emptyPaymentForm: PaymentFormState = {
+  invoiceId: "",
+  amount: "",
+  method: "cash",
+  reference: "",
+  note: ""
+};
+
+const emptyImportForm: ImportFormState = {
+  fileName: "suppliers.csv",
+  content: "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier"
 };
 
 const emptySyncSummary: SyncQueueSummary = {
@@ -233,11 +343,18 @@ function App() {
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
+  const [payments, setPayments] = useState<PaymentSummary[]>([]);
+  const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
+  const [customerDebts, setCustomerDebts] = useState<CustomerDebtSummary[]>([]);
+  const [importJobs, setImportJobs] = useState<DocumentImportJobSummary[]>([]);
+  const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
+  const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
+  const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
@@ -253,6 +370,8 @@ function App() {
       : `${activeQueueCount} queued`
     : "Waiting for setup";
   const userLabel = session?.user.displayName ?? "Signed out";
+  const activeImportJob =
+    importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
   useEffect(() => {
     void refreshSession();
@@ -306,6 +425,15 @@ function App() {
 
     if (view === "home" || view === "sync") {
       void loadSyncQueue(business.id);
+    }
+
+    if (view === "payments") {
+      void loadInvoices(business.id);
+      void loadPaymentData(business.id);
+    }
+
+    if (view === "imports") {
+      void loadDocumentImports(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -530,6 +658,155 @@ function App() {
     }
   }
 
+  async function loadPaymentData(businessId: string) {
+    try {
+      const [nextPayments, nextSummaries, nextDebts] = await Promise.all([
+        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`),
+        getJson<InvoicePaymentSummary[]>(`/businesses/${businessId}/payment-summaries`),
+        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`)
+      ]);
+      setPayments(nextPayments);
+      setInvoicePayments(nextSummaries);
+      setCustomerDebts(nextDebts);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadDocumentImports(businessId: string) {
+    try {
+      const jobs = await getJson<DocumentImportJobSummary[]>(`/businesses/${businessId}/imports`);
+      setImportJobs(jobs);
+      if (selectedImportJobId === null && jobs[0] !== undefined) {
+        setSelectedImportJobId(jobs[0].id);
+      }
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createSupplierCsvImport() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const job = await postJson<DocumentImportJobSummary>(
+        `/businesses/${business.id}/imports/supplier-csv`,
+        {
+          fileName: importForm.fileName,
+          contentType: "text/csv",
+          content: importForm.content
+        }
+      );
+      setImportJobs((jobs) => [job, ...jobs.filter((item) => item.id !== job.id)]);
+      setSelectedImportJobId(job.id);
+      setStatusMessage(job.status === "failed" ? "Import failed" : "Import preview ready");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function updateImportRowLocal(input: {
+    importJobId: string;
+    rowNumber: number;
+    mapped: SupplierImportDraft;
+    selected: boolean;
+  }) {
+    setImportJobs((jobs) =>
+      jobs.map((job) =>
+        job.id === input.importJobId
+          ? {
+              ...job,
+              rows: job.rows.map((row) =>
+                row.rowNumber === input.rowNumber
+                  ? {
+                      ...row,
+                      mapped: input.mapped,
+                      selected: input.selected
+                    }
+                  : row
+              )
+            }
+          : job
+      )
+    );
+  }
+
+  async function saveImportRow(job: DocumentImportJobSummary, row: DocumentImportPreviewRow) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const updated = await patchJson<DocumentImportJobSummary>(
+        `/businesses/${business.id}/imports/${job.id}/rows/${row.rowNumber}`,
+        {
+          mapped: row.mapped,
+          selected: row.selected
+        }
+      );
+      setImportJobs((jobs) => jobs.map((item) => (item.id === updated.id ? updated : item)));
+      setStatusMessage(`Import row ${row.rowNumber} saved`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function confirmImport(job: DocumentImportJobSummary) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const response = await postJson<DocumentImportConfirmResult>(
+        `/businesses/${business.id}/imports/${job.id}/confirm`,
+        {
+          selectedRowNumbers: job.rows.filter((row) => row.selected).map((row) => row.rowNumber)
+        }
+      );
+      setImportJobs((jobs) =>
+        jobs.map((item) => (item.id === response.job.id ? response.job : item))
+      );
+      await loadDocumentImports(business.id);
+      setStatusMessage(`${response.job.confirmedCount} supplier rows imported`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function recordPayment() {
+    if (business === null || paymentForm.invoiceId.length === 0) {
+      return;
+    }
+
+    try {
+      const response = await postJson<RecordPaymentResponse>(
+        `/businesses/${business.id}/payments`,
+        {
+          invoiceId: paymentForm.invoiceId,
+          amount: Number(paymentForm.amount),
+          method: paymentForm.method,
+          reference: paymentForm.reference,
+          note: paymentForm.note
+        }
+      );
+      setPaymentForm({
+        ...emptyPaymentForm,
+        invoiceId:
+          response.invoicePayment.status === "paid" ? "" : response.invoicePayment.invoiceId,
+        amount:
+          response.invoicePayment.status === "paid"
+            ? ""
+            : String(response.invoicePayment.balanceDue)
+      });
+      await loadPaymentData(business.id);
+      setStatusMessage("Payment recorded");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function replaySyncQueue() {
     if (business === null) {
       return;
@@ -541,6 +818,7 @@ function App() {
       await loadProducts(business.id);
       await loadCustomers(business.id);
       await loadInvoices(business.id);
+      await loadPaymentData(business.id);
       setStatusMessage("Sync queue replayed");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -638,9 +916,16 @@ function App() {
     setProducts([]);
     setCustomers([]);
     setInvoices([]);
+    setPayments([]);
+    setInvoicePayments([]);
+    setCustomerDebts([]);
+    setImportJobs([]);
+    setSelectedImportJobId(null);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
     setInvoiceForm(emptyInvoiceForm);
+    setPaymentForm(emptyPaymentForm);
+    setImportForm(emptyImportForm);
     setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
@@ -851,11 +1136,40 @@ function App() {
                   onReplay={() => void replaySyncQueue()}
                 />
               ) : null}
+              {view === "payments" ? (
+                <PaymentSurface
+                  invoices={invoices}
+                  payments={payments}
+                  invoicePayments={invoicePayments}
+                  customerDebts={customerDebts}
+                  form={paymentForm}
+                  onFormChange={setPaymentForm}
+                  onRecord={() => void recordPayment()}
+                  onRefresh={() => business !== null && void loadPaymentData(business.id)}
+                />
+              ) : null}
+              {view === "imports" ? (
+                <ImportSurface
+                  form={importForm}
+                  importJobs={importJobs}
+                  activeImportJob={activeImportJob}
+                  selectedImportJobId={selectedImportJobId}
+                  onFormChange={setImportForm}
+                  onCreate={() => void createSupplierCsvImport()}
+                  onSelectJob={setSelectedImportJobId}
+                  onRowChange={updateImportRowLocal}
+                  onSaveRow={(job, row) => void saveImportRow(job, row)}
+                  onConfirm={(job) => void confirmImport(job)}
+                  onRefresh={() => business !== null && void loadDocumentImports(business.id)}
+                />
+              ) : null}
               {currentEmptyState !== undefined &&
               view !== "products" &&
               view !== "customers" &&
               view !== "invoices" &&
-              view !== "sync" ? (
+              view !== "sync" &&
+              view !== "payments" &&
+              view !== "imports" ? (
                 <EmptyStateSurface
                   title={currentEmptyState.title}
                   body={currentEmptyState.body}
@@ -1166,6 +1480,476 @@ function SyncSurface(props: SyncSurfaceProps) {
         )}
       </section>
     </div>
+  );
+}
+
+interface PaymentSurfaceProps {
+  invoices: InvoiceSummary[];
+  payments: PaymentSummary[];
+  invoicePayments: InvoicePaymentSummary[];
+  customerDebts: CustomerDebtSummary[];
+  form: PaymentFormState;
+  onFormChange: (form: PaymentFormState) => void;
+  onRecord: () => void;
+  onRefresh: () => void;
+}
+
+function PaymentSurface(props: PaymentSurfaceProps) {
+  const confirmedInvoices = props.invoices.filter((invoice) => invoice.status === "confirmed");
+  const selectedSummary = props.invoicePayments.find(
+    (summary) => summary.invoiceId === props.form.invoiceId
+  );
+  const unpaidInvoices = props.invoicePayments.filter((summary) => summary.status !== "paid");
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Payment form">
+        <div className="section-heading">
+          <p className="eyebrow">CP8 payment</p>
+          <h3>Record invoice payment</h3>
+        </div>
+        <label>
+          Invoice
+          <select
+            value={props.form.invoiceId}
+            onChange={(event) => {
+              const summary = props.invoicePayments.find(
+                (item) => item.invoiceId === event.target.value
+              );
+              props.onFormChange({
+                ...props.form,
+                invoiceId: event.target.value,
+                amount: summary === undefined ? props.form.amount : String(summary.balanceDue)
+              });
+            }}
+          >
+            <option value="">Select confirmed invoice</option>
+            {confirmedInvoices.map((invoice) => {
+              const summary = props.invoicePayments.find((item) => item.invoiceId === invoice.id);
+
+              return (
+                <option key={invoice.id} value={invoice.id} disabled={summary?.status === "paid"}>
+                  {invoice.invoiceNumber} - {invoice.customerName ?? "Walk-in"} -{" "}
+                  {formatMoney(summary?.balanceDue ?? invoice.total)}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+        <div className="form-row">
+          <label>
+            Amount
+            <input
+              value={props.form.amount}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, amount: event.target.value })
+              }
+              inputMode="decimal"
+            />
+          </label>
+          <label>
+            Method
+            <select
+              value={props.form.method}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  method: event.target.value as PaymentMethod
+                })
+              }
+            >
+              <option value="cash">Cash</option>
+              <option value="bank_transfer">Bank transfer</option>
+              <option value="mobile_money_manual">Manual mobile money</option>
+              <option value="card_manual">Manual card</option>
+              <option value="other_manual">Other manual</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Reference
+          <input
+            value={props.form.reference}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, reference: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Note
+          <textarea
+            value={props.form.note}
+            onChange={(event) => props.onFormChange({ ...props.form, note: event.target.value })}
+            rows={3}
+          />
+        </label>
+        {selectedSummary !== undefined ? (
+          <div className="metric-grid compact">
+            <div className="metric">
+              <span>Total</span>
+              <strong>{formatMoney(selectedSummary.invoiceTotal)}</strong>
+            </div>
+            <div className="metric">
+              <span>Paid</span>
+              <strong>{formatMoney(selectedSummary.paidTotal)}</strong>
+            </div>
+            <div className="metric">
+              <span>Due</span>
+              <strong>{formatMoney(selectedSummary.balanceDue)}</strong>
+            </div>
+          </div>
+        ) : null}
+        <div className="actions">
+          <button
+            type="button"
+            onClick={props.onRecord}
+            disabled={props.form.invoiceId === "" || Number(props.form.amount) <= 0}
+          >
+            Record
+          </button>
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Invoice settlement">
+        <div className="section-heading">
+          <p className="eyebrow">Settlement</p>
+          <h3>Open invoice balances</h3>
+        </div>
+        {unpaidInvoices.length === 0 ? (
+          <div className="empty-record">
+            <h3>No open balances</h3>
+            <p>Confirmed unpaid invoices will appear here.</p>
+          </div>
+        ) : (
+          unpaidInvoices.map((summary) => (
+            <article className="record-row" key={summary.invoiceId}>
+              <div>
+                <strong>
+                  {summary.invoiceNumber} - {summary.status.replace("_", " ")}
+                </strong>
+                <span>
+                  {summary.customerName ?? "Walk-in customer"} - due{" "}
+                  {formatMoney(summary.balanceDue)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  props.onFormChange({
+                    ...props.form,
+                    invoiceId: summary.invoiceId,
+                    amount: String(summary.balanceDue)
+                  })
+                }
+              >
+                Pay
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+
+      <section className="record-list" aria-label="Customer debt">
+        <div className="section-heading">
+          <p className="eyebrow">Debt</p>
+          <h3>Customer balances</h3>
+        </div>
+        {props.customerDebts.length === 0 ? (
+          <div className="empty-record">
+            <h3>No customer debt</h3>
+            <p>Customer-linked invoice balances are clear.</p>
+          </div>
+        ) : (
+          props.customerDebts.map((debt) => (
+            <article className="record-row" key={debt.customerId}>
+              <div>
+                <strong>{debt.customerName}</strong>
+                <span>
+                  {debt.invoiceCount} invoice{debt.invoiceCount === 1 ? "" : "s"} - paid{" "}
+                  {formatMoney(debt.totalPaid)}
+                </span>
+              </div>
+              <strong>{formatMoney(debt.balanceDue)}</strong>
+            </article>
+          ))
+        )}
+      </section>
+
+      <section className="record-list" aria-label="Recent payments">
+        <div className="section-heading">
+          <p className="eyebrow">Ledger</p>
+          <h3>Recent payments</h3>
+        </div>
+        {props.payments.length === 0 ? (
+          <div className="empty-record">
+            <h3>No payments yet</h3>
+            <p>Record a payment against a confirmed invoice.</p>
+          </div>
+        ) : (
+          props.payments.map((payment) => (
+            <article className="record-row" key={payment.id}>
+              <div>
+                <strong>
+                  {payment.invoiceNumber} - {formatMoney(payment.amount)}
+                </strong>
+                <span>
+                  {payment.customerName ?? "Walk-in customer"} -{" "}
+                  {payment.method.replaceAll("_", " ")}
+                </span>
+              </div>
+              <span>{new Date(payment.createdAt).toLocaleDateString()}</span>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
+interface ImportSurfaceProps {
+  form: ImportFormState;
+  importJobs: DocumentImportJobSummary[];
+  activeImportJob: DocumentImportJobSummary | null;
+  selectedImportJobId: string | null;
+  onFormChange: (form: ImportFormState) => void;
+  onCreate: () => void;
+  onSelectJob: (jobId: string) => void;
+  onRowChange: (input: {
+    importJobId: string;
+    rowNumber: number;
+    mapped: SupplierImportDraft;
+    selected: boolean;
+  }) => void;
+  onSaveRow: (job: DocumentImportJobSummary, row: DocumentImportPreviewRow) => void;
+  onConfirm: (job: DocumentImportJobSummary) => void;
+  onRefresh: () => void;
+}
+
+function ImportSurface(props: ImportSurfaceProps) {
+  const selectedRows = props.activeImportJob?.rows.filter((row) => row.selected) ?? [];
+  const invalidSelectedRows = selectedRows.filter((row) => row.errors.length > 0);
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Supplier CSV import">
+        <div className="section-heading">
+          <p className="eyebrow">CP9 import</p>
+          <h3>Supplier CSV preview</h3>
+        </div>
+        <label>
+          File name
+          <input
+            value={props.form.fileName}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, fileName: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          CSV content
+          <textarea
+            value={props.form.content}
+            onChange={(event) => props.onFormChange({ ...props.form, content: event.target.value })}
+            rows={7}
+          />
+        </label>
+        <div className="actions">
+          <button
+            type="button"
+            onClick={props.onCreate}
+            disabled={props.form.fileName.trim() === "" || props.form.content.trim() === ""}
+          >
+            Preview
+          </button>
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Import jobs">
+        <div className="section-heading">
+          <p className="eyebrow">Jobs</p>
+          <h3>Document imports</h3>
+        </div>
+        {props.importJobs.length === 0 ? (
+          <div className="empty-record">
+            <h3>No imports yet</h3>
+            <p>Preview a supplier CSV before confirming new records.</p>
+          </div>
+        ) : (
+          props.importJobs.map((job) => (
+            <article className="record-row" key={job.id}>
+              <div>
+                <strong>
+                  {job.source.fileName} - {job.status}
+                </strong>
+                <span>
+                  {job.rows.length} row{job.rows.length === 1 ? "" : "s"} - {job.confirmedCount}{" "}
+                  confirmed
+                </span>
+              </div>
+              <button
+                type="button"
+                className={props.selectedImportJobId === job.id ? "active" : ""}
+                onClick={() => props.onSelectJob(job.id)}
+              >
+                View
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+
+      {props.activeImportJob !== null ? (
+        <section className="record-list" aria-label="Import preview rows">
+          <div className="section-heading">
+            <p className="eyebrow">{props.activeImportJob.status}</p>
+            <h3>Preview rows</h3>
+          </div>
+          <div className="metric-grid compact">
+            <div className="metric">
+              <span>Rows</span>
+              <strong>{props.activeImportJob.rows.length}</strong>
+            </div>
+            <div className="metric">
+              <span>Selected</span>
+              <strong>{selectedRows.length}</strong>
+            </div>
+            <div className="metric">
+              <span>Invalid</span>
+              <strong>{invalidSelectedRows.length}</strong>
+            </div>
+          </div>
+          {props.activeImportJob.errorMessage !== null ? (
+            <div className="empty-record">
+              <h3>Import failed</h3>
+              <p>{props.activeImportJob.errorMessage}</p>
+            </div>
+          ) : null}
+          {props.activeImportJob.rows.map((row) => (
+            <ImportRowEditor
+              importJobId={props.activeImportJob?.id ?? ""}
+              key={row.rowNumber}
+              row={row}
+              disabled={props.activeImportJob?.status !== "previewed"}
+              onRowChange={props.onRowChange}
+              onSave={() =>
+                props.activeImportJob !== null && props.onSaveRow(props.activeImportJob, row)
+              }
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => props.activeImportJob !== null && props.onConfirm(props.activeImportJob)}
+            disabled={
+              props.activeImportJob.status !== "previewed" ||
+              selectedRows.length === 0 ||
+              invalidSelectedRows.length > 0
+            }
+          >
+            Confirm selected
+          </button>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+interface ImportRowEditorProps {
+  importJobId: string;
+  row: DocumentImportPreviewRow;
+  disabled: boolean;
+  onRowChange: (input: {
+    importJobId: string;
+    rowNumber: number;
+    mapped: SupplierImportDraft;
+    selected: boolean;
+  }) => void;
+  onSave: () => void;
+}
+
+function ImportRowEditor(props: ImportRowEditorProps) {
+  function updateMapped(mapped: SupplierImportDraft, selected = props.row.selected) {
+    props.onRowChange({
+      importJobId: props.importJobId,
+      rowNumber: props.row.rowNumber,
+      mapped,
+      selected
+    });
+  }
+
+  return (
+    <article className="import-row">
+      <div className="import-row-header">
+        <label className="inline-check">
+          <input
+            checked={props.row.selected}
+            disabled={props.disabled}
+            type="checkbox"
+            onChange={(event) =>
+              props.onRowChange({
+                importJobId: props.importJobId,
+                rowNumber: props.row.rowNumber,
+                mapped: props.row.mapped,
+                selected: event.target.checked
+              })
+            }
+          />
+          Row {props.row.rowNumber}
+        </label>
+        <span>{props.row.errors.length === 0 ? "Valid" : "Needs correction"}</span>
+      </div>
+      <div className="form-row">
+        <label>
+          Name
+          <input
+            value={props.row.mapped.name}
+            disabled={props.disabled}
+            onChange={(event) => updateMapped({ ...props.row.mapped, name: event.target.value })}
+          />
+        </label>
+        <label>
+          Phone
+          <input
+            value={props.row.mapped.phone ?? ""}
+            disabled={props.disabled}
+            onChange={(event) =>
+              updateMapped({ ...props.row.mapped, phone: event.target.value || null })
+            }
+          />
+        </label>
+      </div>
+      <div className="form-row">
+        <label>
+          Email
+          <input
+            value={props.row.mapped.email ?? ""}
+            disabled={props.disabled}
+            onChange={(event) =>
+              updateMapped({ ...props.row.mapped, email: event.target.value || null })
+            }
+          />
+        </label>
+        <label>
+          Notes
+          <input
+            value={props.row.mapped.notes ?? ""}
+            disabled={props.disabled}
+            onChange={(event) =>
+              updateMapped({ ...props.row.mapped, notes: event.target.value || null })
+            }
+          />
+        </label>
+      </div>
+      {props.row.errors.length > 0 ? <p>{props.row.errors.join(" ")}</p> : null}
+      <button type="button" onClick={props.onSave} disabled={props.disabled}>
+        Save row
+      </button>
+    </article>
   );
 }
 

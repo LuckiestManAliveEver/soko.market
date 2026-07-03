@@ -172,6 +172,25 @@ export const invoiceItems = pgTable("invoice_items", {
   lineTotal: numeric("line_total").notNull()
 });
 
+export const payments = pgTable("payments", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  invoiceId: uuid("invoice_id")
+    .notNull()
+    .references(() => invoices.id),
+  customerId: uuid("customer_id").references(() => customers.id),
+  method: text("method").notNull(),
+  amount: numeric("amount").notNull(),
+  reference: text("reference"),
+  note: text("note"),
+  actorId: uuid("actor_id")
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
 export const invoiceNumberCounters = pgTable("invoice_number_counters", {
   businessId: uuid("business_id")
     .primaryKey()
@@ -207,4 +226,47 @@ export const offlineCacheSnapshots = pgTable("offline_cache_snapshots", {
     .references(() => businesses.id),
   capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
   source: text("source").notNull()
+});
+
+export const documentImportSources = pgTable("document_import_sources", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  fileName: text("file_name").notNull(),
+  contentType: text("content_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const documentImportJobs = pgTable("document_import_jobs", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  sourceId: uuid("source_id")
+    .notNull()
+    .references(() => documentImportSources.id),
+  target: text("target").notNull(),
+  status: text("status").notNull(),
+  fieldMapping: jsonb("field_mapping").notNull(),
+  confirmedCount: integer("confirmed_count").notNull().default(0),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true })
+});
+
+export const documentImportRows = pgTable("document_import_rows", {
+  id: uuid("id").primaryKey(),
+  importJobId: uuid("import_job_id")
+    .notNull()
+    .references(() => documentImportJobs.id),
+  rowNumber: integer("row_number").notNull(),
+  raw: jsonb("raw").notNull(),
+  mapped: jsonb("mapped").notNull(),
+  errors: jsonb("errors").notNull(),
+  warnings: jsonb("warnings").notNull(),
+  selected: integer("selected").notNull().default(0)
 });

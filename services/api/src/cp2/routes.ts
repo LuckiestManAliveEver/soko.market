@@ -1,6 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { BusinessPermission } from "@soko/business-core";
-import type { AuthChannel, SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
+import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
+import type {
+  AuthChannel,
+  SupplierImportDraft,
+  SyncMutationPayload,
+  SyncMutationType
+} from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
 import {
   clearSessionCookie,
@@ -61,6 +66,18 @@ interface SyncQueueParams extends BusinessParams {
   syncItemId: string;
 }
 
+interface DocumentImportParams extends BusinessParams {
+  importJobId: string;
+}
+
+interface DocumentImportRowParams extends DocumentImportParams {
+  rowNumber: string;
+}
+
+interface PaymentParams extends BusinessParams {
+  invoiceId: string;
+}
+
 interface ProductBody {
   name?: string;
   sku?: string | null;
@@ -93,11 +110,34 @@ interface InvoiceBody {
   items?: InvoiceItemBody[];
 }
 
+interface PaymentBody {
+  invoiceId?: string;
+  amount?: number;
+  method?: string;
+  reference?: string | null;
+  note?: string | null;
+}
+
 interface SyncMutationBody {
   idempotencyKey?: string;
   mutationType?: string;
   clientCreatedAt?: string;
   payload?: unknown;
+}
+
+interface SupplierCsvImportBody {
+  fileName?: string;
+  contentType?: string | null;
+  content?: string;
+}
+
+interface SupplierImportRowBody {
+  mapped?: Partial<SupplierImportDraft>;
+  selected?: boolean;
+}
+
+interface SupplierImportConfirmBody {
+  selectedRowNumbers?: number[];
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -411,6 +451,168 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.get(
+    "/businesses/:businessId/payments",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listPayments({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/payments",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: PaymentBody }>, reply) => {
+      try {
+        return store.recordPayment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          payment: parsePaymentBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/invoices/:invoiceId/payments",
+    async (request: FastifyRequest<{ Params: PaymentParams }>, reply) => {
+      try {
+        return store.listPayments({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/payment-summaries",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listInvoicePaymentSummaries({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/customer-debts",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listCustomerDebts({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/imports/supplier-csv",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: SupplierCsvImportBody }>,
+      reply
+    ) => {
+      try {
+        return store.createSupplierCsvImport({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          source: parseSupplierCsvImportBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/imports",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listDocumentImports({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/imports/:importJobId",
+    async (request: FastifyRequest<{ Params: DocumentImportParams }>, reply) => {
+      try {
+        return store.getDocumentImport({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          importJobId: request.params.importJobId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/imports/:importJobId/rows/:rowNumber",
+    async (
+      request: FastifyRequest<{ Params: DocumentImportRowParams; Body: SupplierImportRowBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateSupplierImportRow({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          importJobId: request.params.importJobId,
+          rowNumber: parseIntegerString(request.params.rowNumber, "rowNumber"),
+          ...parseSupplierImportRowBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/imports/:importJobId/confirm",
+    async (
+      request: FastifyRequest<{ Params: DocumentImportParams; Body: SupplierImportConfirmBody }>,
+      reply
+    ) => {
+      try {
+        const selectedRowNumbers = parseOptionalRowNumbers(request.body?.selectedRowNumbers);
+        const input = {
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          importJobId: request.params.importJobId
+        };
+        return store.confirmSupplierImport({
+          ...input,
+          ...(selectedRowNumbers === undefined ? {} : { selectedRowNumbers })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
     "/businesses/:businessId/offline-cache",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
       try {
@@ -543,6 +745,9 @@ function parseSyncMutationPayload(
       return {
         invoiceId: parseString(payload.invoiceId, "payload.invoiceId")
       };
+
+    case "payment.record":
+      return parsePaymentBody(payload);
   }
 }
 
@@ -612,6 +817,68 @@ function parseInvoiceBody(body: InvoiceBody | null | undefined) {
   };
 }
 
+function parsePaymentBody(body: PaymentBody | null | undefined) {
+  const record = parseRequestBody(body);
+  const method = parseString(record.method, "method");
+
+  if (!isPaymentMethod(method)) {
+    throw new Cp2Error(400, "payment_method_invalid", "Payment method is not supported.");
+  }
+
+  return {
+    invoiceId: parseString(record.invoiceId, "invoiceId"),
+    amount: parseNumber(record.amount, "amount"),
+    method,
+    reference: parseNullableString(record.reference),
+    note: parseNullableString(record.note)
+  };
+}
+
+function parseSupplierCsvImportBody(body: SupplierCsvImportBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    fileName: parseString(record.fileName, "fileName"),
+    contentType: parseNullableString(record.contentType),
+    content: parseString(record.content, "content")
+  };
+}
+
+function parseSupplierImportRowBody(body: SupplierImportRowBody | null | undefined): {
+  mapped: SupplierImportDraft;
+  selected?: boolean;
+} {
+  const record = parseRequestBody(body);
+  const mapped = parseRequestBody(record.mapped);
+  const parsed = {
+    mapped: {
+      name: parseString(mapped.name, "mapped.name"),
+      phone: parseNullableString(mapped.phone),
+      email: parseNullableString(mapped.email),
+      notes: parseNullableString(mapped.notes)
+    }
+  };
+
+  return record.selected === undefined
+    ? parsed
+    : {
+        ...parsed,
+        selected: parseBoolean(record.selected, "selected")
+      };
+}
+
+function parseOptionalRowNumbers(value: unknown): number[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "selected_rows_invalid", "selectedRowNumbers must be an array.");
+  }
+
+  return value.map((item, index) => parsePositiveInteger(item, `selectedRowNumbers.${index}`));
+}
+
 function parseInvoiceItems(value: unknown) {
   if (!Array.isArray(value)) {
     throw new Cp2Error(400, "items_required", "items is required.");
@@ -651,6 +918,32 @@ function parseNullableString(value: unknown): string | null {
 function parseNumber(value: unknown, name: string): number {
   if (typeof value !== "number") {
     throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
+  }
+
+  return value;
+}
+
+function parsePositiveInteger(value: unknown, name: string): number {
+  if (!Number.isInteger(value) || typeof value !== "number" || value < 1) {
+    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a positive integer.`);
+  }
+
+  return value;
+}
+
+function parseIntegerString(value: string, name: string): number {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function parseBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a boolean.`);
   }
 
   return value;
@@ -700,7 +993,11 @@ const businessPermissions: BusinessPermission[] = [
   "inventory:adjust",
   "invoice:read",
   "invoice:write",
-  "invoice:confirm"
+  "invoice:confirm",
+  "payment:read",
+  "payment:write",
+  "import:read",
+  "import:write"
 ];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {

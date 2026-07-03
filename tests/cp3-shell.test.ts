@@ -7,7 +7,7 @@ import {
 } from "../apps/web/src/cp3-shell";
 
 describe("CP3 shell contract", () => {
-  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, and later payment placeholders", () => {
+  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, and active CP9 imports", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -15,7 +15,8 @@ describe("CP3 shell contract", () => {
       "customers",
       "invoices",
       "sync",
-      "payments"
+      "payments",
+      "imports"
     ]);
 
     expect(emptyStates.map((state) => state.id)).toEqual([
@@ -23,19 +24,21 @@ describe("CP3 shell contract", () => {
       "customers",
       "invoices",
       "sync",
-      "payments"
+      "payments",
+      "imports"
     ]);
     expect(getEmptyState("chat")).toBeUndefined();
     expect(getEmptyState("products")?.body).toContain("CP5 product record");
     expect(getEmptyState("invoices")?.body).toContain("CP6 invoice draft");
     expect(getEmptyState("sync")?.body).toContain("CP7 sync");
     expect(getEmptyState("payments")?.body).toContain("CP8");
+    expect(getEmptyState("imports")?.body).toContain("CP9");
   });
 
-  it("keeps offline work behind deterministic CP7 server replay", () => {
+  it("keeps imported rows behind explicit confirmation", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("server replay")
+      body: expect.stringContaining("preview until you confirm")
     });
   });
 });

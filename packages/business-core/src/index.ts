@@ -2,10 +2,17 @@ import { createEvent, type BusinessEvent } from "@soko/event-core";
 import type {
   BusinessRole,
   CustomerSummary,
+  DocumentImportJobSummary,
+  DocumentImportPreviewRow,
+  InvoicePaymentStatus,
+  InvoicePaymentSummary,
   InventoryMovementSummary,
   InvoicePreview,
   InvoiceSummary,
+  PaymentMethod,
+  PaymentSummary,
   ProductSummary,
+  SupplierImportDraft,
   SupplierSummary
 } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
@@ -75,7 +82,11 @@ export type BusinessPermission =
   | "inventory:adjust"
   | "invoice:read"
   | "invoice:write"
-  | "invoice:confirm";
+  | "invoice:confirm"
+  | "payment:read"
+  | "payment:write"
+  | "import:read"
+  | "import:write";
 
 const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
@@ -92,7 +103,11 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "inventory:adjust",
     "invoice:read",
     "invoice:write",
-    "invoice:confirm"
+    "invoice:confirm",
+    "payment:read",
+    "payment:write",
+    "import:read",
+    "import:write"
   ]),
   manager: new Set([
     "business:read",
@@ -106,7 +121,11 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "inventory:adjust",
     "invoice:read",
     "invoice:write",
-    "invoice:confirm"
+    "invoice:confirm",
+    "payment:read",
+    "payment:write",
+    "import:read",
+    "import:write"
   ]),
   sales_agent: new Set([
     "business:read",
@@ -114,11 +133,29 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "customer:read",
     "customer:write",
     "invoice:read",
-    "invoice:write"
+    "invoice:write",
+    "payment:read",
+    "import:read"
   ]),
-  cashier: new Set(["business:read", "product:read", "customer:read", "invoice:read"]),
+  cashier: new Set([
+    "business:read",
+    "product:read",
+    "customer:read",
+    "invoice:read",
+    "payment:read",
+    "payment:write",
+    "import:read"
+  ]),
   view_only: new Set(["business:read", "product:read", "customer:read", "supplier:read"])
 };
+
+export const paymentMethods: PaymentMethod[] = [
+  "cash",
+  "bank_transfer",
+  "mobile_money_manual",
+  "card_manual",
+  "other_manual"
+];
 
 export function isBusinessRole(value: string): value is BusinessRole {
   return businessRoles.includes(value as BusinessRole);
@@ -160,6 +197,20 @@ export interface InvoiceInput {
   items: InvoiceLineInput[];
 }
 
+export interface PaymentInput {
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  reference?: string | null;
+  note?: string | null;
+}
+
+export interface DocumentImportSourceInput {
+  fileName: string;
+  contentType?: string | null;
+  content: string;
+}
+
 export interface NormalizedProductInput {
   name: string;
   sku: string | null;
@@ -190,6 +241,19 @@ export interface NormalizedInvoiceInput {
   customerName: string | null;
   taxRate: number;
   items: NormalizedInvoiceLineInput[];
+}
+
+export interface NormalizedPaymentInput {
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  reference: string | null;
+  note: string | null;
+}
+
+export interface SupplierImportPreview {
+  fieldMapping: Record<string, keyof SupplierImportDraft>;
+  rows: DocumentImportPreviewRow[];
 }
 
 export function validateProductInput(input: ProductInput): ValidationResult {
@@ -291,6 +355,87 @@ export function validateInvoiceInput(input: InvoiceInput): ValidationResult {
   return errors.length > 0 ? invalid(...errors) : valid();
 }
 
+export function validatePaymentInput(input: PaymentInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (normalizeRequiredText(input.invoiceId).length === 0) {
+    errors.push("Payment invoice id is required.");
+  }
+
+  if (!isPositiveMoney(input.amount)) {
+    errors.push("Payment amount must be a positive finite number.");
+  }
+
+  if (!isPaymentMethod(input.method)) {
+    errors.push("Payment method is not supported.");
+  }
+
+  if (normalizeOptionalText(input.reference).length > 80) {
+    errors.push("Payment reference must be 80 characters or fewer.");
+  }
+
+  if (normalizeOptionalText(input.note).length > 160) {
+    errors.push("Payment note must be 160 characters or fewer.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
+export function validateDocumentImportSource(input: DocumentImportSourceInput): ValidationResult {
+  const errors: string[] = [];
+  const fileName = normalizeRequiredText(input.fileName);
+  const contentType = normalizeOptionalText(input.contentType);
+
+  if (fileName.length < 5 || !fileName.toLowerCase().endsWith(".csv")) {
+    errors.push("Import file must be a CSV file.");
+  }
+
+  if (
+    contentType.length > 0 &&
+    contentType !== "text/csv" &&
+    contentType !== "application/csv" &&
+    contentType !== "application/vnd.ms-excel"
+  ) {
+    errors.push("Import content type must be CSV.");
+  }
+
+  if (input.content.trim().length === 0) {
+    errors.push("Import content is required.");
+  }
+
+  if (input.content.length > 250_000) {
+    errors.push("Import content must be 250KB or smaller.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
+export function createSupplierImportPreview(input: {
+  content: string;
+  fieldMapping?: Record<string, keyof SupplierImportDraft>;
+}): SupplierImportPreview {
+  const records = parseCsvRecords(input.content);
+  const fieldMapping = input.fieldMapping ?? inferSupplierFieldMapping(records.headers);
+  const rows = records.rows.map((row, index) => {
+    const mapped = mapSupplierRow(row, fieldMapping);
+    const validation = validateContactRecordInput(mapped, "Supplier");
+
+    return {
+      rowNumber: index + 1,
+      raw: row,
+      mapped,
+      errors: validation.errors,
+      warnings: [],
+      selected: validation.ok
+    };
+  });
+
+  return {
+    fieldMapping,
+    rows
+  };
+}
+
 export function normalizeProductInput(input: ProductInput): NormalizedProductInput {
   return {
     name: normalizeRequiredText(input.name),
@@ -331,6 +476,24 @@ export function normalizeInvoiceInput(input: InvoiceInput): NormalizedInvoiceInp
       unitPrice: roundMoney(item.unitPrice)
     }))
   };
+}
+
+export function normalizePaymentInput(input: PaymentInput): NormalizedPaymentInput {
+  return {
+    invoiceId: normalizeRequiredText(input.invoiceId),
+    amount: roundMoney(input.amount),
+    method: input.method,
+    reference: nullableText(input.reference),
+    note: nullableText(input.note)
+  };
+}
+
+export function normalizeSupplierImportDraft(input: SupplierImportDraft): SupplierImportDraft {
+  return normalizeContactRecordInput(input);
+}
+
+export function isPaymentMethod(value: string): value is PaymentMethod {
+  return paymentMethods.includes(value as PaymentMethod);
 }
 
 export function createInvoicePreview(input: {
@@ -380,6 +543,47 @@ export function calculateInvoiceTotals(
     taxRate: normalizedTaxRate,
     taxTotal,
     total: roundMoney(subtotal + taxTotal)
+  };
+}
+
+export function calculateInvoicePaymentStatus(input: {
+  invoiceTotal: number;
+  paidTotal: number;
+}): InvoicePaymentStatus {
+  const invoiceTotal = roundMoney(input.invoiceTotal);
+  const paidTotal = roundMoney(input.paidTotal);
+
+  if (paidTotal <= 0) {
+    return "unpaid";
+  }
+
+  return paidTotal >= invoiceTotal ? "paid" : "partially_paid";
+}
+
+export function createInvoicePaymentSummary(input: {
+  invoice: InvoiceSummary;
+  payments: PaymentSummary[];
+}): InvoicePaymentSummary {
+  const paidTotal = roundMoney(
+    input.payments
+      .filter((payment) => payment.invoiceId === input.invoice.id)
+      .reduce((sum, payment) => sum + payment.amount, 0)
+  );
+  const balanceDue = roundMoney(Math.max(0, input.invoice.total - paidTotal));
+
+  return {
+    invoiceId: input.invoice.id,
+    businessId: input.invoice.businessId,
+    invoiceNumber: input.invoice.invoiceNumber,
+    customerId: input.invoice.customerId,
+    customerName: input.invoice.customerName,
+    invoiceTotal: input.invoice.total,
+    paidTotal,
+    balanceDue,
+    status: calculateInvoicePaymentStatus({
+      invoiceTotal: input.invoice.total,
+      paidTotal
+    })
   };
 }
 
@@ -583,6 +787,91 @@ export function invoiceConfirmedEvent(input: {
   });
 }
 
+export function paymentRecordedEvent(input: {
+  id: string;
+  payment: PaymentSummary;
+  invoicePayment: InvoicePaymentSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  payment: PaymentSummary;
+  invoicePayment: InvoicePaymentSummary;
+}> {
+  return createEvent({
+    id: input.id,
+    type: "payment.recorded",
+    aggregateId: input.payment.invoiceId,
+    aggregateType: "invoice",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      payment: input.payment,
+      invoicePayment: input.invoicePayment
+    }
+  });
+}
+
+export function documentImportPreviewedEvent(input: {
+  id: string;
+  importJob: DocumentImportJobSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ importJob: DocumentImportJobSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "document_import.previewed",
+    aggregateId: input.importJob.id,
+    aggregateType: "document_import",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      importJob: input.importJob
+    }
+  });
+}
+
+export function documentImportConfirmedEvent(input: {
+  id: string;
+  importJob: DocumentImportJobSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ importJob: DocumentImportJobSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "document_import.confirmed",
+    aggregateId: input.importJob.id,
+    aggregateType: "document_import",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      importJob: input.importJob
+    }
+  });
+}
+
+export function documentImportFailedEvent(input: {
+  id: string;
+  importJob: DocumentImportJobSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ importJob: DocumentImportJobSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "document_import.failed",
+    aggregateId: input.importJob.id,
+    aggregateType: "document_import",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      importJob: input.importJob
+    }
+  });
+}
+
 function normalizeRequiredText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -608,6 +897,10 @@ function isValidMoney(value: number): boolean {
   return Number.isFinite(value) && value >= 0;
 }
 
+function isPositiveMoney(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
 function isValidTaxRate(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -619,4 +912,138 @@ function isValidEmail(value: string | null | undefined): boolean {
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function parseCsvRecords(content: string): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} {
+  const records = parseCsv(content).filter((row) => row.some((cell) => cell.trim().length > 0));
+
+  if (records.length === 0) {
+    return {
+      headers: [],
+      rows: []
+    };
+  }
+
+  const headerRecord = records[0];
+
+  if (headerRecord === undefined) {
+    return {
+      headers: [],
+      rows: []
+    };
+  }
+
+  const headers = headerRecord.map(
+    (header, index) => normalizeOptionalText(header) || `column_${index + 1}`
+  );
+  const rows = records
+    .slice(1)
+    .map((record) =>
+      Object.fromEntries(
+        headers.map((header, index) => [header, normalizeOptionalText(record[index])])
+      )
+    );
+
+  return {
+    headers,
+    rows
+  };
+}
+
+function parseCsv(content: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    const next = content[index + 1];
+
+    if (char === '"' && quoted && next === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (char === "," && !quoted) {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") {
+        index += 1;
+      }
+
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+function inferSupplierFieldMapping(headers: string[]): Record<string, keyof SupplierImportDraft> {
+  const mapping: Record<string, keyof SupplierImportDraft> = {};
+
+  for (const header of headers) {
+    const normalized = header.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    if (normalized === "name" || normalized === "supplier" || normalized === "suppliername") {
+      mapping[header] = "name";
+    } else if (normalized === "phone" || normalized === "mobile" || normalized === "tel") {
+      mapping[header] = "phone";
+    } else if (normalized === "email" || normalized === "emailaddress") {
+      mapping[header] = "email";
+    } else if (normalized === "note" || normalized === "notes") {
+      mapping[header] = "notes";
+    }
+  }
+
+  return mapping;
+}
+
+function mapSupplierRow(
+  row: Record<string, string>,
+  fieldMapping: Record<string, keyof SupplierImportDraft>
+): SupplierImportDraft {
+  const mapped: SupplierImportDraft = {
+    name: "",
+    phone: null,
+    email: null,
+    notes: null
+  };
+
+  for (const [sourceField, targetField] of Object.entries(fieldMapping)) {
+    const value = row[sourceField] ?? "";
+
+    if (targetField === "name") {
+      mapped.name = value;
+    } else if (targetField === "phone") {
+      mapped.phone = nullableText(value);
+    } else if (targetField === "email") {
+      mapped.email = nullableText(value);
+    } else {
+      mapped.notes = nullableText(value);
+    }
+  }
+
+  return normalizeSupplierImportDraft(mapped);
 }

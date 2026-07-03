@@ -1,5 +1,5 @@
 export type ShellView =
-  "home" | "chat" | "products" | "customers" | "invoices" | "sync" | "payments";
+  "home" | "chat" | "products" | "customers" | "invoices" | "sync" | "payments" | "imports";
 
 export interface QuickAction {
   id: ShellView;
@@ -53,7 +53,12 @@ export const quickActions: QuickAction[] = [
   {
     id: "payments",
     label: "Payments",
-    summary: "Prepare payment tracking"
+    summary: "Record payments and review debt"
+  },
+  {
+    id: "imports",
+    label: "Imports",
+    summary: "Preview supplier CSV files"
   }
 ];
 
@@ -81,7 +86,12 @@ export const emptyStates: EmptyState[] = [
   {
     id: "payments",
     title: "No payments yet",
-    body: "Payment and debt tracking start in CP8. M-Pesa integration is intentionally deferred."
+    body: "CP8 records manual invoice payments and customer debt. Live M-Pesa integration is intentionally deferred."
+  },
+  {
+    id: "imports",
+    title: "No imports yet",
+    body: "CP9 previews supplier CSV rows before any confirmed business record is written."
   }
 ];
 
@@ -94,7 +104,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP7 offline work is queued until server replay confirms it.`
+      body: `${businessName} is ready. CP9 imports keep extracted rows in preview until you confirm them.`
     }
   ];
 }

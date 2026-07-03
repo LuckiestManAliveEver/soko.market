@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Open CP7:
+Open CP10:
 
-1. Create the CP7 baseline and decision log.
-2. Design durable local storage and pending mutation queue around CP5/CP6 records.
-3. Keep payments, debt tracking, and M-Pesa deferred to CP8.
+1. Create the CP10 baseline and decision log.
+2. Define the Sokoclaw Runtime adapter contract around existing deterministic business tools.
+3. Keep model output behind confirmation and server-side validators.

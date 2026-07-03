@@ -6,13 +6,20 @@ import type {
   AuthSessionView,
   BusinessRole,
   BusinessSummary,
+  CustomerDebtSummary,
   CustomerSummary,
+  DocumentImportConfirmResult,
+  DocumentImportJobSummary,
+  DocumentImportPreviewRow,
+  DocumentImportSourceSummary,
+  InvoicePaymentSummary,
   InventoryMovementSummary,
   InvoiceItemSummary,
   InvoicePreview,
   InvoiceSummary,
   MembershipSummary,
   OfflineCacheSnapshot,
+  PaymentSummary,
   ProductSummary,
   SessionSummary,
   SyncMutationPayload,
@@ -20,6 +27,7 @@ import type {
   SyncQueueItem,
   SyncQueueSummary,
   SyncReplayResult,
+  SupplierImportDraft,
   SupplierSummary,
   SupportedLanguage,
   UserSummary
@@ -35,14 +43,21 @@ import {
   customerCreatedEvent,
   customerUpdatedEvent,
   createInvoicePreview,
+  createInvoicePaymentSummary,
+  createSupplierImportPreview,
+  documentImportConfirmedEvent,
+  documentImportFailedEvent,
+  documentImportPreviewedEvent,
   invoiceConfirmedEvent,
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
   isBusinessRole,
   normalizeContactRecordInput,
   normalizeInvoiceInput,
+  normalizePaymentInput,
   normalizeProductInput,
   normalizeStockAdjustmentInput,
+  paymentRecordedEvent,
   productCreatedEvent,
   productUpdatedEvent,
   roleCan,
@@ -50,12 +65,16 @@ import {
   supplierCreatedEvent,
   supplierUpdatedEvent,
   validateContactRecordInput,
+  validateDocumentImportSource,
   validateInvoiceInput,
+  validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput,
   type BusinessPermission,
   type ContactRecordInput,
+  type DocumentImportSourceInput,
   type InvoiceInput,
+  type PaymentInput,
   type ProductInput,
   type StockAdjustmentInput
 } from "@soko/business-core";
@@ -95,6 +114,10 @@ interface SessionRecord extends SessionSummary {
   createdAt: string;
 }
 
+interface DocumentImportSourceRecord extends DocumentImportSourceSummary {
+  content: string;
+}
+
 export interface OtpRequestResult {
   challengeId: string;
   destination: string;
@@ -126,6 +149,9 @@ export interface Cp2Snapshot {
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
   invoices: InvoiceSummary[];
+  payments: PaymentSummary[];
+  documentImports: DocumentImportJobSummary[];
+  documentImportSources: DocumentImportSourceSummary[];
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
   sessions: SessionRecord[];
@@ -143,6 +169,9 @@ export class Cp2Store {
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
   private readonly invoices = new Map<string, InvoiceSummary>();
+  private readonly payments = new Map<string, PaymentSummary>();
+  private readonly documentImports = new Map<string, DocumentImportJobSummary>();
+  private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly nextInvoiceNumberByBusiness = new Map<string, number>();
   private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
   private readonly syncQueue = new Map<string, SyncQueueItem>();
@@ -925,6 +954,143 @@ export class Cp2Store {
     };
   }
 
+  listPayments(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoiceId?: string;
+    now?: Date;
+  }): PaymentSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+
+    if (input.invoiceId !== undefined) {
+      this.requireInvoice(input.businessId, input.invoiceId);
+    }
+
+    return [...this.payments.values()]
+      .filter(
+        (payment) =>
+          payment.businessId === input.businessId &&
+          (input.invoiceId === undefined || payment.invoiceId === input.invoiceId)
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  recordPayment(input: {
+    sessionId: string | null;
+    businessId: string;
+    payment: PaymentInput;
+    now?: Date;
+  }): { payment: PaymentSummary; invoicePayment: InvoicePaymentSummary } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "payment:write",
+      now
+    );
+    assertValid(validatePaymentInput(input.payment));
+    const normalized = normalizePaymentInput(input.payment);
+    const invoice = this.requireInvoice(input.businessId, normalized.invoiceId);
+
+    if (invoice.status !== "confirmed") {
+      throw new Cp2Error(409, "invoice_not_confirmed", "Payments require a confirmed invoice.");
+    }
+
+    const currentSummary = this.buildInvoicePaymentSummary(invoice);
+
+    if (normalized.amount > currentSummary.balanceDue) {
+      throw new Cp2Error(
+        409,
+        "payment_exceeds_balance",
+        "Payment amount exceeds the invoice balance."
+      );
+    }
+
+    const payment: PaymentSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      customerId: invoice.customerId,
+      customerName: invoice.customerName,
+      method: normalized.method,
+      amount: normalized.amount,
+      reference: normalized.reference,
+      note: normalized.note,
+      actorId: session.user.id,
+      createdAt: now.toISOString()
+    };
+
+    this.payments.set(payment.id, payment);
+    const invoicePayment = this.buildInvoicePaymentSummary(invoice);
+    this.appendBusinessEvent(
+      paymentRecordedEvent({
+        id: randomUUID(),
+        payment,
+        invoicePayment,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return {
+      payment,
+      invoicePayment
+    };
+  }
+
+  listInvoicePaymentSummaries(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): InvoicePaymentSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    return this.buildInvoicePaymentSummaries(input.businessId);
+  }
+
+  listCustomerDebts(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): CustomerDebtSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    const debts = new Map<string, CustomerDebtSummary>();
+
+    for (const summary of this.buildInvoicePaymentSummaries(input.businessId)) {
+      if (summary.customerId === null || summary.balanceDue <= 0) {
+        continue;
+      }
+
+      const existing = debts.get(summary.customerId);
+
+      if (existing === undefined) {
+        debts.set(summary.customerId, {
+          customerId: summary.customerId,
+          customerName: summary.customerName ?? "Customer",
+          invoiceCount: 1,
+          totalInvoiced: summary.invoiceTotal,
+          totalPaid: summary.paidTotal,
+          balanceDue: summary.balanceDue
+        });
+        continue;
+      }
+
+      debts.set(summary.customerId, {
+        ...existing,
+        invoiceCount: existing.invoiceCount + 1,
+        totalInvoiced: roundMoney(existing.totalInvoiced + summary.invoiceTotal),
+        totalPaid: roundMoney(existing.totalPaid + summary.paidTotal),
+        balanceDue: roundMoney(existing.balanceDue + summary.balanceDue)
+      });
+    }
+
+    return [...debts.values()].sort((left, right) =>
+      right.balanceDue === left.balanceDue
+        ? left.customerName.localeCompare(right.customerName)
+        : right.balanceDue - left.balanceDue
+    );
+  }
+
   getOfflineCache(input: {
     sessionId: string | null;
     businessId: string;
@@ -941,6 +1107,9 @@ export class Cp2Store {
       customers: this.listCustomers(input),
       suppliers: this.listSuppliers(input),
       invoices: this.listInvoices(input),
+      payments: this.listPayments(input),
+      invoicePaymentSummaries: this.listInvoicePaymentSummaries(input),
+      customerDebts: this.listCustomerDebts(input),
       inventoryMovements: [...this.inventoryMovements.values()].filter(
         (movement) => movement.businessId === input.businessId
       )
@@ -1112,6 +1281,207 @@ export class Cp2Store {
     };
   }
 
+  createSupplierCsvImport(input: {
+    sessionId: string | null;
+    businessId: string;
+    source: DocumentImportSourceInput;
+    now?: Date;
+  }): DocumentImportJobSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    assertValid(validateDocumentImportSource(input.source));
+    const source: DocumentImportSourceRecord = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      fileName: input.source.fileName.trim(),
+      contentType: input.source.contentType?.trim() || "text/csv",
+      sizeBytes: Buffer.byteLength(input.source.content),
+      checksum: createHash("sha256").update(input.source.content).digest("hex"),
+      content: input.source.content,
+      createdAt: now.toISOString()
+    };
+    const preview = createSupplierImportPreview({
+      content: source.content
+    });
+    const job: DocumentImportJobSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      source: documentImportSourceView(source),
+      target: "supplier",
+      status: preview.rows.length === 0 ? "failed" : "previewed",
+      fieldMapping: preview.fieldMapping,
+      rows: preview.rows,
+      confirmedCount: 0,
+      errorMessage: preview.rows.length === 0 ? "Import file does not contain data rows." : null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      confirmedAt: null
+    };
+
+    this.documentImportSources.set(source.id, source);
+    this.documentImports.set(job.id, job);
+    this.appendBusinessEvent(
+      job.status === "failed"
+        ? documentImportFailedEvent({
+            id: randomUUID(),
+            importJob: job,
+            actorId: session.user.id,
+            occurredAt: now.toISOString()
+          })
+        : documentImportPreviewedEvent({
+            id: randomUUID(),
+            importJob: job,
+            actorId: session.user.id,
+            occurredAt: now.toISOString()
+          })
+    );
+
+    return job;
+  }
+
+  listDocumentImports(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): DocumentImportJobSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
+    return [...this.documentImports.values()]
+      .filter((job) => job.businessId === input.businessId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  getDocumentImport(input: {
+    sessionId: string | null;
+    businessId: string;
+    importJobId: string;
+    now?: Date;
+  }): DocumentImportJobSummary {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
+    return this.requireDocumentImport(input.businessId, input.importJobId);
+  }
+
+  updateSupplierImportRow(input: {
+    sessionId: string | null;
+    businessId: string;
+    importJobId: string;
+    rowNumber: number;
+    mapped: SupplierImportDraft;
+    selected?: boolean;
+    now?: Date;
+  }): DocumentImportJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const job = this.requireDocumentImport(input.businessId, input.importJobId);
+
+    if (job.status !== "previewed") {
+      throw new Cp2Error(409, "import_not_editable", "Only previewed imports can be edited.");
+    }
+
+    const rowIndex = job.rows.findIndex((row) => row.rowNumber === input.rowNumber);
+
+    if (rowIndex === -1) {
+      throw new Cp2Error(404, "import_row_not_found", "Import row was not found.");
+    }
+
+    const validation = validateContactRecordInput(input.mapped, "Supplier");
+    const rows = job.rows.map((row, index): DocumentImportPreviewRow => {
+      if (index !== rowIndex) {
+        return row;
+      }
+
+      return {
+        ...row,
+        mapped: input.mapped,
+        errors: validation.errors,
+        warnings: [],
+        selected: input.selected ?? (validation.ok && row.selected)
+      };
+    });
+    const updated: DocumentImportJobSummary = {
+      ...job,
+      rows,
+      updatedAt: now.toISOString()
+    };
+
+    this.documentImports.set(updated.id, updated);
+    return updated;
+  }
+
+  confirmSupplierImport(input: {
+    sessionId: string | null;
+    businessId: string;
+    importJobId: string;
+    selectedRowNumbers?: number[];
+    now?: Date;
+  }): DocumentImportConfirmResult {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    const job = this.requireDocumentImport(input.businessId, input.importJobId);
+
+    if (job.status !== "previewed") {
+      throw new Cp2Error(409, "import_not_confirmable", "Only previewed imports can be confirmed.");
+    }
+
+    const selectedRows = this.selectImportRows(job, input.selectedRowNumbers);
+
+    if (selectedRows.length === 0) {
+      throw new Cp2Error(400, "import_rows_required", "At least one import row must be selected.");
+    }
+
+    const invalidRows = selectedRows.filter(
+      (row) => !validateContactRecordInput(row.mapped, "Supplier").ok
+    );
+
+    if (invalidRows.length > 0) {
+      throw new Cp2Error(
+        409,
+        "import_rows_invalid",
+        `Import has invalid selected rows: ${invalidRows.map((row) => row.rowNumber).join(", ")}.`
+      );
+    }
+
+    const suppliers = selectedRows.map((row) =>
+      this.createSupplier({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        supplier: row.mapped,
+        now
+      })
+    );
+    const confirmed: DocumentImportJobSummary = {
+      ...job,
+      status: "confirmed",
+      confirmedCount: suppliers.length,
+      updatedAt: now.toISOString(),
+      confirmedAt: now.toISOString()
+    };
+
+    this.documentImports.set(confirmed.id, confirmed);
+    this.appendBusinessEvent(
+      documentImportConfirmedEvent({
+        id: randomUUID(),
+        importJob: confirmed,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return {
+      job: confirmed,
+      suppliers
+    };
+  }
+
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
@@ -1122,6 +1492,9 @@ export class Cp2Store {
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
       invoices: [...this.invoices.values()],
+      payments: [...this.payments.values()],
+      documentImports: [...this.documentImports.values()],
+      documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       inventoryMovements: [...this.inventoryMovements.values()],
       syncQueue: [...this.syncQueue.values()],
       sessions: [...this.sessions.values()],
@@ -1298,6 +1671,28 @@ export class Cp2Store {
     return item;
   }
 
+  private requireDocumentImport(businessId: string, importJobId: string): DocumentImportJobSummary {
+    const job = this.documentImports.get(importJobId);
+
+    if (job === undefined || job.businessId !== businessId) {
+      throw new Cp2Error(404, "import_not_found", "Document import was not found.");
+    }
+
+    return job;
+  }
+
+  private selectImportRows(
+    job: DocumentImportJobSummary,
+    selectedRowNumbers: number[] | undefined
+  ): DocumentImportPreviewRow[] {
+    if (selectedRowNumbers === undefined) {
+      return job.rows.filter((row) => row.selected);
+    }
+
+    const selected = new Set(selectedRowNumbers);
+    return job.rows.filter((row) => selected.has(row.rowNumber));
+  }
+
   private replaySyncMutation(input: {
     sessionId: string | null;
     businessId: string;
@@ -1355,6 +1750,14 @@ export class Cp2Store {
           sessionId: input.sessionId,
           businessId: input.businessId,
           invoiceId: (input.payload as { invoiceId: string }).invoiceId,
+          now: input.now
+        });
+
+      case "payment.record":
+        return this.recordPayment({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          payment: input.payload as PaymentInput,
           now: input.now
         });
     }
@@ -1453,6 +1856,22 @@ export class Cp2Store {
     );
 
     return movement;
+  }
+
+  private buildInvoicePaymentSummaries(businessId: string): InvoicePaymentSummary[] {
+    return [...this.invoices.values()]
+      .filter((invoice) => invoice.businessId === businessId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((invoice) => this.buildInvoicePaymentSummary(invoice));
+  }
+
+  private buildInvoicePaymentSummary(invoice: InvoiceSummary): InvoicePaymentSummary {
+    return createInvoicePaymentSummary({
+      invoice,
+      payments: [...this.payments.values()].filter(
+        (payment) => payment.businessId === invoice.businessId
+      )
+    });
   }
 
   private appendBusinessEvent(event: BusinessEvent): void {
@@ -1568,6 +1987,10 @@ function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): st
   return `${businessId}:${idempotencyKey}`;
 }
 
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 function hashOtp(challengeId: string, code: string): string {
   return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
 }
@@ -1580,6 +2003,18 @@ function sessionView(session: SessionRecord): SessionSummary {
   return {
     id: session.id,
     expiresAt: session.expiresAt
+  };
+}
+
+function documentImportSourceView(source: DocumentImportSourceRecord): DocumentImportSourceSummary {
+  return {
+    id: source.id,
+    businessId: source.businessId,
+    fileName: source.fileName,
+    contentType: source.contentType,
+    sizeBytes: source.sizeBytes,
+    checksum: source.checksum,
+    createdAt: source.createdAt
   };
 }
 

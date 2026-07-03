@@ -134,6 +134,97 @@ export interface InvoicePreview extends InvoiceTotals {
   items: Omit<InvoiceItemSummary, "id" | "invoiceId">[];
 }
 
+export type PaymentMethod =
+  "cash" | "bank_transfer" | "mobile_money_manual" | "card_manual" | "other_manual";
+
+export type InvoicePaymentStatus = "unpaid" | "partially_paid" | "paid";
+
+export interface PaymentSummary {
+  id: string;
+  businessId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  method: PaymentMethod;
+  amount: number;
+  reference: string | null;
+  note: string | null;
+  actorId: string;
+  createdAt: string;
+}
+
+export interface InvoicePaymentSummary {
+  invoiceId: string;
+  businessId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  invoiceTotal: number;
+  paidTotal: number;
+  balanceDue: number;
+  status: InvoicePaymentStatus;
+}
+
+export interface CustomerDebtSummary {
+  customerId: string;
+  customerName: string;
+  invoiceCount: number;
+  totalInvoiced: number;
+  totalPaid: number;
+  balanceDue: number;
+}
+
+export type DocumentImportTarget = "supplier";
+
+export type DocumentImportStatus = "previewed" | "confirmed" | "failed";
+
+export interface DocumentImportSourceSummary {
+  id: string;
+  businessId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  checksum: string;
+  createdAt: string;
+}
+
+export interface SupplierImportDraft {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+}
+
+export interface DocumentImportPreviewRow {
+  rowNumber: number;
+  raw: Record<string, string>;
+  mapped: SupplierImportDraft;
+  errors: string[];
+  warnings: string[];
+  selected: boolean;
+}
+
+export interface DocumentImportJobSummary {
+  id: string;
+  businessId: string;
+  source: DocumentImportSourceSummary;
+  target: DocumentImportTarget;
+  status: DocumentImportStatus;
+  fieldMapping: Record<string, keyof SupplierImportDraft>;
+  rows: DocumentImportPreviewRow[];
+  confirmedCount: number;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+}
+
+export interface DocumentImportConfirmResult {
+  job: DocumentImportJobSummary;
+  suppliers: SupplierSummary[];
+}
+
 export type InventoryMovementType = "manual_adjustment" | "sale";
 
 export interface InventoryMovementSummary {
@@ -157,6 +248,9 @@ export interface OfflineCacheSnapshot {
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
   invoices: InvoiceSummary[];
+  payments: PaymentSummary[];
+  invoicePaymentSummaries: InvoicePaymentSummary[];
+  customerDebts: CustomerDebtSummary[];
   inventoryMovements: InventoryMovementSummary[];
 }
 
@@ -168,7 +262,8 @@ export type SyncMutationType =
   | "supplier.create"
   | "inventory.adjust"
   | "invoice.create"
-  | "invoice.confirm";
+  | "invoice.confirm"
+  | "payment.record";
 
 export interface SyncProductCreatePayload {
   name: string;
@@ -207,12 +302,21 @@ export interface SyncInvoiceConfirmPayload {
   invoiceId: string;
 }
 
+export interface SyncPaymentRecordPayload {
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  reference?: string | null;
+  note?: string | null;
+}
+
 export type SyncMutationPayload =
   | SyncProductCreatePayload
   | SyncContactCreatePayload
   | SyncInventoryAdjustPayload
   | SyncInvoiceCreatePayload
-  | SyncInvoiceConfirmPayload;
+  | SyncInvoiceConfirmPayload
+  | SyncPaymentRecordPayload;
 
 export interface SyncConflict {
   code: string;

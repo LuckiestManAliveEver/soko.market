@@ -401,6 +401,32 @@ button:disabled {
   color: #516258;
 }
 
+.import-row {
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.import-row-header,
+.inline-check {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.inline-check {
+  justify-content: flex-start;
+}
+
+.inline-check input {
+  accent-color: #117a4f;
+  height: 18px;
+  width: 18px;
+}
+
 .metric-grid {
   display: grid;
   gap: 8px;
