@@ -42,7 +42,7 @@ export const quickActions: QuickAction[] = [
   {
     id: "invoices",
     label: "Invoices",
-    summary: "Prepare sales documents"
+    summary: "Create invoice drafts and confirm sales"
   },
   {
     id: "payments",
@@ -65,7 +65,7 @@ export const emptyStates: EmptyState[] = [
   {
     id: "invoices",
     title: "No invoices yet",
-    body: "Invoice and inventory flows start in CP6. CP3 only prepares the navigation surface."
+    body: "Create the first CP6 invoice draft to preview totals and confirm stock movement."
   },
   {
     id: "payments",
@@ -83,7 +83,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP5 product and customer records are active. Chat commands still pass through deterministic business tools before writing records.`
+      body: `${businessName} is ready. CP6 invoice drafts use deterministic previews and owner confirmation before stock moves.`
     }
   ];
 }

@@ -1,10 +1,10 @@
 # CP6: Invoice and Inventory Flow
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 Target tag: `checkpoint/cp6-invoice-inventory`
-Actual tag: pending
+Actual tag: `checkpoint/cp6-invoice-inventory` in `.repo.git`
 
 ## Purpose
 
@@ -88,21 +88,21 @@ Owner opens invoice workflow
 
 ## CP6 Exit Criteria
 
-CP6 can be marked passed when:
+CP6 is marked passed because:
 
-- [ ] Invoice create, preview, confirm, and list/view flows exist.
-- [ ] Invoice item records exist and reference business-scoped CP5 products.
-- [ ] Invoice numbers are generated and unique per business.
-- [ ] Invoice subtotal, tax placeholder/configurable tax, and total are deterministic and test-covered.
-- [ ] Confirmed invoices reduce product inventory.
-- [ ] Confirmed invoices emit inventory movement records and business events.
-- [ ] Draft/preview invoice work does not mutate inventory.
-- [ ] Server-side role checks protect invoice mutations.
-- [ ] Business ownership boundaries are enforced.
-- [ ] Web shell exposes owner-facing invoice workflow.
-- [ ] Chat-to-invoice draft path remains non-mutating until confirmation.
-- [ ] Existing CP1, CP2, CP3, CP4, and CP5 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp6-invoice-inventory` is created.
+- [x] Invoice create, preview, confirm, and list/view flows exist.
+- [x] Invoice item records exist and reference business-scoped CP5 products.
+- [x] Invoice numbers are generated and unique per business.
+- [x] Invoice subtotal, tax placeholder/configurable tax, and total are deterministic and test-covered.
+- [x] Confirmed invoices reduce product inventory.
+- [x] Confirmed invoices emit inventory movement records and business events.
+- [x] Draft/preview invoice work does not mutate inventory.
+- [x] Server-side role checks protect invoice mutations.
+- [x] Business ownership boundaries are enforced.
+- [x] Web shell exposes owner-facing invoice workflow.
+- [x] Chat-to-invoice draft path remains non-mutating until confirmation.
+- [x] Existing CP1, CP2, CP3, CP4, and CP5 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp6-invoice-inventory` is created.
 
 ## Rollback Instructions
 

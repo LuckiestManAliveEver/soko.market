@@ -7,7 +7,7 @@ import {
 } from "../apps/web/src/cp3-shell";
 
 describe("CP3 shell contract", () => {
-  it("exposes chat, active CP5 records, and later commerce placeholders through quick actions", () => {
+  it("exposes chat, active CP5 records, active CP6 invoices, and later payment placeholders", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -25,13 +25,14 @@ describe("CP3 shell contract", () => {
     ]);
     expect(getEmptyState("chat")).toBeUndefined();
     expect(getEmptyState("products")?.body).toContain("CP5 product record");
-    expect(getEmptyState("invoices")?.body).toContain("CP6");
+    expect(getEmptyState("invoices")?.body).toContain("CP6 invoice draft");
+    expect(getEmptyState("payments")?.body).toContain("CP8");
   });
 
-  it("keeps chat writes behind deterministic CP5 business tools", () => {
+  it("keeps chat writes behind deterministic CP6 invoice confirmation", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("deterministic business tools")
+      body: expect.stringContaining("owner confirmation")
     });
   });
 });

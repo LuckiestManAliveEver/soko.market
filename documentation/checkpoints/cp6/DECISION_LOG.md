@@ -1,8 +1,8 @@
 # CP6 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 
 This file records invoice and inventory flow decisions for CP6.
 

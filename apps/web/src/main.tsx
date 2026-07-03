@@ -86,6 +86,41 @@ interface StockAdjustmentResponse {
   product: ProductSummary;
 }
 
+interface InvoiceItemSummary {
+  id: string;
+  invoiceId: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+}
+
+interface InvoicePreview {
+  businessId: string;
+  customerId: string | null;
+  customerName: string | null;
+  items: Omit<InvoiceItemSummary, "id" | "invoiceId">[];
+  subtotal: number;
+  taxRate: number;
+  taxTotal: number;
+  total: number;
+}
+
+interface InvoiceSummary extends InvoicePreview {
+  id: string;
+  invoiceNumber: string;
+  status: "draft" | "confirmed";
+  items: InvoiceItemSummary[];
+  confirmedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ConfirmInvoiceResponse {
+  invoice: InvoiceSummary;
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -100,6 +135,16 @@ interface CustomerFormState {
   phone: string;
   email: string;
   notes: string;
+}
+
+interface InvoiceFormState {
+  id: string | null;
+  customerId: string;
+  customerName: string;
+  productId: string;
+  quantity: string;
+  unitPrice: string;
+  taxRate: string;
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
@@ -121,6 +166,16 @@ const emptyCustomerForm: CustomerFormState = {
   notes: ""
 };
 
+const emptyInvoiceForm: InvoiceFormState = {
+  id: null,
+  customerId: "",
+  customerName: "",
+  productId: "",
+  quantity: "1",
+  unitPrice: "0",
+  taxRate: "0"
+};
+
 function App() {
   const [channel, setChannel] = useState<AuthChannel>("phone");
   const [destination, setDestination] = useState("+254700000000");
@@ -140,8 +195,11 @@ function App() {
   );
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
+  const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
+  const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
@@ -193,6 +251,12 @@ function App() {
 
     if (view === "customers") {
       void loadCustomers(business.id);
+    }
+
+    if (view === "invoices") {
+      void loadProducts(business.id);
+      void loadCustomers(business.id);
+      void loadInvoices(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -399,14 +463,109 @@ function App() {
     }
   }
 
+  async function loadInvoices(businessId: string) {
+    try {
+      setInvoices(await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function createInvoicePayload() {
+    return {
+      customerId: invoiceForm.customerId || null,
+      customerName: invoiceForm.customerName,
+      taxRate: Number(invoiceForm.taxRate),
+      items: [
+        {
+          productId: invoiceForm.productId,
+          quantity: Number(invoiceForm.quantity),
+          unitPrice: Number(invoiceForm.unitPrice)
+        }
+      ]
+    };
+  }
+
+  async function previewInvoice() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const preview = await postJson<InvoicePreview>(
+        `/businesses/${business.id}/invoices/preview`,
+        createInvoicePayload()
+      );
+      setInvoicePreview(preview);
+      setStatusMessage("Invoice preview ready");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveInvoice() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const payload = createInvoicePayload();
+      const invoice =
+        invoiceForm.id === null
+          ? await postJson<InvoiceSummary>(`/businesses/${business.id}/invoices`, payload)
+          : await patchJson<InvoiceSummary>(
+              `/businesses/${business.id}/invoices/${invoiceForm.id}`,
+              payload
+            );
+
+      setInvoiceForm({
+        ...invoiceForm,
+        id: invoice.id
+      });
+      setInvoicePreview(invoice);
+      await loadInvoices(business.id);
+      setStatusMessage(invoiceForm.id === null ? "Invoice draft saved" : "Invoice draft updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function confirmInvoice(invoiceId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const response = await postJson<ConfirmInvoiceResponse>(
+        `/businesses/${business.id}/invoices/${invoiceId}/confirm`,
+        {}
+      );
+      setInvoicePreview(response.invoice);
+      setInvoiceForm(emptyInvoiceForm);
+      await loadInvoices(business.id);
+      await loadProducts(business.id);
+      setStatusMessage("Invoice confirmed and stock moved");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function printInvoice(invoice: InvoiceSummary | InvoicePreview) {
+    setInvoicePreview(invoice);
+    window.setTimeout(() => window.print(), 0);
+  }
+
   async function logout() {
     await postJson<{ revoked: boolean }>("/auth/logout", {});
     setSession(null);
     setBusiness(null);
     setProducts([]);
     setCustomers([]);
+    setInvoices([]);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
+    setInvoiceForm(emptyInvoiceForm);
+    setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
     localStorage.removeItem(activeBusinessStorageKey);
@@ -430,6 +589,19 @@ function App() {
 
     if (parserResult.nextAction.type === "navigate") {
       setView(parserResult.nextAction.view);
+    }
+
+    if (parserResult.intent === "create_invoice" && parserResult.nextAction.type === "draft") {
+      setInvoiceForm((form) => ({
+        ...form,
+        customerName: parserResult.slots.customerName ?? form.customerName,
+        quantity:
+          parserResult.slots.quantity === undefined
+            ? form.quantity
+            : String(parserResult.slots.quantity)
+      }));
+      setInvoicePreview(null);
+      setView("invoices");
     }
 
     setClarificationCount(parserResult.nextAction.type === "clarify" ? clarificationCount + 1 : 0);
@@ -500,6 +672,7 @@ function App() {
                   business={business}
                   productCount={products.length}
                   customerCount={customers.length}
+                  invoiceCount={invoices.length}
                   statusMessage={statusMessage}
                   isOnline={isOnline}
                   onNavigate={setView}
@@ -562,7 +735,41 @@ function App() {
                   }
                 />
               ) : null}
-              {currentEmptyState !== undefined && view !== "products" && view !== "customers" ? (
+              {view === "invoices" ? (
+                <InvoiceSurface
+                  products={products}
+                  customers={customers}
+                  invoices={invoices}
+                  form={invoiceForm}
+                  preview={invoicePreview}
+                  onFormChange={setInvoiceForm}
+                  onPreview={() => void previewInvoice()}
+                  onSave={() => void saveInvoice()}
+                  onReset={() => {
+                    setInvoiceForm(emptyInvoiceForm);
+                    setInvoicePreview(null);
+                  }}
+                  onEdit={(invoice) => {
+                    const firstItem = invoice.items[0];
+                    setInvoiceForm({
+                      id: invoice.id,
+                      customerId: invoice.customerId ?? "",
+                      customerName: invoice.customerName ?? "",
+                      productId: firstItem?.productId ?? "",
+                      quantity: String(firstItem?.quantity ?? 1),
+                      unitPrice: String(firstItem?.unitPrice ?? 0),
+                      taxRate: String(invoice.taxRate)
+                    });
+                    setInvoicePreview(invoice);
+                  }}
+                  onConfirm={(invoiceId) => void confirmInvoice(invoiceId)}
+                  onPrint={printInvoice}
+                />
+              ) : null}
+              {currentEmptyState !== undefined &&
+              view !== "products" &&
+              view !== "customers" &&
+              view !== "invoices" ? (
                 <EmptyStateSurface
                   title={currentEmptyState.title}
                   body={currentEmptyState.body}
@@ -733,6 +940,7 @@ interface HomeSurfaceProps {
   business: ActiveBusiness;
   productCount: number;
   customerCount: number;
+  invoiceCount: number;
   statusMessage: string;
   isOnline: boolean;
   onNavigate: (view: ShellView) => void;
@@ -742,6 +950,7 @@ function HomeSurface({
   business,
   productCount,
   customerCount,
+  invoiceCount,
   statusMessage,
   isOnline,
   onNavigate
@@ -759,7 +968,7 @@ function HomeSurface({
         </div>
         <div className="metric">
           <span>Invoices</span>
-          <strong>0</strong>
+          <strong>{invoiceCount}</strong>
         </div>
       </div>
 
@@ -767,7 +976,7 @@ function HomeSurface({
         <div>
           <p className="eyebrow">Chat-first</p>
           <h3>Start with a draft instruction</h3>
-          <p>CP4 parses drafts. CP5 product and customer writes use validated record tools.</p>
+          <p>CP6 invoice drafts still require deterministic preview and owner confirmation.</p>
         </div>
         <button type="button" onClick={() => onNavigate("chat")}>
           Open chat
@@ -1009,6 +1218,226 @@ function CustomerSurface(props: CustomerSurfaceProps) {
   );
 }
 
+interface InvoiceSurfaceProps {
+  products: ProductSummary[];
+  customers: CustomerSummary[];
+  invoices: InvoiceSummary[];
+  form: InvoiceFormState;
+  preview: InvoicePreview | null;
+  onFormChange: (form: InvoiceFormState) => void;
+  onPreview: () => void;
+  onSave: () => void;
+  onReset: () => void;
+  onEdit: (invoice: InvoiceSummary) => void;
+  onConfirm: (invoiceId: string) => void;
+  onPrint: (invoice: InvoiceSummary | InvoicePreview) => void;
+}
+
+function InvoiceSurface(props: InvoiceSurfaceProps) {
+  const selectedCustomer = props.customers.find(
+    (customer) => customer.id === props.form.customerId
+  );
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Invoice draft form">
+        <div className="section-heading">
+          <p className="eyebrow">{props.form.id === null ? "New invoice" : "Draft invoice"}</p>
+          <h3>{props.form.id === null ? "Create invoice" : "Update invoice draft"}</h3>
+        </div>
+        <div className="form-row">
+          <label>
+            Customer
+            <select
+              value={props.form.customerId}
+              onChange={(event) => {
+                const customer = props.customers.find((item) => item.id === event.target.value);
+                props.onFormChange({
+                  ...props.form,
+                  customerId: event.target.value,
+                  customerName: customer === undefined ? props.form.customerName : ""
+                });
+              }}
+            >
+              <option value="">Walk-in or typed customer</option>
+              {props.customers.map((customer) => (
+                <option key={customer.id} value={customer.id}>
+                  {customer.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Customer name
+            <input
+              value={selectedCustomer?.name ?? props.form.customerName}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  customerId: "",
+                  customerName: event.target.value
+                })
+              }
+              disabled={props.form.customerId !== ""}
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            Product
+            <select
+              value={props.form.productId}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, productId: event.target.value })
+              }
+            >
+              <option value="">Select product</option>
+              {props.products.map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name} ({product.quantity} {product.unit})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Quantity
+            <input
+              value={props.form.quantity}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, quantity: event.target.value })
+              }
+              inputMode="decimal"
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            Unit price
+            <input
+              value={props.form.unitPrice}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, unitPrice: event.target.value })
+              }
+              inputMode="decimal"
+            />
+          </label>
+          <label>
+            Tax rate
+            <input
+              value={props.form.taxRate}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, taxRate: event.target.value })
+              }
+              inputMode="decimal"
+            />
+          </label>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={props.onPreview} disabled={props.products.length === 0}>
+            Preview
+          </button>
+          <button type="button" onClick={props.onSave} disabled={props.products.length === 0}>
+            {props.form.id === null ? "Save draft" : "Update draft"}
+          </button>
+        </div>
+        <button className="secondary" type="button" onClick={props.onReset}>
+          Clear
+        </button>
+      </section>
+
+      <section className="invoice-preview" aria-label="Invoice preview">
+        {props.preview === null ? (
+          <div className="empty-record">
+            <h3>No preview yet</h3>
+            <p>Preview calculates totals without changing inventory.</p>
+          </div>
+        ) : (
+          <InvoiceDocument invoice={props.preview} />
+        )}
+        {props.preview !== null ? (
+          <button type="button" onClick={() => props.onPrint(props.preview as InvoicePreview)}>
+            Print
+          </button>
+        ) : null}
+      </section>
+
+      <section className="record-list" aria-label="Invoices">
+        {props.invoices.length === 0 ? (
+          <div className="empty-record">
+            <h3>No invoices yet</h3>
+            <p>Create the first CP6 invoice draft to preview totals and confirm stock movement.</p>
+          </div>
+        ) : (
+          props.invoices.map((invoice) => (
+            <article className="record-row invoice-row" key={invoice.id}>
+              <div>
+                <strong>
+                  {invoice.invoiceNumber} · {invoice.status}
+                </strong>
+                <span>
+                  {invoice.customerName ?? "Walk-in customer"} · {formatMoney(invoice.total)}
+                </span>
+              </div>
+              <div className="row-actions">
+                <button type="button" onClick={() => props.onEdit(invoice)}>
+                  View
+                </button>
+                <button type="button" onClick={() => props.onPrint(invoice)}>
+                  Print
+                </button>
+                <button
+                  type="button"
+                  onClick={() => props.onConfirm(invoice.id)}
+                  disabled={invoice.status === "confirmed"}
+                >
+                  Confirm
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
+function InvoiceDocument({ invoice }: { invoice: InvoicePreview | InvoiceSummary }) {
+  const invoiceNumber = "invoiceNumber" in invoice ? invoice.invoiceNumber : "Preview";
+  const status = "status" in invoice ? invoice.status : "preview";
+
+  return (
+    <div className="invoice-document">
+      <div className="invoice-document-header">
+        <div>
+          <p className="eyebrow">{status}</p>
+          <h3>{invoiceNumber}</h3>
+        </div>
+        <strong>{formatMoney(invoice.total)}</strong>
+      </div>
+      <p>{invoice.customerName ?? "Walk-in customer"}</p>
+      <div className="invoice-lines">
+        {invoice.items.map((item) => (
+          <div className="invoice-line" key={item.productId}>
+            <span>{item.productName}</span>
+            <span>
+              {item.quantity} x {formatMoney(item.unitPrice)}
+            </span>
+            <strong>{formatMoney(item.lineTotal)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="invoice-totals">
+        <span>Subtotal</span>
+        <strong>{formatMoney(invoice.subtotal)}</strong>
+        <span>Tax ({Math.round(invoice.taxRate * 100)}%)</span>
+        <strong>{formatMoney(invoice.taxTotal)}</strong>
+        <span>Total</span>
+        <strong>{formatMoney(invoice.total)}</strong>
+      </div>
+    </div>
+  );
+}
+
 interface ChatSurfaceProps {
   chatDraft: string;
   messages: ChatMessage[];
@@ -1176,6 +1605,13 @@ function createStructuredFallbackReply(result: ParseResult): string {
 
 function formatConfidence(confidence: number): string {
   return `${Math.round(confidence * 100)}%`;
+}
+
+function formatMoney(value: number): string {
+  return new Intl.NumberFormat("en-KE", {
+    currency: "KES",
+    style: "currency"
+  }).format(value);
 }
 
 function formatSlots(slots: ParseResult["slots"]): string {

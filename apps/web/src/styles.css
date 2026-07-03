@@ -330,6 +330,77 @@ button:disabled {
   min-width: 72px;
 }
 
+.invoice-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.row-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.invoice-preview {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.invoice-preview > button {
+  background: #117a4f;
+  border-radius: 6px;
+  color: #ffffff;
+  font-weight: 800;
+  min-height: 46px;
+  padding: 10px 12px;
+}
+
+.invoice-document {
+  display: grid;
+  gap: 12px;
+}
+
+.invoice-document-header,
+.invoice-line,
+.invoice-totals {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.invoice-document-header {
+  align-items: start;
+}
+
+.invoice-document-header h3 {
+  font-size: 20px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.invoice-lines,
+.invoice-totals {
+  border-top: 1px solid #e0e7df;
+  padding-top: 10px;
+}
+
+.invoice-lines {
+  display: grid;
+  gap: 10px;
+}
+
+.invoice-line {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.invoice-line span,
+.invoice-totals span {
+  color: #516258;
+}
+
 .metric-grid {
   display: grid;
   gap: 8px;
@@ -514,7 +585,27 @@ button:disabled {
   .metric-grid,
   .quick-grid,
   .form-row,
-  .record-row {
+  .record-row,
+  .row-actions,
+  .invoice-line {
     grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  .top-bar,
+  .bottom-nav,
+  .record-form,
+  .record-list,
+  .side-panel,
+  .soko-surface > h1 {
+    display: none;
+  }
+
+  .soko-surface,
+  .home-panel,
+  .invoice-preview {
+    border: 0;
+    padding: 0;
   }
 }

@@ -317,7 +317,7 @@ function getNextAction(intent: Exclude<RuleIntent, "unknown">): ParserNextAction
     return {
       type: "navigate",
       view: "invoices",
-      reason: "Read-only invoice navigation is safe in CP4."
+      reason: "Read-only invoice navigation is safe."
     };
   }
 
@@ -331,7 +331,7 @@ function getNextAction(intent: Exclude<RuleIntent, "unknown">): ParserNextAction
 
   return {
     type: "draft",
-    reason: "State-changing commands remain drafts until deterministic business tools exist."
+    reason: "State-changing commands remain drafts until deterministic validation and confirmation."
   };
 }
 

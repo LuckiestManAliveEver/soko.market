@@ -3,6 +3,8 @@ import type {
   BusinessRole,
   CustomerSummary,
   InventoryMovementSummary,
+  InvoicePreview,
+  InvoiceSummary,
   ProductSummary,
   SupplierSummary
 } from "@soko/shared-types";
@@ -70,7 +72,10 @@ export type BusinessPermission =
   | "customer:write"
   | "supplier:read"
   | "supplier:write"
-  | "inventory:adjust";
+  | "inventory:adjust"
+  | "invoice:read"
+  | "invoice:write"
+  | "invoice:confirm";
 
 const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
@@ -84,7 +89,10 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "customer:write",
     "supplier:read",
     "supplier:write",
-    "inventory:adjust"
+    "inventory:adjust",
+    "invoice:read",
+    "invoice:write",
+    "invoice:confirm"
   ]),
   manager: new Set([
     "business:read",
@@ -95,10 +103,20 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "customer:write",
     "supplier:read",
     "supplier:write",
-    "inventory:adjust"
+    "inventory:adjust",
+    "invoice:read",
+    "invoice:write",
+    "invoice:confirm"
   ]),
-  sales_agent: new Set(["business:read", "product:read", "customer:read", "customer:write"]),
-  cashier: new Set(["business:read", "product:read", "customer:read"]),
+  sales_agent: new Set([
+    "business:read",
+    "product:read",
+    "customer:read",
+    "customer:write",
+    "invoice:read",
+    "invoice:write"
+  ]),
+  cashier: new Set(["business:read", "product:read", "customer:read", "invoice:read"]),
   view_only: new Set(["business:read", "product:read", "customer:read", "supplier:read"])
 };
 
@@ -129,6 +147,19 @@ export interface StockAdjustmentInput {
   reason?: string | null;
 }
 
+export interface InvoiceLineInput {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface InvoiceInput {
+  customerId?: string | null;
+  customerName?: string | null;
+  taxRate?: number | null;
+  items: InvoiceLineInput[];
+}
+
 export interface NormalizedProductInput {
   name: string;
   sku: string | null;
@@ -146,6 +177,19 @@ export interface NormalizedContactRecordInput {
 export interface NormalizedStockAdjustmentInput {
   quantityAfter: number;
   reason: string;
+}
+
+export interface NormalizedInvoiceLineInput {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface NormalizedInvoiceInput {
+  customerId: string | null;
+  customerName: string | null;
+  taxRate: number;
+  items: NormalizedInvoiceLineInput[];
 }
 
 export function validateProductInput(input: ProductInput): ValidationResult {
@@ -209,6 +253,44 @@ export function validateStockAdjustmentInput(input: StockAdjustmentInput): Valid
   return errors.length > 0 ? invalid(...errors) : valid();
 }
 
+export function validateInvoiceInput(input: InvoiceInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    errors.push("Invoice must include at least one item.");
+  } else if (input.items.length > 50) {
+    errors.push("Invoice must include 50 items or fewer.");
+  }
+
+  if (!isValidTaxRate(input.taxRate ?? 0)) {
+    errors.push("Invoice tax rate must be between 0 and 1.");
+  }
+
+  if (normalizeOptionalText(input.customerId).length > 80) {
+    errors.push("Invoice customer id must be 80 characters or fewer.");
+  }
+
+  if (normalizeOptionalText(input.customerName).length > 120) {
+    errors.push("Invoice customer name must be 120 characters or fewer.");
+  }
+
+  for (const [index, item] of input.items.entries()) {
+    if (normalizeRequiredText(item.productId).length === 0) {
+      errors.push(`Invoice item ${index + 1} product is required.`);
+    }
+
+    if (!isPositiveQuantity(item.quantity)) {
+      errors.push(`Invoice item ${index + 1} quantity must be a positive finite number.`);
+    }
+
+    if (!isValidMoney(item.unitPrice)) {
+      errors.push(`Invoice item ${index + 1} unit price must be a finite non-negative number.`);
+    }
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
 export function normalizeProductInput(input: ProductInput): NormalizedProductInput {
   return {
     name: normalizeRequiredText(input.name),
@@ -235,6 +317,69 @@ export function normalizeStockAdjustmentInput(
   return {
     quantityAfter: input.quantityAfter,
     reason: normalizeOptionalText(input.reason) || "Manual stock adjustment"
+  };
+}
+
+export function normalizeInvoiceInput(input: InvoiceInput): NormalizedInvoiceInput {
+  return {
+    customerId: nullableText(input.customerId),
+    customerName: nullableText(input.customerName),
+    taxRate: roundMoney(input.taxRate ?? 0),
+    items: input.items.map((item) => ({
+      productId: normalizeRequiredText(item.productId),
+      quantity: item.quantity,
+      unitPrice: roundMoney(item.unitPrice)
+    }))
+  };
+}
+
+export function createInvoicePreview(input: {
+  businessId: string;
+  invoice: InvoiceInput;
+  products: ProductSummary[];
+  customer?: CustomerSummary | null;
+}): InvoicePreview {
+  const normalized = normalizeInvoiceInput(input.invoice);
+  const items = normalized.items.map((item) => {
+    const product = input.products.find((candidate) => candidate.id === item.productId);
+
+    return {
+      productId: item.productId,
+      productName: product?.name ?? "Unknown product",
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineTotal: roundMoney(item.quantity * item.unitPrice)
+    };
+  });
+  const totals = calculateInvoiceTotals(items, normalized.taxRate);
+
+  return {
+    businessId: input.businessId,
+    customerId: input.customer?.id ?? normalized.customerId,
+    customerName: input.customer?.name ?? normalized.customerName,
+    items,
+    ...totals
+  };
+}
+
+export function calculateInvoiceTotals(
+  items: Array<{ lineTotal: number }>,
+  taxRate: number
+): {
+  subtotal: number;
+  taxRate: number;
+  taxTotal: number;
+  total: number;
+} {
+  const subtotal = roundMoney(items.reduce((sum, item) => sum + item.lineTotal, 0));
+  const normalizedTaxRate = roundMoney(taxRate);
+  const taxTotal = roundMoney(subtotal * normalizedTaxRate);
+
+  return {
+    subtotal,
+    taxRate: normalizedTaxRate,
+    taxTotal,
+    total: roundMoney(subtotal + taxTotal)
   };
 }
 
@@ -378,6 +523,66 @@ export function stockAdjustedEvent(input: {
   });
 }
 
+export function invoiceCreatedEvent(input: {
+  id: string;
+  invoice: InvoiceSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ invoice: InvoiceSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "invoice.created",
+    aggregateId: input.invoice.id,
+    aggregateType: "invoice",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      invoice: input.invoice
+    }
+  });
+}
+
+export function invoiceUpdatedEvent(input: {
+  id: string;
+  invoice: InvoiceSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ invoice: InvoiceSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "invoice.updated",
+    aggregateId: input.invoice.id,
+    aggregateType: "invoice",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      invoice: input.invoice
+    }
+  });
+}
+
+export function invoiceConfirmedEvent(input: {
+  id: string;
+  invoice: InvoiceSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ invoice: InvoiceSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "invoice.confirmed",
+    aggregateId: input.invoice.id,
+    aggregateType: "invoice",
+    actorId: input.actorId,
+    risk: "high",
+    occurredAt: input.occurredAt,
+    payload: {
+      invoice: input.invoice
+    }
+  });
+}
+
 function normalizeRequiredText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -395,7 +600,23 @@ function isValidQuantity(value: number): boolean {
   return Number.isFinite(value) && value >= 0;
 }
 
+function isPositiveQuantity(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
+function isValidMoney(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
+
+function isValidTaxRate(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function isValidEmail(value: string | null | undefined): boolean {
   const normalized = normalizeOptionalText(value);
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized);
+}
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }

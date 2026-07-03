@@ -139,3 +139,42 @@ export const inventoryMovements = pgTable("inventory_movements", {
     .references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
+
+export const invoices = pgTable("invoices", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  invoiceNumber: text("invoice_number").notNull(),
+  status: text("status").notNull(),
+  customerId: uuid("customer_id").references(() => customers.id),
+  customerName: text("customer_name"),
+  subtotal: numeric("subtotal").notNull(),
+  taxRate: numeric("tax_rate").notNull(),
+  taxTotal: numeric("tax_total").notNull(),
+  total: numeric("total").notNull(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const invoiceItems = pgTable("invoice_items", {
+  id: uuid("id").primaryKey(),
+  invoiceId: uuid("invoice_id")
+    .notNull()
+    .references(() => invoices.id),
+  productId: uuid("product_id")
+    .notNull()
+    .references(() => products.id),
+  productName: text("product_name").notNull(),
+  quantity: numeric("quantity").notNull(),
+  unitPrice: numeric("unit_price").notNull(),
+  lineTotal: numeric("line_total").notNull()
+});
+
+export const invoiceNumberCounters = pgTable("invoice_number_counters", {
+  businessId: uuid("business_id")
+    .primaryKey()
+    .references(() => businesses.id),
+  nextNumber: integer("next_number").notNull()
+});

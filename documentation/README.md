@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Implement CP6:
+Open CP7:
 
-1. Build deterministic invoice and inventory flow on top of CP5 records.
-2. Keep invoice drafts/previews non-mutating until owner confirmation.
+1. Create the CP7 baseline and decision log.
+2. Design durable local storage and pending mutation queue around CP5/CP6 records.
 3. Keep payments, debt tracking, and M-Pesa deferred to CP8.

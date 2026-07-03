@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   businessActionProposedEvent,
+  createInvoicePreview,
   customerCreatedEvent,
+  invoiceConfirmedEvent,
   normalizeProductInput,
   productCreatedEvent,
   roleCan,
   stockAdjustedEvent,
   validateBusinessActionDraft,
+  validateInvoiceInput,
   validateProductInput,
   validateStockAdjustmentInput
 } from "../packages/business-core/src";
@@ -132,5 +135,91 @@ describe("business core foundation", () => {
     expect(movementEvent.type).toBe("inventory.stock_adjusted");
     expect(Object.isFrozen(productEvent.payload.product)).toBe(true);
     expect(Object.isFrozen(movementEvent.payload.movement)).toBe(true);
+  });
+
+  it("calculates CP6 invoice totals and validates invoice inputs deterministically", () => {
+    const product = {
+      id: "product-1",
+      businessId: "business-1",
+      name: "Maize Flour",
+      sku: null,
+      unit: "packet",
+      quantity: 10,
+      createdAt: "2026-07-02T00:00:00.000Z",
+      updatedAt: "2026-07-02T00:00:00.000Z"
+    };
+    const preview = createInvoicePreview({
+      businessId: "business-1",
+      products: [product],
+      invoice: {
+        customerName: "Amina",
+        taxRate: 0.16,
+        items: [
+          {
+            productId: product.id,
+            quantity: 2,
+            unitPrice: 125.5
+          }
+        ]
+      }
+    });
+
+    expect(preview).toMatchObject({
+      subtotal: 251,
+      taxRate: 0.16,
+      taxTotal: 40.16,
+      total: 291.16
+    });
+    expect(validateInvoiceInput({ items: [] }).ok).toBe(false);
+    expect(
+      validateInvoiceInput({
+        taxRate: 1.5,
+        items: [{ productId: product.id, quantity: 1, unitPrice: 10 }]
+      }).ok
+    ).toBe(false);
+    expect(
+      validateInvoiceInput({
+        items: [{ productId: product.id, quantity: 0, unitPrice: 10 }]
+      }).ok
+    ).toBe(false);
+  });
+
+  it("creates immutable CP6 invoice events", () => {
+    const invoice = {
+      id: "invoice-1",
+      businessId: "business-1",
+      invoiceNumber: "INV-00001",
+      status: "confirmed" as const,
+      customerId: null,
+      customerName: "Amina",
+      items: [
+        {
+          id: "item-1",
+          invoiceId: "invoice-1",
+          productId: "product-1",
+          productName: "Maize Flour",
+          quantity: 2,
+          unitPrice: 125.5,
+          lineTotal: 251
+        }
+      ],
+      subtotal: 251,
+      taxRate: 0.16,
+      taxTotal: 40.16,
+      total: 291.16,
+      confirmedAt: "2026-07-03T00:00:00.000Z",
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z"
+    };
+    const event = invoiceConfirmedEvent({
+      id: "event-invoice",
+      invoice,
+      actorId: "owner-1",
+      occurredAt: "2026-07-03T00:00:00.000Z"
+    });
+
+    expect(event.type).toBe("invoice.confirmed");
+    expect(event.risk).toBe("high");
+    expect(Object.isFrozen(event.payload.invoice)).toBe(true);
   });
 });

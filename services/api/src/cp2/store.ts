@@ -8,6 +8,9 @@ import type {
   BusinessSummary,
   CustomerSummary,
   InventoryMovementSummary,
+  InvoiceItemSummary,
+  InvoicePreview,
+  InvoiceSummary,
   MembershipSummary,
   ProductSummary,
   SessionSummary,
@@ -18,8 +21,13 @@ import type {
 import {
   customerCreatedEvent,
   customerUpdatedEvent,
+  createInvoicePreview,
+  invoiceConfirmedEvent,
+  invoiceCreatedEvent,
+  invoiceUpdatedEvent,
   isBusinessRole,
   normalizeContactRecordInput,
+  normalizeInvoiceInput,
   normalizeProductInput,
   normalizeStockAdjustmentInput,
   productCreatedEvent,
@@ -29,10 +37,12 @@ import {
   supplierCreatedEvent,
   supplierUpdatedEvent,
   validateContactRecordInput,
+  validateInvoiceInput,
   validateProductInput,
   validateStockAdjustmentInput,
   type BusinessPermission,
   type ContactRecordInput,
+  type InvoiceInput,
   type ProductInput,
   type StockAdjustmentInput
 } from "@soko/business-core";
@@ -102,6 +112,7 @@ export interface Cp2Snapshot {
   products: ProductSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
+  invoices: InvoiceSummary[];
   inventoryMovements: InventoryMovementSummary[];
   sessions: SessionRecord[];
   auditEvents: BusinessEvent[];
@@ -117,6 +128,8 @@ export class Cp2Store {
   private readonly products = new Map<string, ProductSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
+  private readonly invoices = new Map<string, InvoiceSummary>();
+  private readonly nextInvoiceNumberByBusiness = new Map<string, number>();
   private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
@@ -703,6 +716,188 @@ export class Cp2Store {
     return updated;
   }
 
+  previewInvoice(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoice: InvoiceInput;
+    now?: Date;
+  }): InvoicePreview {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:write", input.now);
+    assertValid(validateInvoiceInput(input.invoice));
+
+    return this.buildInvoicePreview(input.businessId, input.invoice);
+  }
+
+  listInvoices(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): InvoiceSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
+    return [...this.invoices.values()].filter((invoice) => invoice.businessId === input.businessId);
+  }
+
+  createInvoice(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoice: InvoiceInput;
+    now?: Date;
+  }): InvoiceSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "invoice:write",
+      now
+    );
+    assertValid(validateInvoiceInput(input.invoice));
+    const invoice = this.buildStoredInvoice({
+      businessId: input.businessId,
+      invoiceId: randomUUID(),
+      invoiceNumber: this.nextInvoiceNumber(input.businessId),
+      input: input.invoice,
+      status: "draft",
+      confirmedAt: null,
+      now
+    });
+
+    this.invoices.set(invoice.id, invoice);
+    this.appendBusinessEvent(
+      invoiceCreatedEvent({
+        id: randomUUID(),
+        invoice,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return invoice;
+  }
+
+  updateInvoice(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoiceId: string;
+    invoice: InvoiceInput;
+    now?: Date;
+  }): InvoiceSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "invoice:write",
+      now
+    );
+    const existing = this.requireInvoice(input.businessId, input.invoiceId);
+
+    if (existing.status !== "draft") {
+      throw new Cp2Error(409, "invoice_already_confirmed", "Confirmed invoices cannot be edited.");
+    }
+
+    assertValid(validateInvoiceInput(input.invoice));
+    const invoice = this.buildStoredInvoice({
+      businessId: input.businessId,
+      invoiceId: existing.id,
+      invoiceNumber: existing.invoiceNumber,
+      input: input.invoice,
+      status: "draft",
+      confirmedAt: null,
+      now,
+      createdAt: existing.createdAt
+    });
+
+    this.invoices.set(invoice.id, invoice);
+    this.appendBusinessEvent(
+      invoiceUpdatedEvent({
+        id: randomUUID(),
+        invoice,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return invoice;
+  }
+
+  confirmInvoice(input: {
+    sessionId: string | null;
+    businessId: string;
+    invoiceId: string;
+    now?: Date;
+  }): { invoice: InvoiceSummary; movements: InventoryMovementSummary[] } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "invoice:confirm",
+      now
+    );
+    const invoice = this.requireInvoice(input.businessId, input.invoiceId);
+
+    if (invoice.status !== "draft") {
+      throw new Cp2Error(409, "invoice_already_confirmed", "Invoice is already confirmed.");
+    }
+
+    for (const item of invoice.items) {
+      const product = this.requireProduct(input.businessId, item.productId);
+
+      if (product.quantity < item.quantity) {
+        throw new Cp2Error(
+          409,
+          "stock_insufficient",
+          `${product.name} has ${product.quantity} ${product.unit} available.`
+        );
+      }
+    }
+
+    const movements: InventoryMovementSummary[] = [];
+
+    for (const item of invoice.items) {
+      const product = this.requireProduct(input.businessId, item.productId);
+      const updatedProduct: ProductSummary = {
+        ...product,
+        quantity: product.quantity - item.quantity,
+        updatedAt: now.toISOString()
+      };
+
+      this.products.set(updatedProduct.id, updatedProduct);
+      movements.push(
+        this.createInventoryMovement({
+          businessId: input.businessId,
+          productId: product.id,
+          type: "sale",
+          quantityBefore: product.quantity,
+          quantityAfter: updatedProduct.quantity,
+          reason: `Invoice ${invoice.invoiceNumber}`,
+          actorId: session.user.id,
+          now
+        })
+      );
+    }
+
+    const confirmed: InvoiceSummary = {
+      ...invoice,
+      status: "confirmed",
+      confirmedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.invoices.set(confirmed.id, confirmed);
+    this.appendBusinessEvent(
+      invoiceConfirmedEvent({
+        id: randomUUID(),
+        invoice: confirmed,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return {
+      invoice: confirmed,
+      movements
+    };
+  }
+
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
@@ -712,6 +907,7 @@ export class Cp2Store {
       products: [...this.products.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
+      invoices: [...this.invoices.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
       sessions: [...this.sessions.values()],
       auditEvents: [...this.auditEvents]
@@ -867,9 +1063,79 @@ export class Cp2Store {
     return supplier;
   }
 
+  private requireInvoice(businessId: string, invoiceId: string): InvoiceSummary {
+    const invoice = this.invoices.get(invoiceId);
+
+    if (invoice === undefined || invoice.businessId !== businessId) {
+      throw new Cp2Error(404, "invoice_not_found", "Invoice was not found.");
+    }
+
+    return invoice;
+  }
+
+  private buildInvoicePreview(businessId: string, invoice: InvoiceInput): InvoicePreview {
+    const normalized = normalizeInvoiceInput(invoice);
+    const customer =
+      normalized.customerId === null
+        ? null
+        : this.requireCustomer(businessId, normalized.customerId);
+    const products = normalized.items.map((item) =>
+      this.requireProduct(businessId, item.productId)
+    );
+
+    return createInvoicePreview({
+      businessId,
+      invoice,
+      products,
+      customer
+    });
+  }
+
+  private buildStoredInvoice(input: {
+    businessId: string;
+    invoiceId: string;
+    invoiceNumber: string;
+    input: InvoiceInput;
+    status: "draft" | "confirmed";
+    confirmedAt: string | null;
+    now: Date;
+    createdAt?: string;
+  }): InvoiceSummary {
+    const preview = this.buildInvoicePreview(input.businessId, input.input);
+    const items: InvoiceItemSummary[] = preview.items.map((item) => ({
+      id: randomUUID(),
+      invoiceId: input.invoiceId,
+      ...item
+    }));
+
+    return {
+      id: input.invoiceId,
+      businessId: input.businessId,
+      invoiceNumber: input.invoiceNumber,
+      status: input.status,
+      customerId: preview.customerId,
+      customerName: preview.customerName,
+      items,
+      subtotal: preview.subtotal,
+      taxRate: preview.taxRate,
+      taxTotal: preview.taxTotal,
+      total: preview.total,
+      confirmedAt: input.confirmedAt,
+      createdAt: input.createdAt ?? input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+  }
+
+  private nextInvoiceNumber(businessId: string): string {
+    const nextNumber = this.nextInvoiceNumberByBusiness.get(businessId) ?? 1;
+    this.nextInvoiceNumberByBusiness.set(businessId, nextNumber + 1);
+    return `INV-${String(nextNumber).padStart(5, "0")}`;
+  }
+
   private createInventoryMovement(input: {
     businessId: string;
     productId: string;
+    type?: "manual_adjustment" | "sale";
     quantityBefore: number;
     quantityAfter: number;
     reason: string;
@@ -880,7 +1146,7 @@ export class Cp2Store {
       id: randomUUID(),
       businessId: input.businessId,
       productId: input.productId,
-      type: "manual_adjustment",
+      type: input.type ?? "manual_adjustment",
       quantityBefore: input.quantityBefore,
       quantityAfter: input.quantityAfter,
       delta: input.quantityAfter - input.quantityBefore,

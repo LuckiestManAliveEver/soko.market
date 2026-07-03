@@ -95,7 +95,46 @@ export interface SupplierSummary {
   updatedAt: string;
 }
 
-export type InventoryMovementType = "manual_adjustment";
+export type InvoiceStatus = "draft" | "confirmed";
+
+export interface InvoiceItemSummary {
+  id: string;
+  invoiceId: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+}
+
+export interface InvoiceTotals {
+  subtotal: number;
+  taxRate: number;
+  taxTotal: number;
+  total: number;
+}
+
+export interface InvoiceSummary extends InvoiceTotals {
+  id: string;
+  businessId: string;
+  invoiceNumber: string;
+  status: InvoiceStatus;
+  customerId: string | null;
+  customerName: string | null;
+  items: InvoiceItemSummary[];
+  confirmedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InvoicePreview extends InvoiceTotals {
+  businessId: string;
+  customerId: string | null;
+  customerName: string | null;
+  items: Omit<InvoiceItemSummary, "id" | "invoiceId">[];
+}
+
+export type InventoryMovementType = "manual_adjustment" | "sale";
 
 export interface InventoryMovementSummary {
   id: string;

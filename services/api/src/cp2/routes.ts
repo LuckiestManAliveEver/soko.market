@@ -52,6 +52,10 @@ interface SupplierParams extends BusinessParams {
   supplierId: string;
 }
 
+interface InvoiceParams extends BusinessParams {
+  invoiceId: string;
+}
+
 interface ProductBody {
   name?: string;
   sku?: string | null;
@@ -69,6 +73,19 @@ interface ContactRecordBody {
 interface StockAdjustmentBody {
   quantityAfter?: number;
   reason?: string | null;
+}
+
+interface InvoiceItemBody {
+  productId?: string;
+  quantity?: number;
+  unitPrice?: number;
+}
+
+interface InvoiceBody {
+  customerId?: string | null;
+  customerName?: string | null;
+  taxRate?: number | null;
+  items?: InvoiceItemBody[];
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -306,6 +323,81 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/invoices/preview",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: InvoiceBody }>, reply) => {
+      try {
+        return store.previewInvoice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          invoice: parseInvoiceBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/invoices",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listInvoices({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/invoices",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: InvoiceBody }>, reply) => {
+      try {
+        return store.createInvoice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          invoice: parseInvoiceBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/invoices/:invoiceId",
+    async (request: FastifyRequest<{ Params: InvoiceParams; Body: InvoiceBody }>, reply) => {
+      try {
+        return store.updateInvoice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          invoiceId: request.params.invoiceId,
+          invoice: parseInvoiceBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/invoices/:invoiceId/confirm",
+    async (request: FastifyRequest<{ Params: InvoiceParams }>, reply) => {
+      try {
+        return store.confirmInvoice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          invoiceId: request.params.invoiceId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   return store;
 }
 
@@ -364,6 +456,33 @@ function parseStockAdjustmentBody(body: StockAdjustmentBody | null | undefined) 
   };
 }
 
+function parseInvoiceBody(body: InvoiceBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    customerId: parseNullableString(record.customerId),
+    customerName: parseNullableString(record.customerName),
+    taxRate: record.taxRate === undefined ? 0 : parseNullableNumber(record.taxRate, "taxRate"),
+    items: parseInvoiceItems(record.items)
+  };
+}
+
+function parseInvoiceItems(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "items_required", "items is required.");
+  }
+
+  return value.map((item, index) => {
+    const record = parseRequestBody(item);
+
+    return {
+      productId: parseString(record.productId, `items.${index}.productId`),
+      quantity: parseNumber(record.quantity, `items.${index}.quantity`),
+      unitPrice: parseNumber(record.unitPrice, `items.${index}.unitPrice`)
+    };
+  });
+}
+
 function parseRequestBody(value: unknown): Record<string, unknown> {
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
     throw new Cp2Error(400, "body_invalid", "Request body must be a JSON object.");
@@ -392,6 +511,14 @@ function parseNumber(value: unknown, name: string): number {
   return value;
 }
 
+function parseNullableNumber(value: unknown, name: string): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  return parseNumber(value, name);
+}
+
 function parseOptionalPermission(value: string | undefined): BusinessPermission | undefined {
   if (value === undefined) {
     return undefined;
@@ -415,7 +542,10 @@ const businessPermissions: BusinessPermission[] = [
   "customer:write",
   "supplier:read",
   "supplier:write",
-  "inventory:adjust"
+  "inventory:adjust",
+  "invoice:read",
+  "invoice:write",
+  "invoice:confirm"
 ];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {
