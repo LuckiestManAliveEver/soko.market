@@ -12,12 +12,25 @@ import type {
   InvoicePreview,
   InvoiceSummary,
   MembershipSummary,
+  OfflineCacheSnapshot,
   ProductSummary,
   SessionSummary,
+  SyncMutationPayload,
+  SyncMutationType,
+  SyncQueueItem,
+  SyncQueueSummary,
+  SyncReplayResult,
   SupplierSummary,
   SupportedLanguage,
   UserSummary
 } from "@soko/shared-types";
+import {
+  createSyncQueueItem,
+  markSyncProcessing,
+  markSyncRejected,
+  markSyncSynced,
+  summarizeSyncQueue
+} from "@soko/sync-core";
 import {
   customerCreatedEvent,
   customerUpdatedEvent,
@@ -114,6 +127,7 @@ export interface Cp2Snapshot {
   suppliers: SupplierSummary[];
   invoices: InvoiceSummary[];
   inventoryMovements: InventoryMovementSummary[];
+  syncQueue: SyncQueueItem[];
   sessions: SessionRecord[];
   auditEvents: BusinessEvent[];
 }
@@ -131,6 +145,8 @@ export class Cp2Store {
   private readonly invoices = new Map<string, InvoiceSummary>();
   private readonly nextInvoiceNumberByBusiness = new Map<string, number>();
   private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
+  private readonly syncQueue = new Map<string, SyncQueueItem>();
+  private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly auditEvents: BusinessEvent[] = [];
@@ -909,6 +925,193 @@ export class Cp2Store {
     };
   }
 
+  getOfflineCache(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): OfflineCacheSnapshot {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+
+    return {
+      businessId: input.businessId,
+      capturedAt: now.toISOString(),
+      source: "server_cache",
+      products: this.listProducts(input),
+      customers: this.listCustomers(input),
+      suppliers: this.listSuppliers(input),
+      invoices: this.listInvoices(input),
+      inventoryMovements: [...this.inventoryMovements.values()].filter(
+        (movement) => movement.businessId === input.businessId
+      )
+    };
+  }
+
+  listSyncQueue(input: { sessionId: string | null; businessId: string; now?: Date }): {
+    summary: SyncQueueSummary;
+    items: SyncQueueItem[];
+  } {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", input.now);
+    const items = [...this.syncQueue.values()]
+      .filter((item) => item.businessId === input.businessId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+    return {
+      summary: summarizeSyncQueue(input.businessId, items),
+      items
+    };
+  }
+
+  enqueueSyncMutation(input: {
+    sessionId: string | null;
+    businessId: string;
+    idempotencyKey: string;
+    mutationType: SyncMutationType;
+    payload: SyncMutationPayload;
+    clientCreatedAt?: string;
+    now?: Date;
+  }): SyncQueueItem {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const idempotencyKey = input.idempotencyKey.trim();
+
+    if (idempotencyKey.length < 8 || idempotencyKey.length > 120) {
+      throw new Cp2Error(
+        400,
+        "idempotency_key_invalid",
+        "Idempotency key must be between 8 and 120 characters."
+      );
+    }
+
+    const existingId = this.syncQueueIdByIdempotency.get(
+      syncQueueIdempotencyKey(input.businessId, idempotencyKey)
+    );
+
+    if (existingId !== undefined) {
+      return this.requireSyncQueueItem(input.businessId, existingId);
+    }
+
+    const item = createSyncQueueItem({
+      id: randomUUID(),
+      idempotencyKey,
+      businessId: input.businessId,
+      actorId: session.user.id,
+      mutationType: input.mutationType,
+      payload: input.payload,
+      clientCreatedAt: input.clientCreatedAt ?? now.toISOString(),
+      now: now.toISOString()
+    });
+
+    this.syncQueue.set(item.id, item);
+    this.syncQueueIdByIdempotency.set(
+      syncQueueIdempotencyKey(item.businessId, item.idempotencyKey),
+      item.id
+    );
+
+    return item;
+  }
+
+  replaySyncQueueItem(input: {
+    sessionId: string | null;
+    businessId: string;
+    syncItemId: string;
+    now?: Date;
+  }): SyncReplayResult {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const item = this.requireSyncQueueItem(input.businessId, input.syncItemId);
+
+    if (item.actorId !== session.user.id) {
+      throw new Cp2Error(403, "sync_actor_mismatch", "Queued work must be replayed by its actor.");
+    }
+
+    if (item.status === "synced") {
+      return {
+        item,
+        replayed: false
+      };
+    }
+
+    if (item.status === "processing") {
+      throw new Cp2Error(409, "sync_item_processing", "Queued work is already processing.");
+    }
+
+    const processing = markSyncProcessing(item, now.toISOString());
+    this.syncQueue.set(processing.id, processing);
+
+    try {
+      const result = this.replaySyncMutation({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        mutationType: processing.mutationType,
+        payload: processing.payload,
+        now
+      });
+      const synced = markSyncSynced(processing, result, now.toISOString());
+      this.syncQueue.set(synced.id, synced);
+
+      return {
+        item: synced,
+        replayed: true
+      };
+    } catch (error) {
+      if (error instanceof Cp2Error) {
+        const rejected = markSyncRejected(processing, {
+          code: error.code,
+          message: error.message,
+          statusCode: error.statusCode,
+          now: now.toISOString()
+        });
+        this.syncQueue.set(rejected.id, rejected);
+
+        return {
+          item: rejected,
+          replayed: true
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  replaySyncQueue(input: { sessionId: string | null; businessId: string; now?: Date }): {
+    summary: SyncQueueSummary;
+    results: SyncReplayResult[];
+  } {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const items = [...this.syncQueue.values()]
+      .filter(
+        (item) =>
+          item.businessId === input.businessId &&
+          (item.status === "pending" || item.status === "failed" || item.status === "conflict")
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const results = items.map((item) =>
+      this.replaySyncQueueItem({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        syncItemId: item.id,
+        now
+      })
+    );
+
+    return {
+      summary: this.listSyncQueue(input).summary,
+      results
+    };
+  }
+
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
@@ -920,6 +1123,7 @@ export class Cp2Store {
       suppliers: [...this.suppliers.values()],
       invoices: [...this.invoices.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
+      syncQueue: [...this.syncQueue.values()],
       sessions: [...this.sessions.values()],
       auditEvents: [...this.auditEvents]
     };
@@ -1082,6 +1286,78 @@ export class Cp2Store {
     }
 
     return invoice;
+  }
+
+  private requireSyncQueueItem(businessId: string, syncItemId: string): SyncQueueItem {
+    const item = this.syncQueue.get(syncItemId);
+
+    if (item === undefined || item.businessId !== businessId) {
+      throw new Cp2Error(404, "sync_item_not_found", "Queued work item was not found.");
+    }
+
+    return item;
+  }
+
+  private replaySyncMutation(input: {
+    sessionId: string | null;
+    businessId: string;
+    mutationType: SyncMutationType;
+    payload: SyncMutationPayload;
+    now: Date;
+  }): unknown {
+    switch (input.mutationType) {
+      case "product.create":
+        return this.createProduct({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          product: input.payload as ProductInput,
+          now: input.now
+        });
+
+      case "customer.create":
+        return this.createCustomer({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          customer: input.payload as ContactRecordInput,
+          now: input.now
+        });
+
+      case "supplier.create":
+        return this.createSupplier({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          supplier: input.payload as ContactRecordInput,
+          now: input.now
+        });
+
+      case "inventory.adjust": {
+        const payload = input.payload as { productId: string } & StockAdjustmentInput;
+
+        return this.adjustProductStock({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          productId: payload.productId,
+          adjustment: payload,
+          now: input.now
+        });
+      }
+
+      case "invoice.create":
+        return this.createInvoice({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          invoice: input.payload as InvoiceInput,
+          now: input.now
+        });
+
+      case "invoice.confirm":
+        return this.confirmInvoice({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          invoiceId: (input.payload as { invoiceId: string }).invoiceId,
+          now: input.now
+        });
+    }
   }
 
   private buildInvoicePreview(businessId: string, invoice: InvoiceInput): InvoicePreview {
@@ -1286,6 +1562,10 @@ function deepFreeze<TValue>(value: TValue): TValue {
 
 function destinationAccountKey(channel: AuthChannel, destination: string): string {
   return `${channel}:${destination}`;
+}
+
+function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): string {
+  return `${businessId}:${idempotencyKey}`;
 }
 
 function hashOtp(challengeId: string, code: string): string {

@@ -178,3 +178,33 @@ export const invoiceNumberCounters = pgTable("invoice_number_counters", {
     .references(() => businesses.id),
   nextNumber: integer("next_number").notNull()
 });
+
+export const offlineSyncQueue = pgTable("offline_sync_queue", {
+  id: uuid("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  actorId: uuid("actor_id")
+    .notNull()
+    .references(() => users.id),
+  mutationType: text("mutation_type").notNull(),
+  payload: jsonb("payload").notNull(),
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  clientCreatedAt: timestamp("client_created_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  result: jsonb("result"),
+  conflict: jsonb("conflict")
+});
+
+export const offlineCacheSnapshots = pgTable("offline_cache_snapshots", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  source: text("source").notNull()
+});

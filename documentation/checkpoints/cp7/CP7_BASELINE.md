@@ -1,10 +1,10 @@
 # CP7: Offline Local Data and Sync Queue
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 Target tag: `checkpoint/cp7-offline-sync`
-Actual tag: pending
+Actual tag: `checkpoint/cp7-offline-sync` in `.repo.git`
 
 ## Purpose
 
@@ -83,21 +83,21 @@ Owner uses app with intermittent connectivity
 
 ## CP7 Exit Criteria
 
-CP7 can be marked passed when:
+CP7 is marked passed because:
 
-- [ ] Local cache contracts exist for CP5 and CP6 business records.
-- [ ] Durable sync queue types and storage exist.
-- [ ] Supported offline mutation envelopes include idempotency and business scope metadata.
-- [ ] Queue replay routes mutations through existing server/API validation.
-- [ ] Queue states cover pending, processing, synced, failed, and conflict.
-- [ ] Conflict reasons are deterministic and visible to the owner-facing shell.
-- [ ] Offline status and queued work count are visible in the web shell.
-- [ ] Manual retry exists for failed/conflict queue items where appropriate.
-- [ ] Tests cover queue ordering, idempotency, business boundaries, and replay.
-- [ ] Tests cover CP5 product/inventory conflict behavior.
-- [ ] Tests cover CP6 invoice confirmation conflict behavior.
-- [ ] Existing CP1 through CP6 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp7-offline-sync` is created.
+- [x] Local cache contracts exist for CP5 and CP6 business records.
+- [x] Durable sync queue types and storage exist.
+- [x] Supported offline mutation envelopes include idempotency and business scope metadata.
+- [x] Queue replay routes mutations through existing server/API validation.
+- [x] Queue states cover pending, processing, synced, failed, and conflict.
+- [x] Conflict reasons are deterministic and visible to the owner-facing shell.
+- [x] Offline status and queued work count are visible in the web shell.
+- [x] Manual retry exists for failed/conflict queue items where appropriate.
+- [x] Tests cover queue ordering, idempotency, business boundaries, and replay.
+- [x] Tests cover CP5 product/inventory conflict behavior.
+- [x] Tests cover CP6 invoice confirmation conflict behavior.
+- [x] Existing CP1 through CP6 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp7-offline-sync` is created.
 
 ## Rollback Instructions
 

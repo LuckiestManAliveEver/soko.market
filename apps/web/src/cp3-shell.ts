@@ -1,4 +1,5 @@
-export type ShellView = "home" | "chat" | "products" | "customers" | "invoices" | "payments";
+export type ShellView =
+  "home" | "chat" | "products" | "customers" | "invoices" | "sync" | "payments";
 
 export interface QuickAction {
   id: ShellView;
@@ -45,6 +46,11 @@ export const quickActions: QuickAction[] = [
     summary: "Create invoice drafts and confirm sales"
   },
   {
+    id: "sync",
+    label: "Sync",
+    summary: "Review offline queue and conflicts"
+  },
+  {
     id: "payments",
     label: "Payments",
     summary: "Prepare payment tracking"
@@ -68,6 +74,11 @@ export const emptyStates: EmptyState[] = [
     body: "Create the first CP6 invoice draft to preview totals and confirm stock movement."
   },
   {
+    id: "sync",
+    title: "No queued work",
+    body: "CP7 sync keeps offline mutations queued until server replay confirms them."
+  },
+  {
     id: "payments",
     title: "No payments yet",
     body: "Payment and debt tracking start in CP8. M-Pesa integration is intentionally deferred."
@@ -83,7 +94,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP6 invoice drafts use deterministic previews and owner confirmation before stock moves.`
+      body: `${businessName} is ready. CP7 offline work is queued until server replay confirms it.`
     }
   ];
 }

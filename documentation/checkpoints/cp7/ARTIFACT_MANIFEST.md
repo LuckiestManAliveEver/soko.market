@@ -1,8 +1,8 @@
 # CP7 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 
 ## Created CP7 Artifacts
 
@@ -12,17 +12,21 @@ Date passed: pending
 | `documentation/checkpoints/cp7/DECISION_LOG.md`      | Offline local data, sync queue, replay, conflict, and boundary decisions. |
 | `documentation/checkpoints/cp7/ARTIFACT_MANIFEST.md` | This manifest.                                                            |
 
-## Planned CP7 Implementation Artifacts
+## Implemented CP7 Artifacts
 
-| Path                        | Purpose                                                                      |
-| --------------------------- | ---------------------------------------------------------------------------- |
-| `packages/shared-types/src` | Shared sync queue, cache, mutation envelope, and conflict contracts.         |
-| `packages/sync-core/src`    | Deterministic queue state, replay planning, idempotency, and conflict rules. |
-| `services/api/src`          | API integration for sync replay and business-scoped queue operations.        |
-| `apps/web/src`              | Offline status, queued work, retry, and conflict shell integration.          |
-| `infra/db/schema.ts`        | Durable sync queue/cache schema additions if needed.                         |
-| `infra/db/migrations`       | CP7 migration for durable sync queue/cache tables if needed.                 |
-| `tests`                     | CP7 sync queue, offline read, replay, idempotency, and conflict tests.       |
+| Path                                           | Purpose                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `packages/shared-types/src/index.ts`           | Shared sync queue, cache, mutation envelope, and conflict contracts.         |
+| `packages/sync-core/src/index.ts`              | Deterministic queue state, replay planning, idempotency, and conflict rules. |
+| `services/api/src/cp2/store.ts`                | Offline cache snapshot, queue storage, idempotent enqueue, and replay logic. |
+| `services/api/src/cp2/routes.ts`               | Offline cache, queue list/enqueue, replay-all, and replay-item API routes.   |
+| `apps/web/src/cp3-shell.ts`                    | Active CP7 Sync shell navigation and copy.                                   |
+| `apps/web/src/main.tsx`                        | Offline queue count, Sync view, conflict display, and manual retry action.   |
+| `infra/db/schema.ts`                           | Durable sync queue/cache schema additions.                                   |
+| `infra/db/migrations/004_cp7_offline_sync.sql` | CP7 migration for durable sync queue/cache tables and indexes.               |
+| `tests/sync-core.test.ts`                      | CP7 sync-core transition, summary, and conflict classification tests.        |
+| `tests/cp7-offline-sync.test.ts`               | CP7 API cache, idempotency, replay, boundary, and conflict tests.            |
+| `tests/cp3-shell.test.ts`                      | Shell contract updates for active CP7 sync workflow.                         |
 
 ## CP7 Opening Checklist
 
@@ -36,22 +40,20 @@ Date passed: pending
 
 ## CP7 Completion Checklist
 
-- [ ] Local cache contracts implemented.
-- [ ] Durable sync queue model implemented.
-- [ ] Mutation envelope metadata implemented.
-- [ ] Queue replay through existing business/API validation implemented.
-- [ ] Queue idempotency implemented and tested.
-- [ ] Queue conflict states implemented and surfaced.
-- [ ] Offline status and queued work UI implemented.
-- [ ] Manual retry behavior implemented.
-- [ ] CP5 inventory conflict tests implemented.
-- [ ] CP6 invoice confirmation conflict tests implemented.
-- [ ] Existing CP1 through CP6 checks pass.
-- [ ] `checkpoint/cp7-offline-sync` tag created.
+- [x] Local cache contracts implemented.
+- [x] Durable sync queue model implemented.
+- [x] Mutation envelope metadata implemented.
+- [x] Queue replay through existing business/API validation implemented.
+- [x] Queue idempotency implemented and tested.
+- [x] Queue conflict states implemented and surfaced.
+- [x] Offline status and queued work UI implemented.
+- [x] Manual retry behavior implemented.
+- [x] CP5 inventory conflict tests implemented.
+- [x] CP6 invoice confirmation conflict tests implemented.
+- [x] Existing CP1 through CP6 checks pass.
+- [x] `checkpoint/cp7-offline-sync` tag created.
 
 ## Verification
-
-Planned verification:
 
 - `pnpm run ci`
 - `pnpm build`

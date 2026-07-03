@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { BusinessPermission } from "@soko/business-core";
-import type { AuthChannel } from "@soko/shared-types";
+import type { AuthChannel, SyncMutationPayload, SyncMutationType } from "@soko/shared-types";
+import { isSyncMutationType } from "@soko/sync-core";
 import {
   clearSessionCookie,
   Cp2Error,
@@ -56,6 +57,10 @@ interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
 
+interface SyncQueueParams extends BusinessParams {
+  syncItemId: string;
+}
+
 interface ProductBody {
   name?: string;
   sku?: string | null;
@@ -86,6 +91,13 @@ interface InvoiceBody {
   customerName?: string | null;
   taxRate?: number | null;
   items?: InvoiceItemBody[];
+}
+
+interface SyncMutationBody {
+  idempotencyKey?: string;
+  mutationType?: string;
+  clientCreatedAt?: string;
+  payload?: unknown;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -398,7 +410,140 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.get(
+    "/businesses/:businessId/offline-cache",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getOfflineCache({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/sync-queue",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listSyncQueue({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/sync-queue",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: SyncMutationBody }>, reply) => {
+      try {
+        const body = parseSyncMutationBody(request.body);
+        return store.enqueueSyncMutation({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...body
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/sync-queue/replay",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.replaySyncQueue({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/sync-queue/:syncItemId/replay",
+    async (request: FastifyRequest<{ Params: SyncQueueParams }>, reply) => {
+      try {
+        return store.replaySyncQueueItem({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          syncItemId: request.params.syncItemId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   return store;
+}
+
+function parseSyncMutationBody(body: SyncMutationBody | null | undefined): {
+  idempotencyKey: string;
+  mutationType: SyncMutationType;
+  clientCreatedAt?: string;
+  payload: SyncMutationPayload;
+} {
+  const record = parseRequestBody(body);
+  const idempotencyKey = parseString(record.idempotencyKey, "idempotencyKey");
+  const mutationType = parseSyncMutationType(record.mutationType);
+  const clientCreatedAt =
+    record.clientCreatedAt === undefined
+      ? undefined
+      : parseIsoTimestamp(record.clientCreatedAt, "clientCreatedAt");
+  const parsed = {
+    idempotencyKey,
+    mutationType,
+    payload: parseSyncMutationPayload(mutationType, record.payload)
+  };
+
+  return clientCreatedAt === undefined ? parsed : { ...parsed, clientCreatedAt };
+}
+
+function parseSyncMutationType(value: unknown): SyncMutationType {
+  if (typeof value === "string" && isSyncMutationType(value)) {
+    return value;
+  }
+
+  throw new Cp2Error(400, "mutation_type_invalid", "Sync mutation type is not supported.");
+}
+
+function parseSyncMutationPayload(
+  mutationType: SyncMutationType,
+  value: unknown
+): SyncMutationPayload {
+  const payload = parseRequestBody(value);
+
+  switch (mutationType) {
+    case "product.create":
+      return parseProductBody(payload);
+
+    case "customer.create":
+    case "supplier.create":
+      return parseContactRecordBody(payload);
+
+    case "inventory.adjust":
+      return {
+        productId: parseString(payload.productId, "payload.productId"),
+        ...parseStockAdjustmentBody(payload)
+      };
+
+    case "invoice.create":
+      return parseInvoiceBody(payload);
+
+    case "invoice.confirm":
+      return {
+        invoiceId: parseString(payload.invoiceId, "payload.invoiceId")
+      };
+  }
 }
 
 function parseString(value: unknown, name: string): string {
@@ -406,7 +551,7 @@ function parseString(value: unknown, name: string): string {
     throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
   }
 
-  return value;
+  return value.trim();
 }
 
 function parseAuthChannel(value: string | undefined): AuthChannel {
@@ -517,6 +662,16 @@ function parseNullableNumber(value: unknown, name: string): number | null {
   }
 
   return parseNumber(value, name);
+}
+
+function parseIsoTimestamp(value: unknown, name: string): string {
+  const timestamp = parseString(value, name);
+
+  if (Number.isNaN(Date.parse(timestamp))) {
+    throw new Cp2Error(400, `${name}_invalid`, `${name} must be an ISO timestamp.`);
+  }
+
+  return timestamp;
 }
 
 function parseOptionalPermission(value: string | undefined): BusinessPermission | undefined {

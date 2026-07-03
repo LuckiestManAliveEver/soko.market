@@ -121,6 +121,33 @@ interface ConfirmInvoiceResponse {
   invoice: InvoiceSummary;
 }
 
+interface SyncQueueSummary {
+  businessId: string;
+  pending: number;
+  processing: number;
+  synced: number;
+  failed: number;
+  conflict: number;
+  total: number;
+}
+
+interface SyncQueueItem {
+  id: string;
+  mutationType: string;
+  status: "pending" | "processing" | "synced" | "failed" | "conflict";
+  attempts: number;
+  clientCreatedAt: string;
+  conflict: {
+    code: string;
+    message: string;
+  } | null;
+}
+
+interface SyncQueueResponse {
+  summary: SyncQueueSummary;
+  items: SyncQueueItem[];
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -176,6 +203,16 @@ const emptyInvoiceForm: InvoiceFormState = {
   taxRate: "0"
 };
 
+const emptySyncSummary: SyncQueueSummary = {
+  businessId: "",
+  pending: 0,
+  processing: 0,
+  synced: 0,
+  failed: 0,
+  conflict: 0,
+  total: 0
+};
+
 function App() {
   const [channel, setChannel] = useState<AuthChannel>("phone");
   const [destination, setDestination] = useState("+254700000000");
@@ -196,6 +233,8 @@ function App() {
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
+  const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
+  const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
@@ -206,7 +245,13 @@ function App() {
 
   const setupComplete = session !== null && business !== null;
   const currentEmptyState = getEmptyState(view);
-  const syncLabel = setupComplete ? "Sync placeholder" : "Waiting for setup";
+  const activeQueueCount =
+    syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
+  const syncLabel = setupComplete
+    ? activeQueueCount === 0
+      ? "Synced"
+      : `${activeQueueCount} queued`
+    : "Waiting for setup";
   const userLabel = session?.user.displayName ?? "Signed out";
 
   useEffect(() => {
@@ -257,6 +302,10 @@ function App() {
       void loadProducts(business.id);
       void loadCustomers(business.id);
       void loadInvoices(business.id);
+    }
+
+    if (view === "home" || view === "sync") {
+      void loadSyncQueue(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -471,6 +520,33 @@ function App() {
     }
   }
 
+  async function loadSyncQueue(businessId: string) {
+    try {
+      const response = await getJson<SyncQueueResponse>(`/businesses/${businessId}/sync-queue`);
+      setSyncSummary(response.summary);
+      setSyncQueue(response.items);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function replaySyncQueue() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson(`/businesses/${business.id}/sync-queue/replay`, {});
+      await loadSyncQueue(business.id);
+      await loadProducts(business.id);
+      await loadCustomers(business.id);
+      await loadInvoices(business.id);
+      setStatusMessage("Sync queue replayed");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   function createInvoicePayload() {
     return {
       customerId: invoiceForm.customerId || null,
@@ -673,6 +749,7 @@ function App() {
                   productCount={products.length}
                   customerCount={customers.length}
                   invoiceCount={invoices.length}
+                  syncSummary={syncSummary}
                   statusMessage={statusMessage}
                   isOnline={isOnline}
                   onNavigate={setView}
@@ -766,10 +843,19 @@ function App() {
                   onPrint={printInvoice}
                 />
               ) : null}
+              {view === "sync" ? (
+                <SyncSurface
+                  summary={syncSummary}
+                  items={syncQueue}
+                  onRefresh={() => business !== null && void loadSyncQueue(business.id)}
+                  onReplay={() => void replaySyncQueue()}
+                />
+              ) : null}
               {currentEmptyState !== undefined &&
               view !== "products" &&
               view !== "customers" &&
-              view !== "invoices" ? (
+              view !== "invoices" &&
+              view !== "sync" ? (
                 <EmptyStateSurface
                   title={currentEmptyState.title}
                   body={currentEmptyState.body}
@@ -788,14 +874,18 @@ function App() {
                 <span className={isOnline ? "status-dot online" : "status-dot offline"} />
                 <div>
                   <strong>{isOnline ? "Connected" : "Offline"}</strong>
-                  <p>CP3 shows status only. Offline queue starts in CP7.</p>
+                  <p>CP7 keeps cached business data visible while queued work awaits replay.</p>
                 </div>
               </div>
               <div className="status-card">
                 <span className="status-dot sync" />
                 <div>
-                  <strong>Sync pending design</strong>
-                  <p>No local business mutations are queued in CP3.</p>
+                  <strong>{syncLabel}</strong>
+                  <p>
+                    {syncSummary.conflict > 0
+                      ? `${syncSummary.conflict} conflict item needs review.`
+                      : `${syncSummary.synced} synced item${syncSummary.synced === 1 ? "" : "s"}.`}
+                  </p>
                 </div>
               </div>
               <div className="side-actions">
@@ -941,6 +1031,7 @@ interface HomeSurfaceProps {
   productCount: number;
   customerCount: number;
   invoiceCount: number;
+  syncSummary: SyncQueueSummary;
   statusMessage: string;
   isOnline: boolean;
   onNavigate: (view: ShellView) => void;
@@ -951,10 +1042,14 @@ function HomeSurface({
   productCount,
   customerCount,
   invoiceCount,
+  syncSummary,
   statusMessage,
   isOnline,
   onNavigate
 }: HomeSurfaceProps) {
+  const activeQueueCount =
+    syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
+
   return (
     <div className="home-surface">
       <div className="metric-grid">
@@ -970,16 +1065,20 @@ function HomeSurface({
           <span>Invoices</span>
           <strong>{invoiceCount}</strong>
         </div>
+        <div className="metric">
+          <span>Queued</span>
+          <strong>{activeQueueCount}</strong>
+        </div>
       </div>
 
       <div className="prompt-band">
         <div>
-          <p className="eyebrow">Chat-first</p>
-          <h3>Start with a draft instruction</h3>
-          <p>CP6 invoice drafts still require deterministic preview and owner confirmation.</p>
+          <p className="eyebrow">Offline-ready</p>
+          <h3>Review queued work before replay</h3>
+          <p>CP7 keeps local mutations queued until server validation confirms them.</p>
         </div>
-        <button type="button" onClick={() => onNavigate("chat")}>
-          Open chat
+        <button type="button" onClick={() => onNavigate("sync")}>
+          Open sync
         </button>
       </div>
 
@@ -997,6 +1096,75 @@ function HomeSurface({
       <p className="shell-note">
         {business.name} is {isOnline ? "online" : "offline"}; {statusMessage}.
       </p>
+    </div>
+  );
+}
+
+interface SyncSurfaceProps {
+  summary: SyncQueueSummary;
+  items: SyncQueueItem[];
+  onRefresh: () => void;
+  onReplay: () => void;
+}
+
+function SyncSurface(props: SyncSurfaceProps) {
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Sync queue actions">
+        <div className="section-heading">
+          <p className="eyebrow">CP7 sync</p>
+          <h3>Offline queue</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>Pending</span>
+            <strong>{props.summary.pending}</strong>
+          </div>
+          <div className="metric">
+            <span>Conflicts</span>
+            <strong>{props.summary.conflict}</strong>
+          </div>
+          <div className="metric">
+            <span>Failed</span>
+            <strong>{props.summary.failed}</strong>
+          </div>
+          <div className="metric">
+            <span>Synced</span>
+            <strong>{props.summary.synced}</strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={props.onReplay} disabled={props.summary.total === 0}>
+            Retry queue
+          </button>
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Sync queue list">
+        {props.items.length === 0 ? (
+          <EmptyStateSurface
+            title="No queued work"
+            body="Offline mutations will appear here until server replay confirms or rejects them."
+            onChat={props.onRefresh}
+            actionLabel="Refresh"
+          />
+        ) : (
+          props.items.map((item) => (
+            <article className="record-row" key={item.id}>
+              <div>
+                <p className="eyebrow">{item.status}</p>
+                <h4>{item.mutationType}</h4>
+                <p>{new Date(item.clientCreatedAt).toLocaleString()}</p>
+                {item.conflict !== null ? <p>{item.conflict.message}</p> : null}
+              </div>
+              <strong>{item.attempts}</strong>
+            </article>
+          ))
+        )}
+      </section>
     </div>
   );
 }
@@ -1478,15 +1646,21 @@ interface EmptyStateSurfaceProps {
   title: string;
   body: string;
   onChat: () => void;
+  actionLabel?: string;
 }
 
-function EmptyStateSurface({ title, body, onChat }: EmptyStateSurfaceProps) {
+function EmptyStateSurface({
+  title,
+  body,
+  onChat,
+  actionLabel = "Draft in chat"
+}: EmptyStateSurfaceProps) {
   return (
     <div className="empty-state">
       <h3>{title}</h3>
       <p>{body}</p>
       <button type="button" onClick={onChat}>
-        Draft in chat
+        {actionLabel}
       </button>
     </div>
   );

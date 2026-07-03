@@ -148,3 +148,107 @@ export interface InventoryMovementSummary {
   actorId: string;
   createdAt: string;
 }
+
+export interface OfflineCacheSnapshot {
+  businessId: string;
+  capturedAt: string;
+  source: "server_cache";
+  products: ProductSummary[];
+  customers: CustomerSummary[];
+  suppliers: SupplierSummary[];
+  invoices: InvoiceSummary[];
+  inventoryMovements: InventoryMovementSummary[];
+}
+
+export type SyncQueueStatus = "pending" | "processing" | "synced" | "failed" | "conflict";
+
+export type SyncMutationType =
+  | "product.create"
+  | "customer.create"
+  | "supplier.create"
+  | "inventory.adjust"
+  | "invoice.create"
+  | "invoice.confirm";
+
+export interface SyncProductCreatePayload {
+  name: string;
+  sku?: string | null;
+  unit?: string | null;
+  quantity?: number;
+}
+
+export interface SyncContactCreatePayload {
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  notes?: string | null;
+}
+
+export interface SyncInventoryAdjustPayload {
+  productId: string;
+  quantityAfter: number;
+  reason?: string | null;
+}
+
+export interface SyncInvoiceLinePayload {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface SyncInvoiceCreatePayload {
+  customerId?: string | null;
+  customerName?: string | null;
+  taxRate?: number | null;
+  items: SyncInvoiceLinePayload[];
+}
+
+export interface SyncInvoiceConfirmPayload {
+  invoiceId: string;
+}
+
+export type SyncMutationPayload =
+  | SyncProductCreatePayload
+  | SyncContactCreatePayload
+  | SyncInventoryAdjustPayload
+  | SyncInvoiceCreatePayload
+  | SyncInvoiceConfirmPayload;
+
+export interface SyncConflict {
+  code: string;
+  message: string;
+  statusCode: number;
+  retryable: boolean;
+}
+
+export interface SyncQueueItem {
+  id: string;
+  idempotencyKey: string;
+  businessId: string;
+  actorId: string;
+  mutationType: SyncMutationType;
+  payload: SyncMutationPayload;
+  status: SyncQueueStatus;
+  attempts: number;
+  clientCreatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt: string | null;
+  result: unknown | null;
+  conflict: SyncConflict | null;
+}
+
+export interface SyncQueueSummary {
+  businessId: string;
+  pending: number;
+  processing: number;
+  synced: number;
+  failed: number;
+  conflict: number;
+  total: number;
+}
+
+export interface SyncReplayResult {
+  item: SyncQueueItem;
+  replayed: boolean;
+}
