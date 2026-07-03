@@ -1,9 +1,10 @@
 # CP5: Business Core Records
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 Target tag: `checkpoint/cp5-business-core-records`
+Actual tag: `checkpoint/cp5-business-core-records` in `.repo.git`
 
 ## Purpose
 
@@ -82,21 +83,21 @@ Owner opens business shell
 
 ## CP5 Exit Criteria
 
-CP5 may be marked passed when:
+CP5 is marked passed because:
 
-- [ ] Product create, edit, and view/list flows exist.
-- [ ] Customer create, edit, and view/list flows exist.
-- [ ] Minimal supplier create, edit, and view/list foundations exist.
-- [ ] Product inventory quantity is stored and validated.
-- [ ] Stock adjustment always creates an inventory movement event.
-- [ ] Product quantity cannot silently become invalid.
-- [ ] Server-side role checks protect CP5 mutations.
-- [ ] Business ownership boundaries are enforced.
-- [ ] Product, customer, supplier, and stock mutations emit events.
-- [ ] Web shell exposes owner-facing product and customer workflows.
-- [ ] Unit/API tests cover core business rules.
-- [ ] Existing CP1, CP2, CP3, and CP4 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp5-business-core-records` is created.
+- [x] Product create, edit, and view/list flows exist.
+- [x] Customer create, edit, and view/list flows exist.
+- [x] Minimal supplier create, edit, and view/list foundations exist.
+- [x] Product inventory quantity is stored and validated.
+- [x] Stock adjustment always creates an inventory movement event.
+- [x] Product quantity cannot silently become invalid.
+- [x] Server-side role checks protect CP5 mutations.
+- [x] Business ownership boundaries are enforced.
+- [x] Product, customer, supplier, and stock mutations emit events.
+- [x] Web shell exposes owner-facing product and customer workflows.
+- [x] Unit/API tests cover core business rules.
+- [x] Existing CP1, CP2, CP3, and CP4 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp5-business-core-records` is created.
 
 ## Rollback Instructions
 

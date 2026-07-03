@@ -7,7 +7,7 @@ import {
 } from "../apps/web/src/cp3-shell";
 
 describe("CP3 shell contract", () => {
-  it("exposes chat and core commerce placeholders through quick actions", () => {
+  it("exposes chat, active CP5 records, and later commerce placeholders through quick actions", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -24,13 +24,14 @@ describe("CP3 shell contract", () => {
       "payments"
     ]);
     expect(getEmptyState("chat")).toBeUndefined();
-    expect(getEmptyState("products")?.body).toContain("without creating stock data");
+    expect(getEmptyState("products")?.body).toContain("CP5 product record");
+    expect(getEmptyState("invoices")?.body).toContain("CP6");
   });
 
-  it("keeps chat behavior as a non-executing CP4 draft placeholder", () => {
+  it("keeps chat writes behind deterministic CP5 business tools", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("State-changing commands stay as drafts")
+      body: expect.stringContaining("deterministic business tools")
     });
   });
 });

@@ -60,8 +60,66 @@ type ActiveBusiness = BusinessResponse["business"] & {
   role: string;
 };
 
+interface ProductSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  sku: string | null;
+  unit: string;
+  quantity: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CustomerSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface StockAdjustmentResponse {
+  product: ProductSummary;
+}
+
+interface ProductFormState {
+  id: string | null;
+  name: string;
+  sku: string;
+  unit: string;
+  quantity: string;
+}
+
+interface CustomerFormState {
+  id: string | null;
+  name: string;
+  phone: string;
+  email: string;
+  notes: string;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
 const activeBusinessStorageKey = "soko.cp3.activeBusiness";
+
+const emptyProductForm: ProductFormState = {
+  id: null,
+  name: "",
+  sku: "",
+  unit: "unit",
+  quantity: "0"
+};
+
+const emptyCustomerForm: CustomerFormState = {
+  id: null,
+  name: "",
+  phone: "",
+  email: "",
+  notes: ""
+};
 
 function App() {
   const [channel, setChannel] = useState<AuthChannel>("phone");
@@ -80,6 +138,13 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
     createInitialChatMessages(readStoredBusiness()?.name ?? "Soko.market")
   );
+  const [products, setProducts] = useState<ProductSummary[]>([]);
+  const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
+  const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
+  const [stockProductId, setStockProductId] = useState("");
+  const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
+  const [stockReason, setStockReason] = useState("Manual stock count");
 
   const setupComplete = session !== null && business !== null;
   const currentEmptyState = getEmptyState(view);
@@ -116,6 +181,20 @@ function App() {
       );
     }
   }, [business]);
+
+  useEffect(() => {
+    if (!setupComplete || business === null) {
+      return;
+    }
+
+    if (view === "products") {
+      void loadProducts(business.id);
+    }
+
+    if (view === "customers") {
+      void loadCustomers(business.id);
+    }
+  }, [business, setupComplete, view]);
 
   async function refreshSession() {
     try {
@@ -218,10 +297,116 @@ function App() {
     }
   }
 
+  async function loadProducts(businessId: string) {
+    try {
+      const response = await getJson<ProductSummary[]>(`/businesses/${businessId}/products`);
+      setProducts(response);
+      if (stockProductId.length === 0 && response[0] !== undefined) {
+        setStockProductId(response[0].id);
+        setStockQuantityAfter(String(response[0].quantity));
+      }
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveProduct() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const payload = {
+        name: productForm.name,
+        sku: productForm.sku,
+        unit: productForm.unit,
+        quantity: Number(productForm.quantity)
+      };
+      const product =
+        productForm.id === null
+          ? await postJson<ProductSummary>(`/businesses/${business.id}/products`, payload)
+          : await patchJson<ProductSummary>(
+              `/businesses/${business.id}/products/${productForm.id}`,
+              payload
+            );
+
+      setProductForm(emptyProductForm);
+      setStockProductId(product.id);
+      setStockQuantityAfter(String(product.quantity));
+      await loadProducts(business.id);
+      setStatusMessage(productForm.id === null ? "Product created" : "Product updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function adjustStock() {
+    if (business === null || stockProductId.length === 0) {
+      return;
+    }
+
+    try {
+      const response = await postJson<StockAdjustmentResponse>(
+        `/businesses/${business.id}/products/${stockProductId}/stock-adjustments`,
+        {
+          quantityAfter: Number(stockQuantityAfter),
+          reason: stockReason
+        }
+      );
+      await loadProducts(business.id);
+      setStockQuantityAfter(String(response.product.quantity));
+      setStatusMessage("Stock adjusted");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadCustomers(businessId: string) {
+    try {
+      setCustomers(await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveCustomer() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const payload = {
+        name: customerForm.name,
+        phone: customerForm.phone,
+        email: customerForm.email,
+        notes: customerForm.notes
+      };
+
+      if (customerForm.id === null) {
+        await postJson<CustomerSummary>(`/businesses/${business.id}/customers`, payload);
+      } else {
+        await patchJson<CustomerSummary>(
+          `/businesses/${business.id}/customers/${customerForm.id}`,
+          payload
+        );
+      }
+
+      setCustomerForm(emptyCustomerForm);
+      await loadCustomers(business.id);
+      setStatusMessage(customerForm.id === null ? "Customer created" : "Customer updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function logout() {
     await postJson<{ revoked: boolean }>("/auth/logout", {});
     setSession(null);
     setBusiness(null);
+    setProducts([]);
+    setCustomers([]);
+    setProductForm(emptyProductForm);
+    setCustomerForm(emptyCustomerForm);
     setView("home");
     setStatusMessage("Signed out");
     localStorage.removeItem(activeBusinessStorageKey);
@@ -313,6 +498,8 @@ function App() {
               {view === "home" ? (
                 <HomeSurface
                   business={business}
+                  productCount={products.length}
+                  customerCount={customers.length}
                   statusMessage={statusMessage}
                   isOnline={isOnline}
                   onNavigate={setView}
@@ -326,7 +513,56 @@ function App() {
                   onSend={sendChatDraft}
                 />
               ) : null}
-              {currentEmptyState !== undefined ? (
+              {view === "products" ? (
+                <ProductSurface
+                  products={products}
+                  form={productForm}
+                  stockProductId={stockProductId}
+                  stockQuantityAfter={stockQuantityAfter}
+                  stockReason={stockReason}
+                  onFormChange={setProductForm}
+                  onSave={() => void saveProduct()}
+                  onReset={() => setProductForm(emptyProductForm)}
+                  onEdit={(product) => {
+                    setProductForm({
+                      id: product.id,
+                      name: product.name,
+                      sku: product.sku ?? "",
+                      unit: product.unit,
+                      quantity: String(product.quantity)
+                    });
+                    setStockProductId(product.id);
+                    setStockQuantityAfter(String(product.quantity));
+                  }}
+                  onStockProductChange={(productId) => {
+                    const product = products.find((item) => item.id === productId);
+                    setStockProductId(productId);
+                    setStockQuantityAfter(String(product?.quantity ?? 0));
+                  }}
+                  onStockQuantityAfterChange={setStockQuantityAfter}
+                  onStockReasonChange={setStockReason}
+                  onAdjustStock={() => void adjustStock()}
+                />
+              ) : null}
+              {view === "customers" ? (
+                <CustomerSurface
+                  customers={customers}
+                  form={customerForm}
+                  onFormChange={setCustomerForm}
+                  onSave={() => void saveCustomer()}
+                  onReset={() => setCustomerForm(emptyCustomerForm)}
+                  onEdit={(customer) =>
+                    setCustomerForm({
+                      id: customer.id,
+                      name: customer.name,
+                      phone: customer.phone ?? "",
+                      email: customer.email ?? "",
+                      notes: customer.notes ?? ""
+                    })
+                  }
+                />
+              ) : null}
+              {currentEmptyState !== undefined && view !== "products" && view !== "customers" ? (
                 <EmptyStateSurface
                   title={currentEmptyState.title}
                   body={currentEmptyState.body}
@@ -495,22 +731,31 @@ function SetupPanel(props: SetupPanelProps) {
 
 interface HomeSurfaceProps {
   business: ActiveBusiness;
+  productCount: number;
+  customerCount: number;
   statusMessage: string;
   isOnline: boolean;
   onNavigate: (view: ShellView) => void;
 }
 
-function HomeSurface({ business, statusMessage, isOnline, onNavigate }: HomeSurfaceProps) {
+function HomeSurface({
+  business,
+  productCount,
+  customerCount,
+  statusMessage,
+  isOnline,
+  onNavigate
+}: HomeSurfaceProps) {
   return (
     <div className="home-surface">
       <div className="metric-grid">
         <div className="metric">
           <span>Products</span>
-          <strong>0</strong>
+          <strong>{productCount}</strong>
         </div>
         <div className="metric">
           <span>Customers</span>
-          <strong>0</strong>
+          <strong>{customerCount}</strong>
         </div>
         <div className="metric">
           <span>Invoices</span>
@@ -522,7 +767,7 @@ function HomeSurface({ business, statusMessage, isOnline, onNavigate }: HomeSurf
         <div>
           <p className="eyebrow">Chat-first</p>
           <h3>Start with a draft instruction</h3>
-          <p>CP3 captures the surface. CP4 will parse and route commands after checks.</p>
+          <p>CP4 parses drafts. CP5 product and customer writes use validated record tools.</p>
         </div>
         <button type="button" onClick={() => onNavigate("chat")}>
           Open chat
@@ -543,6 +788,223 @@ function HomeSurface({ business, statusMessage, isOnline, onNavigate }: HomeSurf
       <p className="shell-note">
         {business.name} is {isOnline ? "online" : "offline"}; {statusMessage}.
       </p>
+    </div>
+  );
+}
+
+interface ProductSurfaceProps {
+  products: ProductSummary[];
+  form: ProductFormState;
+  stockProductId: string;
+  stockQuantityAfter: string;
+  stockReason: string;
+  onFormChange: (form: ProductFormState) => void;
+  onSave: () => void;
+  onReset: () => void;
+  onEdit: (product: ProductSummary) => void;
+  onStockProductChange: (productId: string) => void;
+  onStockQuantityAfterChange: (quantity: string) => void;
+  onStockReasonChange: (reason: string) => void;
+  onAdjustStock: () => void;
+}
+
+function ProductSurface(props: ProductSurfaceProps) {
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Product form">
+        <div className="section-heading">
+          <p className="eyebrow">{props.form.id === null ? "New product" : "Edit product"}</p>
+          <h3>{props.form.id === null ? "Add stock item" : "Update stock item"}</h3>
+        </div>
+        <label>
+          Name
+          <input
+            value={props.form.name}
+            onChange={(event) => props.onFormChange({ ...props.form, name: event.target.value })}
+          />
+        </label>
+        <div className="form-row">
+          <label>
+            SKU
+            <input
+              value={props.form.sku}
+              onChange={(event) => props.onFormChange({ ...props.form, sku: event.target.value })}
+            />
+          </label>
+          <label>
+            Unit
+            <input
+              value={props.form.unit}
+              onChange={(event) => props.onFormChange({ ...props.form, unit: event.target.value })}
+            />
+          </label>
+        </div>
+        <label>
+          Quantity
+          <input
+            value={props.form.quantity}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, quantity: event.target.value })
+            }
+            inputMode="decimal"
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={props.onSave}>
+            {props.form.id === null ? "Create" : "Save"}
+          </button>
+          <button className="secondary" type="button" onClick={props.onReset}>
+            Clear
+          </button>
+        </div>
+      </section>
+
+      <section className="record-form" aria-label="Stock adjustment">
+        <div className="section-heading">
+          <p className="eyebrow">Inventory</p>
+          <h3>Adjust stock</h3>
+        </div>
+        <label>
+          Product
+          <select
+            value={props.stockProductId}
+            onChange={(event) => props.onStockProductChange(event.target.value)}
+          >
+            <option value="">Select product</option>
+            {props.products.map((product) => (
+              <option key={product.id} value={product.id}>
+                {product.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Counted quantity
+          <input
+            value={props.stockQuantityAfter}
+            onChange={(event) => props.onStockQuantityAfterChange(event.target.value)}
+            inputMode="decimal"
+          />
+        </label>
+        <label>
+          Reason
+          <input
+            value={props.stockReason}
+            onChange={(event) => props.onStockReasonChange(event.target.value)}
+          />
+        </label>
+        <button type="button" onClick={props.onAdjustStock} disabled={props.stockProductId === ""}>
+          Record movement
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Products">
+        {props.products.length === 0 ? (
+          <div className="empty-record">
+            <h3>No products yet</h3>
+            <p>Add the first product to start CP5 stock records.</p>
+          </div>
+        ) : (
+          props.products.map((product) => (
+            <article className="record-row" key={product.id}>
+              <div>
+                <strong>{product.name}</strong>
+                <span>
+                  {product.quantity} {product.unit}
+                  {product.sku === null ? "" : ` · ${product.sku}`}
+                </span>
+              </div>
+              <button type="button" onClick={() => props.onEdit(product)}>
+                Edit
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
+interface CustomerSurfaceProps {
+  customers: CustomerSummary[];
+  form: CustomerFormState;
+  onFormChange: (form: CustomerFormState) => void;
+  onSave: () => void;
+  onReset: () => void;
+  onEdit: (customer: CustomerSummary) => void;
+}
+
+function CustomerSurface(props: CustomerSurfaceProps) {
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Customer form">
+        <div className="section-heading">
+          <p className="eyebrow">{props.form.id === null ? "New customer" : "Edit customer"}</p>
+          <h3>{props.form.id === null ? "Add customer" : "Update customer"}</h3>
+        </div>
+        <label>
+          Name
+          <input
+            value={props.form.name}
+            onChange={(event) => props.onFormChange({ ...props.form, name: event.target.value })}
+          />
+        </label>
+        <div className="form-row">
+          <label>
+            Phone
+            <input
+              value={props.form.phone}
+              onChange={(event) => props.onFormChange({ ...props.form, phone: event.target.value })}
+              inputMode="tel"
+            />
+          </label>
+          <label>
+            Email
+            <input
+              value={props.form.email}
+              onChange={(event) => props.onFormChange({ ...props.form, email: event.target.value })}
+              inputMode="email"
+            />
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea
+            value={props.form.notes}
+            onChange={(event) => props.onFormChange({ ...props.form, notes: event.target.value })}
+            rows={3}
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={props.onSave}>
+            {props.form.id === null ? "Create" : "Save"}
+          </button>
+          <button className="secondary" type="button" onClick={props.onReset}>
+            Clear
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Customers">
+        {props.customers.length === 0 ? (
+          <div className="empty-record">
+            <h3>No customers yet</h3>
+            <p>Add the first customer to start CP5 customer records.</p>
+          </div>
+        ) : (
+          props.customers.map((customer) => (
+            <article className="record-row" key={customer.id}>
+              <div>
+                <strong>{customer.name}</strong>
+                <span>{customer.phone ?? customer.email ?? "No contact saved"}</span>
+              </div>
+              <button type="button" onClick={() => props.onEdit(customer)}>
+                Edit
+              </button>
+            </article>
+          ))
+        )}
+      </section>
     </div>
   );
 }
@@ -612,6 +1074,40 @@ async function postJson<TResponse>(
       "content-type": "application/json"
     },
     body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = (await response.json()) as { message?: string };
+    throw new Error(error.message ?? `Request failed with ${response.status}`);
+  }
+
+  return (await response.json()) as TResponse;
+}
+
+async function patchJson<TResponse>(
+  path: string,
+  body: Record<string, unknown>
+): Promise<TResponse> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = (await response.json()) as { message?: string };
+    throw new Error(error.message ?? `Request failed with ${response.status}`);
+  }
+
+  return (await response.json()) as TResponse;
+}
+
+async function getJson<TResponse>(path: string): Promise<TResponse> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    credentials: "include"
   });
 
   if (!response.ok) {

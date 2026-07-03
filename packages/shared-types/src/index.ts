@@ -61,3 +61,51 @@ export interface AuthSessionView {
   user: UserSummary;
   session: SessionSummary;
 }
+
+export interface ProductSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  sku: string | null;
+  unit: string;
+  quantity: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomerSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupplierSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InventoryMovementType = "manual_adjustment";
+
+export interface InventoryMovementSummary {
+  id: string;
+  businessId: string;
+  productId: string;
+  type: InventoryMovementType;
+  quantityBefore: number;
+  quantityAfter: number;
+  delta: number;
+  reason: string;
+  actorId: string;
+  createdAt: string;
+}

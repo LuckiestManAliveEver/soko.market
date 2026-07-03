@@ -6,27 +6,42 @@ import type {
   AuthSessionView,
   BusinessRole,
   BusinessSummary,
+  CustomerSummary,
+  InventoryMovementSummary,
   MembershipSummary,
+  ProductSummary,
   SessionSummary,
+  SupplierSummary,
   SupportedLanguage,
   UserSummary
 } from "@soko/shared-types";
-import type { BusinessPermission } from "@soko/business-core";
+import {
+  customerCreatedEvent,
+  customerUpdatedEvent,
+  isBusinessRole,
+  normalizeContactRecordInput,
+  normalizeProductInput,
+  normalizeStockAdjustmentInput,
+  productCreatedEvent,
+  productUpdatedEvent,
+  roleCan,
+  stockAdjustedEvent,
+  supplierCreatedEvent,
+  supplierUpdatedEvent,
+  validateContactRecordInput,
+  validateProductInput,
+  validateStockAdjustmentInput,
+  type BusinessPermission,
+  type ContactRecordInput,
+  type ProductInput,
+  type StockAdjustmentInput
+} from "@soko/business-core";
 
 export const sessionCookieName = "soko_session";
 
 const otpTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
-const supportedRoles = ["owner", "manager", "sales_agent", "cashier", "view_only"] as const;
-
-const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
-  owner: new Set(["business:create", "business:read", "membership:read", "membership:manage"]),
-  manager: new Set(["business:read", "membership:read"]),
-  sales_agent: new Set(["business:read"]),
-  cashier: new Set(["business:read"]),
-  view_only: new Set(["business:read"])
-};
 
 export class Cp2Error extends Error {
   constructor(
@@ -84,6 +99,10 @@ export interface Cp2Snapshot {
   users: UserSummary[];
   businesses: BusinessSummary[];
   memberships: MembershipSummary[];
+  products: ProductSummary[];
+  customers: CustomerSummary[];
+  suppliers: SupplierSummary[];
+  inventoryMovements: InventoryMovementSummary[];
   sessions: SessionRecord[];
   auditEvents: BusinessEvent[];
 }
@@ -95,6 +114,10 @@ export class Cp2Store {
   private readonly userByAccount = new Map<string, string>();
   private readonly businesses = new Map<string, BusinessSummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
+  private readonly products = new Map<string, ProductSummary>();
+  private readonly customers = new Map<string, CustomerSummary>();
+  private readonly suppliers = new Map<string, SupplierSummary>();
+  private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly auditEvents: BusinessEvent[] = [];
@@ -351,12 +374,345 @@ export class Cp2Store {
     };
   }
 
+  listProducts(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ProductSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    return [...this.products.values()].filter((product) => product.businessId === input.businessId);
+  }
+
+  createProduct(input: {
+    sessionId: string | null;
+    businessId: string;
+    product: ProductInput;
+    now?: Date;
+  }): ProductSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:write",
+      now
+    );
+    assertValid(validateProductInput(input.product));
+    const normalized = normalizeProductInput(input.product);
+    const product: ProductSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      name: normalized.name,
+      sku: normalized.sku,
+      unit: normalized.unit,
+      quantity: normalized.quantity,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.products.set(product.id, product);
+    this.appendBusinessEvent(
+      productCreatedEvent({
+        id: randomUUID(),
+        product,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    if (product.quantity > 0) {
+      this.createInventoryMovement({
+        businessId: input.businessId,
+        productId: product.id,
+        quantityBefore: 0,
+        quantityAfter: product.quantity,
+        reason: "Initial product quantity",
+        actorId: session.user.id,
+        now
+      });
+    }
+
+    return product;
+  }
+
+  updateProduct(input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    product: ProductInput;
+    now?: Date;
+  }): ProductSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:write",
+      now
+    );
+    const existing = this.requireProduct(input.businessId, input.productId);
+    assertValid(validateProductInput(input.product));
+    const normalized = normalizeProductInput(input.product);
+    const updated: ProductSummary = {
+      ...existing,
+      name: normalized.name,
+      sku: normalized.sku,
+      unit: normalized.unit,
+      quantity: normalized.quantity,
+      updatedAt: now.toISOString()
+    };
+
+    this.products.set(updated.id, updated);
+    this.appendBusinessEvent(
+      productUpdatedEvent({
+        id: randomUUID(),
+        product: updated,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    if (existing.quantity !== updated.quantity) {
+      this.createInventoryMovement({
+        businessId: input.businessId,
+        productId: updated.id,
+        quantityBefore: existing.quantity,
+        quantityAfter: updated.quantity,
+        reason: "Product quantity updated",
+        actorId: session.user.id,
+        now
+      });
+    }
+
+    return updated;
+  }
+
+  adjustProductStock(input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    adjustment: StockAdjustmentInput;
+    now?: Date;
+  }): { product: ProductSummary; movement: InventoryMovementSummary } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "inventory:adjust",
+      now
+    );
+    const product = this.requireProduct(input.businessId, input.productId);
+    assertValid(validateStockAdjustmentInput(input.adjustment));
+    const normalized = normalizeStockAdjustmentInput(input.adjustment);
+    const updated: ProductSummary = {
+      ...product,
+      quantity: normalized.quantityAfter,
+      updatedAt: now.toISOString()
+    };
+
+    this.products.set(updated.id, updated);
+    const movement = this.createInventoryMovement({
+      businessId: input.businessId,
+      productId: product.id,
+      quantityBefore: product.quantity,
+      quantityAfter: normalized.quantityAfter,
+      reason: normalized.reason,
+      actorId: session.user.id,
+      now
+    });
+
+    return {
+      product: updated,
+      movement
+    };
+  }
+
+  listCustomers(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): CustomerSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    return [...this.customers.values()].filter(
+      (customer) => customer.businessId === input.businessId
+    );
+  }
+
+  createCustomer(input: {
+    sessionId: string | null;
+    businessId: string;
+    customer: ContactRecordInput;
+    now?: Date;
+  }): CustomerSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    assertValid(validateContactRecordInput(input.customer, "Customer"));
+    const normalized = normalizeContactRecordInput(input.customer);
+    const customer: CustomerSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      name: normalized.name,
+      phone: normalized.phone,
+      email: normalized.email,
+      notes: normalized.notes,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.customers.set(customer.id, customer);
+    this.appendBusinessEvent(
+      customerCreatedEvent({
+        id: randomUUID(),
+        customer,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return customer;
+  }
+
+  updateCustomer(input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId: string;
+    customer: ContactRecordInput;
+    now?: Date;
+  }): CustomerSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const existing = this.requireCustomer(input.businessId, input.customerId);
+    assertValid(validateContactRecordInput(input.customer, "Customer"));
+    const normalized = normalizeContactRecordInput(input.customer);
+    const updated: CustomerSummary = {
+      ...existing,
+      name: normalized.name,
+      phone: normalized.phone,
+      email: normalized.email,
+      notes: normalized.notes,
+      updatedAt: now.toISOString()
+    };
+
+    this.customers.set(updated.id, updated);
+    this.appendBusinessEvent(
+      customerUpdatedEvent({
+        id: randomUUID(),
+        customer: updated,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  listSuppliers(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): SupplierSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
+    return [...this.suppliers.values()].filter(
+      (supplier) => supplier.businessId === input.businessId
+    );
+  }
+
+  createSupplier(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplier: ContactRecordInput;
+    now?: Date;
+  }): SupplierSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    assertValid(validateContactRecordInput(input.supplier, "Supplier"));
+    const normalized = normalizeContactRecordInput(input.supplier);
+    const supplier: SupplierSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      name: normalized.name,
+      phone: normalized.phone,
+      email: normalized.email,
+      notes: normalized.notes,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.suppliers.set(supplier.id, supplier);
+    this.appendBusinessEvent(
+      supplierCreatedEvent({
+        id: randomUUID(),
+        supplier,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return supplier;
+  }
+
+  updateSupplier(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    supplier: ContactRecordInput;
+    now?: Date;
+  }): SupplierSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    const existing = this.requireSupplier(input.businessId, input.supplierId);
+    assertValid(validateContactRecordInput(input.supplier, "Supplier"));
+    const normalized = normalizeContactRecordInput(input.supplier);
+    const updated: SupplierSummary = {
+      ...existing,
+      name: normalized.name,
+      phone: normalized.phone,
+      email: normalized.email,
+      notes: normalized.notes,
+      updatedAt: now.toISOString()
+    };
+
+    this.suppliers.set(updated.id, updated);
+    this.appendBusinessEvent(
+      supplierUpdatedEvent({
+        id: randomUUID(),
+        supplier: updated,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
       users: [...this.users.values()],
       businesses: [...this.businesses.values()],
       memberships: [...this.memberships.values()],
+      products: [...this.products.values()],
+      customers: [...this.customers.values()],
+      suppliers: [...this.suppliers.values()],
+      inventoryMovements: [...this.inventoryMovements.values()],
       sessions: [...this.sessions.values()],
       auditEvents: [...this.auditEvents]
     };
@@ -444,6 +800,112 @@ export class Cp2Store {
     return user;
   }
 
+  private requireAuthorizedSession(
+    sessionId: string | null,
+    businessId: string,
+    permission: BusinessPermission,
+    now = new Date()
+  ): AuthSessionView {
+    const session = this.getSession(sessionId, now);
+
+    if (session === null) {
+      throw new Cp2Error(401, "auth_required", "Authentication is required.");
+    }
+
+    if (!this.businesses.has(businessId)) {
+      throw new Cp2Error(404, "business_not_found", "Business was not found.");
+    }
+
+    const membership = this.requireMembership(businessId, session.user.id);
+
+    if (!roleCan(membership.role, permission)) {
+      throw new Cp2Error(403, "permission_denied", "Permission denied for this business.");
+    }
+
+    return session;
+  }
+
+  private requireMembership(businessId: string, userId: string): MembershipSummary {
+    const membership = [...this.memberships.values()].find(
+      (candidate) => candidate.businessId === businessId && candidate.userId === userId
+    );
+
+    if (membership === undefined) {
+      throw new Cp2Error(403, "membership_required", "Business membership is required.");
+    }
+
+    return membership;
+  }
+
+  private requireProduct(businessId: string, productId: string): ProductSummary {
+    const product = this.products.get(productId);
+
+    if (product === undefined || product.businessId !== businessId) {
+      throw new Cp2Error(404, "product_not_found", "Product was not found.");
+    }
+
+    return product;
+  }
+
+  private requireCustomer(businessId: string, customerId: string): CustomerSummary {
+    const customer = this.customers.get(customerId);
+
+    if (customer === undefined || customer.businessId !== businessId) {
+      throw new Cp2Error(404, "customer_not_found", "Customer was not found.");
+    }
+
+    return customer;
+  }
+
+  private requireSupplier(businessId: string, supplierId: string): SupplierSummary {
+    const supplier = this.suppliers.get(supplierId);
+
+    if (supplier === undefined || supplier.businessId !== businessId) {
+      throw new Cp2Error(404, "supplier_not_found", "Supplier was not found.");
+    }
+
+    return supplier;
+  }
+
+  private createInventoryMovement(input: {
+    businessId: string;
+    productId: string;
+    quantityBefore: number;
+    quantityAfter: number;
+    reason: string;
+    actorId: string;
+    now: Date;
+  }): InventoryMovementSummary {
+    const movement: InventoryMovementSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      productId: input.productId,
+      type: "manual_adjustment",
+      quantityBefore: input.quantityBefore,
+      quantityAfter: input.quantityAfter,
+      delta: input.quantityAfter - input.quantityBefore,
+      reason: input.reason,
+      actorId: input.actorId,
+      createdAt: input.now.toISOString()
+    };
+
+    this.inventoryMovements.set(movement.id, movement);
+    this.appendBusinessEvent(
+      stockAdjustedEvent({
+        id: randomUUID(),
+        movement,
+        actorId: input.actorId,
+        occurredAt: input.now.toISOString()
+      })
+    );
+
+    return movement;
+  }
+
+  private appendBusinessEvent(event: BusinessEvent): void {
+    this.auditEvents.push(event);
+  }
+
   private recordAuditEvent(input: {
     type: string;
     aggregateType: string;
@@ -524,14 +986,6 @@ export function isSupportedLanguage(value: string): value is SupportedLanguage {
   return value === "en" || value === "sw";
 }
 
-function isBusinessRole(value: string): value is BusinessRole {
-  return supportedRoles.includes(value as BusinessRole);
-}
-
-function roleCan(role: BusinessRole, permission: BusinessPermission): boolean {
-  return rolePermissions[role]?.has(permission) ?? false;
-}
-
 function createAuditEvent<TPayload extends Record<string, unknown>>(
   event: BusinessEvent<TPayload>
 ): BusinessEvent<TPayload> {
@@ -574,4 +1028,10 @@ function sessionView(session: SessionRecord): SessionSummary {
 
 function defaultDisplayName(destination: string): string {
   return destination.includes("@") ? (destination.split("@")[0] ?? "Owner") : "Owner";
+}
+
+function assertValid(result: { ok: boolean; errors: string[] }): void {
+  if (!result.ok) {
+    throw new Cp2Error(400, "validation_failed", result.errors.join(" "));
+  }
 }

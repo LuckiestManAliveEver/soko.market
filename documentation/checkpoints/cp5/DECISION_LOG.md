@@ -1,8 +1,8 @@
 # CP5 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-02
-Date passed: pending
+Date passed: 2026-07-02
 
 This file records business core records decisions for CP5.
 

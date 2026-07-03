@@ -1,4 +1,4 @@
-import { integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { integer, jsonb, numeric, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const businessEvents = pgTable("business_events", {
   id: uuid("id").primaryKey(),
@@ -79,5 +79,63 @@ export const sessions = pgTable("sessions", {
     .references(() => users.id),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const products = pgTable("products", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  name: text("name").notNull(),
+  sku: text("sku"),
+  unit: text("unit").notNull(),
+  quantity: numeric("quantity").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const customers = pgTable("customers", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  name: text("name").notNull(),
+  phone: text("phone"),
+  email: text("email"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const suppliers = pgTable("suppliers", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  name: text("name").notNull(),
+  phone: text("phone"),
+  email: text("email"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const inventoryMovements = pgTable("inventory_movements", {
+  id: uuid("id").primaryKey(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id),
+  productId: uuid("product_id")
+    .notNull()
+    .references(() => products.id),
+  type: text("type").notNull(),
+  quantityBefore: numeric("quantity_before").notNull(),
+  quantityAfter: numeric("quantity_after").notNull(),
+  delta: numeric("delta").notNull(),
+  reason: text("reason").notNull(),
+  actorId: uuid("actor_id")
+    .notNull()
+    .references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });

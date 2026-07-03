@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { BusinessPermission } from "@soko/business-core";
 import type { AuthChannel } from "@soko/shared-types";
 import {
   clearSessionCookie,
@@ -32,6 +33,42 @@ interface CreateBusinessBody {
 interface RoleCheckBody {
   businessId?: string;
   role?: string;
+  permission?: string;
+}
+
+interface BusinessParams {
+  businessId: string;
+}
+
+interface ProductParams extends BusinessParams {
+  productId: string;
+}
+
+interface CustomerParams extends BusinessParams {
+  customerId: string;
+}
+
+interface SupplierParams extends BusinessParams {
+  supplierId: string;
+}
+
+interface ProductBody {
+  name?: string;
+  sku?: string | null;
+  unit?: string | null;
+  quantity?: number;
+}
+
+interface ContactRecordBody {
+  name?: string;
+  phone?: string | null;
+  email?: string | null;
+  notes?: string | null;
+}
+
+interface StockAdjustmentBody {
+  quantityAfter?: number;
+  reason?: string | null;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -101,15 +138,176 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     try {
       const businessId = parseString(request.body.businessId, "businessId");
       const role = parseString(request.body.role, "role");
-      return store.checkRole({
+      const permission = parseOptionalPermission(request.body.permission);
+      const input = {
         sessionId: readSessionCookie(request.headers.cookie),
         businessId,
         role
-      });
+      };
+      return permission === undefined
+        ? store.checkRole(input)
+        : store.checkRole({ ...input, permission });
     } catch (error) {
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get(
+    "/businesses/:businessId/products",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listProducts({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/products",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: ProductBody }>, reply) => {
+      try {
+        return store.createProduct({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          product: parseProductBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/products/:productId",
+    async (request: FastifyRequest<{ Params: ProductParams; Body: ProductBody }>, reply) => {
+      try {
+        return store.updateProduct({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          productId: request.params.productId,
+          product: parseProductBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/products/:productId/stock-adjustments",
+    async (
+      request: FastifyRequest<{ Params: ProductParams; Body: StockAdjustmentBody }>,
+      reply
+    ) => {
+      try {
+        return store.adjustProductStock({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          productId: request.params.productId,
+          adjustment: {
+            quantityAfter: parseNumber(request.body.quantityAfter, "quantityAfter"),
+            reason: parseNullableString(request.body.reason)
+          }
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/customers",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listCustomers({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/customers",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: ContactRecordBody }>, reply) => {
+      try {
+        return store.createCustomer({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          customer: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/customers/:customerId",
+    async (request: FastifyRequest<{ Params: CustomerParams; Body: ContactRecordBody }>, reply) => {
+      try {
+        return store.updateCustomer({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          customerId: request.params.customerId,
+          customer: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/suppliers",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listSuppliers({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/suppliers",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: ContactRecordBody }>, reply) => {
+      try {
+        return store.createSupplier({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplier: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/suppliers/:supplierId",
+    async (request: FastifyRequest<{ Params: SupplierParams; Body: ContactRecordBody }>, reply) => {
+      try {
+        return store.updateSupplier({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId,
+          supplier: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   return store;
 }
@@ -137,6 +335,70 @@ function parseLanguage(value: string | undefined) {
 
   return value;
 }
+
+function parseProductBody(body: ProductBody) {
+  return {
+    name: parseString(body.name, "name"),
+    sku: parseNullableString(body.sku),
+    unit: parseNullableString(body.unit),
+    quantity: body.quantity === undefined ? 0 : parseNumber(body.quantity, "quantity")
+  };
+}
+
+function parseContactRecordBody(body: ContactRecordBody) {
+  return {
+    name: parseString(body.name, "name"),
+    phone: parseNullableString(body.phone),
+    email: parseNullableString(body.email),
+    notes: parseNullableString(body.notes)
+  };
+}
+
+function parseNullableString(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new Cp2Error(400, "value_invalid", "Expected a string value.");
+  }
+
+  return value;
+}
+
+function parseNumber(value: number | undefined, name: string): number {
+  if (typeof value !== "number") {
+    throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
+  }
+
+  return value;
+}
+
+function parseOptionalPermission(value: string | undefined): BusinessPermission | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (businessPermissions.includes(value as BusinessPermission)) {
+    return value as BusinessPermission;
+  }
+
+  throw new Cp2Error(400, "permission_invalid", "Permission is not supported.");
+}
+
+const businessPermissions: BusinessPermission[] = [
+  "business:create",
+  "business:read",
+  "membership:read",
+  "membership:manage",
+  "product:read",
+  "product:write",
+  "customer:read",
+  "customer:write",
+  "supplier:read",
+  "supplier:write",
+  "inventory:adjust"
+];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {
   if (error instanceof Cp2Error) {

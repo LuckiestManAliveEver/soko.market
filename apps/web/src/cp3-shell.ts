@@ -32,12 +32,12 @@ export const quickActions: QuickAction[] = [
   {
     id: "products",
     label: "Products",
-    summary: "Prepare stock and price work"
+    summary: "Manage stock records"
   },
   {
     id: "customers",
     label: "Customers",
-    summary: "Prepare customer records"
+    summary: "Manage customer records"
   },
   {
     id: "invoices",
@@ -55,12 +55,12 @@ export const emptyStates: EmptyState[] = [
   {
     id: "products",
     title: "No products yet",
-    body: "Product records start in CP5. This shell keeps the workflow visible without creating stock data."
+    body: "Create the first CP5 product record to start stock tracking."
   },
   {
     id: "customers",
     title: "No customers yet",
-    body: "Customer records start in CP5. Use this area as the future customer entry point."
+    body: "Create the first CP5 customer record to replace paper customer notes."
   },
   {
     id: "invoices",
@@ -83,7 +83,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP4 parser checks are active. State-changing commands stay as drafts until business tools exist.`
+      body: `${businessName} is ready. CP5 product and customer records are active. Chat commands still pass through deterministic business tools before writing records.`
     }
   ];
 }
