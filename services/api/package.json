@@ -17,6 +17,7 @@
     "@soko/event-core": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
+    "@soko/tool-core": "workspace:*",
     "fastify": "^5.2.1"
   }
 }

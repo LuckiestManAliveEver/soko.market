@@ -356,3 +356,120 @@ export interface SyncReplayResult {
   item: SyncQueueItem;
   replayed: boolean;
 }
+
+export type RuntimeToolName =
+  | "products.list"
+  | "invoices.list"
+  | "product.create"
+  | "customer.create"
+  | "invoice.draft"
+  | "payment.record"
+  | "unknown.clarify";
+
+export type RuntimeParserIntent =
+  | "add_product"
+  | "add_customer"
+  | "create_invoice"
+  | "record_payment"
+  | "check_debt"
+  | "show_products"
+  | "show_invoices"
+  | "unknown";
+
+export type RuntimeTurnStatus =
+  "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
+
+export type RuntimePlanStatus =
+  "safe_to_execute" | "needs_confirmation" | "clarification_required" | "blocked";
+
+export type RuntimeTelemetryState =
+  | "turn.received"
+  | "context.built"
+  | "intent.routed"
+  | "plan.created"
+  | "verification.completed"
+  | "tool.executed"
+  | "confirmation.required"
+  | "response.generated"
+  | "turn.rate_limited"
+  | "turn.blocked";
+
+export interface RuntimeContextSummary {
+  businessId: string;
+  userId: string;
+  role: BusinessRole;
+  productCount: number;
+  customerCount: number;
+  supplierCount: number;
+  invoiceCount: number;
+  openInvoiceCount: number;
+  paymentCount: number;
+  importJobCount: number;
+}
+
+export interface RuntimePlannedAction {
+  id: string;
+  toolName: RuntimeToolName;
+  risk: "low" | "medium" | "high" | "critical";
+  requiresConfirmation: boolean;
+  status: RuntimePlanStatus;
+  input: Record<string, unknown>;
+  validationErrors: string[];
+  confirmationToken: string | null;
+  executedAt: string | null;
+}
+
+export interface RuntimeVerificationResult {
+  ok: boolean;
+  requiresConfirmation: boolean;
+  confirmationSatisfied: boolean;
+  roleAllowed: boolean;
+  rateLimited: boolean;
+  errors: string[];
+}
+
+export interface RuntimeTelemetryEvent {
+  id: string;
+  sessionId: string;
+  turnId: string;
+  state: RuntimeTelemetryState;
+  occurredAt: string;
+  toolName: RuntimeToolName | null;
+  risk: RuntimePlannedAction["risk"] | null;
+  status: RuntimeTurnStatus | RuntimePlanStatus;
+  metadata: Record<string, string | number | boolean | null>;
+}
+
+export interface RuntimeSessionSummary {
+  id: string;
+  businessId: string;
+  userId: string;
+  status: "active" | "closed";
+  turnCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeTurnSummary {
+  id: string;
+  sessionId: string;
+  businessId: string;
+  actorId: string;
+  message: string;
+  normalizedInput: string;
+  parserIntent: RuntimeParserIntent;
+  parserConfidence: number;
+  status: RuntimeTurnStatus;
+  context: RuntimeContextSummary;
+  plan: RuntimePlannedAction;
+  verification: RuntimeVerificationResult;
+  response: string;
+  toolResult: unknown | null;
+  telemetry: RuntimeTelemetryEvent[];
+  createdAt: string;
+}
+
+export interface RuntimeTurnResult {
+  session: RuntimeSessionSummary;
+  turn: RuntimeTurnSummary;
+}

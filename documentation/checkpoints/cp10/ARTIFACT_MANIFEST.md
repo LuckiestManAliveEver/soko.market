@@ -1,8 +1,8 @@
 # CP10 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 
 ## Created CP10 Artifacts
 
@@ -12,21 +12,20 @@ Date passed: pending
 | `documentation/checkpoints/cp10/DECISION_LOG.md`      | Runtime adapter, verification, telemetry, and model-boundary decisions. |
 | `documentation/checkpoints/cp10/ARTIFACT_MANIFEST.md` | This manifest.                                                          |
 
-## Planned CP10 Implementation Artifacts
+## Implemented CP10 Artifacts
 
-| Path                                    | Purpose                                                                 |
-| --------------------------------------- | ----------------------------------------------------------------------- |
-| `packages/shared-types/src/index.ts`    | Shared runtime session, turn, plan, verification, and telemetry types.  |
-| `packages/tool-core/src/index.ts`       | Runtime tool registry, tool risk metadata, and executor adapter helpers. |
-| `services/ai-runtime/src/app.ts`        | Sokoclaw Runtime API endpoints for sessions, turns, and health.         |
-| `services/api/src/cp2/store.ts`         | Business-scoped runtime persistence if API-owned storage remains local.  |
-| `services/api/src/cp2/routes.ts`        | Runtime bridge routes if web/API integration needs authenticated proxying. |
-| `apps/web/src/cp3-shell.ts`             | Runtime chat shell metadata while preserving CP3 shell contracts.        |
-| `apps/web/src/main.tsx`                 | Owner-facing runtime chat/confirmation flow if UI scope is included.    |
-| `tests/business-core.test.ts`           | Runtime risk and business validator boundary tests if core rules expand. |
-| `tests/cp3-shell.test.ts`               | Shell contract tests if runtime chat navigation changes.                |
-| `tests/cp10-sokoclaw-runtime.test.ts`   | Runtime API, planning, verification, confirmation, and telemetry tests. |
-| `tests/ai-eval/cp10-runtime-commands.ts` | Runtime evaluation dataset and task-completion gate fixtures.           |
+| Path                                     | Purpose                                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `packages/shared-types/src/index.ts`     | Shared runtime session, turn, plan, verification, context, and telemetry types.              |
+| `packages/tool-core/src/index.ts`        | Runtime tool registry, tool risk metadata, parser-to-tool planner, and eval support.         |
+| `services/api/package.json`              | API dependency on the deterministic tool-core runtime planner.                               |
+| `services/api/src/cp2/store.ts`          | Business-scoped runtime sessions, turns, context, verification, telemetry, and execution.    |
+| `services/api/src/cp2/routes.ts`         | Runtime session, turn, and turn-list endpoints behind authenticated business routes.         |
+| `apps/web/src/cp3-shell.ts`              | CP10 runtime chat shell metadata and welcome copy.                                           |
+| `apps/web/src/main.tsx`                  | Owner-facing runtime chat, confirmation token handling, and CP4 fallback behavior.           |
+| `tests/cp3-shell.test.ts`                | Shell contract test updated for CP10 runtime behavior.                                       |
+| `tests/cp10-sokoclaw-runtime.test.ts`    | Runtime API, planning, verification, confirmation, telemetry, scoping, and rate-limit tests. |
+| `tests/ai-eval/cp10-runtime-commands.ts` | Runtime evaluation dataset and task-completion gate fixtures.                                |
 
 ## CP10 Opening Checklist
 
@@ -40,24 +39,26 @@ Date passed: pending
 
 ## CP10 Completion Checklist
 
-- [ ] Runtime shared contracts implemented.
-- [ ] Runtime API session and turn endpoints implemented.
-- [ ] Conversation manager implemented.
-- [ ] Context builder implemented.
-- [ ] Intent router implemented while preserving CP4 fallback.
-- [ ] Planner emits draft actions, clarifications, or safe read actions.
-- [ ] Tool executor adapter routes through deterministic validators.
-- [ ] Verification engine enforces role, risk, input, and confirmation gates.
-- [ ] High and critical risk tool confirmation tests pass.
-- [ ] Runtime telemetry records state transitions without sensitive plaintext.
-- [ ] Agent action rate limits implemented.
-- [ ] AI evaluation dataset expanded for CP10.
-- [ ] Owner runtime chat/confirmation UI implemented if included in final CP10 scope.
-- [ ] Existing CP1 through CP9 checks pass.
-- [ ] `checkpoint/cp10-sokoclaw-runtime` tag created.
+- [x] Runtime shared contracts implemented.
+- [x] Runtime API session and turn endpoints implemented.
+- [x] Conversation manager implemented.
+- [x] Context builder implemented.
+- [x] Intent router implemented while preserving CP4 fallback.
+- [x] Planner emits draft actions, clarifications, or safe read actions.
+- [x] Tool executor adapter routes through deterministic validators.
+- [x] Verification engine enforces role, risk, input, and confirmation gates.
+- [x] High and critical risk tool confirmation tests pass.
+- [x] Runtime telemetry records state transitions without sensitive plaintext.
+- [x] Agent action rate limits implemented.
+- [x] AI evaluation dataset expanded for CP10.
+- [x] Owner runtime chat/confirmation UI implemented.
+- [x] Existing CP1 through CP9 checks pass.
+- [x] `checkpoint/cp10-sokoclaw-runtime` tag created.
 
 ## Verification
 
-Opening verification:
+Passed verification:
 
-- pending
+- `pnpm --filter @soko/api typecheck`
+- `pnpm --filter @soko/web typecheck`
+- `pnpm vitest run tests/cp3-shell.test.ts tests/cp4-rule-parser.test.ts tests/cp10-sokoclaw-runtime.test.ts --reporter=dot`

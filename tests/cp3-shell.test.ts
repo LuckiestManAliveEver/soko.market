@@ -35,10 +35,10 @@ describe("CP3 shell contract", () => {
     expect(getEmptyState("imports")?.body).toContain("CP9");
   });
 
-  it("keeps imported rows behind explicit confirmation", () => {
+  it("routes chat through the CP10 runtime confirmation boundary", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("preview until you confirm")
+      body: expect.stringContaining("CP10 routes chat through verification and confirmation")
     });
   });
 });

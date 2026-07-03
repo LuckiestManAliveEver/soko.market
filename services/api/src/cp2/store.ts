@@ -21,6 +21,14 @@ import type {
   OfflineCacheSnapshot,
   PaymentSummary,
   ProductSummary,
+  RuntimeContextSummary,
+  RuntimePlannedAction,
+  RuntimeSessionSummary,
+  RuntimeTelemetryEvent,
+  RuntimeTurnResult,
+  RuntimeTurnStatus,
+  RuntimeTurnSummary,
+  RuntimeVerificationResult,
   SessionSummary,
   SyncMutationPayload,
   SyncMutationType,
@@ -78,12 +86,19 @@ import {
   type ProductInput,
   type StockAdjustmentInput
 } from "@soko/business-core";
+import {
+  createRuntimeToolProposal,
+  parseMerchantCommand,
+  runtimeToolRegistry,
+  type RuntimeToolName
+} from "@soko/tool-core";
 
 export const sessionCookieName = "soko_session";
 
 const otpTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
+const maxRuntimeTurnsPerSession = 20;
 
 export class Cp2Error extends Error {
   constructor(
@@ -116,6 +131,13 @@ interface SessionRecord extends SessionSummary {
 
 interface DocumentImportSourceRecord extends DocumentImportSourceSummary {
   content: string;
+}
+
+interface PendingRuntimeAction {
+  sessionId: string;
+  businessId: string;
+  actorId: string;
+  action: RuntimePlannedAction;
 }
 
 export interface OtpRequestResult {
@@ -152,6 +174,8 @@ export interface Cp2Snapshot {
   payments: PaymentSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
+  runtimeSessions: RuntimeSessionSummary[];
+  runtimeTurns: RuntimeTurnSummary[];
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
   sessions: SessionRecord[];
@@ -172,6 +196,9 @@ export class Cp2Store {
   private readonly payments = new Map<string, PaymentSummary>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
+  private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
+  private readonly runtimeTurns = new Map<string, RuntimeTurnSummary>();
+  private readonly pendingRuntimeActions = new Map<string, PendingRuntimeAction>();
   private readonly nextInvoiceNumberByBusiness = new Map<string, number>();
   private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
   private readonly syncQueue = new Map<string, SyncQueueItem>();
@@ -1482,6 +1509,311 @@ export class Cp2Store {
     };
   }
 
+  createRuntimeSession(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): RuntimeSessionSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const runtimeSession: RuntimeSessionSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      userId: session.user.id,
+      status: "active",
+      turnCount: 0,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.runtimeSessions.set(runtimeSession.id, runtimeSession);
+    this.recordAuditEvent({
+      type: "runtime.session_created",
+      aggregateType: "runtime_session",
+      aggregateId: runtimeSession.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId
+      }
+    });
+
+    return runtimeSession;
+  }
+
+  listRuntimeSessions(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): RuntimeSessionSummary[] {
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now
+    );
+
+    return [...this.runtimeSessions.values()]
+      .filter(
+        (runtimeSession) =>
+          runtimeSession.businessId === input.businessId &&
+          runtimeSession.userId === session.user.id
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  listRuntimeTurns(input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeSessionId: string;
+    now?: Date;
+  }): RuntimeTurnSummary[] {
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now
+    );
+    const runtimeSession = this.requireRuntimeSession(input.businessId, input.runtimeSessionId);
+
+    if (runtimeSession.userId !== session.user.id) {
+      throw new Cp2Error(403, "runtime_actor_mismatch", "Runtime session belongs to another user.");
+    }
+
+    return [...this.runtimeTurns.values()]
+      .filter((turn) => turn.sessionId === runtimeSession.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  createRuntimeTurn(input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeSessionId?: string;
+    message: string;
+    confirmationToken?: string;
+    now?: Date;
+  }): RuntimeTurnResult {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const runtimeSession =
+      input.runtimeSessionId === undefined
+        ? this.createRuntimeSession({
+            sessionId: input.sessionId,
+            businessId: input.businessId,
+            now
+          })
+        : this.requireRuntimeSession(input.businessId, input.runtimeSessionId);
+
+    if (runtimeSession.userId !== auth.user.id) {
+      throw new Cp2Error(403, "runtime_actor_mismatch", "Runtime session belongs to another user.");
+    }
+
+    const context = this.buildRuntimeContext(input.businessId, auth.user.id);
+    const turnId = randomUUID();
+    const startedAt = now.toISOString();
+    const telemetry: RuntimeTelemetryEvent[] = [];
+    const appendTelemetry = (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata: RuntimeTelemetryEvent["metadata"] = {}
+    ) => {
+      telemetry.push({
+        id: randomUUID(),
+        sessionId: runtimeSession.id,
+        turnId,
+        state,
+        occurredAt: now.toISOString(),
+        toolName,
+        risk,
+        status,
+        metadata
+      });
+    };
+
+    appendTelemetry("turn.received", "completed", null, null, {
+      messageLength: input.message.trim().length,
+      hasConfirmationToken: input.confirmationToken !== undefined
+    });
+
+    if (runtimeSession.turnCount >= maxRuntimeTurnsPerSession) {
+      const plan = createRuntimePlan({
+        toolName: "unknown.clarify",
+        input: {},
+        validationErrors: ["Runtime session turn limit reached."],
+        confirmationToken: null,
+        status: "blocked"
+      });
+      const verification = createRuntimeVerification({
+        requiresConfirmation: false,
+        confirmationSatisfied: false,
+        roleAllowed: true,
+        rateLimited: true,
+        errors: ["Runtime session turn limit reached."]
+      });
+      appendTelemetry("turn.rate_limited", "rate_limited", plan.toolName, plan.risk, {
+        maxTurns: maxRuntimeTurnsPerSession
+      });
+
+      return this.storeRuntimeTurn({
+        runtimeSession,
+        turn: {
+          id: turnId,
+          sessionId: runtimeSession.id,
+          businessId: input.businessId,
+          actorId: auth.user.id,
+          message: input.message,
+          normalizedInput: input.message.trim().toLowerCase(),
+          parserIntent: "unknown",
+          parserConfidence: 0,
+          status: "rate_limited",
+          context,
+          plan,
+          verification,
+          response: "This runtime session has reached its action limit. Start a new session.",
+          toolResult: null,
+          telemetry,
+          createdAt: startedAt
+        },
+        now
+      });
+    }
+
+    appendTelemetry("context.built", "completed", null, null, {
+      productCount: context.productCount,
+      invoiceCount: context.invoiceCount,
+      importJobCount: context.importJobCount
+    });
+
+    if (input.confirmationToken !== undefined) {
+      return this.confirmRuntimeAction({
+        authUserId: auth.user.id,
+        businessId: input.businessId,
+        context,
+        message: input.message,
+        now,
+        runtimeSession,
+        telemetry,
+        turnId,
+        token: input.confirmationToken
+      });
+    }
+
+    const parserResult = parseMerchantCommand(input.message);
+    appendTelemetry("intent.routed", "completed", null, null, {
+      intent: parserResult.intent,
+      confidence: parserResult.confidence
+    });
+    const proposal = createRuntimeToolProposal(parserResult);
+    const definition = runtimeToolRegistry[proposal.toolName];
+    const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
+    const confirmationToken =
+      proposal.validation.ok && definition.requiresConfirmation ? randomUUID() : null;
+    const plan = createRuntimePlan({
+      toolName: proposal.toolName,
+      input: proposal.input,
+      validationErrors: proposal.validation.errors,
+      confirmationToken,
+      status: proposal.validation.ok
+        ? definition.requiresConfirmation
+          ? "needs_confirmation"
+          : "safe_to_execute"
+        : "clarification_required"
+    });
+    const verificationErrors = [
+      ...proposal.validation.errors,
+      ...(roleAllowed ? [] : ["Actor role cannot use the proposed runtime tool."])
+    ];
+    const verification = createRuntimeVerification({
+      requiresConfirmation: definition.requiresConfirmation,
+      confirmationSatisfied: false,
+      roleAllowed,
+      rateLimited: false,
+      errors: verificationErrors
+    });
+    appendTelemetry("plan.created", plan.status, plan.toolName, plan.risk, {
+      requiresConfirmation: plan.requiresConfirmation,
+      readOnly: definition.readOnly
+    });
+    appendTelemetry("verification.completed", plan.status, plan.toolName, plan.risk, {
+      ok: verification.ok,
+      roleAllowed: verification.roleAllowed
+    });
+
+    if (confirmationToken !== null) {
+      this.pendingRuntimeActions.set(confirmationToken, {
+        sessionId: runtimeSession.id,
+        businessId: input.businessId,
+        actorId: auth.user.id,
+        action: plan
+      });
+      appendTelemetry("confirmation.required", "needs_confirmation", plan.toolName, plan.risk, {
+        actionId: plan.id
+      });
+    }
+
+    const canExecute = plan.status === "safe_to_execute" && verification.ok;
+    const toolResult = canExecute
+      ? this.executeRuntimeAction({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          action: plan,
+          now
+        })
+      : null;
+
+    if (canExecute) {
+      appendTelemetry("tool.executed", "completed", plan.toolName, plan.risk, {
+        actionId: plan.id
+      });
+      plan.executedAt = now.toISOString();
+    }
+
+    const status = runtimeStatusFromPlan(plan, verification);
+    appendTelemetry("response.generated", status, plan.toolName, plan.risk, {
+      actionId: plan.id
+    });
+
+    return this.storeRuntimeTurn({
+      runtimeSession,
+      turn: {
+        id: turnId,
+        sessionId: runtimeSession.id,
+        businessId: input.businessId,
+        actorId: auth.user.id,
+        message: input.message,
+        normalizedInput: parserResult.normalizedInput,
+        parserIntent: parserResult.intent,
+        parserConfidence: parserResult.confidence,
+        status,
+        context,
+        plan,
+        verification,
+        response: createRuntimeResponse({
+          plan,
+          proposalReason: proposal.reason,
+          toolResult,
+          verification
+        }),
+        toolResult,
+        telemetry,
+        createdAt: startedAt
+      },
+      now
+    });
+  }
+
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
@@ -1495,6 +1827,8 @@ export class Cp2Store {
       payments: [...this.payments.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
+      runtimeSessions: [...this.runtimeSessions.values()],
+      runtimeTurns: [...this.runtimeTurns.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
       syncQueue: [...this.syncQueue.values()],
       sessions: [...this.sessions.values()],
@@ -1763,6 +2097,278 @@ export class Cp2Store {
     }
   }
 
+  private confirmRuntimeAction(input: {
+    authUserId: string;
+    businessId: string;
+    context: RuntimeContextSummary;
+    message: string;
+    now: Date;
+    runtimeSession: RuntimeSessionSummary;
+    telemetry: RuntimeTelemetryEvent[];
+    turnId: string;
+    token: string;
+  }): RuntimeTurnResult {
+    const pending = this.pendingRuntimeActions.get(input.token);
+
+    if (pending === undefined) {
+      throw new Cp2Error(
+        404,
+        "runtime_confirmation_not_found",
+        "Runtime confirmation was not found."
+      );
+    }
+
+    if (
+      pending.sessionId !== input.runtimeSession.id ||
+      pending.businessId !== input.businessId ||
+      pending.actorId !== input.authUserId
+    ) {
+      throw new Cp2Error(
+        403,
+        "runtime_confirmation_mismatch",
+        "Runtime confirmation is not valid."
+      );
+    }
+
+    const action: RuntimePlannedAction = {
+      ...pending.action,
+      status: "safe_to_execute",
+      confirmationToken: input.token
+    };
+    const definition = runtimeToolRegistry[action.toolName as RuntimeToolName];
+    const roleAllowed = roleCan(
+      input.context.role,
+      definition.requiredPermission as BusinessPermission
+    );
+    const verification = createRuntimeVerification({
+      requiresConfirmation: action.requiresConfirmation,
+      confirmationSatisfied: true,
+      roleAllowed,
+      rateLimited: false,
+      errors: roleAllowed ? [] : ["Actor role cannot use the confirmed runtime tool."]
+    });
+    const appendTelemetry = (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      metadata: RuntimeTelemetryEvent["metadata"] = {}
+    ) => {
+      input.telemetry.push({
+        id: randomUUID(),
+        sessionId: input.runtimeSession.id,
+        turnId: input.turnId,
+        state,
+        occurredAt: input.now.toISOString(),
+        toolName: action.toolName,
+        risk: action.risk,
+        status,
+        metadata
+      });
+    };
+
+    appendTelemetry("intent.routed", "completed", {
+      confirmation: true
+    });
+    appendTelemetry("plan.created", action.status, {
+      actionId: action.id
+    });
+    appendTelemetry("verification.completed", action.status, {
+      ok: verification.ok,
+      roleAllowed: verification.roleAllowed
+    });
+
+    const toolResult = verification.ok
+      ? this.executeRuntimeAction({
+          sessionId: this.requireSessionIdForUser(input.authUserId),
+          businessId: input.businessId,
+          action,
+          now: input.now
+        })
+      : null;
+
+    if (verification.ok) {
+      action.executedAt = input.now.toISOString();
+      this.pendingRuntimeActions.delete(input.token);
+      appendTelemetry("tool.executed", "completed", {
+        actionId: action.id
+      });
+    }
+
+    appendTelemetry("response.generated", verification.ok ? "completed" : "blocked", {
+      actionId: action.id
+    });
+
+    return this.storeRuntimeTurn({
+      runtimeSession: input.runtimeSession,
+      turn: {
+        id: input.turnId,
+        sessionId: input.runtimeSession.id,
+        businessId: input.businessId,
+        actorId: input.authUserId,
+        message: input.message,
+        normalizedInput: input.message.trim().toLowerCase(),
+        parserIntent: "unknown",
+        parserConfidence: 1,
+        status: verification.ok ? "completed" : "blocked",
+        context: input.context,
+        plan: action,
+        verification,
+        response: verification.ok
+          ? `Confirmed and executed ${action.toolName}.`
+          : "I could not execute the confirmed action.",
+        toolResult,
+        telemetry: input.telemetry,
+        createdAt: input.now.toISOString()
+      },
+      now: input.now
+    });
+  }
+
+  private executeRuntimeAction(input: {
+    sessionId: string | null;
+    businessId: string;
+    action: RuntimePlannedAction;
+    now: Date;
+  }): unknown {
+    switch (input.action.toolName) {
+      case "products.list":
+        return this.listProducts({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        });
+
+      case "invoices.list":
+        return this.listInvoices({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        });
+
+      case "product.create":
+        return this.createProduct({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          product: {
+            name: String(input.action.input.name ?? ""),
+            sku: null,
+            unit: String(input.action.input.unit ?? "unit"),
+            quantity: Number(input.action.input.quantity ?? 0)
+          },
+          now: input.now
+        });
+
+      case "customer.create":
+        return this.createCustomer({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          customer: {
+            name: String(input.action.input.name ?? ""),
+            phone: null,
+            email: null,
+            notes: null
+          },
+          now: input.now
+        });
+
+      case "invoice.draft":
+      case "payment.record":
+      case "unknown.clarify":
+        return null;
+    }
+  }
+
+  private buildRuntimeContext(businessId: string, userId: string): RuntimeContextSummary {
+    const membership = this.requireMembership(businessId, userId);
+    const invoices = [...this.invoices.values()].filter(
+      (invoice) => invoice.businessId === businessId
+    );
+
+    return {
+      businessId,
+      userId,
+      role: membership.role,
+      productCount: [...this.products.values()].filter(
+        (product) => product.businessId === businessId
+      ).length,
+      customerCount: [...this.customers.values()].filter(
+        (customer) => customer.businessId === businessId
+      ).length,
+      supplierCount: [...this.suppliers.values()].filter(
+        (supplier) => supplier.businessId === businessId
+      ).length,
+      invoiceCount: invoices.length,
+      openInvoiceCount: invoices.filter(
+        (invoice) => this.buildInvoicePaymentSummary(invoice).balanceDue > 0
+      ).length,
+      paymentCount: [...this.payments.values()].filter(
+        (payment) => payment.businessId === businessId
+      ).length,
+      importJobCount: [...this.documentImports.values()].filter(
+        (job) => job.businessId === businessId
+      ).length
+    };
+  }
+
+  private requireRuntimeSession(
+    businessId: string,
+    runtimeSessionId: string
+  ): RuntimeSessionSummary {
+    const runtimeSession = this.runtimeSessions.get(runtimeSessionId);
+
+    if (runtimeSession === undefined || runtimeSession.businessId !== businessId) {
+      throw new Cp2Error(404, "runtime_session_not_found", "Runtime session was not found.");
+    }
+
+    if (runtimeSession.status !== "active") {
+      throw new Cp2Error(409, "runtime_session_closed", "Runtime session is closed.");
+    }
+
+    return runtimeSession;
+  }
+
+  private requireSessionIdForUser(userId: string): string | null {
+    const session = [...this.sessions.values()]
+      .filter((candidate) => candidate.userId === userId && candidate.revokedAt === null)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+
+    return session?.id ?? null;
+  }
+
+  private storeRuntimeTurn(input: {
+    runtimeSession: RuntimeSessionSummary;
+    turn: RuntimeTurnSummary;
+    now: Date;
+  }): RuntimeTurnResult {
+    this.runtimeTurns.set(input.turn.id, input.turn);
+    const updatedSession: RuntimeSessionSummary = {
+      ...input.runtimeSession,
+      turnCount: input.runtimeSession.turnCount + 1,
+      updatedAt: input.now.toISOString()
+    };
+    this.runtimeSessions.set(updatedSession.id, updatedSession);
+    this.recordAuditEvent({
+      type: "runtime.turn_recorded",
+      aggregateType: "runtime_turn",
+      aggregateId: input.turn.id,
+      actorId: input.turn.actorId,
+      occurredAt: input.now.toISOString(),
+      payload: {
+        businessId: input.turn.businessId,
+        runtimeSessionId: input.turn.sessionId,
+        parserIntent: input.turn.parserIntent,
+        toolName: input.turn.plan.toolName,
+        risk: input.turn.plan.risk,
+        status: input.turn.status,
+        messageLength: input.turn.message.length
+      }
+    });
+
+    return {
+      session: updatedSession,
+      turn: input.turn
+    };
+  }
+
   private buildInvoicePreview(businessId: string, invoice: InvoiceInput): InvoicePreview {
     const normalized = normalizeInvoiceInput(invoice);
     const customer =
@@ -1903,6 +2509,97 @@ export class Cp2Store {
 
 export function createCp2Store(): Cp2Store {
   return new Cp2Store();
+}
+
+function createRuntimePlan(input: {
+  toolName: RuntimeToolName;
+  input: Record<string, unknown>;
+  validationErrors: string[];
+  confirmationToken: string | null;
+  status: RuntimePlannedAction["status"];
+}): RuntimePlannedAction {
+  const definition = runtimeToolRegistry[input.toolName];
+
+  return {
+    id: randomUUID(),
+    toolName: input.toolName,
+    risk: definition.risk,
+    requiresConfirmation: definition.requiresConfirmation,
+    status: input.status,
+    input: input.input,
+    validationErrors: input.validationErrors,
+    confirmationToken: input.confirmationToken,
+    executedAt: null
+  };
+}
+
+function createRuntimeVerification(input: {
+  requiresConfirmation: boolean;
+  confirmationSatisfied: boolean;
+  roleAllowed: boolean;
+  rateLimited: boolean;
+  errors: string[];
+}): RuntimeVerificationResult {
+  return {
+    ok:
+      !input.rateLimited &&
+      input.roleAllowed &&
+      input.errors.length === 0 &&
+      (!input.requiresConfirmation || input.confirmationSatisfied),
+    requiresConfirmation: input.requiresConfirmation,
+    confirmationSatisfied: input.confirmationSatisfied,
+    roleAllowed: input.roleAllowed,
+    rateLimited: input.rateLimited,
+    errors: input.errors
+  };
+}
+
+function runtimeStatusFromPlan(
+  plan: RuntimePlannedAction,
+  verification: RuntimeVerificationResult
+): RuntimeTurnStatus {
+  if (verification.rateLimited) {
+    return "rate_limited";
+  }
+
+  if (!verification.roleAllowed) {
+    return "blocked";
+  }
+
+  if (plan.status === "clarification_required") {
+    return "clarifying";
+  }
+
+  if (plan.status === "needs_confirmation") {
+    return "needs_confirmation";
+  }
+
+  return verification.errors.length > 0 ? "blocked" : "completed";
+}
+
+function createRuntimeResponse(input: {
+  plan: RuntimePlannedAction;
+  proposalReason: string;
+  toolResult: unknown | null;
+  verification: RuntimeVerificationResult;
+}): string {
+  if (!input.verification.roleAllowed) {
+    return "I cannot use that tool with your current business role.";
+  }
+
+  if (input.plan.status === "clarification_required") {
+    return input.plan.validationErrors[0] ?? "I need more details before I can plan that.";
+  }
+
+  if (input.plan.status === "needs_confirmation") {
+    return `I prepared ${input.plan.toolName}. Confirm before I run it.`;
+  }
+
+  if (input.toolResult !== null) {
+    return `${input.proposalReason} Done.`;
+  }
+
+  return input.proposalReason;
 }
 
 export function serializeSessionCookie(

@@ -1,10 +1,10 @@
 # CP10: Sokoclaw Runtime Full Adapter
 
-Status: active
+Status: passed
 Date opened: 2026-07-03
-Date passed: pending
+Date passed: 2026-07-03
 Target tag: `checkpoint/cp10-sokoclaw-runtime`
-Actual tag: pending
+Actual tag: `checkpoint/cp10-sokoclaw-runtime`
 
 ## Purpose
 
@@ -96,22 +96,22 @@ Owner sends a message
 
 CP10 can be marked passed when:
 
-- [ ] Runtime shared contracts exist.
-- [ ] Runtime API exposes session/turn endpoints.
-- [ ] Conversation manager records runtime sessions and turns.
-- [ ] Context builder gathers business-scoped context without cross-business leakage.
-- [ ] Intent router preserves CP4 deterministic parser fallback behavior.
-- [ ] Planner emits draft actions, clarifications, or safe read actions.
-- [ ] Tool executor adapter routes actions through deterministic validators.
-- [ ] Verification engine enforces risk, role, input validation, and confirmation gates.
-- [ ] High and critical risk tools require explicit confirmation.
-- [ ] Runtime output cannot directly mutate business data.
-- [ ] Runtime telemetry records state transitions needed for debugging.
-- [ ] Agent action rate limits exist.
-- [ ] AI evaluation dataset covers runtime flows and configured task-completion gates.
-- [ ] Web/chat shell exposes the runtime path without regressing CP3 behavior.
-- [ ] Existing CP1 through CP9 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp10-sokoclaw-runtime` is created.
+- [x] Runtime shared contracts exist.
+- [x] Runtime API exposes session/turn endpoints.
+- [x] Conversation manager records runtime sessions and turns.
+- [x] Context builder gathers business-scoped context without cross-business leakage.
+- [x] Intent router preserves CP4 deterministic parser fallback behavior.
+- [x] Planner emits draft actions, clarifications, or safe read actions.
+- [x] Tool executor adapter routes actions through deterministic validators.
+- [x] Verification engine enforces risk, role, input validation, and confirmation gates.
+- [x] High and critical risk tools require explicit confirmation.
+- [x] Runtime output cannot directly mutate business data.
+- [x] Runtime telemetry records state transitions needed for debugging.
+- [x] Agent action rate limits exist.
+- [x] AI evaluation dataset covers runtime flows and configured task-completion gates.
+- [x] Web/chat shell exposes the runtime path without regressing CP3 behavior.
+- [x] Existing CP1 through CP9 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp10-sokoclaw-runtime` is created.
 
 ## Rollback Instructions
 

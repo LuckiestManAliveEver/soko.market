@@ -66,6 +66,10 @@ interface SyncQueueParams extends BusinessParams {
   syncItemId: string;
 }
 
+interface RuntimeSessionParams extends BusinessParams {
+  runtimeSessionId: string;
+}
+
 interface DocumentImportParams extends BusinessParams {
   importJobId: string;
 }
@@ -138,6 +142,12 @@ interface SupplierImportRowBody {
 
 interface SupplierImportConfirmBody {
   selectedRowNumbers?: number[];
+}
+
+interface RuntimeTurnBody {
+  runtimeSessionId?: string;
+  message?: string;
+  confirmationToken?: string;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -612,6 +622,64 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/runtime/sessions",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.createRuntimeSession({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/runtime/sessions",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listRuntimeSessions({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/runtime/sessions/:runtimeSessionId/turns",
+    async (request: FastifyRequest<{ Params: RuntimeSessionParams }>, reply) => {
+      try {
+        return store.listRuntimeTurns({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          runtimeSessionId: request.params.runtimeSessionId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/runtime/turns",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: RuntimeTurnBody }>, reply) => {
+      try {
+        return store.createRuntimeTurn({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...parseRuntimeTurnBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/businesses/:businessId/offline-cache",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -877,6 +945,31 @@ function parseOptionalRowNumbers(value: unknown): number[] | undefined {
   }
 
   return value.map((item, index) => parsePositiveInteger(item, `selectedRowNumbers.${index}`));
+}
+
+function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
+  runtimeSessionId?: string;
+  message: string;
+  confirmationToken?: string;
+} {
+  const record = parseRequestBody(body);
+  const runtimeSessionId =
+    record.runtimeSessionId === undefined
+      ? undefined
+      : parseString(record.runtimeSessionId, "runtimeSessionId");
+  const confirmationToken =
+    record.confirmationToken === undefined
+      ? undefined
+      : parseString(record.confirmationToken, "confirmationToken");
+  const parsed = {
+    message: parseString(record.message, "message")
+  };
+
+  return {
+    ...parsed,
+    ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
+    ...(confirmationToken === undefined ? {} : { confirmationToken })
+  };
 }
 
 function parseInvoiceItems(value: unknown) {

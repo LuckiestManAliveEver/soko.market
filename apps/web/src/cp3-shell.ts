@@ -17,6 +17,7 @@ export interface ChatMessage {
   id: string;
   author: "merchant" | "sokoclaw";
   body: string;
+  confirmationToken?: string;
 }
 
 export const quickActions: QuickAction[] = [
@@ -28,7 +29,7 @@ export const quickActions: QuickAction[] = [
   {
     id: "chat",
     label: "Chat",
-    summary: "Ask for help or draft a task"
+    summary: "Plan work through the CP10 runtime"
   },
   {
     id: "products",
@@ -104,7 +105,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP9 imports keep extracted rows in preview until you confirm them.`
+      body: `${businessName} is ready. CP10 routes chat through verification and confirmation before any runtime action can write records.`
     }
   ];
 }

@@ -144,6 +144,9 @@ importers:
       '@soko/sync-core':
         specifier: workspace:*
         version: link:../../packages/sync-core
+      '@soko/tool-core':
+        specifier: workspace:*
+        version: link:../../packages/tool-core
       fastify:
         specifier: ^5.2.1
         version: 5.9.0

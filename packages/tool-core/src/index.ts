@@ -62,6 +62,168 @@ export interface ParseResult {
   slots: ParserSlots;
 }
 
+export type RuntimeToolRisk = "low" | "medium" | "high" | "critical";
+
+export type RuntimeToolName =
+  | "products.list"
+  | "invoices.list"
+  | "product.create"
+  | "customer.create"
+  | "invoice.draft"
+  | "payment.record"
+  | "unknown.clarify";
+
+export interface RuntimeToolDefinition {
+  name: RuntimeToolName;
+  risk: RuntimeToolRisk;
+  requiresConfirmation: boolean;
+  readOnly: boolean;
+  requiredPermission: string;
+}
+
+export interface RuntimeToolProposal {
+  toolName: RuntimeToolName;
+  input: Record<string, unknown>;
+  reason: string;
+  validation: ValidationResult;
+}
+
+export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition> = {
+  "products.list": {
+    name: "products.list",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "product:read"
+  },
+  "invoices.list": {
+    name: "invoices.list",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "invoice:read"
+  },
+  "product.create": {
+    name: "product.create",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "product:write"
+  },
+  "customer.create": {
+    name: "customer.create",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "customer:write"
+  },
+  "invoice.draft": {
+    name: "invoice.draft",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "invoice:write"
+  },
+  "payment.record": {
+    name: "payment.record",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "payment:write"
+  },
+  "unknown.clarify": {
+    name: "unknown.clarify",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "business:read"
+  }
+};
+
+export function createRuntimeToolProposal(result: ParseResult): RuntimeToolProposal {
+  switch (result.intent) {
+    case "show_products":
+      return {
+        toolName: "products.list",
+        input: {},
+        reason: "List products for the active business.",
+        validation: valid()
+      };
+
+    case "show_invoices":
+      return {
+        toolName: "invoices.list",
+        input: {},
+        reason: "List invoices for the active business.",
+        validation: valid()
+      };
+
+    case "add_product":
+      return {
+        toolName: "product.create",
+        input: {
+          name: result.slots.productName ?? "",
+          unit: result.slots.unit ?? "unit",
+          quantity: result.slots.quantity ?? 0
+        },
+        reason: "Draft a product creation action from the merchant command.",
+        validation:
+          result.slots.productName === undefined
+            ? invalid("Product name is required before a product can be drafted.")
+            : valid()
+      };
+
+    case "add_customer":
+      return {
+        toolName: "customer.create",
+        input: {
+          name: result.slots.customerName ?? ""
+        },
+        reason: "Draft a customer creation action from the merchant command.",
+        validation:
+          result.slots.customerName === undefined
+            ? invalid("Customer name is required before a customer can be drafted.")
+            : valid()
+      };
+
+    case "create_invoice":
+      return {
+        toolName: "invoice.draft",
+        input: {
+          customerName: result.slots.customerName ?? null,
+          quantity: result.slots.quantity ?? null
+        },
+        reason: "Draft an invoice action from the merchant command.",
+        validation: invalid("Invoice runtime draft needs product and price details.")
+      };
+
+    case "record_payment":
+      return {
+        toolName: "payment.record",
+        input: {
+          amount: result.slots.amount ?? null,
+          customerName: result.slots.customerName ?? null
+        },
+        reason: "Draft a payment recording action from the merchant command.",
+        validation: invalid("Payment runtime draft needs an invoice id and method.")
+      };
+
+    case "check_debt":
+    case "unknown":
+      return {
+        toolName: "unknown.clarify",
+        input: {},
+        reason:
+          result.nextAction.type === "clarify" ? result.nextAction.reason : "Clarify request.",
+        validation: invalid(
+          result.nextAction.type === "clarify"
+            ? result.nextAction.question
+            : "I need more details before I can plan that action."
+        )
+      };
+  }
+}
+
 export function shouldUseStructuredFallback(
   result: ParseResult,
   previousClarificationCount: number
@@ -101,6 +263,7 @@ const intentRules: IntentRule[] = [
       "list invoices",
       "open invoices",
       "show sales",
+      "list sales",
       "onyesha ankara",
       "invoice list"
     ],

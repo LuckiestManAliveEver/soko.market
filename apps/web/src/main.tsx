@@ -232,6 +232,23 @@ interface DocumentImportConfirmResult {
   job: DocumentImportJobSummary;
 }
 
+interface RuntimeSessionSummary {
+  id: string;
+  turnCount: number;
+}
+
+interface RuntimeTurnResult {
+  session: RuntimeSessionSummary;
+  turn: {
+    status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
+    response: string;
+    plan: {
+      toolName: string;
+      confirmationToken: string | null;
+    };
+  };
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -336,6 +353,7 @@ function App() {
   const [view, setView] = useState<ShellView>("home");
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [chatDraft, setChatDraft] = useState("");
+  const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
   const [clarificationCount, setClarificationCount] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
     createInitialChatMessages(readStoredBusiness()?.name ?? "Soko.market")
@@ -921,6 +939,7 @@ function App() {
     setCustomerDebts([]);
     setImportJobs([]);
     setSelectedImportJobId(null);
+    setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
     setInvoiceForm(emptyInvoiceForm);
@@ -932,13 +951,120 @@ function App() {
     localStorage.removeItem(activeBusinessStorageKey);
   }
 
-  function sendChatDraft() {
-    const parserResult = parseMerchantCommand(chatDraft);
+  async function sendChatDraft() {
+    const message = chatDraft.trim();
+
+    if (message.length === 0) {
+      return;
+    }
+
+    if (business === null) {
+      sendLocalParserChat(message);
+      return;
+    }
+
+    const merchantMessage: ChatMessage = {
+      id: `merchant-${Date.now()}`,
+      author: "merchant",
+      body: message
+    };
+
+    setChatMessages((messages) => [...messages, merchantMessage]);
+    setChatDraft("");
+
+    try {
+      const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
+        runtimeSessionId,
+        message
+      });
+      setRuntimeSessionId(result.session.id);
+      setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
+      const confirmationToken = result.turn.plan.confirmationToken;
+      setChatMessages((messages) => [
+        ...messages,
+        confirmationToken === null
+          ? {
+              id: `sokoclaw-${Date.now()}`,
+              author: "sokoclaw",
+              body: result.turn.response
+            }
+          : {
+              id: `sokoclaw-${Date.now()}`,
+              author: "sokoclaw",
+              body: result.turn.response,
+              confirmationToken
+            }
+      ]);
+
+      if (result.turn.plan.toolName === "products.list") {
+        await loadProducts(business.id);
+        setView("products");
+      }
+
+      if (result.turn.plan.toolName === "invoices.list") {
+        await loadInvoices(business.id);
+        setView("invoices");
+      }
+
+      setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
+    } catch (error) {
+      sendLocalParserChat(message);
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function confirmRuntimeAction(confirmationToken: string) {
+    if (business === null || runtimeSessionId === null) {
+      return;
+    }
+
+    const merchantMessage: ChatMessage = {
+      id: `merchant-${Date.now()}`,
+      author: "merchant",
+      body: "Confirm"
+    };
+
+    setChatMessages((messages) => [...messages, merchantMessage]);
+
+    try {
+      const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
+        runtimeSessionId,
+        message: "confirm",
+        confirmationToken
+      });
+      setRuntimeSessionId(result.session.id);
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          id: `sokoclaw-${Date.now()}`,
+          author: "sokoclaw",
+          body: result.turn.response
+        }
+      ]);
+
+      if (result.turn.plan.toolName === "product.create") {
+        await loadProducts(business.id);
+        setView("products");
+      }
+
+      if (result.turn.plan.toolName === "customer.create") {
+        await loadCustomers(business.id);
+        setView("customers");
+      }
+
+      setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function sendLocalParserChat(message: string) {
+    const parserResult = parseMerchantCommand(message);
     const useFallback = shouldUseStructuredFallback(parserResult, clarificationCount);
     const merchantMessage: ChatMessage = {
       id: `merchant-${Date.now()}`,
       author: "merchant",
-      body: chatDraft.trim()
+      body: message
     };
     const reply: ChatMessage = {
       id: `sokoclaw-${Date.now()}`,
@@ -1045,7 +1171,8 @@ function App() {
                   chatDraft={chatDraft}
                   messages={chatMessages}
                   onDraftChange={setChatDraft}
-                  onSend={sendChatDraft}
+                  onConfirm={(token) => void confirmRuntimeAction(token)}
+                  onSend={() => void sendChatDraft()}
                 />
               ) : null}
               {view === "products" ? (
@@ -2394,10 +2521,11 @@ interface ChatSurfaceProps {
   chatDraft: string;
   messages: ChatMessage[];
   onDraftChange: (draft: string) => void;
+  onConfirm: (confirmationToken: string) => void;
   onSend: () => void;
 }
 
-function ChatSurface({ chatDraft, messages, onDraftChange, onSend }: ChatSurfaceProps) {
+function ChatSurface({ chatDraft, messages, onDraftChange, onConfirm, onSend }: ChatSurfaceProps) {
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite">
@@ -2405,6 +2533,11 @@ function ChatSurface({ chatDraft, messages, onDraftChange, onSend }: ChatSurface
           <article className={`message ${message.author}`} key={message.id}>
             <span>{message.author === "merchant" ? "You" : "Sokoclaw"}</span>
             <p>{message.body}</p>
+            {message.confirmationToken !== undefined ? (
+              <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
+                Confirm
+              </button>
+            ) : null}
           </article>
         ))}
       </div>
