@@ -40,6 +40,8 @@ interface SupplierResponse {
   id: string;
   businessId: string;
   name: string;
+  phone: string | null;
+  email: string | null;
 }
 
 interface StockAdjustmentResponse {
@@ -162,7 +164,27 @@ describe("CP5 business core records", () => {
 
     expect(supplier).toMatchObject({
       businessId,
-      name: "Wholesale Depot"
+      name: "Wholesale Depot",
+      phone: "+254700000004",
+      email: null
+    });
+
+    const updatedSupplier = await patchJson<SupplierResponse>(
+      app,
+      `/businesses/${businessId}/suppliers/${supplier.id}`,
+      {
+        name: "Wholesale Depot Ltd",
+        phone: "",
+        email: "SUPPLY@example.com"
+      },
+      sessionCookie
+    );
+
+    expect(updatedSupplier).toMatchObject({
+      id: supplier.id,
+      name: "Wholesale Depot Ltd",
+      phone: null,
+      email: "supply@example.com"
     });
 
     const products = await getJson<ProductResponse[]>(
@@ -175,9 +197,19 @@ describe("CP5 business core records", () => {
       `/businesses/${businessId}/customers`,
       sessionCookie
     );
+    const suppliers = await getJson<SupplierResponse[]>(
+      app,
+      `/businesses/${businessId}/suppliers`,
+      sessionCookie
+    );
 
     expect(products).toHaveLength(1);
     expect(customers).toHaveLength(1);
+    expect(suppliers).toHaveLength(1);
+    expect(suppliers[0]).toMatchObject({
+      id: supplier.id,
+      name: "Wholesale Depot Ltd"
+    });
     expect(store.snapshot().inventoryMovements).toHaveLength(3);
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining([
@@ -186,6 +218,7 @@ describe("CP5 business core records", () => {
         "customer.created",
         "customer.updated",
         "supplier.created",
+        "supplier.updated",
         "inventory.stock_adjusted"
       ])
     );
@@ -216,6 +249,44 @@ describe("CP5 business core records", () => {
       code: "validation_failed"
     });
 
+    const missingProductBody = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/products`,
+      headers: {
+        cookie: sessionCookie
+      }
+    });
+
+    expect(missingProductBody.statusCode).toBe(400);
+    expect(missingProductBody.json()).toMatchObject({
+      code: "body_invalid"
+    });
+
+    const validProduct = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      {
+        name: "Rice",
+        quantity: 5
+      },
+      sessionCookie
+    );
+
+    const nullStockAdjustmentBody = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/products/${validProduct.id}/stock-adjustments`,
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: "null"
+    });
+
+    expect(nullStockAdjustmentBody.statusCode).toBe(400);
+    expect(nullStockAdjustmentBody.json()).toMatchObject({
+      code: "body_invalid"
+    });
+
     const unauthenticatedProduct = await app.inject({
       method: "POST",
       url: `/businesses/${businessId}/products`,
@@ -227,6 +298,58 @@ describe("CP5 business core records", () => {
     });
 
     expect(unauthenticatedProduct.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it("keeps CP5 records scoped to their owning business", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId: firstBusinessId, sessionCookie } = await createOwnerBusiness(app);
+    const secondBusiness = await postJson<CreateBusinessResponse>(
+      app,
+      "/businesses",
+      {
+        name: "Second Shop",
+        language: "en"
+      },
+      sessionCookie
+    );
+
+    const product = await postJson<ProductResponse>(
+      app,
+      `/businesses/${firstBusinessId}/products`,
+      {
+        name: "Rice",
+        quantity: 5
+      },
+      sessionCookie
+    );
+
+    const productsForSecondBusiness = await getJson<ProductResponse[]>(
+      app,
+      `/businesses/${secondBusiness.business.id}/products`,
+      sessionCookie
+    );
+
+    expect(productsForSecondBusiness).toEqual([]);
+
+    const crossBusinessStockAdjustment = await app.inject({
+      method: "POST",
+      url: `/businesses/${secondBusiness.business.id}/products/${product.id}/stock-adjustments`,
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({
+        quantityAfter: 7
+      })
+    });
+
+    expect(crossBusinessStockAdjustment.statusCode).toBe(404);
+    expect(crossBusinessStockAdjustment.json()).toMatchObject({
+      code: "product_not_found"
+    });
 
     await app.close();
   });

@@ -208,10 +208,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           productId: request.params.productId,
-          adjustment: {
-            quantityAfter: parseNumber(request.body.quantityAfter, "quantityAfter"),
-            reason: parseNullableString(request.body.reason)
-          }
+          adjustment: parseStockAdjustmentBody(request.body)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -312,8 +309,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   return store;
 }
 
-function parseString(value: string | undefined, name: string): string {
-  if (value === undefined || value.trim().length === 0) {
+function parseString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
   }
 
@@ -336,25 +333,46 @@ function parseLanguage(value: string | undefined) {
   return value;
 }
 
-function parseProductBody(body: ProductBody) {
+function parseProductBody(body: ProductBody | null | undefined) {
+  const record = parseRequestBody(body);
+
   return {
-    name: parseString(body.name, "name"),
-    sku: parseNullableString(body.sku),
-    unit: parseNullableString(body.unit),
-    quantity: body.quantity === undefined ? 0 : parseNumber(body.quantity, "quantity")
+    name: parseString(record.name, "name"),
+    sku: parseNullableString(record.sku),
+    unit: parseNullableString(record.unit),
+    quantity: record.quantity === undefined ? 0 : parseNumber(record.quantity, "quantity")
   };
 }
 
-function parseContactRecordBody(body: ContactRecordBody) {
+function parseContactRecordBody(body: ContactRecordBody | null | undefined) {
+  const record = parseRequestBody(body);
+
   return {
-    name: parseString(body.name, "name"),
-    phone: parseNullableString(body.phone),
-    email: parseNullableString(body.email),
-    notes: parseNullableString(body.notes)
+    name: parseString(record.name, "name"),
+    phone: parseNullableString(record.phone),
+    email: parseNullableString(record.email),
+    notes: parseNullableString(record.notes)
   };
 }
 
-function parseNullableString(value: string | null | undefined): string | null {
+function parseStockAdjustmentBody(body: StockAdjustmentBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    quantityAfter: parseNumber(record.quantityAfter, "quantityAfter"),
+    reason: parseNullableString(record.reason)
+  };
+}
+
+function parseRequestBody(value: unknown): Record<string, unknown> {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    throw new Cp2Error(400, "body_invalid", "Request body must be a JSON object.");
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function parseNullableString(value: unknown): string | null {
   if (value === undefined || value === null) {
     return null;
   }
@@ -366,7 +384,7 @@ function parseNullableString(value: string | null | undefined): string | null {
   return value;
 }
 
-function parseNumber(value: number | undefined, name: string): number {
+function parseNumber(value: unknown, name: string): number {
   if (typeof value !== "number") {
     throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
   }
