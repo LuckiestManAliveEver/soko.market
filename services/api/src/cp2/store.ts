@@ -751,6 +751,8 @@ export class Cp2Store {
       now
     );
     assertValid(validateInvoiceInput(input.invoice));
+    this.buildInvoicePreview(input.businessId, input.invoice);
+
     const invoice = this.buildStoredInvoice({
       businessId: input.businessId,
       invoiceId: randomUUID(),
@@ -838,10 +840,19 @@ export class Cp2Store {
       throw new Cp2Error(409, "invoice_already_confirmed", "Invoice is already confirmed.");
     }
 
-    for (const item of invoice.items) {
-      const product = this.requireProduct(input.businessId, item.productId);
+    const requiredQuantityByProduct = new Map<string, number>();
 
-      if (product.quantity < item.quantity) {
+    for (const item of invoice.items) {
+      requiredQuantityByProduct.set(
+        item.productId,
+        (requiredQuantityByProduct.get(item.productId) ?? 0) + item.quantity
+      );
+    }
+
+    for (const [productId, requiredQuantity] of requiredQuantityByProduct) {
+      const product = this.requireProduct(input.businessId, productId);
+
+      if (product.quantity < requiredQuantity) {
         throw new Cp2Error(
           409,
           "stock_insufficient",

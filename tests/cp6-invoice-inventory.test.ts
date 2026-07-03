@@ -241,6 +241,121 @@ describe("CP6 invoice and inventory flow", () => {
 
     await app.close();
   });
+
+  it("rejects duplicate invoice lines that oversell the same product", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const product = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      {
+        name: "Beans",
+        quantity: 5
+      },
+      sessionCookie
+    );
+    const draft = await postJson<InvoiceResponse>(
+      app,
+      `/businesses/${businessId}/invoices`,
+      {
+        items: [
+          {
+            productId: product.id,
+            quantity: 3,
+            unitPrice: 80
+          },
+          {
+            productId: product.id,
+            quantity: 3,
+            unitPrice: 80
+          }
+        ]
+      },
+      sessionCookie
+    );
+
+    const duplicateLineOversell = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/invoices/${draft.id}/confirm`,
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({})
+    });
+
+    expect(duplicateLineOversell.statusCode).toBe(409);
+    expect(duplicateLineOversell.json()).toMatchObject({
+      code: "stock_insufficient"
+    });
+    expect(store.snapshot().products.find((item) => item.id === product.id)?.quantity).toBe(5);
+    expect(store.snapshot().invoices.find((invoice) => invoice.id === draft.id)?.status).toBe(
+      "draft"
+    );
+    expect(
+      store.snapshot().inventoryMovements.filter((movement) => movement.type === "sale")
+    ).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it("does not consume invoice numbers when create validation fails", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const product = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      {
+        name: "Sugar",
+        quantity: 4
+      },
+      sessionCookie
+    );
+
+    const invalidCreate = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/invoices`,
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({
+        items: [
+          {
+            productId: "missing-product",
+            quantity: 1,
+            unitPrice: 25
+          }
+        ]
+      })
+    });
+
+    expect(invalidCreate.statusCode).toBe(404);
+    expect(invalidCreate.json()).toMatchObject({
+      code: "product_not_found"
+    });
+
+    const draft = await postJson<InvoiceResponse>(
+      app,
+      `/businesses/${businessId}/invoices`,
+      {
+        items: [
+          {
+            productId: product.id,
+            quantity: 1,
+            unitPrice: 25
+          }
+        ]
+      },
+      sessionCookie
+    );
+
+    expect(draft.invoiceNumber).toBe("INV-00001");
+
+    await app.close();
+  });
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
