@@ -953,8 +953,8 @@ The original CP1/CP2 planning list has been resolved or assigned to later checkp
 
 ## Recommended Immediate Next Step
 
-Open CP6:
+Implement CP6:
 
-1. Create the CP6 baseline and decision log.
-2. Implement deterministic invoice and inventory flow on top of CP5 records.
+1. Build deterministic invoice and inventory flow on top of CP5 records.
+2. Keep invoice drafts/previews non-mutating until owner confirmation.
 3. Keep payments, debt tracking, and M-Pesa deferred to CP8.
