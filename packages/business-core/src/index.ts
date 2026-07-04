@@ -86,7 +86,10 @@ export type BusinessPermission =
   | "payment:read"
   | "payment:write"
   | "import:read"
-  | "import:write";
+  | "import:write"
+  | "report:read"
+  | "notification:read"
+  | "notification:write";
 
 const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
@@ -107,7 +110,10 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:read",
     "payment:write",
     "import:read",
-    "import:write"
+    "import:write",
+    "report:read",
+    "notification:read",
+    "notification:write"
   ]),
   manager: new Set([
     "business:read",
@@ -125,7 +131,10 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:read",
     "payment:write",
     "import:read",
-    "import:write"
+    "import:write",
+    "report:read",
+    "notification:read",
+    "notification:write"
   ]),
   sales_agent: new Set([
     "business:read",
@@ -135,7 +144,8 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "invoice:read",
     "invoice:write",
     "payment:read",
-    "import:read"
+    "import:read",
+    "notification:read"
   ]),
   cashier: new Set([
     "business:read",
@@ -144,7 +154,8 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "invoice:read",
     "payment:read",
     "payment:write",
-    "import:read"
+    "import:read",
+    "notification:read"
   ]),
   view_only: new Set(["business:read", "product:read", "customer:read", "supplier:read"])
 };

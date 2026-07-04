@@ -357,6 +357,110 @@ export interface SyncReplayResult {
   replayed: boolean;
 }
 
+export interface SalesReportSummary {
+  invoiceCount: number;
+  confirmedInvoiceCount: number;
+  grossSales: number;
+  collectedTotal: number;
+  outstandingTotal: number;
+}
+
+export interface InventoryReportSummary {
+  productCount: number;
+  totalUnitsOnHand: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  movementCount: number;
+}
+
+export interface PaymentsReportSummary {
+  paymentCount: number;
+  paidInvoiceCount: number;
+  partiallyPaidInvoiceCount: number;
+  unpaidInvoiceCount: number;
+  totalPaid: number;
+}
+
+export interface DebtReportSummary {
+  customerCount: number;
+  totalOutstanding: number;
+  largestBalanceDue: number;
+}
+
+export interface ImportsReportSummary {
+  totalJobs: number;
+  previewedJobs: number;
+  confirmedJobs: number;
+  failedJobs: number;
+  confirmedRows: number;
+}
+
+export interface SyncHealthReportSummary extends SyncQueueSummary {
+  active: number;
+}
+
+export interface BusinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  sales: SalesReportSummary;
+  inventory: InventoryReportSummary;
+  payments: PaymentsReportSummary;
+  debts: DebtReportSummary;
+  imports: ImportsReportSummary;
+  sync: SyncHealthReportSummary;
+}
+
+export type BusinessNotificationType =
+  "low_stock" | "open_debt" | "sync_conflict" | "import_failed";
+
+export type BusinessNotificationSeverity = "info" | "warning" | "critical";
+
+export type BusinessNotificationStatus = "unread" | "read" | "archived";
+
+export interface BusinessNotificationSummary {
+  id: string;
+  businessId: string;
+  type: BusinessNotificationType;
+  severity: BusinessNotificationSeverity;
+  status: BusinessNotificationStatus;
+  title: string;
+  body: string;
+  sourceType: "report" | "product" | "customer_debt" | "sync_queue" | "document_import";
+  sourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  readAt: string | null;
+  archivedAt: string | null;
+}
+
+export interface NotificationInboxSummary {
+  businessId: string;
+  unread: number;
+  read: number;
+  archived: number;
+  total: number;
+}
+
+export interface NotificationInbox {
+  summary: NotificationInboxSummary;
+  notifications: BusinessNotificationSummary[];
+}
+
+export interface BusinessKnowledgeFact {
+  topic: "sales" | "inventory" | "payments" | "debt" | "imports" | "sync" | "notifications";
+  severity: BusinessNotificationSeverity;
+  detail: string;
+  metric: number;
+}
+
+export interface BusinessKnowledgeSummary {
+  businessId: string;
+  generatedAt: string;
+  report: BusinessReportSummary;
+  notificationSummary: NotificationInboxSummary;
+  facts: BusinessKnowledgeFact[];
+}
+
 export type RuntimeToolName =
   | "products.list"
   | "invoices.list"
@@ -408,6 +512,10 @@ export interface RuntimeContextSummary {
   openInvoiceCount: number;
   paymentCount: number;
   importJobCount: number;
+  lowStockCount: number;
+  outstandingDebtTotal: number;
+  unreadNotificationCount: number;
+  knowledgeFactCount: number;
 }
 
 export type RuntimeModelProviderName = "llama.cpp" | "test";

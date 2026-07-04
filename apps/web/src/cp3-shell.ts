@@ -1,5 +1,14 @@
 export type ShellView =
-  "home" | "chat" | "products" | "customers" | "invoices" | "sync" | "payments" | "imports";
+  | "home"
+  | "chat"
+  | "products"
+  | "customers"
+  | "invoices"
+  | "sync"
+  | "payments"
+  | "imports"
+  | "reports"
+  | "notifications";
 
 export interface QuickAction {
   id: ShellView;
@@ -60,6 +69,16 @@ export const quickActions: QuickAction[] = [
     id: "imports",
     label: "Imports",
     summary: "Preview supplier CSV files"
+  },
+  {
+    id: "reports",
+    label: "Reports",
+    summary: "Review sales, stock, debt, imports, and sync health"
+  },
+  {
+    id: "notifications",
+    label: "Alerts",
+    summary: "Review in-app business notifications"
   }
 ];
 
@@ -93,6 +112,16 @@ export const emptyStates: EmptyState[] = [
     id: "imports",
     title: "No imports yet",
     body: "CP9 previews supplier CSV rows before any confirmed business record is written."
+  },
+  {
+    id: "reports",
+    title: "No report data yet",
+    body: "CP12 reports summarize deterministic business records once products, invoices, payments, imports, or sync work exists."
+  },
+  {
+    id: "notifications",
+    title: "No notifications yet",
+    body: "CP12 in-app alerts appear when deterministic business rules find low stock, debt, sync conflicts, or failed imports."
   }
 ];
 

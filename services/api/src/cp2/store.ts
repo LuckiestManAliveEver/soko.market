@@ -4,6 +4,10 @@ import type {
   AccountSummary,
   AuthChannel,
   AuthSessionView,
+  BusinessKnowledgeSummary,
+  BusinessNotificationStatus,
+  BusinessNotificationSummary,
+  BusinessReportSummary,
   BusinessRole,
   BusinessSummary,
   CustomerDebtSummary,
@@ -18,6 +22,7 @@ import type {
   InvoicePreview,
   InvoiceSummary,
   MembershipSummary,
+  NotificationInbox,
   OfflineCacheSnapshot,
   PaymentSummary,
   ProductSummary,
@@ -179,6 +184,7 @@ export interface Cp2Snapshot {
   payments: PaymentSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
+  notifications: BusinessNotificationSummary[];
   runtimeSessions: RuntimeSessionSummary[];
   runtimeTurns: RuntimeTurnSummary[];
   inventoryMovements: InventoryMovementSummary[];
@@ -207,6 +213,8 @@ export class Cp2Store {
   private readonly payments = new Map<string, PaymentSummary>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
+  private readonly notifications = new Map<string, BusinessNotificationSummary>();
+  private readonly notificationByRuleKey = new Map<string, string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
   private readonly runtimeTurns = new Map<string, RuntimeTurnSummary>();
   private readonly pendingRuntimeActions = new Map<string, PendingRuntimeAction>();
@@ -1092,9 +1100,13 @@ export class Cp2Store {
     now?: Date;
   }): CustomerDebtSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    return this.buildCustomerDebtSummaries(input.businessId);
+  }
+
+  private buildCustomerDebtSummaries(businessId: string): CustomerDebtSummary[] {
     const debts = new Map<string, CustomerDebtSummary>();
 
-    for (const summary of this.buildInvoicePaymentSummaries(input.businessId)) {
+    for (const summary of this.buildInvoicePaymentSummaries(businessId)) {
       if (summary.customerId === null || summary.balanceDue <= 0) {
         continue;
       }
@@ -1167,6 +1179,94 @@ export class Cp2Store {
       summary: summarizeSyncQueue(input.businessId, items),
       items
     };
+  }
+
+  getBusinessReport(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BusinessReportSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "report:read", now);
+    return this.buildBusinessReport(input.businessId, now);
+  }
+
+  getBusinessKnowledge(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BusinessKnowledgeSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "report:read", now);
+    return this.buildBusinessKnowledge(input.businessId, now);
+  }
+
+  listNotifications(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): NotificationInbox {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "notification:read", now);
+    this.ensureDeterministicNotifications(input.businessId, now);
+    const notifications = this.sortedNotifications(input.businessId);
+
+    return {
+      summary: summarizeNotifications(input.businessId, notifications),
+      notifications
+    };
+  }
+
+  updateNotificationStatus(input: {
+    sessionId: string | null;
+    businessId: string;
+    notificationId: string;
+    status: BusinessNotificationStatus;
+    now?: Date;
+  }): BusinessNotificationSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "notification:write",
+      now
+    );
+    this.ensureDeterministicNotifications(input.businessId, now);
+    const notification = this.notifications.get(input.notificationId);
+
+    if (notification === undefined || notification.businessId !== input.businessId) {
+      throw new Cp2Error(404, "notification_not_found", "Notification was not found.");
+    }
+
+    const updated: BusinessNotificationSummary = {
+      ...notification,
+      status: input.status,
+      updatedAt: now.toISOString(),
+      readAt:
+        input.status === "read"
+          ? (notification.readAt ?? now.toISOString())
+          : input.status === "archived"
+            ? (notification.readAt ?? now.toISOString())
+            : null,
+      archivedAt:
+        input.status === "archived" ? (notification.archivedAt ?? now.toISOString()) : null
+    };
+
+    this.notifications.set(updated.id, updated);
+    this.recordAuditEvent({
+      type: "notification.status_updated",
+      aggregateType: "notification",
+      aggregateId: updated.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        status: updated.status,
+        type: updated.type
+      }
+    });
+
+    return updated;
   }
 
   enqueueSyncMutation(input: {
@@ -1847,6 +1947,7 @@ export class Cp2Store {
       payments: [...this.payments.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
+      notifications: [...this.notifications.values()],
       runtimeSessions: [...this.runtimeSessions.values()],
       runtimeTurns: [...this.runtimeTurns.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
@@ -2303,6 +2404,7 @@ export class Cp2Store {
     const invoices = [...this.invoices.values()].filter(
       (invoice) => invoice.businessId === businessId
     );
+    const knowledge = this.buildBusinessKnowledge(businessId, new Date());
 
     return {
       businessId,
@@ -2326,8 +2428,280 @@ export class Cp2Store {
       ).length,
       importJobCount: [...this.documentImports.values()].filter(
         (job) => job.businessId === businessId
-      ).length
+      ).length,
+      lowStockCount: knowledge.report.inventory.lowStockCount,
+      outstandingDebtTotal: knowledge.report.debts.totalOutstanding,
+      unreadNotificationCount: knowledge.notificationSummary.unread,
+      knowledgeFactCount: knowledge.facts.length
     };
+  }
+
+  private buildBusinessReport(businessId: string, now: Date): BusinessReportSummary {
+    const products = this.productsForBusiness(businessId);
+    const invoices = this.invoicesForBusiness(businessId);
+    const payments = this.paymentsForBusiness(businessId);
+    const imports = this.importsForBusiness(businessId);
+    const movements = [...this.inventoryMovements.values()].filter(
+      (movement) => movement.businessId === businessId
+    );
+    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
+    const debts = this.buildCustomerDebtSummaries(businessId);
+    const syncSummary = summarizeSyncQueue(businessId, this.syncItemsForBusiness(businessId));
+    const confirmedInvoices = invoices.filter((invoice) => invoice.status === "confirmed");
+
+    return {
+      businessId,
+      generatedAt: now.toISOString(),
+      sales: {
+        invoiceCount: invoices.length,
+        confirmedInvoiceCount: confirmedInvoices.length,
+        grossSales: roundMoney(
+          confirmedInvoices.reduce((total, invoice) => total + invoice.total, 0)
+        ),
+        collectedTotal: roundMoney(payments.reduce((total, payment) => total + payment.amount, 0)),
+        outstandingTotal: roundMoney(
+          paymentSummaries.reduce((total, summary) => total + summary.balanceDue, 0)
+        )
+      },
+      inventory: {
+        productCount: products.length,
+        totalUnitsOnHand: roundMoney(
+          products.reduce((total, product) => total + product.quantity, 0)
+        ),
+        lowStockCount: products.filter((product) => product.quantity > 0 && product.quantity <= 2)
+          .length,
+        outOfStockCount: products.filter((product) => product.quantity <= 0).length,
+        movementCount: movements.length
+      },
+      payments: {
+        paymentCount: payments.length,
+        paidInvoiceCount: paymentSummaries.filter((summary) => summary.status === "paid").length,
+        partiallyPaidInvoiceCount: paymentSummaries.filter(
+          (summary) => summary.status === "partially_paid"
+        ).length,
+        unpaidInvoiceCount: paymentSummaries.filter((summary) => summary.status === "unpaid")
+          .length,
+        totalPaid: roundMoney(payments.reduce((total, payment) => total + payment.amount, 0))
+      },
+      debts: {
+        customerCount: debts.length,
+        totalOutstanding: roundMoney(debts.reduce((total, debt) => total + debt.balanceDue, 0)),
+        largestBalanceDue: roundMoney(Math.max(0, ...debts.map((debt) => debt.balanceDue)))
+      },
+      imports: {
+        totalJobs: imports.length,
+        previewedJobs: imports.filter((job) => job.status === "previewed").length,
+        confirmedJobs: imports.filter((job) => job.status === "confirmed").length,
+        failedJobs: imports.filter((job) => job.status === "failed").length,
+        confirmedRows: imports.reduce((total, job) => total + job.confirmedCount, 0)
+      },
+      sync: {
+        ...syncSummary,
+        active:
+          syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict
+      }
+    };
+  }
+
+  private buildBusinessKnowledge(businessId: string, now: Date): BusinessKnowledgeSummary {
+    const report = this.buildBusinessReport(businessId, now);
+    this.ensureDeterministicNotifications(businessId, now);
+    const notificationSummary = summarizeNotifications(
+      businessId,
+      this.sortedNotifications(businessId)
+    );
+    const facts = [
+      {
+        topic: "sales" as const,
+        severity: "info" as const,
+        detail: `${report.sales.confirmedInvoiceCount} confirmed invoices total ${report.sales.grossSales}.`,
+        metric: report.sales.grossSales
+      },
+      {
+        topic: "debt" as const,
+        severity: report.debts.totalOutstanding > 0 ? ("warning" as const) : ("info" as const),
+        detail: `${report.debts.customerCount} customers have outstanding balances.`,
+        metric: report.debts.totalOutstanding
+      },
+      {
+        topic: "inventory" as const,
+        severity:
+          report.inventory.outOfStockCount > 0
+            ? ("critical" as const)
+            : report.inventory.lowStockCount > 0
+              ? ("warning" as const)
+              : ("info" as const),
+        detail: `${report.inventory.lowStockCount} low-stock products and ${report.inventory.outOfStockCount} out of stock.`,
+        metric: report.inventory.lowStockCount + report.inventory.outOfStockCount
+      },
+      {
+        topic: "sync" as const,
+        severity: report.sync.conflict > 0 ? ("critical" as const) : ("info" as const),
+        detail: `${report.sync.active} sync items need attention.`,
+        metric: report.sync.active
+      },
+      {
+        topic: "notifications" as const,
+        severity: notificationSummary.unread > 0 ? ("warning" as const) : ("info" as const),
+        detail: `${notificationSummary.unread} unread in-app notifications.`,
+        metric: notificationSummary.unread
+      }
+    ];
+
+    return {
+      businessId,
+      generatedAt: now.toISOString(),
+      report,
+      notificationSummary,
+      facts
+    };
+  }
+
+  private ensureDeterministicNotifications(businessId: string, now: Date): void {
+    const report = this.buildBusinessReport(businessId, now);
+
+    if (report.inventory.outOfStockCount > 0 || report.inventory.lowStockCount > 0) {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:inventory.low_stock`,
+        type: "low_stock",
+        severity: report.inventory.outOfStockCount > 0 ? "critical" : "warning",
+        title: "Inventory needs attention",
+        body: `${report.inventory.lowStockCount} low-stock products and ${report.inventory.outOfStockCount} out of stock.`,
+        sourceType: "report",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.debts.totalOutstanding > 0) {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:debt.open`,
+        type: "open_debt",
+        severity: "warning",
+        title: "Open customer debt",
+        body: `${report.debts.customerCount} customers owe ${report.debts.totalOutstanding}.`,
+        sourceType: "report",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.sync.conflict > 0) {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:sync.conflict`,
+        type: "sync_conflict",
+        severity: "critical",
+        title: "Sync conflicts need review",
+        body: `${report.sync.conflict} queued sync item${report.sync.conflict === 1 ? "" : "s"} have conflicts.`,
+        sourceType: "sync_queue",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.imports.failedJobs > 0) {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:import.failed`,
+        type: "import_failed",
+        severity: "warning",
+        title: "Import failed",
+        body: `${report.imports.failedJobs} document import job${report.imports.failedJobs === 1 ? "" : "s"} failed.`,
+        sourceType: "document_import",
+        sourceId: null,
+        now
+      });
+    }
+  }
+
+  private upsertNotification(input: {
+    businessId: string;
+    ruleKey: string;
+    type: BusinessNotificationSummary["type"];
+    severity: BusinessNotificationSummary["severity"];
+    title: string;
+    body: string;
+    sourceType: BusinessNotificationSummary["sourceType"];
+    sourceId: string | null;
+    now: Date;
+  }): void {
+    const existingId = this.notificationByRuleKey.get(input.ruleKey);
+    const existing = existingId === undefined ? undefined : this.notifications.get(existingId);
+
+    if (existing !== undefined) {
+      if (existing.status === "archived") {
+        return;
+      }
+
+      this.notifications.set(existing.id, {
+        ...existing,
+        severity: input.severity,
+        title: input.title,
+        body: input.body,
+        updatedAt: input.now.toISOString()
+      });
+      return;
+    }
+
+    const notification: BusinessNotificationSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      type: input.type,
+      severity: input.severity,
+      status: "unread",
+      title: input.title,
+      body: input.body,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString(),
+      readAt: null,
+      archivedAt: null
+    };
+
+    this.notifications.set(notification.id, notification);
+    this.notificationByRuleKey.set(input.ruleKey, notification.id);
+    this.recordAuditEvent({
+      type: "notification.created",
+      aggregateType: "notification",
+      aggregateId: notification.id,
+      actorId: "system",
+      occurredAt: input.now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        type: notification.type,
+        severity: notification.severity
+      }
+    });
+  }
+
+  private sortedNotifications(businessId: string): BusinessNotificationSummary[] {
+    return [...this.notifications.values()]
+      .filter((notification) => notification.businessId === businessId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  private productsForBusiness(businessId: string): ProductSummary[] {
+    return [...this.products.values()].filter((product) => product.businessId === businessId);
+  }
+
+  private invoicesForBusiness(businessId: string): InvoiceSummary[] {
+    return [...this.invoices.values()].filter((invoice) => invoice.businessId === businessId);
+  }
+
+  private paymentsForBusiness(businessId: string): PaymentSummary[] {
+    return [...this.payments.values()].filter((payment) => payment.businessId === businessId);
+  }
+
+  private importsForBusiness(businessId: string): DocumentImportJobSummary[] {
+    return [...this.documentImports.values()].filter((job) => job.businessId === businessId);
+  }
+
+  private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
+    return [...this.syncQueue.values()].filter((item) => item.businessId === businessId);
   }
 
   private async createRuntimeModelRoute(input: {
@@ -2851,6 +3225,25 @@ function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): st
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function summarizeNotifications(
+  businessId: string,
+  notifications: BusinessNotificationSummary[]
+): NotificationInbox["summary"] {
+  const summary = {
+    businessId,
+    unread: 0,
+    read: 0,
+    archived: 0,
+    total: notifications.length
+  };
+
+  for (const notification of notifications) {
+    summary[notification.status] += 1;
+  }
+
+  return summary;
 }
 
 function hashOtp(challengeId: string, code: string): string {

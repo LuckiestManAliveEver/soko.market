@@ -315,7 +315,8 @@ button:disabled {
 }
 
 .record-row strong,
-.empty-record h3 {
+.empty-record h3,
+.record-row h4 {
   letter-spacing: 0;
   margin: 0;
 }
@@ -330,6 +331,11 @@ button:disabled {
   min-width: 72px;
 }
 
+.record-row button.secondary {
+  background: #e7ede8;
+  color: #23342a;
+}
+
 .invoice-row {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -338,6 +344,14 @@ button:disabled {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compact-actions {
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
+}
+
+.notification-row {
+  align-items: stretch;
 }
 
 .invoice-preview {

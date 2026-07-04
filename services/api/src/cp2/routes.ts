@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
   AuthChannel,
+  BusinessNotificationStatus,
   SupplierImportDraft,
   SyncMutationPayload,
   SyncMutationType
@@ -68,6 +69,10 @@ interface SyncQueueParams extends BusinessParams {
 
 interface RuntimeSessionParams extends BusinessParams {
   runtimeSessionId: string;
+}
+
+interface NotificationParams extends BusinessParams {
+  notificationId: string;
 }
 
 interface DocumentImportParams extends BusinessParams {
@@ -148,6 +153,10 @@ interface RuntimeTurnBody {
   runtimeSessionId?: string;
   message?: string;
   confirmationToken?: string;
+}
+
+interface NotificationStatusBody {
+  status?: string;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -525,6 +534,67 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         return store.listCustomerDebts({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/reports/summary",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getBusinessReport({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/knowledge",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getBusinessKnowledge({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/notifications",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listNotifications({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/notifications/:notificationId",
+    async (
+      request: FastifyRequest<{ Params: NotificationParams; Body: NotificationStatusBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateNotificationStatus({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          notificationId: request.params.notificationId,
+          status: parseNotificationStatus(request.body?.status)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -972,6 +1042,16 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   };
 }
 
+function parseNotificationStatus(value: unknown): BusinessNotificationStatus {
+  const status = parseString(value, "status");
+
+  if (status === "unread" || status === "read" || status === "archived") {
+    return status;
+  }
+
+  throw new Cp2Error(400, "notification_status_invalid", "Notification status is not supported.");
+}
+
 function parseInvoiceItems(value: unknown) {
   if (!Array.isArray(value)) {
     throw new Cp2Error(400, "items_required", "items is required.");
@@ -1090,7 +1170,10 @@ const businessPermissions: BusinessPermission[] = [
   "payment:read",
   "payment:write",
   "import:read",
-  "import:write"
+  "import:write",
+  "report:read",
+  "notification:read",
+  "notification:write"
 ];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {

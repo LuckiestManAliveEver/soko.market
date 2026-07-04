@@ -7,7 +7,7 @@ import {
 } from "../apps/web/src/cp3-shell";
 
 describe("CP3 shell contract", () => {
-  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, and active CP9 imports", () => {
+  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, CP9 imports, and CP12 reports", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -16,7 +16,9 @@ describe("CP3 shell contract", () => {
       "invoices",
       "sync",
       "payments",
-      "imports"
+      "imports",
+      "reports",
+      "notifications"
     ]);
 
     expect(emptyStates.map((state) => state.id)).toEqual([
@@ -25,7 +27,9 @@ describe("CP3 shell contract", () => {
       "invoices",
       "sync",
       "payments",
-      "imports"
+      "imports",
+      "reports",
+      "notifications"
     ]);
     expect(getEmptyState("chat")).toBeUndefined();
     expect(getEmptyState("products")?.body).toContain("CP5 product record");
@@ -33,6 +37,8 @@ describe("CP3 shell contract", () => {
     expect(getEmptyState("sync")?.body).toContain("CP7 sync");
     expect(getEmptyState("payments")?.body).toContain("CP8");
     expect(getEmptyState("imports")?.body).toContain("CP9");
+    expect(getEmptyState("reports")?.body).toContain("CP12");
+    expect(getEmptyState("notifications")?.body).toContain("CP12");
   });
 
   it("routes chat through the CP10 runtime confirmation boundary", () => {

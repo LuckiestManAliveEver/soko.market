@@ -99,7 +99,7 @@ export function buildLlamaPrompt(prompt: RuntimeModelPrompt): string {
     'or {"type":"clarification","message":"..."}',
     'or {"type":"response","message":"..."}.',
     `Allowed tools: ${tools}.`,
-    `Context: role=${prompt.context.role}; products=${prompt.context.productCount}; customers=${prompt.context.customerCount}; invoices=${prompt.context.invoiceCount}; openInvoices=${prompt.context.openInvoiceCount}; imports=${prompt.context.importJobCount}.`,
+    `Context: role=${prompt.context.role}; products=${prompt.context.productCount}; customers=${prompt.context.customerCount}; invoices=${prompt.context.invoiceCount}; openInvoices=${prompt.context.openInvoiceCount}; imports=${prompt.context.importJobCount}; lowStock=${prompt.context.lowStockCount}; outstandingDebt=${prompt.context.outstandingDebtTotal}; unreadNotifications=${prompt.context.unreadNotificationCount}; knowledgeFacts=${prompt.context.knowledgeFactCount}.`,
     `User message: ${JSON.stringify(prompt.message)}`
   ].join("\n");
 }

@@ -192,6 +192,89 @@ interface SyncQueueResponse {
   items: SyncQueueItem[];
 }
 
+interface BusinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  sales: {
+    invoiceCount: number;
+    confirmedInvoiceCount: number;
+    grossSales: number;
+    collectedTotal: number;
+    outstandingTotal: number;
+  };
+  inventory: {
+    productCount: number;
+    totalUnitsOnHand: number;
+    lowStockCount: number;
+    outOfStockCount: number;
+    movementCount: number;
+  };
+  payments: {
+    paymentCount: number;
+    paidInvoiceCount: number;
+    partiallyPaidInvoiceCount: number;
+    unpaidInvoiceCount: number;
+    totalPaid: number;
+  };
+  debts: {
+    customerCount: number;
+    totalOutstanding: number;
+    largestBalanceDue: number;
+  };
+  imports: {
+    totalJobs: number;
+    previewedJobs: number;
+    confirmedJobs: number;
+    failedJobs: number;
+    confirmedRows: number;
+  };
+  sync: SyncQueueSummary & {
+    active: number;
+  };
+}
+
+interface BusinessKnowledgeSummary {
+  businessId: string;
+  generatedAt: string;
+  report: BusinessReportSummary;
+  notificationSummary: NotificationInboxSummary;
+  facts: Array<{
+    topic: string;
+    severity: "info" | "warning" | "critical";
+    detail: string;
+    metric: number;
+  }>;
+}
+
+interface BusinessNotificationSummary {
+  id: string;
+  businessId: string;
+  type: string;
+  severity: "info" | "warning" | "critical";
+  status: "unread" | "read" | "archived";
+  title: string;
+  body: string;
+  sourceType: string;
+  sourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  readAt: string | null;
+  archivedAt: string | null;
+}
+
+interface NotificationInboxSummary {
+  businessId: string;
+  unread: number;
+  read: number;
+  archived: number;
+  total: number;
+}
+
+interface NotificationInbox {
+  summary: NotificationInboxSummary;
+  notifications: BusinessNotificationSummary[];
+}
+
 interface SupplierImportDraft {
   name: string;
   phone: string | null;
@@ -340,6 +423,14 @@ const emptySyncSummary: SyncQueueSummary = {
   total: 0
 };
 
+const emptyNotificationSummary: NotificationInboxSummary = {
+  businessId: "",
+  unread: 0,
+  read: 0,
+  archived: 0,
+  total: 0
+};
+
 function App() {
   const [channel, setChannel] = useState<AuthChannel>("phone");
   const [destination, setDestination] = useState("+254700000000");
@@ -368,6 +459,12 @@ function App() {
   const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
+  const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
+  const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
+  const [notificationInbox, setNotificationInbox] = useState<NotificationInbox>({
+    summary: emptyNotificationSummary,
+    notifications: []
+  });
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
@@ -443,6 +540,14 @@ function App() {
 
     if (view === "home" || view === "sync") {
       void loadSyncQueue(business.id);
+    }
+
+    if (view === "home" || view === "reports") {
+      void loadReports(business.id);
+    }
+
+    if (view === "home" || view === "notifications") {
+      void loadNotifications(business.id);
     }
 
     if (view === "payments") {
@@ -686,6 +791,49 @@ function App() {
       setPayments(nextPayments);
       setInvoicePayments(nextSummaries);
       setCustomerDebts(nextDebts);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadReports(businessId: string) {
+    try {
+      const [report, knowledge] = await Promise.all([
+        getJson<BusinessReportSummary>(`/businesses/${businessId}/reports/summary`),
+        getJson<BusinessKnowledgeSummary>(`/businesses/${businessId}/knowledge`)
+      ]);
+      setReportSummary(report);
+      setKnowledgeSummary(knowledge);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadNotifications(businessId: string) {
+    try {
+      setNotificationInbox(
+        await getJson<NotificationInbox>(`/businesses/${businessId}/notifications`)
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateNotification(
+    notificationId: string,
+    status: BusinessNotificationSummary["status"]
+  ) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<BusinessNotificationSummary>(
+        `/businesses/${business.id}/notifications/${notificationId}`,
+        { status }
+      );
+      await loadNotifications(business.id);
+      setStatusMessage("Notification updated");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -1290,13 +1438,31 @@ function App() {
                   onRefresh={() => business !== null && void loadDocumentImports(business.id)}
                 />
               ) : null}
+              {view === "reports" ? (
+                <ReportsSurface
+                  report={reportSummary}
+                  knowledge={knowledgeSummary}
+                  onRefresh={() => business !== null && void loadReports(business.id)}
+                />
+              ) : null}
+              {view === "notifications" ? (
+                <NotificationsSurface
+                  inbox={notificationInbox}
+                  onRefresh={() => business !== null && void loadNotifications(business.id)}
+                  onUpdate={(notificationId, status) =>
+                    void updateNotification(notificationId, status)
+                  }
+                />
+              ) : null}
               {currentEmptyState !== undefined &&
               view !== "products" &&
               view !== "customers" &&
               view !== "invoices" &&
               view !== "sync" &&
               view !== "payments" &&
-              view !== "imports" ? (
+              view !== "imports" &&
+              view !== "reports" &&
+              view !== "notifications" ? (
                 <EmptyStateSurface
                   title={currentEmptyState.title}
                   body={currentEmptyState.body}
@@ -2513,6 +2679,194 @@ function InvoiceDocument({ invoice }: { invoice: InvoicePreview | InvoiceSummary
         <span>Total</span>
         <strong>{formatMoney(invoice.total)}</strong>
       </div>
+    </div>
+  );
+}
+
+interface ReportsSurfaceProps {
+  report: BusinessReportSummary | null;
+  knowledge: BusinessKnowledgeSummary | null;
+  onRefresh: () => void;
+}
+
+function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
+  if (report === null) {
+    return (
+      <EmptyStateSurface
+        title="Reports not loaded"
+        body="Refresh to load CP12 deterministic business summaries."
+        onChat={onRefresh}
+        actionLabel="Refresh"
+      />
+    );
+  }
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Report controls">
+        <div className="section-heading">
+          <p className="eyebrow">CP12 reports</p>
+          <h3>Business summary</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>Sales</span>
+            <strong>{formatMoney(report.sales.grossSales)}</strong>
+          </div>
+          <div className="metric">
+            <span>Collected</span>
+            <strong>{formatMoney(report.sales.collectedTotal)}</strong>
+          </div>
+          <div className="metric">
+            <span>Debt</span>
+            <strong>{formatMoney(report.debts.totalOutstanding)}</strong>
+          </div>
+        </div>
+        <button type="button" onClick={onRefresh}>
+          Refresh reports
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Report sections">
+        <ReportRow
+          title="Inventory"
+          eyebrow={`${report.inventory.productCount} products`}
+          body={`${report.inventory.lowStockCount} low stock, ${report.inventory.outOfStockCount} out of stock, ${report.inventory.totalUnitsOnHand} units on hand.`}
+          value={`${report.inventory.movementCount} movements`}
+        />
+        <ReportRow
+          title="Payments"
+          eyebrow={`${report.payments.paymentCount} payments`}
+          body={`${report.payments.paidInvoiceCount} paid, ${report.payments.partiallyPaidInvoiceCount} partial, ${report.payments.unpaidInvoiceCount} unpaid invoices.`}
+          value={formatMoney(report.payments.totalPaid)}
+        />
+        <ReportRow
+          title="Imports"
+          eyebrow={`${report.imports.totalJobs} jobs`}
+          body={`${report.imports.confirmedJobs} confirmed, ${report.imports.previewedJobs} previewed, ${report.imports.failedJobs} failed.`}
+          value={`${report.imports.confirmedRows} rows`}
+        />
+        <ReportRow
+          title="Sync"
+          eyebrow={`${report.sync.total} queued records`}
+          body={`${report.sync.pending} pending, ${report.sync.failed} failed, ${report.sync.conflict} conflicts.`}
+          value={`${report.sync.active} active`}
+        />
+      </section>
+
+      <section className="record-list" aria-label="Knowledge facts">
+        <div className="section-heading">
+          <p className="eyebrow">Knowledge</p>
+          <h3>Runtime-safe facts</h3>
+        </div>
+        {knowledge?.facts.map((fact) => (
+          <article className="record-row" key={`${fact.topic}-${fact.detail}`}>
+            <div>
+              <p className="eyebrow">{fact.severity}</p>
+              <h4>{fact.topic}</h4>
+              <p>{fact.detail}</p>
+            </div>
+            <strong>{fact.metric}</strong>
+          </article>
+        )) ?? null}
+      </section>
+    </div>
+  );
+}
+
+interface ReportRowProps {
+  eyebrow: string;
+  title: string;
+  body: string;
+  value: string;
+}
+
+function ReportRow(props: ReportRowProps) {
+  return (
+    <article className="record-row">
+      <div>
+        <p className="eyebrow">{props.eyebrow}</p>
+        <h4>{props.title}</h4>
+        <p>{props.body}</p>
+      </div>
+      <strong>{props.value}</strong>
+    </article>
+  );
+}
+
+interface NotificationsSurfaceProps {
+  inbox: NotificationInbox;
+  onRefresh: () => void;
+  onUpdate: (notificationId: string, status: BusinessNotificationSummary["status"]) => void;
+}
+
+function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfaceProps) {
+  const visibleNotifications = inbox.notifications.filter(
+    (notification) => notification.status !== "archived"
+  );
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Notification controls">
+        <div className="section-heading">
+          <p className="eyebrow">CP12 alerts</p>
+          <h3>In-app notifications</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>Unread</span>
+            <strong>{inbox.summary.unread}</strong>
+          </div>
+          <div className="metric">
+            <span>Read</span>
+            <strong>{inbox.summary.read}</strong>
+          </div>
+          <div className="metric">
+            <span>Archived</span>
+            <strong>{inbox.summary.archived}</strong>
+          </div>
+        </div>
+        <button type="button" onClick={onRefresh}>
+          Refresh alerts
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Notifications">
+        {visibleNotifications.length === 0 ? (
+          <EmptyStateSurface
+            title="No active notifications"
+            body="Low stock, open debt, sync conflicts, and failed imports create in-app alerts here."
+            onChat={onRefresh}
+            actionLabel="Refresh"
+          />
+        ) : (
+          visibleNotifications.map((notification) => (
+            <article className="record-row notification-row" key={notification.id}>
+              <div>
+                <p className="eyebrow">
+                  {notification.severity} - {notification.status}
+                </p>
+                <h4>{notification.title}</h4>
+                <p>{notification.body}</p>
+              </div>
+              <div className="row-actions compact-actions">
+                {notification.status === "unread" ? (
+                  <button type="button" onClick={() => onUpdate(notification.id, "read")}>
+                    Read
+                  </button>
+                ) : null}
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => onUpdate(notification.id, "archived")}
+                >
+                  Archive
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+      </section>
     </div>
   );
 }

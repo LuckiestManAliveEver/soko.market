@@ -1,10 +1,10 @@
 # CP12: Reports, Notifications, and Knowledge Layer
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 Target tag: `checkpoint/cp12-reports-knowledge`
-Actual tag: pending
+Actual tag: `checkpoint/cp12-reports-knowledge`
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Business records and events change
 
 CP12 can be marked passed when:
 
-- [ ] Report shared contracts exist for sales, inventory, payments, debt, imports, and sync health.
-- [ ] Deterministic report builders aggregate existing scoped business records.
-- [ ] Report API endpoints enforce business membership and role access.
-- [ ] Owner web UI exposes report views without regressing CP3 shell behavior.
-- [ ] Notification shared contracts and in-app records exist.
-- [ ] Notification API endpoints support listing and state changes such as read/archive.
-- [ ] Important business states can create deterministic in-app notification records.
-- [ ] Runtime knowledge summaries expose bounded read-only report and notification context.
-- [ ] Local-model prompts continue to avoid raw sensitive business records unless explicitly needed and bounded.
-- [ ] Tests prove report totals, business scoping, role access, notification state transitions, and runtime knowledge safety.
-- [ ] Existing CP1 through CP11 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp12-reports-knowledge` is created.
+- [x] Report shared contracts exist for sales, inventory, payments, debt, imports, and sync health.
+- [x] Deterministic report builders aggregate existing scoped business records.
+- [x] Report API endpoints enforce business membership and role access.
+- [x] Owner web UI exposes report views without regressing CP3 shell behavior.
+- [x] Notification shared contracts and in-app records exist.
+- [x] Notification API endpoints support listing and state changes such as read/archive.
+- [x] Important business states can create deterministic in-app notification records.
+- [x] Runtime knowledge summaries expose bounded read-only report and notification context.
+- [x] Local-model prompts continue to avoid raw sensitive business records unless explicitly needed and bounded.
+- [x] Tests prove report totals, business scoping, role access, notification state transitions, and runtime knowledge safety.
+- [x] Existing CP1 through CP11 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp12-reports-knowledge` is created.
 
 ## Rollback Instructions
 

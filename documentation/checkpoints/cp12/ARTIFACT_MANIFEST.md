@@ -1,8 +1,8 @@
 # CP12 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 
 ## Created CP12 Artifacts
 
@@ -12,18 +12,20 @@ Date passed: pending
 | `documentation/checkpoints/cp12/DECISION_LOG.md`      | Reports, notifications, knowledge, provider, and runtime-boundary decisions. |
 | `documentation/checkpoints/cp12/ARTIFACT_MANIFEST.md` | This manifest.                                                               |
 
-## Planned CP12 Implementation Artifacts
+## Implemented CP12 Artifacts
 
-| Path                                  | Purpose                                                                                   |
-| ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `packages/shared-types/src/index.ts`  | Shared report, notification, and knowledge summary contracts.                             |
-| `packages/business-core/src/index.ts` | Deterministic report and notification rule helpers if they fit business-core boundaries.  |
-| `packages/event-core/src/index.ts`    | Event contracts or helpers needed for report and notification auditability.               |
-| `services/api/src/cp2/*`              | Business-scoped report, notification, and knowledge endpoints plus in-memory store state. |
-| `packages/tool-core/src/index.ts`     | Runtime read-only knowledge/report tool support if needed.                                |
-| `apps/web/src/*`                      | Owner-facing report, notification, and knowledge UI surfaces.                             |
-| `tests/*cp12*`                        | Report totals, scoping, role access, notification, and runtime knowledge safety tests.    |
-| `documentation/*`                     | Report definitions and notification boundary documentation.                               |
+| Path                                          | Purpose                                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `packages/shared-types/src/index.ts`          | Shared report, notification, knowledge summary, and runtime context contracts.                 |
+| `packages/business-core/src/index.ts`         | Report and notification permissions for role-gated API access.                                 |
+| `services/api/src/cp2/store.ts`               | Deterministic report builders, in-app notifications, knowledge summaries, and runtime context. |
+| `services/api/src/cp2/routes.ts`              | Business-scoped report, notification, and knowledge endpoints.                                 |
+| `services/ai-runtime/src/local-model.ts`      | Bounded CP12 knowledge counts in local-model prompt context.                                   |
+| `apps/web/src/cp3-shell.ts`                   | Reports and alerts shell navigation entries and empty states.                                  |
+| `apps/web/src/main.tsx`                       | Owner-facing report and notification UI surfaces.                                              |
+| `apps/web/src/styles.css`                     | Compact report and notification row styling.                                                   |
+| `tests/cp12-reports-knowledge.test.ts`        | Report totals, scoping, role access, notification, and runtime knowledge safety tests.         |
+| `documentation/CP12_REPORTS_NOTIFICATIONS.md` | Report definitions and notification boundary documentation.                                    |
 
 ## CP12 Opening Checklist
 
@@ -37,21 +39,25 @@ Date passed: pending
 
 ## CP12 Completion Checklist
 
-- [ ] Report shared contracts implemented.
-- [ ] Deterministic report builders implemented.
-- [ ] Report API endpoints implemented.
-- [ ] Owner report UI implemented.
-- [ ] Notification shared contracts implemented.
-- [ ] In-app notification records and state transitions implemented.
-- [ ] Notification API endpoints implemented.
-- [ ] Runtime knowledge summaries implemented.
-- [ ] Local-model prompt boundaries preserved.
-- [ ] CP12 tests implemented.
-- [ ] Existing CP1 through CP11 checks pass.
-- [ ] `checkpoint/cp12-reports-knowledge` tag created.
+- [x] Report shared contracts implemented.
+- [x] Deterministic report builders implemented.
+- [x] Report API endpoints implemented.
+- [x] Owner report UI implemented.
+- [x] Notification shared contracts implemented.
+- [x] In-app notification records and state transitions implemented.
+- [x] Notification API endpoints implemented.
+- [x] Runtime knowledge summaries implemented.
+- [x] Local-model prompt boundaries preserved.
+- [x] CP12 tests implemented.
+- [x] Existing CP1 through CP11 checks pass.
+- [x] `checkpoint/cp12-reports-knowledge` tag created.
 
 ## Verification
 
-Opening verification:
+Passed verification:
 
-- pending
+- `pnpm --filter @soko/shared-types typecheck`
+- `pnpm --filter @soko/api typecheck`
+- `pnpm --filter @soko/web typecheck`
+- `pnpm vitest run tests/cp12-reports-knowledge.test.ts --reporter=dot`
+- `pnpm run ci`
