@@ -385,6 +385,9 @@ export type RuntimePlanStatus =
 export type RuntimeTelemetryState =
   | "turn.received"
   | "context.built"
+  | "model.prompt_built"
+  | "model.completed"
+  | "model.fallback"
   | "intent.routed"
   | "plan.created"
   | "verification.completed"
@@ -405,6 +408,41 @@ export interface RuntimeContextSummary {
   openInvoiceCount: number;
   paymentCount: number;
   importJobCount: number;
+}
+
+export type RuntimeModelProviderName = "llama.cpp" | "test";
+
+export type RuntimeModelAdapterStatus =
+  "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
+
+export interface RuntimeModelPrompt {
+  message: string;
+  context: RuntimeContextSummary;
+  allowedTools: RuntimeToolName[];
+  schemaVersion: "cp11-runtime-model-v1";
+}
+
+export interface RuntimeModelCompletionResult {
+  provider: RuntimeModelProviderName;
+  status: Exclude<RuntimeModelAdapterStatus, "disabled" | "malformed">;
+  outputText: string | null;
+  durationMs: number;
+  errorCode: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+}
+
+export interface RuntimeModelProvider {
+  name: RuntimeModelProviderName;
+  complete(prompt: RuntimeModelPrompt): Promise<RuntimeModelCompletionResult>;
+}
+
+export interface RuntimeModelTrace {
+  provider: RuntimeModelProviderName | null;
+  status: RuntimeModelAdapterStatus;
+  durationMs: number | null;
+  fallbackUsed: boolean;
+  outputKind: "tool" | "clarification" | "response" | null;
+  errorCode: string | null;
 }
 
 export interface RuntimePlannedAction {
@@ -463,6 +501,7 @@ export interface RuntimeTurnSummary {
   context: RuntimeContextSummary;
   plan: RuntimePlannedAction;
   verification: RuntimeVerificationResult;
+  model: RuntimeModelTrace | null;
   response: string;
   toolResult: unknown | null;
   telemetry: RuntimeTelemetryEvent[];

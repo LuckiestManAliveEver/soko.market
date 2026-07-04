@@ -22,6 +22,10 @@ import type {
   PaymentSummary,
   ProductSummary,
   RuntimeContextSummary,
+  RuntimeModelCompletionResult,
+  RuntimeModelPrompt,
+  RuntimeModelProvider,
+  RuntimeModelTrace,
   RuntimePlannedAction,
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
@@ -88,6 +92,7 @@ import {
 } from "@soko/business-core";
 import {
   createRuntimeToolProposal,
+  parseRuntimeModelOutput,
   parseMerchantCommand,
   runtimeToolRegistry,
   type RuntimeToolName
@@ -182,7 +187,13 @@ export interface Cp2Snapshot {
   auditEvents: BusinessEvent[];
 }
 
+export interface Cp2StoreOptions {
+  runtimeModelProvider?: RuntimeModelProvider;
+}
+
 export class Cp2Store {
+  constructor(private readonly options: Cp2StoreOptions = {}) {}
+
   private readonly accounts = new Map<string, AccountSummary>();
   private readonly accountByDestination = new Map<string, string>();
   private readonly users = new Map<string, UserSummary>();
@@ -1590,14 +1601,14 @@ export class Cp2Store {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  createRuntimeTurn(input: {
+  async createRuntimeTurn(input: {
     sessionId: string | null;
     businessId: string;
     runtimeSessionId?: string;
     message: string;
     confirmationToken?: string;
     now?: Date;
-  }): RuntimeTurnResult {
+  }): Promise<RuntimeTurnResult> {
     const now = input.now ?? new Date();
     const auth = this.requireAuthorizedSession(
       input.sessionId,
@@ -1681,6 +1692,7 @@ export class Cp2Store {
           context,
           plan,
           verification,
+          model: null,
           response: "This runtime session has reached its action limit. Start a new session.",
           toolResult: null,
           telemetry,
@@ -1711,11 +1723,18 @@ export class Cp2Store {
     }
 
     const parserResult = parseMerchantCommand(input.message);
+    const modelRoute = await this.createRuntimeModelRoute({
+      message: input.message,
+      context,
+      now,
+      appendTelemetry
+    });
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
-      confidence: parserResult.confidence
+      confidence: parserResult.confidence,
+      source: modelRoute.proposal === null ? "parser" : "local_model"
     });
-    const proposal = createRuntimeToolProposal(parserResult);
+    const proposal = modelRoute.proposal ?? createRuntimeToolProposal(parserResult);
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
     const confirmationToken =
@@ -1800,6 +1819,7 @@ export class Cp2Store {
         context,
         plan,
         verification,
+        model: modelRoute.trace,
         response: createRuntimeResponse({
           plan,
           proposalReason: proposal.reason,
@@ -2212,6 +2232,7 @@ export class Cp2Store {
         context: input.context,
         plan: action,
         verification,
+        model: null,
         response: verification.ok
           ? `Confirmed and executed ${action.toolName}.`
           : "I could not execute the confirmed action.",
@@ -2306,6 +2327,123 @@ export class Cp2Store {
       importJobCount: [...this.documentImports.values()].filter(
         (job) => job.businessId === businessId
       ).length
+    };
+  }
+
+  private async createRuntimeModelRoute(input: {
+    message: string;
+    context: RuntimeContextSummary;
+    now: Date;
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void;
+  }): Promise<{
+    proposal: ReturnType<typeof createRuntimeToolProposal> | null;
+    trace: RuntimeModelTrace | null;
+  }> {
+    const provider = this.options.runtimeModelProvider;
+
+    if (provider === undefined) {
+      return {
+        proposal: null,
+        trace: null
+      };
+    }
+
+    const prompt = buildRuntimeModelPrompt(input.message, input.context);
+    input.appendTelemetry("model.prompt_built", "completed", null, null, {
+      provider: provider.name,
+      allowedToolCount: prompt.allowedTools.length,
+      messageLength: input.message.trim().length,
+      productCount: input.context.productCount,
+      invoiceCount: input.context.invoiceCount
+    });
+
+    let completion: RuntimeModelCompletionResult;
+
+    try {
+      completion = await provider.complete(prompt);
+    } catch {
+      input.appendTelemetry("model.completed", "blocked", null, null, {
+        provider: provider.name,
+        adapterStatus: "error",
+        durationMs: 0,
+        errorCode: "provider_exception"
+      });
+      input.appendTelemetry("model.fallback", "completed", null, null, {
+        provider: provider.name,
+        adapterStatus: "error",
+        errorCode: "provider_exception"
+      });
+
+      return {
+        proposal: null,
+        trace: {
+          provider: provider.name,
+          status: "error",
+          durationMs: 0,
+          fallbackUsed: true,
+          outputKind: null,
+          errorCode: "provider_exception"
+        }
+      };
+    }
+
+    input.appendTelemetry(
+      "model.completed",
+      completion.status === "available" ? "completed" : "blocked",
+      null,
+      null,
+      {
+        provider: completion.provider,
+        adapterStatus: completion.status,
+        durationMs: completion.durationMs,
+        errorCode: completion.errorCode
+      }
+    );
+
+    if (completion.status !== "available" || completion.outputText === null) {
+      input.appendTelemetry("model.fallback", "completed", null, null, {
+        provider: completion.provider,
+        adapterStatus: completion.status,
+        errorCode: completion.errorCode
+      });
+
+      return {
+        proposal: null,
+        trace: modelTraceFromCompletion(completion, true, null)
+      };
+    }
+
+    const parsed = parseRuntimeModelOutput(completion.outputText);
+
+    if (!parsed.ok || parsed.output === null) {
+      input.appendTelemetry("model.fallback", "completed", null, null, {
+        provider: completion.provider,
+        adapterStatus: "malformed",
+        errorCode: parsed.errors[0] ?? "model_output_malformed"
+      });
+
+      return {
+        proposal: null,
+        trace: {
+          provider: completion.provider,
+          status: "malformed",
+          durationMs: completion.durationMs,
+          fallbackUsed: true,
+          outputKind: null,
+          errorCode: parsed.errors[0] ?? "model_output_malformed"
+        }
+      };
+    }
+
+    return {
+      proposal: parsed.output.proposal,
+      trace: modelTraceFromCompletion(completion, false, parsed.output.kind)
     };
   }
 
@@ -2507,8 +2645,35 @@ export class Cp2Store {
   }
 }
 
-export function createCp2Store(): Cp2Store {
-  return new Cp2Store();
+export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
+  return new Cp2Store(options);
+}
+
+function buildRuntimeModelPrompt(
+  message: string,
+  context: RuntimeContextSummary
+): RuntimeModelPrompt {
+  return {
+    message,
+    context,
+    allowedTools: Object.keys(runtimeToolRegistry) as RuntimeToolName[],
+    schemaVersion: "cp11-runtime-model-v1"
+  };
+}
+
+function modelTraceFromCompletion(
+  completion: RuntimeModelCompletionResult,
+  fallbackUsed: boolean,
+  outputKind: RuntimeModelTrace["outputKind"]
+): RuntimeModelTrace {
+  return {
+    provider: completion.provider,
+    status: completion.status,
+    durationMs: completion.durationMs,
+    fallbackUsed,
+    outputKind,
+    errorCode: completion.errorCode
+  };
 }
 
 function createRuntimePlan(input: {

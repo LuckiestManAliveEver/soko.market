@@ -1,5 +1,10 @@
 import Fastify from "fastify";
 import type { HealthResponse } from "@soko/shared-types";
+export {
+  buildLlamaPrompt,
+  createLlamaCppRuntimeModelProvider,
+  type LlamaCppRuntimeModelOptions
+} from "./local-model.js";
 
 export function buildAiRuntime() {
   const app = Fastify({

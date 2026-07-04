@@ -1,8 +1,8 @@
 # CP11 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 
 ## Created CP11 Artifacts
 
@@ -12,17 +12,18 @@ Date passed: pending
 | `documentation/checkpoints/cp11/DECISION_LOG.md`      | Local model adapter, fallback, telemetry, and safety-boundary decisions. |
 | `documentation/checkpoints/cp11/ARTIFACT_MANIFEST.md` | This manifest.                                                           |
 
-## Planned CP11 Implementation Artifacts
+## Implemented CP11 Artifacts
 
-| Path                                 | Purpose                                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- |
-| `services/ai-runtime/src/*`          | Local model provider interface and llama.cpp-compatible adapter.        |
-| `services/api/src/cp2/*`             | Runtime integration with local model-backed planning and fallback.      |
-| `packages/shared-types/src/index.ts` | Shared model adapter state, telemetry, and response contract types.     |
-| `packages/tool-core/src/index.ts`    | Bounded model output parsing support for draft plans or clarifications. |
-| `apps/web/src/*`                     | Runtime UI behavior for local-model-backed responses if needed.         |
-| `tests/*cp11*`                       | Adapter success, fallback, timeout, malformed output, and safety tests. |
-| `documentation/*`                    | Local development setup and configuration notes for llama.cpp adapter.  |
+| Path                                      | Purpose                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `services/ai-runtime/src/local-model.ts`  | llama.cpp-compatible provider, prompt builder, timeout handling, and failure mapping.      |
+| `services/ai-runtime/src/app.ts`          | Exports local model adapter helpers from the AI runtime service boundary.                  |
+| `services/api/src/cp2/store.ts`           | Optional model-provider runtime integration, bounded fallback, model trace, and telemetry. |
+| `services/api/src/cp2/routes.ts`          | Awaits async runtime turn creation while preserving CP2 error handling.                    |
+| `packages/shared-types/src/index.ts`      | Shared model adapter prompt, completion, provider, trace, and telemetry types.             |
+| `packages/tool-core/src/index.ts`         | Bounded model output parsing and runtime tool-input validation support.                    |
+| `tests/cp11-local-model-adapter.test.ts`  | Adapter success, fallback, timeout, malformed output, and safety tests.                    |
+| `documentation/CP11_LOCAL_MODEL_SETUP.md` | Local development setup and configuration notes for llama.cpp adapter.                     |
 
 ## CP11 Opening Checklist
 
@@ -36,21 +37,26 @@ Date passed: pending
 
 ## CP11 Completion Checklist
 
-- [ ] Local model provider interface implemented.
-- [ ] llama.cpp-compatible local adapter implemented.
-- [ ] Local adapter configuration documented.
-- [ ] Prompt assembly uses least-necessary business-scoped context.
-- [ ] Model output parsed into bounded runtime shapes.
-- [ ] Adapter failures, timeouts, and malformed output fall back deterministically.
-- [ ] Verification gates remain enforced for model-derived plans.
-- [ ] High and critical risk confirmation tests still pass.
-- [ ] Runtime telemetry records adapter state without sensitive plaintext.
-- [ ] CP11 adapter tests implemented.
-- [ ] Existing CP1 through CP10 checks pass.
-- [ ] `checkpoint/cp11-local-model-adapter` tag created.
+- [x] Local model provider interface implemented.
+- [x] llama.cpp-compatible local adapter implemented.
+- [x] Local adapter configuration documented.
+- [x] Prompt assembly uses least-necessary business-scoped context.
+- [x] Model output parsed into bounded runtime shapes.
+- [x] Adapter failures, timeouts, and malformed output fall back deterministically.
+- [x] Verification gates remain enforced for model-derived plans.
+- [x] High and critical risk confirmation tests still pass.
+- [x] Runtime telemetry records adapter state without sensitive plaintext.
+- [x] CP11 adapter tests implemented.
+- [x] Existing CP1 through CP10 checks pass.
+- [x] `checkpoint/cp11-local-model-adapter` tag created.
 
 ## Verification
 
-Opening verification:
+Passed verification:
 
-- pending
+- `pnpm --filter @soko/shared-types typecheck`
+- `pnpm --filter @soko/tool-core typecheck`
+- `pnpm --filter @soko/api typecheck`
+- `pnpm --filter @soko/ai-runtime typecheck`
+- `pnpm vitest run tests/cp11-local-model-adapter.test.ts --reporter=dot`
+- `pnpm run ci`

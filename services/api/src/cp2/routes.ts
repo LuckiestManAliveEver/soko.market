@@ -669,7 +669,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/businesses/:businessId/runtime/turns",
     async (request: FastifyRequest<{ Params: BusinessParams; Body: RuntimeTurnBody }>, reply) => {
       try {
-        return store.createRuntimeTurn({
+        return await store.createRuntimeTurn({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           ...parseRuntimeTurnBody(request.body)

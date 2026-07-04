@@ -88,6 +88,19 @@ export interface RuntimeToolProposal {
   validation: ValidationResult;
 }
 
+export type RuntimeModelOutputKind = "tool" | "clarification" | "response";
+
+export interface ParsedRuntimeModelOutput {
+  kind: RuntimeModelOutputKind;
+  proposal: RuntimeToolProposal;
+}
+
+export interface RuntimeModelOutputParseResult {
+  ok: boolean;
+  output: ParsedRuntimeModelOutput | null;
+  errors: string[];
+}
+
 export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition> = {
   "products.list": {
     name: "products.list",
@@ -221,6 +234,158 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
             : "I need more details before I can plan that action."
         )
       };
+  }
+}
+
+export function parseRuntimeModelOutput(outputText: string): RuntimeModelOutputParseResult {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(outputText);
+  } catch {
+    return {
+      ok: false,
+      output: null,
+      errors: ["Local model returned malformed JSON."]
+    };
+  }
+
+  if (!isRecord(parsed)) {
+    return {
+      ok: false,
+      output: null,
+      errors: ["Local model output must be a JSON object."]
+    };
+  }
+
+  const kind = parsed.type;
+
+  if (kind === "tool") {
+    const toolName = parsed.toolName;
+    const input = parsed.input;
+    const reason =
+      typeof parsed.reason === "string" && parsed.reason.trim().length > 0
+        ? parsed.reason.trim()
+        : "Local model proposed a runtime tool.";
+
+    if (!isRuntimeToolName(toolName)) {
+      return {
+        ok: false,
+        output: null,
+        errors: ["Local model proposed an unsupported runtime tool."]
+      };
+    }
+
+    const toolInput = isRecord(input) ? input : {};
+
+    return {
+      ok: true,
+      output: {
+        kind: "tool",
+        proposal: {
+          toolName,
+          input: toolInput,
+          reason,
+          validation: validateRuntimeToolInput(toolName, toolInput)
+        }
+      },
+      errors: []
+    };
+  }
+
+  if (kind === "clarification") {
+    const message = parseModelMessage(
+      parsed.message,
+      "I need more details before I can plan that."
+    );
+
+    return {
+      ok: true,
+      output: {
+        kind: "clarification",
+        proposal: {
+          toolName: "unknown.clarify",
+          input: {},
+          reason: "Local model requested clarification.",
+          validation: invalid(message)
+        }
+      },
+      errors: []
+    };
+  }
+
+  if (kind === "response") {
+    const message = parseModelMessage(
+      parsed.message,
+      "I can help with products, invoices, payments, and imports."
+    );
+
+    return {
+      ok: true,
+      output: {
+        kind: "response",
+        proposal: {
+          toolName: "unknown.clarify",
+          input: {},
+          reason: message,
+          validation: valid()
+        }
+      },
+      errors: []
+    };
+  }
+
+  return {
+    ok: false,
+    output: null,
+    errors: ["Local model output type must be tool, clarification, or response."]
+  };
+}
+
+export function validateRuntimeToolInput(
+  toolName: RuntimeToolName,
+  input: Record<string, unknown>
+): ValidationResult {
+  switch (toolName) {
+    case "products.list":
+    case "invoices.list":
+    case "unknown.clarify":
+      return valid();
+
+    case "product.create": {
+      const errors: string[] = [];
+      const name = typeof input.name === "string" ? input.name.trim() : "";
+      const unit = typeof input.unit === "string" ? input.unit.trim() : "";
+      const quantity = Number(input.quantity ?? 0);
+
+      if (name.length === 0) {
+        errors.push("Product name is required before a product can be drafted.");
+      }
+
+      if (unit.length === 0) {
+        errors.push("Product unit is required before a product can be drafted.");
+      }
+
+      if (!Number.isFinite(quantity) || quantity < 0) {
+        errors.push("Product quantity must be a non-negative number.");
+      }
+
+      return errors.length === 0 ? valid() : invalid(...errors);
+    }
+
+    case "customer.create": {
+      const name = typeof input.name === "string" ? input.name.trim() : "";
+
+      return name.length === 0
+        ? invalid("Customer name is required before a customer can be drafted.")
+        : valid();
+    }
+
+    case "invoice.draft":
+      return invalid("Invoice runtime draft needs product and price details.");
+
+    case "payment.record":
+      return invalid("Payment runtime draft needs an invoice id and method.");
   }
 }
 
@@ -465,6 +630,18 @@ function createUnknownResult(normalizedInput: string, question: string): ParseRe
     normalizedInput,
     slots: {}
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRuntimeToolName(value: unknown): value is RuntimeToolName {
+  return typeof value === "string" && value in runtimeToolRegistry;
+}
+
+function parseModelMessage(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
 function getNextAction(intent: Exclude<RuleIntent, "unknown">): ParserNextAction {

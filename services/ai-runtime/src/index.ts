@@ -1,4 +1,9 @@
 import { buildAiRuntime } from "./app.js";
+export {
+  buildLlamaPrompt,
+  createLlamaCppRuntimeModelProvider,
+  type LlamaCppRuntimeModelOptions
+} from "./local-model.js";
 
 const port = Number(process.env.AI_RUNTIME_PORT ?? 4002);
 const app = buildAiRuntime();

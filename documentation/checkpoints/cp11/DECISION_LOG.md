@@ -1,8 +1,8 @@
 # CP11 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 
 This file records llama.cpp local model adapter decisions for CP11.
 

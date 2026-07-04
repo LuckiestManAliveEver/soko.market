@@ -1,10 +1,10 @@
 # CP11: llama.cpp Local Model Adapter
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 Target tag: `checkpoint/cp11-local-model-adapter`
-Actual tag: pending
+Actual tag: `checkpoint/cp11-local-model-adapter`
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Owner sends a message
 
 CP11 can be marked passed when:
 
-- [ ] Local model provider interface exists behind the CP10 runtime contract.
-- [ ] llama.cpp-compatible adapter can be configured for local development.
-- [ ] Prompt assembly uses business-scoped, least-necessary runtime context.
-- [ ] Model output is parsed into response text, clarification, or draft plan without direct writes.
-- [ ] Adapter failures, timeouts, and malformed responses fall back deterministically.
-- [ ] Verification still enforces risk, role, input validation, and confirmation gates.
-- [ ] High and critical risk tools still require explicit confirmation.
-- [ ] Runtime telemetry records adapter state without sensitive plaintext prompts or outputs.
-- [ ] Tests cover successful inference, unavailable adapter, timeout, malformed output, and mutation-boundary preservation.
-- [ ] Web/runtime behavior exposes local-model-backed responses without regressing CP3 or CP10 behavior.
-- [ ] Existing CP1 through CP10 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp11-local-model-adapter` is created.
+- [x] Local model provider interface exists behind the CP10 runtime contract.
+- [x] llama.cpp-compatible adapter can be configured for local development.
+- [x] Prompt assembly uses business-scoped, least-necessary runtime context.
+- [x] Model output is parsed into response text, clarification, or draft plan without direct writes.
+- [x] Adapter failures, timeouts, and malformed responses fall back deterministically.
+- [x] Verification still enforces risk, role, input validation, and confirmation gates.
+- [x] High and critical risk tools still require explicit confirmation.
+- [x] Runtime telemetry records adapter state without sensitive plaintext prompts or outputs.
+- [x] Tests cover successful inference, unavailable adapter, timeout, malformed output, and mutation-boundary preservation.
+- [x] Web/runtime behavior exposes local-model-backed responses without regressing CP3 or CP10 behavior.
+- [x] Existing CP1 through CP10 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp11-local-model-adapter` is created.
 
 ## Rollback Instructions
 
