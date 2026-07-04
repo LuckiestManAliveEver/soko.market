@@ -1,10 +1,10 @@
 # CP13: Logistics
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 Target tag: `checkpoint/cp13-logistics`
-Actual tag: pending
+Actual tag: `checkpoint/cp13-logistics`
 
 ## Purpose
 
@@ -85,18 +85,18 @@ Confirmed invoice exists
 
 CP13 can be marked passed when:
 
-- [ ] Logistics shared contracts exist for fulfillment records, methods, statuses, and summaries.
-- [ ] Deterministic logistics builders or validators enforce invoice linkage and status transitions.
-- [ ] Logistics API endpoints enforce business membership and role access.
-- [ ] Owner web UI exposes logistics workflows without regressing CP3 shell behavior.
-- [ ] Logistics audit events are emitted for creation and status changes.
-- [ ] Logistics records remain business-scoped and do not leak across businesses.
-- [ ] Logistics updates do not mutate invoice totals, inventory, payments, or debt directly.
-- [ ] Runtime knowledge summaries expose bounded read-only logistics context.
-- [ ] Local-model prompts continue to avoid raw sensitive business records unless explicitly needed and bounded.
-- [ ] Tests prove logistics lifecycle, scoping, role access, audit events, sync boundaries, and runtime safety.
-- [ ] Existing CP1 through CP12 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp13-logistics` is created.
+- [x] Logistics shared contracts exist for fulfillment records, methods, statuses, and summaries.
+- [x] Deterministic logistics builders or validators enforce invoice linkage and status transitions.
+- [x] Logistics API endpoints enforce business membership and role access.
+- [x] Owner web UI exposes logistics workflows without regressing CP3 shell behavior.
+- [x] Logistics audit events are emitted for creation and status changes.
+- [x] Logistics records remain business-scoped and do not leak across businesses.
+- [x] Logistics updates do not mutate invoice totals, inventory, payments, or debt directly.
+- [x] Runtime knowledge summaries expose bounded read-only logistics context.
+- [x] Local-model prompts continue to avoid raw sensitive business records unless explicitly needed and bounded.
+- [x] Tests prove logistics lifecycle, scoping, role access, audit events, sync boundaries, and runtime safety.
+- [x] Existing CP1 through CP12 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp13-logistics` is created.
 
 ## Rollback Instructions
 

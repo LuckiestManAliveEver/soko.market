@@ -7,6 +7,7 @@ export type ShellView =
   | "sync"
   | "payments"
   | "imports"
+  | "logistics"
   | "reports"
   | "notifications";
 
@@ -71,6 +72,11 @@ export const quickActions: QuickAction[] = [
     summary: "Preview supplier CSV files"
   },
   {
+    id: "logistics",
+    label: "Logistics",
+    summary: "Track pickup and delivery fulfillment"
+  },
+  {
     id: "reports",
     label: "Reports",
     summary: "Review sales, stock, debt, imports, and sync health"
@@ -112,6 +118,11 @@ export const emptyStates: EmptyState[] = [
     id: "imports",
     title: "No imports yet",
     body: "CP9 previews supplier CSV rows before any confirmed business record is written."
+  },
+  {
+    id: "logistics",
+    title: "No logistics yet",
+    body: "CP13 tracks pickup and delivery fulfillment for confirmed invoices."
   },
   {
     id: "reports",

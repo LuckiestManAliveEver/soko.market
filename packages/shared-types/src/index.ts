@@ -166,6 +166,39 @@ export interface InvoicePaymentSummary {
   status: InvoicePaymentStatus;
 }
 
+export type FulfillmentMethod = "delivery" | "pickup";
+
+export type FulfillmentStatus =
+  "pending" | "ready" | "out_for_delivery" | "completed" | "cancelled";
+
+export interface LogisticsSummary {
+  id: string;
+  businessId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  method: FulfillmentMethod;
+  status: FulfillmentStatus;
+  destination: string | null;
+  note: string | null;
+  actorId: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  cancelledAt: string | null;
+}
+
+export interface LogisticsReportSummary {
+  fulfillmentCount: number;
+  pendingCount: number;
+  readyCount: number;
+  outForDeliveryCount: number;
+  completedCount: number;
+  cancelledCount: number;
+  activeCount: number;
+}
+
 export interface CustomerDebtSummary {
   customerId: string;
   customerName: string;
@@ -249,6 +282,7 @@ export interface OfflineCacheSnapshot {
   suppliers: SupplierSummary[];
   invoices: InvoiceSummary[];
   payments: PaymentSummary[];
+  logistics: LogisticsSummary[];
   invoicePaymentSummaries: InvoicePaymentSummary[];
   customerDebts: CustomerDebtSummary[];
   inventoryMovements: InventoryMovementSummary[];
@@ -263,7 +297,9 @@ export type SyncMutationType =
   | "inventory.adjust"
   | "invoice.create"
   | "invoice.confirm"
-  | "payment.record";
+  | "payment.record"
+  | "logistics.create"
+  | "logistics.update_status";
 
 export interface SyncProductCreatePayload {
   name: string;
@@ -310,13 +346,28 @@ export interface SyncPaymentRecordPayload {
   note?: string | null;
 }
 
+export interface SyncLogisticsCreatePayload {
+  invoiceId: string;
+  method: FulfillmentMethod;
+  destination?: string | null;
+  note?: string | null;
+}
+
+export interface SyncLogisticsStatusPayload {
+  logisticsId: string;
+  status: FulfillmentStatus;
+  note?: string | null;
+}
+
 export type SyncMutationPayload =
   | SyncProductCreatePayload
   | SyncContactCreatePayload
   | SyncInventoryAdjustPayload
   | SyncInvoiceCreatePayload
   | SyncInvoiceConfirmPayload
-  | SyncPaymentRecordPayload;
+  | SyncPaymentRecordPayload
+  | SyncLogisticsCreatePayload
+  | SyncLogisticsStatusPayload;
 
 export interface SyncConflict {
   code: string;
@@ -407,11 +458,12 @@ export interface BusinessReportSummary {
   payments: PaymentsReportSummary;
   debts: DebtReportSummary;
   imports: ImportsReportSummary;
+  logistics: LogisticsReportSummary;
   sync: SyncHealthReportSummary;
 }
 
 export type BusinessNotificationType =
-  "low_stock" | "open_debt" | "sync_conflict" | "import_failed";
+  "low_stock" | "open_debt" | "sync_conflict" | "import_failed" | "fulfillment_pending";
 
 export type BusinessNotificationSeverity = "info" | "warning" | "critical";
 
@@ -425,7 +477,8 @@ export interface BusinessNotificationSummary {
   status: BusinessNotificationStatus;
   title: string;
   body: string;
-  sourceType: "report" | "product" | "customer_debt" | "sync_queue" | "document_import";
+  sourceType:
+    "report" | "product" | "customer_debt" | "sync_queue" | "document_import" | "logistics";
   sourceId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -447,7 +500,15 @@ export interface NotificationInbox {
 }
 
 export interface BusinessKnowledgeFact {
-  topic: "sales" | "inventory" | "payments" | "debt" | "imports" | "sync" | "notifications";
+  topic:
+    | "sales"
+    | "inventory"
+    | "payments"
+    | "debt"
+    | "imports"
+    | "logistics"
+    | "sync"
+    | "notifications";
   severity: BusinessNotificationSeverity;
   detail: string;
   metric: number;
@@ -512,6 +573,8 @@ export interface RuntimeContextSummary {
   openInvoiceCount: number;
   paymentCount: number;
   importJobCount: number;
+  logisticsCount: number;
+  activeLogisticsCount: number;
   lowStockCount: number;
   outstandingDebtTotal: number;
   unreadNotificationCount: number;

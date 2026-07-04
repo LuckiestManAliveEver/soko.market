@@ -23,7 +23,9 @@ export const syncMutationTypes: SyncMutationType[] = [
   "inventory.adjust",
   "invoice.create",
   "invoice.confirm",
-  "payment.record"
+  "payment.record",
+  "logistics.create",
+  "logistics.update_status"
 ];
 
 export type LegacySyncQueueStatus = "queued" | "syncing" | "synced" | "failed";

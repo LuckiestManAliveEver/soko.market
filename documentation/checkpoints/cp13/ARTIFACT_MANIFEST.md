@@ -1,8 +1,8 @@
 # CP13 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-04
-Date passed: pending
+Date passed: 2026-07-04
 
 ## Created CP13 Artifacts
 
@@ -24,20 +24,30 @@ Date passed: pending
 
 ## CP13 Completion Checklist
 
-- [ ] Logistics shared contracts implemented.
-- [ ] Deterministic logistics lifecycle validators implemented.
-- [ ] Logistics API endpoints implemented.
-- [ ] Owner logistics UI implemented.
-- [ ] Logistics audit events implemented.
-- [ ] Logistics report, notification, or knowledge summaries implemented where useful.
-- [ ] Runtime logistics context implemented with bounded prompt exposure.
-- [ ] Offline/sync logistics behavior implemented or explicitly bounded.
-- [ ] CP13 tests implemented.
-- [ ] Existing CP1 through CP12 checks pass.
-- [ ] `checkpoint/cp13-logistics` tag created.
+- [x] Logistics shared contracts implemented.
+- [x] Deterministic logistics lifecycle validators implemented.
+- [x] Logistics API endpoints implemented.
+- [x] Owner logistics UI implemented.
+- [x] Logistics audit events implemented.
+- [x] Logistics report, notification, or knowledge summaries implemented where useful.
+- [x] Runtime logistics context implemented with bounded prompt exposure.
+- [x] Offline/sync logistics behavior implemented or explicitly bounded.
+- [x] CP13 tests implemented.
+- [x] Existing CP1 through CP12 checks pass.
+- [x] `checkpoint/cp13-logistics` tag created.
 
 ## Verification
 
 Opening verification:
 
 - [x] `pnpm run ci`
+
+Passed verification:
+
+- `pnpm --filter @soko/shared-types typecheck`
+- `pnpm --filter @soko/business-core typecheck`
+- `pnpm --filter @soko/sync-core typecheck`
+- `pnpm --filter @soko/api typecheck`
+- `pnpm --filter @soko/web typecheck`
+- `pnpm vitest run tests/cp13-logistics.test.ts tests/cp12-reports-knowledge.test.ts tests/cp3-shell.test.ts --reporter=dot`
+- `pnpm run ci`

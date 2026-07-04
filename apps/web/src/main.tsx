@@ -165,6 +165,27 @@ interface RecordPaymentResponse {
   invoicePayment: InvoicePaymentSummary;
 }
 
+type FulfillmentMethod = "delivery" | "pickup";
+type FulfillmentStatus = "pending" | "ready" | "out_for_delivery" | "completed" | "cancelled";
+
+interface LogisticsSummary {
+  id: string;
+  businessId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  customerId: string | null;
+  customerName: string | null;
+  method: FulfillmentMethod;
+  status: FulfillmentStatus;
+  destination: string | null;
+  note: string | null;
+  actorId: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  cancelledAt: string | null;
+}
+
 interface SyncQueueSummary {
   businessId: string;
   pending: number;
@@ -227,6 +248,15 @@ interface BusinessReportSummary {
     confirmedJobs: number;
     failedJobs: number;
     confirmedRows: number;
+  };
+  logistics: {
+    fulfillmentCount: number;
+    pendingCount: number;
+    readyCount: number;
+    outForDeliveryCount: number;
+    completedCount: number;
+    cancelledCount: number;
+    activeCount: number;
   };
   sync: SyncQueueSummary & {
     active: number;
@@ -371,6 +401,13 @@ interface ImportFormState {
   content: string;
 }
 
+interface LogisticsFormState {
+  invoiceId: string;
+  method: FulfillmentMethod;
+  destination: string;
+  note: string;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
 const activeBusinessStorageKey = "soko.cp3.activeBusiness";
 
@@ -413,6 +450,13 @@ const emptyImportForm: ImportFormState = {
   content: "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier"
 };
 
+const emptyLogisticsForm: LogisticsFormState = {
+  invoiceId: "",
+  method: "delivery",
+  destination: "",
+  note: ""
+};
+
 const emptySyncSummary: SyncQueueSummary = {
   businessId: "",
   pending: 0,
@@ -453,6 +497,7 @@ function App() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
+  const [logistics, setLogistics] = useState<LogisticsSummary[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
   const [customerDebts, setCustomerDebts] = useState<CustomerDebtSummary[]>([]);
   const [importJobs, setImportJobs] = useState<DocumentImportJobSummary[]>([]);
@@ -470,6 +515,7 @@ function App() {
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
+  const [logisticsForm, setLogisticsForm] = useState<LogisticsFormState>(emptyLogisticsForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
@@ -557,6 +603,11 @@ function App() {
 
     if (view === "imports") {
       void loadDocumentImports(business.id);
+    }
+
+    if (view === "logistics") {
+      void loadInvoices(business.id);
+      void loadLogistics(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -796,6 +847,26 @@ function App() {
     }
   }
 
+  async function loadLogistics(businessId: string) {
+    try {
+      const nextLogistics = await getJson<LogisticsSummary[]>(
+        `/businesses/${businessId}/logistics`
+      );
+      setLogistics(nextLogistics);
+      if (logisticsForm.invoiceId.length === 0) {
+        const existingInvoiceIds = new Set(nextLogistics.map((item) => item.invoiceId));
+        const invoice = invoices.find(
+          (item) => item.status === "confirmed" && !existingInvoiceIds.has(item.id)
+        );
+        if (invoice !== undefined) {
+          setLogisticsForm((form) => ({ ...form, invoiceId: invoice.id }));
+        }
+      }
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function loadReports(businessId: string) {
     try {
       const [report, knowledge] = await Promise.all([
@@ -973,6 +1044,45 @@ function App() {
     }
   }
 
+  async function createLogistics() {
+    if (business === null || logisticsForm.invoiceId.length === 0) {
+      return;
+    }
+
+    try {
+      await postJson<LogisticsSummary>(`/businesses/${business.id}/logistics`, {
+        invoiceId: logisticsForm.invoiceId,
+        method: logisticsForm.method,
+        destination: logisticsForm.destination,
+        note: logisticsForm.note
+      });
+      setLogisticsForm(emptyLogisticsForm);
+      await loadLogistics(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Logistics record created");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateLogisticsStatus(logisticsId: string, status: FulfillmentStatus) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<LogisticsSummary>(`/businesses/${business.id}/logistics/${logisticsId}`, {
+        status,
+        note: ""
+      });
+      await loadLogistics(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Logistics status updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function replaySyncQueue() {
     if (business === null) {
       return;
@@ -985,6 +1095,7 @@ function App() {
       await loadCustomers(business.id);
       await loadInvoices(business.id);
       await loadPaymentData(business.id);
+      await loadLogistics(business.id);
       setStatusMessage("Sync queue replayed");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -1083,6 +1194,7 @@ function App() {
     setCustomers([]);
     setInvoices([]);
     setPayments([]);
+    setLogistics([]);
     setInvoicePayments([]);
     setCustomerDebts([]);
     setImportJobs([]);
@@ -1093,6 +1205,7 @@ function App() {
     setInvoiceForm(emptyInvoiceForm);
     setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
+    setLogisticsForm(emptyLogisticsForm);
     setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
@@ -1438,6 +1551,19 @@ function App() {
                   onRefresh={() => business !== null && void loadDocumentImports(business.id)}
                 />
               ) : null}
+              {view === "logistics" ? (
+                <LogisticsSurface
+                  invoices={invoices}
+                  logistics={logistics}
+                  form={logisticsForm}
+                  onFormChange={setLogisticsForm}
+                  onCreate={() => void createLogistics()}
+                  onStatusChange={(logisticsId, status) =>
+                    void updateLogisticsStatus(logisticsId, status)
+                  }
+                  onRefresh={() => business !== null && void loadLogistics(business.id)}
+                />
+              ) : null}
               {view === "reports" ? (
                 <ReportsSurface
                   report={reportSummary}
@@ -1461,6 +1587,7 @@ function App() {
               view !== "sync" &&
               view !== "payments" &&
               view !== "imports" &&
+              view !== "logistics" &&
               view !== "reports" &&
               view !== "notifications" ? (
                 <EmptyStateSurface
@@ -2246,6 +2373,158 @@ function ImportRowEditor(props: ImportRowEditorProps) {
   );
 }
 
+interface LogisticsSurfaceProps {
+  invoices: InvoiceSummary[];
+  logistics: LogisticsSummary[];
+  form: LogisticsFormState;
+  onFormChange: (form: LogisticsFormState) => void;
+  onCreate: () => void;
+  onStatusChange: (logisticsId: string, status: FulfillmentStatus) => void;
+  onRefresh: () => void;
+}
+
+function LogisticsSurface(props: LogisticsSurfaceProps) {
+  const linkedInvoiceIds = new Set(props.logistics.map((item) => item.invoiceId));
+  const availableInvoices = props.invoices.filter(
+    (invoice) => invoice.status === "confirmed" && !linkedInvoiceIds.has(invoice.id)
+  );
+  const activeCount = props.logistics.filter(
+    (item) => item.status !== "completed" && item.status !== "cancelled"
+  ).length;
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Logistics form">
+        <div className="section-heading">
+          <p className="eyebrow">CP13 logistics</p>
+          <h3>Create fulfillment</h3>
+        </div>
+        <label>
+          Confirmed invoice
+          <select
+            value={props.form.invoiceId}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, invoiceId: event.target.value })
+            }
+          >
+            <option value="">Select invoice</option>
+            {availableInvoices.map((invoice) => (
+              <option key={invoice.id} value={invoice.id}>
+                {invoice.invoiceNumber} - {invoice.customerName ?? "Walk-in customer"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="segmented" aria-label="Fulfillment method">
+          <button
+            className={props.form.method === "delivery" ? "active" : ""}
+            type="button"
+            onClick={() => props.onFormChange({ ...props.form, method: "delivery" })}
+          >
+            Delivery
+          </button>
+          <button
+            className={props.form.method === "pickup" ? "active" : ""}
+            type="button"
+            onClick={() => props.onFormChange({ ...props.form, method: "pickup" })}
+          >
+            Pickup
+          </button>
+        </div>
+        <label>
+          Destination
+          <input
+            value={props.form.destination}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, destination: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Note
+          <input
+            value={props.form.note}
+            onChange={(event) => props.onFormChange({ ...props.form, note: event.target.value })}
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={props.onCreate} disabled={props.form.invoiceId === ""}>
+            Create
+          </button>
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Logistics records">
+        <div className="section-heading">
+          <p className="eyebrow">{activeCount} active</p>
+          <h3>Fulfillment work</h3>
+        </div>
+        {props.logistics.length === 0 ? (
+          <div className="empty-record">
+            <h3>No logistics yet</h3>
+            <p>Create fulfillment work from a confirmed invoice.</p>
+          </div>
+        ) : (
+          props.logistics.map((item) => (
+            <article className="record-row logistics-row" key={item.id}>
+              <div>
+                <strong>
+                  {item.invoiceNumber} - {item.status.replaceAll("_", " ")}
+                </strong>
+                <span>
+                  {item.method} - {item.customerName ?? "Walk-in customer"}
+                  {item.destination === null ? "" : ` - ${item.destination}`}
+                </span>
+              </div>
+              <div className="compact-actions">
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onStatusChange(item.id, "ready")}
+                  disabled={item.status !== "pending"}
+                >
+                  Ready
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onStatusChange(item.id, "out_for_delivery")}
+                  disabled={item.method !== "delivery" || item.status !== "ready"}
+                >
+                  Dispatch
+                </button>
+                <button
+                  type="button"
+                  onClick={() => props.onStatusChange(item.id, "completed")}
+                  disabled={
+                    item.status === "completed" ||
+                    item.status === "cancelled" ||
+                    (item.method === "delivery" && item.status !== "out_for_delivery") ||
+                    (item.method === "pickup" && item.status !== "ready")
+                  }
+                >
+                  Complete
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onStatusChange(item.id, "cancelled")}
+                  disabled={item.status === "completed" || item.status === "cancelled"}
+                >
+                  Cancel
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
 interface ProductSurfaceProps {
   products: ProductSummary[];
   form: ProductFormState;
@@ -2745,6 +3024,12 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
           eyebrow={`${report.imports.totalJobs} jobs`}
           body={`${report.imports.confirmedJobs} confirmed, ${report.imports.previewedJobs} previewed, ${report.imports.failedJobs} failed.`}
           value={`${report.imports.confirmedRows} rows`}
+        />
+        <ReportRow
+          title="Logistics"
+          eyebrow={`${report.logistics.fulfillmentCount} records`}
+          body={`${report.logistics.pendingCount} pending, ${report.logistics.readyCount} ready, ${report.logistics.outForDeliveryCount} dispatched.`}
+          value={`${report.logistics.activeCount} active`}
         />
         <ReportRow
           title="Sync"

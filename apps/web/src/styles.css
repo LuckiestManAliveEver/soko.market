@@ -354,6 +354,11 @@ button:disabled {
   align-items: stretch;
 }
 
+.logistics-row .compact-actions {
+  display: grid;
+  min-width: min(100%, 320px);
+}
+
 .invoice-preview {
   background: #ffffff;
   border: 1px solid #dbe4dc;

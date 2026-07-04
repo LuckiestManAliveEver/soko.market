@@ -353,7 +353,7 @@ describe("CP12 reports notifications and knowledge", () => {
         lowStockCount: 1,
         outstandingDebtTotal: 120,
         unreadNotificationCount: 2,
-        knowledgeFactCount: 5
+        knowledgeFactCount: 6
       },
       plan: {
         toolName: "products.list"
@@ -363,7 +363,7 @@ describe("CP12 reports notifications and knowledge", () => {
       lowStockCount: 1,
       outstandingDebtTotal: 120,
       unreadNotificationCount: 2,
-      knowledgeFactCount: 5
+      knowledgeFactCount: 6
     });
     expect(JSON.stringify(capturedPrompt)).not.toContain("Rice");
     expect(JSON.stringify(turn.turn.telemetry)).not.toContain("Rice");

@@ -21,6 +21,8 @@ import type {
   InvoiceItemSummary,
   InvoicePreview,
   InvoiceSummary,
+  LogisticsReportSummary,
+  LogisticsSummary,
   MembershipSummary,
   NotificationInbox,
   OfflineCacheSnapshot,
@@ -71,6 +73,8 @@ import {
   isBusinessRole,
   normalizeContactRecordInput,
   normalizeInvoiceInput,
+  normalizeLogisticsInput,
+  normalizeLogisticsStatusInput,
   normalizePaymentInput,
   normalizeProductInput,
   normalizeStockAdjustmentInput,
@@ -81,9 +85,14 @@ import {
   stockAdjustedEvent,
   supplierCreatedEvent,
   supplierUpdatedEvent,
+  logisticsCreatedEvent,
+  logisticsStatusUpdatedEvent,
   validateContactRecordInput,
   validateDocumentImportSource,
   validateInvoiceInput,
+  validateLogisticsInput,
+  validateLogisticsStatusInput,
+  validateLogisticsStatusTransition,
   validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput,
@@ -91,6 +100,8 @@ import {
   type ContactRecordInput,
   type DocumentImportSourceInput,
   type InvoiceInput,
+  type LogisticsInput,
+  type LogisticsStatusInput,
   type PaymentInput,
   type ProductInput,
   type StockAdjustmentInput
@@ -182,6 +193,7 @@ export interface Cp2Snapshot {
   suppliers: SupplierSummary[];
   invoices: InvoiceSummary[];
   payments: PaymentSummary[];
+  logistics: LogisticsSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
   notifications: BusinessNotificationSummary[];
@@ -211,6 +223,8 @@ export class Cp2Store {
   private readonly suppliers = new Map<string, SupplierSummary>();
   private readonly invoices = new Map<string, InvoiceSummary>();
   private readonly payments = new Map<string, PaymentSummary>();
+  private readonly logistics = new Map<string, LogisticsSummary>();
+  private readonly logisticsByInvoice = new Map<string, string>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
@@ -1103,6 +1117,127 @@ export class Cp2Store {
     return this.buildCustomerDebtSummaries(input.businessId);
   }
 
+  listLogistics(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): LogisticsSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "logistics:read", input.now);
+    return this.logisticsForBusiness(input.businessId).sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt)
+    );
+  }
+
+  createLogistics(input: {
+    sessionId: string | null;
+    businessId: string;
+    logistics: LogisticsInput;
+    now?: Date;
+  }): LogisticsSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "logistics:write",
+      now
+    );
+    assertValid(validateLogisticsInput(input.logistics));
+    const normalized = normalizeLogisticsInput(input.logistics);
+    const invoice = this.requireInvoice(input.businessId, normalized.invoiceId);
+
+    if (invoice.status !== "confirmed") {
+      throw new Cp2Error(
+        409,
+        "invoice_not_confirmed",
+        "Logistics records require a confirmed invoice."
+      );
+    }
+
+    if (this.logisticsByInvoice.has(invoice.id)) {
+      throw new Cp2Error(
+        409,
+        "logistics_invoice_exists",
+        "This invoice already has a logistics record."
+      );
+    }
+
+    const logistics: LogisticsSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      customerId: invoice.customerId,
+      customerName: invoice.customerName,
+      method: normalized.method,
+      status: "pending",
+      destination: normalized.destination,
+      note: normalized.note,
+      actorId: session.user.id,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+      cancelledAt: null
+    };
+
+    this.logistics.set(logistics.id, logistics);
+    this.logisticsByInvoice.set(invoice.id, logistics.id);
+    this.appendBusinessEvent(
+      logisticsCreatedEvent({
+        id: randomUUID(),
+        logistics,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return logistics;
+  }
+
+  updateLogisticsStatus(input: {
+    sessionId: string | null;
+    businessId: string;
+    logisticsId: string;
+    status: LogisticsStatusInput;
+    now?: Date;
+  }): LogisticsSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "logistics:write",
+      now
+    );
+    const existing = this.requireLogistics(input.businessId, input.logisticsId);
+    assertValid(validateLogisticsStatusInput(input.status));
+    const normalized = normalizeLogisticsStatusInput(input.status);
+    assertValid(
+      validateLogisticsStatusTransition(existing.status, normalized.status, existing.method)
+    );
+    const updated: LogisticsSummary = {
+      ...existing,
+      status: normalized.status,
+      note: normalized.note ?? existing.note,
+      updatedAt: now.toISOString(),
+      completedAt:
+        normalized.status === "completed" ? (existing.completedAt ?? now.toISOString()) : null,
+      cancelledAt:
+        normalized.status === "cancelled" ? (existing.cancelledAt ?? now.toISOString()) : null
+    };
+
+    this.logistics.set(updated.id, updated);
+    this.appendBusinessEvent(
+      logisticsStatusUpdatedEvent({
+        id: randomUUID(),
+        logistics: updated,
+        previousStatus: existing.status,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
   private buildCustomerDebtSummaries(businessId: string): CustomerDebtSummary[] {
     const debts = new Map<string, CustomerDebtSummary>();
 
@@ -1158,6 +1293,7 @@ export class Cp2Store {
       suppliers: this.listSuppliers(input),
       invoices: this.listInvoices(input),
       payments: this.listPayments(input),
+      logistics: this.listLogistics(input),
       invoicePaymentSummaries: this.listInvoicePaymentSummaries(input),
       customerDebts: this.listCustomerDebts(input),
       inventoryMovements: [...this.inventoryMovements.values()].filter(
@@ -1945,6 +2081,7 @@ export class Cp2Store {
       suppliers: [...this.suppliers.values()],
       invoices: [...this.invoices.values()],
       payments: [...this.payments.values()],
+      logistics: [...this.logistics.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       notifications: [...this.notifications.values()],
@@ -2116,6 +2253,16 @@ export class Cp2Store {
     return invoice;
   }
 
+  private requireLogistics(businessId: string, logisticsId: string): LogisticsSummary {
+    const logistics = this.logistics.get(logisticsId);
+
+    if (logistics === undefined || logistics.businessId !== businessId) {
+      throw new Cp2Error(404, "logistics_not_found", "Logistics record was not found.");
+    }
+
+    return logistics;
+  }
+
   private requireSyncQueueItem(businessId: string, syncItemId: string): SyncQueueItem {
     const item = this.syncQueue.get(syncItemId);
 
@@ -2215,6 +2362,26 @@ export class Cp2Store {
           payment: input.payload as PaymentInput,
           now: input.now
         });
+
+      case "logistics.create":
+        return this.createLogistics({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          logistics: input.payload as LogisticsInput,
+          now: input.now
+        });
+
+      case "logistics.update_status": {
+        const payload = input.payload as { logisticsId: string } & LogisticsStatusInput;
+
+        return this.updateLogisticsStatus({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          logisticsId: payload.logisticsId,
+          status: payload,
+          now: input.now
+        });
+      }
     }
   }
 
@@ -2405,6 +2572,7 @@ export class Cp2Store {
       (invoice) => invoice.businessId === businessId
     );
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
+    const logisticsReport = summarizeLogistics(this.logisticsForBusiness(businessId));
 
     return {
       businessId,
@@ -2429,6 +2597,8 @@ export class Cp2Store {
       importJobCount: [...this.documentImports.values()].filter(
         (job) => job.businessId === businessId
       ).length,
+      logisticsCount: logisticsReport.fulfillmentCount,
+      activeLogisticsCount: logisticsReport.activeCount,
       lowStockCount: knowledge.report.inventory.lowStockCount,
       outstandingDebtTotal: knowledge.report.debts.totalOutstanding,
       unreadNotificationCount: knowledge.notificationSummary.unread,
@@ -2441,6 +2611,7 @@ export class Cp2Store {
     const invoices = this.invoicesForBusiness(businessId);
     const payments = this.paymentsForBusiness(businessId);
     const imports = this.importsForBusiness(businessId);
+    const logistics = this.logisticsForBusiness(businessId);
     const movements = [...this.inventoryMovements.values()].filter(
       (movement) => movement.businessId === businessId
     );
@@ -2495,6 +2666,7 @@ export class Cp2Store {
         failedJobs: imports.filter((job) => job.status === "failed").length,
         confirmedRows: imports.reduce((total, job) => total + job.confirmedCount, 0)
       },
+      logistics: summarizeLogistics(logistics),
       sync: {
         ...syncSummary,
         active:
@@ -2533,6 +2705,12 @@ export class Cp2Store {
               : ("info" as const),
         detail: `${report.inventory.lowStockCount} low-stock products and ${report.inventory.outOfStockCount} out of stock.`,
         metric: report.inventory.lowStockCount + report.inventory.outOfStockCount
+      },
+      {
+        topic: "logistics" as const,
+        severity: report.logistics.activeCount > 0 ? ("warning" as const) : ("info" as const),
+        detail: `${report.logistics.activeCount} fulfillment records are still active.`,
+        metric: report.logistics.activeCount
       },
       {
         topic: "sync" as const,
@@ -2611,6 +2789,20 @@ export class Cp2Store {
         title: "Import failed",
         body: `${report.imports.failedJobs} document import job${report.imports.failedJobs === 1 ? "" : "s"} failed.`,
         sourceType: "document_import",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.logistics.pendingCount > 0 || report.logistics.readyCount > 0) {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:logistics.pending`,
+        type: "fulfillment_pending",
+        severity: "warning",
+        title: "Fulfillment work is open",
+        body: `${report.logistics.pendingCount} pending and ${report.logistics.readyCount} ready fulfillment records need attention.`,
+        sourceType: "logistics",
         sourceId: null,
         now
       });
@@ -2698,6 +2890,10 @@ export class Cp2Store {
 
   private importsForBusiness(businessId: string): DocumentImportJobSummary[] {
     return [...this.documentImports.values()].filter((job) => job.businessId === businessId);
+  }
+
+  private logisticsForBusiness(businessId: string): LogisticsSummary[] {
+    return [...this.logistics.values()].filter((item) => item.businessId === businessId);
   }
 
   private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
@@ -3241,6 +3437,46 @@ function summarizeNotifications(
 
   for (const notification of notifications) {
     summary[notification.status] += 1;
+  }
+
+  return summary;
+}
+
+function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSummary {
+  const summary: LogisticsReportSummary = {
+    fulfillmentCount: logistics.length,
+    pendingCount: 0,
+    readyCount: 0,
+    outForDeliveryCount: 0,
+    completedCount: 0,
+    cancelledCount: 0,
+    activeCount: 0
+  };
+
+  for (const item of logistics) {
+    if (item.status === "pending") {
+      summary.pendingCount += 1;
+    }
+
+    if (item.status === "ready") {
+      summary.readyCount += 1;
+    }
+
+    if (item.status === "out_for_delivery") {
+      summary.outForDeliveryCount += 1;
+    }
+
+    if (item.status === "completed") {
+      summary.completedCount += 1;
+    }
+
+    if (item.status === "cancelled") {
+      summary.cancelledCount += 1;
+    }
+
+    if (item.status !== "completed" && item.status !== "cancelled") {
+      summary.activeCount += 1;
+    }
   }
 
   return summary;

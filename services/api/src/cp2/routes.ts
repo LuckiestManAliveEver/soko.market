@@ -3,6 +3,8 @@ import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
   AuthChannel,
   BusinessNotificationStatus,
+  FulfillmentMethod,
+  FulfillmentStatus,
   SupplierImportDraft,
   SyncMutationPayload,
   SyncMutationType
@@ -75,6 +77,10 @@ interface NotificationParams extends BusinessParams {
   notificationId: string;
 }
 
+interface LogisticsParams extends BusinessParams {
+  logisticsId: string;
+}
+
 interface DocumentImportParams extends BusinessParams {
   importJobId: string;
 }
@@ -124,6 +130,18 @@ interface PaymentBody {
   amount?: number;
   method?: string;
   reference?: string | null;
+  note?: string | null;
+}
+
+interface LogisticsBody {
+  invoiceId?: string;
+  method?: string;
+  destination?: string | null;
+  note?: string | null;
+}
+
+interface LogisticsStatusBody {
+  status?: string;
   note?: string | null;
 }
 
@@ -542,6 +560,54 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.get(
+    "/businesses/:businessId/logistics",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listLogistics({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/logistics",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: LogisticsBody }>, reply) => {
+      try {
+        return store.createLogistics({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          logistics: parseLogisticsBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/logistics/:logisticsId",
+    async (
+      request: FastifyRequest<{ Params: LogisticsParams; Body: LogisticsStatusBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateLogisticsStatus({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          logisticsId: request.params.logisticsId,
+          status: parseLogisticsStatusBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
     "/businesses/:businessId/reports/summary",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
       try {
@@ -886,6 +952,15 @@ function parseSyncMutationPayload(
 
     case "payment.record":
       return parsePaymentBody(payload);
+
+    case "logistics.create":
+      return parseLogisticsBody(payload);
+
+    case "logistics.update_status":
+      return {
+        logisticsId: parseString(payload.logisticsId, "payload.logisticsId"),
+        ...parseLogisticsStatusBody(payload)
+      };
   }
 }
 
@@ -970,6 +1045,52 @@ function parsePaymentBody(body: PaymentBody | null | undefined) {
     reference: parseNullableString(record.reference),
     note: parseNullableString(record.note)
   };
+}
+
+function parseLogisticsBody(body: LogisticsBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    invoiceId: parseString(record.invoiceId, "invoiceId"),
+    method: parseFulfillmentMethod(record.method),
+    destination: parseNullableString(record.destination),
+    note: parseNullableString(record.note)
+  };
+}
+
+function parseLogisticsStatusBody(body: LogisticsStatusBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    status: parseFulfillmentStatus(record.status),
+    note: parseNullableString(record.note)
+  };
+}
+
+function parseFulfillmentMethod(value: unknown): FulfillmentMethod {
+  const method = parseString(value, "method");
+
+  if (method === "delivery" || method === "pickup") {
+    return method;
+  }
+
+  throw new Cp2Error(400, "fulfillment_method_invalid", "Fulfillment method is not supported.");
+}
+
+function parseFulfillmentStatus(value: unknown): FulfillmentStatus {
+  const status = parseString(value, "status");
+
+  if (
+    status === "pending" ||
+    status === "ready" ||
+    status === "out_for_delivery" ||
+    status === "completed" ||
+    status === "cancelled"
+  ) {
+    return status;
+  }
+
+  throw new Cp2Error(400, "fulfillment_status_invalid", "Fulfillment status is not supported.");
 }
 
 function parseSupplierCsvImportBody(body: SupplierCsvImportBody | null | undefined) {
@@ -1169,6 +1290,8 @@ const businessPermissions: BusinessPermission[] = [
   "invoice:confirm",
   "payment:read",
   "payment:write",
+  "logistics:read",
+  "logistics:write",
   "import:read",
   "import:write",
   "report:read",
