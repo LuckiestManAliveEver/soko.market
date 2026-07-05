@@ -1,8 +1,8 @@
 # CP15 Decision Log
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 
 This file records beta release hardening decisions for CP15.
 

@@ -1,10 +1,10 @@
 # CP15: Beta Release Hardening
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 Target tag: `checkpoint/cp15-closed-beta`
-Actual tag: pending
+Actual tag: `checkpoint/cp15-closed-beta`
 
 ## Purpose
 
@@ -93,19 +93,19 @@ Selected merchant is invited to beta
 
 CP15 can be marked passed when:
 
-- [ ] Closed beta onboarding gate exists and is reversible.
-- [ ] Beta feature flags and release gates are documented and enforced.
-- [ ] 1 GB and 2 GB Android usability targets are tested or simulated with documented constraints.
-- [ ] Offline workflows are tested across beta-critical records.
-- [ ] Sync stress tests prove repeated queued mutations replay deterministically.
-- [ ] Payment testing and reconciliation checks pass in staging and controlled production boundaries.
-- [ ] UX refinements for beta-critical owner workflows are implemented.
-- [ ] Support process, severity labels, and rollback communication rules are documented.
-- [ ] Crash and error telemetry contracts exist and avoid sensitive data exposure.
-- [ ] Beta readiness report or summary is available to owner/operator workflows.
-- [ ] Tests prove beta gates, offline/sync hardening, payment reconciliation, telemetry safety, and support workflow behavior.
-- [ ] Existing CP1 through CP14 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp15-closed-beta` is created.
+- [x] Closed beta onboarding gate exists and is reversible.
+- [x] Beta feature flags and release gates are documented and enforced.
+- [x] 1 GB and 2 GB Android usability targets are tested or simulated with documented constraints.
+- [x] Offline workflows are tested across beta-critical records.
+- [x] Sync stress tests prove repeated queued mutations replay deterministically.
+- [x] Payment testing and reconciliation checks pass in staging and controlled production boundaries.
+- [x] UX refinements for beta-critical owner workflows are implemented.
+- [x] Support process, severity labels, and rollback communication rules are documented.
+- [x] Crash and error telemetry contracts exist and avoid sensitive data exposure.
+- [x] Beta readiness report or summary is available to owner/operator workflows.
+- [x] Tests prove beta gates, offline/sync hardening, payment reconciliation, telemetry safety, and support workflow behavior.
+- [x] Existing CP1 through CP14 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp15-closed-beta` is created.
 
 ## Rollback Instructions
 

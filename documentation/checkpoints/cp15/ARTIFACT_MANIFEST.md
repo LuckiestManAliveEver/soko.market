@@ -1,8 +1,8 @@
 # CP15 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 
 ## Created CP15 Artifacts
 
@@ -25,19 +25,19 @@ Date passed: pending
 
 ## CP15 Completion Checklist
 
-- [ ] Closed beta onboarding gate implemented.
-- [ ] Beta feature flags and release gates implemented.
-- [ ] Low-end Android usability targets tested or simulated.
-- [ ] Offline beta-critical workflows hardened.
-- [ ] Sync stress testing implemented.
-- [ ] Payment testing and reconciliation checks implemented.
-- [ ] UX refinements for beta-critical workflows implemented.
-- [ ] Support process and rollback communication rules documented.
-- [ ] Crash and error telemetry contracts implemented.
-- [ ] Beta readiness summary documented and surfaced.
-- [ ] CP15 tests implemented.
-- [ ] Existing CP1 through CP14 checks pass.
-- [ ] `checkpoint/cp15-closed-beta` tag created.
+- [x] Closed beta onboarding gate implemented.
+- [x] Beta feature flags and release gates implemented.
+- [x] Low-end Android usability targets tested or simulated.
+- [x] Offline beta-critical workflows hardened.
+- [x] Sync stress testing implemented.
+- [x] Payment testing and reconciliation checks implemented.
+- [x] UX refinements for beta-critical workflows implemented.
+- [x] Support process and rollback communication rules documented.
+- [x] Crash and error telemetry contracts implemented.
+- [x] Beta readiness summary documented and surfaced.
+- [x] CP15 tests implemented.
+- [x] Existing CP1 through CP14 checks pass.
+- [x] `checkpoint/cp15-closed-beta` tag created.
 
 ## Verification
 
@@ -47,4 +47,6 @@ Opening verification:
 
 Passed verification:
 
-- pending
+- `pnpm --filter @soko/api typecheck`
+- `pnpm vitest run tests/cp15-beta-hardening.test.ts --reporter=dot`
+- `pnpm run ci`

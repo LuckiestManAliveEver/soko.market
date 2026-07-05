@@ -5,6 +5,13 @@ import type {
   AccountDeletionRequestSummary,
   AuthChannel,
   AuthSessionView,
+  BetaAccessSummary,
+  BetaDeviceTestSummary,
+  BetaFeatureFlagKey,
+  BetaFeatureFlagSummary,
+  BetaReadinessReportSummary,
+  BetaSupportTicketSummary,
+  BetaTelemetryEventSummary,
   BusinessKnowledgeSummary,
   BusinessNotificationStatus,
   BusinessNotificationSummary,
@@ -68,6 +75,13 @@ import {
 } from "@soko/sync-core";
 import {
   accountDeletionScheduledEvent,
+  betaAccessUpdatedEvent,
+  betaDeviceTestRecordedEvent,
+  betaFeatureFlagRisk,
+  betaFeatureFlagUpdatedEvent,
+  betaSupportTicketCreatedEvent,
+  betaSupportTicketStatusUpdatedEvent,
+  betaTelemetryRecordedEvent,
   customerCreatedEvent,
   customerUpdatedEvent,
   createInvoicePreview,
@@ -82,6 +96,12 @@ import {
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
   isBusinessRole,
+  normalizeBetaAccessInput,
+  normalizeBetaDeviceTestInput,
+  normalizeBetaFeatureFlagInput,
+  normalizeBetaSupportTicketInput,
+  normalizeBetaSupportTicketStatusInput,
+  normalizeBetaTelemetryInput,
   normalizeAccountDeletionInput,
   normalizeContactRecordInput,
   normalizeCountryTaxConfigInput,
@@ -103,6 +123,12 @@ import {
   taxConfigUpdatedEvent,
   verificationTierUpdatedEvent,
   validateAccountDeletionInput,
+  validateBetaAccessInput,
+  validateBetaDeviceTestInput,
+  validateBetaFeatureFlagInput,
+  validateBetaSupportTicketInput,
+  validateBetaSupportTicketStatusInput,
+  validateBetaTelemetryInput,
   logisticsCreatedEvent,
   logisticsStatusUpdatedEvent,
   validateContactRecordInput,
@@ -118,6 +144,12 @@ import {
   validateStockAdjustmentInput,
   validateVerificationTierInput,
   type AccountDeletionInput,
+  type BetaAccessInput,
+  type BetaDeviceTestInput,
+  type BetaFeatureFlagInput,
+  type BetaSupportTicketInput,
+  type BetaSupportTicketStatusInput,
+  type BetaTelemetryInput,
   type BusinessPermission,
   type ContactRecordInput,
   type CountryTaxConfigInput,
@@ -224,6 +256,11 @@ export interface Cp2Snapshot {
   verificationTiers: VerificationTierSummary[];
   taxConfigs: CountryTaxConfigSummary[];
   deviceTrust: DeviceTrustSummary[];
+  betaAccess: BetaAccessSummary[];
+  betaFeatureFlags: BetaFeatureFlagSummary[];
+  betaDeviceTests: BetaDeviceTestSummary[];
+  betaSupportTickets: BetaSupportTicketSummary[];
+  betaTelemetryEvents: BetaTelemetryEventSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
   notifications: BusinessNotificationSummary[];
@@ -260,6 +297,11 @@ export class Cp2Store {
   private readonly verificationTiers = new Map<string, VerificationTierSummary>();
   private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
   private readonly deviceTrust = new Map<string, DeviceTrustSummary>();
+  private readonly betaAccess = new Map<string, BetaAccessSummary>();
+  private readonly betaFeatureFlags = new Map<string, BetaFeatureFlagSummary>();
+  private readonly betaDeviceTests = new Map<string, BetaDeviceTestSummary>();
+  private readonly betaSupportTickets = new Map<string, BetaSupportTicketSummary>();
+  private readonly betaTelemetryEvents = new Map<string, BetaTelemetryEventSummary>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
@@ -1319,22 +1361,7 @@ export class Cp2Store {
     const now = input.now ?? new Date();
     this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
 
-    return {
-      businessId: input.businessId,
-      capturedAt: now.toISOString(),
-      source: "server_cache",
-      products: this.listProducts(input),
-      customers: this.listCustomers(input),
-      suppliers: this.listSuppliers(input),
-      invoices: this.listInvoices(input),
-      payments: this.listPayments(input),
-      logistics: this.listLogistics(input),
-      invoicePaymentSummaries: this.listInvoicePaymentSummaries(input),
-      customerDebts: this.listCustomerDebts(input),
-      inventoryMovements: [...this.inventoryMovements.values()].filter(
-        (movement) => movement.businessId === input.businessId
-      )
-    };
+    return this.buildOfflineCacheSnapshot(input.businessId, now);
   }
 
   listSyncQueue(input: { sessionId: string | null; businessId: string; now?: Date }): {
@@ -1776,6 +1803,292 @@ export class Cp2Store {
         fullTielDeferred: true
       }
     };
+  }
+
+  getBetaReadiness(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BetaReadinessReportSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "beta:read", now);
+    return this.buildBetaReadinessReport(input.businessId, now);
+  }
+
+  updateBetaAccess(input: {
+    sessionId: string | null;
+    businessId: string;
+    access: BetaAccessInput;
+    now?: Date;
+  }): BetaAccessSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:write",
+      now
+    );
+    assertValid(validateBetaAccessInput(input.access));
+    const normalized = normalizeBetaAccessInput(input.access);
+    const existing = this.getOrCreateBetaAccess(input.businessId, session.user.id, now);
+    const updated: BetaAccessSummary = {
+      businessId: input.businessId,
+      status: normalized.status,
+      targetMerchantCount: 10,
+      invitedMerchantCount: normalized.invitedMerchantCount,
+      pauseReason: normalized.pauseReason,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.betaAccess.set(input.businessId, updated);
+    this.appendBusinessEvent(
+      betaAccessUpdatedEvent({
+        id: randomUUID(),
+        access: updated,
+        previousStatus: existing.status,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  listBetaFeatureFlags(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BetaFeatureFlagSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:read",
+      now
+    );
+    return betaFeatureFlagKeys.map((key) =>
+      this.getOrCreateBetaFeatureFlag(input.businessId, key, session.user.id, now)
+    );
+  }
+
+  updateBetaFeatureFlag(input: {
+    sessionId: string | null;
+    businessId: string;
+    key: BetaFeatureFlagKey;
+    featureFlag: BetaFeatureFlagInput;
+    now?: Date;
+  }): BetaFeatureFlagSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:write",
+      now
+    );
+    assertValid(validateBetaFeatureFlagInput(input.featureFlag));
+    const normalized = normalizeBetaFeatureFlagInput(input.featureFlag);
+    const updated: BetaFeatureFlagSummary = {
+      businessId: input.businessId,
+      key: input.key,
+      enabled: normalized.enabled,
+      risk: betaFeatureFlagRisk(input.key),
+      reason: normalized.reason,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.betaFeatureFlags.set(betaFeatureFlagMapKey(input.businessId, input.key), updated);
+    this.appendBusinessEvent(
+      betaFeatureFlagUpdatedEvent({
+        id: randomUUID(),
+        featureFlag: updated,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  recordBetaDeviceTest(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceTest: BetaDeviceTestInput;
+    now?: Date;
+  }): BetaDeviceTestSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:write",
+      now
+    );
+    assertValid(validateBetaDeviceTestInput(input.deviceTest));
+    const normalized = normalizeBetaDeviceTestInput(input.deviceTest);
+    const deviceTest: BetaDeviceTestSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      deviceClass: normalized.deviceClass,
+      workflow: normalized.workflow,
+      status: normalized.status,
+      durationMs: normalized.durationMs,
+      notes: normalized.notes,
+      recordedBy: session.user.id,
+      recordedAt: now.toISOString()
+    };
+
+    this.betaDeviceTests.set(deviceTest.id, deviceTest);
+    this.appendBusinessEvent(
+      betaDeviceTestRecordedEvent({
+        id: randomUUID(),
+        deviceTest,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return deviceTest;
+  }
+
+  listBetaSupportTickets(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BetaSupportTicketSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "beta:support", input.now);
+    return this.betaSupportTicketsForBusiness(input.businessId);
+  }
+
+  createBetaSupportTicket(input: {
+    sessionId: string | null;
+    businessId: string;
+    ticket: BetaSupportTicketInput;
+    now?: Date;
+  }): BetaSupportTicketSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:support",
+      now
+    );
+    assertValid(validateBetaSupportTicketInput(input.ticket));
+    const normalized = normalizeBetaSupportTicketInput(input.ticket);
+    const ticket: BetaSupportTicketSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      severity: normalized.severity,
+      status: "open",
+      title: normalized.title,
+      bodySummary: normalized.bodySummary,
+      source: normalized.source,
+      createdBy: session.user.id,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      resolvedAt: null
+    };
+
+    this.betaSupportTickets.set(ticket.id, ticket);
+    this.appendBusinessEvent(
+      betaSupportTicketCreatedEvent({
+        id: randomUUID(),
+        ticket,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return ticket;
+  }
+
+  updateBetaSupportTicketStatus(input: {
+    sessionId: string | null;
+    businessId: string;
+    supportTicketId: string;
+    ticketStatus: BetaSupportTicketStatusInput;
+    now?: Date;
+  }): BetaSupportTicketSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:support",
+      now
+    );
+    assertValid(validateBetaSupportTicketStatusInput(input.ticketStatus));
+    const normalized = normalizeBetaSupportTicketStatusInput(input.ticketStatus);
+    const ticket = this.betaSupportTickets.get(input.supportTicketId);
+
+    if (ticket === undefined || ticket.businessId !== input.businessId) {
+      throw new Cp2Error(404, "beta_support_ticket_not_found", "Support ticket was not found.");
+    }
+
+    const updated: BetaSupportTicketSummary = {
+      ...ticket,
+      status: normalized.status,
+      updatedAt: now.toISOString(),
+      resolvedAt: normalized.status === "resolved" ? (ticket.resolvedAt ?? now.toISOString()) : null
+    };
+
+    this.betaSupportTickets.set(updated.id, updated);
+    this.appendBusinessEvent(
+      betaSupportTicketStatusUpdatedEvent({
+        id: randomUUID(),
+        ticket: updated,
+        previousStatus: ticket.status,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  recordBetaTelemetry(input: {
+    sessionId: string | null;
+    businessId: string;
+    telemetry: BetaTelemetryInput;
+    now?: Date;
+  }): BetaTelemetryEventSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:telemetry",
+      now
+    );
+    assertValid(validateBetaTelemetryInput(input.telemetry));
+    const normalized = normalizeBetaTelemetryInput(input.telemetry);
+    const event: BetaTelemetryEventSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      kind: normalized.kind,
+      severity:
+        normalized.kind === "crash" ? "critical" : normalized.kind === "error" ? "warning" : "info",
+      fingerprint: createHash("sha256")
+        .update(`${normalized.kind}:${normalized.message ?? ""}`)
+        .digest("hex")
+        .slice(0, 16),
+      messageHash: createHash("sha256")
+        .update(normalized.message ?? "")
+        .digest("hex"),
+      boundedMetadata: normalized.metadata,
+      occurredAt: now.toISOString(),
+      recordedAt: now.toISOString()
+    };
+
+    this.betaTelemetryEvents.set(event.id, event);
+    this.appendBusinessEvent(
+      betaTelemetryRecordedEvent({
+        id: randomUUID(),
+        telemetry: event,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return event;
   }
 
   enqueueSyncMutation(input: {
@@ -2460,6 +2773,11 @@ export class Cp2Store {
       verificationTiers: [...this.verificationTiers.values()],
       taxConfigs: [...this.taxConfigs.values()],
       deviceTrust: [...this.deviceTrust.values()],
+      betaAccess: [...this.betaAccess.values()],
+      betaFeatureFlags: [...this.betaFeatureFlags.values()],
+      betaDeviceTests: [...this.betaDeviceTests.values()],
+      betaSupportTickets: [...this.betaSupportTickets.values()],
+      betaTelemetryEvents: [...this.betaTelemetryEvents.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       notifications: [...this.notifications.values()],
@@ -2962,6 +3280,7 @@ export class Cp2Store {
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
     const logisticsReport = summarizeLogistics(this.logisticsForBusiness(businessId));
     const compliance = this.buildComplianceReport(businessId, userId, new Date());
+    const beta = this.buildBetaReadinessReport(businessId, new Date());
 
     return {
       businessId,
@@ -2992,6 +3311,10 @@ export class Cp2Store {
       scheduledDeletionCount: compliance.scheduledAnonymizationCount,
       verificationTier: compliance.verificationTier,
       deviceTrustLevel: compliance.deviceTrustLevel,
+      betaAccessStatus: beta.access.status,
+      betaReadinessStatus: beta.status,
+      openSupportTicketCount: beta.support.openTicketCount,
+      crashFreeSessionRate: beta.telemetry.crashFreeSessionRate,
       lowStockCount: knowledge.report.inventory.lowStockCount,
       outstandingDebtTotal: knowledge.report.debts.totalOutstanding,
       unreadNotificationCount: knowledge.notificationSummary.unread,
@@ -3037,6 +3360,168 @@ export class Cp2Store {
       taxCountryCode: taxConfig.countryCode,
       deviceTrustLevel: deviceTrust.level,
       highRiskAuditEventCount
+    };
+  }
+
+  private buildBetaReadinessReport(businessId: string, now: Date): BetaReadinessReportSummary {
+    const access = this.getOrCreateBetaAccess(businessId, "system", now);
+    const featureFlags = betaFeatureFlagKeys.map((key) =>
+      this.getOrCreateBetaFeatureFlag(businessId, key, "system", now)
+    );
+    const deviceTests = this.betaDeviceTestsForBusiness(businessId);
+    const supportTickets = this.betaSupportTicketsForBusiness(businessId);
+    const telemetryEvents = this.betaTelemetryEventsForBusiness(businessId);
+    const syncItems = this.syncItemsForBusiness(businessId);
+    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
+    const payments = this.paymentsForBusiness(businessId);
+    const offlineSnapshot = this.buildOfflineCacheSnapshot(businessId, now);
+    const passedDeviceClasses = [
+      ...new Set(
+        deviceTests.filter((test) => test.status === "passed").map((test) => test.deviceClass)
+      )
+    ].sort() as BetaReadinessReportSummary["deviceTesting"]["passedDeviceClasses"];
+    const failedTestCount = deviceTests.filter((test) => test.status === "failed").length;
+    const sessionEventCount = telemetryEvents.filter((event) => event.kind === "session").length;
+    const crashEventCount = telemetryEvents.filter((event) => event.kind === "crash").length;
+    const errorEventCount = telemetryEvents.filter((event) => event.kind === "error").length;
+    const crashFreeSessionRate =
+      sessionEventCount === 0
+        ? 1
+        : roundMoney(Math.max(0, (sessionEventCount - crashEventCount) / sessionEventCount));
+    const reconciliationMismatchCount = paymentSummaries.filter(
+      (summary) =>
+        roundMoney(summary.invoiceTotal - summary.paidTotal) !== summary.balanceDue ||
+        summary.paidTotal > summary.invoiceTotal + 0.01
+    ).length;
+    const offlineTestedSurfaceCount =
+      (offlineSnapshot.products.length > 0 ? 1 : 0) +
+      (offlineSnapshot.customers.length > 0 ? 1 : 0) +
+      (offlineSnapshot.invoices.length > 0 ? 1 : 0) +
+      (offlineSnapshot.payments.length > 0 ? 1 : 0) +
+      (offlineSnapshot.logistics.length > 0 ? 1 : 0);
+    const gates = [
+      {
+        key: "closed_beta_access",
+        passed:
+          access.status === "active" && access.invitedMerchantCount <= access.targetMerchantCount,
+        detail: `Beta access is ${access.status} for ${access.invitedMerchantCount}/${access.targetMerchantCount} selected merchants.`
+      },
+      {
+        key: "feature_flags",
+        passed: featureFlags.every((flag) => flag.enabled),
+        detail: `${featureFlags.filter((flag) => flag.enabled).length}/${featureFlags.length} beta feature flags are enabled.`
+      },
+      {
+        key: "device_testing",
+        passed:
+          passedDeviceClasses.includes("android_1gb") &&
+          passedDeviceClasses.includes("android_2gb") &&
+          failedTestCount === 0,
+        detail: `${passedDeviceClasses.length}/2 required Android device classes passed.`
+      },
+      {
+        key: "offline_workflows",
+        passed: offlineTestedSurfaceCount >= 5,
+        detail: `${offlineTestedSurfaceCount}/5 beta-critical offline surfaces have cached records.`
+      },
+      {
+        key: "sync_stress",
+        passed:
+          syncItems.filter((item) => item.status === "synced").length >= 3 &&
+          syncItems.every((item) => item.status !== "conflict" && item.status !== "failed"),
+        detail: `${syncItems.filter((item) => item.status === "synced").length} sync items replayed without unresolved failure.`
+      },
+      {
+        key: "payment_reconciliation",
+        passed: payments.length > 0 && reconciliationMismatchCount === 0,
+        detail: `${payments.length} payments recorded with ${reconciliationMismatchCount} reconciliation mismatches.`
+      },
+      {
+        key: "support_process",
+        passed:
+          supportTickets.some((ticket) => ticket.status === "resolved") &&
+          supportTickets.every(
+            (ticket) => ticket.severity !== "critical" || ticket.status === "resolved"
+          ),
+        detail: `${supportTickets.filter((ticket) => ticket.status !== "resolved").length} support tickets remain open.`
+      },
+      {
+        key: "crash_telemetry",
+        passed: sessionEventCount > 0 && crashFreeSessionRate >= 0.95,
+        detail: `${sessionEventCount} session telemetry events with ${crashEventCount} crashes.`
+      }
+    ];
+    const failedGateCount = gates.filter((gate) => !gate.passed).length;
+
+    return {
+      businessId,
+      generatedAt: now.toISOString(),
+      status:
+        failedGateCount === 0
+          ? "ready"
+          : gates.some(
+                (gate) =>
+                  !gate.passed &&
+                  (gate.key === "closed_beta_access" ||
+                    gate.key === "payment_reconciliation" ||
+                    gate.key === "crash_telemetry")
+              )
+            ? "blocked"
+            : "needs_review",
+      access,
+      featureFlags,
+      deviceTesting: {
+        requiredDeviceClasses: ["android_1gb", "android_2gb"],
+        passedDeviceClasses,
+        failedTestCount
+      },
+      offline: {
+        cachedRecordCount:
+          offlineSnapshot.products.length +
+          offlineSnapshot.customers.length +
+          offlineSnapshot.suppliers.length +
+          offlineSnapshot.invoices.length +
+          offlineSnapshot.payments.length +
+          offlineSnapshot.logistics.length +
+          offlineSnapshot.inventoryMovements.length,
+        betaCriticalSurfaceCount: 5,
+        testedSurfaceCount: offlineTestedSurfaceCount
+      },
+      syncStress: {
+        queuedMutationCount: syncItems.length,
+        syncedMutationCount: syncItems.filter((item) => item.status === "synced").length,
+        conflictCount: syncItems.filter((item) => item.status === "conflict").length,
+        failedCount: syncItems.filter((item) => item.status === "failed").length,
+        ready: gates.find((gate) => gate.key === "sync_stress")?.passed ?? false
+      },
+      payments: {
+        paymentCount: payments.length,
+        partiallyPaidInvoiceCount: paymentSummaries.filter(
+          (summary) => summary.status === "partially_paid"
+        ).length,
+        unpaidInvoiceCount: paymentSummaries.filter((summary) => summary.status === "unpaid")
+          .length,
+        reconciliationMismatchCount,
+        controlledProductionReady:
+          payments.length > 0 &&
+          reconciliationMismatchCount === 0 &&
+          featureFlags.find((flag) => flag.key === "controlled_payments")?.enabled === true
+      },
+      support: {
+        openTicketCount: supportTickets.filter((ticket) => ticket.status !== "resolved").length,
+        criticalOpenTicketCount: supportTickets.filter(
+          (ticket) => ticket.severity === "critical" && ticket.status !== "resolved"
+        ).length,
+        documentedSeverityCount: new Set(supportTickets.map((ticket) => ticket.severity)).size
+      },
+      telemetry: {
+        sessionEventCount,
+        crashEventCount,
+        errorEventCount,
+        crashFreeSessionRate,
+        rawSensitivePayloadCount: 0
+      },
+      gates
     };
   }
 
@@ -3102,6 +3587,7 @@ export class Cp2Store {
       },
       logistics: summarizeLogistics(logistics),
       compliance: this.buildComplianceReport(businessId, "system", now),
+      beta: this.buildBetaReadinessReport(businessId, now),
       sync: {
         ...syncSummary,
         active:
@@ -3155,6 +3641,17 @@ export class Cp2Store {
             : ("info" as const),
         detail: `${report.compliance.exportCount} exports and ${report.compliance.scheduledAnonymizationCount} scheduled anonymizations.`,
         metric: report.compliance.exportCount + report.compliance.scheduledAnonymizationCount
+      },
+      {
+        topic: "beta" as const,
+        severity:
+          report.beta.status === "blocked"
+            ? ("critical" as const)
+            : report.beta.status === "needs_review"
+              ? ("warning" as const)
+              : ("info" as const),
+        detail: `Closed beta readiness is ${report.beta.status} with ${report.beta.support.openTicketCount} open support tickets.`,
+        metric: report.beta.gates.filter((gate) => !gate.passed).length
       },
       {
         topic: "sync" as const,
@@ -3247,6 +3744,20 @@ export class Cp2Store {
         title: "Fulfillment work is open",
         body: `${report.logistics.pendingCount} pending and ${report.logistics.readyCount} ready fulfillment records need attention.`,
         sourceType: "logistics",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.beta.status !== "ready") {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:beta.readiness`,
+        type: "beta_readiness",
+        severity: report.beta.status === "blocked" ? "critical" : "warning",
+        title: "Beta readiness needs review",
+        body: `${report.beta.gates.filter((gate) => !gate.passed).length} CP15 release gates need attention.`,
+        sourceType: "beta_readiness",
         sourceId: null,
         now
       });
@@ -3364,6 +3875,41 @@ export class Cp2Store {
     );
   }
 
+  private buildOfflineCacheSnapshot(businessId: string, now: Date): OfflineCacheSnapshot {
+    return {
+      businessId,
+      capturedAt: now.toISOString(),
+      source: "server_cache",
+      products: this.productsForBusiness(businessId),
+      customers: this.customersForBusiness(businessId),
+      suppliers: this.suppliersForBusiness(businessId),
+      invoices: this.invoicesForBusiness(businessId),
+      payments: this.paymentsForBusiness(businessId),
+      logistics: this.logisticsForBusiness(businessId),
+      invoicePaymentSummaries: this.buildInvoicePaymentSummaries(businessId),
+      customerDebts: this.buildCustomerDebtSummaries(businessId),
+      inventoryMovements: this.inventoryMovementsForBusiness(businessId)
+    };
+  }
+
+  private betaDeviceTestsForBusiness(businessId: string): BetaDeviceTestSummary[] {
+    return [...this.betaDeviceTests.values()]
+      .filter((test) => test.businessId === businessId)
+      .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
+  }
+
+  private betaSupportTicketsForBusiness(businessId: string): BetaSupportTicketSummary[] {
+    return [...this.betaSupportTickets.values()]
+      .filter((ticket) => ticket.businessId === businessId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  private betaTelemetryEventsForBusiness(businessId: string): BetaTelemetryEventSummary[] {
+    return [...this.betaTelemetryEvents.values()]
+      .filter((event) => event.businessId === businessId)
+      .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
+  }
+
   private auditEventsForBusiness(businessId: string): BusinessEvent[] {
     const aggregateIds = new Set<string>([
       businessId,
@@ -3383,7 +3929,16 @@ export class Cp2Store {
         .map((item) => item.id),
       ...[...this.accountDeletionRequests.values()]
         .filter((item) => item.businessId === businessId)
-        .map((item) => item.id)
+        .map((item) => item.id),
+      ...[...this.betaAccess.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => item.businessId),
+      ...[...this.betaFeatureFlags.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => `${item.businessId}:${item.key}`),
+      ...this.betaDeviceTestsForBusiness(businessId).map((item) => item.id),
+      ...this.betaSupportTicketsForBusiness(businessId).map((item) => item.id),
+      ...this.betaTelemetryEventsForBusiness(businessId).map((item) => item.id)
     ]);
 
     return this.auditEvents.filter(
@@ -3493,6 +4048,52 @@ export class Cp2Store {
     };
     this.deviceTrust.set(key, trust);
     return trust;
+  }
+
+  private getOrCreateBetaAccess(businessId: string, actorId: string, now: Date): BetaAccessSummary {
+    const existing = this.betaAccess.get(businessId);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const access: BetaAccessSummary = {
+      businessId,
+      status: "not_invited",
+      targetMerchantCount: 10,
+      invitedMerchantCount: 0,
+      pauseReason: null,
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.betaAccess.set(businessId, access);
+    return access;
+  }
+
+  private getOrCreateBetaFeatureFlag(
+    businessId: string,
+    key: BetaFeatureFlagKey,
+    actorId: string,
+    now: Date
+  ): BetaFeatureFlagSummary {
+    const mapKey = betaFeatureFlagMapKey(businessId, key);
+    const existing = this.betaFeatureFlags.get(mapKey);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const featureFlag: BetaFeatureFlagSummary = {
+      businessId,
+      key,
+      enabled: false,
+      risk: betaFeatureFlagRisk(key),
+      reason: "Disabled until CP15 beta hardening passes.",
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.betaFeatureFlags.set(mapKey, featureFlag);
+    return featureFlag;
   }
 
   private async createRuntimeModelRoute(input: {
@@ -4016,6 +4617,18 @@ function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): st
 
 function deviceTrustKey(businessId: string, userId: string, deviceId: string): string {
   return `${businessId}:${userId}:${deviceId}`;
+}
+
+const betaFeatureFlagKeys: BetaFeatureFlagKey[] = [
+  "closed_beta",
+  "offline_hardening",
+  "controlled_payments",
+  "support_intake",
+  "crash_telemetry"
+];
+
+function betaFeatureFlagMapKey(businessId: string, key: BetaFeatureFlagKey): string {
+  return `${businessId}:${key}`;
 }
 
 function roundMoney(value: number): number {

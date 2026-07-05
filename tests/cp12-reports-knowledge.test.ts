@@ -200,10 +200,11 @@ describe("CP12 reports notifications and knowledge", () => {
       sessionCookie
     );
     expect(inbox.summary).toMatchObject({
-      unread: 2,
-      total: 2
+      unread: 3,
+      total: 3
     });
     expect(inbox.notifications.map((notification) => notification.type).sort()).toEqual([
+      "beta_readiness",
       "low_stock",
       "open_debt"
     ]);
@@ -216,7 +217,7 @@ describe("CP12 reports notifications and knowledge", () => {
     expect(knowledge).toMatchObject({
       businessId,
       notificationSummary: {
-        unread: 2
+        unread: 3
       }
     });
     expect(knowledge.facts.length).toBeGreaterThanOrEqual(5);
@@ -253,7 +254,7 @@ describe("CP12 reports notifications and knowledge", () => {
     const createdEvents = store
       .snapshot()
       .auditEvents.filter((event) => event.type === "notification.created");
-    expect(createdEvents).toHaveLength(2);
+    expect(createdEvents).toHaveLength(3);
     expect(JSON.stringify(createdEvents)).not.toContain("Rice");
 
     await app.close();
@@ -302,7 +303,7 @@ describe("CP12 reports notifications and knowledge", () => {
     );
     expect(updatedInbox.summary).toMatchObject({
       archived: 1,
-      unread: 1
+      unread: 2
     });
     expect(store.snapshot().products).toHaveLength(productCount);
     expect(store.snapshot().invoices).toHaveLength(invoiceCount);
@@ -352,8 +353,8 @@ describe("CP12 reports notifications and knowledge", () => {
       context: {
         lowStockCount: 1,
         outstandingDebtTotal: 120,
-        unreadNotificationCount: 2,
-        knowledgeFactCount: 7
+        unreadNotificationCount: 3,
+        knowledgeFactCount: 8
       },
       plan: {
         toolName: "products.list"
@@ -362,8 +363,8 @@ describe("CP12 reports notifications and knowledge", () => {
     expect(capturedPrompt?.context).toMatchObject({
       lowStockCount: 1,
       outstandingDebtTotal: 120,
-      unreadNotificationCount: 2,
-      knowledgeFactCount: 7
+      unreadNotificationCount: 3,
+      knowledgeFactCount: 8
     });
     expect(JSON.stringify(capturedPrompt)).not.toContain("Rice");
     expect(JSON.stringify(turn.turn.telemetry)).not.toContain("Rice");

@@ -301,6 +301,136 @@ export interface DeviceTrustSummary {
   updatedAt: string;
 }
 
+export type BetaAccessStatus = "not_invited" | "active" | "paused";
+
+export interface BetaAccessSummary {
+  businessId: string;
+  status: BetaAccessStatus;
+  targetMerchantCount: number;
+  invitedMerchantCount: number;
+  pauseReason: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type BetaFeatureFlagKey =
+  | "closed_beta"
+  | "offline_hardening"
+  | "controlled_payments"
+  | "support_intake"
+  | "crash_telemetry";
+
+export type BetaFeatureFlagRisk = "low" | "medium" | "high";
+
+export interface BetaFeatureFlagSummary {
+  businessId: string;
+  key: BetaFeatureFlagKey;
+  enabled: boolean;
+  risk: BetaFeatureFlagRisk;
+  reason: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type BetaDeviceClass = "android_1gb" | "android_2gb";
+
+export type BetaDeviceTestStatus = "passed" | "failed";
+
+export interface BetaDeviceTestSummary {
+  id: string;
+  businessId: string;
+  deviceClass: BetaDeviceClass;
+  workflow: string;
+  status: BetaDeviceTestStatus;
+  durationMs: number;
+  notes: string | null;
+  recordedBy: string;
+  recordedAt: string;
+}
+
+export type BetaSupportSeverity = "low" | "medium" | "high" | "critical";
+
+export type BetaSupportTicketStatus = "open" | "triaged" | "resolved";
+
+export interface BetaSupportTicketSummary {
+  id: string;
+  businessId: string;
+  severity: BetaSupportSeverity;
+  status: BetaSupportTicketStatus;
+  title: string;
+  bodySummary: string;
+  source: "merchant" | "operator";
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export type BetaTelemetryKind = "session" | "crash" | "error";
+
+export interface BetaTelemetryEventSummary {
+  id: string;
+  businessId: string;
+  kind: BetaTelemetryKind;
+  severity: "info" | "warning" | "critical";
+  fingerprint: string;
+  messageHash: string;
+  boundedMetadata: Record<string, string | number | boolean | null>;
+  occurredAt: string;
+  recordedAt: string;
+}
+
+export type BetaReadinessStatus = "blocked" | "needs_review" | "ready";
+
+export interface BetaReadinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  status: BetaReadinessStatus;
+  access: BetaAccessSummary;
+  featureFlags: BetaFeatureFlagSummary[];
+  deviceTesting: {
+    requiredDeviceClasses: BetaDeviceClass[];
+    passedDeviceClasses: BetaDeviceClass[];
+    failedTestCount: number;
+  };
+  offline: {
+    cachedRecordCount: number;
+    betaCriticalSurfaceCount: number;
+    testedSurfaceCount: number;
+  };
+  syncStress: {
+    queuedMutationCount: number;
+    syncedMutationCount: number;
+    conflictCount: number;
+    failedCount: number;
+    ready: boolean;
+  };
+  payments: {
+    paymentCount: number;
+    partiallyPaidInvoiceCount: number;
+    unpaidInvoiceCount: number;
+    reconciliationMismatchCount: number;
+    controlledProductionReady: boolean;
+  };
+  support: {
+    openTicketCount: number;
+    criticalOpenTicketCount: number;
+    documentedSeverityCount: number;
+  };
+  telemetry: {
+    sessionEventCount: number;
+    crashEventCount: number;
+    errorEventCount: number;
+    crashFreeSessionRate: number;
+    rawSensitivePayloadCount: number;
+  };
+  gates: Array<{
+    key: string;
+    passed: boolean;
+    detail: string;
+  }>;
+}
+
 export interface SecurityReviewSummary {
   businessId: string;
   generatedAt: string;
@@ -600,11 +730,17 @@ export interface BusinessReportSummary {
   imports: ImportsReportSummary;
   logistics: LogisticsReportSummary;
   compliance: ComplianceReportSummary;
+  beta: BetaReadinessReportSummary;
   sync: SyncHealthReportSummary;
 }
 
 export type BusinessNotificationType =
-  "low_stock" | "open_debt" | "sync_conflict" | "import_failed" | "fulfillment_pending";
+  | "low_stock"
+  | "open_debt"
+  | "sync_conflict"
+  | "import_failed"
+  | "fulfillment_pending"
+  | "beta_readiness";
 
 export type BusinessNotificationSeverity = "info" | "warning" | "critical";
 
@@ -619,7 +755,13 @@ export interface BusinessNotificationSummary {
   title: string;
   body: string;
   sourceType:
-    "report" | "product" | "customer_debt" | "sync_queue" | "document_import" | "logistics";
+    | "report"
+    | "product"
+    | "customer_debt"
+    | "sync_queue"
+    | "document_import"
+    | "logistics"
+    | "beta_readiness";
   sourceId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -649,6 +791,7 @@ export interface BusinessKnowledgeFact {
     | "imports"
     | "logistics"
     | "compliance"
+    | "beta"
     | "sync"
     | "notifications";
   severity: BusinessNotificationSeverity;
@@ -721,6 +864,10 @@ export interface RuntimeContextSummary {
   scheduledDeletionCount: number;
   verificationTier: VerificationTier;
   deviceTrustLevel: DeviceTrustLevel;
+  betaAccessStatus: BetaAccessStatus;
+  betaReadinessStatus: BetaReadinessStatus;
+  openSupportTicketCount: number;
+  crashFreeSessionRate: number;
   lowStockCount: number;
   outstandingDebtTotal: number;
   unreadNotificationCount: number;

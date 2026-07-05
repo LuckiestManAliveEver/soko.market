@@ -268,6 +268,7 @@ interface BusinessReportSummary {
     deviceTrustLevel: DeviceTrustLevel;
     highRiskAuditEventCount: number;
   };
+  beta: BetaReadinessReportSummary;
   sync: SyncQueueSummary & {
     active: number;
   };
@@ -448,6 +449,91 @@ interface DeviceTrustSummary {
   updatedAt: string;
 }
 
+type BetaAccessStatus = "not_invited" | "active" | "paused";
+type BetaFeatureFlagKey =
+  | "closed_beta"
+  | "offline_hardening"
+  | "controlled_payments"
+  | "support_intake"
+  | "crash_telemetry";
+type BetaDeviceClass = "android_1gb" | "android_2gb";
+type BetaDeviceTestStatus = "passed" | "failed";
+type BetaSupportSeverity = "low" | "medium" | "high" | "critical";
+type BetaSupportTicketStatus = "open" | "triaged" | "resolved";
+type BetaTelemetryKind = "session" | "crash" | "error";
+type BetaReadinessStatus = "blocked" | "needs_review" | "ready";
+
+interface BetaAccessSummary {
+  status: BetaAccessStatus;
+  targetMerchantCount: number;
+  invitedMerchantCount: number;
+  pauseReason: string | null;
+  updatedAt: string;
+}
+
+interface BetaFeatureFlagSummary {
+  key: BetaFeatureFlagKey;
+  enabled: boolean;
+  risk: "low" | "medium" | "high";
+  reason: string;
+  updatedAt: string;
+}
+
+interface BetaSupportTicketSummary {
+  id: string;
+  severity: BetaSupportSeverity;
+  status: BetaSupportTicketStatus;
+  title: string;
+  bodySummary: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+interface BetaReadinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  status: BetaReadinessStatus;
+  access: BetaAccessSummary;
+  featureFlags: BetaFeatureFlagSummary[];
+  deviceTesting: {
+    passedDeviceClasses: BetaDeviceClass[];
+    failedTestCount: number;
+  };
+  offline: {
+    cachedRecordCount: number;
+    betaCriticalSurfaceCount: number;
+    testedSurfaceCount: number;
+  };
+  syncStress: {
+    syncedMutationCount: number;
+    conflictCount: number;
+    failedCount: number;
+    ready: boolean;
+  };
+  payments: {
+    paymentCount: number;
+    reconciliationMismatchCount: number;
+    controlledProductionReady: boolean;
+  };
+  support: {
+    openTicketCount: number;
+    criticalOpenTicketCount: number;
+    documentedSeverityCount: number;
+  };
+  telemetry: {
+    sessionEventCount: number;
+    crashEventCount: number;
+    errorEventCount: number;
+    crashFreeSessionRate: number;
+    rawSensitivePayloadCount: number;
+  };
+  gates: Array<{
+    key: string;
+    passed: boolean;
+    detail: string;
+  }>;
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -505,6 +591,21 @@ interface ComplianceFormState {
   deviceTrustReason: string;
   deletionConfirmation: string;
   deletionReason: string;
+}
+
+interface BetaFormState {
+  accessStatus: BetaAccessStatus;
+  invitedMerchantCount: string;
+  pauseReason: string;
+  deviceClass: BetaDeviceClass;
+  deviceWorkflow: string;
+  deviceStatus: BetaDeviceTestStatus;
+  deviceDurationMs: string;
+  supportSeverity: BetaSupportSeverity;
+  supportTitle: string;
+  supportBody: string;
+  telemetryKind: BetaTelemetryKind;
+  telemetryMessage: string;
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
@@ -569,6 +670,21 @@ const emptyComplianceForm: ComplianceFormState = {
   deletionReason: ""
 };
 
+const emptyBetaForm: BetaFormState = {
+  accessStatus: "not_invited",
+  invitedMerchantCount: "1",
+  pauseReason: "",
+  deviceClass: "android_1gb",
+  deviceWorkflow: "daily owner workflow",
+  deviceStatus: "passed",
+  deviceDurationMs: "90000",
+  supportSeverity: "medium",
+  supportTitle: "Beta support rehearsal",
+  supportBody: "Operator can triage and resolve beta support issues.",
+  telemetryKind: "session",
+  telemetryMessage: "beta session completed"
+};
+
 const emptySyncSummary: SyncQueueSummary = {
   businessId: "",
   pending: 0,
@@ -630,6 +746,8 @@ function App() {
   const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
   const [taxConfig, setTaxConfig] = useState<CountryTaxConfigSummary | null>(null);
   const [deviceTrust, setDeviceTrust] = useState<DeviceTrustSummary | null>(null);
+  const [betaReadiness, setBetaReadiness] = useState<BetaReadinessReportSummary | null>(null);
+  const [betaSupportTickets, setBetaSupportTickets] = useState<BetaSupportTicketSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
@@ -637,6 +755,7 @@ function App() {
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
   const [logisticsForm, setLogisticsForm] = useState<LogisticsFormState>(emptyLogisticsForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
+  const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
@@ -733,6 +852,10 @@ function App() {
 
     if (view === "compliance") {
       void loadCompliance(business.id);
+    }
+
+    if (view === "home" || view === "beta") {
+      void loadBetaReadiness(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -1155,6 +1278,147 @@ function App() {
     }
   }
 
+  async function loadBetaReadiness(businessId: string) {
+    try {
+      const [readiness, tickets] = await Promise.all([
+        getJson<BetaReadinessReportSummary>(`/businesses/${businessId}/beta/readiness`),
+        getJson<BetaSupportTicketSummary[]>(`/businesses/${businessId}/beta/support-tickets`)
+      ]);
+      setBetaReadiness(readiness);
+      setBetaSupportTickets(tickets);
+      setBetaForm((form) => ({
+        ...form,
+        accessStatus: readiness.access.status,
+        invitedMerchantCount: String(readiness.access.invitedMerchantCount),
+        pauseReason: readiness.access.pauseReason ?? ""
+      }));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateBetaAccess() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<BetaAccessSummary>(`/businesses/${business.id}/beta/access`, {
+        status: betaForm.accessStatus,
+        invitedMerchantCount: Number(betaForm.invitedMerchantCount),
+        pauseReason: betaForm.pauseReason
+      });
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta access updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function enableBetaFlags() {
+    if (business === null || betaReadiness === null) {
+      return;
+    }
+
+    try {
+      await Promise.all(
+        betaReadiness.featureFlags.map((flag) =>
+          patchJson<BetaFeatureFlagSummary>(
+            `/businesses/${business.id}/beta/feature-flags/${flag.key}`,
+            {
+              enabled: true,
+              reason: "Enabled for CP15 closed beta readiness."
+            }
+          )
+        )
+      );
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta feature flags enabled");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function recordBetaDeviceTest() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson(`/businesses/${business.id}/beta/device-tests`, {
+        deviceClass: betaForm.deviceClass,
+        workflow: betaForm.deviceWorkflow,
+        status: betaForm.deviceStatus,
+        durationMs: Number(betaForm.deviceDurationMs),
+        notes: "Recorded from owner shell"
+      });
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta device test recorded");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createBetaSupportTicket() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<BetaSupportTicketSummary>(`/businesses/${business.id}/beta/support-tickets`, {
+        severity: betaForm.supportSeverity,
+        title: betaForm.supportTitle,
+        body: betaForm.supportBody,
+        source: "operator"
+      });
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta support ticket created");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateBetaSupportTicketStatus(
+    supportTicketId: string,
+    status: BetaSupportTicketStatus
+  ) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<BetaSupportTicketSummary>(
+        `/businesses/${business.id}/beta/support-tickets/${supportTicketId}`,
+        { status }
+      );
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta support ticket updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function recordBetaTelemetry() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson(`/businesses/${business.id}/beta/telemetry`, {
+        kind: betaForm.telemetryKind,
+        message: betaForm.telemetryMessage,
+        metadata: {
+          surface: "web",
+          online: isOnline
+        }
+      });
+      await loadBetaReadiness(business.id);
+      setStatusMessage("Beta telemetry recorded");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function updateNotification(
     notificationId: string,
     status: BusinessNotificationSummary["status"]
@@ -1470,6 +1734,8 @@ function App() {
     setVerificationTier(null);
     setTaxConfig(null);
     setDeviceTrust(null);
+    setBetaReadiness(null);
+    setBetaSupportTickets([]);
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
@@ -1478,6 +1744,7 @@ function App() {
     setImportForm(emptyImportForm);
     setLogisticsForm(emptyLogisticsForm);
     setComplianceForm(emptyComplianceForm);
+    setBetaForm(emptyBetaForm);
     setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
@@ -1854,6 +2121,23 @@ function App() {
                   onRefresh={() => business !== null && void loadCompliance(business.id)}
                 />
               ) : null}
+              {view === "beta" ? (
+                <BetaSurface
+                  form={betaForm}
+                  readiness={betaReadiness}
+                  supportTickets={betaSupportTickets}
+                  onFormChange={setBetaForm}
+                  onUpdateAccess={() => void updateBetaAccess()}
+                  onEnableFlags={() => void enableBetaFlags()}
+                  onRecordDeviceTest={() => void recordBetaDeviceTest()}
+                  onCreateSupportTicket={() => void createBetaSupportTicket()}
+                  onUpdateSupportTicket={(supportTicketId, status) =>
+                    void updateBetaSupportTicketStatus(supportTicketId, status)
+                  }
+                  onRecordTelemetry={() => void recordBetaTelemetry()}
+                  onRefresh={() => business !== null && void loadBetaReadiness(business.id)}
+                />
+              ) : null}
               {view === "reports" ? (
                 <ReportsSurface
                   report={reportSummary}
@@ -1879,6 +2163,7 @@ function App() {
               view !== "imports" &&
               view !== "logistics" &&
               view !== "compliance" &&
+              view !== "beta" &&
               view !== "reports" &&
               view !== "notifications" ? (
                 <EmptyStateSurface
@@ -3493,6 +3778,283 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
   );
 }
 
+interface BetaSurfaceProps {
+  form: BetaFormState;
+  readiness: BetaReadinessReportSummary | null;
+  supportTickets: BetaSupportTicketSummary[];
+  onFormChange: (form: BetaFormState) => void;
+  onUpdateAccess: () => void;
+  onEnableFlags: () => void;
+  onRecordDeviceTest: () => void;
+  onCreateSupportTicket: () => void;
+  onUpdateSupportTicket: (supportTicketId: string, status: BetaSupportTicketStatus) => void;
+  onRecordTelemetry: () => void;
+  onRefresh: () => void;
+}
+
+function BetaSurface(props: BetaSurfaceProps) {
+  const failedGates = props.readiness?.gates.filter((gate) => !gate.passed) ?? [];
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Beta readiness controls">
+        <div className="section-heading">
+          <p className="eyebrow">CP15 beta</p>
+          <h3>Readiness gates</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>Status</span>
+            <strong>{props.readiness?.status ?? "pending"}</strong>
+          </div>
+          <div className="metric">
+            <span>Gates</span>
+            <strong>{failedGates.length}</strong>
+          </div>
+          <div className="metric">
+            <span>Crash-free</span>
+            <strong>{formatPercent(props.readiness?.telemetry.crashFreeSessionRate ?? 1)}</strong>
+          </div>
+          <div className="metric">
+            <span>Support</span>
+            <strong>{props.readiness?.support.openTicketCount ?? 0}</strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+          <button type="button" onClick={props.onEnableFlags}>
+            Enable flags
+          </button>
+        </div>
+      </section>
+
+      <section className="record-form" aria-label="Closed beta access">
+        <div className="section-heading">
+          <p className="eyebrow">Access gate</p>
+          <h3>Closed beta</h3>
+        </div>
+        <label>
+          Access status
+          <select
+            value={props.form.accessStatus}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                accessStatus: event.target.value as BetaAccessStatus
+              })
+            }
+          >
+            <option value="not_invited">Not invited</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+          </select>
+        </label>
+        <label>
+          Invited merchants
+          <input
+            value={props.form.invitedMerchantCount}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, invitedMerchantCount: event.target.value })
+            }
+            inputMode="numeric"
+          />
+        </label>
+        <label>
+          Pause reason
+          <input
+            value={props.form.pauseReason}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, pauseReason: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={props.onUpdateAccess}>
+          Save access
+        </button>
+      </section>
+
+      <section className="record-form" aria-label="Device and telemetry controls">
+        <div className="section-heading">
+          <p className="eyebrow">Reliability</p>
+          <h3>Device and telemetry</h3>
+        </div>
+        <div className="form-row">
+          <label>
+            Device class
+            <select
+              value={props.form.deviceClass}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  deviceClass: event.target.value as BetaDeviceClass
+                })
+              }
+            >
+              <option value="android_1gb">Android 1 GB</option>
+              <option value="android_2gb">Android 2 GB</option>
+            </select>
+          </label>
+          <label>
+            Test status
+            <select
+              value={props.form.deviceStatus}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  deviceStatus: event.target.value as BetaDeviceTestStatus
+                })
+              }
+            >
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Workflow
+          <input
+            value={props.form.deviceWorkflow}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deviceWorkflow: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Duration ms
+          <input
+            value={props.form.deviceDurationMs}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deviceDurationMs: event.target.value })
+            }
+            inputMode="numeric"
+          />
+        </label>
+        <button type="button" onClick={props.onRecordDeviceTest}>
+          Record device test
+        </button>
+        <label>
+          Telemetry kind
+          <select
+            value={props.form.telemetryKind}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                telemetryKind: event.target.value as BetaTelemetryKind
+              })
+            }
+          >
+            <option value="session">Session</option>
+            <option value="error">Error</option>
+            <option value="crash">Crash</option>
+          </select>
+        </label>
+        <label>
+          Telemetry message
+          <input
+            value={props.form.telemetryMessage}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, telemetryMessage: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={props.onRecordTelemetry}>
+          Record telemetry
+        </button>
+      </section>
+
+      <section className="record-form" aria-label="Support controls">
+        <div className="section-heading">
+          <p className="eyebrow">Support</p>
+          <h3>Issue intake</h3>
+        </div>
+        <label>
+          Severity
+          <select
+            value={props.form.supportSeverity}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                supportSeverity: event.target.value as BetaSupportSeverity
+              })
+            }
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </label>
+        <label>
+          Title
+          <input
+            value={props.form.supportTitle}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, supportTitle: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Body
+          <textarea
+            value={props.form.supportBody}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, supportBody: event.target.value })
+            }
+            rows={3}
+          />
+        </label>
+        <button type="button" onClick={props.onCreateSupportTicket}>
+          Create ticket
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Beta readiness status">
+        {props.readiness?.gates.map((gate) => (
+          <ReportRow
+            key={gate.key}
+            title={gate.key.replaceAll("_", " ")}
+            eyebrow={gate.passed ? "passed" : "needs review"}
+            body={gate.detail}
+            value={gate.passed ? "ok" : "fix"}
+          />
+        )) ?? null}
+        {props.supportTickets.map((ticket) => (
+          <article className="record-row" key={ticket.id}>
+            <div>
+              <p className="eyebrow">
+                {ticket.severity} - {ticket.status}
+              </p>
+              <h4>{ticket.title}</h4>
+              <p>{ticket.bodySummary}</p>
+            </div>
+            <div className="row-actions compact-actions">
+              {ticket.status === "open" ? (
+                <button
+                  type="button"
+                  onClick={() => props.onUpdateSupportTicket(ticket.id, "triaged")}
+                >
+                  Triage
+                </button>
+              ) : null}
+              {ticket.status !== "resolved" ? (
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onUpdateSupportTicket(ticket.id, "resolved")}
+                >
+                  Resolve
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
 function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
   if (report === null) {
     return (
@@ -3561,6 +4123,12 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
           eyebrow={`${report.compliance.exportCount} exports`}
           body={`${report.compliance.scheduledAnonymizationCount} scheduled anonymizations, ${report.compliance.highRiskAuditEventCount} high-risk audit events.`}
           value={report.compliance.verificationTier}
+        />
+        <ReportRow
+          title="Beta"
+          eyebrow={report.beta.status}
+          body={`${report.beta.gates.filter((gate) => !gate.passed).length} gates need review, ${report.beta.support.openTicketCount} support tickets open.`}
+          value={formatPercent(report.beta.telemetry.crashFreeSessionRate)}
         />
         <ReportRow
           title="Sync"
@@ -3873,6 +4441,10 @@ function formatMoney(value: number): string {
     currency: "KES",
     style: "currency"
   }).format(value);
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 function formatDate(value: string): string {

@@ -9,6 +9,7 @@ export type ShellView =
   | "imports"
   | "logistics"
   | "compliance"
+  | "beta"
   | "reports"
   | "notifications";
 
@@ -83,6 +84,11 @@ export const quickActions: QuickAction[] = [
     summary: "Manage export, deletion, verification, tax, and trust controls"
   },
   {
+    id: "beta",
+    label: "Beta",
+    summary: "Review closed beta access, gates, support, and telemetry"
+  },
+  {
     id: "reports",
     label: "Reports",
     summary: "Review sales, stock, debt, imports, and sync health"
@@ -134,6 +140,11 @@ export const emptyStates: EmptyState[] = [
     id: "compliance",
     title: "Compliance not reviewed yet",
     body: "CP14 keeps export, deletion, verification, tax, and device trust workflows explicit and audited."
+  },
+  {
+    id: "beta",
+    title: "Beta readiness not reviewed yet",
+    body: "CP15 keeps closed beta access, support, sync, payment, and telemetry gates explicit before selected merchant use."
   },
   {
     id: "reports",
