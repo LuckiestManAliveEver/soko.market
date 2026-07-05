@@ -104,6 +104,8 @@ In Render:
 
 Do not configure Cloudflare records until Render gives you the DNS targets for the custom domains.
 
+If Render deploy logs show an older commit, stop and redeploy the latest `main` commit first. For example, a deploy log that checks out `d6f4a90` is stale; it predates the Render Corepack fix. Use the latest commit from GitHub instead.
+
 ## 5. Get Render DNS Targets
 
 For the backend API:
@@ -250,7 +252,16 @@ If Render fails with `EROFS: read-only file system, unlink '/usr/bin/pnpm'`:
 1. Do not use `corepack enable` in Render build commands.
 2. Use `COREPACK_HOME=/tmp/corepack corepack pnpm ...` instead.
 3. Confirm `render.yaml` has the updated build and start commands.
-4. Redeploy both Render services from the latest `main` commit.
+4. Confirm Render is deploying the latest `main` commit, not an older commit.
+5. If the Render service still shows the old command, open the Render Blueprint and sync it from the latest `main`, or manually update the service build command in Render.
+6. Redeploy both Render services from the latest `main` commit.
+
+If Render selects Node 26:
+
+1. Confirm the latest commit includes `.node-version`.
+2. Confirm root `package.json` has `"node": ">=20.19.0 <21.0.0"` under `engines`.
+3. Confirm each Render service has `NODE_VERSION=20.19.0`.
+4. Redeploy from the latest `main` commit.
 
 If the frontend loads but API calls fail:
 
