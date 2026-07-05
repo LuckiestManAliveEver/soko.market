@@ -208,6 +208,21 @@ button:disabled {
   color: #23342a;
 }
 
+.record-form button.danger {
+  background: #9f2f2f;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
 .segmented {
   background: #e8eee8;
   border-radius: 8px;

@@ -8,6 +8,7 @@ export type ShellView =
   | "payments"
   | "imports"
   | "logistics"
+  | "compliance"
   | "reports"
   | "notifications";
 
@@ -77,6 +78,11 @@ export const quickActions: QuickAction[] = [
     summary: "Track pickup and delivery fulfillment"
   },
   {
+    id: "compliance",
+    label: "Compliance",
+    summary: "Manage export, deletion, verification, tax, and trust controls"
+  },
+  {
     id: "reports",
     label: "Reports",
     summary: "Review sales, stock, debt, imports, and sync health"
@@ -123,6 +129,11 @@ export const emptyStates: EmptyState[] = [
     id: "logistics",
     title: "No logistics yet",
     body: "CP13 tracks pickup and delivery fulfillment for confirmed invoices."
+  },
+  {
+    id: "compliance",
+    title: "Compliance not reviewed yet",
+    body: "CP14 keeps export, deletion, verification, tax, and device trust workflows explicit and audited."
   },
   {
     id: "reports",

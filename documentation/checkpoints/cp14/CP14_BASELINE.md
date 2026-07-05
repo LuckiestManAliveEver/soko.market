@@ -1,10 +1,10 @@
 # CP14: Security, Compliance, and TIEL Preparation
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 Target tag: `checkpoint/cp14-security-compliance`
-Actual tag: pending
+Actual tag: `checkpoint/cp14-security-compliance`
 
 ## Purpose
 
@@ -89,19 +89,19 @@ Owner or authorized actor requests sensitive action
 
 CP14 can be marked passed when:
 
-- [ ] RBAC enforcement review is completed and gaps are fixed or documented.
-- [ ] High-risk account, business, commerce, runtime, import, logistics, export, deletion, and compliance actions are audited.
-- [ ] Sensitive data logging and prompt-context scan is completed with redaction or bounded-summary rules.
-- [ ] Owner account and business data export workflow exists and is access-controlled.
-- [ ] Account deletion deactivates access immediately and schedules anonymization.
-- [ ] Compliance-required business records are retained in anonymized or minimized form.
-- [ ] Verification tier contracts and deterministic update rules exist.
-- [ ] Country tax configuration contracts and first supported configuration path exist.
-- [ ] Device trust placeholder exists if full TIEL remains deferred.
-- [ ] TIEL design alignment is documented without implementing CP18.
-- [ ] Tests prove access control, audit, export, deletion/anonymization, retention, tax config, verification, and runtime/log safety.
-- [ ] Existing CP1 through CP13 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp14-security-compliance` is created.
+- [x] RBAC enforcement review is completed and gaps are fixed or documented.
+- [x] High-risk account, business, commerce, runtime, import, logistics, export, deletion, and compliance actions are audited.
+- [x] Sensitive data logging and prompt-context scan is completed with redaction or bounded-summary rules.
+- [x] Owner account and business data export workflow exists and is access-controlled.
+- [x] Account deletion deactivates access immediately and schedules anonymization.
+- [x] Compliance-required business records are retained in anonymized or minimized form.
+- [x] Verification tier contracts and deterministic update rules exist.
+- [x] Country tax configuration contracts and first supported configuration path exist.
+- [x] Device trust placeholder exists if full TIEL remains deferred.
+- [x] TIEL design alignment is documented without implementing CP18.
+- [x] Tests prove access control, audit, export, deletion/anonymization, retention, tax config, verification, and runtime/log safety.
+- [x] Existing CP1 through CP13 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp14-security-compliance` is created.
 
 ## Rollback Instructions
 

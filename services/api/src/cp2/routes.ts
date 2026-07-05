@@ -3,11 +3,14 @@ import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
   AuthChannel,
   BusinessNotificationStatus,
+  DeviceTrustLevel,
   FulfillmentMethod,
   FulfillmentStatus,
   SupplierImportDraft,
+  TaxCountryCode,
   SyncMutationPayload,
-  SyncMutationType
+  SyncMutationType,
+  VerificationTier
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
 import {
@@ -175,6 +178,30 @@ interface RuntimeTurnBody {
 
 interface NotificationStatusBody {
   status?: string;
+}
+
+interface AccountDeletionBody {
+  confirmation?: string;
+  reason?: string | null;
+}
+
+interface VerificationTierBody {
+  tier?: string;
+  evidenceType?: string | null;
+  note?: string | null;
+}
+
+interface TaxConfigBody {
+  countryCode?: string;
+  defaultTaxRate?: number;
+  taxId?: string | null;
+  pricesIncludeTax?: boolean;
+}
+
+interface DeviceTrustBody {
+  deviceId?: string;
+  level?: string;
+  reason?: string | null;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -661,6 +688,144 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: request.params.businessId,
           notificationId: request.params.notificationId,
           status: parseNotificationStatus(request.body?.status)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/compliance/security-review",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getSecurityReview({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/compliance/export",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.createDataExport({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/compliance/account-deletion",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: AccountDeletionBody }>,
+      reply
+    ) => {
+      try {
+        const result = store.requestAccountDeletion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deletion: parseAccountDeletionBody(request.body)
+        });
+        reply.header("set-cookie", clearSessionCookie());
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/compliance/verification",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getVerificationTier({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/compliance/verification",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: VerificationTierBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateVerificationTier({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          verification: parseVerificationTierBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/compliance/tax-config",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getTaxConfig({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/compliance/tax-config",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: TaxConfigBody }>, reply) => {
+      try {
+        return store.updateTaxConfig({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          taxConfig: parseTaxConfigBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/compliance/device-trust",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getDeviceTrust({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/compliance/device-trust",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: DeviceTrustBody }>, reply) => {
+      try {
+        return store.updateDeviceTrust({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceTrust: parseDeviceTrustBody(request.body)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1173,6 +1338,102 @@ function parseNotificationStatus(value: unknown): BusinessNotificationStatus {
   throw new Cp2Error(400, "notification_status_invalid", "Notification status is not supported.");
 }
 
+function parseAccountDeletionBody(body: AccountDeletionBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    confirmation: parseString(record.confirmation, "confirmation"),
+    reason: parseNullableString(record.reason)
+  };
+}
+
+function parseVerificationTierBody(body: VerificationTierBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    tier: parseVerificationTier(record.tier),
+    evidenceType:
+      record.evidenceType === undefined || record.evidenceType === null
+        ? null
+        : parseVerificationEvidenceType(record.evidenceType),
+    note: parseNullableString(record.note)
+  };
+}
+
+function parseTaxConfigBody(body: TaxConfigBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    countryCode: parseTaxCountryCode(record.countryCode),
+    defaultTaxRate: parseNumber(record.defaultTaxRate, "defaultTaxRate"),
+    taxId: parseNullableString(record.taxId),
+    pricesIncludeTax:
+      record.pricesIncludeTax === undefined
+        ? false
+        : parseBoolean(record.pricesIncludeTax, "pricesIncludeTax")
+  };
+}
+
+function parseDeviceTrustBody(body: DeviceTrustBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    deviceId: parseString(record.deviceId, "deviceId"),
+    level: parseDeviceTrustLevel(record.level),
+    reason: parseNullableString(record.reason)
+  };
+}
+
+function parseVerificationTier(value: unknown): VerificationTier {
+  const tier = parseString(value, "tier");
+
+  if (tier === "unverified" || tier === "owner_verified" || tier === "business_verified") {
+    return tier;
+  }
+
+  throw new Cp2Error(400, "verification_tier_invalid", "Verification tier is not supported.");
+}
+
+function parseVerificationEvidenceType(
+  value: unknown
+): "none" | "owner_attestation" | "business_document" {
+  const evidenceType = parseString(value, "evidenceType");
+
+  if (
+    evidenceType === "none" ||
+    evidenceType === "owner_attestation" ||
+    evidenceType === "business_document"
+  ) {
+    return evidenceType;
+  }
+
+  throw new Cp2Error(
+    400,
+    "verification_evidence_invalid",
+    "Verification evidence type is not supported."
+  );
+}
+
+function parseTaxCountryCode(value: unknown): TaxCountryCode {
+  const countryCode = parseString(value, "countryCode");
+
+  if (countryCode === "KE") {
+    return countryCode;
+  }
+
+  throw new Cp2Error(400, "tax_country_invalid", "Tax country code is not supported.");
+}
+
+function parseDeviceTrustLevel(value: unknown): DeviceTrustLevel {
+  const level = parseString(value, "level");
+
+  if (level === "unknown" || level === "trusted" || level === "restricted") {
+    return level;
+  }
+
+  throw new Cp2Error(400, "device_trust_invalid", "Device trust level is not supported.");
+}
+
 function parseInvoiceItems(value: unknown) {
   if (!Array.isArray(value)) {
     throw new Cp2Error(400, "items_required", "items is required.");
@@ -1296,7 +1557,16 @@ const businessPermissions: BusinessPermission[] = [
   "import:write",
   "report:read",
   "notification:read",
-  "notification:write"
+  "notification:write",
+  "compliance:read",
+  "compliance:export",
+  "compliance:delete",
+  "verification:read",
+  "verification:write",
+  "tax:read",
+  "tax:write",
+  "device_trust:read",
+  "device_trust:write"
 ];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {

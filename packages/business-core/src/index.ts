@@ -1,9 +1,14 @@
 import { createEvent, type BusinessEvent } from "@soko/event-core";
 import type {
   BusinessRole,
+  CountryTaxConfigSummary,
   CustomerSummary,
+  DataExportBundleSummary,
+  DeviceTrustLevel,
+  DeviceTrustSummary,
   DocumentImportJobSummary,
   DocumentImportPreviewRow,
+  AccountDeletionRequestSummary,
   InvoicePaymentStatus,
   InvoicePaymentSummary,
   InventoryMovementSummary,
@@ -16,7 +21,10 @@ import type {
   PaymentSummary,
   ProductSummary,
   SupplierImportDraft,
-  SupplierSummary
+  SupplierSummary,
+  TaxCountryCode,
+  VerificationTier,
+  VerificationTierSummary
 } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
@@ -94,7 +102,16 @@ export type BusinessPermission =
   | "import:write"
   | "report:read"
   | "notification:read"
-  | "notification:write";
+  | "notification:write"
+  | "compliance:read"
+  | "compliance:export"
+  | "compliance:delete"
+  | "verification:read"
+  | "verification:write"
+  | "tax:read"
+  | "tax:write"
+  | "device_trust:read"
+  | "device_trust:write";
 
 const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
   owner: new Set([
@@ -120,7 +137,16 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "import:write",
     "report:read",
     "notification:read",
-    "notification:write"
+    "notification:write",
+    "compliance:read",
+    "compliance:export",
+    "compliance:delete",
+    "verification:read",
+    "verification:write",
+    "tax:read",
+    "tax:write",
+    "device_trust:read",
+    "device_trust:write"
   ]),
   manager: new Set([
     "business:read",
@@ -143,7 +169,12 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "import:write",
     "report:read",
     "notification:read",
-    "notification:write"
+    "notification:write",
+    "compliance:read",
+    "verification:read",
+    "tax:read",
+    "tax:write",
+    "device_trust:read"
   ]),
   sales_agent: new Set([
     "business:read",
@@ -156,7 +187,8 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "logistics:read",
     "logistics:write",
     "import:read",
-    "notification:read"
+    "notification:read",
+    "tax:read"
   ]),
   cashier: new Set([
     "business:read",
@@ -167,9 +199,16 @@ const rolePermissions: Record<BusinessRole, ReadonlySet<BusinessPermission>> = {
     "payment:write",
     "logistics:read",
     "import:read",
-    "notification:read"
+    "notification:read",
+    "tax:read"
   ]),
-  view_only: new Set(["business:read", "product:read", "customer:read", "supplier:read"])
+  view_only: new Set([
+    "business:read",
+    "product:read",
+    "customer:read",
+    "supplier:read",
+    "tax:read"
+  ])
 };
 
 export const paymentMethods: PaymentMethod[] = [
@@ -240,6 +279,30 @@ export interface LogisticsStatusInput {
   note?: string | null;
 }
 
+export interface AccountDeletionInput {
+  confirmation: string;
+  reason?: string | null;
+}
+
+export interface VerificationTierInput {
+  tier: VerificationTier;
+  evidenceType?: "none" | "owner_attestation" | "business_document" | null;
+  note?: string | null;
+}
+
+export interface CountryTaxConfigInput {
+  countryCode: TaxCountryCode;
+  defaultTaxRate: number;
+  taxId?: string | null;
+  pricesIncludeTax?: boolean;
+}
+
+export interface DeviceTrustInput {
+  deviceId: string;
+  level: DeviceTrustLevel;
+  reason?: string | null;
+}
+
 export interface DocumentImportSourceInput {
   fileName: string;
   contentType?: string | null;
@@ -296,6 +359,29 @@ export interface NormalizedLogisticsInput {
 export interface NormalizedLogisticsStatusInput {
   status: FulfillmentStatus;
   note: string | null;
+}
+
+export interface NormalizedAccountDeletionInput {
+  reason: string | null;
+}
+
+export interface NormalizedVerificationTierInput {
+  tier: VerificationTier;
+  evidenceType: "none" | "owner_attestation" | "business_document";
+  note: string | null;
+}
+
+export interface NormalizedCountryTaxConfigInput {
+  countryCode: TaxCountryCode;
+  defaultTaxRate: number;
+  taxId: string | null;
+  pricesIncludeTax: boolean;
+}
+
+export interface NormalizedDeviceTrustInput {
+  deviceId: string;
+  level: DeviceTrustLevel;
+  reason: string | null;
 }
 
 export interface SupplierImportPreview {
@@ -493,6 +579,84 @@ export function validateLogisticsStatusTransition(
     : invalid(`Cannot change fulfillment status from ${current} to ${next}.`);
 }
 
+export function validateAccountDeletionInput(input: AccountDeletionInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (input.confirmation.trim() !== "DELETE") {
+    errors.push("Account deletion requires DELETE confirmation.");
+  }
+
+  if (normalizeOptionalText(input.reason).length > 240) {
+    errors.push("Account deletion reason must be 240 characters or fewer.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
+export function validateVerificationTierInput(input: VerificationTierInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (!isVerificationTier(input.tier)) {
+    errors.push("Verification tier is not supported.");
+  }
+
+  if (
+    input.evidenceType !== undefined &&
+    input.evidenceType !== null &&
+    input.evidenceType !== "none" &&
+    input.evidenceType !== "owner_attestation" &&
+    input.evidenceType !== "business_document"
+  ) {
+    errors.push("Verification evidence type is not supported.");
+  }
+
+  if (normalizeOptionalText(input.note).length > 240) {
+    errors.push("Verification note must be 240 characters or fewer.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
+export function validateCountryTaxConfigInput(input: CountryTaxConfigInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (!isTaxCountryCode(input.countryCode)) {
+    errors.push("Tax country code is not supported.");
+  }
+
+  if (!isValidTaxRate(input.defaultTaxRate)) {
+    errors.push("Default tax rate must be between 0 and 1.");
+  }
+
+  if (normalizeOptionalText(input.taxId).length > 64) {
+    errors.push("Tax id must be 64 characters or fewer.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
+export function validateDeviceTrustInput(input: DeviceTrustInput): ValidationResult {
+  const errors: string[] = [];
+
+  if (normalizeRequiredText(input.deviceId).length < 4) {
+    errors.push("Device id must be at least 4 characters.");
+  }
+
+  if (normalizeRequiredText(input.deviceId).length > 120) {
+    errors.push("Device id must be 120 characters or fewer.");
+  }
+
+  if (!isDeviceTrustLevel(input.level)) {
+    errors.push("Device trust level is not supported.");
+  }
+
+  if (normalizeOptionalText(input.reason).length > 180) {
+    errors.push("Device trust reason must be 180 characters or fewer.");
+  }
+
+  return errors.length > 0 ? invalid(...errors) : valid();
+}
+
 export function validateDocumentImportSource(input: DocumentImportSourceInput): ValidationResult {
   const errors: string[] = [];
   const fileName = normalizeRequiredText(input.fileName);
@@ -618,6 +782,44 @@ export function normalizeLogisticsStatusInput(
   };
 }
 
+export function normalizeAccountDeletionInput(
+  input: AccountDeletionInput
+): NormalizedAccountDeletionInput {
+  return {
+    reason: nullableText(input.reason)
+  };
+}
+
+export function normalizeVerificationTierInput(
+  input: VerificationTierInput
+): NormalizedVerificationTierInput {
+  return {
+    tier: input.tier,
+    evidenceType:
+      input.evidenceType ?? (input.tier === "unverified" ? "none" : "owner_attestation"),
+    note: nullableText(input.note)
+  };
+}
+
+export function normalizeCountryTaxConfigInput(
+  input: CountryTaxConfigInput
+): NormalizedCountryTaxConfigInput {
+  return {
+    countryCode: input.countryCode,
+    defaultTaxRate: roundMoney(input.defaultTaxRate),
+    taxId: nullableText(input.taxId),
+    pricesIncludeTax: input.pricesIncludeTax ?? false
+  };
+}
+
+export function normalizeDeviceTrustInput(input: DeviceTrustInput): NormalizedDeviceTrustInput {
+  return {
+    deviceId: normalizeRequiredText(input.deviceId),
+    level: input.level,
+    reason: nullableText(input.reason)
+  };
+}
+
 export function normalizeSupplierImportDraft(input: SupplierImportDraft): SupplierImportDraft {
   return normalizeContactRecordInput(input);
 }
@@ -636,8 +838,164 @@ export function isFulfillmentStatus(value: string): value is FulfillmentStatus {
   );
 }
 
+export function isVerificationTier(value: string): value is VerificationTier {
+  return value === "unverified" || value === "owner_verified" || value === "business_verified";
+}
+
+export function isTaxCountryCode(value: string): value is TaxCountryCode {
+  return value === "KE";
+}
+
+export function isDeviceTrustLevel(value: string): value is DeviceTrustLevel {
+  return value === "unknown" || value === "trusted" || value === "restricted";
+}
+
 export function isPaymentMethod(value: string): value is PaymentMethod {
   return paymentMethods.includes(value as PaymentMethod);
+}
+
+export function dataExportCreatedEvent(input: {
+  id: string;
+  exportBundle: DataExportBundleSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  businessId: string;
+  exportId: string;
+  recordCounts: Record<string, number>;
+  checksum: string;
+}> {
+  return createEvent({
+    id: input.id,
+    type: "compliance.data_export_created",
+    aggregateId: input.exportBundle.id,
+    aggregateType: "data_export",
+    actorId: input.actorId,
+    risk: "high",
+    occurredAt: input.occurredAt,
+    payload: {
+      businessId: input.exportBundle.businessId,
+      exportId: input.exportBundle.id,
+      recordCounts: input.exportBundle.recordCounts,
+      checksum: input.exportBundle.checksum
+    }
+  });
+}
+
+export function accountDeletionScheduledEvent(input: {
+  id: string;
+  deletionRequest: AccountDeletionRequestSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  businessId: string;
+  deletionRequestId: string;
+  status: AccountDeletionRequestSummary["status"];
+  anonymizeAfter: string;
+  retention: AccountDeletionRequestSummary["retention"];
+}> {
+  return createEvent({
+    id: input.id,
+    type: "compliance.account_deletion_scheduled",
+    aggregateId: input.deletionRequest.id,
+    aggregateType: "account_deletion",
+    actorId: input.actorId,
+    risk: "critical",
+    occurredAt: input.occurredAt,
+    payload: {
+      businessId: input.deletionRequest.businessId,
+      deletionRequestId: input.deletionRequest.id,
+      status: input.deletionRequest.status,
+      anonymizeAfter: input.deletionRequest.anonymizeAfter,
+      retention: input.deletionRequest.retention
+    }
+  });
+}
+
+export function verificationTierUpdatedEvent(input: {
+  id: string;
+  verification: VerificationTierSummary;
+  previousTier: VerificationTier;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  businessId: string;
+  previousTier: VerificationTier;
+  tier: VerificationTier;
+  evidenceType: VerificationTierSummary["evidenceType"];
+}> {
+  return createEvent({
+    id: input.id,
+    type: "compliance.verification_tier_updated",
+    aggregateId: input.verification.businessId,
+    aggregateType: "verification_tier",
+    actorId: input.actorId,
+    risk: "high",
+    occurredAt: input.occurredAt,
+    payload: {
+      businessId: input.verification.businessId,
+      previousTier: input.previousTier,
+      tier: input.verification.tier,
+      evidenceType: input.verification.evidenceType
+    }
+  });
+}
+
+export function taxConfigUpdatedEvent(input: {
+  id: string;
+  taxConfig: CountryTaxConfigSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  businessId: string;
+  countryCode: TaxCountryCode;
+  defaultTaxRate: number;
+  pricesIncludeTax: boolean;
+}> {
+  return createEvent({
+    id: input.id,
+    type: "compliance.tax_config_updated",
+    aggregateId: input.taxConfig.businessId,
+    aggregateType: "tax_config",
+    actorId: input.actorId,
+    risk: "high",
+    occurredAt: input.occurredAt,
+    payload: {
+      businessId: input.taxConfig.businessId,
+      countryCode: input.taxConfig.countryCode,
+      defaultTaxRate: input.taxConfig.defaultTaxRate,
+      pricesIncludeTax: input.taxConfig.pricesIncludeTax
+    }
+  });
+}
+
+export function deviceTrustUpdatedEvent(input: {
+  id: string;
+  deviceTrust: DeviceTrustSummary;
+  previousLevel: DeviceTrustLevel;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{
+  businessId: string;
+  deviceId: string;
+  previousLevel: DeviceTrustLevel;
+  level: DeviceTrustLevel;
+}> {
+  return createEvent({
+    id: input.id,
+    type: "compliance.device_trust_updated",
+    aggregateId: `${input.deviceTrust.businessId}:${input.deviceTrust.deviceId}`,
+    aggregateType: "device_trust",
+    actorId: input.actorId,
+    risk: "high",
+    occurredAt: input.occurredAt,
+    payload: {
+      businessId: input.deviceTrust.businessId,
+      deviceId: input.deviceTrust.deviceId,
+      previousLevel: input.previousLevel,
+      level: input.deviceTrust.level
+    }
+  });
 }
 
 export function logisticsCreatedEvent(input: {

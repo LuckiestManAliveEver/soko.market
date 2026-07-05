@@ -199,6 +199,146 @@ export interface LogisticsReportSummary {
   activeCount: number;
 }
 
+export type DataExportStatus = "ready";
+
+export interface DataExportBundleSummary {
+  id: string;
+  businessId: string;
+  accountId: string;
+  actorId: string;
+  status: DataExportStatus;
+  recordCounts: Record<string, number>;
+  checksum: string;
+  createdAt: string;
+}
+
+export interface DataExportBundle extends DataExportBundleSummary {
+  data: {
+    account: AccountSummary;
+    user: UserSummary;
+    business: BusinessSummary;
+    memberships: MembershipSummary[];
+    products: ProductSummary[];
+    customers: CustomerSummary[];
+    suppliers: SupplierSummary[];
+    invoices: InvoiceSummary[];
+    payments: PaymentSummary[];
+    logistics: LogisticsSummary[];
+    documentImports: DocumentImportJobSummary[];
+    notifications: BusinessNotificationSummary[];
+    inventoryMovements: InventoryMovementSummary[];
+    auditEvents: Array<{
+      id: string;
+      type: string;
+      aggregateType: string;
+      aggregateId: string;
+      actorId: string;
+      occurredAt: string;
+      risk: string;
+    }>;
+  };
+}
+
+export type AccountDeletionStatus = "scheduled";
+
+export interface ComplianceRetentionSummary {
+  businessId: string;
+  retainedInvoiceCount: number;
+  retainedPaymentCount: number;
+  retainedLogisticsCount: number;
+  retainedImportCount: number;
+  retainedAuditEventCount: number;
+  directIdentifierFieldsRemoved: number;
+}
+
+export interface AccountDeletionRequestSummary {
+  id: string;
+  accountId: string;
+  userId: string;
+  businessId: string;
+  actorId: string;
+  status: AccountDeletionStatus;
+  reason: string | null;
+  requestedAt: string;
+  deactivatedAt: string;
+  anonymizeAfter: string;
+  retention: ComplianceRetentionSummary;
+}
+
+export type VerificationTier = "unverified" | "owner_verified" | "business_verified";
+
+export interface VerificationTierSummary {
+  businessId: string;
+  tier: VerificationTier;
+  evidenceType: "none" | "owner_attestation" | "business_document";
+  note: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type TaxCountryCode = "KE";
+
+export interface CountryTaxConfigSummary {
+  businessId: string;
+  countryCode: TaxCountryCode;
+  defaultTaxRate: number;
+  taxIdLabel: string;
+  taxId: string | null;
+  pricesIncludeTax: boolean;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type DeviceTrustLevel = "unknown" | "trusted" | "restricted";
+
+export interface DeviceTrustSummary {
+  businessId: string;
+  userId: string;
+  deviceId: string;
+  level: DeviceTrustLevel;
+  reason: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface SecurityReviewSummary {
+  businessId: string;
+  generatedAt: string;
+  rbac: {
+    reviewedPermissionCount: number;
+    highRiskPermissionCount: number;
+    ownerOnlyPermissionCount: number;
+    gaps: string[];
+  };
+  audit: {
+    highRiskActionCount: number;
+    missingHighRiskAuditCount: number;
+    coveredActionTypes: string[];
+  };
+  sensitiveData: {
+    scannedSurfaceCount: number;
+    rawSensitiveLogFindings: number;
+    promptExposure: "bounded";
+    redactionRules: string[];
+  };
+  tielReadiness: {
+    verificationTier: VerificationTier;
+    deviceTrustLevel: DeviceTrustLevel;
+    fullTielDeferred: true;
+  };
+}
+
+export interface ComplianceReportSummary {
+  exportCount: number;
+  deletionRequestCount: number;
+  scheduledAnonymizationCount: number;
+  retainedRecordCount: number;
+  verificationTier: VerificationTier;
+  taxCountryCode: TaxCountryCode;
+  deviceTrustLevel: DeviceTrustLevel;
+  highRiskAuditEventCount: number;
+}
+
 export interface CustomerDebtSummary {
   customerId: string;
   customerName: string;
@@ -459,6 +599,7 @@ export interface BusinessReportSummary {
   debts: DebtReportSummary;
   imports: ImportsReportSummary;
   logistics: LogisticsReportSummary;
+  compliance: ComplianceReportSummary;
   sync: SyncHealthReportSummary;
 }
 
@@ -507,6 +648,7 @@ export interface BusinessKnowledgeFact {
     | "debt"
     | "imports"
     | "logistics"
+    | "compliance"
     | "sync"
     | "notifications";
   severity: BusinessNotificationSeverity;
@@ -575,6 +717,10 @@ export interface RuntimeContextSummary {
   importJobCount: number;
   logisticsCount: number;
   activeLogisticsCount: number;
+  complianceExportCount: number;
+  scheduledDeletionCount: number;
+  verificationTier: VerificationTier;
+  deviceTrustLevel: DeviceTrustLevel;
   lowStockCount: number;
   outstandingDebtTotal: number;
   unreadNotificationCount: number;

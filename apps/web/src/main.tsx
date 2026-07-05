@@ -258,6 +258,16 @@ interface BusinessReportSummary {
     cancelledCount: number;
     activeCount: number;
   };
+  compliance: {
+    exportCount: number;
+    deletionRequestCount: number;
+    scheduledAnonymizationCount: number;
+    retainedRecordCount: number;
+    verificationTier: VerificationTier;
+    taxCountryCode: "KE";
+    deviceTrustLevel: DeviceTrustLevel;
+    highRiskAuditEventCount: number;
+  };
   sync: SyncQueueSummary & {
     active: number;
   };
@@ -362,6 +372,82 @@ interface RuntimeTurnResult {
   };
 }
 
+type VerificationTier = "unverified" | "owner_verified" | "business_verified";
+type DeviceTrustLevel = "unknown" | "trusted" | "restricted";
+
+interface SecurityReviewSummary {
+  businessId: string;
+  generatedAt: string;
+  rbac: {
+    reviewedPermissionCount: number;
+    highRiskPermissionCount: number;
+    ownerOnlyPermissionCount: number;
+    gaps: string[];
+  };
+  audit: {
+    highRiskActionCount: number;
+    missingHighRiskAuditCount: number;
+    coveredActionTypes: string[];
+  };
+  sensitiveData: {
+    scannedSurfaceCount: number;
+    rawSensitiveLogFindings: number;
+    promptExposure: "bounded";
+    redactionRules: string[];
+  };
+  tielReadiness: {
+    verificationTier: VerificationTier;
+    deviceTrustLevel: DeviceTrustLevel;
+    fullTielDeferred: true;
+  };
+}
+
+interface DataExportBundle {
+  id: string;
+  status: "ready";
+  checksum: string;
+  recordCounts: Record<string, number>;
+  createdAt: string;
+}
+
+interface AccountDeletionRequestSummary {
+  id: string;
+  status: "scheduled";
+  requestedAt: string;
+  deactivatedAt: string;
+  anonymizeAfter: string;
+  retention: {
+    retainedInvoiceCount: number;
+    retainedPaymentCount: number;
+    retainedLogisticsCount: number;
+    retainedAuditEventCount: number;
+    directIdentifierFieldsRemoved: number;
+  };
+}
+
+interface VerificationTierSummary {
+  tier: VerificationTier;
+  evidenceType: "none" | "owner_attestation" | "business_document";
+  note: string | null;
+  updatedAt: string;
+}
+
+interface CountryTaxConfigSummary {
+  countryCode: "KE";
+  defaultTaxRate: number;
+  taxIdLabel: string;
+  taxId: string | null;
+  pricesIncludeTax: boolean;
+  updatedAt: string;
+}
+
+interface DeviceTrustSummary {
+  deviceId: string;
+  level: DeviceTrustLevel;
+  reason: string | null;
+  updatedAt: string;
+}
+
 interface ProductFormState {
   id: string | null;
   name: string;
@@ -406,6 +492,19 @@ interface LogisticsFormState {
   method: FulfillmentMethod;
   destination: string;
   note: string;
+}
+
+interface ComplianceFormState {
+  verificationTier: VerificationTier;
+  verificationNote: string;
+  defaultTaxRate: string;
+  taxId: string;
+  pricesIncludeTax: boolean;
+  deviceId: string;
+  deviceTrustLevel: DeviceTrustLevel;
+  deviceTrustReason: string;
+  deletionConfirmation: string;
+  deletionReason: string;
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
@@ -455,6 +554,19 @@ const emptyLogisticsForm: LogisticsFormState = {
   method: "delivery",
   destination: "",
   note: ""
+};
+
+const emptyComplianceForm: ComplianceFormState = {
+  verificationTier: "unverified",
+  verificationNote: "",
+  defaultTaxRate: "0.16",
+  taxId: "",
+  pricesIncludeTax: false,
+  deviceId: "browser-session",
+  deviceTrustLevel: "unknown",
+  deviceTrustReason: "",
+  deletionConfirmation: "",
+  deletionReason: ""
 };
 
 const emptySyncSummary: SyncQueueSummary = {
@@ -510,12 +622,21 @@ function App() {
     summary: emptyNotificationSummary,
     notifications: []
   });
+  const [securityReview, setSecurityReview] = useState<SecurityReviewSummary | null>(null);
+  const [dataExport, setDataExport] = useState<DataExportBundle | null>(null);
+  const [accountDeletion, setAccountDeletion] = useState<AccountDeletionRequestSummary | null>(
+    null
+  );
+  const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
+  const [taxConfig, setTaxConfig] = useState<CountryTaxConfigSummary | null>(null);
+  const [deviceTrust, setDeviceTrust] = useState<DeviceTrustSummary | null>(null);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
   const [logisticsForm, setLogisticsForm] = useState<LogisticsFormState>(emptyLogisticsForm);
+  const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
@@ -608,6 +729,10 @@ function App() {
     if (view === "logistics") {
       void loadInvoices(business.id);
       void loadLogistics(business.id);
+    }
+
+    if (view === "compliance") {
+      void loadCompliance(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -885,6 +1010,146 @@ function App() {
       setNotificationInbox(
         await getJson<NotificationInbox>(`/businesses/${businessId}/notifications`)
       );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadCompliance(businessId: string) {
+    try {
+      const [review, verification, tax, trust] = await Promise.all([
+        getJson<SecurityReviewSummary>(`/businesses/${businessId}/compliance/security-review`),
+        getJson<VerificationTierSummary>(`/businesses/${businessId}/compliance/verification`),
+        getJson<CountryTaxConfigSummary>(`/businesses/${businessId}/compliance/tax-config`),
+        getJson<DeviceTrustSummary>(`/businesses/${businessId}/compliance/device-trust`)
+      ]);
+      setSecurityReview(review);
+      setVerificationTier(verification);
+      setTaxConfig(tax);
+      setDeviceTrust(trust);
+      setComplianceForm((form) => ({
+        ...form,
+        verificationTier: verification.tier,
+        verificationNote: verification.note ?? "",
+        defaultTaxRate: String(tax.defaultTaxRate),
+        taxId: tax.taxId ?? "",
+        pricesIncludeTax: tax.pricesIncludeTax,
+        deviceId: trust.deviceId,
+        deviceTrustLevel: trust.level,
+        deviceTrustReason: trust.reason ?? ""
+      }));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createDataExport() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const exportBundle = await postJson<DataExportBundle>(
+        `/businesses/${business.id}/compliance/export`,
+        {}
+      );
+      setDataExport(exportBundle);
+      await loadCompliance(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Data export ready");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveVerificationTier() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const verification = await patchJson<VerificationTierSummary>(
+        `/businesses/${business.id}/compliance/verification`,
+        {
+          tier: complianceForm.verificationTier,
+          evidenceType:
+            complianceForm.verificationTier === "unverified" ? "none" : "owner_attestation",
+          note: complianceForm.verificationNote
+        }
+      );
+      setVerificationTier(verification);
+      await loadCompliance(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Verification tier updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveTaxConfig() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const tax = await patchJson<CountryTaxConfigSummary>(
+        `/businesses/${business.id}/compliance/tax-config`,
+        {
+          countryCode: "KE",
+          defaultTaxRate: Number(complianceForm.defaultTaxRate),
+          taxId: complianceForm.taxId,
+          pricesIncludeTax: complianceForm.pricesIncludeTax
+        }
+      );
+      setTaxConfig(tax);
+      await loadReports(business.id);
+      setStatusMessage("Tax configuration updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveDeviceTrust() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const trust = await patchJson<DeviceTrustSummary>(
+        `/businesses/${business.id}/compliance/device-trust`,
+        {
+          deviceId: complianceForm.deviceId,
+          level: complianceForm.deviceTrustLevel,
+          reason: complianceForm.deviceTrustReason
+        }
+      );
+      setDeviceTrust(trust);
+      await loadCompliance(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Device trust updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function scheduleAccountDeletion() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const deletion = await postJson<AccountDeletionRequestSummary>(
+        `/businesses/${business.id}/compliance/account-deletion`,
+        {
+          confirmation: complianceForm.deletionConfirmation,
+          reason: complianceForm.deletionReason
+        }
+      );
+      setAccountDeletion(deletion);
+      setSession(null);
+      setBusiness(null);
+      localStorage.removeItem(activeBusinessStorageKey);
+      setStatusMessage("Account deactivated and anonymization scheduled");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -1199,6 +1464,12 @@ function App() {
     setCustomerDebts([]);
     setImportJobs([]);
     setSelectedImportJobId(null);
+    setSecurityReview(null);
+    setDataExport(null);
+    setAccountDeletion(null);
+    setVerificationTier(null);
+    setTaxConfig(null);
+    setDeviceTrust(null);
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
@@ -1206,6 +1477,7 @@ function App() {
     setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
     setLogisticsForm(emptyLogisticsForm);
+    setComplianceForm(emptyComplianceForm);
     setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
@@ -1564,6 +1836,24 @@ function App() {
                   onRefresh={() => business !== null && void loadLogistics(business.id)}
                 />
               ) : null}
+              {view === "compliance" ? (
+                <ComplianceSurface
+                  form={complianceForm}
+                  securityReview={securityReview}
+                  dataExport={dataExport}
+                  accountDeletion={accountDeletion}
+                  verification={verificationTier}
+                  taxConfig={taxConfig}
+                  deviceTrust={deviceTrust}
+                  onFormChange={setComplianceForm}
+                  onExport={() => void createDataExport()}
+                  onSaveVerification={() => void saveVerificationTier()}
+                  onSaveTax={() => void saveTaxConfig()}
+                  onSaveDeviceTrust={() => void saveDeviceTrust()}
+                  onScheduleDeletion={() => void scheduleAccountDeletion()}
+                  onRefresh={() => business !== null && void loadCompliance(business.id)}
+                />
+              ) : null}
               {view === "reports" ? (
                 <ReportsSurface
                   report={reportSummary}
@@ -1588,6 +1878,7 @@ function App() {
               view !== "payments" &&
               view !== "imports" &&
               view !== "logistics" &&
+              view !== "compliance" &&
               view !== "reports" &&
               view !== "notifications" ? (
                 <EmptyStateSurface
@@ -2968,6 +3259,240 @@ interface ReportsSurfaceProps {
   onRefresh: () => void;
 }
 
+interface ComplianceSurfaceProps {
+  form: ComplianceFormState;
+  securityReview: SecurityReviewSummary | null;
+  dataExport: DataExportBundle | null;
+  accountDeletion: AccountDeletionRequestSummary | null;
+  verification: VerificationTierSummary | null;
+  taxConfig: CountryTaxConfigSummary | null;
+  deviceTrust: DeviceTrustSummary | null;
+  onFormChange: (form: ComplianceFormState) => void;
+  onExport: () => void;
+  onSaveVerification: () => void;
+  onSaveTax: () => void;
+  onSaveDeviceTrust: () => void;
+  onScheduleDeletion: () => void;
+  onRefresh: () => void;
+}
+
+function ComplianceSurface(props: ComplianceSurfaceProps) {
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Compliance controls">
+        <div className="section-heading">
+          <p className="eyebrow">CP14 compliance</p>
+          <h3>Security controls</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>RBAC</span>
+            <strong>{props.securityReview?.rbac.gaps.length ?? 0}</strong>
+          </div>
+          <div className="metric">
+            <span>Audits</span>
+            <strong>{props.securityReview?.audit.highRiskActionCount ?? 0}</strong>
+          </div>
+          <div className="metric">
+            <span>Logs</span>
+            <strong>{props.securityReview?.sensitiveData.rawSensitiveLogFindings ?? 0}</strong>
+          </div>
+          <div className="metric">
+            <span>TIEL</span>
+            <strong>
+              {props.securityReview?.tielReadiness.fullTielDeferred ? "defer" : "ready"}
+            </strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+          <button type="button" onClick={props.onExport}>
+            Export data
+          </button>
+        </div>
+        {props.dataExport === null ? null : (
+          <p className="shell-note">
+            Export {props.dataExport.id.slice(0, 8)} ready with{" "}
+            {Object.values(props.dataExport.recordCounts).reduce(
+              (total, count) => total + count,
+              0
+            )}{" "}
+            records.
+          </p>
+        )}
+      </section>
+
+      <section className="record-form" aria-label="Verification and tax controls">
+        <div className="section-heading">
+          <p className="eyebrow">Trust and tax</p>
+          <h3>Verification</h3>
+        </div>
+        <label>
+          Verification tier
+          <select
+            value={props.form.verificationTier}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                verificationTier: event.target.value as VerificationTier
+              })
+            }
+          >
+            <option value="unverified">Unverified</option>
+            <option value="owner_verified">Owner verified</option>
+            <option value="business_verified">Business verified</option>
+          </select>
+        </label>
+        <label>
+          Verification note
+          <input
+            value={props.form.verificationNote}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, verificationNote: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={props.onSaveVerification}>
+          Save verification
+        </button>
+        <div className="form-row">
+          <label>
+            Default tax rate
+            <input
+              value={props.form.defaultTaxRate}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, defaultTaxRate: event.target.value })
+              }
+              inputMode="decimal"
+            />
+          </label>
+          <label>
+            KRA PIN
+            <input
+              value={props.form.taxId}
+              onChange={(event) => props.onFormChange({ ...props.form, taxId: event.target.value })}
+            />
+          </label>
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={props.form.pricesIncludeTax}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, pricesIncludeTax: event.target.checked })
+            }
+          />
+          Prices include tax
+        </label>
+        <button type="button" onClick={props.onSaveTax}>
+          Save tax config
+        </button>
+      </section>
+
+      <section className="record-form" aria-label="Device trust and deletion controls">
+        <div className="section-heading">
+          <p className="eyebrow">TIEL placeholder</p>
+          <h3>Device trust</h3>
+        </div>
+        <label>
+          Device id
+          <input
+            value={props.form.deviceId}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deviceId: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Trust level
+          <select
+            value={props.form.deviceTrustLevel}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                deviceTrustLevel: event.target.value as DeviceTrustLevel
+              })
+            }
+          >
+            <option value="unknown">Unknown</option>
+            <option value="trusted">Trusted</option>
+            <option value="restricted">Restricted</option>
+          </select>
+        </label>
+        <label>
+          Trust reason
+          <input
+            value={props.form.deviceTrustReason}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deviceTrustReason: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={props.onSaveDeviceTrust}>
+          Save device trust
+        </button>
+        <label>
+          Delete confirmation
+          <input
+            value={props.form.deletionConfirmation}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deletionConfirmation: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Deletion reason
+          <input
+            value={props.form.deletionReason}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, deletionReason: event.target.value })
+            }
+          />
+        </label>
+        <button
+          className="danger"
+          type="button"
+          onClick={props.onScheduleDeletion}
+          disabled={props.form.deletionConfirmation !== "DELETE"}
+        >
+          Deactivate account
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Compliance status">
+        <ReportRow
+          title="Verification"
+          eyebrow={props.verification?.tier ?? "unverified"}
+          body={props.verification?.note ?? "No verification evidence recorded."}
+          value={props.verification?.evidenceType ?? "none"}
+        />
+        <ReportRow
+          title="Tax"
+          eyebrow={props.taxConfig?.countryCode ?? "KE"}
+          body={`${props.taxConfig?.taxIdLabel ?? "KRA PIN"}: ${props.taxConfig?.taxId ?? "not set"}`}
+          value={`${Math.round((props.taxConfig?.defaultTaxRate ?? 0.16) * 100)}%`}
+        />
+        <ReportRow
+          title="Device"
+          eyebrow={props.deviceTrust?.deviceId ?? props.form.deviceId}
+          body={props.deviceTrust?.reason ?? "Device trust is a CP14 placeholder."}
+          value={props.deviceTrust?.level ?? "unknown"}
+        />
+        {props.accountDeletion === null ? null : (
+          <ReportRow
+            title="Deletion scheduled"
+            eyebrow={props.accountDeletion.status}
+            body={`Anonymization after ${formatDate(props.accountDeletion.anonymizeAfter)}.`}
+            value={`${props.accountDeletion.retention.directIdentifierFieldsRemoved} fields`}
+          />
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
   if (report === null) {
     return (
@@ -3030,6 +3555,12 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
           eyebrow={`${report.logistics.fulfillmentCount} records`}
           body={`${report.logistics.pendingCount} pending, ${report.logistics.readyCount} ready, ${report.logistics.outForDeliveryCount} dispatched.`}
           value={`${report.logistics.activeCount} active`}
+        />
+        <ReportRow
+          title="Compliance"
+          eyebrow={`${report.compliance.exportCount} exports`}
+          body={`${report.compliance.scheduledAnonymizationCount} scheduled anonymizations, ${report.compliance.highRiskAuditEventCount} high-risk audit events.`}
+          value={report.compliance.verificationTier}
         />
         <ReportRow
           title="Sync"
@@ -3342,6 +3873,12 @@ function formatMoney(value: number): string {
     currency: "KES",
     style: "currency"
   }).format(value);
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat("en-KE", {
+    dateStyle: "medium"
+  }).format(new Date(value));
 }
 
 function formatSlots(slots: ParseResult["slots"]): string {

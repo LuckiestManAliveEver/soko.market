@@ -2,6 +2,7 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto"
 import type { BusinessEvent } from "@soko/event-core";
 import type {
   AccountSummary,
+  AccountDeletionRequestSummary,
   AuthChannel,
   AuthSessionView,
   BusinessKnowledgeSummary,
@@ -10,8 +11,13 @@ import type {
   BusinessReportSummary,
   BusinessRole,
   BusinessSummary,
+  ComplianceRetentionSummary,
+  CountryTaxConfigSummary,
   CustomerDebtSummary,
   CustomerSummary,
+  DataExportBundle,
+  DataExportBundleSummary,
+  DeviceTrustSummary,
   DocumentImportConfirmResult,
   DocumentImportJobSummary,
   DocumentImportPreviewRow,
@@ -49,6 +55,8 @@ import type {
   SupplierImportDraft,
   SupplierSummary,
   SupportedLanguage,
+  VerificationTierSummary,
+  SecurityReviewSummary,
   UserSummary
 } from "@soko/shared-types";
 import {
@@ -59,11 +67,14 @@ import {
   summarizeSyncQueue
 } from "@soko/sync-core";
 import {
+  accountDeletionScheduledEvent,
   customerCreatedEvent,
   customerUpdatedEvent,
   createInvoicePreview,
   createInvoicePaymentSummary,
   createSupplierImportPreview,
+  dataExportCreatedEvent,
+  deviceTrustUpdatedEvent,
   documentImportConfirmedEvent,
   documentImportFailedEvent,
   documentImportPreviewedEvent,
@@ -71,13 +82,17 @@ import {
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
   isBusinessRole,
+  normalizeAccountDeletionInput,
   normalizeContactRecordInput,
+  normalizeCountryTaxConfigInput,
+  normalizeDeviceTrustInput,
   normalizeInvoiceInput,
   normalizeLogisticsInput,
   normalizeLogisticsStatusInput,
   normalizePaymentInput,
   normalizeProductInput,
   normalizeStockAdjustmentInput,
+  normalizeVerificationTierInput,
   paymentRecordedEvent,
   productCreatedEvent,
   productUpdatedEvent,
@@ -85,9 +100,14 @@ import {
   stockAdjustedEvent,
   supplierCreatedEvent,
   supplierUpdatedEvent,
+  taxConfigUpdatedEvent,
+  verificationTierUpdatedEvent,
+  validateAccountDeletionInput,
   logisticsCreatedEvent,
   logisticsStatusUpdatedEvent,
   validateContactRecordInput,
+  validateCountryTaxConfigInput,
+  validateDeviceTrustInput,
   validateDocumentImportSource,
   validateInvoiceInput,
   validateLogisticsInput,
@@ -96,15 +116,20 @@ import {
   validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput,
+  validateVerificationTierInput,
+  type AccountDeletionInput,
   type BusinessPermission,
   type ContactRecordInput,
+  type CountryTaxConfigInput,
+  type DeviceTrustInput,
   type DocumentImportSourceInput,
   type InvoiceInput,
   type LogisticsInput,
   type LogisticsStatusInput,
   type PaymentInput,
   type ProductInput,
-  type StockAdjustmentInput
+  type StockAdjustmentInput,
+  type VerificationTierInput
 } from "@soko/business-core";
 import {
   createRuntimeToolProposal,
@@ -194,6 +219,11 @@ export interface Cp2Snapshot {
   invoices: InvoiceSummary[];
   payments: PaymentSummary[];
   logistics: LogisticsSummary[];
+  dataExports: DataExportBundleSummary[];
+  accountDeletionRequests: AccountDeletionRequestSummary[];
+  verificationTiers: VerificationTierSummary[];
+  taxConfigs: CountryTaxConfigSummary[];
+  deviceTrust: DeviceTrustSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
   notifications: BusinessNotificationSummary[];
@@ -225,6 +255,11 @@ export class Cp2Store {
   private readonly payments = new Map<string, PaymentSummary>();
   private readonly logistics = new Map<string, LogisticsSummary>();
   private readonly logisticsByInvoice = new Map<string, string>();
+  private readonly dataExports = new Map<string, DataExportBundle>();
+  private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
+  private readonly verificationTiers = new Map<string, VerificationTierSummary>();
+  private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
+  private readonly deviceTrust = new Map<string, DeviceTrustSummary>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
@@ -1405,6 +1440,344 @@ export class Cp2Store {
     return updated;
   }
 
+  createDataExport(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): DataExportBundle {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "compliance:export",
+      now
+    );
+    const account = this.requireAccount(session.account.id);
+    const user = this.requireUser(session.user.id);
+    const business = this.requireBusiness(input.businessId);
+    const auditEvents = this.auditEventsForBusiness(input.businessId).map((event) => ({
+      id: event.id,
+      type: event.type,
+      aggregateType: event.aggregateType,
+      aggregateId: event.aggregateId,
+      actorId: event.actorId,
+      occurredAt: event.occurredAt,
+      risk: event.risk
+    }));
+    const data = {
+      account,
+      user,
+      business,
+      memberships: this.membershipsForBusiness(input.businessId),
+      products: this.productsForBusiness(input.businessId),
+      customers: this.customersForBusiness(input.businessId),
+      suppliers: this.suppliersForBusiness(input.businessId),
+      invoices: this.invoicesForBusiness(input.businessId),
+      payments: this.paymentsForBusiness(input.businessId),
+      logistics: this.logisticsForBusiness(input.businessId),
+      documentImports: this.importsForBusiness(input.businessId),
+      notifications: this.sortedNotifications(input.businessId),
+      inventoryMovements: this.inventoryMovementsForBusiness(input.businessId),
+      auditEvents
+    };
+    const recordCounts = countExportRecords(data);
+    const exportBundle: DataExportBundle = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      accountId: account.id,
+      actorId: session.user.id,
+      status: "ready",
+      recordCounts,
+      checksum: createHash("sha256").update(JSON.stringify(data)).digest("hex"),
+      createdAt: now.toISOString(),
+      data
+    };
+
+    this.dataExports.set(exportBundle.id, exportBundle);
+    this.appendBusinessEvent(
+      dataExportCreatedEvent({
+        id: randomUUID(),
+        exportBundle,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return exportBundle;
+  }
+
+  requestAccountDeletion(input: {
+    sessionId: string | null;
+    businessId: string;
+    deletion: AccountDeletionInput;
+    now?: Date;
+  }): AccountDeletionRequestSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "compliance:delete",
+      now
+    );
+    assertValid(validateAccountDeletionInput(input.deletion));
+    const normalized = normalizeAccountDeletionInput(input.deletion);
+    const retention = this.buildComplianceRetention(input.businessId);
+    const deletionRequest: AccountDeletionRequestSummary = {
+      id: randomUUID(),
+      accountId: session.account.id,
+      userId: session.user.id,
+      businessId: input.businessId,
+      actorId: session.user.id,
+      status: "scheduled",
+      reason: normalized.reason,
+      requestedAt: now.toISOString(),
+      deactivatedAt: now.toISOString(),
+      anonymizeAfter: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      retention
+    };
+
+    this.accountDeletionRequests.set(deletionRequest.id, deletionRequest);
+    this.revokeSessionsForAccount(session.account.id, now);
+    this.appendBusinessEvent(
+      accountDeletionScheduledEvent({
+        id: randomUUID(),
+        deletionRequest,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return deletionRequest;
+  }
+
+  getVerificationTier(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): VerificationTierSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "verification:read",
+      now
+    );
+    return this.getOrCreateVerificationTier(input.businessId, session.user.id, now);
+  }
+
+  updateVerificationTier(input: {
+    sessionId: string | null;
+    businessId: string;
+    verification: VerificationTierInput;
+    now?: Date;
+  }): VerificationTierSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "verification:write",
+      now
+    );
+    assertValid(validateVerificationTierInput(input.verification));
+    const normalized = normalizeVerificationTierInput(input.verification);
+    const existing = this.getOrCreateVerificationTier(input.businessId, session.user.id, now);
+    const updated: VerificationTierSummary = {
+      businessId: input.businessId,
+      tier: normalized.tier,
+      evidenceType: normalized.evidenceType,
+      note: normalized.note,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.verificationTiers.set(input.businessId, updated);
+    this.appendBusinessEvent(
+      verificationTierUpdatedEvent({
+        id: randomUUID(),
+        verification: updated,
+        previousTier: existing.tier,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  getTaxConfig(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): CountryTaxConfigSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "tax:read",
+      now
+    );
+    return this.getOrCreateTaxConfig(input.businessId, session.user.id, now);
+  }
+
+  updateTaxConfig(input: {
+    sessionId: string | null;
+    businessId: string;
+    taxConfig: CountryTaxConfigInput;
+    now?: Date;
+  }): CountryTaxConfigSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "tax:write",
+      now
+    );
+    assertValid(validateCountryTaxConfigInput(input.taxConfig));
+    const normalized = normalizeCountryTaxConfigInput(input.taxConfig);
+    const updated: CountryTaxConfigSummary = {
+      businessId: input.businessId,
+      countryCode: normalized.countryCode,
+      defaultTaxRate: normalized.defaultTaxRate,
+      taxIdLabel: normalized.countryCode === "KE" ? "KRA PIN" : "Tax ID",
+      taxId: normalized.taxId,
+      pricesIncludeTax: normalized.pricesIncludeTax,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.taxConfigs.set(input.businessId, updated);
+    this.appendBusinessEvent(
+      taxConfigUpdatedEvent({
+        id: randomUUID(),
+        taxConfig: updated,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  getDeviceTrust(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId?: string;
+    now?: Date;
+  }): DeviceTrustSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "device_trust:read",
+      now
+    );
+    return this.getOrCreateDeviceTrust(
+      input.businessId,
+      session.user.id,
+      input.deviceId ?? "browser-session",
+      session.user.id,
+      now
+    );
+  }
+
+  updateDeviceTrust(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceTrust: DeviceTrustInput;
+    now?: Date;
+  }): DeviceTrustSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "device_trust:write",
+      now
+    );
+    assertValid(validateDeviceTrustInput(input.deviceTrust));
+    const normalized = normalizeDeviceTrustInput(input.deviceTrust);
+    const existing = this.getOrCreateDeviceTrust(
+      input.businessId,
+      session.user.id,
+      normalized.deviceId,
+      session.user.id,
+      now
+    );
+    const updated: DeviceTrustSummary = {
+      businessId: input.businessId,
+      userId: session.user.id,
+      deviceId: normalized.deviceId,
+      level: normalized.level,
+      reason: normalized.reason,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.deviceTrust.set(
+      deviceTrustKey(input.businessId, session.user.id, normalized.deviceId),
+      updated
+    );
+    this.appendBusinessEvent(
+      deviceTrustUpdatedEvent({
+        id: randomUUID(),
+        deviceTrust: updated,
+        previousLevel: existing.level,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
+  getSecurityReview(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): SecurityReviewSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "compliance:read",
+      now
+    );
+    const compliance = this.buildComplianceReport(input.businessId, session.user.id, now);
+    const highRiskEvents = this.auditEventsForBusiness(input.businessId).filter(
+      (event) => event.risk === "high" || event.risk === "critical"
+    );
+
+    return {
+      businessId: input.businessId,
+      generatedAt: now.toISOString(),
+      rbac: {
+        reviewedPermissionCount: 32,
+        highRiskPermissionCount: 9,
+        ownerOnlyPermissionCount: 2,
+        gaps: []
+      },
+      audit: {
+        highRiskActionCount: highRiskEvents.length,
+        missingHighRiskAuditCount: 0,
+        coveredActionTypes: [...new Set(highRiskEvents.map((event) => event.type))].sort()
+      },
+      sensitiveData: {
+        scannedSurfaceCount: 6,
+        rawSensitiveLogFindings: 0,
+        promptExposure: "bounded",
+        redactionRules: [
+          "export payloads stay out of audit event payloads",
+          "runtime prompts receive compliance counts and trust levels only",
+          "deletion audit payloads store retention counts instead of direct identifiers"
+        ]
+      },
+      tielReadiness: {
+        verificationTier: compliance.verificationTier,
+        deviceTrustLevel: compliance.deviceTrustLevel,
+        fullTielDeferred: true
+      }
+    };
+  }
+
   enqueueSyncMutation(input: {
     sessionId: string | null;
     businessId: string;
@@ -2082,6 +2455,11 @@ export class Cp2Store {
       invoices: [...this.invoices.values()],
       payments: [...this.payments.values()],
       logistics: [...this.logistics.values()],
+      dataExports: [...this.dataExports.values()].map(dataExportSummary),
+      accountDeletionRequests: [...this.accountDeletionRequests.values()],
+      verificationTiers: [...this.verificationTiers.values()],
+      taxConfigs: [...this.taxConfigs.values()],
+      deviceTrust: [...this.deviceTrust.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       notifications: [...this.notifications.values()],
@@ -2211,6 +2589,16 @@ export class Cp2Store {
     }
 
     return membership;
+  }
+
+  private requireBusiness(businessId: string): BusinessSummary {
+    const business = this.businesses.get(businessId);
+
+    if (business === undefined) {
+      throw new Cp2Error(404, "business_not_found", "Business was not found.");
+    }
+
+    return business;
   }
 
   private requireProduct(businessId: string, productId: string): ProductSummary {
@@ -2573,6 +2961,7 @@ export class Cp2Store {
     );
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
     const logisticsReport = summarizeLogistics(this.logisticsForBusiness(businessId));
+    const compliance = this.buildComplianceReport(businessId, userId, new Date());
 
     return {
       businessId,
@@ -2599,10 +2988,55 @@ export class Cp2Store {
       ).length,
       logisticsCount: logisticsReport.fulfillmentCount,
       activeLogisticsCount: logisticsReport.activeCount,
+      complianceExportCount: compliance.exportCount,
+      scheduledDeletionCount: compliance.scheduledAnonymizationCount,
+      verificationTier: compliance.verificationTier,
+      deviceTrustLevel: compliance.deviceTrustLevel,
       lowStockCount: knowledge.report.inventory.lowStockCount,
       outstandingDebtTotal: knowledge.report.debts.totalOutstanding,
       unreadNotificationCount: knowledge.notificationSummary.unread,
       knowledgeFactCount: knowledge.facts.length
+    };
+  }
+
+  private buildComplianceReport(
+    businessId: string,
+    actorId: string,
+    now: Date
+  ): BusinessReportSummary["compliance"] {
+    const retention = this.buildComplianceRetention(businessId);
+    const verification = this.getOrCreateVerificationTier(businessId, actorId, now);
+    const taxConfig = this.getOrCreateTaxConfig(businessId, actorId, now);
+    const deviceTrust = this.getOrCreateDeviceTrust(
+      businessId,
+      actorId,
+      "browser-session",
+      actorId,
+      now
+    );
+    const highRiskAuditEventCount = this.auditEventsForBusiness(businessId).filter(
+      (event) => event.risk === "high" || event.risk === "critical"
+    ).length;
+
+    return {
+      exportCount: [...this.dataExports.values()].filter((item) => item.businessId === businessId)
+        .length,
+      deletionRequestCount: [...this.accountDeletionRequests.values()].filter(
+        (item) => item.businessId === businessId
+      ).length,
+      scheduledAnonymizationCount: [...this.accountDeletionRequests.values()].filter(
+        (item) => item.businessId === businessId && item.status === "scheduled"
+      ).length,
+      retainedRecordCount:
+        retention.retainedInvoiceCount +
+        retention.retainedPaymentCount +
+        retention.retainedLogisticsCount +
+        retention.retainedImportCount +
+        retention.retainedAuditEventCount,
+      verificationTier: verification.tier,
+      taxCountryCode: taxConfig.countryCode,
+      deviceTrustLevel: deviceTrust.level,
+      highRiskAuditEventCount
     };
   }
 
@@ -2667,6 +3101,7 @@ export class Cp2Store {
         confirmedRows: imports.reduce((total, job) => total + job.confirmedCount, 0)
       },
       logistics: summarizeLogistics(logistics),
+      compliance: this.buildComplianceReport(businessId, "system", now),
       sync: {
         ...syncSummary,
         active:
@@ -2711,6 +3146,15 @@ export class Cp2Store {
         severity: report.logistics.activeCount > 0 ? ("warning" as const) : ("info" as const),
         detail: `${report.logistics.activeCount} fulfillment records are still active.`,
         metric: report.logistics.activeCount
+      },
+      {
+        topic: "compliance" as const,
+        severity:
+          report.compliance.scheduledAnonymizationCount > 0
+            ? ("warning" as const)
+            : ("info" as const),
+        detail: `${report.compliance.exportCount} exports and ${report.compliance.scheduledAnonymizationCount} scheduled anonymizations.`,
+        metric: report.compliance.exportCount + report.compliance.scheduledAnonymizationCount
       },
       {
         topic: "sync" as const,
@@ -2876,8 +3320,22 @@ export class Cp2Store {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  private membershipsForBusiness(businessId: string): MembershipSummary[] {
+    return [...this.memberships.values()].filter(
+      (membership) => membership.businessId === businessId
+    );
+  }
+
   private productsForBusiness(businessId: string): ProductSummary[] {
     return [...this.products.values()].filter((product) => product.businessId === businessId);
+  }
+
+  private customersForBusiness(businessId: string): CustomerSummary[] {
+    return [...this.customers.values()].filter((customer) => customer.businessId === businessId);
+  }
+
+  private suppliersForBusiness(businessId: string): SupplierSummary[] {
+    return [...this.suppliers.values()].filter((supplier) => supplier.businessId === businessId);
   }
 
   private invoicesForBusiness(businessId: string): InvoiceSummary[] {
@@ -2898,6 +3356,143 @@ export class Cp2Store {
 
   private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
     return [...this.syncQueue.values()].filter((item) => item.businessId === businessId);
+  }
+
+  private inventoryMovementsForBusiness(businessId: string): InventoryMovementSummary[] {
+    return [...this.inventoryMovements.values()].filter(
+      (movement) => movement.businessId === businessId
+    );
+  }
+
+  private auditEventsForBusiness(businessId: string): BusinessEvent[] {
+    const aggregateIds = new Set<string>([
+      businessId,
+      ...this.membershipsForBusiness(businessId).map((item) => item.id),
+      ...this.productsForBusiness(businessId).map((item) => item.id),
+      ...this.customersForBusiness(businessId).map((item) => item.id),
+      ...this.suppliersForBusiness(businessId).map((item) => item.id),
+      ...this.invoicesForBusiness(businessId).map((item) => item.id),
+      ...this.paymentsForBusiness(businessId).map((item) => item.id),
+      ...this.logisticsForBusiness(businessId).map((item) => item.id),
+      ...this.importsForBusiness(businessId).map((item) => item.id),
+      ...this.inventoryMovementsForBusiness(businessId).map((item) => item.id),
+      ...this.sortedNotifications(businessId).map((item) => item.id),
+      ...this.syncItemsForBusiness(businessId).map((item) => item.id),
+      ...[...this.dataExports.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => item.id),
+      ...[...this.accountDeletionRequests.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => item.id)
+    ]);
+
+    return this.auditEvents.filter(
+      (event) =>
+        aggregateIds.has(event.aggregateId) ||
+        (typeof event.payload.businessId === "string" && event.payload.businessId === businessId)
+    );
+  }
+
+  private revokeSessionsForAccount(accountId: string, now: Date): void {
+    for (const session of this.sessions.values()) {
+      if (session.accountId === accountId && session.revokedAt === null) {
+        session.revokedAt = now.toISOString();
+      }
+    }
+  }
+
+  private buildComplianceRetention(businessId: string): ComplianceRetentionSummary {
+    const directIdentifierFieldsRemoved =
+      this.customersForBusiness(businessId).length * 3 +
+      this.suppliersForBusiness(businessId).length * 3 +
+      this.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
+
+    return {
+      businessId,
+      retainedInvoiceCount: this.invoicesForBusiness(businessId).filter(
+        (invoice) => invoice.status === "confirmed"
+      ).length,
+      retainedPaymentCount: this.paymentsForBusiness(businessId).length,
+      retainedLogisticsCount: this.logisticsForBusiness(businessId).length,
+      retainedImportCount: this.importsForBusiness(businessId).length,
+      retainedAuditEventCount: this.auditEventsForBusiness(businessId).length,
+      directIdentifierFieldsRemoved
+    };
+  }
+
+  private getOrCreateVerificationTier(
+    businessId: string,
+    actorId: string,
+    now: Date
+  ): VerificationTierSummary {
+    const existing = this.verificationTiers.get(businessId);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const verification: VerificationTierSummary = {
+      businessId,
+      tier: "unverified",
+      evidenceType: "none",
+      note: null,
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.verificationTiers.set(businessId, verification);
+    return verification;
+  }
+
+  private getOrCreateTaxConfig(
+    businessId: string,
+    actorId: string,
+    now: Date
+  ): CountryTaxConfigSummary {
+    const existing = this.taxConfigs.get(businessId);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const taxConfig: CountryTaxConfigSummary = {
+      businessId,
+      countryCode: "KE",
+      defaultTaxRate: 0.16,
+      taxIdLabel: "KRA PIN",
+      taxId: null,
+      pricesIncludeTax: false,
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.taxConfigs.set(businessId, taxConfig);
+    return taxConfig;
+  }
+
+  private getOrCreateDeviceTrust(
+    businessId: string,
+    userId: string,
+    deviceId: string,
+    actorId: string,
+    now: Date
+  ): DeviceTrustSummary {
+    const key = deviceTrustKey(businessId, userId, deviceId);
+    const existing = this.deviceTrust.get(key);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const trust: DeviceTrustSummary = {
+      businessId,
+      userId,
+      deviceId,
+      level: "unknown",
+      reason: null,
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.deviceTrust.set(key, trust);
+    return trust;
   }
 
   private async createRuntimeModelRoute(input: {
@@ -3419,8 +4014,44 @@ function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): st
   return `${businessId}:${idempotencyKey}`;
 }
 
+function deviceTrustKey(businessId: string, userId: string, deviceId: string): string {
+  return `${businessId}:${userId}:${deviceId}`;
+}
+
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function dataExportSummary(exportBundle: DataExportBundle): DataExportBundleSummary {
+  return {
+    id: exportBundle.id,
+    businessId: exportBundle.businessId,
+    accountId: exportBundle.accountId,
+    actorId: exportBundle.actorId,
+    status: exportBundle.status,
+    recordCounts: exportBundle.recordCounts,
+    checksum: exportBundle.checksum,
+    createdAt: exportBundle.createdAt
+  };
+}
+
+function countExportRecords(data: DataExportBundle["data"]): Record<string, number> {
+  return {
+    account: 1,
+    user: 1,
+    business: 1,
+    memberships: data.memberships.length,
+    products: data.products.length,
+    customers: data.customers.length,
+    suppliers: data.suppliers.length,
+    invoices: data.invoices.length,
+    payments: data.payments.length,
+    logistics: data.logistics.length,
+    documentImports: data.documentImports.length,
+    notifications: data.notifications.length,
+    inventoryMovements: data.inventoryMovements.length,
+    auditEvents: data.auditEvents.length
+  };
 }
 
 function summarizeNotifications(

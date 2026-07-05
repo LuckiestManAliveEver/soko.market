@@ -1,8 +1,8 @@
 # CP14 Artifact Manifest
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 
 ## Created CP14 Artifacts
 
@@ -11,6 +11,7 @@ Date passed: pending
 | `documentation/checkpoints/cp14/CP14_BASELINE.md`     | Formal CP14 baseline, scope, exit criteria, and rollback rules.                    |
 | `documentation/checkpoints/cp14/DECISION_LOG.md`      | Security, compliance, verification, tax, TIEL-preparation, and boundary decisions. |
 | `documentation/checkpoints/cp14/ARTIFACT_MANIFEST.md` | This manifest.                                                                     |
+| `documentation/CP14_SECURITY_COMPLIANCE.md`           | Implemented CP14 workflows, API surface, and runtime boundaries.                   |
 
 ## CP14 Opening Checklist
 
@@ -24,19 +25,19 @@ Date passed: pending
 
 ## CP14 Completion Checklist
 
-- [ ] RBAC enforcement review completed.
-- [ ] Audit log review completed and high-risk action gaps fixed.
-- [ ] Sensitive data logging and prompt-context scan completed.
-- [ ] Data export workflow implemented.
-- [ ] Account deletion and anonymization workflow implemented.
-- [ ] Compliance retention rules implemented.
-- [ ] Verification tier contracts and deterministic update rules implemented.
-- [ ] Country tax configuration implemented.
-- [ ] Device trust placeholder implemented if TIEL remains deferred.
-- [ ] TIEL design alignment documented.
-- [ ] CP14 tests implemented.
-- [ ] Existing CP1 through CP13 checks pass.
-- [ ] `checkpoint/cp14-security-compliance` tag created.
+- [x] RBAC enforcement review completed.
+- [x] Audit log review completed and high-risk action gaps fixed.
+- [x] Sensitive data logging and prompt-context scan completed.
+- [x] Data export workflow implemented.
+- [x] Account deletion and anonymization workflow implemented.
+- [x] Compliance retention rules implemented.
+- [x] Verification tier contracts and deterministic update rules implemented.
+- [x] Country tax configuration implemented.
+- [x] Device trust placeholder implemented if TIEL remains deferred.
+- [x] TIEL design alignment documented.
+- [x] CP14 tests implemented.
+- [x] Existing CP1 through CP13 checks pass.
+- [x] `checkpoint/cp14-security-compliance` tag created.
 
 ## Verification
 
@@ -46,4 +47,9 @@ Opening verification:
 
 Passed verification:
 
-- pending
+- `pnpm --filter @soko/shared-types typecheck`
+- `pnpm --filter @soko/business-core typecheck`
+- `pnpm --filter @soko/api typecheck`
+- `pnpm --filter @soko/web typecheck`
+- `pnpm vitest run tests/cp14-security-compliance.test.ts tests/cp13-logistics.test.ts tests/cp12-reports-knowledge.test.ts tests/cp3-shell.test.ts --reporter=dot`
+- `pnpm run ci`

@@ -408,7 +408,7 @@ describe("CP13 logistics", () => {
     expect(turn.turn.context).toMatchObject({
       logisticsCount: 1,
       activeLogisticsCount: 1,
-      knowledgeFactCount: 6
+      knowledgeFactCount: 7
     });
     expect(capturedPrompt?.context).toMatchObject({
       logisticsCount: 1,
