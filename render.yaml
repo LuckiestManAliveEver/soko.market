@@ -4,14 +4,16 @@ services:
     runtime: node
     plan: free
     region: oregon
-    buildCommand: corepack enable && pnpm install --frozen-lockfile
-    startCommand: pnpm exec tsx services/api/src/index.ts
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
+    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm exec tsx services/api/src/index.ts
     healthCheckPath: /health
     domains:
       - api.soko.market
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 20.19.0
       - key: API_HOST
         value: 0.0.0.0
       - key: WEB_ORIGINS
@@ -22,7 +24,7 @@ services:
   - type: web
     name: soko-market-web
     runtime: static
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @soko/web build
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/web build
     staticPublishPath: apps/web/dist
     domains:
       - soko.market
@@ -31,5 +33,7 @@ services:
         source: /*
         destination: /index.html
     envVars:
+      - key: NODE_VERSION
+        value: 20.19.0
       - key: VITE_API_URL
         value: https://api.soko.market
