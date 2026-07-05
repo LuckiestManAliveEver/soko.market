@@ -2,7 +2,9 @@ import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 
 const config = readEnvironment();
-const app = buildApi();
+const app = buildApi({
+  allowedCorsOrigins: config.allowedCorsOrigins
+});
 
 try {
   await app.listen({

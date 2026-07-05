@@ -9,6 +9,7 @@ export interface HealthResponse {
 export interface EnvironmentConfig {
   apiHost: string;
   apiPort: number;
+  allowedCorsOrigins: string[];
   databaseUrl: string;
   redisUrl: string;
 }
