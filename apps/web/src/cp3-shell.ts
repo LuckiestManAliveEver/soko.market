@@ -10,6 +10,7 @@ export type ShellView =
   | "logistics"
   | "compliance"
   | "beta"
+  | "launch"
   | "reports"
   | "notifications";
 
@@ -89,6 +90,11 @@ export const quickActions: QuickAction[] = [
     summary: "Review closed beta access, gates, support, and telemetry"
   },
   {
+    id: "launch",
+    label: "Launch",
+    summary: "Review public launch gates, checklist, incidents, and rollback"
+  },
+  {
     id: "reports",
     label: "Reports",
     summary: "Review sales, stock, debt, imports, and sync health"
@@ -145,6 +151,11 @@ export const emptyStates: EmptyState[] = [
     id: "beta",
     title: "Beta readiness not reviewed yet",
     body: "CP15 keeps closed beta access, support, sync, payment, and telemetry gates explicit before selected merchant use."
+  },
+  {
+    id: "launch",
+    title: "Launch readiness not reviewed yet",
+    body: "CP16 keeps public onboarding, production checklist, support, telemetry, and rollback gates explicit before launch."
   },
   {
     id: "reports",

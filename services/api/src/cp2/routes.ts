@@ -13,6 +13,12 @@ import type {
   DeviceTrustLevel,
   FulfillmentMethod,
   FulfillmentStatus,
+  LaunchAccessStatus,
+  LaunchChecklistKey,
+  LaunchChecklistStatus,
+  LaunchIncidentCategory,
+  LaunchIncidentSeverity,
+  LaunchIncidentStatus,
   SupplierImportDraft,
   TaxCountryCode,
   SyncMutationPayload,
@@ -219,6 +225,14 @@ interface BetaSupportTicketParams extends BusinessParams {
   supportTicketId: string;
 }
 
+interface LaunchChecklistParams extends BusinessParams {
+  checklistKey: string;
+}
+
+interface LaunchIncidentParams extends BusinessParams {
+  incidentId: string;
+}
+
 interface BetaAccessBody {
   status?: string;
   invitedMerchantCount?: number;
@@ -253,6 +267,31 @@ interface BetaTelemetryBody {
   kind?: string;
   message?: string | null;
   metadata?: Record<string, string | number | boolean | null>;
+}
+
+interface LaunchSettingsBody {
+  status?: string;
+  publicOnboardingEnabled?: boolean;
+  rollbackArmed?: boolean;
+  freezeActive?: boolean;
+  allowedSignupCount?: number;
+  pauseReason?: string | null;
+}
+
+interface LaunchChecklistBody {
+  status?: string;
+  evidence?: string | null;
+}
+
+interface LaunchIncidentBody {
+  severity?: string;
+  category?: string;
+  title?: string;
+  body?: string | null;
+}
+
+interface LaunchIncidentStatusBody {
+  status?: string;
 }
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
@@ -1033,6 +1072,124 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.get(
+    "/businesses/:businessId/launch/readiness",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getLaunchReadiness({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/launch/settings",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: LaunchSettingsBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateLaunchSettings({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          settings: parseLaunchSettingsBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/launch/checklist",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listLaunchChecklist({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/launch/checklist/:checklistKey",
+    async (
+      request: FastifyRequest<{ Params: LaunchChecklistParams; Body: LaunchChecklistBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateLaunchChecklist({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          checklist: parseLaunchChecklistBody(request.params.checklistKey, request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/launch/incidents",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listLaunchIncidents({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/launch/incidents",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: LaunchIncidentBody }>,
+      reply
+    ) => {
+      try {
+        return store.createLaunchIncident({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          incident: parseLaunchIncidentBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/launch/incidents/:incidentId",
+    async (
+      request: FastifyRequest<{
+        Params: LaunchIncidentParams;
+        Body: LaunchIncidentStatusBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.updateLaunchIncidentStatus({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          incidentId: request.params.incidentId,
+          incidentStatus: parseLaunchIncidentStatusBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/imports/supplier-csv",
     async (
@@ -1651,6 +1808,64 @@ function parseBetaTelemetryBody(body: BetaTelemetryBody | null | undefined) {
   };
 }
 
+function parseLaunchSettingsBody(body: LaunchSettingsBody | null | undefined) {
+  const record = parseRequestBody(body);
+  const publicOnboardingEnabled =
+    record.publicOnboardingEnabled === undefined
+      ? undefined
+      : parseBoolean(record.publicOnboardingEnabled, "publicOnboardingEnabled");
+  const rollbackArmed =
+    record.rollbackArmed === undefined
+      ? undefined
+      : parseBoolean(record.rollbackArmed, "rollbackArmed");
+  const freezeActive =
+    record.freezeActive === undefined
+      ? undefined
+      : parseBoolean(record.freezeActive, "freezeActive");
+  const allowedSignupCount =
+    record.allowedSignupCount === undefined
+      ? undefined
+      : parseNumber(record.allowedSignupCount, "allowedSignupCount");
+
+  return {
+    status: parseLaunchAccessStatus(record.status),
+    ...(publicOnboardingEnabled === undefined ? {} : { publicOnboardingEnabled }),
+    ...(rollbackArmed === undefined ? {} : { rollbackArmed }),
+    ...(freezeActive === undefined ? {} : { freezeActive }),
+    ...(allowedSignupCount === undefined ? {} : { allowedSignupCount }),
+    pauseReason: parseNullableString(record.pauseReason)
+  };
+}
+
+function parseLaunchChecklistBody(key: string, body: LaunchChecklistBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    key: parseLaunchChecklistKey(key),
+    status: parseLaunchChecklistStatus(record.status),
+    evidence: parseNullableString(record.evidence)
+  };
+}
+
+function parseLaunchIncidentBody(body: LaunchIncidentBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    severity: parseLaunchIncidentSeverity(record.severity),
+    category: parseLaunchIncidentCategory(record.category),
+    title: parseString(record.title, "title"),
+    body: parseNullableString(record.body)
+  };
+}
+
+function parseLaunchIncidentStatusBody(body: LaunchIncidentStatusBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    status: parseLaunchIncidentStatus(record.status)
+  };
+}
+
 function parseVerificationTier(value: unknown): VerificationTier {
   const tier = parseString(value, "tier");
 
@@ -1794,6 +2009,102 @@ function parseBetaTelemetryKind(value: unknown): BetaTelemetryKind {
   }
 
   throw new Cp2Error(400, "beta_telemetry_kind_invalid", "Beta telemetry kind is not supported.");
+}
+
+function parseLaunchAccessStatus(value: unknown): LaunchAccessStatus {
+  const status = parseString(value, "status");
+
+  if (status === "closed" || status === "open" || status === "paused") {
+    return status;
+  }
+
+  throw new Cp2Error(400, "launch_status_invalid", "Launch status is not supported.");
+}
+
+function parseLaunchChecklistKey(value: unknown): LaunchChecklistKey {
+  const key = parseString(value, "checklistKey");
+
+  if (
+    key === "environment_config" ||
+    key === "secrets_ready" ||
+    key === "backup_verified" ||
+    key === "monitoring_ready" ||
+    key === "deploy_verified" ||
+    key === "rollback_runbook" ||
+    key === "support_coverage"
+  ) {
+    return key;
+  }
+
+  throw new Cp2Error(400, "launch_checklist_invalid", "Launch checklist key is not supported.");
+}
+
+function parseLaunchChecklistStatus(value: unknown): LaunchChecklistStatus {
+  const status = parseString(value, "status");
+
+  if (status === "pending" || status === "passed" || status === "failed") {
+    return status;
+  }
+
+  throw new Cp2Error(
+    400,
+    "launch_checklist_status_invalid",
+    "Launch checklist status is not supported."
+  );
+}
+
+function parseLaunchIncidentSeverity(value: unknown): LaunchIncidentSeverity {
+  const severity = parseString(value, "severity");
+
+  if (
+    severity === "low" ||
+    severity === "medium" ||
+    severity === "high" ||
+    severity === "critical"
+  ) {
+    return severity;
+  }
+
+  throw new Cp2Error(
+    400,
+    "launch_incident_severity_invalid",
+    "Launch incident severity is not supported."
+  );
+}
+
+function parseLaunchIncidentCategory(value: unknown): LaunchIncidentCategory {
+  const category = parseString(value, "category");
+
+  if (
+    category === "onboarding" ||
+    category === "payments" ||
+    category === "sync" ||
+    category === "support" ||
+    category === "telemetry" ||
+    category === "rollback"
+  ) {
+    return category;
+  }
+
+  throw new Cp2Error(
+    400,
+    "launch_incident_category_invalid",
+    "Launch incident category is not supported."
+  );
+}
+
+function parseLaunchIncidentStatus(value: unknown): LaunchIncidentStatus {
+  const status = parseString(value, "status");
+
+  if (status === "open" || status === "mitigating" || status === "resolved") {
+    return status;
+  }
+
+  throw new Cp2Error(
+    400,
+    "launch_incident_status_invalid",
+    "Launch incident status is not supported."
+  );
 }
 
 function parseBetaTelemetryMetadata(
@@ -1967,7 +2278,10 @@ const businessPermissions: BusinessPermission[] = [
   "beta:read",
   "beta:write",
   "beta:support",
-  "beta:telemetry"
+  "beta:telemetry",
+  "launch:read",
+  "launch:write",
+  "launch:support"
 ];
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {

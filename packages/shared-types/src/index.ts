@@ -431,6 +431,119 @@ export interface BetaReadinessReportSummary {
   }>;
 }
 
+export type LaunchAccessStatus = "closed" | "open" | "paused";
+
+export interface LaunchSettingsSummary {
+  businessId: string;
+  status: LaunchAccessStatus;
+  publicOnboardingEnabled: boolean;
+  rollbackArmed: boolean;
+  freezeActive: boolean;
+  allowedSignupCount: number;
+  pauseReason: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type LaunchChecklistKey =
+  | "environment_config"
+  | "secrets_ready"
+  | "backup_verified"
+  | "monitoring_ready"
+  | "deploy_verified"
+  | "rollback_runbook"
+  | "support_coverage";
+
+export type LaunchChecklistStatus = "pending" | "passed" | "failed";
+
+export interface LaunchChecklistItemSummary {
+  businessId: string;
+  key: LaunchChecklistKey;
+  status: LaunchChecklistStatus;
+  evidence: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type LaunchIncidentSeverity = "low" | "medium" | "high" | "critical";
+
+export type LaunchIncidentStatus = "open" | "mitigating" | "resolved";
+
+export type LaunchIncidentCategory =
+  "onboarding" | "payments" | "sync" | "support" | "telemetry" | "rollback";
+
+export interface LaunchIncidentSummary {
+  id: string;
+  businessId: string;
+  severity: LaunchIncidentSeverity;
+  status: LaunchIncidentStatus;
+  category: LaunchIncidentCategory;
+  title: string;
+  bodySummary: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+export type LaunchReadinessStatus = "blocked" | "needs_review" | "ready";
+
+export interface LaunchReadinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  status: LaunchReadinessStatus;
+  settings: LaunchSettingsSummary;
+  betaStatus: BetaReadinessStatus;
+  checklist: {
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+    items: LaunchChecklistItemSummary[];
+  };
+  onboarding: {
+    publicOnboardingEnabled: boolean;
+    allowedSignupCount: number;
+    firstRunComplete: boolean;
+    productCount: number;
+    customerCount: number;
+    invoiceCount: number;
+    paymentCount: number;
+  };
+  support: {
+    openIncidentCount: number;
+    criticalOpenIncidentCount: number;
+    resolvedIncidentCount: number;
+    betaOpenTicketCount: number;
+  };
+  telemetry: {
+    sessionEventCount: number;
+    crashEventCount: number;
+    errorEventCount: number;
+    crashFreeSessionRate: number;
+    launchSafePayloadCount: number;
+  };
+  sync: {
+    activeQueueCount: number;
+    conflictCount: number;
+    failedCount: number;
+  };
+  payments: {
+    paymentCount: number;
+    reconciliationMismatchCount: number;
+  };
+  rollback: {
+    rollbackArmed: boolean;
+    freezeActive: boolean;
+    canPauseOnboarding: boolean;
+  };
+  gates: Array<{
+    key: string;
+    passed: boolean;
+    detail: string;
+  }>;
+}
+
 export interface SecurityReviewSummary {
   businessId: string;
   generatedAt: string;
@@ -731,6 +844,7 @@ export interface BusinessReportSummary {
   logistics: LogisticsReportSummary;
   compliance: ComplianceReportSummary;
   beta: BetaReadinessReportSummary;
+  launch: LaunchReadinessReportSummary;
   sync: SyncHealthReportSummary;
 }
 
@@ -740,7 +854,8 @@ export type BusinessNotificationType =
   | "sync_conflict"
   | "import_failed"
   | "fulfillment_pending"
-  | "beta_readiness";
+  | "beta_readiness"
+  | "launch_readiness";
 
 export type BusinessNotificationSeverity = "info" | "warning" | "critical";
 
@@ -761,7 +876,8 @@ export interface BusinessNotificationSummary {
     | "sync_queue"
     | "document_import"
     | "logistics"
-    | "beta_readiness";
+    | "beta_readiness"
+    | "launch_readiness";
   sourceId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -792,6 +908,7 @@ export interface BusinessKnowledgeFact {
     | "logistics"
     | "compliance"
     | "beta"
+    | "launch"
     | "sync"
     | "notifications";
   severity: BusinessNotificationSeverity;
@@ -868,6 +985,9 @@ export interface RuntimeContextSummary {
   betaReadinessStatus: BetaReadinessStatus;
   openSupportTicketCount: number;
   crashFreeSessionRate: number;
+  publicLaunchStatus: LaunchAccessStatus;
+  launchReadinessStatus: LaunchReadinessStatus;
+  openLaunchIncidentCount: number;
   lowStockCount: number;
   outstandingDebtTotal: number;
   unreadNotificationCount: number;

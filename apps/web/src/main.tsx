@@ -269,6 +269,7 @@ interface BusinessReportSummary {
     highRiskAuditEventCount: number;
   };
   beta: BetaReadinessReportSummary;
+  launch: LaunchReadinessReportSummary;
   sync: SyncQueueSummary & {
     active: number;
   };
@@ -462,6 +463,21 @@ type BetaSupportSeverity = "low" | "medium" | "high" | "critical";
 type BetaSupportTicketStatus = "open" | "triaged" | "resolved";
 type BetaTelemetryKind = "session" | "crash" | "error";
 type BetaReadinessStatus = "blocked" | "needs_review" | "ready";
+type LaunchAccessStatus = "closed" | "open" | "paused";
+type LaunchChecklistKey =
+  | "environment_config"
+  | "secrets_ready"
+  | "backup_verified"
+  | "monitoring_ready"
+  | "deploy_verified"
+  | "rollback_runbook"
+  | "support_coverage";
+type LaunchChecklistStatus = "pending" | "passed" | "failed";
+type LaunchIncidentSeverity = "low" | "medium" | "high" | "critical";
+type LaunchIncidentStatus = "open" | "mitigating" | "resolved";
+type LaunchIncidentCategory =
+  "onboarding" | "payments" | "sync" | "support" | "telemetry" | "rollback";
+type LaunchReadinessStatus = "blocked" | "needs_review" | "ready";
 
 interface BetaAccessSummary {
   status: BetaAccessStatus;
@@ -526,6 +542,90 @@ interface BetaReadinessReportSummary {
     errorEventCount: number;
     crashFreeSessionRate: number;
     rawSensitivePayloadCount: number;
+  };
+  gates: Array<{
+    key: string;
+    passed: boolean;
+    detail: string;
+  }>;
+}
+
+interface LaunchSettingsSummary {
+  status: LaunchAccessStatus;
+  publicOnboardingEnabled: boolean;
+  rollbackArmed: boolean;
+  freezeActive: boolean;
+  allowedSignupCount: number;
+  pauseReason: string | null;
+  updatedAt: string;
+}
+
+interface LaunchChecklistItemSummary {
+  key: LaunchChecklistKey;
+  status: LaunchChecklistStatus;
+  evidence: string;
+  updatedAt: string;
+}
+
+interface LaunchIncidentSummary {
+  id: string;
+  severity: LaunchIncidentSeverity;
+  status: LaunchIncidentStatus;
+  category: LaunchIncidentCategory;
+  title: string;
+  bodySummary: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+interface LaunchReadinessReportSummary {
+  businessId: string;
+  generatedAt: string;
+  status: LaunchReadinessStatus;
+  settings: LaunchSettingsSummary;
+  betaStatus: BetaReadinessStatus;
+  checklist: {
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+    items: LaunchChecklistItemSummary[];
+  };
+  onboarding: {
+    publicOnboardingEnabled: boolean;
+    allowedSignupCount: number;
+    firstRunComplete: boolean;
+    productCount: number;
+    customerCount: number;
+    invoiceCount: number;
+    paymentCount: number;
+  };
+  support: {
+    openIncidentCount: number;
+    criticalOpenIncidentCount: number;
+    resolvedIncidentCount: number;
+    betaOpenTicketCount: number;
+  };
+  telemetry: {
+    sessionEventCount: number;
+    crashEventCount: number;
+    errorEventCount: number;
+    crashFreeSessionRate: number;
+    launchSafePayloadCount: number;
+  };
+  sync: {
+    activeQueueCount: number;
+    conflictCount: number;
+    failedCount: number;
+  };
+  payments: {
+    paymentCount: number;
+    reconciliationMismatchCount: number;
+  };
+  rollback: {
+    rollbackArmed: boolean;
+    freezeActive: boolean;
+    canPauseOnboarding: boolean;
   };
   gates: Array<{
     key: string;
@@ -608,6 +708,22 @@ interface BetaFormState {
   telemetryMessage: string;
 }
 
+interface LaunchFormState {
+  status: LaunchAccessStatus;
+  publicOnboardingEnabled: boolean;
+  rollbackArmed: boolean;
+  freezeActive: boolean;
+  allowedSignupCount: string;
+  pauseReason: string;
+  checklistKey: LaunchChecklistKey;
+  checklistStatus: LaunchChecklistStatus;
+  checklistEvidence: string;
+  incidentSeverity: LaunchIncidentSeverity;
+  incidentCategory: LaunchIncidentCategory;
+  incidentTitle: string;
+  incidentBody: string;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
 const activeBusinessStorageKey = "soko.cp3.activeBusiness";
 
@@ -685,6 +801,22 @@ const emptyBetaForm: BetaFormState = {
   telemetryMessage: "beta session completed"
 };
 
+const emptyLaunchForm: LaunchFormState = {
+  status: "closed",
+  publicOnboardingEnabled: false,
+  rollbackArmed: true,
+  freezeActive: true,
+  allowedSignupCount: "0",
+  pauseReason: "Public launch is closed until CP16 gates pass.",
+  checklistKey: "environment_config",
+  checklistStatus: "passed",
+  checklistEvidence: "Verified for public launch.",
+  incidentSeverity: "medium",
+  incidentCategory: "onboarding",
+  incidentTitle: "Launch support rehearsal",
+  incidentBody: "Operator can triage and resolve public launch incidents."
+};
+
 const emptySyncSummary: SyncQueueSummary = {
   businessId: "",
   pending: 0,
@@ -748,6 +880,8 @@ function App() {
   const [deviceTrust, setDeviceTrust] = useState<DeviceTrustSummary | null>(null);
   const [betaReadiness, setBetaReadiness] = useState<BetaReadinessReportSummary | null>(null);
   const [betaSupportTickets, setBetaSupportTickets] = useState<BetaSupportTicketSummary[]>([]);
+  const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
+  const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
@@ -756,6 +890,7 @@ function App() {
   const [logisticsForm, setLogisticsForm] = useState<LogisticsFormState>(emptyLogisticsForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
+  const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
@@ -856,6 +991,10 @@ function App() {
 
     if (view === "home" || view === "beta") {
       void loadBetaReadiness(business.id);
+    }
+
+    if (view === "home" || view === "launch") {
+      void loadLaunchReadiness(business.id);
     }
   }, [business, setupComplete, view]);
 
@@ -1419,6 +1558,105 @@ function App() {
     }
   }
 
+  async function loadLaunchReadiness(businessId: string) {
+    try {
+      const [readiness, incidents] = await Promise.all([
+        getJson<LaunchReadinessReportSummary>(`/businesses/${businessId}/launch/readiness`),
+        getJson<LaunchIncidentSummary[]>(`/businesses/${businessId}/launch/incidents`)
+      ]);
+      setLaunchReadiness(readiness);
+      setLaunchIncidents(incidents);
+      setLaunchForm((form) => ({
+        ...form,
+        status: readiness.settings.status,
+        publicOnboardingEnabled: readiness.settings.publicOnboardingEnabled,
+        rollbackArmed: readiness.settings.rollbackArmed,
+        freezeActive: readiness.settings.freezeActive,
+        allowedSignupCount: String(readiness.settings.allowedSignupCount),
+        pauseReason: readiness.settings.pauseReason ?? ""
+      }));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateLaunchSettings() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<LaunchSettingsSummary>(`/businesses/${business.id}/launch/settings`, {
+        status: launchForm.status,
+        publicOnboardingEnabled: launchForm.publicOnboardingEnabled,
+        rollbackArmed: launchForm.rollbackArmed,
+        freezeActive: launchForm.freezeActive,
+        allowedSignupCount: Number(launchForm.allowedSignupCount),
+        pauseReason: launchForm.pauseReason
+      });
+      await loadLaunchReadiness(business.id);
+      setStatusMessage("Launch settings updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateLaunchChecklist() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<LaunchChecklistItemSummary>(
+        `/businesses/${business.id}/launch/checklist/${launchForm.checklistKey}`,
+        {
+          status: launchForm.checklistStatus,
+          evidence: launchForm.checklistEvidence
+        }
+      );
+      await loadLaunchReadiness(business.id);
+      setStatusMessage("Launch checklist updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createLaunchIncident() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<LaunchIncidentSummary>(`/businesses/${business.id}/launch/incidents`, {
+        severity: launchForm.incidentSeverity,
+        category: launchForm.incidentCategory,
+        title: launchForm.incidentTitle,
+        body: launchForm.incidentBody
+      });
+      await loadLaunchReadiness(business.id);
+      setStatusMessage("Launch incident created");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateLaunchIncidentStatus(incidentId: string, status: LaunchIncidentStatus) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await patchJson<LaunchIncidentSummary>(
+        `/businesses/${business.id}/launch/incidents/${incidentId}`,
+        { status }
+      );
+      await loadLaunchReadiness(business.id);
+      setStatusMessage("Launch incident updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function updateNotification(
     notificationId: string,
     status: BusinessNotificationSummary["status"]
@@ -1736,6 +1974,8 @@ function App() {
     setDeviceTrust(null);
     setBetaReadiness(null);
     setBetaSupportTickets([]);
+    setLaunchReadiness(null);
+    setLaunchIncidents([]);
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setCustomerForm(emptyCustomerForm);
@@ -1745,6 +1985,7 @@ function App() {
     setLogisticsForm(emptyLogisticsForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
+    setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
     setView("home");
     setStatusMessage("Signed out");
@@ -2136,6 +2377,21 @@ function App() {
                   }
                   onRecordTelemetry={() => void recordBetaTelemetry()}
                   onRefresh={() => business !== null && void loadBetaReadiness(business.id)}
+                />
+              ) : null}
+              {view === "launch" ? (
+                <LaunchSurface
+                  form={launchForm}
+                  readiness={launchReadiness}
+                  incidents={launchIncidents}
+                  onFormChange={setLaunchForm}
+                  onUpdateSettings={() => void updateLaunchSettings()}
+                  onUpdateChecklist={() => void updateLaunchChecklist()}
+                  onCreateIncident={() => void createLaunchIncident()}
+                  onUpdateIncident={(incidentId, status) =>
+                    void updateLaunchIncidentStatus(incidentId, status)
+                  }
+                  onRefresh={() => business !== null && void loadLaunchReadiness(business.id)}
                 />
               ) : null}
               {view === "reports" ? (
@@ -4055,6 +4311,308 @@ function BetaSurface(props: BetaSurfaceProps) {
   );
 }
 
+interface LaunchSurfaceProps {
+  form: LaunchFormState;
+  readiness: LaunchReadinessReportSummary | null;
+  incidents: LaunchIncidentSummary[];
+  onFormChange: (form: LaunchFormState) => void;
+  onUpdateSettings: () => void;
+  onUpdateChecklist: () => void;
+  onCreateIncident: () => void;
+  onUpdateIncident: (incidentId: string, status: LaunchIncidentStatus) => void;
+  onRefresh: () => void;
+}
+
+function LaunchSurface(props: LaunchSurfaceProps) {
+  const failedGates = props.readiness?.gates.filter((gate) => !gate.passed) ?? [];
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Public launch readiness controls">
+        <div className="section-heading">
+          <p className="eyebrow">CP16 launch</p>
+          <h3>Readiness gates</h3>
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric">
+            <span>Status</span>
+            <strong>{props.readiness?.status ?? "pending"}</strong>
+          </div>
+          <div className="metric">
+            <span>Gates</span>
+            <strong>{failedGates.length}</strong>
+          </div>
+          <div className="metric">
+            <span>Checklist</span>
+            <strong>
+              {props.readiness?.checklist.passed ?? 0}/{props.readiness?.checklist.total ?? 0}
+            </strong>
+          </div>
+          <div className="metric">
+            <span>Incidents</span>
+            <strong>{props.readiness?.support.openIncidentCount ?? 0}</strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </section>
+
+      <section className="record-form" aria-label="Launch settings">
+        <div className="section-heading">
+          <p className="eyebrow">Onboarding gate</p>
+          <h3>Public access</h3>
+        </div>
+        <label>
+          Launch status
+          <select
+            value={props.form.status}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                status: event.target.value as LaunchAccessStatus
+              })
+            }
+          >
+            <option value="closed">Closed</option>
+            <option value="open">Open</option>
+            <option value="paused">Paused</option>
+          </select>
+        </label>
+        <label>
+          Allowed signups
+          <input
+            value={props.form.allowedSignupCount}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, allowedSignupCount: event.target.value })
+            }
+            inputMode="numeric"
+          />
+        </label>
+        <label>
+          Pause reason
+          <input
+            value={props.form.pauseReason}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, pauseReason: event.target.value })
+            }
+          />
+        </label>
+        <div className="toggle-row">
+          <label>
+            <input
+              type="checkbox"
+              checked={props.form.publicOnboardingEnabled}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  publicOnboardingEnabled: event.target.checked
+                })
+              }
+            />
+            Public onboarding
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={props.form.rollbackArmed}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, rollbackArmed: event.target.checked })
+              }
+            />
+            Rollback armed
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={props.form.freezeActive}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, freezeActive: event.target.checked })
+              }
+            />
+            Freeze active
+          </label>
+        </div>
+        <button type="button" onClick={props.onUpdateSettings}>
+          Save launch settings
+        </button>
+      </section>
+
+      <section className="record-form" aria-label="Production checklist">
+        <div className="section-heading">
+          <p className="eyebrow">Production readiness</p>
+          <h3>Checklist</h3>
+        </div>
+        <label>
+          Checklist item
+          <select
+            value={props.form.checklistKey}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                checklistKey: event.target.value as LaunchChecklistKey
+              })
+            }
+          >
+            {[
+              "environment_config",
+              "secrets_ready",
+              "backup_verified",
+              "monitoring_ready",
+              "deploy_verified",
+              "rollback_runbook",
+              "support_coverage"
+            ].map((key) => (
+              <option key={key} value={key}>
+                {key.replaceAll("_", " ")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Status
+          <select
+            value={props.form.checklistStatus}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                checklistStatus: event.target.value as LaunchChecklistStatus
+              })
+            }
+          >
+            <option value="pending">Pending</option>
+            <option value="passed">Passed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <label>
+          Evidence
+          <input
+            value={props.form.checklistEvidence}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, checklistEvidence: event.target.value })
+            }
+          />
+        </label>
+        <button type="button" onClick={props.onUpdateChecklist}>
+          Save checklist
+        </button>
+      </section>
+
+      <section className="record-form" aria-label="Launch incident controls">
+        <div className="section-heading">
+          <p className="eyebrow">Support</p>
+          <h3>Incidents</h3>
+        </div>
+        <div className="form-row">
+          <label>
+            Severity
+            <select
+              value={props.form.incidentSeverity}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  incidentSeverity: event.target.value as LaunchIncidentSeverity
+                })
+              }
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </label>
+          <label>
+            Category
+            <select
+              value={props.form.incidentCategory}
+              onChange={(event) =>
+                props.onFormChange({
+                  ...props.form,
+                  incidentCategory: event.target.value as LaunchIncidentCategory
+                })
+              }
+            >
+              <option value="onboarding">Onboarding</option>
+              <option value="payments">Payments</option>
+              <option value="sync">Sync</option>
+              <option value="support">Support</option>
+              <option value="telemetry">Telemetry</option>
+              <option value="rollback">Rollback</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Title
+          <input
+            value={props.form.incidentTitle}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, incidentTitle: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Body
+          <textarea
+            value={props.form.incidentBody}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, incidentBody: event.target.value })
+            }
+            rows={3}
+          />
+        </label>
+        <button type="button" onClick={props.onCreateIncident}>
+          Create incident
+        </button>
+      </section>
+
+      <section className="record-list" aria-label="Launch readiness status">
+        {props.readiness?.gates.map((gate) => (
+          <ReportRow
+            key={gate.key}
+            title={gate.key.replaceAll("_", " ")}
+            eyebrow={gate.passed ? "passed" : "needs review"}
+            body={gate.detail}
+            value={gate.passed ? "ok" : "fix"}
+          />
+        )) ?? null}
+        {props.incidents.map((incident) => (
+          <article className="record-row" key={incident.id}>
+            <div>
+              <p className="eyebrow">
+                {incident.category} - {incident.severity} - {incident.status}
+              </p>
+              <h4>{incident.title}</h4>
+              <p>{incident.bodySummary}</p>
+            </div>
+            <div className="row-actions compact-actions">
+              {incident.status === "open" ? (
+                <button
+                  type="button"
+                  onClick={() => props.onUpdateIncident(incident.id, "mitigating")}
+                >
+                  Mitigate
+                </button>
+              ) : null}
+              {incident.status !== "resolved" ? (
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onUpdateIncident(incident.id, "resolved")}
+                >
+                  Resolve
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
 function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
   if (report === null) {
     return (
@@ -4129,6 +4687,12 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
           eyebrow={report.beta.status}
           body={`${report.beta.gates.filter((gate) => !gate.passed).length} gates need review, ${report.beta.support.openTicketCount} support tickets open.`}
           value={formatPercent(report.beta.telemetry.crashFreeSessionRate)}
+        />
+        <ReportRow
+          title="Launch"
+          eyebrow={report.launch.status}
+          body={`${report.launch.gates.filter((gate) => !gate.passed).length} gates need review, ${report.launch.support.openIncidentCount} incidents open.`}
+          value={`${report.launch.checklist.passed}/${report.launch.checklist.total} checks`}
         />
         <ReportRow
           title="Sync"

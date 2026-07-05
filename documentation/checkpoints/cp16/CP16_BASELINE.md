@@ -1,10 +1,10 @@
 # CP16: Public Launch
 
-Status: active
+Status: passed
 Date opened: 2026-07-05
-Date passed: pending
+Date passed: 2026-07-05
 Target tag: `checkpoint/cp16-public-launch`
-Actual tag: pending
+Actual tag: `checkpoint/cp16-public-launch`
 
 ## Purpose
 
@@ -90,17 +90,17 @@ Operator reviews launch readiness
 
 CP16 can be marked passed when:
 
-- [ ] Public launch gate exists and is reversible.
-- [ ] Public onboarding can be enabled, paused, and audited.
-- [ ] Launch readiness report combines beta status, support state, telemetry health, sync health, payment reconciliation, and rollback state.
-- [ ] First-run public merchant workflow is implemented or refined for launch-critical setup.
-- [ ] Launch support process, incident severity, escalation, and customer-facing issue categories are documented.
-- [ ] Launch-safe telemetry contracts exist and avoid sensitive data exposure.
-- [ ] Production readiness checklist exists for configuration, secrets, backup, monitoring, deploy verification, and rollback.
-- [ ] Runtime context and reports include bounded public launch readiness summaries.
-- [ ] Tests prove launch gates, public onboarding boundaries, rollback controls, telemetry safety, and support workflow behavior.
-- [ ] Existing CP1 through CP15 checks still pass.
-- [ ] Checkpoint tag `checkpoint/cp16-public-launch` is created.
+- [x] Public launch gate exists and is reversible.
+- [x] Public onboarding can be enabled, paused, and audited.
+- [x] Launch readiness report combines beta status, support state, telemetry health, sync health, payment reconciliation, and rollback state.
+- [x] First-run public merchant workflow is implemented or refined for launch-critical setup.
+- [x] Launch support process, incident severity, escalation, and customer-facing issue categories are documented.
+- [x] Launch-safe telemetry contracts exist and avoid sensitive data exposure.
+- [x] Production readiness checklist exists for configuration, secrets, backup, monitoring, deploy verification, and rollback.
+- [x] Runtime context and reports include bounded public launch readiness summaries.
+- [x] Tests prove launch gates, public onboarding boundaries, rollback controls, telemetry safety, and support workflow behavior.
+- [x] Existing CP1 through CP15 checks still pass.
+- [x] Checkpoint tag `checkpoint/cp16-public-launch` is created.
 
 ## Rollback Instructions
 

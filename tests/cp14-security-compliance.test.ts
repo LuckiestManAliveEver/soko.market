@@ -332,7 +332,7 @@ describe("CP14 security compliance", () => {
       scheduledDeletionCount: 0,
       verificationTier: "owner_verified",
       deviceTrustLevel: "unknown",
-      knowledgeFactCount: 8
+      knowledgeFactCount: 9
     });
     expect(capturedPrompt?.context).toMatchObject({
       complianceExportCount: 1,

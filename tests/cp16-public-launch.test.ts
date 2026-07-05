@@ -42,46 +42,63 @@ interface ConfirmInvoiceResponse {
 
 interface BetaReadinessResponse {
   status: "blocked" | "needs_review" | "ready";
-  access: {
-    status: "not_invited" | "active" | "paused";
-    invitedMerchantCount: number;
-    targetMerchantCount: number;
-  };
   featureFlags: Array<{
     key: string;
     enabled: boolean;
-    reason: string;
   }>;
-  deviceTesting: {
-    passedDeviceClasses: string[];
-    failedTestCount: number;
+  support: {
+    openTicketCount: number;
   };
-  offline: {
-    cachedRecordCount: number;
-    testedSurfaceCount: number;
+}
+
+interface LaunchReadinessResponse {
+  status: "blocked" | "needs_review" | "ready";
+  betaStatus: "blocked" | "needs_review" | "ready";
+  settings: {
+    status: "closed" | "open" | "paused";
+    publicOnboardingEnabled: boolean;
+    rollbackArmed: boolean;
+    freezeActive: boolean;
+    allowedSignupCount: number;
   };
-  syncStress: {
-    syncedMutationCount: number;
+  checklist: {
+    total: number;
+    passed: number;
+    failed: number;
+    pending: number;
+    items: Array<{
+      key: string;
+      status: string;
+    }>;
+  };
+  onboarding: {
+    firstRunComplete: boolean;
+    allowedSignupCount: number;
+  };
+  support: {
+    openIncidentCount: number;
+    criticalOpenIncidentCount: number;
+    resolvedIncidentCount: number;
+    betaOpenTicketCount: number;
+  };
+  telemetry: {
+    sessionEventCount: number;
+    crashFreeSessionRate: number;
+    launchSafePayloadCount: number;
+  };
+  sync: {
+    activeQueueCount: number;
     conflictCount: number;
     failedCount: number;
-    ready: boolean;
   };
   payments: {
     paymentCount: number;
     reconciliationMismatchCount: number;
-    controlledProductionReady: boolean;
   };
-  support: {
-    openTicketCount: number;
-    criticalOpenTicketCount: number;
-    documentedSeverityCount: number;
-  };
-  telemetry: {
-    sessionEventCount: number;
-    crashEventCount: number;
-    errorEventCount: number;
-    crashFreeSessionRate: number;
-    rawSensitivePayloadCount: number;
+  rollback: {
+    rollbackArmed: boolean;
+    freezeActive: boolean;
+    canPauseOnboarding: boolean;
   };
   gates: Array<{
     key: string;
@@ -90,15 +107,16 @@ interface BetaReadinessResponse {
   }>;
 }
 
-interface BetaSupportTicketResponse {
+interface LaunchIncidentResponse {
   id: string;
   severity: "low" | "medium" | "high" | "critical";
-  status: "open" | "triaged" | "resolved";
+  status: "open" | "mitigating" | "resolved";
   bodySummary: string;
 }
 
 interface BusinessReportResponse {
   beta: BetaReadinessResponse;
+  launch: LaunchReadinessResponse;
 }
 
 interface BusinessKnowledgeResponse {
@@ -112,20 +130,17 @@ interface BusinessKnowledgeResponse {
 interface RuntimeTurnResponse {
   turn: {
     context: {
-      betaAccessStatus: string;
       betaReadinessStatus: string;
-      openSupportTicketCount: number;
-      crashFreeSessionRate: number;
+      publicLaunchStatus: string;
+      launchReadinessStatus: string;
+      openLaunchIncidentCount: number;
       knowledgeFactCount: number;
     };
-    telemetry: Array<{
-      metadata: Record<string, unknown>;
-    }>;
   };
 }
 
-describe("CP15 beta release hardening", () => {
-  it("gates closed beta readiness, bounds telemetry and support data, and preserves runtime context safety", async () => {
+describe("CP16 public launch", () => {
+  it("opens reversible public onboarding only after launch gates pass with bounded support and runtime context", async () => {
     let capturedPrompt: RuntimeModelPrompt | null = null;
     const provider: RuntimeModelProvider = {
       name: "test",
@@ -138,7 +153,7 @@ describe("CP15 beta release hardening", () => {
             type: "tool",
             toolName: "products.list",
             input: {},
-            reason: "List products from bounded beta context."
+            reason: "List products from bounded launch context."
           }),
           durationMs: 1,
           errorCode: null,
@@ -149,91 +164,75 @@ describe("CP15 beta release hardening", () => {
     const store = createCp2Store({ runtimeModelProvider: provider });
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
-    const initialReadiness = await getJson<BetaReadinessResponse>(
+
+    const initialLaunch = await getJson<LaunchReadinessResponse>(
       app,
-      `/businesses/${businessId}/beta/readiness`,
+      `/businesses/${businessId}/launch/readiness`,
       sessionCookie
     );
 
-    expect(initialReadiness.status).toBe("blocked");
-    expect(initialReadiness.access.status).toBe("not_invited");
-    expect(initialReadiness.featureFlags.every((flag) => !flag.enabled)).toBe(true);
+    expect(initialLaunch.status).toBe("blocked");
+    expect(initialLaunch.settings).toMatchObject({
+      status: "closed",
+      publicOnboardingEnabled: false,
+      rollbackArmed: true,
+      freezeActive: true
+    });
+    expect(initialLaunch.checklist.pending).toBe(initialLaunch.checklist.total);
 
-    await patchJson(
+    const betaReadiness = await prepareBetaReadyBusiness(app, businessId, sessionCookie);
+    expect(betaReadiness.status).toBe("ready");
+
+    const launchIncident = await postJson<LaunchIncidentResponse>(
       app,
-      `/businesses/${businessId}/beta/access`,
-      {
-        status: "active",
-        invitedMerchantCount: 10
-      },
-      sessionCookie
-    );
-
-    for (const flag of initialReadiness.featureFlags) {
-      await patchJson(
-        app,
-        `/businesses/${businessId}/beta/feature-flags/${flag.key}`,
-        {
-          enabled: true,
-          reason: `Enable ${flag.key} for CP15.`
-        },
-        sessionCookie
-      );
-    }
-
-    await seedBetaDailyUseData(app, businessId, sessionCookie);
-    await recordDeviceTests(app, businessId, sessionCookie);
-    await replayThreeSyncMutations(app, businessId, sessionCookie);
-
-    const supportTicket = await postJson<BetaSupportTicketResponse>(
-      app,
-      `/businesses/${businessId}/beta/support-tickets`,
+      `/businesses/${businessId}/launch/incidents`,
       {
         severity: "high",
-        title: "Payment handoff rehearsal",
-        body: "Sensitive support detail for private beta customer Amina should not enter audit or prompts.",
-        source: "operator"
+        category: "onboarding",
+        title: "Public onboarding rehearsal",
+        body: "Sensitive launch incident detail for public merchant Amina should stay out of audits and prompts."
       },
       sessionCookie
     );
+    expect(launchIncident.bodySummary).toContain("Sensitive launch incident detail");
+
     await patchJson(
       app,
-      `/businesses/${businessId}/beta/support-tickets/${supportTicket.id}`,
+      `/businesses/${businessId}/launch/incidents/${launchIncident.id}`,
       {
         status: "resolved"
       },
       sessionCookie
     );
-    await postJson(
+
+    for (const item of initialLaunch.checklist.items) {
+      await patchJson(
+        app,
+        `/businesses/${businessId}/launch/checklist/${item.key}`,
+        {
+          status: "passed",
+          evidence: `${item.key} verified for CP16 launch.`
+        },
+        sessionCookie
+      );
+    }
+
+    await patchJson(
       app,
-      `/businesses/${businessId}/beta/telemetry`,
+      `/businesses/${businessId}/launch/settings`,
       {
-        kind: "session",
-        message: "Sensitive crash-free session message should be hashed",
-        metadata: {
-          surface: "invoice",
-          deviceClass: "android_1gb"
-        }
-      },
-      sessionCookie
-    );
-    await postJson(
-      app,
-      `/businesses/${businessId}/beta/telemetry`,
-      {
-        kind: "error",
-        message: "Bounded retry warning",
-        metadata: {
-          surface: "sync",
-          retryable: true
-        }
+        status: "open",
+        publicOnboardingEnabled: true,
+        rollbackArmed: true,
+        freezeActive: false,
+        allowedSignupCount: 250
       },
       sessionCookie
     );
 
-    const readiness = await getJson<BetaReadinessResponse>(
+    const readiness = await getJson<LaunchReadinessResponse>(
       app,
-      `/businesses/${businessId}/beta/readiness`,
+      `/businesses/${businessId}/launch/readiness`,
       sessionCookie
     );
     const report = await getJson<BusinessReportResponse>(
@@ -257,64 +256,161 @@ describe("CP15 beta release hardening", () => {
     const snapshot = store.snapshot();
 
     expect(readiness.status).toBe("ready");
-    expect(readiness.access).toMatchObject({
-      status: "active",
-      invitedMerchantCount: 10,
-      targetMerchantCount: 10
+    expect(readiness.betaStatus).toBe("ready");
+    expect(readiness.settings).toMatchObject({
+      status: "open",
+      publicOnboardingEnabled: true,
+      rollbackArmed: true,
+      freezeActive: false,
+      allowedSignupCount: 250
     });
-    expect(readiness.deviceTesting).toMatchObject({
-      passedDeviceClasses: ["android_1gb", "android_2gb"],
-      failedTestCount: 0
+    expect(readiness.checklist).toMatchObject({
+      passed: 7,
+      failed: 0,
+      pending: 0
     });
-    expect(readiness.offline.testedSurfaceCount).toBe(5);
-    expect(readiness.syncStress).toMatchObject({
-      syncedMutationCount: 3,
-      conflictCount: 0,
-      failedCount: 0,
-      ready: true
-    });
-    expect(readiness.payments).toMatchObject({
-      paymentCount: 1,
-      reconciliationMismatchCount: 0,
-      controlledProductionReady: true
+    expect(readiness.onboarding).toMatchObject({
+      firstRunComplete: true,
+      allowedSignupCount: 250
     });
     expect(readiness.support).toMatchObject({
-      openTicketCount: 0,
-      criticalOpenTicketCount: 0
+      openIncidentCount: 0,
+      criticalOpenIncidentCount: 0,
+      resolvedIncidentCount: 1,
+      betaOpenTicketCount: 0
     });
     expect(readiness.telemetry).toMatchObject({
       sessionEventCount: 1,
-      crashEventCount: 0,
-      errorEventCount: 1,
       crashFreeSessionRate: 1,
-      rawSensitivePayloadCount: 0
+      launchSafePayloadCount: 2
+    });
+    expect(readiness.sync).toMatchObject({
+      activeQueueCount: 0,
+      conflictCount: 0,
+      failedCount: 0
+    });
+    expect(readiness.payments).toMatchObject({
+      paymentCount: 1,
+      reconciliationMismatchCount: 0
+    });
+    expect(readiness.rollback).toMatchObject({
+      rollbackArmed: true,
+      freezeActive: false,
+      canPauseOnboarding: true
     });
     expect(readiness.gates.every((gate) => gate.passed)).toBe(true);
-    expect(report.beta.status).toBe("ready");
-    expect(knowledge.facts.some((fact) => fact.topic === "beta")).toBe(true);
+    expect(report.launch.status).toBe("ready");
+    expect(knowledge.facts.some((fact) => fact.topic === "launch")).toBe(true);
     expect(turn.turn.context).toMatchObject({
-      betaAccessStatus: "active",
       betaReadinessStatus: "ready",
-      openSupportTicketCount: 0,
-      crashFreeSessionRate: 1,
+      publicLaunchStatus: "open",
+      launchReadinessStatus: "ready",
+      openLaunchIncidentCount: 0,
       knowledgeFactCount: 9
     });
     expect(capturedPrompt?.context).toMatchObject({
-      betaAccessStatus: "active",
-      betaReadinessStatus: "ready",
-      openSupportTicketCount: 0
+      publicLaunchStatus: "open",
+      launchReadinessStatus: "ready",
+      openLaunchIncidentCount: 0
     });
-    expect(snapshot.betaTelemetryEvents[0]?.messageHash).toHaveLength(64);
-    expect(JSON.stringify(snapshot.auditEvents)).not.toContain("Sensitive support detail");
-    expect(JSON.stringify(snapshot.auditEvents)).not.toContain("Sensitive crash-free session");
-    expect(JSON.stringify(capturedPrompt)).not.toContain("Sensitive support detail");
-    expect(JSON.stringify(turn.turn.telemetry)).not.toContain("Sensitive crash-free session");
+    expect(JSON.stringify(snapshot.auditEvents)).not.toContain("Sensitive launch incident detail");
+    expect(JSON.stringify(capturedPrompt)).not.toContain("Sensitive launch incident detail");
 
     await app.close();
   });
 });
 
-async function seedBetaDailyUseData(
+async function prepareBetaReadyBusiness(
+  app: ReturnType<typeof buildApi>,
+  businessId: string,
+  sessionCookie: string
+): Promise<BetaReadinessResponse> {
+  const initialReadiness = await getJson<BetaReadinessResponse>(
+    app,
+    `/businesses/${businessId}/beta/readiness`,
+    sessionCookie
+  );
+
+  await patchJson(
+    app,
+    `/businesses/${businessId}/beta/access`,
+    {
+      status: "active",
+      invitedMerchantCount: 10
+    },
+    sessionCookie
+  );
+
+  for (const flag of initialReadiness.featureFlags) {
+    await patchJson(
+      app,
+      `/businesses/${businessId}/beta/feature-flags/${flag.key}`,
+      {
+        enabled: true,
+        reason: `Enable ${flag.key} for CP16 launch.`
+      },
+      sessionCookie
+    );
+  }
+
+  await seedLaunchDailyUseData(app, businessId, sessionCookie);
+  await recordDeviceTests(app, businessId, sessionCookie);
+  await replayThreeSyncMutations(app, businessId, sessionCookie);
+
+  const supportTicket = await postJson<{ id: string }>(
+    app,
+    `/businesses/${businessId}/beta/support-tickets`,
+    {
+      severity: "high",
+      title: "Launch support rehearsal",
+      body: "Bounded beta support ticket for CP16 launch.",
+      source: "operator"
+    },
+    sessionCookie
+  );
+  await patchJson(
+    app,
+    `/businesses/${businessId}/beta/support-tickets/${supportTicket.id}`,
+    {
+      status: "resolved"
+    },
+    sessionCookie
+  );
+  await postJson(
+    app,
+    `/businesses/${businessId}/beta/telemetry`,
+    {
+      kind: "session",
+      message: "Launch session completed",
+      metadata: {
+        surface: "launch",
+        publicOnboarding: true
+      }
+    },
+    sessionCookie
+  );
+  await postJson(
+    app,
+    `/businesses/${businessId}/beta/telemetry`,
+    {
+      kind: "error",
+      message: "Launch retry warning",
+      metadata: {
+        surface: "sync",
+        retryable: true
+      }
+    },
+    sessionCookie
+  );
+
+  return getJson<BetaReadinessResponse>(
+    app,
+    `/businesses/${businessId}/beta/readiness`,
+    sessionCookie
+  );
+}
+
+async function seedLaunchDailyUseData(
   app: ReturnType<typeof buildApi>,
   businessId: string,
   sessionCookie: string
@@ -409,10 +505,10 @@ async function replayThreeSyncMutations(
       app,
       `/businesses/${businessId}/sync-queue`,
       {
-        idempotencyKey: `cp15-sync-${index}`,
+        idempotencyKey: `cp16-sync-${index}`,
         mutationType: "customer.create",
         payload: {
-          name: `Beta Sync ${index}`
+          name: `Launch Sync ${index}`
         }
       },
       sessionCookie
@@ -425,7 +521,7 @@ async function replayThreeSyncMutations(
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
   const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
     channel: "phone",
-    destination: "254700000015"
+    destination: "254700000016"
   });
   const verifyResponse = await app.inject({
     method: "POST",
@@ -442,7 +538,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: "Jane's Launch Shop",
       language: "en"
     },
     sessionCookie

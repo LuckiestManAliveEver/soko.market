@@ -7,7 +7,7 @@ import {
 } from "../apps/web/src/cp3-shell";
 
 describe("CP3 shell contract", () => {
-  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, CP9 imports, CP12 reports, CP13 logistics, CP14 compliance, and CP15 beta", () => {
+  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, CP9 imports, CP12 reports, CP13 logistics, CP14 compliance, CP15 beta, and CP16 launch", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -20,6 +20,7 @@ describe("CP3 shell contract", () => {
       "logistics",
       "compliance",
       "beta",
+      "launch",
       "reports",
       "notifications"
     ]);
@@ -34,6 +35,7 @@ describe("CP3 shell contract", () => {
       "logistics",
       "compliance",
       "beta",
+      "launch",
       "reports",
       "notifications"
     ]);
@@ -46,6 +48,7 @@ describe("CP3 shell contract", () => {
     expect(getEmptyState("logistics")?.body).toContain("CP13");
     expect(getEmptyState("compliance")?.body).toContain("CP14");
     expect(getEmptyState("beta")?.body).toContain("CP15");
+    expect(getEmptyState("launch")?.body).toContain("CP16");
     expect(getEmptyState("reports")?.body).toContain("CP12");
     expect(getEmptyState("notifications")?.body).toContain("CP12");
   });

@@ -34,6 +34,11 @@ import type {
   InvoiceItemSummary,
   InvoicePreview,
   InvoiceSummary,
+  LaunchChecklistItemSummary,
+  LaunchChecklistKey,
+  LaunchIncidentSummary,
+  LaunchReadinessReportSummary,
+  LaunchSettingsSummary,
   LogisticsReportSummary,
   LogisticsSummary,
   MembershipSummary,
@@ -96,12 +101,20 @@ import {
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
   isBusinessRole,
+  launchChecklistUpdatedEvent,
+  launchIncidentCreatedEvent,
+  launchIncidentStatusUpdatedEvent,
+  launchSettingsUpdatedEvent,
   normalizeBetaAccessInput,
   normalizeBetaDeviceTestInput,
   normalizeBetaFeatureFlagInput,
   normalizeBetaSupportTicketInput,
   normalizeBetaSupportTicketStatusInput,
   normalizeBetaTelemetryInput,
+  normalizeLaunchChecklistInput,
+  normalizeLaunchIncidentInput,
+  normalizeLaunchIncidentStatusInput,
+  normalizeLaunchSettingsInput,
   normalizeAccountDeletionInput,
   normalizeContactRecordInput,
   normalizeCountryTaxConfigInput,
@@ -129,6 +142,10 @@ import {
   validateBetaSupportTicketInput,
   validateBetaSupportTicketStatusInput,
   validateBetaTelemetryInput,
+  validateLaunchChecklistInput,
+  validateLaunchIncidentInput,
+  validateLaunchIncidentStatusInput,
+  validateLaunchSettingsInput,
   logisticsCreatedEvent,
   logisticsStatusUpdatedEvent,
   validateContactRecordInput,
@@ -156,6 +173,10 @@ import {
   type DeviceTrustInput,
   type DocumentImportSourceInput,
   type InvoiceInput,
+  type LaunchChecklistInput,
+  type LaunchIncidentInput,
+  type LaunchIncidentStatusInput,
+  type LaunchSettingsInput,
   type LogisticsInput,
   type LogisticsStatusInput,
   type PaymentInput,
@@ -261,6 +282,9 @@ export interface Cp2Snapshot {
   betaDeviceTests: BetaDeviceTestSummary[];
   betaSupportTickets: BetaSupportTicketSummary[];
   betaTelemetryEvents: BetaTelemetryEventSummary[];
+  launchSettings: LaunchSettingsSummary[];
+  launchChecklist: LaunchChecklistItemSummary[];
+  launchIncidents: LaunchIncidentSummary[];
   documentImports: DocumentImportJobSummary[];
   documentImportSources: DocumentImportSourceSummary[];
   notifications: BusinessNotificationSummary[];
@@ -302,6 +326,9 @@ export class Cp2Store {
   private readonly betaDeviceTests = new Map<string, BetaDeviceTestSummary>();
   private readonly betaSupportTickets = new Map<string, BetaSupportTicketSummary>();
   private readonly betaTelemetryEvents = new Map<string, BetaTelemetryEventSummary>();
+  private readonly launchSettings = new Map<string, LaunchSettingsSummary>();
+  private readonly launchChecklist = new Map<string, LaunchChecklistItemSummary>();
+  private readonly launchIncidents = new Map<string, LaunchIncidentSummary>();
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
@@ -2091,6 +2118,207 @@ export class Cp2Store {
     return event;
   }
 
+  getLaunchReadiness(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): LaunchReadinessReportSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "launch:read", now);
+    return this.buildLaunchReadinessReport(input.businessId, now);
+  }
+
+  updateLaunchSettings(input: {
+    sessionId: string | null;
+    businessId: string;
+    settings: LaunchSettingsInput;
+    now?: Date;
+  }): LaunchSettingsSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:write",
+      now
+    );
+    assertValid(validateLaunchSettingsInput(input.settings));
+    const normalized = normalizeLaunchSettingsInput(input.settings);
+    const existing = this.getOrCreateLaunchSettings(input.businessId, session.user.id, now);
+    const settings: LaunchSettingsSummary = {
+      businessId: input.businessId,
+      status: normalized.status,
+      publicOnboardingEnabled: normalized.publicOnboardingEnabled,
+      rollbackArmed: normalized.rollbackArmed,
+      freezeActive: normalized.freezeActive,
+      allowedSignupCount: normalized.allowedSignupCount,
+      pauseReason: normalized.pauseReason,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.launchSettings.set(input.businessId, settings);
+    this.appendBusinessEvent(
+      launchSettingsUpdatedEvent({
+        id: randomUUID(),
+        settings,
+        previousStatus: existing.status,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return settings;
+  }
+
+  listLaunchChecklist(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): LaunchChecklistItemSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:read",
+      now
+    );
+    return launchChecklistKeys.map((key) =>
+      this.getOrCreateLaunchChecklistItem(input.businessId, key, session.user.id, now)
+    );
+  }
+
+  updateLaunchChecklist(input: {
+    sessionId: string | null;
+    businessId: string;
+    checklist: LaunchChecklistInput;
+    now?: Date;
+  }): LaunchChecklistItemSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:write",
+      now
+    );
+    assertValid(validateLaunchChecklistInput(input.checklist));
+    const normalized = normalizeLaunchChecklistInput(input.checklist);
+    const item: LaunchChecklistItemSummary = {
+      businessId: input.businessId,
+      key: normalized.key,
+      status: normalized.status,
+      evidence: normalized.evidence,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+
+    this.launchChecklist.set(launchChecklistMapKey(input.businessId, item.key), item);
+    this.appendBusinessEvent(
+      launchChecklistUpdatedEvent({
+        id: randomUUID(),
+        item,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return item;
+  }
+
+  listLaunchIncidents(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): LaunchIncidentSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "launch:support", input.now);
+    return this.launchIncidentsForBusiness(input.businessId);
+  }
+
+  createLaunchIncident(input: {
+    sessionId: string | null;
+    businessId: string;
+    incident: LaunchIncidentInput;
+    now?: Date;
+  }): LaunchIncidentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:support",
+      now
+    );
+    assertValid(validateLaunchIncidentInput(input.incident));
+    const normalized = normalizeLaunchIncidentInput(input.incident);
+    const incident: LaunchIncidentSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      severity: normalized.severity,
+      status: "open",
+      category: normalized.category,
+      title: normalized.title,
+      bodySummary: normalized.bodySummary,
+      createdBy: session.user.id,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      resolvedAt: null
+    };
+
+    this.launchIncidents.set(incident.id, incident);
+    this.appendBusinessEvent(
+      launchIncidentCreatedEvent({
+        id: randomUUID(),
+        incident,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return incident;
+  }
+
+  updateLaunchIncidentStatus(input: {
+    sessionId: string | null;
+    businessId: string;
+    incidentId: string;
+    incidentStatus: LaunchIncidentStatusInput;
+    now?: Date;
+  }): LaunchIncidentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:support",
+      now
+    );
+    assertValid(validateLaunchIncidentStatusInput(input.incidentStatus));
+    const normalized = normalizeLaunchIncidentStatusInput(input.incidentStatus);
+    const incident = this.launchIncidents.get(input.incidentId);
+
+    if (incident === undefined || incident.businessId !== input.businessId) {
+      throw new Cp2Error(404, "launch_incident_not_found", "Launch incident was not found.");
+    }
+
+    const updated: LaunchIncidentSummary = {
+      ...incident,
+      status: normalized.status,
+      updatedAt: now.toISOString(),
+      resolvedAt:
+        normalized.status === "resolved" ? (incident.resolvedAt ?? now.toISOString()) : null
+    };
+
+    this.launchIncidents.set(updated.id, updated);
+    this.appendBusinessEvent(
+      launchIncidentStatusUpdatedEvent({
+        id: randomUUID(),
+        incident: updated,
+        previousStatus: incident.status,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return updated;
+  }
+
   enqueueSyncMutation(input: {
     sessionId: string | null;
     businessId: string;
@@ -2778,6 +3006,9 @@ export class Cp2Store {
       betaDeviceTests: [...this.betaDeviceTests.values()],
       betaSupportTickets: [...this.betaSupportTickets.values()],
       betaTelemetryEvents: [...this.betaTelemetryEvents.values()],
+      launchSettings: [...this.launchSettings.values()],
+      launchChecklist: [...this.launchChecklist.values()],
+      launchIncidents: [...this.launchIncidents.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       notifications: [...this.notifications.values()],
@@ -3281,6 +3512,7 @@ export class Cp2Store {
     const logisticsReport = summarizeLogistics(this.logisticsForBusiness(businessId));
     const compliance = this.buildComplianceReport(businessId, userId, new Date());
     const beta = this.buildBetaReadinessReport(businessId, new Date());
+    const launch = this.buildLaunchReadinessReport(businessId, new Date());
 
     return {
       businessId,
@@ -3315,6 +3547,9 @@ export class Cp2Store {
       betaReadinessStatus: beta.status,
       openSupportTicketCount: beta.support.openTicketCount,
       crashFreeSessionRate: beta.telemetry.crashFreeSessionRate,
+      publicLaunchStatus: launch.settings.status,
+      launchReadinessStatus: launch.status,
+      openLaunchIncidentCount: launch.support.openIncidentCount,
       lowStockCount: knowledge.report.inventory.lowStockCount,
       outstandingDebtTotal: knowledge.report.debts.totalOutstanding,
       unreadNotificationCount: knowledge.notificationSummary.unread,
@@ -3525,6 +3760,166 @@ export class Cp2Store {
     };
   }
 
+  private buildLaunchReadinessReport(businessId: string, now: Date): LaunchReadinessReportSummary {
+    const beta = this.buildBetaReadinessReport(businessId, now);
+    const settings = this.getOrCreateLaunchSettings(businessId, "system", now);
+    const checklistItems = launchChecklistKeys.map((key) =>
+      this.getOrCreateLaunchChecklistItem(businessId, key, "system", now)
+    );
+    const incidents = this.launchIncidentsForBusiness(businessId);
+    const telemetryEvents = this.betaTelemetryEventsForBusiness(businessId);
+    const products = this.productsForBusiness(businessId);
+    const customers = [...this.customers.values()].filter(
+      (customer) => customer.businessId === businessId
+    );
+    const invoices = this.invoicesForBusiness(businessId);
+    const payments = this.paymentsForBusiness(businessId);
+    const syncSummary = summarizeSyncQueue(businessId, this.syncItemsForBusiness(businessId));
+    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
+    const sessionEventCount = telemetryEvents.filter((event) => event.kind === "session").length;
+    const crashEventCount = telemetryEvents.filter((event) => event.kind === "crash").length;
+    const errorEventCount = telemetryEvents.filter((event) => event.kind === "error").length;
+    const crashFreeSessionRate =
+      sessionEventCount === 0
+        ? 1
+        : roundMoney(Math.max(0, (sessionEventCount - crashEventCount) / sessionEventCount));
+    const reconciliationMismatchCount = paymentSummaries.filter(
+      (summary) =>
+        roundMoney(summary.invoiceTotal - summary.paidTotal) !== summary.balanceDue ||
+        summary.paidTotal > summary.invoiceTotal + 0.01
+    ).length;
+    const activeQueueCount =
+      syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
+    const openIncidents = incidents.filter((incident) => incident.status !== "resolved");
+    const firstRunComplete =
+      products.length > 0 && customers.length > 0 && invoices.length > 0 && payments.length > 0;
+    const gates = [
+      {
+        key: "beta_ready",
+        passed: beta.status === "ready",
+        detail: `CP15 beta readiness is ${beta.status}.`
+      },
+      {
+        key: "public_onboarding",
+        passed:
+          settings.status === "open" &&
+          settings.publicOnboardingEnabled &&
+          !settings.freezeActive &&
+          settings.allowedSignupCount > 0,
+        detail: `Public onboarding is ${settings.status} with ${settings.allowedSignupCount} allowed signups.`
+      },
+      {
+        key: "production_checklist",
+        passed: checklistItems.every((item) => item.status === "passed"),
+        detail: `${checklistItems.filter((item) => item.status === "passed").length}/${checklistItems.length} production checklist items passed.`
+      },
+      {
+        key: "first_run_workflow",
+        passed: firstRunComplete,
+        detail: `${products.length} products, ${customers.length} customers, ${invoices.length} invoices, and ${payments.length} payments exist for first-run proof.`
+      },
+      {
+        key: "support_readiness",
+        passed:
+          beta.support.openTicketCount === 0 &&
+          openIncidents.every((incident) => incident.severity !== "critical") &&
+          checklistItems.find((item) => item.key === "support_coverage")?.status === "passed",
+        detail: `${openIncidents.length} launch incidents and ${beta.support.openTicketCount} beta support tickets are open.`
+      },
+      {
+        key: "telemetry_health",
+        passed: sessionEventCount > 0 && crashFreeSessionRate >= 0.95,
+        detail: `${sessionEventCount} launch-safe session telemetry events with ${crashEventCount} crashes.`
+      },
+      {
+        key: "sync_health",
+        passed: activeQueueCount === 0,
+        detail: `${activeQueueCount} sync queue items require attention.`
+      },
+      {
+        key: "payment_reconciliation",
+        passed: payments.length > 0 && reconciliationMismatchCount === 0,
+        detail: `${payments.length} payments recorded with ${reconciliationMismatchCount} reconciliation mismatches.`
+      },
+      {
+        key: "rollback_ready",
+        passed:
+          settings.rollbackArmed && settings.status !== "open" ? true : settings.rollbackArmed,
+        detail: settings.rollbackArmed
+          ? "Rollback is armed and can pause onboarding."
+          : "Rollback is not armed."
+      }
+    ];
+    const failedGateCount = gates.filter((gate) => !gate.passed).length;
+
+    return {
+      businessId,
+      generatedAt: now.toISOString(),
+      status:
+        failedGateCount === 0
+          ? "ready"
+          : gates.some(
+                (gate) =>
+                  !gate.passed &&
+                  (gate.key === "public_onboarding" ||
+                    gate.key === "beta_ready" ||
+                    gate.key === "rollback_ready" ||
+                    gate.key === "payment_reconciliation")
+              )
+            ? "blocked"
+            : "needs_review",
+      settings,
+      betaStatus: beta.status,
+      checklist: {
+        total: checklistItems.length,
+        passed: checklistItems.filter((item) => item.status === "passed").length,
+        failed: checklistItems.filter((item) => item.status === "failed").length,
+        pending: checklistItems.filter((item) => item.status === "pending").length,
+        items: checklistItems
+      },
+      onboarding: {
+        publicOnboardingEnabled: settings.publicOnboardingEnabled,
+        allowedSignupCount: settings.allowedSignupCount,
+        firstRunComplete,
+        productCount: products.length,
+        customerCount: customers.length,
+        invoiceCount: invoices.length,
+        paymentCount: payments.length
+      },
+      support: {
+        openIncidentCount: openIncidents.length,
+        criticalOpenIncidentCount: openIncidents.filter(
+          (incident) => incident.severity === "critical"
+        ).length,
+        resolvedIncidentCount: incidents.filter((incident) => incident.status === "resolved")
+          .length,
+        betaOpenTicketCount: beta.support.openTicketCount
+      },
+      telemetry: {
+        sessionEventCount,
+        crashEventCount,
+        errorEventCount,
+        crashFreeSessionRate,
+        launchSafePayloadCount: telemetryEvents.length
+      },
+      sync: {
+        activeQueueCount,
+        conflictCount: syncSummary.conflict,
+        failedCount: syncSummary.failed
+      },
+      payments: {
+        paymentCount: payments.length,
+        reconciliationMismatchCount
+      },
+      rollback: {
+        rollbackArmed: settings.rollbackArmed,
+        freezeActive: settings.freezeActive,
+        canPauseOnboarding: settings.rollbackArmed && settings.status === "open"
+      },
+      gates
+    };
+  }
+
   private buildBusinessReport(businessId: string, now: Date): BusinessReportSummary {
     const products = this.productsForBusiness(businessId);
     const invoices = this.invoicesForBusiness(businessId);
@@ -3588,6 +3983,7 @@ export class Cp2Store {
       logistics: summarizeLogistics(logistics),
       compliance: this.buildComplianceReport(businessId, "system", now),
       beta: this.buildBetaReadinessReport(businessId, now),
+      launch: this.buildLaunchReadinessReport(businessId, now),
       sync: {
         ...syncSummary,
         active:
@@ -3652,6 +4048,17 @@ export class Cp2Store {
               : ("info" as const),
         detail: `Closed beta readiness is ${report.beta.status} with ${report.beta.support.openTicketCount} open support tickets.`,
         metric: report.beta.gates.filter((gate) => !gate.passed).length
+      },
+      {
+        topic: "launch" as const,
+        severity:
+          report.launch.status === "blocked"
+            ? ("critical" as const)
+            : report.launch.status === "needs_review"
+              ? ("warning" as const)
+              : ("info" as const),
+        detail: `Public launch readiness is ${report.launch.status} with ${report.launch.support.openIncidentCount} open incidents.`,
+        metric: report.launch.gates.filter((gate) => !gate.passed).length
       },
       {
         topic: "sync" as const,
@@ -3758,6 +4165,20 @@ export class Cp2Store {
         title: "Beta readiness needs review",
         body: `${report.beta.gates.filter((gate) => !gate.passed).length} CP15 release gates need attention.`,
         sourceType: "beta_readiness",
+        sourceId: null,
+        now
+      });
+    }
+
+    if (report.launch.status !== "ready") {
+      this.upsertNotification({
+        businessId,
+        ruleKey: `${businessId}:launch.readiness`,
+        type: "launch_readiness",
+        severity: report.launch.status === "blocked" ? "critical" : "warning",
+        title: "Public launch readiness needs review",
+        body: `${report.launch.gates.filter((gate) => !gate.passed).length} CP16 launch gates need attention.`,
+        sourceType: "launch_readiness",
         sourceId: null,
         now
       });
@@ -3910,6 +4331,12 @@ export class Cp2Store {
       .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
   }
 
+  private launchIncidentsForBusiness(businessId: string): LaunchIncidentSummary[] {
+    return [...this.launchIncidents.values()]
+      .filter((incident) => incident.businessId === businessId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
   private auditEventsForBusiness(businessId: string): BusinessEvent[] {
     const aggregateIds = new Set<string>([
       businessId,
@@ -3938,7 +4365,14 @@ export class Cp2Store {
         .map((item) => `${item.businessId}:${item.key}`),
       ...this.betaDeviceTestsForBusiness(businessId).map((item) => item.id),
       ...this.betaSupportTicketsForBusiness(businessId).map((item) => item.id),
-      ...this.betaTelemetryEventsForBusiness(businessId).map((item) => item.id)
+      ...this.betaTelemetryEventsForBusiness(businessId).map((item) => item.id),
+      ...[...this.launchSettings.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => item.businessId),
+      ...[...this.launchChecklist.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => `${item.businessId}:${item.key}`),
+      ...this.launchIncidentsForBusiness(businessId).map((item) => item.id)
     ]);
 
     return this.auditEvents.filter(
@@ -4094,6 +4528,57 @@ export class Cp2Store {
     };
     this.betaFeatureFlags.set(mapKey, featureFlag);
     return featureFlag;
+  }
+
+  private getOrCreateLaunchSettings(
+    businessId: string,
+    actorId: string,
+    now: Date
+  ): LaunchSettingsSummary {
+    const existing = this.launchSettings.get(businessId);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const settings: LaunchSettingsSummary = {
+      businessId,
+      status: "closed",
+      publicOnboardingEnabled: false,
+      rollbackArmed: true,
+      freezeActive: true,
+      allowedSignupCount: 0,
+      pauseReason: "Public launch is closed until CP16 gates pass.",
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.launchSettings.set(businessId, settings);
+    return settings;
+  }
+
+  private getOrCreateLaunchChecklistItem(
+    businessId: string,
+    key: LaunchChecklistKey,
+    actorId: string,
+    now: Date
+  ): LaunchChecklistItemSummary {
+    const mapKey = launchChecklistMapKey(businessId, key);
+    const existing = this.launchChecklist.get(mapKey);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const item: LaunchChecklistItemSummary = {
+      businessId,
+      key,
+      status: "pending",
+      evidence: "Pending CP16 public launch verification.",
+      updatedBy: actorId,
+      updatedAt: now.toISOString()
+    };
+    this.launchChecklist.set(mapKey, item);
+    return item;
   }
 
   private async createRuntimeModelRoute(input: {
@@ -4627,7 +5112,21 @@ const betaFeatureFlagKeys: BetaFeatureFlagKey[] = [
   "crash_telemetry"
 ];
 
+const launchChecklistKeys: LaunchChecklistKey[] = [
+  "environment_config",
+  "secrets_ready",
+  "backup_verified",
+  "monitoring_ready",
+  "deploy_verified",
+  "rollback_runbook",
+  "support_coverage"
+];
+
 function betaFeatureFlagMapKey(businessId: string, key: BetaFeatureFlagKey): string {
+  return `${businessId}:${key}`;
+}
+
+function launchChecklistMapKey(businessId: string, key: LaunchChecklistKey): string {
   return `${businessId}:${key}`;
 }
 
