@@ -33,10 +33,13 @@ import {
   isSupportedLanguage,
   readSessionCookie,
   serializeSessionCookie,
-  type Cp2Store
+  type Cp2Store,
+  type OtpChallengeDelivery
 } from "./store.js";
+import { createOtpProviderFromEnvironment, type OtpProvider } from "./otp-provider.js";
 
 export interface Cp2RouteOptions {
+  otpProvider?: OtpProvider;
   store?: Cp2Store;
 }
 
@@ -296,6 +299,7 @@ interface LaunchIncidentStatusBody {
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
+  const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
 
   app.post(
     "/auth/otp/request",
@@ -303,7 +307,28 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       try {
         const channel = parseAuthChannel(request.body.channel);
         const destination = parseString(request.body.destination, "destination");
-        return store.requestOtp({ channel, destination });
+        const otp = store.requestOtp({ channel, destination });
+
+        if (otpProvider.canHandle(channel)) {
+          await otpProvider.requestOtp({
+            channel,
+            destination: otp.destination
+          });
+        }
+
+        if (
+          otpProvider.exposesDevOtp ||
+          !otpProvider.verifiesExternally ||
+          !otpProvider.canHandle(channel)
+        ) {
+          return otp;
+        }
+
+        return {
+          challengeId: otp.challengeId,
+          destination: otp.destination,
+          expiresAt: otp.expiresAt
+        };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -314,7 +339,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     try {
       const challengeId = parseString(request.body.challengeId, "challengeId");
       const code = parseString(request.body.code, "code");
-      const result = store.verifyOtp({ challengeId, code });
+      const challenge = store.getOtpChallengeDelivery(challengeId);
+      const result =
+        otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
+          ? await verifyProviderOtp(store, otpProvider, challengeId, challenge, code)
+          : store.verifyOtp({ challengeId, code });
       reply.header("set-cookie", serializeSessionCookie(result.session.id));
       return result;
     } catch (error) {
@@ -1412,6 +1441,26 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   return store;
+}
+
+async function verifyProviderOtp(
+  store: Cp2Store,
+  otpProvider: OtpProvider,
+  challengeId: string,
+  challenge: OtpChallengeDelivery,
+  code: string
+) {
+  const isApproved = await otpProvider.verifyOtp({
+    channel: challenge.channel,
+    destination: challenge.destination,
+    code
+  });
+
+  if (!isApproved) {
+    throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
+  }
+
+  return store.verifyExternallyApprovedOtp({ challengeId });
 }
 
 function parseSyncMutationBody(body: SyncMutationBody | null | undefined): {

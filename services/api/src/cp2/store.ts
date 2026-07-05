@@ -221,6 +221,13 @@ interface OtpChallenge {
   createdAt: string;
 }
 
+export interface OtpChallengeDelivery {
+  challengeId: string;
+  channel: AuthChannel;
+  destination: string;
+  expiresAt: string;
+}
+
 interface SessionRecord extends SessionSummary {
   accountId: string;
   userId: string;
@@ -376,6 +383,40 @@ export class Cp2Store {
     const now = input.now ?? new Date();
     const challenge = this.otpChallenges.get(input.challengeId);
 
+    this.validateOtpChallenge(challenge, now);
+
+    if (!hashMatches(hashOtp(challenge.id, input.code), challenge.codeHash)) {
+      challenge.attempts += 1;
+      throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
+    }
+
+    return this.completeOtpVerification(challenge, now);
+  }
+
+  getOtpChallengeDelivery(challengeId: string, now = new Date()): OtpChallengeDelivery {
+    const challenge = this.otpChallenges.get(challengeId);
+    this.validateOtpChallenge(challenge, now);
+
+    return {
+      challengeId: challenge.id,
+      channel: challenge.channel,
+      destination: challenge.destination,
+      expiresAt: challenge.expiresAt
+    };
+  }
+
+  verifyExternallyApprovedOtp(input: { challengeId: string; now?: Date }): VerifyOtpResult {
+    const now = input.now ?? new Date();
+    const challenge = this.otpChallenges.get(input.challengeId);
+    this.validateOtpChallenge(challenge, now);
+
+    return this.completeOtpVerification(challenge, now);
+  }
+
+  private validateOtpChallenge(
+    challenge: OtpChallenge | undefined,
+    now: Date
+  ): asserts challenge is OtpChallenge {
     if (challenge === undefined) {
       throw new Cp2Error(404, "otp_not_found", "OTP challenge was not found.");
     }
@@ -391,12 +432,9 @@ export class Cp2Store {
     if (challenge.attempts >= challenge.maxAttempts) {
       throw new Cp2Error(429, "otp_attempts_exceeded", "OTP attempts exceeded.");
     }
+  }
 
-    if (!hashMatches(hashOtp(challenge.id, input.code), challenge.codeHash)) {
-      challenge.attempts += 1;
-      throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
-    }
-
+  private completeOtpVerification(challenge: OtpChallenge, now: Date): VerifyOtpResult {
     challenge.verifiedAt = now.toISOString();
     const destinationKey = destinationAccountKey(challenge.channel, challenge.destination);
     const existingAccountId = this.accountByDestination.get(destinationKey);

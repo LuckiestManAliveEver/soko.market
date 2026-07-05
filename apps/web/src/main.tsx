@@ -22,7 +22,7 @@ interface OtpRequestResponse {
   challengeId: string;
   destination: string;
   expiresAt: string;
-  devOtp: string;
+  devOtp?: string;
 }
 
 interface SessionResponse {
@@ -1054,7 +1054,7 @@ function App() {
         destination
       });
       setChallenge(response);
-      setOtp(response.devOtp);
+      setOtp(response.devOtp ?? "");
       setStatusMessage(`OTP sent to ${response.destination}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));

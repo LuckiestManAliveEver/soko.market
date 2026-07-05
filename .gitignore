@@ -7,5 +7,6 @@ coverage/
 .env
 .env.*
 !.env.example
+mongodb/*.env
 *.log
 .DS_Store

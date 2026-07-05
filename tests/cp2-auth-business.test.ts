@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+import type { OtpProvider } from "../services/api/src/cp2/otp-provider";
 
 interface OtpRequestResponse {
   challengeId: string;
   destination: string;
-  devOtp: string;
+  devOtp?: string;
 }
 
 interface VerifyOtpResponse {
@@ -226,7 +227,97 @@ describe("CP2 auth and business creation", () => {
 
     await app.close();
   });
+
+  it("uses an external OTP provider without exposing a development code", async () => {
+    const store = createCp2Store();
+    const provider = new FakeOtpProvider("123456");
+    const app = buildApi({ cp2: { store, otpProvider: provider } });
+
+    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      channel: "phone",
+      destination: "254700000002"
+    });
+
+    expect(otpResponse.destination).toBe("+254700000002");
+    expect(otpResponse.devOtp).toBeUndefined();
+    expect(provider.requests).toEqual([
+      {
+        channel: "phone",
+        destination: "+254700000002"
+      }
+    ]);
+
+    const badOtp = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        challengeId: otpResponse.challengeId,
+        code: "000000"
+      })
+    });
+
+    expect(badOtp.statusCode).toBe(401);
+
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        challengeId: otpResponse.challengeId,
+        code: "123456"
+      })
+    });
+    const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+    const auth = verifyResponse.json<VerifyOtpResponse>();
+
+    expect(verifyResponse.statusCode).toBe(200);
+    expect(sessionCookie).toContain("soko_session=");
+    expect(auth.account.id).toHaveLength(36);
+    expect(provider.verifications).toEqual([
+      {
+        channel: "phone",
+        destination: "+254700000002",
+        code: "000000"
+      },
+      {
+        channel: "phone",
+        destination: "+254700000002",
+        code: "123456"
+      }
+    ]);
+
+    await app.close();
+  });
 });
+
+class FakeOtpProvider implements OtpProvider {
+  readonly name = "fake";
+  readonly exposesDevOtp = false;
+  readonly verifiesExternally = true;
+  readonly requests: Array<{ channel: "phone" | "email"; destination: string }> = [];
+  readonly verifications: Array<{ channel: "phone" | "email"; destination: string; code: string }> =
+    [];
+
+  constructor(private readonly acceptedCode: string) {}
+
+  canHandle(channel: "phone" | "email"): boolean {
+    return channel === "phone";
+  }
+
+  async requestOtp(input: { channel: "phone" | "email"; destination: string }): Promise<void> {
+    this.requests.push(input);
+  }
+
+  async verifyOtp(input: {
+    channel: "phone" | "email";
+    destination: string;
+    code: string;
+  }): Promise<boolean> {
+    this.verifications.push(input);
+    return input.code === this.acceptedCode;
+  }
+}
 
 async function postJson<TResponse>(
   app: ReturnType<typeof buildApi>,

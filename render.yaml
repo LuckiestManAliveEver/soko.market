@@ -20,6 +20,14 @@ services:
         value: https://soko.market,https://www.soko.market
       - key: MONGODB_URI
         sync: false
+      - key: TWILIO_VERIFY_ENABLED
+        value: "false"
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_VERIFY_SERVICE_SID
+        sync: false
 
   - type: web
     name: soko-market-web
