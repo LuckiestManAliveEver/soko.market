@@ -6,9 +6,10 @@ import type {
 
 export interface LlamaCppRuntimeModelOptions {
   endpoint: string;
-  timeoutMs?: number;
-  temperature?: number;
   maxTokens?: number;
+  modelProfile?: string;
+  temperature?: number;
+  timeoutMs?: number;
 }
 
 interface LlamaCompletionResponse {
@@ -51,7 +52,8 @@ export function createLlamaCppRuntimeModelProvider(
             startedAt,
             errorCode: `http_${response.status}`,
             metadata: {
-              endpointHost: safeHost(endpoint)
+              endpointHost: safeHost(endpoint),
+              modelProfile: options.modelProfile ?? null
             }
           });
         }
@@ -65,7 +67,8 @@ export function createLlamaCppRuntimeModelProvider(
           startedAt,
           errorCode: content.length > 0 ? null : "empty_completion",
           metadata: {
-            endpointHost: safeHost(endpoint)
+            endpointHost: safeHost(endpoint),
+            modelProfile: options.modelProfile ?? null
           }
         });
       } catch (error) {
@@ -79,7 +82,8 @@ export function createLlamaCppRuntimeModelProvider(
           startedAt,
           errorCode: aborted ? "timeout" : "completion_failed",
           metadata: {
-            endpointHost: safeHost(endpoint)
+            endpointHost: safeHost(endpoint),
+            modelProfile: options.modelProfile ?? null
           }
         });
       } finally {

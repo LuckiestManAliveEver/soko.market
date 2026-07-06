@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@soko/ai-runtime": "workspace:*",
     "@soko/business-core": "workspace:*",
     "@soko/event-core": "workspace:*",
     "@soko/shared-types": "workspace:*",

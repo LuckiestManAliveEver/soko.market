@@ -5,7 +5,7 @@ import type {
   RuntimeModelProvider
 } from "../packages/shared-types/src";
 import { parseRuntimeModelOutput } from "../packages/tool-core/src";
-import { buildLlamaPrompt } from "../services/ai-runtime/src/app";
+import { buildLlamaPrompt, createLlamaCppRuntimeModelProvider } from "../services/ai-runtime/src/app";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -93,6 +93,47 @@ describe("CP11 local model adapter", () => {
       ok: false,
       output: null
     });
+  });
+
+  it("reports the configured small local model profile in adapter metadata", async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          content: JSON.stringify({
+            type: "response",
+            message: "Ready."
+          })
+        }),
+        {
+          headers: {
+            "content-type": "application/json"
+          },
+          status: 200
+        }
+      );
+
+    try {
+      const provider = createLlamaCppRuntimeModelProvider({
+        endpoint: "http://127.0.0.1:8080",
+        maxTokens: 128,
+        modelProfile: "qwen2.5-0.5b-instruct-q4_0-android-2gb",
+        temperature: 0,
+        timeoutMs: 8000
+      });
+      const completion = await provider.complete(emptyRuntimePrompt("show products"));
+
+      expect(completion).toMatchObject({
+        provider: "llama.cpp",
+        status: "available",
+        metadata: {
+          endpointHost: "127.0.0.1:8080",
+          modelProfile: "qwen2.5-0.5b-instruct-q4_0-android-2gb"
+        }
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 
   it("builds llama.cpp prompts with bounded context and no business record names", async () => {
@@ -388,6 +429,40 @@ function availableCompletion(output: unknown): RuntimeModelCompletionResult {
     durationMs: 1,
     errorCode: null,
     metadata: {}
+  };
+}
+
+function emptyRuntimePrompt(message: string): RuntimeModelPrompt {
+  return {
+    allowedTools: ["products.list"],
+    context: {
+      activeLogisticsCount: 0,
+      betaAccessStatus: "not_invited",
+      betaReadinessStatus: "not_ready",
+      complianceExportCount: 0,
+      crashFreeSessionRate: 1,
+      customerCount: 0,
+      deviceTrustLevel: "unknown",
+      importJobCount: 0,
+      invoiceCount: 0,
+      knowledgeFactCount: 0,
+      language: "en",
+      launchReadinessStatus: "not_ready",
+      logisticsCount: 0,
+      lowStockCount: 0,
+      openInvoiceCount: 0,
+      openLaunchIncidentCount: 0,
+      openSupportTicketCount: 0,
+      outstandingDebtTotal: 0,
+      productCount: 0,
+      publicLaunchStatus: "closed",
+      role: "owner",
+      scheduledDeletionCount: 0,
+      unreadNotificationCount: 0,
+      verificationTier: "unverified"
+    },
+    message,
+    schemaVersion: "cp11-runtime-model-v1"
   };
 }
 

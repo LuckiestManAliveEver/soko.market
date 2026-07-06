@@ -11,6 +11,12 @@ export interface EnvironmentConfig {
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
+  localModelEnabled: boolean;
+  localModelEndpoint: string;
+  localModelMaxTokens: number;
+  localModelProfile: string;
+  localModelTemperature: number;
+  localModelTimeoutMs: number;
   redisUrl: string;
 }
 

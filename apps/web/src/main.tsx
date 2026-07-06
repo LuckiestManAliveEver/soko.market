@@ -84,7 +84,11 @@ type ActiveBusiness = BusinessResponse["business"] & {
   role: string;
 };
 
-type AgentModel = "sokoclaw-local" | "openai-fast" | "openai-reasoning";
+type AgentModel =
+  | "qwen2.5-0.5b-android"
+  | "sokoclaw-local"
+  | "openai-fast"
+  | "openai-reasoning";
 
 interface AgentSettings {
   id: string;
@@ -5476,7 +5480,8 @@ function AgentProfileSurface({
               value={agent.model}
               onChange={(event) => updateAgent({ model: event.target.value as AgentModel })}
             >
-              <option value="sokoclaw-local">Sokoclaw local</option>
+              <option value="qwen2.5-0.5b-android">Qwen2.5 0.5B local Android</option>
+              <option value="sokoclaw-local">Sokoclaw local legacy</option>
               <option value="openai-fast">OpenAI fast</option>
               <option value="openai-reasoning">OpenAI reasoning</option>
             </select>
@@ -6053,8 +6058,8 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
   return {
     id: `agent-${globalAgentId}`,
     name: businessName,
-    description: "AI business attendant for owner operations and public storefront chat.",
-    model: "sokoclaw-local",
+    description: "AI business attendant linked to a predownloaded small local model.",
+    model: "qwen2.5-0.5b-android",
     role: "Business assistant and storefront attendant",
     globalAgentId,
     storefrontUrl: createStorefrontUrl(globalAgentId),
@@ -6082,7 +6087,12 @@ function splitListInput(value: string): string[] {
 }
 
 function isAgentModel(value: unknown): value is AgentModel {
-  return value === "sokoclaw-local" || value === "openai-fast" || value === "openai-reasoning";
+  return (
+    value === "qwen2.5-0.5b-android" ||
+    value === "sokoclaw-local" ||
+    value === "openai-fast" ||
+    value === "openai-reasoning"
+  );
 }
 
 function composeSignupContact(

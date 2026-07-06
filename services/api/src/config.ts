@@ -28,6 +28,42 @@ function numberFromEnvList(names: string[], fallback: number): number {
   return fallback;
 }
 
+function floatFromEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${name} must be a finite number.`);
+  }
+
+  return parsed;
+}
+
+function booleanFromEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`${name} must be true or false.`);
+}
+
 function stringFromEnv(name: string, fallback: string): string {
   const value = process.env[name];
   return value === undefined || value.trim() === "" ? fallback : value;
@@ -60,6 +96,15 @@ export function readEnvironment(): EnvironmentConfig {
       "DATABASE_URL",
       "postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market"
     ),
+    localModelEnabled: booleanFromEnv("LOCAL_MODEL_ENABLED", false),
+    localModelEndpoint: stringFromEnv("LOCAL_MODEL_ENDPOINT", "http://127.0.0.1:8080"),
+    localModelMaxTokens: numberFromEnv("LOCAL_MODEL_MAX_TOKENS", 128),
+    localModelProfile: stringFromEnv(
+      "LOCAL_MODEL_PROFILE",
+      "qwen2.5-0.5b-instruct-q4_0-android-2gb"
+    ),
+    localModelTemperature: floatFromEnv("LOCAL_MODEL_TEMPERATURE", 0),
+    localModelTimeoutMs: numberFromEnv("LOCAL_MODEL_TIMEOUT_MS", 8000),
     redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")
   };
 }

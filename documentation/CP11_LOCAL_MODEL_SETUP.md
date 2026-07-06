@@ -4,6 +4,47 @@ CP11 supports a llama.cpp-compatible local model adapter behind the CP10 runtime
 
 The project does not download, license, quantize, or tune model files automatically. Operators choose and place model artifacts outside this repository.
 
+## Android 2GB Profile
+
+Use a predownloaded small open-source GGUF model outside this repository. The
+default Soko local profile is:
+
+```text
+qwen2.5-0.5b-instruct-q4_0-android-2gb
+```
+
+Recommended artifact shape:
+
+```text
+Qwen2.5-0.5B-Instruct Q4_0 GGUF
+```
+
+This profile is intended for constrained Android devices around 2GB RAM. Keep
+context and output short so the operating system, app shell, llama.cpp runtime,
+and model weights can coexist.
+
+Suggested llama.cpp server flags:
+
+```bash
+llama-server \
+  --model /path/to/Qwen2.5-0.5B-Instruct-Q4_0.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 1024 \
+  --threads 2
+```
+
+Then enable the adapter for the API:
+
+```text
+LOCAL_MODEL_ENABLED=true
+LOCAL_MODEL_ENDPOINT=http://127.0.0.1:8080
+LOCAL_MODEL_PROFILE=qwen2.5-0.5b-instruct-q4_0-android-2gb
+LOCAL_MODEL_TIMEOUT_MS=8000
+LOCAL_MODEL_MAX_TOKENS=128
+LOCAL_MODEL_TEMPERATURE=0
+```
+
 ## Expected Local Server
 
 Run a llama.cpp-compatible HTTP server that exposes `/completion`.
@@ -20,7 +61,7 @@ Then configure the runtime adapter with:
 endpoint: http://127.0.0.1:8080
 timeoutMs: 8000
 temperature: 0
-maxTokens: 256
+maxTokens: 128
 ```
 
 The adapter normalizes the endpoint to `/completion`.

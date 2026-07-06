@@ -132,6 +132,9 @@ importers:
 
   services/api:
     dependencies:
+      '@soko/ai-runtime':
+        specifier: workspace:*
+        version: link:../ai-runtime
       '@soko/business-core':
         specifier: workspace:*
         version: link:../../packages/business-core
