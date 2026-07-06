@@ -309,6 +309,85 @@ button:disabled {
   font-size: 13px;
 }
 
+.social-signup-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel .social-signup-button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d9e1dc;
+  border-radius: 8px;
+  color: #17211b;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-start;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.social-signup-button span {
+  align-items: center;
+  border-radius: 6px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  height: 24px;
+  justify-content: center;
+  min-width: 24px;
+}
+
+.social-signup-button.google span {
+  background: #1a73e8;
+}
+
+.social-signup-button.meta span {
+  background: #0866ff;
+}
+
+.social-signup-button.x span {
+  background: #111111;
+}
+
+.social-signup-button.linkedin span {
+  background: #0a66c2;
+}
+
+.social-signup-button.other span {
+  background: #47606b;
+}
+
+.signup-divider {
+  align-items: center;
+  color: #65746a;
+  display: grid;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  text-transform: uppercase;
+}
+
+.signup-divider::before,
+.signup-divider::after {
+  background: #dbe4dc;
+  content: "";
+  height: 1px;
+}
+
+.phone-contact-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(138px, 0.42fr) minmax(0, 1fr);
+}
+
+.phone-contact-row select {
+  text-overflow: ellipsis;
+}
+
 .secondary {
   background: #e7ede8;
   color: #23342a;
@@ -934,6 +1013,8 @@ button:disabled {
   .metric-grid,
   .quick-grid,
   .generated-card-grid,
+  .social-signup-grid,
+  .phone-contact-row,
   .form-row,
   .record-row,
   .row-actions,

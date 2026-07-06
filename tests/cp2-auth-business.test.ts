@@ -257,6 +257,128 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("sets and verifies an owner login PIN after OTP", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      method: "phone",
+      contact: "+254700000003"
+    });
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000003",
+        otp: otpResponse.devOtp
+      })
+    });
+    const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+
+    const pinSetup = await postJson<VerifyOtpResponse>(
+      app,
+      "/auth/pin/setup",
+      {
+        pin: "1234"
+      },
+      sessionCookie
+    );
+    const business = await postJson<CreateBusinessResponse>(
+      app,
+      "/businesses",
+      {
+        name: "Pinned Shop",
+        language: "en"
+      },
+      sessionCookie
+    );
+
+    expect(pinSetup.account.id).toBe(verifyResponse.json<VerifyOtpResponse>().account.id);
+    expect(business.membership.role).toBe("owner");
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        cookie: sessionCookie
+      }
+    });
+
+    const loginOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      method: "phone",
+      contact: "+254700000003"
+    });
+    const loginVerify = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000003",
+        otp: loginOtp.devOtp
+      })
+    });
+    const loginCookie = extractSessionCookie(loginVerify.headers["set-cookie"]);
+    const blockedRole = await app.inject({
+      method: "POST",
+      url: "/roles/check",
+      headers: {
+        ...jsonHeaders(),
+        cookie: loginCookie
+      },
+      payload: JSON.stringify({
+        businessId: business.business.id,
+        role: "owner"
+      })
+    });
+
+    expect(blockedRole.statusCode).toBe(401);
+    expect(blockedRole.json()).toMatchObject({
+      code: "pin_required"
+    });
+
+    const badPin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/verify",
+      headers: {
+        ...jsonHeaders(),
+        cookie: loginCookie
+      },
+      payload: JSON.stringify({
+        pin: "0000"
+      })
+    });
+
+    expect(badPin.statusCode).toBe(401);
+    expect(badPin.json()).toMatchObject({
+      code: "pin_invalid"
+    });
+
+    await postJson<VerifyOtpResponse>(
+      app,
+      "/auth/pin/verify",
+      {
+        pin: "1234"
+      },
+      loginCookie
+    );
+    const allowedRole = await postJson<RoleCheckResponse>(
+      app,
+      "/roles/check",
+      {
+        businessId: business.business.id,
+        role: "owner"
+      },
+      loginCookie
+    );
+
+    expect(allowedRole.allowed).toBe(true);
+
+    await app.close();
+  });
+
   it("uses an external OTP provider without exposing a development code", async () => {
     const store = createCp2Store();
     const provider = new FakeOtpProvider("123456");

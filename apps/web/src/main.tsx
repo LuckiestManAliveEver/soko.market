@@ -16,6 +16,8 @@ import "./styles.css";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
+type SocialSignupProvider = "google" | "meta" | "x" | "linkedin" | "other";
+type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 interface OtpRequestResponse {
   challengeId: string;
@@ -80,10 +82,16 @@ interface AgentSettings {
 
 interface SetupDraft {
   channel: AuthChannel;
+  countryCode: CountryDialCode;
   destination: string;
   businessName: string;
   language: SupportedLanguage;
   completedStep: 0 | 1 | 2;
+}
+
+interface OwnerAuthRecord {
+  contact: string;
+  countryCode: CountryDialCode;
 }
 
 interface ProductSummary {
@@ -753,7 +761,36 @@ interface LaunchFormState {
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
 const activeBusinessStorageKey = "soko.cp3.activeBusiness";
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
+const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
+
+const socialSignupProviders: Array<{
+  id: SocialSignupProvider;
+  label: string;
+  mark: string;
+}> = [
+  { id: "google", label: "Google", mark: "G" },
+  { id: "meta", label: "Meta", mark: "M" },
+  { id: "x", label: "X", mark: "X" },
+  { id: "linkedin", label: "LinkedIn", mark: "in" },
+  { id: "other", label: "Other social account", mark: "+" }
+];
+
+const countryDialCodes: Array<{
+  code: CountryDialCode;
+  country: string;
+  flag: string;
+  suffixLength: number;
+}> = [
+  { code: "+254", country: "Kenya", flag: "KE", suffixLength: 9 },
+  { code: "+1", country: "United States", flag: "US", suffixLength: 10 },
+  { code: "+44", country: "United Kingdom", flag: "UK", suffixLength: 10 },
+  { code: "+234", country: "Nigeria", flag: "NG", suffixLength: 10 },
+  { code: "+27", country: "South Africa", flag: "ZA", suffixLength: 9 },
+  { code: "+255", country: "Tanzania", flag: "TZ", suffixLength: 9 },
+  { code: "+256", country: "Uganda", flag: "UG", suffixLength: 9 },
+  { code: "+250", country: "Rwanda", flag: "RW", suffixLength: 9 }
+];
 
 const emptyProductForm: ProductFormState = {
   id: null,
@@ -866,14 +903,35 @@ const emptyNotificationSummary: NotificationInboxSummary = {
 function App() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
-  const [channel, setChannel] = useState<AuthChannel>(initialSetupDraft?.channel ?? "phone");
-  const [destination, setDestination] = useState(initialSetupDraft?.destination ?? "");
+  const initialOwnerAuth = readStoredOwnerAuth();
+  const [channel, setChannel] = useState<AuthChannel>(
+    initialOwnerAuth === null ? (initialSetupDraft?.channel ?? "phone") : "phone"
+  );
+  const [countryCode, setCountryCode] = useState<CountryDialCode>(
+    initialOwnerAuth?.countryCode ??
+      initialSetupDraft?.countryCode ??
+      inferCountryCode(initialSetupDraft?.destination ?? "") ??
+      "+254"
+  );
+  const [destination, setDestination] = useState(
+    initialOwnerAuth !== null
+      ? stripDialCode(initialOwnerAuth.contact, initialOwnerAuth.countryCode)
+      : initialSetupDraft?.channel === "phone"
+        ? stripDialCode(initialSetupDraft.destination, initialSetupDraft.countryCode)
+        : (initialSetupDraft?.destination ?? "")
+  );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
+  const [isOtpVerified, setIsOtpVerified] = useState(false);
+  const [signupPin, setSignupPin] = useState("");
+  const [signupPinConfirm, setSignupPinConfirm] = useState("");
+  const [loginPin, setLoginPin] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
+  const [ownerAuth, setOwnerAuth] = useState<OwnerAuthRecord | null>(initialOwnerAuth);
+  const [isWorkspaceUnlocked, setIsWorkspaceUnlocked] = useState(initialOwnerAuth === null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
@@ -929,7 +987,8 @@ function App() {
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
 
-  const setupComplete = session !== null && business !== null;
+  const shouldShowLogin = business !== null && ownerAuth !== null && !isWorkspaceUnlocked;
+  const setupComplete = business !== null && !shouldShowLogin;
   const activeQueueCount =
     syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
   const syncLabel = setupComplete
@@ -964,20 +1023,21 @@ function App() {
   }, [agentSettings]);
 
   useEffect(() => {
-    if (setupComplete) {
+    if (business !== null) {
       localStorage.removeItem(setupDraftStorageKey);
       return;
     }
 
     const draft: SetupDraft = {
       channel,
+      countryCode,
       destination,
       businessName,
       language,
       completedStep: session === null ? 0 : 1
     };
     localStorage.setItem(setupDraftStorageKey, JSON.stringify(draft));
-  }, [businessName, channel, destination, language, session, setupComplete]);
+  }, [business, businessName, channel, countryCode, destination, language, session]);
 
   useEffect(() => {
     if (business !== null) {
@@ -1077,11 +1137,17 @@ function App() {
       }
 
       setSession(null);
-      setBusiness(null);
-      setStatusMessage("Sign in to continue");
-      localStorage.removeItem(activeBusinessStorageKey);
+      if (readStoredBusiness() === null) {
+        setBusiness(null);
+        setStatusMessage("Sign in to continue");
+        return;
+      }
+
+      setStatusMessage("Saved workspace loaded");
     } catch {
-      setStatusMessage("API unavailable");
+      setStatusMessage(
+        readStoredBusiness() === null ? "API unavailable" : "Saved workspace loaded"
+      );
     }
   }
 
@@ -1107,12 +1173,14 @@ function App() {
       // Local development uses an in-memory API store; stale cached business views are expected after restarts.
     }
 
-    setBusiness(null);
-    localStorage.removeItem(activeBusinessStorageKey);
+    setBusiness(storedBusiness);
+    setStatusMessage("Saved workspace loaded");
   }
 
   async function requestOtp() {
-    if (!isValidContact(channel, destination)) {
+    const contactValue = composeSignupContact(channel, countryCode, destination);
+
+    if (!isSignupContactValid(channel, countryCode, destination)) {
       setStatusMessage(
         channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
       );
@@ -1122,10 +1190,11 @@ function App() {
     try {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
-        contact: destination
+        contact: contactValue
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
+      setIsOtpVerified(false);
       setStatusMessage(`OTP sent to ${response.destination}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -1138,14 +1207,116 @@ function App() {
       return;
     }
 
+    const contactValue = composeSignupContact(channel, countryCode, destination);
+
+    if (!isSignupContactValid(channel, countryCode, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
+      return;
+    }
+
     try {
       const response = await postJson<SessionResponse>("/auth/otp/verify", {
         method: channel,
-        contact: destination,
+        contact: contactValue,
         otp
       });
       setSession(response);
-      setStatusMessage("Account verified");
+      setIsOtpVerified(true);
+      setStatusMessage("OTP verified. Enter your PIN.");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function startSocialSignup(provider: SocialSignupProvider) {
+    const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
+    setStatusMessage(
+      `${selectedProvider?.label ?? "Social"} signup is ready in the UI. Connect the OAuth provider to finish this flow.`
+    );
+  }
+
+  async function requestLoginOtp() {
+    const contactValue = composeSignupContact("phone", countryCode, destination);
+
+    if (!isSignupContactValid("phone", countryCode, destination)) {
+      setStatusMessage("Enter a valid phone number");
+      return;
+    }
+
+    try {
+      const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
+        method: "phone",
+        contact: contactValue
+      });
+      setChallenge(response);
+      setOtp(response.devOtp ?? "");
+      setIsOtpVerified(false);
+      setStatusMessage(`OTP sent to ${response.destination}`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function verifyLoginOtp() {
+    if (challenge === null) {
+      setStatusMessage("Request an OTP first");
+      return;
+    }
+
+    const contactValue = composeSignupContact("phone", countryCode, destination);
+
+    if (!isSignupContactValid("phone", countryCode, destination)) {
+      setStatusMessage("Enter a valid phone number");
+      return;
+    }
+
+    try {
+      const response = await postJson<SessionResponse>("/auth/otp/verify", {
+        method: "phone",
+        contact: contactValue,
+        otp
+      });
+      setSession(response);
+      setIsOtpVerified(true);
+      setStatusMessage("OTP verified. Enter your login PIN.");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loginWithPin() {
+    if (ownerAuth === null) {
+      setStatusMessage("No saved owner PIN found");
+      return;
+    }
+
+    const contactValue = composeSignupContact("phone", countryCode, destination);
+
+    if (contactValue !== ownerAuth.contact) {
+      setStatusMessage("Phone number does not match this owner account");
+      return;
+    }
+
+    if (!isOtpVerified) {
+      setStatusMessage("Verify OTP before entering PIN");
+      return;
+    }
+
+    if (!isValidPin(loginPin)) {
+      setStatusMessage("Enter your 4-digit PIN");
+      return;
+    }
+
+    try {
+      await postJson<SessionResponse>("/auth/pin/verify", {
+        pin: loginPin
+      });
+      setIsWorkspaceUnlocked(true);
+      setLoginPin("");
+      setView("chat");
+      setStatusMessage("Login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -1157,7 +1328,20 @@ function App() {
       return;
     }
 
+    if (!isOtpVerified) {
+      setStatusMessage("Verify OTP before finishing setup");
+      return;
+    }
+
+    if (!isValidPin(signupPin) || signupPin !== signupPinConfirm) {
+      setStatusMessage("Enter and confirm a 4-digit PIN");
+      return;
+    }
+
     try {
+      await postJson<SessionResponse>("/auth/pin/setup", {
+        pin: signupPin
+      });
       const response = await postJson<BusinessResponse>("/businesses", {
         name: businessName.trim(),
         language
@@ -1167,10 +1351,18 @@ function App() {
         role: response.membership.role
       };
       const nextAgent = createDefaultAgent(nextBusiness);
+      const contactValue = composeSignupContact(channel, countryCode, destination);
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: contactValue,
+        countryCode
+      };
       setBusiness(nextBusiness);
+      setOwnerAuth(nextOwnerAuth);
       setAgentSettings(nextAgent);
+      setIsWorkspaceUnlocked(true);
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
       await refreshSession();
       setView("chat");
@@ -1491,7 +1683,11 @@ function App() {
       setAccountDeletion(deletion);
       setSession(null);
       setBusiness(null);
+      setOwnerAuth(null);
+      setIsWorkspaceUnlocked(false);
       localStorage.removeItem(activeBusinessStorageKey);
+      localStorage.removeItem(activeAgentStorageKey);
+      localStorage.removeItem(ownerAuthStorageKey);
       setStatusMessage("Account deactivated and anonymization scheduled");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -2037,7 +2233,6 @@ function App() {
   async function logout() {
     await postJson<{ revoked: boolean }>("/auth/logout", {});
     setSession(null);
-    setBusiness(null);
     setProducts([]);
     setCustomers([]);
     setInvoices([]);
@@ -2068,10 +2263,13 @@ function App() {
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
+    setChallenge(null);
+    setOtp("");
+    setIsOtpVerified(false);
+    setLoginPin("");
     setView("chat");
     setStatusMessage("Signed out");
-    localStorage.removeItem(activeBusinessStorageKey);
-    localStorage.removeItem(activeAgentStorageKey);
+    setIsWorkspaceUnlocked(ownerAuth === null);
   }
 
   async function sendChatDraft() {
@@ -2476,17 +2674,22 @@ function App() {
           </div>
         </header>
 
-        {!setupComplete ? (
+        {business === null ? (
           <SetupPanel
             channel={channel}
+            countryCode={countryCode}
             destination={destination}
             challenge={challenge}
             otp={otp}
+            isOtpVerified={isOtpVerified}
+            signupPin={signupPin}
+            signupPinConfirm={signupPinConfirm}
             businessName={businessName}
             language={language}
             session={session}
             statusMessage={statusMessage}
             onChannelChange={setChannel}
+            onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
             onBusinessNameChange={setBusinessName}
@@ -2494,6 +2697,26 @@ function App() {
             onRequestOtp={() => void requestOtp()}
             onVerifyOtp={() => void verifyOtp()}
             onCreateBusiness={() => void createBusiness()}
+            onSignupPinChange={setSignupPin}
+            onSignupPinConfirmChange={setSignupPinConfirm}
+            onSocialSignup={startSocialSignup}
+          />
+        ) : shouldShowLogin ? (
+          <LoginPanel
+            countryCode={countryCode}
+            destination={destination}
+            challenge={challenge}
+            otp={otp}
+            isOtpVerified={isOtpVerified}
+            loginPin={loginPin}
+            statusMessage={statusMessage}
+            onCountryCodeChange={setCountryCode}
+            onDestinationChange={setDestination}
+            onOtpChange={setOtp}
+            onRequestOtp={() => void requestLoginOtp()}
+            onVerifyOtp={() => void verifyLoginOtp()}
+            onLoginPinChange={setLoginPin}
+            onLogin={() => void loginWithPin()}
           />
         ) : view === "agent" ? (
           <AgentProfileSurface
@@ -2534,14 +2757,19 @@ function App() {
 
 interface SetupPanelProps {
   channel: AuthChannel;
+  countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
+  isOtpVerified: boolean;
+  signupPin: string;
+  signupPinConfirm: string;
   businessName: string;
   language: SupportedLanguage;
   session: SessionResponse | null;
   statusMessage: string;
   onChannelChange: (channel: AuthChannel) => void;
+  onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
   onBusinessNameChange: (businessName: string) => void;
@@ -2549,10 +2777,15 @@ interface SetupPanelProps {
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCreateBusiness: () => void;
+  onSignupPinChange: (pin: string) => void;
+  onSignupPinConfirmChange: (pin: string) => void;
+  onSocialSignup: (provider: SocialSignupProvider) => void;
 }
 
 function SetupPanel(props: SetupPanelProps) {
-  const contactIsValid = isValidContact(props.channel, props.destination);
+  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
+  const selectedCountryCode = getCountryDialCode(props.countryCode);
+  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
 
   return (
     <main className="setup-grid">
@@ -2560,6 +2793,22 @@ function SetupPanel(props: SetupPanelProps) {
         <div className="section-heading">
           <p className="eyebrow">Step 1</p>
           <h2>Owner access</h2>
+        </div>
+        <div className="social-signup-grid" aria-label="Social signup options">
+          {socialSignupProviders.map((provider) => (
+            <button
+              className={`social-signup-button ${provider.id}`}
+              key={provider.id}
+              type="button"
+              onClick={() => props.onSocialSignup(provider.id)}
+            >
+              <span>{provider.mark}</span>
+              {provider.label}
+            </button>
+          ))}
+        </div>
+        <div className="signup-divider">
+          <span>or use OTP</span>
         </div>
         <div className="segmented" aria-label="Auth channel">
           <button
@@ -2577,16 +2826,52 @@ function SetupPanel(props: SetupPanelProps) {
             Email
           </button>
         </div>
-        <label>
-          Contact
-          <input
-            value={props.destination}
-            onChange={(event) => props.onDestinationChange(event.target.value)}
-            inputMode={props.channel === "phone" ? "tel" : "email"}
-            type={props.channel === "phone" ? "tel" : "email"}
-            placeholder={props.channel === "phone" ? "+254700000000" : "owner@example.com"}
-          />
-        </label>
+        {props.channel === "phone" ? (
+          <div className="phone-contact-row">
+            <label>
+              Country code
+              <select
+                value={props.countryCode}
+                onChange={(event) =>
+                  props.onCountryCodeChange(event.target.value as CountryDialCode)
+                }
+              >
+                {countryDialCodes.map((item) => (
+                  <option key={item.code} value={item.code}>
+                    {item.flag} {item.code} {item.country}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Phone number
+              <input
+                value={phoneSuffix}
+                onChange={(event) =>
+                  props.onDestinationChange(
+                    sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                  )
+                }
+                inputMode="numeric"
+                maxLength={selectedCountryCode.suffixLength}
+                pattern="[0-9]*"
+                type="tel"
+                placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+              />
+            </label>
+          </div>
+        ) : (
+          <label>
+            Email address
+            <input
+              value={props.destination}
+              onChange={(event) => props.onDestinationChange(event.target.value)}
+              inputMode="email"
+              type="email"
+              placeholder="owner@example.com"
+            />
+          </label>
+        )}
         <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
           Request OTP
         </button>
@@ -2605,6 +2890,39 @@ function SetupPanel(props: SetupPanelProps) {
         <p className="setup-status">{props.statusMessage}</p>
       </section>
 
+      {props.isOtpVerified ? (
+        <section className="panel">
+          <div className="section-heading">
+            <p className="eyebrow">Login PIN</p>
+            <h2>Create PIN</h2>
+          </div>
+          <label>
+            PIN
+            <input
+              value={props.signupPin}
+              onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
+              inputMode="numeric"
+              maxLength={4}
+              pattern="[0-9]*"
+              type="password"
+              placeholder="4-digit PIN"
+            />
+          </label>
+          <label>
+            Confirm PIN
+            <input
+              value={props.signupPinConfirm}
+              onChange={(event) => props.onSignupPinConfirmChange(sanitizePin(event.target.value))}
+              inputMode="numeric"
+              maxLength={4}
+              pattern="[0-9]*"
+              type="password"
+              placeholder="Re-enter PIN"
+            />
+          </label>
+        </section>
+      ) : null}
+
       <section className="panel">
         <div className="section-heading with-action">
           <div>
@@ -2614,7 +2932,13 @@ function SetupPanel(props: SetupPanelProps) {
           <button
             type="button"
             onClick={props.onCreateBusiness}
-            disabled={props.session === null || props.businessName.trim().length === 0}
+            disabled={
+              props.session === null ||
+              !props.isOtpVerified ||
+              !isValidPin(props.signupPin) ||
+              props.signupPin !== props.signupPinConfirm ||
+              props.businessName.trim().length === 0
+            }
           >
             Finish
           </button>
@@ -2636,6 +2960,113 @@ function SetupPanel(props: SetupPanelProps) {
             <option value="sw">Swahili</option>
           </select>
         </label>
+      </section>
+    </main>
+  );
+}
+
+interface LoginPanelProps {
+  countryCode: CountryDialCode;
+  destination: string;
+  challenge: OtpRequestResponse | null;
+  otp: string;
+  isOtpVerified: boolean;
+  loginPin: string;
+  statusMessage: string;
+  onCountryCodeChange: (countryCode: CountryDialCode) => void;
+  onDestinationChange: (destination: string) => void;
+  onOtpChange: (otp: string) => void;
+  onRequestOtp: () => void;
+  onVerifyOtp: () => void;
+  onLoginPinChange: (pin: string) => void;
+  onLogin: () => void;
+}
+
+function LoginPanel(props: LoginPanelProps) {
+  const selectedCountryCode = getCountryDialCode(props.countryCode);
+  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
+  const contactIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
+
+  return (
+    <main className="setup-grid login-grid">
+      <section className="panel">
+        <div className="section-heading">
+          <p className="eyebrow">Owner login</p>
+          <h2>Phone verification</h2>
+        </div>
+        <div className="phone-contact-row">
+          <label>
+            Country code
+            <select
+              value={props.countryCode}
+              onChange={(event) => props.onCountryCodeChange(event.target.value as CountryDialCode)}
+            >
+              {countryDialCodes.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.flag} {item.code} {item.country}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Phone number
+            <input
+              value={phoneSuffix}
+              onChange={(event) =>
+                props.onDestinationChange(
+                  sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                )
+              }
+              inputMode="numeric"
+              maxLength={selectedCountryCode.suffixLength}
+              pattern="[0-9]*"
+              type="tel"
+              placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+            />
+          </label>
+        </div>
+        <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
+          Request OTP
+        </button>
+        <label>
+          OTP
+          <input
+            value={props.otp}
+            onChange={(event) => props.onOtpChange(event.target.value)}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+          />
+        </label>
+        <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
+          Verify OTP
+        </button>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <p className="eyebrow">Login PIN</p>
+          <h2>Enter PIN</h2>
+        </div>
+        <label>
+          PIN
+          <input
+            value={props.loginPin}
+            onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
+            inputMode="numeric"
+            maxLength={4}
+            pattern="[0-9]*"
+            type="password"
+            placeholder="4-digit PIN"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={props.onLogin}
+          disabled={!props.isOtpVerified || !isValidPin(props.loginPin)}
+        >
+          Login
+        </button>
+        <p className="setup-status">{props.statusMessage}</p>
       </section>
     </main>
   );
@@ -5309,6 +5740,29 @@ function readStoredAgent(): AgentSettings | null {
   return null;
 }
 
+function readStoredOwnerAuth(): OwnerAuthRecord | null {
+  const stored = localStorage.getItem(ownerAuthStorageKey);
+
+  if (stored === null) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as OwnerAuthRecord;
+
+    if (typeof parsed.contact === "string" && isCountryDialCode(parsed.countryCode)) {
+      return {
+        contact: parsed.contact,
+        countryCode: parsed.countryCode
+      };
+    }
+  } catch {
+    localStorage.removeItem(ownerAuthStorageKey);
+  }
+
+  return null;
+}
+
 function readSetupDraft(): SetupDraft | null {
   const stored = localStorage.getItem(setupDraftStorageKey);
 
@@ -5326,7 +5780,12 @@ function readSetupDraft(): SetupDraft | null {
       (parsed.language === "en" || parsed.language === "sw") &&
       (parsed.completedStep === 0 || parsed.completedStep === 1 || parsed.completedStep === 2)
     ) {
-      return parsed;
+      return {
+        ...parsed,
+        countryCode: isCountryDialCode(parsed.countryCode)
+          ? parsed.countryCode
+          : (inferCountryCode(parsed.destination) ?? "+254")
+      };
     }
   } catch {
     localStorage.removeItem(setupDraftStorageKey);
@@ -5377,6 +5836,85 @@ function splitListInput(value: string): string[] {
 
 function isAgentModel(value: unknown): value is AgentModel {
   return value === "sokoclaw-local" || value === "openai-fast" || value === "openai-reasoning";
+}
+
+function composeSignupContact(
+  channel: AuthChannel,
+  countryCode: CountryDialCode,
+  destination: string
+): string {
+  if (channel === "email") {
+    return destination.trim();
+  }
+
+  const selectedCountryCode = getCountryDialCode(countryCode);
+  const phone = sanitizePhoneSuffix(destination, selectedCountryCode.suffixLength);
+
+  if (phone.startsWith("+")) {
+    return phone;
+  }
+
+  return `${countryCode}${phone}`;
+}
+
+function inferCountryCode(value: string): CountryDialCode | null {
+  const normalized = value.trim().replace(/[\s-]/g, "");
+
+  return countryDialCodes.find((item) => normalized.startsWith(item.code))?.code ?? null;
+}
+
+function stripDialCode(value: string, countryCode: CountryDialCode): string {
+  const normalized = value.trim();
+
+  if (!normalized.startsWith("+")) {
+    return normalized;
+  }
+
+  const matchedCode = inferCountryCode(normalized) ?? countryCode;
+
+  return normalized.replace(matchedCode, "").replace(/^[\s-]+/, "");
+}
+
+function isCountryDialCode(value: unknown): value is CountryDialCode {
+  return countryDialCodes.some((item) => item.code === value);
+}
+
+function getCountryDialCode(countryCode: CountryDialCode) {
+  return (
+    countryDialCodes.find((item) => item.code === countryCode) ?? {
+      code: "+254" as const,
+      country: "Kenya",
+      flag: "KE",
+      suffixLength: 9
+    }
+  );
+}
+
+function sanitizePhoneSuffix(value: string, maxLength: number): string {
+  return value.replace(/\D/g, "").slice(0, maxLength);
+}
+
+function sanitizePin(value: string): string {
+  return value.replace(/\D/g, "").slice(0, 4);
+}
+
+function isValidPin(value: string): boolean {
+  return /^\d{4}$/.test(value);
+}
+
+function isSignupContactValid(
+  channel: AuthChannel,
+  countryCode: CountryDialCode,
+  contact: string
+): boolean {
+  if (channel === "email") {
+    return isValidContact(channel, contact);
+  }
+
+  const selectedCountryCode = getCountryDialCode(countryCode);
+  const phoneSuffix = sanitizePhoneSuffix(contact, selectedCountryCode.suffixLength);
+
+  return phoneSuffix.length === selectedCountryCode.suffixLength;
 }
 
 function isValidContact(channel: AuthChannel, contact: string): boolean {

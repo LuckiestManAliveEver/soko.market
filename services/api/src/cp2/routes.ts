@@ -58,6 +58,10 @@ interface OtpVerifyBody {
   otp?: string;
 }
 
+interface PinBody {
+  pin?: string;
+}
+
 interface CreateBusinessBody {
   name?: string;
   language?: string;
@@ -359,6 +363,30 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           : store.verifyOtp({ challengeId: challenge.challengeId, code });
       reply.header("set-cookie", serializeSessionCookie(result.session.id));
       return result;
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post("/auth/pin/setup", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
+    try {
+      const pin = parseString(request.body.pin, "pin");
+      return store.setAccountPin({
+        sessionId: readSessionCookie(request.headers.cookie),
+        pin
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post("/auth/pin/verify", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
+    try {
+      const pin = parseString(request.body.pin, "pin");
+      return store.verifyAccountPin({
+        sessionId: readSessionCookie(request.headers.cookie),
+        pin
+      });
     } catch (error) {
       return sendCp2Error(reply, error);
     }

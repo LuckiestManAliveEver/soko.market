@@ -231,6 +231,7 @@ export interface OtpChallengeDelivery {
 interface SessionRecord extends SessionSummary {
   accountId: string;
   userId: string;
+  pinVerifiedAt: string | null;
   revokedAt: string | null;
   createdAt: string;
 }
@@ -349,6 +350,7 @@ export class Cp2Store {
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly accountPinHashes = new Map<string, string>();
   private readonly auditEvents: BusinessEvent[] = [];
 
   requestOtp(input: { channel: AuthChannel; destination: string; now?: Date }): OtpRequestResult {
@@ -545,6 +547,52 @@ export class Cp2Store {
     return true;
   }
 
+  setAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const pin = normalizePin(input.pin);
+    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
+    this.markSessionPinVerified(session.session.id, now);
+
+    this.recordAuditEvent({
+      type: "auth.pin_set",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+
+    return this.requireAnySession(input.sessionId, now);
+  }
+
+  verifyAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const pin = normalizePin(input.pin);
+    const pinHash = this.accountPinHashes.get(session.account.id);
+
+    if (pinHash === undefined) {
+      throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
+    }
+
+    if (!hashMatches(hashPin(session.account.id, pin), pinHash)) {
+      throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
+    }
+
+    this.markSessionPinVerified(session.session.id, now);
+    this.recordAuditEvent({
+      type: "auth.pin_verified",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+
+    return this.requireAnySession(input.sessionId, now);
+  }
+
   createBusiness(input: {
     sessionId: string | null;
     name: string;
@@ -552,11 +600,7 @@ export class Cp2Store {
     now?: Date;
   }): CreateBusinessResult {
     const now = input.now ?? new Date();
-    const session = this.getSession(input.sessionId, now);
-
-    if (session === null) {
-      throw new Cp2Error(401, "auth_required", "Authentication is required.");
-    }
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     const name = input.name.trim();
 
@@ -626,11 +670,7 @@ export class Cp2Store {
     now?: Date;
   }): RoleCheckResult {
     const now = input.now ?? new Date();
-    const session = this.getSession(input.sessionId, now);
-
-    if (session === null) {
-      throw new Cp2Error(401, "auth_required", "Authentication is required.");
-    }
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     if (!isBusinessRole(input.role)) {
       throw new Cp2Error(400, "role_invalid", "Role is not supported.");
@@ -3116,6 +3156,7 @@ export class Cp2Store {
       accountId: account.id,
       userId: user.id,
       expiresAt: new Date(now.getTime() + sessionTtlMs).toISOString(),
+      pinVerifiedAt: null,
       revokedAt: null,
       createdAt: now.toISOString()
     };
@@ -3133,6 +3174,38 @@ export class Cp2Store {
     });
 
     return sessionView(session);
+  }
+
+  private requireAnySession(sessionId: string | null, now: Date): AuthSessionView {
+    const session = this.getSession(sessionId, now);
+
+    if (session === null) {
+      throw new Cp2Error(401, "auth_required", "Authentication is required.");
+    }
+
+    return session;
+  }
+
+  private requirePinVerifiedSession(sessionId: string | null, now: Date): AuthSessionView {
+    const session = this.requireAnySession(sessionId, now);
+    const sessionRecord = this.sessions.get(session.session.id);
+
+    if (
+      this.accountPinHashes.has(session.account.id) &&
+      (sessionRecord === undefined || sessionRecord.pinVerifiedAt === null)
+    ) {
+      throw new Cp2Error(401, "pin_required", "Login PIN verification is required.");
+    }
+
+    return session;
+  }
+
+  private markSessionPinVerified(sessionId: string, now: Date): void {
+    const session = this.sessions.get(sessionId);
+
+    if (session !== undefined) {
+      session.pinVerifiedAt = now.toISOString();
+    }
   }
 
   private requireAccount(accountId: string): AccountSummary {
@@ -3165,11 +3238,7 @@ export class Cp2Store {
     permission: BusinessPermission,
     now = new Date()
   ): AuthSessionView {
-    const session = this.getSession(sessionId, now);
-
-    if (session === null) {
-      throw new Cp2Error(401, "auth_required", "Authentication is required.");
-    }
+    const session = this.requirePinVerifiedSession(sessionId, now);
 
     if (!this.businesses.has(businessId)) {
       throw new Cp2Error(404, "business_not_found", "Business was not found.");
@@ -5127,6 +5196,14 @@ export function isSupportedLanguage(value: string): value is SupportedLanguage {
   return value === "en" || value === "sw";
 }
 
+function normalizePin(pin: string): string {
+  if (!/^\d{4}$/.test(pin)) {
+    throw new Cp2Error(400, "pin_invalid", "PIN must be exactly 4 digits.");
+  }
+
+  return pin;
+}
+
 function createAuditEvent<TPayload extends Record<string, unknown>>(
   event: BusinessEvent<TPayload>
 ): BusinessEvent<TPayload> {
@@ -5283,6 +5360,10 @@ function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSumma
 
 function hashOtp(challengeId: string, code: string): string {
   return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
+}
+
+function hashPin(accountId: string, pin: string): string {
+  return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
 }
 
 function hashMatches(actual: string, expected: string): boolean {
