@@ -910,6 +910,7 @@ button:disabled {
 .composer-input {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .composer-input span {
@@ -1044,11 +1045,13 @@ button:disabled {
   }
 
   .composer {
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
 
   .send-button {
-    grid-column: 1 / -1;
+    grid-column: auto;
+    justify-self: end;
+    width: auto;
   }
 }
 
