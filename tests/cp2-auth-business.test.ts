@@ -276,6 +276,32 @@ describe("CP2 auth and business creation", () => {
       })
     });
     const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+    const initialPinStatus = await app.inject({
+      method: "GET",
+      url: "/auth/pin/status",
+      headers: {
+        cookie: sessionCookie
+      }
+    });
+    const recoverBeforeSetup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/recover",
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({
+        pin: "7777"
+      })
+    });
+
+    expect(initialPinStatus.json()).toMatchObject({
+      hasPin: false
+    });
+    expect(recoverBeforeSetup.statusCode).toBe(409);
+    expect(recoverBeforeSetup.json()).toMatchObject({
+      code: "pin_not_set"
+    });
 
     const pinSetup = await postJson<VerifyOtpResponse>(
       app,
@@ -285,6 +311,13 @@ describe("CP2 auth and business creation", () => {
       },
       sessionCookie
     );
+    const setupPinStatus = await app.inject({
+      method: "GET",
+      url: "/auth/pin/status",
+      headers: {
+        cookie: sessionCookie
+      }
+    });
     const business = await postJson<CreateBusinessResponse>(
       app,
       "/businesses",
@@ -296,6 +329,9 @@ describe("CP2 auth and business creation", () => {
     );
 
     expect(pinSetup.account.id).toBe(verifyResponse.json<VerifyOtpResponse>().account.id);
+    expect(setupPinStatus.json()).toMatchObject({
+      hasPin: true
+    });
     expect(business.membership.role).toBe("owner");
 
     await app.inject({

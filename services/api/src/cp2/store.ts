@@ -566,10 +566,24 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
+  getAccountPinStatus(input: { sessionId: string | null; now?: Date }): { hasPin: boolean } {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+
+    return {
+      hasPin: this.accountPinHashes.has(session.account.id)
+    };
+  }
+
   recoverAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
     const pin = normalizePin(input.pin);
+
+    if (!this.accountPinHashes.has(session.account.id)) {
+      throw new Cp2Error(409, "pin_not_set", "Login PIN has not been set.");
+    }
+
     this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
     this.markSessionPinVerified(session.session.id, now);
 

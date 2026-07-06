@@ -380,6 +380,16 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.get("/auth/pin/status", async (request, reply) => {
+    try {
+      return store.getAccountPinStatus({
+        sessionId: readSessionCookie(request.headers.cookie)
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
   app.post("/auth/pin/verify", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
     try {
       const pin = parseString(request.body.pin, "pin");

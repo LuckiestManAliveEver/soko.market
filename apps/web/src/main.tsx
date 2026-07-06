@@ -63,6 +63,10 @@ interface SessionResponse {
   };
 }
 
+interface PinStatusResponse {
+  hasPin: boolean;
+}
+
 interface BusinessResponse {
   business: {
     id: string;
@@ -119,6 +123,7 @@ interface SetupDraft {
 interface OwnerAuthRecord {
   contact: string;
   countryCode: CountryDialCode;
+  pinSet?: boolean;
 }
 
 interface ProductSummary {
@@ -954,6 +959,7 @@ function App() {
   const [signupPinConfirm, setSignupPinConfirm] = useState("");
   const [loginPin, setLoginPin] = useState("");
   const [isRecoveringPin, setIsRecoveringPin] = useState(false);
+  const [hasLoginPin, setHasLoginPin] = useState(initialOwnerAuth?.pinSet ?? true);
   const [recoveryPin, setRecoveryPin] = useState("");
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
@@ -1268,6 +1274,22 @@ function App() {
     );
   }
 
+  function updateOwnerPinSet(pinSet: boolean) {
+    setHasLoginPin(pinSet);
+    setOwnerAuth((current) => {
+      if (current === null) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        pinSet
+      };
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(next));
+      return next;
+    });
+  }
+
   async function requestLoginOtp() {
     const contactValue = composeSignupContact("phone", countryCode, destination);
 
@@ -1310,9 +1332,18 @@ function App() {
         otp
       });
       setSession(response);
+      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
+      updateOwnerPinSet(pinStatus.hasPin);
+      if (!pinStatus.hasPin) {
+        setIsRecoveringPin(false);
+      }
       setIsOtpVerified(true);
       setStatusMessage(
-        isRecoveringPin ? "OTP verified. Set a new login PIN." : "OTP verified. Enter your login PIN."
+        pinStatus.hasPin
+          ? isRecoveringPin
+            ? "OTP verified. Reset your login PIN."
+            : "OTP verified. Enter your login PIN."
+          : "OTP verified. Set your login PIN once."
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -1409,6 +1440,34 @@ function App() {
     }
   }
 
+  async function setMissingLoginPin() {
+    if (!isOtpVerified) {
+      setStatusMessage("Verify OTP before setting your PIN");
+      return;
+    }
+
+    if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
+      setStatusMessage("Enter and confirm a 4-digit PIN");
+      return;
+    }
+
+    try {
+      await postJson<SessionResponse>("/auth/pin/setup", {
+        pin: recoveryPin
+      });
+      updateOwnerPinSet(true);
+      setIsWorkspaceUnlocked(true);
+      setIsRecoveringPin(false);
+      setLoginPin("");
+      setRecoveryPin("");
+      setRecoveryPinConfirm("");
+      setView("chat");
+      setStatusMessage("PIN set. Login complete");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function createBusiness() {
     if (businessName.trim().length === 0) {
       setStatusMessage("Business name is required");
@@ -1441,7 +1500,8 @@ function App() {
       const contactValue = composeSignupContact(channel, countryCode, destination);
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: contactValue,
-        countryCode
+        countryCode,
+        pinSet: true
       };
       setBusiness(nextBusiness);
       setOwnerAuth(nextOwnerAuth);
@@ -2834,6 +2894,7 @@ function App() {
             isOtpVerified={isOtpVerified}
             loginPin={loginPin}
             isRecoveringPin={isRecoveringPin}
+            hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
             statusMessage={statusMessage}
@@ -2848,6 +2909,7 @@ function App() {
             onStartPinRecovery={startPinRecovery}
             onCancelPinRecovery={cancelPinRecovery}
             onRecoverPin={() => void recoverLoginPin()}
+            onSetMissingPin={() => void setMissingLoginPin()}
             onLogin={() => void loginWithPin()}
           />
         ) : view === "agent" ? (
@@ -3108,6 +3170,7 @@ interface LoginPanelProps {
   isOtpVerified: boolean;
   loginPin: string;
   isRecoveringPin: boolean;
+  hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
   statusMessage: string;
@@ -3122,6 +3185,7 @@ interface LoginPanelProps {
   onStartPinRecovery: () => void;
   onCancelPinRecovery: () => void;
   onRecoverPin: () => void;
+  onSetMissingPin: () => void;
   onLogin: () => void;
 }
 
@@ -3129,6 +3193,7 @@ function LoginPanel(props: LoginPanelProps) {
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
+  const isSettingPin = !props.hasLoginPin;
 
   return (
     <main className="setup-grid login-grid">
@@ -3187,13 +3252,17 @@ function LoginPanel(props: LoginPanelProps) {
 
       <section className="panel">
         <div className="section-heading">
-          <p className="eyebrow">{props.isRecoveringPin ? "PIN recovery" : "Login PIN"}</p>
-          <h2>{props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
+          <p className="eyebrow">
+            {isSettingPin ? "PIN setup" : props.isRecoveringPin ? "PIN recovery" : "Login PIN"}
+          </p>
+          <h2>
+            {isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}
+          </h2>
         </div>
-        {props.isRecoveringPin ? (
+        {props.isRecoveringPin || isSettingPin ? (
           <>
             <label>
-              New PIN
+              {isSettingPin ? "PIN" : "New PIN"}
               <input
                 value={props.recoveryPin}
                 onChange={(event) => props.onRecoveryPinChange(sanitizePin(event.target.value))}
@@ -3205,7 +3274,7 @@ function LoginPanel(props: LoginPanelProps) {
               />
             </label>
             <label>
-              Confirm new PIN
+              {isSettingPin ? "Confirm PIN" : "Confirm new PIN"}
               <input
                 value={props.recoveryPinConfirm}
                 onChange={(event) =>
@@ -3220,18 +3289,20 @@ function LoginPanel(props: LoginPanelProps) {
             </label>
             <button
               type="button"
-              onClick={props.onRecoverPin}
+              onClick={isSettingPin ? props.onSetMissingPin : props.onRecoverPin}
               disabled={
                 !props.isOtpVerified ||
                 !isValidPin(props.recoveryPin) ||
                 props.recoveryPin !== props.recoveryPinConfirm
               }
             >
-              Reset PIN
+              {isSettingPin ? "Set PIN" : "Reset PIN"}
             </button>
-            <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
-              Back to PIN login
-            </button>
+            {!isSettingPin ? (
+              <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
+                Back to PIN login
+              </button>
+            ) : null}
           </>
         ) : (
           <>
@@ -3254,9 +3325,11 @@ function LoginPanel(props: LoginPanelProps) {
             >
               Login
             </button>
-            <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
-              Forgot PIN?
-            </button>
+            {props.hasLoginPin ? (
+              <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
+                Forgot PIN?
+              </button>
+            ) : null}
           </>
         )}
         <p className="setup-status">{props.statusMessage}</p>
@@ -6005,7 +6078,8 @@ function readStoredOwnerAuth(): OwnerAuthRecord | null {
     if (typeof parsed.contact === "string" && isCountryDialCode(parsed.countryCode)) {
       return {
         contact: parsed.contact,
-        countryCode: parsed.countryCode
+        countryCode: parsed.countryCode,
+        pinSet: typeof parsed.pinSet === "boolean" ? parsed.pinSet : true
       };
     }
   } catch {
