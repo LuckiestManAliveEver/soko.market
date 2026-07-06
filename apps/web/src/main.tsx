@@ -949,6 +949,9 @@ function App() {
   const [signupPin, setSignupPin] = useState("");
   const [signupPinConfirm, setSignupPinConfirm] = useState("");
   const [loginPin, setLoginPin] = useState("");
+  const [isRecoveringPin, setIsRecoveringPin] = useState(false);
+  const [recoveryPin, setRecoveryPin] = useState("");
+  const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
@@ -1304,10 +1307,27 @@ function App() {
       });
       setSession(response);
       setIsOtpVerified(true);
-      setStatusMessage("OTP verified. Enter your login PIN.");
+      setStatusMessage(
+        isRecoveringPin ? "OTP verified. Set a new login PIN." : "OTP verified. Enter your login PIN."
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
+  }
+
+  function startPinRecovery() {
+    setIsRecoveringPin(true);
+    setLoginPin("");
+    setRecoveryPin("");
+    setRecoveryPinConfirm("");
+    setStatusMessage("Verify your phone with OTP, then set a new PIN.");
+  }
+
+  function cancelPinRecovery() {
+    setIsRecoveringPin(false);
+    setRecoveryPin("");
+    setRecoveryPinConfirm("");
+    setStatusMessage("Enter your phone OTP and login PIN.");
   }
 
   async function loginWithPin() {
@@ -1341,6 +1361,45 @@ function App() {
       setLoginPin("");
       setView("chat");
       setStatusMessage("Login complete");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function recoverLoginPin() {
+    if (ownerAuth === null) {
+      setStatusMessage("No saved owner account found");
+      return;
+    }
+
+    const contactValue = composeSignupContact("phone", countryCode, destination);
+
+    if (contactValue !== ownerAuth.contact) {
+      setStatusMessage("Phone number does not match this owner account");
+      return;
+    }
+
+    if (!isOtpVerified) {
+      setStatusMessage("Verify OTP before resetting your PIN");
+      return;
+    }
+
+    if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
+      setStatusMessage("Enter and confirm a new 4-digit PIN");
+      return;
+    }
+
+    try {
+      await postJson<SessionResponse>("/auth/pin/recover", {
+        pin: recoveryPin
+      });
+      setIsWorkspaceUnlocked(true);
+      setIsRecoveringPin(false);
+      setLoginPin("");
+      setRecoveryPin("");
+      setRecoveryPinConfirm("");
+      setView("chat");
+      setStatusMessage("PIN reset. Login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2291,6 +2350,9 @@ function App() {
     setOtp("");
     setIsOtpVerified(false);
     setLoginPin("");
+    setIsRecoveringPin(false);
+    setRecoveryPin("");
+    setRecoveryPinConfirm("");
     setView("chat");
     setStatusMessage("Signed out");
     setIsWorkspaceUnlocked(ownerAuth === null);
@@ -2767,6 +2829,9 @@ function App() {
             otp={otp}
             isOtpVerified={isOtpVerified}
             loginPin={loginPin}
+            isRecoveringPin={isRecoveringPin}
+            recoveryPin={recoveryPin}
+            recoveryPinConfirm={recoveryPinConfirm}
             statusMessage={statusMessage}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -2774,6 +2839,11 @@ function App() {
             onRequestOtp={() => void requestLoginOtp()}
             onVerifyOtp={() => void verifyLoginOtp()}
             onLoginPinChange={setLoginPin}
+            onRecoveryPinChange={setRecoveryPin}
+            onRecoveryPinConfirmChange={setRecoveryPinConfirm}
+            onStartPinRecovery={startPinRecovery}
+            onCancelPinRecovery={cancelPinRecovery}
+            onRecoverPin={() => void recoverLoginPin()}
             onLogin={() => void loginWithPin()}
           />
         ) : view === "agent" ? (
@@ -3033,6 +3103,9 @@ interface LoginPanelProps {
   otp: string;
   isOtpVerified: boolean;
   loginPin: string;
+  isRecoveringPin: boolean;
+  recoveryPin: string;
+  recoveryPinConfirm: string;
   statusMessage: string;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -3040,6 +3113,11 @@ interface LoginPanelProps {
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onLoginPinChange: (pin: string) => void;
+  onRecoveryPinChange: (pin: string) => void;
+  onRecoveryPinConfirmChange: (pin: string) => void;
+  onStartPinRecovery: () => void;
+  onCancelPinRecovery: () => void;
+  onRecoverPin: () => void;
   onLogin: () => void;
 }
 
@@ -3105,28 +3183,78 @@ function LoginPanel(props: LoginPanelProps) {
 
       <section className="panel">
         <div className="section-heading">
-          <p className="eyebrow">Login PIN</p>
-          <h2>Enter PIN</h2>
+          <p className="eyebrow">{props.isRecoveringPin ? "PIN recovery" : "Login PIN"}</p>
+          <h2>{props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
         </div>
-        <label>
-          PIN
-          <input
-            value={props.loginPin}
-            onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
-            inputMode="numeric"
-            maxLength={4}
-            pattern="[0-9]*"
-            type="password"
-            placeholder="4-digit PIN"
-          />
-        </label>
-        <button
-          type="button"
-          onClick={props.onLogin}
-          disabled={!props.isOtpVerified || !isValidPin(props.loginPin)}
-        >
-          Login
-        </button>
+        {props.isRecoveringPin ? (
+          <>
+            <label>
+              New PIN
+              <input
+                value={props.recoveryPin}
+                onChange={(event) => props.onRecoveryPinChange(sanitizePin(event.target.value))}
+                inputMode="numeric"
+                maxLength={4}
+                pattern="[0-9]*"
+                type="password"
+                placeholder="4-digit PIN"
+              />
+            </label>
+            <label>
+              Confirm new PIN
+              <input
+                value={props.recoveryPinConfirm}
+                onChange={(event) =>
+                  props.onRecoveryPinConfirmChange(sanitizePin(event.target.value))
+                }
+                inputMode="numeric"
+                maxLength={4}
+                pattern="[0-9]*"
+                type="password"
+                placeholder="Confirm PIN"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={props.onRecoverPin}
+              disabled={
+                !props.isOtpVerified ||
+                !isValidPin(props.recoveryPin) ||
+                props.recoveryPin !== props.recoveryPinConfirm
+              }
+            >
+              Reset PIN
+            </button>
+            <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
+              Back to PIN login
+            </button>
+          </>
+        ) : (
+          <>
+            <label>
+              PIN
+              <input
+                value={props.loginPin}
+                onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
+                inputMode="numeric"
+                maxLength={4}
+                pattern="[0-9]*"
+                type="password"
+                placeholder="4-digit PIN"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={props.onLogin}
+              disabled={!props.isOtpVerified || !isValidPin(props.loginPin)}
+            >
+              Login
+            </button>
+            <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
+              Forgot PIN?
+            </button>
+          </>
+        )}
         <p className="setup-status">{props.statusMessage}</p>
       </section>
     </main>

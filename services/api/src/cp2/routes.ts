@@ -392,6 +392,18 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.post("/auth/pin/recover", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
+    try {
+      const pin = parseString(request.body.pin, "pin");
+      return store.recoverAccountPin({
+        sessionId: readSessionCookie(request.headers.cookie),
+        pin
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
   app.get("/session", async (request, reply) => {
     const session = store.getSession(readSessionCookie(request.headers.cookie));
 

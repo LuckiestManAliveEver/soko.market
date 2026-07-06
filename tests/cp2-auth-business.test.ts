@@ -376,6 +376,96 @@ describe("CP2 auth and business creation", () => {
 
     expect(allowedRole.allowed).toBe(true);
 
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        cookie: loginCookie
+      }
+    });
+
+    const recoveryOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      method: "phone",
+      contact: "+254700000003"
+    });
+    const recoveryVerify = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000003",
+        otp: recoveryOtp.devOtp
+      })
+    });
+    const recoveryCookie = extractSessionCookie(recoveryVerify.headers["set-cookie"]);
+
+    await postJson<VerifyOtpResponse>(
+      app,
+      "/auth/pin/recover",
+      {
+        pin: "7777"
+      },
+      recoveryCookie
+    );
+
+    const recoveredRole = await postJson<RoleCheckResponse>(
+      app,
+      "/roles/check",
+      {
+        businessId: business.business.id,
+        role: "owner"
+      },
+      recoveryCookie
+    );
+
+    expect(recoveredRole.allowed).toBe(true);
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        cookie: recoveryCookie
+      }
+    });
+
+    const resetLoginOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      method: "phone",
+      contact: "+254700000003"
+    });
+    const resetLoginVerify = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000003",
+        otp: resetLoginOtp.devOtp
+      })
+    });
+    const resetLoginCookie = extractSessionCookie(resetLoginVerify.headers["set-cookie"]);
+    const oldPin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/verify",
+      headers: {
+        ...jsonHeaders(),
+        cookie: resetLoginCookie
+      },
+      payload: JSON.stringify({
+        pin: "1234"
+      })
+    });
+
+    expect(oldPin.statusCode).toBe(401);
+    await postJson<VerifyOtpResponse>(
+      app,
+      "/auth/pin/verify",
+      {
+        pin: "7777"
+      },
+      resetLoginCookie
+    );
+
     await app.close();
   });
 

@@ -566,6 +566,25 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
+  recoverAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const pin = normalizePin(input.pin);
+    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
+    this.markSessionPinVerified(session.session.id, now);
+
+    this.recordAuditEvent({
+      type: "auth.pin_recovered",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+
+    return this.requireAnySession(input.sessionId, now);
+  }
+
   verifyAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
