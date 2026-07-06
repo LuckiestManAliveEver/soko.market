@@ -834,13 +834,14 @@ button:disabled {
 }
 
 .generated-card-message {
+  background: #edf4ee;
+  border: 1px solid #cfdfd2;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
   justify-self: start;
   max-width: min(92%, 700px);
   padding: 10px;
-}
-
-.generated-card-message > span {
-  color: #2e3a33;
 }
 
 .generated-card-grid {

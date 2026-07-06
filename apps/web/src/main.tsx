@@ -5636,6 +5636,16 @@ function ChatSurface({
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite">
+        <ContextualBusinessCards
+          business={business}
+          productCount={productCount}
+          customerCount={customerCount}
+          invoiceCount={invoiceCount}
+          notificationCount={notificationCount}
+          report={report}
+          syncSummary={syncSummary}
+          onNavigate={onNavigate}
+        />
         {messages.map((message) => (
           <article className={`message ${message.author}`} key={message.id}>
             <span>{message.author === "merchant" ? "You" : agent.name}</span>
@@ -5660,16 +5670,6 @@ function ChatSurface({
             ) : null}
           </article>
         ))}
-        <ContextualBusinessCards
-          business={business}
-          productCount={productCount}
-          customerCount={customerCount}
-          invoiceCount={invoiceCount}
-          notificationCount={notificationCount}
-          report={report}
-          syncSummary={syncSummary}
-          onNavigate={onNavigate}
-        />
         {activeView !== "chat" && activeView !== "home" ? (
           <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
             <div className="generated-card-header">
@@ -5835,8 +5835,7 @@ function ContextualBusinessCards({
   ];
 
   return (
-    <section className="message sokoclaw generated-card-message" aria-label="Generated business cards">
-      <span>Business cards</span>
+    <section className="generated-card-message" aria-label="Conversation starter cards">
       <div className="generated-card-grid">
         {cards.map((card) => (
           <button key={card.view} type="button" onClick={() => onNavigate(card.view)}>
