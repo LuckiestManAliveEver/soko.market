@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState, type ReactNode } from "react";
+import { StrictMode, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {
   parseMerchantCommand,
@@ -9,6 +9,7 @@ import { Surface } from "@soko/ui";
 import {
   createInitialChatMessages,
   quickActions,
+  type ChatAttachment,
   type ChatMessage,
   type ShellView
 } from "./cp3-shell";
@@ -18,6 +19,28 @@ type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
 type SocialSignupProvider = "google" | "meta" | "x" | "linkedin" | "other";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
+
+const chatAttachmentAccept = [
+  "image/*",
+  "video/*",
+  "application/*",
+  "text/*",
+  ".csv",
+  ".doc",
+  ".docx",
+  ".json",
+  ".odp",
+  ".ods",
+  ".odt",
+  ".pdf",
+  ".ppt",
+  ".pptx",
+  ".rtf",
+  ".txt",
+  ".xls",
+  ".xlsx",
+  ".xml"
+].join(",");
 
 interface OtpRequestResponse {
   challengeId: string;
@@ -939,6 +962,7 @@ function App() {
   const [view, setView] = useState<ShellView>("chat");
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [chatDraft, setChatDraft] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
   const [clarificationCount, setClarificationCount] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
@@ -2273,30 +2297,35 @@ function App() {
   }
 
   async function sendChatDraft() {
-    const message = chatDraft.trim();
+    const attachments = pendingAttachments;
+    const message =
+      chatDraft.trim().length > 0 ? chatDraft.trim() : createAttachmentOnlyMessage(attachments);
+    const runtimeMessage = appendAttachmentSummary(message, attachments);
 
-    if (message.length === 0) {
+    if (message.length === 0 && attachments.length === 0) {
       return;
     }
 
     if (business === null) {
-      sendLocalParserChat(message);
+      sendLocalParserChat(message, attachments);
       return;
     }
 
     const merchantMessage: ChatMessage = {
       id: `merchant-${Date.now()}`,
       author: "merchant",
-      body: message
+      body: message,
+      ...(attachments.length > 0 ? { attachments } : {})
     };
 
     setChatMessages((messages) => [...messages, merchantMessage]);
     setChatDraft("");
+    setPendingAttachments([]);
 
     try {
       const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
         runtimeSessionId,
-        message
+        message: runtimeMessage
       });
       setRuntimeSessionId(result.session.id);
       setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
@@ -2329,7 +2358,8 @@ function App() {
 
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
-      sendLocalParserChat(message);
+      const parserReply = createLocalParserReply(message);
+      setChatMessages((messages) => [...messages, parserReply]);
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -2379,14 +2409,29 @@ function App() {
     }
   }
 
-  function sendLocalParserChat(message: string) {
+  function handleChatAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+
+    if (files.length === 0) {
+      return;
+    }
+
+    setPendingAttachments((attachments) => [
+      ...attachments,
+      ...files.map((file) => createChatAttachment(file))
+    ]);
+    event.target.value = "";
+  }
+
+  function removePendingAttachment(attachmentId: string) {
+    setPendingAttachments((attachments) =>
+      attachments.filter((attachment) => attachment.id !== attachmentId)
+    );
+  }
+
+  function createLocalParserReply(message: string): ChatMessage {
     const parserResult = parseMerchantCommand(message);
     const useFallback = shouldUseStructuredFallback(parserResult, clarificationCount);
-    const merchantMessage: ChatMessage = {
-      id: `merchant-${Date.now()}`,
-      author: "merchant",
-      body: message
-    };
     const reply: ChatMessage = {
       id: `sokoclaw-${Date.now()}`,
       author: "sokoclaw",
@@ -2413,8 +2458,21 @@ function App() {
     }
 
     setClarificationCount(parserResult.nextAction.type === "clarify" ? clarificationCount + 1 : 0);
+    return reply;
+  }
+
+  function sendLocalParserChat(message: string, attachments: ChatAttachment[] = []) {
+    const merchantMessage: ChatMessage = {
+      id: `merchant-${Date.now()}`,
+      author: "merchant",
+      body: message,
+      ...(attachments.length > 0 ? { attachments } : {})
+    };
+    const reply = createLocalParserReply(message);
+
     setChatMessages((messages) => [...messages, merchantMessage, reply]);
     setChatDraft("");
+    setPendingAttachments([]);
   }
 
   function renderActiveWorkspace() {
@@ -2737,13 +2795,16 @@ function App() {
               invoiceCount={invoices.length}
               messages={chatMessages}
               notificationCount={notificationInbox.summary.unread}
+              pendingAttachments={pendingAttachments}
               productCount={products.length}
               report={reportSummary}
               syncSummary={syncSummary}
+              onAttachmentChange={handleChatAttachmentChange}
               onBackToChat={() => setView("chat")}
               onConfirm={(token) => void confirmRuntimeAction(token)}
               onDraftChange={setChatDraft}
               onNavigate={setView}
+              onRemoveAttachment={removePendingAttachment}
               onSend={() => void sendChatDraft()}
             >
               {renderActiveWorkspace()}
@@ -5407,12 +5468,15 @@ interface ChatSurfaceProps {
   invoiceCount: number;
   messages: ChatMessage[];
   notificationCount: number;
+  pendingAttachments: ChatAttachment[];
   productCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
+  onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onBackToChat: () => void;
   onDraftChange: (draft: string) => void;
   onNavigate: (view: ShellView) => void;
+  onRemoveAttachment: (attachmentId: string) => void;
   onConfirm: (confirmationToken: string) => void;
   onSend: () => void;
 }
@@ -5427,15 +5491,20 @@ function ChatSurface({
   invoiceCount,
   messages,
   notificationCount,
+  pendingAttachments,
   productCount,
   report,
   syncSummary,
+  onAttachmentChange,
   onBackToChat,
   onDraftChange,
   onNavigate,
+  onRemoveAttachment,
   onConfirm,
   onSend
 }: ChatSurfaceProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite">
@@ -5443,6 +5512,19 @@ function ChatSurface({
           <article className={`message ${message.author}`} key={message.id}>
             <span>{message.author === "merchant" ? "You" : agent.name}</span>
             <p>{message.body}</p>
+            {message.attachments !== undefined && message.attachments.length > 0 ? (
+              <div className="message-attachments" aria-label="Message attachments">
+                {message.attachments.map((attachment) => (
+                  <span className="message-attachment" key={attachment.id}>
+                    {attachment.name}
+                    <small>
+                      {formatAttachmentCategory(attachment.category)} ·{" "}
+                      {formatFileSize(attachment.size)}
+                    </small>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {message.confirmationToken !== undefined ? (
               <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
                 Confirm
@@ -5479,9 +5561,44 @@ function ChatSurface({
         <button className="icon-button" type="button" aria-label="Voice input">
           Mic
         </button>
-        <button className="icon-button" type="button" aria-label="Attach file">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Attach file"
+          onClick={() => fileInputRef.current?.click()}
+        >
           +
         </button>
+        <input
+          ref={fileInputRef}
+          className="chat-file-input"
+          type="file"
+          multiple
+          accept={chatAttachmentAccept}
+          onChange={onAttachmentChange}
+        />
+        {pendingAttachments.length > 0 ? (
+          <div className="attachment-tray" aria-label="Selected attachments">
+            {pendingAttachments.map((attachment) => (
+              <span className="attachment-chip" key={attachment.id}>
+                <span>
+                  <strong>{attachment.name}</strong>
+                  <small>
+                    {formatAttachmentCategory(attachment.category)} ·{" "}
+                    {formatFileSize(attachment.size)}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${attachment.name}`}
+                  onClick={() => onRemoveAttachment(attachment.id)}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <label className="composer-input">
           <span>Message</span>
           <input
@@ -5928,6 +6045,86 @@ function isValidContact(channel: AuthChannel, contact: string): boolean {
   }
 
   return /^\+?[0-9\s-]{7,18}$/.test(value);
+}
+
+function createChatAttachment(file: File): ChatAttachment {
+  return {
+    id: `${file.name}-${file.size}-${file.lastModified}-${Date.now()}`,
+    name: file.name,
+    type: file.type || "application/octet-stream",
+    size: file.size,
+    category: getAttachmentCategory(file)
+  };
+}
+
+function getAttachmentCategory(file: File): ChatAttachment["category"] {
+  if (file.type.startsWith("image/")) {
+    return "image";
+  }
+
+  if (file.type.startsWith("video/")) {
+    return "video";
+  }
+
+  if (
+    file.type.startsWith("text/") ||
+    file.type.startsWith("application/") ||
+    /\.(csv|doc|docx|json|odp|ods|odt|pdf|ppt|pptx|rtf|txt|xls|xlsx|xml)$/i.test(file.name)
+  ) {
+    return "document";
+  }
+
+  return "other";
+}
+
+function createAttachmentOnlyMessage(attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) {
+    return "";
+  }
+
+  return `Uploaded ${attachments.length} ${attachments.length === 1 ? "file" : "files"}.`;
+}
+
+function appendAttachmentSummary(message: string, attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) {
+    return message;
+  }
+
+  return `${message}\n\nAttachments:\n${attachments.map(formatAttachmentForRuntime).join("\n")}`;
+}
+
+function formatAttachmentForRuntime(attachment: ChatAttachment): string {
+  return `- ${attachment.name} (${formatAttachmentCategory(attachment.category)}, ${attachment.type}, ${formatFileSize(
+    attachment.size
+  )})`;
+}
+
+function formatAttachmentCategory(category: ChatAttachment["category"]): string {
+  if (category === "image") {
+    return "Image";
+  }
+
+  if (category === "video") {
+    return "Video";
+  }
+
+  if (category === "document") {
+    return "Document";
+  }
+
+  return "File";
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${Math.round(size / 102.4) / 10} KB`;
+  }
+
+  return `${Math.round(size / 104857.6) / 10} MB`;
 }
 
 function getErrorMessage(error: unknown): string {

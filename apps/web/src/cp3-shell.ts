@@ -31,7 +31,16 @@ export interface ChatMessage {
   id: string;
   author: "merchant" | "sokoclaw";
   body: string;
+  attachments?: ChatAttachment[];
   confirmationToken?: string;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  category: "document" | "image" | "video" | "other";
 }
 
 export const quickActions: QuickAction[] = [
