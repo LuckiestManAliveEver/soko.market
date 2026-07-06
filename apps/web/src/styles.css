@@ -38,14 +38,11 @@ button:disabled {
 
 .soko-surface {
   min-height: 100vh;
-  padding: 16px;
+  padding: 0;
 }
 
 .soko-surface > h1 {
-  font-size: 24px;
-  letter-spacing: 0;
-  margin: 0 auto 12px;
-  max-width: 1120px;
+  display: none;
 }
 
 .soko-surface p {
@@ -56,20 +53,103 @@ button:disabled {
 
 .app-frame {
   display: grid;
-  gap: 12px;
+  gap: 0;
   margin: 0 auto;
-  max-width: 1120px;
+  max-width: 100%;
+  min-height: 100vh;
+  padding-top: 76px;
 }
 
 .top-bar {
-  align-items: start;
+  align-items: center;
   background: #ffffff;
-  border: 1px solid #dde4dc;
-  border-radius: 8px;
+  border: 0;
+  border-bottom: 1px solid #dde4dc;
+  border-radius: 0;
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  padding: 14px;
+  left: 0;
+  min-height: 76px;
+  padding: 10px 14px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 10;
+}
+
+.brand-lockup {
+  align-items: center;
+  background: transparent;
+  color: #17211b;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.brand-lockup > span:last-child {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.brand-lockup strong,
+.brand-lockup span,
+.brand-lockup small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-lockup strong {
+  font-size: 13px;
+}
+
+.brand-lockup span span {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.brand-lockup small {
+  color: #5a665e;
+  font-size: 12px;
+}
+
+.logo-mark,
+.agent-avatar {
+  align-items: center;
+  background: #113f67;
+  border-radius: 8px;
+  color: #ffffff;
+  display: inline-flex;
+  font-weight: 900;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.header-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.icon-button {
+  align-items: center;
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  color: #17211b;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 42px;
+  min-width: 42px;
+  padding: 8px;
 }
 
 .top-bar h2,
@@ -133,6 +213,13 @@ button:disabled {
   gap: 12px;
 }
 
+.setup-grid {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 16px;
+  width: 100%;
+}
+
 .panel,
 .home-panel,
 .side-panel {
@@ -147,6 +234,15 @@ button:disabled {
 .section-heading {
   display: grid;
   gap: 2px;
+}
+
+.section-heading.with-action {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.section-heading.with-action button {
+  min-height: 40px;
 }
 
 .section-heading h2 {
@@ -204,6 +300,16 @@ button:disabled {
 .panel button.secondary,
 .side-actions button.secondary,
 .record-form button.secondary {
+  background: #e7ede8;
+  color: #23342a;
+}
+
+.setup-status {
+  color: #516258;
+  font-size: 13px;
+}
+
+.secondary {
   background: #e7ede8;
   color: #23342a;
 }
@@ -591,6 +697,176 @@ button:disabled {
   width: 12px;
 }
 
+.chat-workspace-shell {
+  min-height: calc(100vh - 76px);
+}
+
+.chat-surface {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: calc(100vh - 76px);
+}
+
+.message-list {
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.message {
+  gap: 6px;
+  max-width: min(84%, 720px);
+}
+
+.message.sokoclaw {
+  background: #edf4ee;
+  border: 1px solid #cfdfd2;
+}
+
+.message.merchant {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  justify-self: end;
+}
+
+.generated-card-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 860px;
+  width: 100%;
+}
+
+.generated-card-grid button {
+  align-content: start;
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  color: #17211b;
+  display: grid;
+  gap: 8px;
+  min-height: 116px;
+  padding: 12px;
+  text-align: left;
+}
+
+.generated-card-grid span {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.generated-card-grid strong {
+  color: #113f67;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}
+
+.generated-card-grid small {
+  color: #516258;
+  line-height: 1.35;
+}
+
+.generated-card-detail {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  max-width: 980px;
+  padding: 14px;
+  width: 100%;
+}
+
+.generated-card-header {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.generated-card-header h2 {
+  font-size: 18px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.composer {
+  align-items: end;
+  background: #ffffff;
+  border-top: 1px solid #dde4dc;
+  gap: 8px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  padding: 10px;
+  position: sticky;
+  bottom: 0;
+}
+
+.composer .icon-button {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  color: #17211b;
+  min-height: 42px;
+  padding: 8px;
+}
+
+.composer-input {
+  display: grid;
+  gap: 4px;
+}
+
+.composer-input span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.composer-input input {
+  background: #ffffff;
+  border: 1px solid #b8c5bc;
+  border-radius: 8px;
+  color: #17211b;
+  min-height: 42px;
+  padding: 9px 12px;
+  width: 100%;
+}
+
+.send-button {
+  background: #117a4f;
+  border-radius: 8px;
+  color: #ffffff;
+  font-weight: 900;
+  min-height: 42px;
+  padding: 8px 12px;
+}
+
+.agent-profile-surface {
+  display: grid;
+  gap: 14px;
+  margin: 0 auto;
+  max-width: 980px;
+  padding: 16px;
+  width: 100%;
+}
+
+.agent-profile-header {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto auto minmax(0, 1fr);
+}
+
+.agent-profile-header h2 {
+  font-size: 22px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.agent-settings-grid {
+  display: grid;
+  gap: 12px;
+}
+
 @media (min-width: 760px) {
   .setup-grid {
     grid-template-columns: 1fr 1fr;
@@ -613,20 +889,33 @@ button:disabled {
   .prompt-band {
     grid-template-columns: 1fr auto;
   }
+
+  .generated-card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .agent-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 430px) {
   .soko-surface {
-    padding: 10px;
+    padding: 0;
   }
 
   .top-bar {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .status-stack {
     align-items: start;
     grid-template-columns: repeat(2, max-content);
+  }
+
+  .header-actions {
+    justify-content: space-between;
   }
 
   .bottom-nav {
@@ -644,11 +933,28 @@ button:disabled {
 
   .metric-grid,
   .quick-grid,
+  .generated-card-grid,
   .form-row,
   .record-row,
   .row-actions,
   .invoice-line {
     grid-template-columns: 1fr;
+  }
+
+  .agent-profile-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .agent-profile-header > button {
+    grid-column: 1 / -1;
+  }
+
+  .composer {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .send-button {
+    grid-column: 1 / -1;
   }
 }
 

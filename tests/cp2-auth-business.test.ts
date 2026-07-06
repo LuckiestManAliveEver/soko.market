@@ -228,6 +228,35 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("accepts email OTP setup payloads with method, contact, and otp", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      method: "email",
+      contact: "Owner@Example.com"
+    });
+
+    expect(otpResponse.destination).toBe("owner@example.com");
+
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "email",
+        contact: "owner@example.com",
+        otp: otpResponse.devOtp
+      })
+    });
+    const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+
+    expect(verifyResponse.statusCode).toBe(200);
+    expect(sessionCookie).toContain("soko_session=");
+
+    await app.close();
+  });
+
   it("uses an external OTP provider without exposing a development code", async () => {
     const store = createCp2Store();
     const provider = new FakeOtpProvider("123456");

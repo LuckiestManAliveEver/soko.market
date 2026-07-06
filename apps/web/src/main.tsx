@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {
   parseMerchantCommand,
@@ -8,7 +8,6 @@ import {
 import { Surface } from "@soko/ui";
 import {
   createInitialChatMessages,
-  getEmptyState,
   quickActions,
   type ChatMessage,
   type ShellView
@@ -59,6 +58,33 @@ interface RoleCheckResponse {
 type ActiveBusiness = BusinessResponse["business"] & {
   role: string;
 };
+
+type AgentModel = "sokoclaw-local" | "openai-fast" | "openai-reasoning";
+
+interface AgentSettings {
+  id: string;
+  name: string;
+  description: string;
+  model: AgentModel;
+  role: string;
+  globalAgentId: string;
+  storefrontUrl: string;
+  language: SupportedLanguage;
+  personality: string;
+  instructions: string;
+  knowledge: string;
+  tools: string[];
+  integrations: string[];
+  status: "active" | "draft";
+}
+
+interface SetupDraft {
+  channel: AuthChannel;
+  destination: string;
+  businessName: string;
+  language: SupportedLanguage;
+  completedStep: 0 | 1 | 2;
+}
 
 interface ProductSummary {
   id: string;
@@ -726,6 +752,8 @@ interface LaunchFormState {
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
 const activeBusinessStorageKey = "soko.cp3.activeBusiness";
+const activeAgentStorageKey = "soko.chatFirst.agentSettings";
+const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 
 const emptyProductForm: ProductFormState = {
   id: null,
@@ -836,22 +864,27 @@ const emptyNotificationSummary: NotificationInboxSummary = {
 };
 
 function App() {
-  const [channel, setChannel] = useState<AuthChannel>("phone");
-  const [destination, setDestination] = useState("+254700000000");
+  const initialSetupDraft = readSetupDraft();
+  const initialBusiness = readStoredBusiness();
+  const [channel, setChannel] = useState<AuthChannel>(initialSetupDraft?.channel ?? "phone");
+  const [destination, setDestination] = useState(initialSetupDraft?.destination ?? "");
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
-  const [businessName, setBusinessName] = useState("Jane's Shop");
-  const [language, setLanguage] = useState<SupportedLanguage>("en");
-  const [business, setBusiness] = useState<ActiveBusiness | null>(readStoredBusiness);
+  const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
+  const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
+  const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>(
+    () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
+  );
   const [statusMessage, setStatusMessage] = useState("Checking session");
-  const [view, setView] = useState<ShellView>("home");
+  const [view, setView] = useState<ShellView>("chat");
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [chatDraft, setChatDraft] = useState("");
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
   const [clarificationCount, setClarificationCount] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
-    createInitialChatMessages(readStoredBusiness()?.name ?? "Soko.market")
+    createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
   );
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
@@ -897,7 +930,6 @@ function App() {
   const [stockReason, setStockReason] = useState("Manual stock count");
 
   const setupComplete = session !== null && business !== null;
-  const currentEmptyState = getEmptyState(view);
   const activeQueueCount =
     syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
   const syncLabel = setupComplete
@@ -928,7 +960,30 @@ function App() {
   }, []);
 
   useEffect(() => {
+    localStorage.setItem(activeAgentStorageKey, JSON.stringify(agentSettings));
+  }, [agentSettings]);
+
+  useEffect(() => {
+    if (setupComplete) {
+      localStorage.removeItem(setupDraftStorageKey);
+      return;
+    }
+
+    const draft: SetupDraft = {
+      channel,
+      destination,
+      businessName,
+      language,
+      completedStep: session === null ? 0 : 1
+    };
+    localStorage.setItem(setupDraftStorageKey, JSON.stringify(draft));
+  }, [businessName, channel, destination, language, session, setupComplete]);
+
+  useEffect(() => {
     if (business !== null) {
+      setAgentSettings((agent) =>
+        agent.globalAgentId.length === 0 ? createDefaultAgent(business) : agent
+      );
       setChatMessages((messages) =>
         messages[0]?.id === "welcome"
           ? createInitialChatMessages(business.name)
@@ -943,6 +998,15 @@ function App() {
   useEffect(() => {
     if (!setupComplete || business === null) {
       return;
+    }
+
+    if (view === "chat") {
+      void loadProducts(business.id);
+      void loadCustomers(business.id);
+      void loadInvoices(business.id);
+      void loadSyncQueue(business.id);
+      void loadReports(business.id);
+      void loadNotifications(business.id);
     }
 
     if (view === "products") {
@@ -1048,10 +1112,17 @@ function App() {
   }
 
   async function requestOtp() {
+    if (!isValidContact(channel, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
+      return;
+    }
+
     try {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        channel,
-        destination
+        method: channel,
+        contact: destination
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -1069,8 +1140,9 @@ function App() {
 
     try {
       const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        challengeId: challenge.challengeId,
-        code: otp
+        method: channel,
+        contact: destination,
+        otp
       });
       setSession(response);
       setStatusMessage("Account verified");
@@ -1080,20 +1152,29 @@ function App() {
   }
 
   async function createBusiness() {
+    if (businessName.trim().length === 0) {
+      setStatusMessage("Business name is required");
+      return;
+    }
+
     try {
       const response = await postJson<BusinessResponse>("/businesses", {
-        name: businessName,
+        name: businessName.trim(),
         language
       });
       const nextBusiness = {
         ...response.business,
         role: response.membership.role
       };
+      const nextAgent = createDefaultAgent(nextBusiness);
       setBusiness(nextBusiness);
+      setAgentSettings(nextAgent);
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
+      localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
+      localStorage.removeItem(setupDraftStorageKey);
       await refreshSession();
-      setView("home");
-      setStatusMessage("Business shell ready");
+      setView("chat");
+      setStatusMessage("Business and agent ready");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -1987,9 +2068,10 @@ function App() {
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
-    setView("home");
+    setView("chat");
     setStatusMessage("Signed out");
     localStorage.removeItem(activeBusinessStorageKey);
+    localStorage.removeItem(activeAgentStorageKey);
   }
 
   async function sendChatDraft() {
@@ -2137,19 +2219,260 @@ function App() {
     setChatDraft("");
   }
 
+  function renderActiveWorkspace() {
+    if (business === null) {
+      return null;
+    }
+
+    switch (view) {
+      case "products":
+        return (
+          <ProductSurface
+            products={products}
+            form={productForm}
+            stockProductId={stockProductId}
+            stockQuantityAfter={stockQuantityAfter}
+            stockReason={stockReason}
+            onFormChange={setProductForm}
+            onSave={() => void saveProduct()}
+            onReset={() => setProductForm(emptyProductForm)}
+            onEdit={(product) => {
+              setProductForm({
+                id: product.id,
+                name: product.name,
+                sku: product.sku ?? "",
+                unit: product.unit,
+                quantity: String(product.quantity)
+              });
+              setStockProductId(product.id);
+              setStockQuantityAfter(String(product.quantity));
+            }}
+            onStockProductChange={(productId) => {
+              const product = products.find((item) => item.id === productId);
+              setStockProductId(productId);
+              setStockQuantityAfter(String(product?.quantity ?? 0));
+            }}
+            onStockQuantityAfterChange={setStockQuantityAfter}
+            onStockReasonChange={setStockReason}
+            onAdjustStock={() => void adjustStock()}
+          />
+        );
+      case "customers":
+        return (
+          <CustomerSurface
+            customers={customers}
+            form={customerForm}
+            onFormChange={setCustomerForm}
+            onSave={() => void saveCustomer()}
+            onReset={() => setCustomerForm(emptyCustomerForm)}
+            onEdit={(customer) =>
+              setCustomerForm({
+                id: customer.id,
+                name: customer.name,
+                phone: customer.phone ?? "",
+                email: customer.email ?? "",
+                notes: customer.notes ?? ""
+              })
+            }
+          />
+        );
+      case "invoices":
+        return (
+          <InvoiceSurface
+            products={products}
+            customers={customers}
+            invoices={invoices}
+            form={invoiceForm}
+            preview={invoicePreview}
+            onFormChange={setInvoiceForm}
+            onPreview={() => void previewInvoice()}
+            onSave={() => void saveInvoice()}
+            onReset={() => {
+              setInvoiceForm(emptyInvoiceForm);
+              setInvoicePreview(null);
+            }}
+            onEdit={(invoice) => {
+              const firstItem = invoice.items[0];
+              setInvoiceForm({
+                id: invoice.id,
+                customerId: invoice.customerId ?? "",
+                customerName: invoice.customerName ?? "",
+                productId: firstItem?.productId ?? "",
+                quantity: String(firstItem?.quantity ?? 1),
+                unitPrice: String(firstItem?.unitPrice ?? 0),
+                taxRate: String(invoice.taxRate)
+              });
+              setInvoicePreview(invoice);
+            }}
+            onConfirm={(invoiceId) => void confirmInvoice(invoiceId)}
+            onPrint={printInvoice}
+          />
+        );
+      case "sync":
+        return (
+          <SyncSurface
+            summary={syncSummary}
+            items={syncQueue}
+            onRefresh={() => void loadSyncQueue(business.id)}
+            onReplay={() => void replaySyncQueue()}
+          />
+        );
+      case "payments":
+        return (
+          <PaymentSurface
+            invoices={invoices}
+            payments={payments}
+            invoicePayments={invoicePayments}
+            customerDebts={customerDebts}
+            form={paymentForm}
+            onFormChange={setPaymentForm}
+            onRecord={() => void recordPayment()}
+            onRefresh={() => void loadPaymentData(business.id)}
+          />
+        );
+      case "imports":
+        return (
+          <ImportSurface
+            form={importForm}
+            importJobs={importJobs}
+            activeImportJob={activeImportJob}
+            selectedImportJobId={selectedImportJobId}
+            onFormChange={setImportForm}
+            onCreate={() => void createSupplierCsvImport()}
+            onSelectJob={setSelectedImportJobId}
+            onRowChange={updateImportRowLocal}
+            onSaveRow={(job, row) => void saveImportRow(job, row)}
+            onConfirm={(job) => void confirmImport(job)}
+            onRefresh={() => void loadDocumentImports(business.id)}
+          />
+        );
+      case "logistics":
+        return (
+          <LogisticsSurface
+            invoices={invoices}
+            logistics={logistics}
+            form={logisticsForm}
+            onFormChange={setLogisticsForm}
+            onCreate={() => void createLogistics()}
+            onStatusChange={(logisticsId, status) =>
+              void updateLogisticsStatus(logisticsId, status)
+            }
+            onRefresh={() => void loadLogistics(business.id)}
+          />
+        );
+      case "compliance":
+        return (
+          <ComplianceSurface
+            form={complianceForm}
+            securityReview={securityReview}
+            dataExport={dataExport}
+            accountDeletion={accountDeletion}
+            verification={verificationTier}
+            taxConfig={taxConfig}
+            deviceTrust={deviceTrust}
+            onFormChange={setComplianceForm}
+            onExport={() => void createDataExport()}
+            onSaveVerification={() => void saveVerificationTier()}
+            onSaveTax={() => void saveTaxConfig()}
+            onSaveDeviceTrust={() => void saveDeviceTrust()}
+            onScheduleDeletion={() => void scheduleAccountDeletion()}
+            onRefresh={() => void loadCompliance(business.id)}
+          />
+        );
+      case "beta":
+        return (
+          <BetaSurface
+            form={betaForm}
+            readiness={betaReadiness}
+            supportTickets={betaSupportTickets}
+            onFormChange={setBetaForm}
+            onUpdateAccess={() => void updateBetaAccess()}
+            onEnableFlags={() => void enableBetaFlags()}
+            onRecordDeviceTest={() => void recordBetaDeviceTest()}
+            onCreateSupportTicket={() => void createBetaSupportTicket()}
+            onUpdateSupportTicket={(supportTicketId, status) =>
+              void updateBetaSupportTicketStatus(supportTicketId, status)
+            }
+            onRecordTelemetry={() => void recordBetaTelemetry()}
+            onRefresh={() => void loadBetaReadiness(business.id)}
+          />
+        );
+      case "launch":
+        return (
+          <LaunchSurface
+            form={launchForm}
+            readiness={launchReadiness}
+            incidents={launchIncidents}
+            onFormChange={setLaunchForm}
+            onUpdateSettings={() => void updateLaunchSettings()}
+            onUpdateChecklist={() => void updateLaunchChecklist()}
+            onCreateIncident={() => void createLaunchIncident()}
+            onUpdateIncident={(incidentId, status) =>
+              void updateLaunchIncidentStatus(incidentId, status)
+            }
+            onRefresh={() => void loadLaunchReadiness(business.id)}
+          />
+        );
+      case "reports":
+        return (
+          <ReportsSurface
+            report={reportSummary}
+            knowledge={knowledgeSummary}
+            onRefresh={() => void loadReports(business.id)}
+          />
+        );
+      case "notifications":
+        return (
+          <NotificationsSurface
+            inbox={notificationInbox}
+            onRefresh={() => void loadNotifications(business.id)}
+            onUpdate={(notificationId, status) => void updateNotification(notificationId, status)}
+          />
+        );
+      default:
+        return null;
+    }
+  }
+
   return (
     <Surface title="Soko.market">
       <div className="app-frame">
         <header className="top-bar">
-          <div>
-            <p className="eyebrow">Mobile PWA shell</p>
-            <h2>{business?.name ?? "Owner setup"}</h2>
-          </div>
-          <div className="status-stack" aria-label="Shell status">
-            <span className={isOnline ? "status-pill online" : "status-pill offline"}>
-              {isOnline ? "Online" : "Offline"}
+          <button
+            className="brand-lockup"
+            type="button"
+            onClick={() => setupComplete && setView("agent")}
+          >
+            <span className="logo-mark">S</span>
+            <span>
+              <strong>Soko.market</strong>
+              <span>{business?.name ?? "Owner setup"}</span>
+              <small>{setupComplete ? agentSettings.name : statusMessage}</small>
             </span>
-            <span className="status-pill sync">{syncLabel}</span>
+          </button>
+          <div className="header-actions">
+            <div className="status-stack" aria-label="Shell status">
+              <span className={isOnline ? "status-pill online" : "status-pill offline"}>
+                {isOnline ? "Online" : "Offline"}
+              </span>
+              <span className="status-pill sync">{syncLabel}</span>
+            </div>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => setupComplete && setView("notifications")}
+              aria-label="Notifications"
+            >
+              !
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => (setupComplete ? void logout() : void refreshSession())}
+              aria-label={setupComplete ? "Logout" : "Refresh"}
+            >
+              ...
+            </button>
           </div>
         </header>
 
@@ -2163,7 +2486,6 @@ function App() {
             language={language}
             session={session}
             statusMessage={statusMessage}
-            userLabel={userLabel}
             onChannelChange={setChannel}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
@@ -2172,297 +2494,37 @@ function App() {
             onRequestOtp={() => void requestOtp()}
             onVerifyOtp={() => void verifyOtp()}
             onCreateBusiness={() => void createBusiness()}
-            onRefresh={() => void refreshSession()}
-            onLogout={() => void logout()}
+          />
+        ) : view === "agent" ? (
+          <AgentProfileSurface
+            agent={agentSettings}
+            business={business}
+            ownerLabel={userLabel}
+            onAgentChange={setAgentSettings}
+            onBack={() => setView("chat")}
           />
         ) : (
-          <main className="shell-grid">
-            <nav className="bottom-nav" aria-label="Primary shell navigation">
-              {quickActions.map((action) => (
-                <button
-                  className={view === action.id ? "active" : ""}
-                  key={action.id}
-                  type="button"
-                  onClick={() => setView(action.id)}
-                >
-                  <span>{action.label}</span>
-                </button>
-              ))}
-            </nav>
-
-            <section className="home-panel" aria-label="Business home">
-              <div className="section-heading">
-                <p className="eyebrow">Today</p>
-                <h2>{view === "home" ? "Business home" : viewLabel(view)}</h2>
-              </div>
-              {view === "home" ? (
-                <HomeSurface
-                  business={business}
-                  productCount={products.length}
-                  customerCount={customers.length}
-                  invoiceCount={invoices.length}
-                  syncSummary={syncSummary}
-                  statusMessage={statusMessage}
-                  isOnline={isOnline}
-                  onNavigate={setView}
-                />
-              ) : null}
-              {view === "chat" ? (
-                <ChatSurface
-                  chatDraft={chatDraft}
-                  messages={chatMessages}
-                  onDraftChange={setChatDraft}
-                  onConfirm={(token) => void confirmRuntimeAction(token)}
-                  onSend={() => void sendChatDraft()}
-                />
-              ) : null}
-              {view === "products" ? (
-                <ProductSurface
-                  products={products}
-                  form={productForm}
-                  stockProductId={stockProductId}
-                  stockQuantityAfter={stockQuantityAfter}
-                  stockReason={stockReason}
-                  onFormChange={setProductForm}
-                  onSave={() => void saveProduct()}
-                  onReset={() => setProductForm(emptyProductForm)}
-                  onEdit={(product) => {
-                    setProductForm({
-                      id: product.id,
-                      name: product.name,
-                      sku: product.sku ?? "",
-                      unit: product.unit,
-                      quantity: String(product.quantity)
-                    });
-                    setStockProductId(product.id);
-                    setStockQuantityAfter(String(product.quantity));
-                  }}
-                  onStockProductChange={(productId) => {
-                    const product = products.find((item) => item.id === productId);
-                    setStockProductId(productId);
-                    setStockQuantityAfter(String(product?.quantity ?? 0));
-                  }}
-                  onStockQuantityAfterChange={setStockQuantityAfter}
-                  onStockReasonChange={setStockReason}
-                  onAdjustStock={() => void adjustStock()}
-                />
-              ) : null}
-              {view === "customers" ? (
-                <CustomerSurface
-                  customers={customers}
-                  form={customerForm}
-                  onFormChange={setCustomerForm}
-                  onSave={() => void saveCustomer()}
-                  onReset={() => setCustomerForm(emptyCustomerForm)}
-                  onEdit={(customer) =>
-                    setCustomerForm({
-                      id: customer.id,
-                      name: customer.name,
-                      phone: customer.phone ?? "",
-                      email: customer.email ?? "",
-                      notes: customer.notes ?? ""
-                    })
-                  }
-                />
-              ) : null}
-              {view === "invoices" ? (
-                <InvoiceSurface
-                  products={products}
-                  customers={customers}
-                  invoices={invoices}
-                  form={invoiceForm}
-                  preview={invoicePreview}
-                  onFormChange={setInvoiceForm}
-                  onPreview={() => void previewInvoice()}
-                  onSave={() => void saveInvoice()}
-                  onReset={() => {
-                    setInvoiceForm(emptyInvoiceForm);
-                    setInvoicePreview(null);
-                  }}
-                  onEdit={(invoice) => {
-                    const firstItem = invoice.items[0];
-                    setInvoiceForm({
-                      id: invoice.id,
-                      customerId: invoice.customerId ?? "",
-                      customerName: invoice.customerName ?? "",
-                      productId: firstItem?.productId ?? "",
-                      quantity: String(firstItem?.quantity ?? 1),
-                      unitPrice: String(firstItem?.unitPrice ?? 0),
-                      taxRate: String(invoice.taxRate)
-                    });
-                    setInvoicePreview(invoice);
-                  }}
-                  onConfirm={(invoiceId) => void confirmInvoice(invoiceId)}
-                  onPrint={printInvoice}
-                />
-              ) : null}
-              {view === "sync" ? (
-                <SyncSurface
-                  summary={syncSummary}
-                  items={syncQueue}
-                  onRefresh={() => business !== null && void loadSyncQueue(business.id)}
-                  onReplay={() => void replaySyncQueue()}
-                />
-              ) : null}
-              {view === "payments" ? (
-                <PaymentSurface
-                  invoices={invoices}
-                  payments={payments}
-                  invoicePayments={invoicePayments}
-                  customerDebts={customerDebts}
-                  form={paymentForm}
-                  onFormChange={setPaymentForm}
-                  onRecord={() => void recordPayment()}
-                  onRefresh={() => business !== null && void loadPaymentData(business.id)}
-                />
-              ) : null}
-              {view === "imports" ? (
-                <ImportSurface
-                  form={importForm}
-                  importJobs={importJobs}
-                  activeImportJob={activeImportJob}
-                  selectedImportJobId={selectedImportJobId}
-                  onFormChange={setImportForm}
-                  onCreate={() => void createSupplierCsvImport()}
-                  onSelectJob={setSelectedImportJobId}
-                  onRowChange={updateImportRowLocal}
-                  onSaveRow={(job, row) => void saveImportRow(job, row)}
-                  onConfirm={(job) => void confirmImport(job)}
-                  onRefresh={() => business !== null && void loadDocumentImports(business.id)}
-                />
-              ) : null}
-              {view === "logistics" ? (
-                <LogisticsSurface
-                  invoices={invoices}
-                  logistics={logistics}
-                  form={logisticsForm}
-                  onFormChange={setLogisticsForm}
-                  onCreate={() => void createLogistics()}
-                  onStatusChange={(logisticsId, status) =>
-                    void updateLogisticsStatus(logisticsId, status)
-                  }
-                  onRefresh={() => business !== null && void loadLogistics(business.id)}
-                />
-              ) : null}
-              {view === "compliance" ? (
-                <ComplianceSurface
-                  form={complianceForm}
-                  securityReview={securityReview}
-                  dataExport={dataExport}
-                  accountDeletion={accountDeletion}
-                  verification={verificationTier}
-                  taxConfig={taxConfig}
-                  deviceTrust={deviceTrust}
-                  onFormChange={setComplianceForm}
-                  onExport={() => void createDataExport()}
-                  onSaveVerification={() => void saveVerificationTier()}
-                  onSaveTax={() => void saveTaxConfig()}
-                  onSaveDeviceTrust={() => void saveDeviceTrust()}
-                  onScheduleDeletion={() => void scheduleAccountDeletion()}
-                  onRefresh={() => business !== null && void loadCompliance(business.id)}
-                />
-              ) : null}
-              {view === "beta" ? (
-                <BetaSurface
-                  form={betaForm}
-                  readiness={betaReadiness}
-                  supportTickets={betaSupportTickets}
-                  onFormChange={setBetaForm}
-                  onUpdateAccess={() => void updateBetaAccess()}
-                  onEnableFlags={() => void enableBetaFlags()}
-                  onRecordDeviceTest={() => void recordBetaDeviceTest()}
-                  onCreateSupportTicket={() => void createBetaSupportTicket()}
-                  onUpdateSupportTicket={(supportTicketId, status) =>
-                    void updateBetaSupportTicketStatus(supportTicketId, status)
-                  }
-                  onRecordTelemetry={() => void recordBetaTelemetry()}
-                  onRefresh={() => business !== null && void loadBetaReadiness(business.id)}
-                />
-              ) : null}
-              {view === "launch" ? (
-                <LaunchSurface
-                  form={launchForm}
-                  readiness={launchReadiness}
-                  incidents={launchIncidents}
-                  onFormChange={setLaunchForm}
-                  onUpdateSettings={() => void updateLaunchSettings()}
-                  onUpdateChecklist={() => void updateLaunchChecklist()}
-                  onCreateIncident={() => void createLaunchIncident()}
-                  onUpdateIncident={(incidentId, status) =>
-                    void updateLaunchIncidentStatus(incidentId, status)
-                  }
-                  onRefresh={() => business !== null && void loadLaunchReadiness(business.id)}
-                />
-              ) : null}
-              {view === "reports" ? (
-                <ReportsSurface
-                  report={reportSummary}
-                  knowledge={knowledgeSummary}
-                  onRefresh={() => business !== null && void loadReports(business.id)}
-                />
-              ) : null}
-              {view === "notifications" ? (
-                <NotificationsSurface
-                  inbox={notificationInbox}
-                  onRefresh={() => business !== null && void loadNotifications(business.id)}
-                  onUpdate={(notificationId, status) =>
-                    void updateNotification(notificationId, status)
-                  }
-                />
-              ) : null}
-              {currentEmptyState !== undefined &&
-              view !== "products" &&
-              view !== "customers" &&
-              view !== "invoices" &&
-              view !== "sync" &&
-              view !== "payments" &&
-              view !== "imports" &&
-              view !== "logistics" &&
-              view !== "compliance" &&
-              view !== "beta" &&
-              view !== "reports" &&
-              view !== "notifications" ? (
-                <EmptyStateSurface
-                  title={currentEmptyState.title}
-                  body={currentEmptyState.body}
-                  onChat={() => setView("chat")}
-                />
-              ) : null}
-            </section>
-
-            <aside className="side-panel" aria-label="Shell details">
-              <div>
-                <p className="eyebrow">Owner</p>
-                <h3>{userLabel}</h3>
-                <p>{business.role}</p>
-              </div>
-              <div className="status-card">
-                <span className={isOnline ? "status-dot online" : "status-dot offline"} />
-                <div>
-                  <strong>{isOnline ? "Connected" : "Offline"}</strong>
-                  <p>CP7 keeps cached business data visible while queued work awaits replay.</p>
-                </div>
-              </div>
-              <div className="status-card">
-                <span className="status-dot sync" />
-                <div>
-                  <strong>{syncLabel}</strong>
-                  <p>
-                    {syncSummary.conflict > 0
-                      ? `${syncSummary.conflict} conflict item needs review.`
-                      : `${syncSummary.synced} synced item${syncSummary.synced === 1 ? "" : "s"}.`}
-                  </p>
-                </div>
-              </div>
-              <div className="side-actions">
-                <button type="button" onClick={() => void refreshSession()}>
-                  Refresh
-                </button>
-                <button className="secondary" type="button" onClick={() => void logout()}>
-                  Logout
-                </button>
-              </div>
-            </aside>
+          <main className="chat-workspace-shell">
+            <ChatSurface
+              activeView={view}
+              agent={agentSettings}
+              business={business}
+              chatDraft={chatDraft}
+              customerCount={customers.length}
+              invoiceCount={invoices.length}
+              messages={chatMessages}
+              notificationCount={notificationInbox.summary.unread}
+              productCount={products.length}
+              report={reportSummary}
+              syncSummary={syncSummary}
+              onBackToChat={() => setView("chat")}
+              onConfirm={(token) => void confirmRuntimeAction(token)}
+              onDraftChange={setChatDraft}
+              onNavigate={setView}
+              onSend={() => void sendChatDraft()}
+            >
+              {renderActiveWorkspace()}
+            </ChatSurface>
           </main>
         )}
       </div>
@@ -2479,7 +2541,6 @@ interface SetupPanelProps {
   language: SupportedLanguage;
   session: SessionResponse | null;
   statusMessage: string;
-  userLabel: string;
   onChannelChange: (channel: AuthChannel) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
@@ -2488,11 +2549,11 @@ interface SetupPanelProps {
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCreateBusiness: () => void;
-  onRefresh: () => void;
-  onLogout: () => void;
 }
 
 function SetupPanel(props: SetupPanelProps) {
+  const contactIsValid = isValidContact(props.channel, props.destination);
+
   return (
     <main className="setup-grid">
       <section className="panel">
@@ -2522,9 +2583,11 @@ function SetupPanel(props: SetupPanelProps) {
             value={props.destination}
             onChange={(event) => props.onDestinationChange(event.target.value)}
             inputMode={props.channel === "phone" ? "tel" : "email"}
+            type={props.channel === "phone" ? "tel" : "email"}
+            placeholder={props.channel === "phone" ? "+254700000000" : "owner@example.com"}
           />
         </label>
-        <button type="button" onClick={props.onRequestOtp}>
+        <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
           Request OTP
         </button>
         <label>
@@ -2533,20 +2596,31 @@ function SetupPanel(props: SetupPanelProps) {
             value={props.otp}
             onChange={(event) => props.onOtpChange(event.target.value)}
             inputMode="numeric"
+            autoComplete="one-time-code"
           />
         </label>
         <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
-          Verify
+          Verify OTP
         </button>
+        <p className="setup-status">{props.statusMessage}</p>
       </section>
 
       <section className="panel">
-        <div className="section-heading">
-          <p className="eyebrow">Step 2</p>
-          <h2>Business setup</h2>
+        <div className="section-heading with-action">
+          <div>
+            <p className="eyebrow">Step 2</p>
+            <h2>Business setup</h2>
+          </div>
+          <button
+            type="button"
+            onClick={props.onCreateBusiness}
+            disabled={props.session === null || props.businessName.trim().length === 0}
+          >
+            Finish
+          </button>
         </div>
         <label>
-          Business
+          Business name
           <input
             value={props.businessName}
             onChange={(event) => props.onBusinessNameChange(event.target.value)}
@@ -2562,107 +2636,8 @@ function SetupPanel(props: SetupPanelProps) {
             <option value="sw">Swahili</option>
           </select>
         </label>
-        <button type="button" onClick={props.onCreateBusiness} disabled={props.session === null}>
-          Create Business
-        </button>
-      </section>
-
-      <section className="panel status-panel">
-        <div className="section-heading">
-          <p className="eyebrow">Session</p>
-          <h2>Status</h2>
-        </div>
-        <p>{props.statusMessage}</p>
-        <p>{props.userLabel}</p>
-        <div className="actions">
-          <button type="button" onClick={props.onRefresh}>
-            Refresh
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            onClick={props.onLogout}
-            disabled={props.session === null}
-          >
-            Logout
-          </button>
-        </div>
       </section>
     </main>
-  );
-}
-
-interface HomeSurfaceProps {
-  business: ActiveBusiness;
-  productCount: number;
-  customerCount: number;
-  invoiceCount: number;
-  syncSummary: SyncQueueSummary;
-  statusMessage: string;
-  isOnline: boolean;
-  onNavigate: (view: ShellView) => void;
-}
-
-function HomeSurface({
-  business,
-  productCount,
-  customerCount,
-  invoiceCount,
-  syncSummary,
-  statusMessage,
-  isOnline,
-  onNavigate
-}: HomeSurfaceProps) {
-  const activeQueueCount =
-    syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
-
-  return (
-    <div className="home-surface">
-      <div className="metric-grid">
-        <div className="metric">
-          <span>Products</span>
-          <strong>{productCount}</strong>
-        </div>
-        <div className="metric">
-          <span>Customers</span>
-          <strong>{customerCount}</strong>
-        </div>
-        <div className="metric">
-          <span>Invoices</span>
-          <strong>{invoiceCount}</strong>
-        </div>
-        <div className="metric">
-          <span>Queued</span>
-          <strong>{activeQueueCount}</strong>
-        </div>
-      </div>
-
-      <div className="prompt-band">
-        <div>
-          <p className="eyebrow">Offline-ready</p>
-          <h3>Review queued work before replay</h3>
-          <p>CP7 keeps local mutations queued until server validation confirms them.</p>
-        </div>
-        <button type="button" onClick={() => onNavigate("sync")}>
-          Open sync
-        </button>
-      </div>
-
-      <div className="quick-grid" aria-label="Quick actions">
-        {quickActions
-          .filter((action) => action.id !== "home" && action.id !== "chat")
-          .map((action) => (
-            <button key={action.id} type="button" onClick={() => onNavigate(action.id)}>
-              <strong>{action.label}</strong>
-              <span>{action.summary}</span>
-            </button>
-          ))}
-      </div>
-
-      <p className="shell-note">
-        {business.name} is {isOnline ? "online" : "offline"}; {statusMessage}.
-      </p>
-    </div>
   );
 }
 
@@ -4819,21 +4794,223 @@ function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfa
   );
 }
 
+interface AgentProfileSurfaceProps {
+  agent: AgentSettings;
+  business: ActiveBusiness;
+  ownerLabel: string;
+  onAgentChange: (agent: AgentSettings) => void;
+  onBack: () => void;
+}
+
+function AgentProfileSurface({
+  agent,
+  business,
+  ownerLabel,
+  onAgentChange,
+  onBack
+}: AgentProfileSurfaceProps) {
+  function updateAgent(patch: Partial<AgentSettings>) {
+    onAgentChange({ ...agent, ...patch });
+  }
+
+  return (
+    <main className="agent-profile-surface">
+      <section className="agent-profile-header">
+        <button className="secondary" type="button" onClick={onBack}>
+          Back
+        </button>
+        <div className="agent-avatar" aria-hidden="true">
+          {agent.name.slice(0, 1).toUpperCase()}
+        </div>
+        <div>
+          <p className="eyebrow">{business.name}</p>
+          <h2>{agent.name}</h2>
+          <p>{agent.description}</p>
+        </div>
+      </section>
+
+      <section className="agent-settings-grid">
+        <div className="record-form">
+          <div className="section-heading">
+            <p className="eyebrow">Identity</p>
+            <h3>Agent profile</h3>
+          </div>
+          <label>
+            Agent name
+            <input
+              value={agent.name}
+              onChange={(event) => updateAgent({ name: event.target.value })}
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              value={agent.description}
+              onChange={(event) => updateAgent({ description: event.target.value })}
+              rows={3}
+            />
+          </label>
+          <label>
+            AI model
+            <select
+              value={agent.model}
+              onChange={(event) => updateAgent({ model: event.target.value as AgentModel })}
+            >
+              <option value="sokoclaw-local">Sokoclaw local</option>
+              <option value="openai-fast">OpenAI fast</option>
+              <option value="openai-reasoning">OpenAI reasoning</option>
+            </select>
+          </label>
+          <label>
+            Agent role
+            <input
+              value={agent.role}
+              onChange={(event) => updateAgent({ role: event.target.value })}
+            />
+          </label>
+        </div>
+
+        <div className="record-form">
+          <div className="section-heading">
+            <p className="eyebrow">Global agent ID</p>
+            <h3>Public storefront</h3>
+          </div>
+          <label>
+            Public ID
+            <input
+              value={agent.globalAgentId}
+              onChange={(event) =>
+                updateAgent({
+                  globalAgentId: event.target.value,
+                  storefrontUrl: createStorefrontUrl(event.target.value)
+                })
+              }
+            />
+          </label>
+          <label>
+            Storefront URL
+            <input
+              value={agent.storefrontUrl}
+              onChange={(event) => updateAgent({ storefrontUrl: event.target.value })}
+            />
+          </label>
+          <label>
+            Language
+            <select
+              value={agent.language}
+              onChange={(event) =>
+                updateAgent({ language: event.target.value as SupportedLanguage })
+              }
+            >
+              <option value="en">English</option>
+              <option value="sw">Swahili</option>
+            </select>
+          </label>
+          <p className="shell-note">{ownerLabel} owns this public storefront assistant.</p>
+        </div>
+
+        <div className="record-form">
+          <div className="section-heading">
+            <p className="eyebrow">Behavior</p>
+            <h3>Personality and instructions</h3>
+          </div>
+          <label>
+            Personality
+            <input
+              value={agent.personality}
+              onChange={(event) => updateAgent({ personality: event.target.value })}
+            />
+          </label>
+          <label>
+            Instructions
+            <textarea
+              value={agent.instructions}
+              onChange={(event) => updateAgent({ instructions: event.target.value })}
+              rows={5}
+            />
+          </label>
+        </div>
+
+        <div className="record-form">
+          <div className="section-heading">
+            <p className="eyebrow">Capabilities</p>
+            <h3>Knowledge, tools, integrations</h3>
+          </div>
+          <label>
+            Knowledge
+            <textarea
+              value={agent.knowledge}
+              onChange={(event) => updateAgent({ knowledge: event.target.value })}
+              rows={4}
+            />
+          </label>
+          <label>
+            Tools
+            <input
+              value={agent.tools.join(", ")}
+              onChange={(event) => updateAgent({ tools: splitListInput(event.target.value) })}
+            />
+          </label>
+          <label>
+            Integrations
+            <input
+              value={agent.integrations.join(", ")}
+              onChange={(event) =>
+                updateAgent({ integrations: splitListInput(event.target.value) })
+              }
+            />
+          </label>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 interface ChatSurfaceProps {
+  activeView: ShellView;
+  agent: AgentSettings;
+  business: ActiveBusiness;
   chatDraft: string;
+  children: ReactNode;
+  customerCount: number;
+  invoiceCount: number;
   messages: ChatMessage[];
+  notificationCount: number;
+  productCount: number;
+  report: BusinessReportSummary | null;
+  syncSummary: SyncQueueSummary;
+  onBackToChat: () => void;
   onDraftChange: (draft: string) => void;
+  onNavigate: (view: ShellView) => void;
   onConfirm: (confirmationToken: string) => void;
   onSend: () => void;
 }
 
-function ChatSurface({ chatDraft, messages, onDraftChange, onConfirm, onSend }: ChatSurfaceProps) {
+function ChatSurface({
+  activeView,
+  agent,
+  business,
+  chatDraft,
+  children,
+  customerCount,
+  invoiceCount,
+  messages,
+  notificationCount,
+  productCount,
+  report,
+  syncSummary,
+  onBackToChat,
+  onDraftChange,
+  onNavigate,
+  onConfirm,
+  onSend
+}: ChatSurfaceProps) {
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite">
         {messages.map((message) => (
           <article className={`message ${message.author}`} key={message.id}>
-            <span>{message.author === "merchant" ? "You" : "Sokoclaw"}</span>
+            <span>{message.author === "merchant" ? "You" : agent.name}</span>
             <p>{message.body}</p>
             {message.confirmationToken !== undefined ? (
               <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
@@ -4842,22 +5019,155 @@ function ChatSurface({ chatDraft, messages, onDraftChange, onConfirm, onSend }: 
             ) : null}
           </article>
         ))}
+        <ContextualBusinessCards
+          business={business}
+          productCount={productCount}
+          customerCount={customerCount}
+          invoiceCount={invoiceCount}
+          notificationCount={notificationCount}
+          report={report}
+          syncSummary={syncSummary}
+          onNavigate={onNavigate}
+        />
+        {activeView !== "chat" && activeView !== "home" ? (
+          <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
+            <div className="generated-card-header">
+              <div>
+                <p className="eyebrow">Generated card</p>
+                <h2>{viewLabel(activeView)}</h2>
+              </div>
+              <button className="secondary" type="button" onClick={onBackToChat}>
+                Close
+              </button>
+            </div>
+            {children}
+          </section>
+        ) : null}
       </div>
       <div className="composer">
-        <label>
-          Message
-          <textarea
+        <button className="icon-button" type="button" aria-label="Voice input">
+          Mic
+        </button>
+        <button className="icon-button" type="button" aria-label="Attach file">
+          +
+        </button>
+        <label className="composer-input">
+          <span>Message</span>
+          <input
             value={chatDraft}
             onChange={(event) => onDraftChange(event.target.value)}
-            placeholder="Example: Add 10 packets of maize flour"
-            rows={3}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onSend();
+              }
+            }}
+            placeholder="Ask your attendant"
           />
         </label>
-        <button type="button" onClick={onSend}>
-          Send draft
+        <button className="send-button" type="button" onClick={onSend}>
+          Send
         </button>
       </div>
     </div>
+  );
+}
+
+interface ContextualBusinessCardsProps {
+  business: ActiveBusiness;
+  productCount: number;
+  customerCount: number;
+  invoiceCount: number;
+  notificationCount: number;
+  report: BusinessReportSummary | null;
+  syncSummary: SyncQueueSummary;
+  onNavigate: (view: ShellView) => void;
+}
+
+function ContextualBusinessCards({
+  business,
+  productCount,
+  customerCount,
+  invoiceCount,
+  notificationCount,
+  report,
+  syncSummary,
+  onNavigate
+}: ContextualBusinessCardsProps) {
+  const activeQueueCount =
+    syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
+
+  const cards: Array<{
+    view: ShellView;
+    title: string;
+    body: string;
+    value: string;
+  }> = [
+    {
+      view: "products",
+      title: "Products",
+      body: "Stock, SKUs, units and adjustments",
+      value: String(productCount)
+    },
+    {
+      view: "invoices",
+      title: "Make a Sale",
+      body: "Create, preview and confirm invoices",
+      value: String(invoiceCount)
+    },
+    {
+      view: "customers",
+      title: "Customers",
+      body: "Customer contacts and notes",
+      value: String(customerCount)
+    },
+    {
+      view: "payments",
+      title: "Payments",
+      body: "Record payments and track balances",
+      value: formatMoney(report?.payments.totalPaid ?? 0)
+    },
+    {
+      view: "reports",
+      title: "Business Summary",
+      body: `${business.name} sales and stock health`,
+      value: formatMoney(report?.sales.grossSales ?? 0)
+    },
+    {
+      view: "notifications",
+      title: "Alerts",
+      body: "Low stock, debt and sync notices",
+      value: String(notificationCount)
+    },
+    {
+      view: "sync",
+      title: "Sync",
+      body: "Offline queue and conflict replay",
+      value: String(activeQueueCount)
+    },
+    {
+      view: "imports",
+      title: "Knowledge",
+      body: "Supplier files and business records",
+      value: "CSV"
+    },
+    {
+      view: "logistics",
+      title: "Delivery",
+      body: "Pickup and delivery fulfillment",
+      value: "Track"
+    }
+  ];
+
+  return (
+    <section className="generated-card-grid" aria-label="Generated business cards">
+      {cards.map((card) => (
+        <button key={card.view} type="button" onClick={() => onNavigate(card.view)}>
+          <span>{card.title}</span>
+          <strong>{card.value}</strong>
+          <small>{card.body}</small>
+        </button>
+      ))}
+    </section>
   );
 }
 
@@ -4963,6 +5273,120 @@ function readStoredBusiness(): ActiveBusiness | null {
   }
 
   return null;
+}
+
+function readStoredAgent(): AgentSettings | null {
+  const stored = localStorage.getItem(activeAgentStorageKey);
+
+  if (stored === null) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as AgentSettings;
+
+    if (
+      typeof parsed.id === "string" &&
+      typeof parsed.name === "string" &&
+      typeof parsed.description === "string" &&
+      isAgentModel(parsed.model) &&
+      typeof parsed.role === "string" &&
+      typeof parsed.globalAgentId === "string" &&
+      typeof parsed.storefrontUrl === "string" &&
+      (parsed.language === "en" || parsed.language === "sw") &&
+      typeof parsed.personality === "string" &&
+      typeof parsed.instructions === "string" &&
+      typeof parsed.knowledge === "string" &&
+      Array.isArray(parsed.tools) &&
+      Array.isArray(parsed.integrations)
+    ) {
+      return parsed;
+    }
+  } catch {
+    localStorage.removeItem(activeAgentStorageKey);
+  }
+
+  return null;
+}
+
+function readSetupDraft(): SetupDraft | null {
+  const stored = localStorage.getItem(setupDraftStorageKey);
+
+  if (stored === null) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as SetupDraft;
+
+    if (
+      (parsed.channel === "phone" || parsed.channel === "email") &&
+      typeof parsed.destination === "string" &&
+      typeof parsed.businessName === "string" &&
+      (parsed.language === "en" || parsed.language === "sw") &&
+      (parsed.completedStep === 0 || parsed.completedStep === 1 || parsed.completedStep === 2)
+    ) {
+      return parsed;
+    }
+  } catch {
+    localStorage.removeItem(setupDraftStorageKey);
+  }
+
+  return null;
+}
+
+function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
+  const businessName = business?.name.trim() || "Soko.market";
+  const seed = `${business?.id ?? "local"}-${businessName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+  const globalAgentId = seed.length === 0 ? "soko-agent" : seed;
+
+  return {
+    id: `agent-${globalAgentId}`,
+    name: businessName,
+    description: "AI business attendant for owner operations and public storefront chat.",
+    model: "sokoclaw-local",
+    role: "Business assistant and storefront attendant",
+    globalAgentId,
+    storefrontUrl: createStorefrontUrl(globalAgentId),
+    language: business?.language ?? "en",
+    personality: "Warm, concise, accurate and commercially practical",
+    instructions:
+      "Help the owner run daily business work and help customers browse the storefront.",
+    knowledge:
+      "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
+    tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    integrations: ["Soko.market storefront"],
+    status: "active"
+  };
+}
+
+function createStorefrontUrl(agentId: string): string {
+  return `https://soko.market/agent/${agentId.trim()}`;
+}
+
+function splitListInput(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function isAgentModel(value: unknown): value is AgentModel {
+  return value === "sokoclaw-local" || value === "openai-fast" || value === "openai-reasoning";
+}
+
+function isValidContact(channel: AuthChannel, contact: string): boolean {
+  const value = contact.trim();
+
+  if (channel === "email") {
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
+  }
+
+  return /^\+?[0-9\s-]{7,18}$/.test(value);
 }
 
 function getErrorMessage(error: unknown): string {

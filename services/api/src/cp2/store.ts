@@ -405,6 +405,24 @@ export class Cp2Store {
     };
   }
 
+  getOtpChallengeDeliveryByContact(
+    input: { channel: AuthChannel; destination: string },
+    now = new Date()
+  ): OtpChallengeDelivery {
+    const destination = normalizeDestination(input.channel, input.destination);
+    const challenge = [...this.otpChallenges.values()]
+      .reverse()
+      .find((item) => item.channel === input.channel && item.destination === destination);
+    this.validateOtpChallenge(challenge, now);
+
+    return {
+      challengeId: challenge.id,
+      channel: challenge.channel,
+      destination: challenge.destination,
+      expiresAt: challenge.expiresAt
+    };
+  }
+
   verifyExternallyApprovedOtp(input: { challengeId: string; now?: Date }): VerifyOtpResult {
     const now = input.now ?? new Date();
     const challenge = this.otpChallenges.get(input.challengeId);

@@ -45,12 +45,17 @@ export interface Cp2RouteOptions {
 
 interface OtpRequestBody {
   channel?: string;
+  contact?: string;
   destination?: string;
+  method?: string;
 }
 
 interface OtpVerifyBody {
   challengeId?: string;
   code?: string;
+  contact?: string;
+  method?: string;
+  otp?: string;
 }
 
 interface CreateBusinessBody {
@@ -305,8 +310,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/otp/request",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
-        const channel = parseAuthChannel(request.body.channel);
-        const destination = parseString(request.body.destination, "destination");
+        const channel = parseAuthChannel(request.body.method ?? request.body.channel);
+        const destination = parseString(
+          request.body.contact ?? request.body.destination,
+          "contact"
+        );
         const otp = store.requestOtp({ channel, destination });
 
         if (otpProvider.canHandle(channel)) {
@@ -337,13 +345,18 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/otp/verify", async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
     try {
-      const challengeId = parseString(request.body.challengeId, "challengeId");
-      const code = parseString(request.body.code, "code");
-      const challenge = store.getOtpChallengeDelivery(challengeId);
+      const code = parseString(request.body.otp ?? request.body.code, "otp");
+      const challenge =
+        request.body.challengeId === undefined
+          ? store.getOtpChallengeDeliveryByContact({
+              channel: parseAuthChannel(request.body.method),
+              destination: parseString(request.body.contact, "contact")
+            })
+          : store.getOtpChallengeDelivery(parseString(request.body.challengeId, "challengeId"));
       const result =
         otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
-          ? await verifyProviderOtp(store, otpProvider, challengeId, challenge, code)
-          : store.verifyOtp({ challengeId, code });
+          ? await verifyProviderOtp(store, otpProvider, challenge.challengeId, challenge, code)
+          : store.verifyOtp({ challengeId: challenge.challengeId, code });
       reply.header("set-cookie", serializeSessionCookie(result.session.id));
       return result;
     } catch (error) {

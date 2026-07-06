@@ -1,6 +1,7 @@
 export type ShellView =
   | "home"
   | "chat"
+  | "agent"
   | "products"
   | "customers"
   | "invoices"
@@ -178,7 +179,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `${businessName} is ready. CP10 routes chat through verification and confirmation before any runtime action can write records.`
+      body: `Karibu back, ${businessName}! I'm your AI attendant and I'm here to help you run your business smoothly. Everything looks good. What would you like to do today?`
     }
   ];
 }
