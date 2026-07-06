@@ -5590,14 +5590,17 @@ function ContextualBusinessCards({
   ];
 
   return (
-    <section className="generated-card-grid" aria-label="Generated business cards">
-      {cards.map((card) => (
-        <button key={card.view} type="button" onClick={() => onNavigate(card.view)}>
-          <span>{card.title}</span>
-          <strong>{card.value}</strong>
-          <small>{card.body}</small>
-        </button>
-      ))}
+    <section className="message sokoclaw generated-card-message" aria-label="Generated business cards">
+      <span>Business cards</span>
+      <div className="generated-card-grid">
+        {cards.map((card) => (
+          <button key={card.view} type="button" onClick={() => onNavigate(card.view)}>
+            <span>{card.title}</span>
+            <strong>{card.value}</strong>
+            <small>{card.body}</small>
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

@@ -7,11 +7,24 @@ CP1 uses explicit environment variables with safe local defaults documented in `
 - PostgreSQL: `postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market`
 - Redis: `redis://127.0.0.1:6379`
 - API: `http://127.0.0.1:4000`
+- Web frontend: `http://127.0.0.1:5173`
 
 Start local infrastructure with:
 
 ```bash
 pnpm dev:stack
+```
+
+Start the API watcher and Vite frontend dev server with:
+
+```bash
+pnpm dev
+```
+
+Run only the Vite frontend with:
+
+```bash
+pnpm dev:web
 ```
 
 Stop local infrastructure with:
