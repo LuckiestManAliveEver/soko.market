@@ -215,6 +215,8 @@ interface SupplierImportConfirmBody {
 
 interface RuntimeTurnBody {
   agentProfile?: {
+    behavior?: string;
+    integrations?: string[];
     knowledge?: string;
     model?: string;
     role?: string;
@@ -1916,17 +1918,28 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
 function parseRuntimeAgentProfile(value: unknown): RuntimeAgentProfile {
   const record = parseRequestBody(value);
   const tools = record.tools;
+  const integrations = record.integrations;
 
-  if (!Array.isArray(tools)) {
+  if (tools !== undefined && !Array.isArray(tools)) {
     throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.tools must be an array.");
   }
 
+  if (integrations !== undefined && !Array.isArray(integrations)) {
+    throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.integrations must be an array.");
+  }
+
+  const instructions = parseString(record.instructions, "agentProfile.instructions");
+
   return {
+    behavior: parseOptionalString(record.behavior) ?? instructions,
+    integrations: (integrations ?? []).map((integration, index) =>
+      parseString(integration, `agentProfile.integrations.${index}`)
+    ),
     knowledge: parseString(record.knowledge, "agentProfile.knowledge"),
     model: parseString(record.model, "agentProfile.model"),
     role: parseString(record.role, "agentProfile.role"),
-    instructions: parseString(record.instructions, "agentProfile.instructions"),
-    tools: tools.map((tool, index) => parseString(tool, `agentProfile.tools.${index}`))
+    instructions,
+    tools: (tools ?? []).map((tool, index) => parseString(tool, `agentProfile.tools.${index}`))
   };
 }
 

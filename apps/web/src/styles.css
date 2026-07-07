@@ -943,6 +943,7 @@ button:disabled {
   border-top: 1px solid #dde4dc;
   gap: 8px;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
+  min-width: 0;
   padding: 10px;
   position: sticky;
   bottom: 0;
@@ -1023,11 +1024,14 @@ button:disabled {
 }
 
 .composer-input input {
+  appearance: none;
   background: #ffffff;
   border: 1px solid #b8c5bc;
   border-radius: 8px;
   color: #17211b;
+  font-size: 16px;
   min-height: 42px;
+  min-width: 0;
   padding: 9px 12px;
   width: 100%;
 }
@@ -1038,7 +1042,9 @@ button:disabled {
   color: #ffffff;
   font-weight: 900;
   min-height: 42px;
+  min-width: 58px;
   padding: 8px 12px;
+  white-space: nowrap;
 }
 
 .public-storefront-shell {
@@ -1220,11 +1226,14 @@ button:disabled {
 .storefront-checkout input,
 .storefront-checkout textarea,
 .storefront-composer input {
+  appearance: none;
   background: #ffffff;
   border: 1px solid #b8c5bc;
   border-radius: 8px;
   color: #17211b;
+  font-size: 16px;
   min-height: 42px;
+  min-width: 0;
   padding: 9px 12px;
   width: 100%;
 }
@@ -1236,6 +1245,7 @@ button:disabled {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
   padding: 10px;
 }
 
@@ -1429,13 +1439,7 @@ button:disabled {
 
   .composer {
     align-items: center;
-    grid-template-columns: auto auto minmax(0, 1fr);
-  }
-
-  .composer .send-button {
-    grid-column: 1 / -1;
-    justify-self: stretch;
-    width: 100%;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
 
   .composer-input span {

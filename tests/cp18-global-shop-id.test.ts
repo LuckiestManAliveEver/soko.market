@@ -73,8 +73,13 @@ describe("CP18 Global Shop ID", () => {
       method: "GET",
       url: `/public/storefronts/${encodeURIComponent(first.business.sokoId)}`
     });
+    const rawStorefront = await app.inject({
+      method: "GET",
+      url: `/public/storefronts/${first.business.sokoId}`
+    });
 
     expect(storefront.statusCode).toBe(200);
+    expect(rawStorefront.statusCode).toBe(200);
     expect(storefront.json<PublicStorefrontResponse>()).toEqual({
       agentId: first.business.sokoId,
       sokoId: first.business.sokoId,
@@ -88,6 +93,7 @@ describe("CP18 Global Shop ID", () => {
         }
       ]
     });
+    expect(rawStorefront.json<PublicStorefrontResponse>().sokoId).toBe(first.business.sokoId);
     expect(storefront.json().products[0]).not.toHaveProperty("sku");
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining(["business.global_shop_id_created"])

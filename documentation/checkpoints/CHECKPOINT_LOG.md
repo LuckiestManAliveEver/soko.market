@@ -34,6 +34,7 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | CP16       | Public Launch                               |   passed |  2026-07-05 |  2026-07-05 | `checkpoint/cp16-public-launch`          | Public launch gates, onboarding controls, production checklist, incidents, readiness reports, UI, runtime context, and tests implemented.              |
 | CP17       | Marketplace Foundation                      | deferred |  2026-07-07 |     pending | `checkpoint/cp17-marketplace-foundation` | Bypassed for now; marketplace trigger gates remain unmet.                                                                                              |
 | CP18       | Global Shop ID                              |   passed |  2026-07-07 |  2026-07-07 | `checkpoint/cp18-global-shop-id`         | Implemented from `documentation/Soko_Global_Shop_ID_Concept.docx`; establishes the Business Agent ID as the permanent storefront identity.             |
+| CP19       | Continuous Learning Architecture            |  planned |     pending |     pending | `checkpoint/cp19-continuous-learning`    | Future expansion from `documentation/Soko.market_Continuous_Learning_Architecture_v1.pdf`; runtime, memory, skill, eval, and feedback learning layer.  |
 
 ## Git Directory Note
 

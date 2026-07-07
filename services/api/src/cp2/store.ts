@@ -244,6 +244,8 @@ export interface OtpChallengeDelivery {
 }
 
 export interface RuntimeAgentProfile {
+  behavior: string;
+  integrations: string[];
   knowledge: string;
   model: string;
   role: string;
@@ -5342,11 +5344,13 @@ function formatRuntimeModelMessage(
   }
 
   return [
-    `Selected model profile: ${agentProfile.model}.`,
+    "Use this agent profile as the guiding operating principles for how this store is run.",
     `Agent role: ${agentProfile.role}.`,
+    `Agent behavior: ${agentProfile.behavior}.`,
     `Agent responsibilities: ${agentProfile.instructions}`,
-    `Agent knowledge: ${agentProfile.knowledge}`,
-    `Enabled tools: ${agentProfile.tools.join(", ") || "none"}.`,
+    `Agent capabilities: ${agentProfile.tools.join(", ") || "none"}.`,
+    `Agent integrations: ${agentProfile.integrations.join(", ") || "none"}.`,
+    `Store knowledge: ${agentProfile.knowledge}`,
     "Infer the user's intent from the business menu data and request text.",
     "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
     `User message: ${message}`

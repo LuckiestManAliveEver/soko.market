@@ -113,6 +113,8 @@ interface AgentSettings {
 }
 
 interface AgentRuntimeProfile {
+  behavior: string;
+  integrations: string[];
   knowledge: string;
   model: AgentModel;
   role: string;
@@ -6449,8 +6451,8 @@ function AgentProfileSurface({
             </div>
           </div>
           <label>
-            Legacy public agent ID
-            <input value={createLegacyPublicStorefrontAgentId(business)} disabled />
+            Storefront ID
+            <input value={business.sokoId} disabled />
           </label>
           <label>
             Storefront URL
@@ -7057,22 +7059,15 @@ function createPublicStorefrontAgentId(business: ActiveBusiness): string {
   return createFallbackSokoId(business.id, business.name);
 }
 
-function createLegacyPublicStorefrontAgentId(business: ActiveBusiness): string {
-  const seed = `${business.id}-${business.name}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-
-  return seed.length === 0 ? "soko-agent" : seed;
-}
-
 function createPublicStorefrontUrl(business: ActiveBusiness): string {
   return createStorefrontUrl(createPublicStorefrontAgentId(business));
 }
 
 function createStorefrontUrl(agentId: string): string {
-  const normalizedAgentId = encodeURIComponent(agentId.trim());
+  const trimmedAgentId = agentId.trim();
+  const normalizedAgentId = isSokoId(trimmedAgentId)
+    ? trimmedAgentId
+    : encodeURIComponent(trimmedAgentId);
   const localOrigins = ["localhost", "127.0.0.1", "0.0.0.0"];
 
   if (localOrigins.includes(window.location.hostname)) {
@@ -7333,6 +7328,8 @@ type AgentRuntimeDecision =
 
 function createAgentRuntimeProfile(agent: AgentSettings): AgentRuntimeProfile {
   return {
+    behavior: agent.personality,
+    integrations: agent.integrations,
     knowledge: agent.knowledge,
     model: agent.model,
     role: agent.role,

@@ -5,7 +5,10 @@ import type {
   RuntimeModelProvider
 } from "../packages/shared-types/src";
 import { parseRuntimeModelOutput } from "../packages/tool-core/src";
-import { buildLlamaPrompt, createLlamaCppRuntimeModelProvider } from "../services/ai-runtime/src/app";
+import {
+  buildLlamaPrompt,
+  createLlamaCppRuntimeModelProvider
+} from "../services/ai-runtime/src/app";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -165,7 +168,16 @@ describe("CP11 local model adapter", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "what is in stock?"
+        message: "what is in stock?",
+        agentProfile: {
+          behavior: "Practical, polite, and inventory-first",
+          integrations: ["Soko.market storefront"],
+          knowledge: "Prioritize saved products and confirmed store records.",
+          model: "qwen2.5-0.5b-android",
+          role: "Store attendant",
+          instructions: "Only promise items the store can actually supply.",
+          tools: ["Products", "Invoices"]
+        }
       },
       sessionCookie
     );
@@ -178,7 +190,15 @@ describe("CP11 local model adapter", () => {
       }
     });
     expect(JSON.stringify(capturedPrompt?.context)).not.toContain("Private Sugar");
-    expect(buildLlamaPrompt(capturedPrompt as RuntimeModelPrompt)).not.toContain("Private Sugar");
+    const llamaPrompt = buildLlamaPrompt(capturedPrompt as RuntimeModelPrompt);
+    expect(llamaPrompt).not.toContain("Private Sugar");
+    expect(llamaPrompt).toContain(
+      "Use this agent profile as the guiding operating principles for how this store is run."
+    );
+    expect(llamaPrompt).toContain("Agent behavior: Practical, polite, and inventory-first.");
+    expect(llamaPrompt).toContain("Agent capabilities: Products, Invoices.");
+    expect(llamaPrompt).toContain("Agent integrations: Soko.market storefront.");
+    expect(llamaPrompt).toContain("Only promise items the store can actually supply.");
     expect(turn.turn).toMatchObject({
       status: "completed",
       model: {

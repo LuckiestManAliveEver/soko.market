@@ -43,11 +43,15 @@ When documents disagree, follow this order:
    - CP18 frontend concept and kickoff brief.
    - Defines the Soko Global Shop ID as the permanent Business Agent storefront identity.
 
-9. `1000157660.png`, `1000157661.png`, `1000157662.png`
-   - Mobile UI references.
-   - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
+9. `Soko.market_Continuous_Learning_Architecture_v1.pdf` and `CP19_CONTINUOUS_LEARNING.md`
+   - Future expansion concept.
+   - Defines continual learning through runtime traces, memory, skills, evaluation, and production feedback rather than direct model fine-tuning.
 
-10. `Soko doc 4 June .pdf`
+10. `1000157660.png`, `1000157661.png`, `1000157662.png`
+    - Mobile UI references.
+    - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
+
+11. `Soko doc 4 June .pdf`
     - Broken placeholder.
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.
@@ -809,6 +813,47 @@ Rollback point:
 - Backup: generated shop IDs, storefront routing map, and audit events.
 - Rollback action: hide Soko ID surfaces while preserving generated IDs and keeping existing storefront URLs/contact workflows active.
 
+### CP19: Continuous Learning Architecture
+
+Goal:
+
+- Prepare a future continual learning layer for Soko.market and the Sokoclaw runtime without making model fine-tuning the primary path for improvement.
+- Status: planned future expansion.
+
+Source:
+
+- `documentation/Soko.market_Continuous_Learning_Architecture_v1.pdf`
+- `documentation/CP19_CONTINUOUS_LEARNING.md`
+
+Core concept:
+
+- The intelligence of Soko.market lives primarily in the runtime rather than the language model.
+- Runtime traces, memory, skills, evaluation, and production feedback should improve the platform while deterministic business tools remain authoritative.
+
+Deliverables:
+
+- Trace capture for execution graphs, tool calls, outcomes, corrections, latency, and errors.
+- Unified memory engine for shop, customer, supplier, inventory, market, and runtime memories.
+- Outcome classification for success, failure, and partial success.
+- Skill candidate detection and promotion workflow.
+- SokoBench commerce evaluation suite.
+- Human review queue for runtime improvement proposals.
+- Production intelligence dashboard for clustered failures and improvement candidates.
+
+Exit criteria:
+
+- Tenant data remains isolated and privacy-controlled.
+- Runtime improvements cannot bypass Soko business validators, confirmation gates, RBAC, audit logging, or rollback rules.
+- Promoted skills are versioned, tested, permissioned, and reversible.
+- Every runtime improvement passes SokoBench before production deployment.
+- Human review is required before approved improvements benefit stores.
+
+Rollback point:
+
+- Tag: `checkpoint/cp19-continuous-learning`
+- Backup: learning configuration, trace schema, memory promotion rules, skill registry, evaluation baselines, and approved improvement manifests.
+- Rollback action: disable learning-derived runtime changes and restore the previous deterministic runtime configuration while preserving traces according to retention policy.
+
 ## Standard Checkpoint Procedure
 
 Every checkpoint must follow the same procedure:
@@ -931,6 +976,7 @@ Public Launch adds:
 Post-launch adds:
 
 - Marketplace foundation.
+- Continuous learning architecture.
 - First-party skills.
 - Third-party skill onboarding.
 - Trusted Identity Execution Layer.
