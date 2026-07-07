@@ -6245,10 +6245,17 @@ function ChatSurface({
   onSend
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    messageListRef.current?.scrollTo({
+      top: messageListRef.current.scrollHeight
+    });
+  }, [activeView, messages]);
 
   return (
     <div className="chat-surface">
-      <div className="message-list" aria-live="polite">
+      <div className="message-list" aria-live="polite" ref={messageListRef}>
         <ContextualBusinessCards
           business={business}
           productCount={productCount}
@@ -7013,35 +7020,35 @@ function createAgentActionReply(input: {
   product: ProductSummary | null;
   result: ParseResult;
 }): string {
-  const modelLabel = formatAgentModel(input.agent.model);
+  const agentLabel = formatAgentDisplayName(input.agent);
 
   if (input.result.nextAction.type === "navigate") {
-    return `${modelLabel} opened ${viewLabel(input.result.nextAction.view)}.`;
+    return `${agentLabel} opened ${viewLabel(input.result.nextAction.view)}.`;
   }
 
   if (input.result.intent === "add_product") {
-    return `${modelLabel} prepared a product draft. Review it, then save it.`;
+    return `${agentLabel} prepared a product draft. Review it, then save it.`;
   }
 
   if (input.result.intent === "add_customer") {
-    return `${modelLabel} prepared a customer draft. Review it, then save it.`;
+    return `${agentLabel} prepared a customer draft. Review it, then save it.`;
   }
 
   if (input.result.intent === "create_invoice") {
     const productText = input.product === null ? "" : ` with ${input.product.name}`;
     const customerText = input.customer === null ? "" : ` for ${input.customer.name}`;
-    return `${modelLabel} opened an invoice draft${customerText}${productText}. Review it before saving or confirming.`;
+    return `${agentLabel} opened an invoice draft${customerText}${productText}. Review it before saving or confirming.`;
   }
 
   if (input.result.intent === "record_payment") {
-    return `${modelLabel} opened the payment form with the details it could match. Review it before recording payment.`;
+    return `${agentLabel} opened the payment form with the details it could match. Review it before recording payment.`;
   }
 
   if (input.result.intent === "check_debt") {
-    return `${modelLabel} opened payments and debt records.`;
+    return `${agentLabel} opened payments and debt records.`;
   }
 
-  return `${modelLabel} prepared the matching workspace action.`;
+  return `${agentLabel} prepared the matching workspace action.`;
 }
 
 function createAgentOptionsReply(input: {
@@ -7200,20 +7207,8 @@ function tokenizeSearchText(value: string): string[] {
     .filter((token) => token.length > 1);
 }
 
-function formatAgentModel(model: AgentModel): string {
-  if (model === "qwen2.5-0.5b-android") {
-    return "Qwen local agent";
-  }
-
-  if (model === "sokoclaw-local") {
-    return "Sokoclaw local agent";
-  }
-
-  if (model === "openai-fast") {
-    return "OpenAI fast agent";
-  }
-
-  return "OpenAI reasoning agent";
+function formatAgentDisplayName(agent: AgentSettings): string {
+  return agent.name.trim().length === 0 ? "Your agent" : agent.name.trim();
 }
 
 function formatMoney(value: number): string {

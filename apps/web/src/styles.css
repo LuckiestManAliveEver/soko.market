@@ -800,19 +800,23 @@ button:disabled {
 }
 
 .chat-workspace-shell {
-  min-height: calc(100vh - 76px);
+  height: calc(100vh - 76px);
+  min-height: 0;
 }
 
 .chat-surface {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
-  min-height: calc(100vh - 76px);
+  height: 100%;
+  min-height: 0;
 }
 
 .message-list {
   align-content: start;
   gap: 12px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
 }
 
