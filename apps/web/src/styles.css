@@ -1196,13 +1196,20 @@ button:disabled {
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
 }
 
 .agent-profile-header h2 {
   font-size: 22px;
   letter-spacing: 0;
   margin: 0;
+}
+
+.agent-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
 }
 
 .agent-settings-grid {
@@ -1287,6 +1294,11 @@ button:disabled {
 
   .agent-profile-header > button {
     grid-column: 1 / -1;
+  }
+
+  .agent-profile-actions {
+    grid-column: 1 / -1;
+    justify-content: start;
   }
 
   .composer {

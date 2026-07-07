@@ -5981,8 +5981,32 @@ function AgentProfileSurface({
   onAgentChange,
   onBack
 }: AgentProfileSurfaceProps) {
+  const [draftAgent, setDraftAgent] = useState(agent);
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraftAgent(agent);
+    }
+  }, [agent, isEditing]);
+
   function updateAgent(patch: Partial<AgentSettings>) {
-    onAgentChange({ ...agent, ...patch });
+    setDraftAgent((currentAgent) => ({ ...currentAgent, ...patch }));
+  }
+
+  function startEditing() {
+    setDraftAgent(agent);
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setDraftAgent(agent);
+    setIsEditing(false);
+  }
+
+  function saveAgent() {
+    onAgentChange(draftAgent);
+    setIsEditing(false);
   }
 
   return (
@@ -5992,12 +6016,28 @@ function AgentProfileSurface({
           Back
         </button>
         <div className="agent-avatar" aria-hidden="true">
-          {agent.name.slice(0, 1).toUpperCase()}
+          {draftAgent.name.slice(0, 1).toUpperCase()}
         </div>
         <div>
           <p className="eyebrow">{business.name}</p>
-          <h2>{agent.name}</h2>
-          <p>{agent.description}</p>
+          <h2>{draftAgent.name}</h2>
+          <p>{draftAgent.description}</p>
+        </div>
+        <div className="agent-profile-actions">
+          {isEditing ? (
+            <>
+              <button type="button" onClick={saveAgent}>
+                Save
+              </button>
+              <button className="secondary" type="button" onClick={cancelEditing}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={startEditing}>
+              Edit
+            </button>
+          )}
         </div>
       </section>
 
@@ -6010,14 +6050,16 @@ function AgentProfileSurface({
           <label>
             Agent name
             <input
-              value={agent.name}
+              value={draftAgent.name}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ name: event.target.value })}
             />
           </label>
           <label>
             Description
             <textarea
-              value={agent.description}
+              value={draftAgent.description}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ description: event.target.value })}
               rows={3}
             />
@@ -6025,7 +6067,8 @@ function AgentProfileSurface({
           <label>
             AI model
             <select
-              value={agent.model}
+              value={draftAgent.model}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ model: event.target.value as AgentModel })}
             >
               <option value="qwen2.5-0.5b-android">Qwen2.5 0.5B local Android</option>
@@ -6037,7 +6080,8 @@ function AgentProfileSurface({
           <label>
             Agent role
             <input
-              value={agent.role}
+              value={draftAgent.role}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ role: event.target.value })}
             />
           </label>
@@ -6051,7 +6095,8 @@ function AgentProfileSurface({
           <label>
             Public ID
             <input
-              value={agent.globalAgentId}
+              value={draftAgent.globalAgentId}
+              disabled={!isEditing}
               onChange={(event) =>
                 updateAgent({
                   globalAgentId: event.target.value,
@@ -6063,14 +6108,16 @@ function AgentProfileSurface({
           <label>
             Storefront URL
             <input
-              value={agent.storefrontUrl}
+              value={draftAgent.storefrontUrl}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ storefrontUrl: event.target.value })}
             />
           </label>
           <label>
             Language
             <select
-              value={agent.language}
+              value={draftAgent.language}
+              disabled={!isEditing}
               onChange={(event) =>
                 updateAgent({ language: event.target.value as SupportedLanguage })
               }
@@ -6090,14 +6137,16 @@ function AgentProfileSurface({
           <label>
             Personality
             <input
-              value={agent.personality}
+              value={draftAgent.personality}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ personality: event.target.value })}
             />
           </label>
           <label>
             Instructions
             <textarea
-              value={agent.instructions}
+              value={draftAgent.instructions}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ instructions: event.target.value })}
               rows={5}
             />
@@ -6112,7 +6161,8 @@ function AgentProfileSurface({
           <label>
             Knowledge
             <textarea
-              value={agent.knowledge}
+              value={draftAgent.knowledge}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ knowledge: event.target.value })}
               rows={4}
             />
@@ -6120,14 +6170,16 @@ function AgentProfileSurface({
           <label>
             Tools
             <input
-              value={agent.tools.join(", ")}
+              value={draftAgent.tools.join(", ")}
+              disabled={!isEditing}
               onChange={(event) => updateAgent({ tools: splitListInput(event.target.value) })}
             />
           </label>
           <label>
             Integrations
             <input
-              value={agent.integrations.join(", ")}
+              value={draftAgent.integrations.join(", ")}
+              disabled={!isEditing}
               onChange={(event) =>
                 updateAgent({ integrations: splitListInput(event.target.value) })
               }
