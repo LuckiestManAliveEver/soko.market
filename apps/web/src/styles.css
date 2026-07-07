@@ -1,4 +1,5 @@
 :root {
+  --app-header-height: 72px;
   color: #17211b;
   background: #f4f6f2;
   font-family:
@@ -16,7 +17,9 @@
 }
 
 body {
+  min-height: 100vh;
   margin: 0;
+  overflow: hidden;
 }
 
 button,
@@ -37,6 +40,7 @@ button:disabled {
 }
 
 .soko-surface {
+  background: #f4f6f2;
   min-height: 100vh;
   padding: 0;
 }
@@ -54,10 +58,13 @@ button:disabled {
 .app-frame {
   display: grid;
   gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100dvh;
   margin: 0 auto;
   max-width: 100%;
   min-height: 100vh;
-  padding-top: 76px;
+  overflow: hidden;
+  padding-top: 0;
 }
 
 .app-credits {
@@ -70,19 +77,16 @@ button:disabled {
 
 .top-bar {
   align-items: center;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.96);
   border: 0;
   border-bottom: 1px solid #dde4dc;
   border-radius: 0;
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  left: 0;
-  min-height: 76px;
-  padding: 10px 14px;
-  position: fixed;
-  right: 0;
-  top: 0;
+  min-height: var(--app-header-height);
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px;
+  position: relative;
   z-index: 10;
 }
 
@@ -223,6 +227,7 @@ button:disabled {
 .setup-grid {
   margin: 0 auto;
   max-width: 760px;
+  overflow-y: auto;
   padding: 16px;
   width: 100%;
 }
@@ -810,8 +815,9 @@ button:disabled {
 }
 
 .chat-workspace-shell {
-  height: calc(100vh - 76px);
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .chat-surface {
@@ -827,7 +833,8 @@ button:disabled {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px;
+  padding: 14px 16px;
+  scroll-padding-top: 14px;
 }
 
 .message {
@@ -1201,6 +1208,7 @@ button:disabled {
   gap: 14px;
   margin: 0 auto;
   max-width: 980px;
+  overflow-y: auto;
   padding: 16px;
   width: 100%;
 }
@@ -1263,18 +1271,55 @@ button:disabled {
     padding: 0;
   }
 
+  .app-frame {
+    height: 100dvh;
+  }
+
   .top-bar {
     display: grid;
+    gap: 8px;
     grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+    padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 8px;
+  }
+
+  .logo-mark {
+    display: none;
+  }
+
+  .brand-lockup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .brand-lockup strong {
+    display: none;
+  }
+
+  .brand-lockup span span {
+    font-size: 16px;
+  }
+
+  .brand-lockup small {
+    font-size: 11px;
   }
 
   .status-stack {
     align-items: start;
     grid-template-columns: repeat(2, max-content);
+    min-width: 0;
   }
 
   .header-actions {
     justify-content: space-between;
+  }
+
+  .status-pill,
+  .icon-button {
+    min-height: 34px;
+  }
+
+  .icon-button {
+    min-width: 38px;
   }
 
   .bottom-nav {
@@ -1316,6 +1361,28 @@ button:disabled {
 
   .composer {
     grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .message-list {
+    padding: 10px;
+    scroll-padding-top: 10px;
+  }
+
+  .generated-card-message,
+  .generated-card-detail,
+  .message {
+    max-width: 100%;
+  }
+
+  .generated-card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .generated-card-grid button {
+    flex: initial;
+    min-height: 76px;
   }
 
   .public-storefront-shell {
