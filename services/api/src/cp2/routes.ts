@@ -63,6 +63,13 @@ interface PinBody {
   pin?: string;
 }
 
+interface PinLoginBody extends PinBody {
+  channel?: string;
+  contact?: string;
+  destination?: string;
+  method?: string;
+}
+
 interface CreateBusinessBody {
   name?: string;
   language?: string;
@@ -414,6 +421,20 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.post("/auth/pin/login", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
+    try {
+      const result = store.loginWithAccountPin({
+        channel: parseAuthChannel(request.body.method ?? request.body.channel),
+        destination: parseString(request.body.contact ?? request.body.destination, "contact"),
+        pin: parseString(request.body.pin, "pin")
+      });
+      reply.header("set-cookie", serializeSessionCookie(result.session.id));
+      return result;
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
   app.post("/auth/pin/recover", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
     try {
       const pin = parseString(request.body.pin, "pin");
@@ -530,6 +551,21 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: request.params.businessId,
           productId: request.params.productId,
           product: parseProductBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/products/:productId",
+    async (request: FastifyRequest<{ Params: ProductParams }>, reply) => {
+      try {
+        return store.deleteProduct({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          productId: request.params.productId
         });
       } catch (error) {
         return sendCp2Error(reply, error);

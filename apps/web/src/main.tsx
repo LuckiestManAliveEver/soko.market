@@ -1393,6 +1393,9 @@ function OwnerApp() {
 
   function startPinRecovery() {
     setIsRecoveringPin(true);
+    setChallenge(null);
+    setOtp("");
+    setIsOtpVerified(false);
     setLoginPin("");
     setRecoveryPin("");
     setRecoveryPinConfirm("");
@@ -1401,9 +1404,12 @@ function OwnerApp() {
 
   function cancelPinRecovery() {
     setIsRecoveringPin(false);
+    setChallenge(null);
+    setOtp("");
+    setIsOtpVerified(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setStatusMessage("Enter your phone OTP and login PIN.");
+    setStatusMessage("Enter your phone number and login PIN.");
   }
 
   async function loginWithPin() {
@@ -1419,21 +1425,21 @@ function OwnerApp() {
       return;
     }
 
-    if (!isOtpVerified) {
-      setStatusMessage("Verify OTP before entering PIN");
-      return;
-    }
-
     if (!isValidPin(loginPin)) {
       setStatusMessage("Enter your 4-digit PIN");
       return;
     }
 
     try {
-      await postJson<SessionResponse>("/auth/pin/verify", {
+      const response = await postJson<SessionResponse>("/auth/pin/login", {
+        method: "phone",
+        contact: contactValue,
         pin: loginPin
       });
+      setSession(response);
+      updateOwnerPinSet(true);
       setIsWorkspaceUnlocked(true);
+      setIsOtpVerified(false);
       setLoginPin("");
       setView("chat");
       setStatusMessage("Login complete");
@@ -1598,6 +1604,32 @@ function OwnerApp() {
       setStockQuantityAfter(String(product.quantity));
       await loadProducts(business.id);
       setStatusMessage(productForm.id === null ? "Product created" : "Product updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function deleteProduct(productId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const product = await deleteJson<ProductSummary>(
+        `/businesses/${business.id}/products/${productId}`
+      );
+
+      if (productForm.id === product.id) {
+        setProductForm(emptyProductForm);
+      }
+
+      if (stockProductId === product.id) {
+        setStockProductId("");
+        setStockQuantityAfter("");
+      }
+
+      await loadProducts(business.id);
+      setStatusMessage("Product removed");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2732,6 +2764,7 @@ function OwnerApp() {
             onFormChange={setProductForm}
             onSave={() => void saveProduct()}
             onReset={() => setProductForm(emptyProductForm)}
+            onAdd={() => setProductForm(emptyProductForm)}
             onEdit={(product) => {
               setProductForm({
                 id: product.id,
@@ -2751,6 +2784,7 @@ function OwnerApp() {
             onStockQuantityAfterChange={setStockQuantityAfter}
             onStockReasonChange={setStockReason}
             onAdjustStock={() => void adjustStock()}
+            onRemove={(productId) => void deleteProduct(productId)}
           />
         );
       case "customers":
@@ -3315,13 +3349,14 @@ function LoginPanel(props: LoginPanelProps) {
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
+  const needsOtp = props.isRecoveringPin || isSettingPin;
 
   return (
     <main className="setup-grid login-grid">
       <section className="panel">
         <div className="section-heading">
           <p className="eyebrow">Owner login</p>
-          <h2>Phone verification</h2>
+          <h2>{needsOtp ? "Phone verification" : "Phone login"}</h2>
         </div>
         <div className="phone-contact-row">
           <label>
@@ -3354,21 +3389,27 @@ function LoginPanel(props: LoginPanelProps) {
             />
           </label>
         </div>
-        <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-          Request OTP
-        </button>
-        <label>
-          OTP
-          <input
-            value={props.otp}
-            onChange={(event) => props.onOtpChange(event.target.value)}
-            inputMode="numeric"
-            autoComplete="one-time-code"
-          />
-        </label>
-        <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
-          Verify OTP
-        </button>
+        {needsOtp ? (
+          <>
+            <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
+              Request OTP
+            </button>
+            <label>
+              OTP
+              <input
+                value={props.otp}
+                onChange={(event) => props.onOtpChange(event.target.value)}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+              />
+            </label>
+            <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
+              Verify OTP
+            </button>
+          </>
+        ) : (
+          <p className="shell-note">Use your saved phone number and PIN to unlock this device.</p>
+        )}
       </section>
 
       <section className="panel">
@@ -3440,7 +3481,7 @@ function LoginPanel(props: LoginPanelProps) {
             <button
               type="button"
               onClick={props.onLogin}
-              disabled={!props.isOtpVerified || !isValidPin(props.loginPin)}
+              disabled={!contactIsValid || !isValidPin(props.loginPin)}
             >
               Login
             </button>
@@ -4157,7 +4198,9 @@ interface ProductSurfaceProps {
   onFormChange: (form: ProductFormState) => void;
   onSave: () => void;
   onReset: () => void;
+  onAdd: () => void;
   onEdit: (product: ProductSummary) => void;
+  onRemove: (productId: string) => void;
   onStockProductChange: (productId: string) => void;
   onStockQuantityAfterChange: (quantity: string) => void;
   onStockReasonChange: (reason: string) => void;
@@ -4531,6 +4574,48 @@ function PublicStorefrontChat(props: { agentId: string }) {
 function ProductSurface(props: ProductSurfaceProps) {
   return (
     <div className="records-surface">
+      <section className="record-list" aria-label="Product catalogue">
+        <div className="section-heading">
+          <p className="eyebrow">Catalogue</p>
+          <h3>Existing products</h3>
+        </div>
+        {props.products.length === 0 ? (
+          <div className="empty-record">
+            <h3>No products yet</h3>
+            <p>Add the first product to start CP5 stock records.</p>
+          </div>
+        ) : (
+          props.products.map((product) => (
+            <article className="record-row" key={product.id}>
+              <div>
+                <strong>{product.name}</strong>
+                <span>
+                  {product.quantity} {product.unit}
+                  {product.sku === null ? "" : ` · ${product.sku}`}
+                </span>
+              </div>
+              <div className="row-actions compact-actions">
+                <button type="button" onClick={() => props.onEdit(product)}>
+                  Edit
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onRemove(product.id)}
+                >
+                  Remove
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+        <div className="actions">
+          <button type="button" onClick={props.onAdd}>
+            Add product
+          </button>
+        </div>
+      </section>
+
       <section className="record-form" aria-label="Product form">
         <div className="section-heading">
           <p className="eyebrow">{props.form.id === null ? "New product" : "Edit product"}</p>
@@ -4616,30 +4701,6 @@ function ProductSurface(props: ProductSurfaceProps) {
         <button type="button" onClick={props.onAdjustStock} disabled={props.stockProductId === ""}>
           Record movement
         </button>
-      </section>
-
-      <section className="record-list" aria-label="Products">
-        {props.products.length === 0 ? (
-          <div className="empty-record">
-            <h3>No products yet</h3>
-            <p>Add the first product to start CP5 stock records.</p>
-          </div>
-        ) : (
-          props.products.map((product) => (
-            <article className="record-row" key={product.id}>
-              <div>
-                <strong>{product.name}</strong>
-                <span>
-                  {product.quantity} {product.unit}
-                  {product.sku === null ? "" : ` · ${product.sku}`}
-                </span>
-              </div>
-              <button type="button" onClick={() => props.onEdit(product)}>
-                Edit
-              </button>
-            </article>
-          ))
-        )}
       </section>
     </div>
   );
@@ -6293,10 +6354,6 @@ function ChatSurface({
         {activeView !== "chat" && activeView !== "home" ? (
           <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
             <div className="generated-card-header">
-              <div>
-                <p className="eyebrow">Generated card</p>
-                <h2>{viewLabel(activeView)}</h2>
-              </div>
               <button className="secondary" type="button" onClick={onBackToChat}>
                 Close
               </button>
@@ -6525,6 +6582,20 @@ async function patchJson<TResponse>(
       "content-type": "application/json"
     },
     body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = (await response.json()) as { message?: string };
+    throw new Error(error.message ?? `Request failed with ${response.status}`);
+  }
+
+  return (await response.json()) as TResponse;
+}
+
+async function deleteJson<TResponse>(path: string): Promise<TResponse> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "DELETE",
+    credentials: "include"
   });
 
   if (!response.ok) {

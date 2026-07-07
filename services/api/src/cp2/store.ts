@@ -128,6 +128,7 @@ import {
   normalizeVerificationTierInput,
   paymentRecordedEvent,
   productCreatedEvent,
+  productDeletedEvent,
   productUpdatedEvent,
   roleCan,
   stockAdjustedEvent,
@@ -647,6 +648,52 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
+  loginWithAccountPin(input: {
+    channel: AuthChannel;
+    destination: string;
+    pin: string;
+    now?: Date;
+  }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const destination = normalizeDestination(input.channel, input.destination);
+    const accountId = this.accountByDestination.get(
+      destinationAccountKey(input.channel, destination)
+    );
+
+    if (accountId === undefined) {
+      throw new Cp2Error(401, "account_not_found", "Owner account was not found.");
+    }
+
+    const account = this.requireAccount(accountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const pin = normalizePin(input.pin);
+    const pinHash = this.accountPinHashes.get(account.id);
+
+    if (pinHash === undefined) {
+      throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
+    }
+
+    if (!hashMatches(hashPin(account.id, pin), pinHash)) {
+      throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
+    }
+
+    const session = this.createSession(account, user, now);
+    this.markSessionPinVerified(session.id, now);
+    this.recordAuditEvent({
+      type: "auth.pin_login",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        channel: input.channel,
+        destination
+      }
+    });
+
+    return this.requireAnySession(session.id, now);
+  }
+
   createBusiness(input: {
     sessionId: string | null;
     name: string;
@@ -878,6 +925,34 @@ export class Cp2Store {
     }
 
     return updated;
+  }
+
+  deleteProduct(input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    now?: Date;
+  }): ProductSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:write",
+      now
+    );
+    const product = this.requireProduct(input.businessId, input.productId);
+
+    this.products.delete(product.id);
+    this.appendBusinessEvent(
+      productDeletedEvent({
+        id: randomUUID(),
+        product,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return product;
   }
 
   adjustProductStock(input: {

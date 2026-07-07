@@ -2079,6 +2079,26 @@ export function productUpdatedEvent(input: {
   });
 }
 
+export function productDeletedEvent(input: {
+  id: string;
+  product: ProductSummary;
+  actorId: string;
+  occurredAt: string;
+}): BusinessEvent<{ product: ProductSummary }> {
+  return createEvent({
+    id: input.id,
+    type: "product.deleted",
+    aggregateId: input.product.id,
+    aggregateType: "product",
+    actorId: input.actorId,
+    risk: "medium",
+    occurredAt: input.occurredAt,
+    payload: {
+      product: input.product
+    }
+  });
+}
+
 export function customerCreatedEvent(input: {
   id: string;
   customer: CustomerSummary;

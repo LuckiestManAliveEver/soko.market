@@ -360,64 +360,40 @@ describe("CP2 auth and business creation", () => {
       }
     });
 
-    const loginOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      method: "phone",
-      contact: "+254700000003"
-    });
-    const loginVerify = await app.inject({
+    const badPinLogin = await app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
         method: "phone",
         contact: "+254700000003",
-        otp: loginOtp.devOtp
-      })
-    });
-    const loginCookie = extractSessionCookie(loginVerify.headers["set-cookie"]);
-    const blockedRole = await app.inject({
-      method: "POST",
-      url: "/roles/check",
-      headers: {
-        ...jsonHeaders(),
-        cookie: loginCookie
-      },
-      payload: JSON.stringify({
-        businessId: business.business.id,
-        role: "owner"
-      })
-    });
-
-    expect(blockedRole.statusCode).toBe(401);
-    expect(blockedRole.json()).toMatchObject({
-      code: "pin_required"
-    });
-
-    const badPin = await app.inject({
-      method: "POST",
-      url: "/auth/pin/verify",
-      headers: {
-        ...jsonHeaders(),
-        cookie: loginCookie
-      },
-      payload: JSON.stringify({
         pin: "0000"
       })
     });
 
-    expect(badPin.statusCode).toBe(401);
-    expect(badPin.json()).toMatchObject({
+    expect(badPinLogin.statusCode).toBe(401);
+    expect(badPinLogin.json()).toMatchObject({
       code: "pin_invalid"
     });
 
-    await postJson<VerifyOtpResponse>(
-      app,
-      "/auth/pin/verify",
-      {
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000003",
         pin: "1234"
-      },
-      loginCookie
+      })
+    });
+    const loginCookie = extractSessionCookie(login.headers["set-cookie"]);
+
+    expect(login.statusCode).toBe(200);
+    expect(loginCookie).toContain("soko_session=");
+    expect(login.json<VerifyOtpResponse>().account.id).toBe(
+      verifyResponse.json<VerifyOtpResponse>().account.id
     );
+
     const allowedRole = await postJson<RoleCheckResponse>(
       app,
       "/roles/check",
@@ -483,41 +459,31 @@ describe("CP2 auth and business creation", () => {
       }
     });
 
-    const resetLoginOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      method: "phone",
-      contact: "+254700000003"
-    });
-    const resetLoginVerify = await app.inject({
+    const oldPin = await app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
         method: "phone",
         contact: "+254700000003",
-        otp: resetLoginOtp.devOtp
+        pin: "1234"
       })
     });
-    const resetLoginCookie = extractSessionCookie(resetLoginVerify.headers["set-cookie"]);
-    const oldPin = await app.inject({
+    const newPin = await app.inject({
       method: "POST",
-      url: "/auth/pin/verify",
-      headers: {
-        ...jsonHeaders(),
-        cookie: resetLoginCookie
-      },
+      url: "/auth/pin/login",
+      headers: jsonHeaders(),
       payload: JSON.stringify({
-        pin: "1234"
+        method: "phone",
+        contact: "+254700000003",
+        pin: "7777"
       })
     });
 
     expect(oldPin.statusCode).toBe(401);
-    await postJson<VerifyOtpResponse>(
-      app,
-      "/auth/pin/verify",
-      {
-        pin: "7777"
-      },
-      resetLoginCookie
+    expect(newPin.statusCode).toBe(200);
+    expect(newPin.json<VerifyOtpResponse>().account.id).toBe(
+      verifyResponse.json<VerifyOtpResponse>().account.id
     );
 
     await app.close();

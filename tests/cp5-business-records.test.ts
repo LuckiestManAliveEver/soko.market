@@ -223,6 +223,21 @@ describe("CP5 business core records", () => {
       ])
     );
 
+    const deletedProduct = await deleteJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products/${product.id}`,
+      sessionCookie
+    );
+    const productsAfterDelete = await getJson<ProductResponse[]>(
+      app,
+      `/businesses/${businessId}/products`,
+      sessionCookie
+    );
+
+    expect(deletedProduct.id).toBe(product.id);
+    expect(productsAfterDelete).toEqual([]);
+    expect(store.snapshot().auditEvents.map((event) => event.type)).toContain("product.deleted");
+
     await app.close();
   });
 
@@ -422,6 +437,25 @@ async function patchJson<TResponse>(
       cookie
     },
     payload: JSON.stringify(payload)
+  });
+
+  expect(response.statusCode).toBeGreaterThanOrEqual(200);
+  expect(response.statusCode).toBeLessThan(300);
+
+  return response.json<TResponse>();
+}
+
+async function deleteJson<TResponse>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  cookie: string
+): Promise<TResponse> {
+  const response = await app.inject({
+    method: "DELETE",
+    url,
+    headers: {
+      cookie
+    }
   });
 
   expect(response.statusCode).toBeGreaterThanOrEqual(200);

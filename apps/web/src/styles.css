@@ -287,6 +287,7 @@ button:disabled {
 .composer button,
 .side-actions button,
 .record-form button,
+.record-list button,
 .record-row button {
   background: #117a4f;
   border-radius: 6px;
@@ -298,7 +299,8 @@ button:disabled {
 
 .panel button.secondary,
 .side-actions button.secondary,
-.record-form button.secondary {
+.record-form button.secondary,
+.record-list button.secondary {
   background: #e7ede8;
   color: #23342a;
 }
