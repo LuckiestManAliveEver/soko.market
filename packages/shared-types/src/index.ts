@@ -49,6 +49,7 @@ export interface BusinessSummary {
   id: string;
   name: string;
   language: SupportedLanguage;
+  sokoId: string;
 }
 
 export interface MembershipSummary {

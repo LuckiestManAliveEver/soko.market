@@ -1239,6 +1239,38 @@ button:disabled {
   padding: 10px;
 }
 
+.soko-id-card {
+  background: #eef7f1;
+  border: 1px solid #b9d9c6;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.soko-id-card span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.soko-id-card strong {
+  color: #0f5c3d;
+  font-size: 22px;
+  overflow-wrap: anywhere;
+}
+
+.soko-id-card p {
+  color: #516258;
+  margin: 0;
+}
+
+.storefront-share-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .agent-profile-surface {
   display: grid;
   gap: 14px;
@@ -1446,7 +1478,8 @@ button:disabled {
   .storefront-product-grid,
   .storefront-product-tile,
   .storefront-cart-lines div,
-  .storefront-crm-actions {
+  .storefront-crm-actions,
+  .storefront-share-actions {
     grid-template-columns: 1fr;
   }
 

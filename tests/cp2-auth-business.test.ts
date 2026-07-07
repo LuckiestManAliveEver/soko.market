@@ -27,6 +27,7 @@ interface CreateBusinessResponse {
   business: {
     id: string;
     language: string;
+    sokoId: string;
   };
   membership: {
     role: string;
@@ -47,6 +48,7 @@ interface ProductResponse {
 
 interface PublicStorefrontResponse {
   agentId: string;
+  sokoId: string;
   businessName: string;
   products: Array<{
     id: string;
@@ -107,6 +109,7 @@ describe("CP2 auth and business creation", () => {
     );
 
     expect(business.business.language).toBe("sw");
+    expect(business.business.sokoId).toMatch(/^\+254-A\d{8}$/);
     expect(business.membership.role).toBe("owner");
 
     const ownerRole = await postJson<RoleCheckResponse>(
@@ -153,6 +156,7 @@ describe("CP2 auth and business creation", () => {
         "auth.otp_verified",
         "account.created",
         "business.created",
+        "business.global_shop_id_created",
         "membership.created"
       ])
     );
@@ -333,11 +337,17 @@ describe("CP2 auth and business creation", () => {
     });
 
     expect(pinSetup.account.id).toBe(socialBody.account.id);
+    expect(business.business.sokoId).toMatch(/^\+254-A\d{8}$/);
     expect(ownerRole.allowed).toBe(true);
     expect(resumed.statusCode).toBe(200);
     expect(resumed.json<VerifyOtpResponse>().resumed).toBe(true);
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["auth.social_login", "business.created", "auth.pin_set"])
+      expect.arrayContaining([
+        "auth.social_login",
+        "business.created",
+        "business.global_shop_id_created",
+        "auth.pin_set"
+      ])
     );
 
     await app.close();
@@ -610,9 +620,13 @@ describe("CP2 auth and business creation", () => {
     );
 
     const agentId = createExpectedAgentId(business.business.id, businessName);
-    const publicResponse = await app.inject({
+    const legacyPublicResponse = await app.inject({
       method: "GET",
       url: `/public/storefronts/${agentId}`
+    });
+    const publicResponse = await app.inject({
+      method: "GET",
+      url: `/public/storefronts/${encodeURIComponent(business.business.sokoId)}`
     });
     const privateProducts = await app.inject({
       method: "GET",
@@ -620,9 +634,11 @@ describe("CP2 auth and business creation", () => {
     });
 
     expect(publicResponse.statusCode).toBe(200);
+    expect(legacyPublicResponse.statusCode).toBe(200);
     expect(privateProducts.statusCode).toBe(401);
     expect(publicResponse.json<PublicStorefrontResponse>()).toEqual({
-      agentId,
+      agentId: business.business.sokoId,
+      sokoId: business.business.sokoId,
       businessName,
       products: [
         {
@@ -633,6 +649,9 @@ describe("CP2 auth and business creation", () => {
         }
       ]
     });
+    expect(legacyPublicResponse.json<PublicStorefrontResponse>().sokoId).toBe(
+      business.business.sokoId
+    );
     expect(publicResponse.json().products[0]).not.toHaveProperty("businessId");
     expect(publicResponse.json().products[0]).not.toHaveProperty("sku");
     expect(publicResponse.json().products[0]).not.toHaveProperty("quantity");

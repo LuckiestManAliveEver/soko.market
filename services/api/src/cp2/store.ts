@@ -209,6 +209,7 @@ export interface PublicStorefrontProductSummary {
 
 export interface PublicStorefrontSummary {
   agentId: string;
+  sokoId: string;
   businessName: string;
   products: PublicStorefrontProductSummary[];
 }
@@ -774,10 +775,17 @@ export class Cp2Store {
       );
     }
 
+    const businessId = randomUUID();
+    const sokoId = this.createGlobalShopId({
+      businessId,
+      businessName: name,
+      destination: session.account.primaryAuthDestination
+    });
     const business: BusinessSummary = {
-      id: randomUUID(),
+      id: businessId,
       name,
-      language: input.language
+      language: input.language,
+      sokoId
     };
     const membership: MembershipSummary = {
       id: randomUUID(),
@@ -801,7 +809,20 @@ export class Cp2Store {
       occurredAt: now.toISOString(),
       payload: {
         name: business.name,
-        language: business.language
+        language: business.language,
+        sokoId: business.sokoId
+      }
+    });
+
+    this.recordAuditEvent({
+      type: "business.global_shop_id_created",
+      aggregateType: "business",
+      aggregateId: business.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        sokoId: business.sokoId,
+        namespace: extractSokoIdNamespace(business.sokoId)
       }
     });
 
@@ -864,16 +885,20 @@ export class Cp2Store {
   }
 
   getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
-    const business = [...this.businesses.values()].find(
-      (candidate) => createPublicAgentId(candidate) === input.agentId
-    );
+    const storefrontId = normalizeStorefrontLookupId(input.agentId);
+    const business = [...this.businesses.values()].find((candidate) => {
+      const sokoId = normalizeStorefrontLookupId(candidate.sokoId);
+      const legacyAgentId = normalizeStorefrontLookupId(createPublicAgentId(candidate));
+      return sokoId === storefrontId || legacyAgentId === storefrontId;
+    });
 
     if (business === undefined) {
       throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
     }
 
     return {
-      agentId: input.agentId,
+      agentId: business.sokoId,
+      sokoId: business.sokoId,
       businessName: business.name,
       products: this.productsForBusiness(business.id)
         .filter((product) => product.quantity > 0)
@@ -5246,6 +5271,38 @@ export class Cp2Store {
       })
     );
   }
+
+  private createGlobalShopId(input: {
+    businessId: string;
+    businessName: string;
+    destination: string;
+  }): string {
+    const namespace = inferCountryNamespace(input.destination);
+    const seed = `${input.businessId}:${input.businessName}:${namespace}`;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const digest = createHash("sha256").update(`${seed}:${attempt}`).digest("hex").slice(0, 12);
+      const numericId = (Number.parseInt(digest, 16) % 100_000_000).toString().padStart(8, "0");
+      const candidate = `${namespace}-A${numericId}`;
+
+      if (!this.hasGlobalShopId(candidate)) {
+        return candidate;
+      }
+    }
+
+    throw new Cp2Error(
+      500,
+      "soko_id_collision",
+      "A unique Soko Global Shop ID could not be generated."
+    );
+  }
+
+  private hasGlobalShopId(sokoId: string): boolean {
+    const normalized = normalizeStorefrontLookupId(sokoId);
+    return [...this.businesses.values()].some(
+      (business) => normalizeStorefrontLookupId(business.sokoId) === normalized
+    );
+  }
 }
 
 export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
@@ -5260,6 +5317,20 @@ function createPublicAgentId(business: BusinessSummary): string {
     .slice(0, 48);
 
   return seed.length === 0 ? "soko-agent" : seed;
+}
+
+function inferCountryNamespace(destination: string): string {
+  const match = destination.match(/^\+(\d{1,3})/);
+  return match === null ? "+254" : `+${match[1]}`;
+}
+
+function extractSokoIdNamespace(sokoId: string): string {
+  const match = sokoId.match(/^(\+\d{1,3})-A\d{8}$/);
+  return match?.[1] ?? "+254";
+}
+
+function normalizeStorefrontLookupId(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function formatRuntimeModelMessage(

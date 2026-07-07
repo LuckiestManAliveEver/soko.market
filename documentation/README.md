@@ -39,14 +39,18 @@ When documents disagree, follow this order:
    - TIEL implementation supplement.
    - Adds trust degradation handling, key recovery, federated Identity Authority, offline session tokens, local IA cache, and acceptance criteria.
 
-8. `1000157660.png`, `1000157661.png`, `1000157662.png`
+8. `Soko_Global_Shop_ID_Concept.docx` and `CP18_GLOBAL_SHOP_ID.md`
+   - CP18 frontend concept and kickoff brief.
+   - Defines the Soko Global Shop ID as the permanent Business Agent storefront identity.
+
+9. `1000157660.png`, `1000157661.png`, `1000157662.png`
    - Mobile UI references.
    - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
 
-9. `Soko doc 4 June .pdf`
-   - Broken placeholder.
-   - Contains only `Soko.markeyl`.
-   - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.
+10. `Soko doc 4 June .pdf`
+    - Broken placeholder.
+    - Contains only `Soko.markeyl`.
+    - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.
 
 ## Core Implementation Principles
 
@@ -726,6 +730,7 @@ Rollback point:
 Goal:
 
 - Prepare extensibility without compromising safety.
+- Status: deferred on 2026-07-07 while CP18 starts.
 
 Prerequisite:
 
@@ -756,35 +761,53 @@ Rollback point:
 - Backup: skill registry, installed skill list, permission grants.
 - Rollback action: disable all non-core skills and restore prior tool registry.
 
-### CP18: Trusted Identity Execution Layer
+### CP18: Global Shop ID
 
 Goal:
 
-- Add cryptographic identity and trust levels after the core commerce system is stable.
+- Establish a permanent Soko Global Shop ID as the customer-facing identity for every Business Agent storefront.
+
+Source:
+
+- `documentation/Soko_Global_Shop_ID_Concept.docx`
+- `documentation/CP18_GLOBAL_SHOP_ID.md`
+
+Core concept:
+
+```text
+The BigFish soko: +254-A12567835
+```
+
+Where:
+
+- `+254` is the country namespace.
+- `A` is the Business Agent identifier prefix.
+- `12567835` is the unique global shop identifier.
 
 Deliverables:
 
-- Identity Authority prototype.
-- Trusted Identity Module abstraction.
-- Device trust levels.
-- Trust-level tokens.
-- Operation gating by trust level.
-- Offline Session Tokens.
-- Threshold key recovery design.
-- Federated IA design.
+- Stable global shop ID generation using the `+country-A########` format.
+- Business Agent identity display in owner storefront/profile surfaces.
+- Public storefront display of the shop ID.
+- Customer conversation entry by Soko ID.
+- Copy/share affordances for packaging, receipts, QR codes, and storefront sharing.
+- Collision handling and audit events for ID creation.
+- Tests for ID creation, uniqueness, lookup, and storefront routing.
 
 Exit criteria:
 
-- Trust level is declared in authentication tokens.
-- High-value operations can require minimum trust level.
-- Recovery flow is tested.
-- Offline token expiry is enforced.
+- Every business has a stable Soko Global Shop ID.
+- Owner UI and public storefront UI both present the ID prominently.
+- Customers can use the ID to find or resume a storefront conversation.
+- Phone numbers remain contact details rather than primary shop identity.
+- Generated IDs are unique, auditable, and covered by tests.
+- Legacy storefront slugs continue to resolve while new URLs use the Soko ID.
 
 Rollback point:
 
-- Tag: `checkpoint/cp18-tiel`
-- Backup: identity registry, key recovery test fixtures, trust policy config.
-- Rollback action: fall back to standard auth for non-sensitive operations and block trust-gated operations.
+- Tag: `checkpoint/cp18-global-shop-id`
+- Backup: generated shop IDs, storefront routing map, and audit events.
+- Rollback action: hide Soko ID surfaces while preserving generated IDs and keeping existing storefront URLs/contact workflows active.
 
 ## Standard Checkpoint Procedure
 

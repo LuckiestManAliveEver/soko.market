@@ -76,6 +76,7 @@ interface BusinessResponse {
     id: string;
     name: string;
     language: SupportedLanguage;
+    sokoId: string;
   };
   membership: {
     role: string;
@@ -155,6 +156,7 @@ interface PublicStorefrontProductSummary {
 
 interface PublicStorefrontSummary {
   agentId: string;
+  sokoId: string;
   businessName: string;
   products: PublicStorefrontProductSummary[];
 }
@@ -3065,6 +3067,7 @@ function OwnerApp() {
               <strong>Soko.market</strong>
               <span>{business?.name ?? "Owner setup"}</span>
               <small>{setupComplete ? agentSettings.name : statusMessage}</small>
+              {business?.sokoId ? <small>{business.sokoId}</small> : null}
             </span>
           </button>
           <div className="header-actions">
@@ -4652,7 +4655,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
             <span className="agent-avatar">S</span>
             <div>
               <strong>{storefront.businessName}</strong>
-              <span>Product browsing chat</span>
+              <span>{storefront.sokoId}</span>
             </div>
           </div>
 
@@ -4661,7 +4664,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <span>Agent</span>
               <p>
                 Karibu to {storefront.businessName}. I can help you browse products and prepare
-                checkout when you are ready.
+                checkout when you are ready. Use {storefront.sokoId} any time you want to return to
+                this shop.
               </p>
             </div>
 
@@ -6339,6 +6343,11 @@ function AgentProfileSurface({
     setIsEditing(false);
   }
 
+  function copyStorefrontValue(value: string, label: string) {
+    void copyTextToClipboard(value);
+    window.alert(`${label} copied`);
+  }
+
   return (
     <main className="agent-profile-surface">
       <section className="agent-profile-header">
@@ -6419,12 +6428,29 @@ function AgentProfileSurface({
 
         <div className="record-form">
           <div className="section-heading">
-            <p className="eyebrow">Global agent ID</p>
+            <p className="eyebrow">Soko Global Shop ID</p>
             <h3>Public storefront</h3>
           </div>
+          <div className="soko-id-card">
+            <span>Permanent shop identity</span>
+            <strong>{business.sokoId}</strong>
+            <p>Print this on packaging, receipts, QR codes, and storefront material.</p>
+            <div className="storefront-share-actions">
+              <button type="button" onClick={() => copyStorefrontValue(business.sokoId, "Soko ID")}>
+                Copy ID
+              </button>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => copyStorefrontValue(storefrontUrl, "Storefront URL")}
+              >
+                Copy URL
+              </button>
+            </div>
+          </div>
           <label>
-            Public ID
-            <input value={createPublicStorefrontAgentId(business)} disabled />
+            Legacy public agent ID
+            <input value={createLegacyPublicStorefrontAgentId(business)} disabled />
           </label>
           <label>
             Storefront URL
@@ -6893,7 +6919,13 @@ function readStoredBusiness(): ActiveBusiness | null {
       (parsed.language === "en" || parsed.language === "sw") &&
       typeof parsed.role === "string"
     ) {
-      return parsed;
+      return {
+        ...parsed,
+        sokoId:
+          typeof parsed.sokoId === "string" && isSokoId(parsed.sokoId)
+            ? parsed.sokoId
+            : createFallbackSokoId(parsed.id, parsed.name)
+      };
     }
   } catch {
     localStorage.removeItem(activeBusinessStorageKey);
@@ -7018,6 +7050,14 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
 }
 
 function createPublicStorefrontAgentId(business: ActiveBusiness): string {
+  if (isSokoId(business.sokoId)) {
+    return business.sokoId;
+  }
+
+  return createFallbackSokoId(business.id, business.name);
+}
+
+function createLegacyPublicStorefrontAgentId(business: ActiveBusiness): string {
   const seed = `${business.id}-${business.name}`
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -7040,6 +7080,38 @@ function createStorefrontUrl(agentId: string): string {
   }
 
   return `https://soko.market/agent/${normalizedAgentId}`;
+}
+
+function createFallbackSokoId(businessId: string, businessName: string): string {
+  const seed = `${businessId}:${businessName}`;
+  let hash = 0;
+
+  for (const character of seed) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+
+  return `+254-A${(hash % 100_000_000).toString().padStart(8, "0")}`;
+}
+
+function isSokoId(value: unknown): value is string {
+  return typeof value === "string" && /^\+\d{1,3}-A\d{8}$/.test(value);
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard !== undefined) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textArea);
 }
 
 function splitListInput(value: string): string[] {

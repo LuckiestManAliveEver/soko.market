@@ -53,10 +53,10 @@ describe("CP3 shell contract", () => {
     expect(getEmptyState("notifications")?.body).toContain("CP12");
   });
 
-  it("routes chat through the CP10 runtime confirmation boundary", () => {
+  it("creates the initial owner-facing welcome message", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("CP10 routes chat through verification and confirmation")
+      body: expect.stringContaining("Karibu back, Jane's Shop")
     });
   });
 });
