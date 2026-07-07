@@ -1074,13 +1074,6 @@ function OwnerApp() {
 
   const shouldShowLogin = business !== null && ownerAuth !== null && !isWorkspaceUnlocked;
   const setupComplete = business !== null && !shouldShowLogin;
-  const activeQueueCount =
-    syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
-  const syncLabel = setupComplete
-    ? activeQueueCount === 0
-      ? "Synced"
-      : `${activeQueueCount} queued`
-    : "Waiting for setup";
   const userLabel = session?.user.displayName ?? "Signed out";
   const activeImportJob =
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
@@ -2322,6 +2315,14 @@ function OwnerApp() {
     }
   }
 
+  function openStorefront() {
+    if (!setupComplete) {
+      return;
+    }
+
+    window.open(agentSettings.storefrontUrl, "_blank", "noopener,noreferrer");
+  }
+
   async function replaySyncQueue() {
     if (business === null) {
       return;
@@ -2950,7 +2951,14 @@ function OwnerApp() {
               <span className={isOnline ? "status-pill online" : "status-pill offline"}>
                 {isOnline ? "Online" : "Offline"}
               </span>
-              <span className="status-pill sync">{syncLabel}</span>
+              <button
+                className="status-pill storefront"
+                type="button"
+                onClick={openStorefront}
+                disabled={!setupComplete}
+              >
+                Storefront
+              </button>
             </div>
             <button
               className="icon-button"
