@@ -329,6 +329,10 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.social-email-input {
+  grid-column: 1 / -1;
+}
+
 .panel .social-signup-button {
   align-items: center;
   background: #ffffff;
@@ -1095,6 +1099,7 @@ button:disabled {
 
 .storefront-product-card,
 .storefront-cart-summary,
+.storefront-crm-card,
 .storefront-checkout {
   background: #f7f8f6;
   border: 1px solid #dbe4dc;
@@ -1108,16 +1113,47 @@ button:disabled {
 }
 
 .storefront-product-card > div:first-child,
-.storefront-cart-summary > div:first-child {
+.storefront-cart-summary > div:first-child,
+.storefront-crm-card > div:first-child {
   display: grid;
   gap: 2px;
 }
 
 .storefront-product-card span,
-.storefront-cart-summary span {
+.storefront-cart-summary span,
+.storefront-crm-card span {
   color: #516258;
   font-size: 12px;
   font-weight: 800;
+}
+
+.storefront-crm-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.storefront-crm-actions button {
+  background: #117a4f;
+  border-radius: 6px;
+  color: #ffffff;
+  font-weight: 800;
+  min-height: 42px;
+  padding: 9px 10px;
+}
+
+.storefront-crm-notes {
+  display: grid;
+  gap: 8px;
+}
+
+.storefront-crm-notes p {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
 }
 
 .storefront-product-grid {
@@ -1360,7 +1396,18 @@ button:disabled {
   }
 
   .composer {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .composer .send-button {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .composer-input span {
+    display: none;
   }
 
   .message-list {
@@ -1398,12 +1445,14 @@ button:disabled {
 
   .storefront-product-grid,
   .storefront-product-tile,
-  .storefront-cart-lines div {
+  .storefront-cart-lines div,
+  .storefront-crm-actions {
     grid-template-columns: 1fr;
   }
 
   .storefront-product-tile button,
   .storefront-cart-summary button,
+  .storefront-crm-actions button,
   .storefront-checkout button,
   .storefront-composer button {
     justify-self: start;

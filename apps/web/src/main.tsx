@@ -132,6 +132,7 @@ interface OwnerAuthRecord {
   contact: string;
   countryCode: CountryDialCode;
   pinSet?: boolean;
+  provider?: SocialSignupProvider;
 }
 
 interface ProductSummary {
@@ -173,6 +174,12 @@ interface StorefrontCheckoutDetails {
   name: string;
   phone: string;
   note: string;
+}
+
+interface StorefrontCrmNote {
+  id: string;
+  label: string;
+  body: string;
 }
 
 interface CustomerSummary {
@@ -994,11 +1001,17 @@ function OwnerApp() {
       "+254"
   );
   const [destination, setDestination] = useState(
-    initialOwnerAuth !== null
+    initialOwnerAuth !== null && !initialOwnerAuth.contact.includes("@")
       ? stripDialCode(initialOwnerAuth.contact, initialOwnerAuth.countryCode)
       : initialSetupDraft?.channel === "phone"
         ? stripDialCode(initialSetupDraft.destination, initialSetupDraft.countryCode)
         : (initialSetupDraft?.destination ?? "")
+  );
+  const [socialEmail, setSocialEmail] = useState(
+    initialOwnerAuth?.contact.includes("@") ? initialOwnerAuth.contact : ""
+  );
+  const [socialProvider, setSocialProvider] = useState<SocialSignupProvider | null>(
+    initialOwnerAuth?.provider ?? null
   );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
@@ -1291,6 +1304,7 @@ function OwnerApp() {
       setChallenge(response);
       setOtp(response.devOtp ?? "");
       setIsOtpVerified(false);
+      setSocialProvider(null);
       setStatusMessage(`OTP sent to ${response.destination}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -1320,17 +1334,68 @@ function OwnerApp() {
       });
       setSession(response);
       setIsOtpVerified(true);
+      setSocialProvider(null);
       setStatusMessage("OTP verified. Enter your PIN.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
   }
 
-  function startSocialSignup(provider: SocialSignupProvider) {
+  async function authenticateSocialProfile(provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
-    setStatusMessage(
-      `${selectedProvider?.label ?? "Social"} signup is ready in the UI. Connect the OAuth provider to finish this flow.`
-    );
+    const email = socialEmail.trim().toLowerCase();
+
+    if (!isValidContact("email", email)) {
+      setStatusMessage("Enter the email connected to your social profile");
+      return;
+    }
+
+    try {
+      const response = await postJson<SessionResponse>("/auth/social/login", {
+        provider,
+        email,
+        displayName: email.split("@")[0]
+      });
+      setSession(response);
+      setChannel("email");
+      setDestination(email);
+      setSocialEmail(email);
+      setSocialProvider(provider);
+      setChallenge(null);
+      setOtp("");
+      setIsOtpVerified(true);
+
+      if (business !== null) {
+        const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
+          businessId: business.id,
+          role: "owner"
+        });
+
+        if (!roleCheck.allowed) {
+          setStatusMessage("This social profile is not an owner for this workspace");
+          return;
+        }
+
+        const nextOwnerAuth: OwnerAuthRecord = {
+          contact: email,
+          countryCode,
+          pinSet: true,
+          ...(provider === undefined ? {} : { provider })
+        };
+        setOwnerAuth(nextOwnerAuth);
+        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+        setIsWorkspaceUnlocked(true);
+        setView("chat");
+        setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete`);
+        return;
+      }
+
+      setStatusMessage(
+        `${selectedProvider?.label ?? "Social"} profile verified. Register the business, then set your PIN to finish.`
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
   }
 
   function updateOwnerPinSet(pinSet: boolean) {
@@ -1540,7 +1605,7 @@ function OwnerApp() {
     }
 
     if (!isOtpVerified) {
-      setStatusMessage("Verify OTP before finishing setup");
+      setStatusMessage("Verify OTP or social profile before finishing setup");
       return;
     }
 
@@ -1550,23 +1615,27 @@ function OwnerApp() {
     }
 
     try {
-      await postJson<SessionResponse>("/auth/pin/setup", {
-        pin: signupPin
-      });
       const response = await postJson<BusinessResponse>("/businesses", {
         name: businessName.trim(),
         language
+      });
+      await postJson<SessionResponse>("/auth/pin/setup", {
+        pin: signupPin
       });
       const nextBusiness = {
         ...response.business,
         role: response.membership.role
       };
       const nextAgent = createDefaultAgent(nextBusiness);
-      const contactValue = composeSignupContact(channel, countryCode, destination);
+      const contactValue =
+        channel === "email"
+          ? destination.trim().toLowerCase()
+          : composeSignupContact(channel, countryCode, destination);
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: contactValue,
         countryCode,
-        pinSet: true
+        pinSet: true,
+        ...(socialProvider === null ? {} : { provider: socialProvider })
       };
       setBusiness(nextBusiness);
       setOwnerAuth(nextOwnerAuth);
@@ -3041,6 +3110,7 @@ function OwnerApp() {
             isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
+            socialEmail={socialEmail}
             businessName={businessName}
             language={language}
             session={session}
@@ -3056,7 +3126,8 @@ function OwnerApp() {
             onCreateBusiness={() => void createBusiness()}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
-            onSocialSignup={startSocialSignup}
+            onSocialEmailChange={setSocialEmail}
+            onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -3070,6 +3141,7 @@ function OwnerApp() {
             hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
+            socialEmail={socialEmail}
             statusMessage={statusMessage}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -3083,6 +3155,8 @@ function OwnerApp() {
             onCancelPinRecovery={cancelPinRecovery}
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
+            onSocialEmailChange={setSocialEmail}
+            onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
             onLogin={() => void loginWithPin()}
           />
         ) : view === "agent" ? (
@@ -3138,6 +3212,7 @@ interface SetupPanelProps {
   isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
+  socialEmail: string;
   businessName: string;
   language: SupportedLanguage;
   session: SessionResponse | null;
@@ -3153,6 +3228,7 @@ interface SetupPanelProps {
   onCreateBusiness: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
+  onSocialEmailChange: (email: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
 }
 
@@ -3169,6 +3245,16 @@ function SetupPanel(props: SetupPanelProps) {
           <h2>Owner access</h2>
         </div>
         <div className="social-signup-grid" aria-label="Social signup options">
+          <label className="social-email-input">
+            Social profile email
+            <input
+              value={props.socialEmail}
+              onChange={(event) => props.onSocialEmailChange(event.target.value)}
+              inputMode="email"
+              type="email"
+              placeholder="you@example.com"
+            />
+          </label>
           {socialSignupProviders.map((provider) => (
             <button
               className={`social-signup-button ${provider.id}`}
@@ -3267,8 +3353,34 @@ function SetupPanel(props: SetupPanelProps) {
       {props.isOtpVerified ? (
         <section className="panel">
           <div className="section-heading">
-            <p className="eyebrow">Login PIN</p>
-            <h2>Create PIN</h2>
+            <p className="eyebrow">Step 2</p>
+            <h2>Business setup</h2>
+          </div>
+          <label>
+            Business name
+            <input
+              value={props.businessName}
+              onChange={(event) => props.onBusinessNameChange(event.target.value)}
+            />
+          </label>
+          <label>
+            Language
+            <select
+              value={props.language}
+              onChange={(event) => props.onLanguageChange(event.target.value as SupportedLanguage)}
+            >
+              <option value="en">English</option>
+              <option value="sw">Swahili</option>
+            </select>
+          </label>
+        </section>
+      ) : null}
+
+      {props.isOtpVerified && props.businessName.trim().length > 0 ? (
+        <section className="panel">
+          <div className="section-heading">
+            <p className="eyebrow">Step 3</p>
+            <h2>Create login PIN</h2>
           </div>
           <label>
             PIN
@@ -3294,15 +3406,6 @@ function SetupPanel(props: SetupPanelProps) {
               placeholder="Re-enter PIN"
             />
           </label>
-        </section>
-      ) : null}
-
-      <section className="panel">
-        <div className="section-heading with-action">
-          <div>
-            <p className="eyebrow">Step 2</p>
-            <h2>Business setup</h2>
-          </div>
           <button
             type="button"
             onClick={props.onCreateBusiness}
@@ -3314,27 +3417,10 @@ function SetupPanel(props: SetupPanelProps) {
               props.businessName.trim().length === 0
             }
           >
-            Finish
+            Finish signup
           </button>
-        </div>
-        <label>
-          Business name
-          <input
-            value={props.businessName}
-            onChange={(event) => props.onBusinessNameChange(event.target.value)}
-          />
-        </label>
-        <label>
-          Language
-          <select
-            value={props.language}
-            onChange={(event) => props.onLanguageChange(event.target.value as SupportedLanguage)}
-          >
-            <option value="en">English</option>
-            <option value="sw">Swahili</option>
-          </select>
-        </label>
-      </section>
+        </section>
+      ) : null}
     </main>
   );
 }
@@ -3350,6 +3436,7 @@ interface LoginPanelProps {
   hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
+  socialEmail: string;
   statusMessage: string;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -3363,6 +3450,8 @@ interface LoginPanelProps {
   onCancelPinRecovery: () => void;
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
+  onSocialEmailChange: (email: string) => void;
+  onSocialLogin: (provider: SocialSignupProvider) => void;
   onLogin: () => void;
 }
 
@@ -3432,6 +3521,32 @@ function LoginPanel(props: LoginPanelProps) {
         ) : (
           <p className="shell-note">Use your saved phone number and PIN to unlock this device.</p>
         )}
+        <div className="signup-divider">
+          <span>or use social profile</span>
+        </div>
+        <label>
+          Social profile email
+          <input
+            value={props.socialEmail}
+            onChange={(event) => props.onSocialEmailChange(event.target.value)}
+            inputMode="email"
+            type="email"
+            placeholder="you@example.com"
+          />
+        </label>
+        <div className="social-signup-grid" aria-label="Social login options">
+          {socialSignupProviders.map((provider) => (
+            <button
+              className={`social-signup-button ${provider.id}`}
+              key={provider.id}
+              type="button"
+              onClick={() => props.onSocialLogin(provider.id)}
+            >
+              <span>{provider.mark}</span>
+              {provider.label}
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="panel">
@@ -4233,6 +4348,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [storefront, setStorefront] = useState<PublicStorefrontSummary | null>(null);
   const [messages, setMessages] = useState<StorefrontChatMessage[]>([]);
   const [cart, setCart] = useState<StorefrontCartItem[]>([]);
+  const [crmNotes, setCrmNotes] = useState<StorefrontCrmNote[]>([]);
   const [draft, setDraft] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
@@ -4289,6 +4405,52 @@ function PublicStorefrontChat(props: { agentId: string }) {
         body
       }
     ]);
+  }
+
+  function addCrmNote(label: string, body: string) {
+    setCrmNotes((notes) => [
+      ...notes,
+      {
+        id: `crm-${Date.now()}-${notes.length}`,
+        label,
+        body
+      }
+    ]);
+  }
+
+  function requestCallback() {
+    setCheckoutOpen(true);
+    addCrmNote("Callback requested", "Customer asked the storefront agent for follow-up.");
+    appendMessage("customer", "I would like a callback.");
+    appendMessage(
+      "agent",
+      "I can help with that. Add your name, phone number, and a note below so the store can follow up."
+    );
+  }
+
+  function requestQuote() {
+    if (cartCount === 0) {
+      appendMessage(
+        "agent",
+        "Add the products you are interested in first, then I can prepare a quote request."
+      );
+      return;
+    }
+
+    setCheckoutOpen(true);
+    addCrmNote("Quote requested", `${cartCount} item${cartCount === 1 ? "" : "s"} selected.`);
+    appendMessage("customer", "Please prepare a quote.");
+    appendMessage("agent", "I can prepare a quote request. Add your contact details below.");
+  }
+
+  function requestSupport() {
+    setCheckoutOpen(true);
+    addCrmNote("Support requested", "Customer requested help from the storefront chat.");
+    appendMessage("customer", "I need customer support.");
+    appendMessage(
+      "agent",
+      "Tell me what you need help with. Add your contact details below if you want the store to follow up."
+    );
   }
 
   function addProductToCart(product: PublicStorefrontProductSummary) {
@@ -4351,6 +4513,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
         "agent",
         `${matchedProduct.name} is in your order. Resend checkout when you are ready to finish.`
       );
+      addCrmNote("Product interest", `Customer added ${matchedProduct.name} from chat.`);
       return;
     }
 
@@ -4370,6 +4533,36 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
       setCheckoutOpen(true);
       appendMessage("agent", "I can prepare checkout now. Please add your details below.");
+      return;
+    }
+
+    if (
+      lowerMessage.includes("quote") ||
+      lowerMessage.includes("price") ||
+      lowerMessage.includes("estimate")
+    ) {
+      requestQuote();
+      return;
+    }
+
+    if (
+      lowerMessage.includes("support") ||
+      lowerMessage.includes("help") ||
+      lowerMessage.includes("complaint") ||
+      lowerMessage.includes("return") ||
+      lowerMessage.includes("refund") ||
+      lowerMessage.includes("delivery")
+    ) {
+      requestSupport();
+      return;
+    }
+
+    if (
+      lowerMessage.includes("call") ||
+      lowerMessage.includes("contact me") ||
+      lowerMessage.includes("follow up")
+    ) {
+      requestCallback();
       return;
     }
 
@@ -4409,6 +4602,12 @@ function PublicStorefrontChat(props: { agentId: string }) {
     }
 
     setCheckoutOpen(false);
+    addCrmNote(
+      "Contact captured",
+      `${checkoutDetails.name.trim()} - ${checkoutDetails.phone.trim()} - ${
+        checkoutDetails.note.trim() || "No note"
+      }`
+    );
     appendMessage(
       "agent",
       `Your checkout request is prepared for ${cartCount} item${cartCount === 1 ? "" : "s"}. The store can use these details to follow up without requiring an account.`
@@ -4525,6 +4724,36 @@ function PublicStorefrontChat(props: { agentId: string }) {
                 </button>
               </section>
             ) : null}
+
+            <section className="storefront-crm-card" aria-label="Customer support">
+              <div>
+                <span>Customer care</span>
+                <strong>Conversation and follow-up</strong>
+              </div>
+              <div className="storefront-crm-actions">
+                <button type="button" onClick={requestCallback}>
+                  Request callback
+                </button>
+                <button type="button" onClick={requestQuote}>
+                  Request quote
+                </button>
+                <button type="button" onClick={requestSupport}>
+                  Support
+                </button>
+              </div>
+              {crmNotes.length > 0 ? (
+                <div className="storefront-crm-notes" aria-label="Conversation notes">
+                  {crmNotes.slice(-3).map((note) => (
+                    <p key={note.id}>
+                      <strong>{note.label}</strong>
+                      <span>{note.body}</span>
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p>Ask about products, delivery, quotes, support, returns, or follow-up.</p>
+              )}
+            </section>
 
             {messages.map((message) => (
               <div
@@ -6721,7 +6950,8 @@ function readStoredOwnerAuth(): OwnerAuthRecord | null {
       return {
         contact: parsed.contact,
         countryCode: parsed.countryCode,
-        pinSet: typeof parsed.pinSet === "boolean" ? parsed.pinSet : true
+        pinSet: typeof parsed.pinSet === "boolean" ? parsed.pinSet : true,
+        ...(isSocialSignupProvider(parsed.provider) ? { provider: parsed.provider } : {})
       };
     }
   } catch {
@@ -6825,6 +7055,16 @@ function isAgentModel(value: unknown): value is AgentModel {
     value === "sokoclaw-local" ||
     value === "openai-fast" ||
     value === "openai-reasoning"
+  );
+}
+
+function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
+  return (
+    value === "google" ||
+    value === "meta" ||
+    value === "x" ||
+    value === "linkedin" ||
+    value === "other"
   );
 }
 

@@ -455,6 +455,67 @@ export class Cp2Store {
     return this.completeOtpVerification(challenge, now);
   }
 
+  authenticateSocialProfile(input: {
+    provider: string;
+    email: string;
+    displayName?: string;
+    now?: Date;
+  }): VerifyOtpResult {
+    const now = input.now ?? new Date();
+    const destination = normalizeDestination("email", input.email);
+    const destinationKey = destinationAccountKey("email", destination);
+    const existingAccountId = this.accountByDestination.get(destinationKey);
+    const resumed = existingAccountId !== undefined;
+    const account =
+      existingAccountId === undefined
+        ? this.createAccount("email", destination, now)
+        : this.requireAccount(existingAccountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const displayName = input.displayName?.trim();
+
+    if (displayName !== undefined && displayName.length > 0) {
+      this.users.set(user.id, {
+        ...user,
+        displayName
+      });
+    }
+
+    const nextUser = this.requireUser(user.id);
+    const session = this.createSession(account, nextUser, now);
+    this.markSessionPinVerified(session.id, now);
+
+    this.recordAuditEvent({
+      type: "auth.social_login",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: nextUser.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        provider: input.provider,
+        destination
+      }
+    });
+
+    this.recordAuditEvent({
+      type: resumed ? "account.resumed" : "account.created",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: nextUser.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        primaryAuthChannel: account.primaryAuthChannel,
+        primaryAuthDestination: account.primaryAuthDestination
+      }
+    });
+
+    return {
+      account,
+      user: nextUser,
+      session,
+      resumed
+    };
+  }
+
   private validateOtpChallenge(
     challenge: OtpChallenge | undefined,
     now: Date
@@ -701,7 +762,7 @@ export class Cp2Store {
     now?: Date;
   }): CreateBusinessResult {
     const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const session = this.requireAnySession(input.sessionId, now);
 
     const name = input.name.trim();
 

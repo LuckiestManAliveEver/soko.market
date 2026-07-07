@@ -59,6 +59,12 @@ interface OtpVerifyBody {
   otp?: string;
 }
 
+interface SocialAuthBody {
+  displayName?: string;
+  email?: string;
+  provider?: string;
+}
+
 interface PinBody {
   pin?: string;
 }
@@ -386,6 +392,24 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.post(
+    "/auth/social/login",
+    async (request: FastifyRequest<{ Body: SocialAuthBody }>, reply) => {
+      try {
+        const displayName = parseOptionalString(request.body.displayName);
+        const result = store.authenticateSocialProfile({
+          email: parseString(request.body.email, "email"),
+          provider: parseSocialProvider(request.body.provider),
+          ...(displayName === undefined ? {} : { displayName })
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post("/auth/pin/setup", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
     try {
@@ -1665,6 +1689,33 @@ function parseString(value: unknown, name: string): string {
   }
 
   return value.trim();
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new Cp2Error(400, "value_invalid", "Expected a string value.");
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function parseSocialProvider(value: string | undefined): string {
+  if (
+    value === "google" ||
+    value === "meta" ||
+    value === "x" ||
+    value === "linkedin" ||
+    value === "other"
+  ) {
+    return value;
+  }
+
+  throw new Cp2Error(400, "provider_invalid", "Social provider is not supported.");
 }
 
 function parseAuthChannel(value: string | undefined): AuthChannel {

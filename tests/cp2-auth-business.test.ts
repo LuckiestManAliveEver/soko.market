@@ -275,6 +275,74 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("authenticates a social profile and finishes setup with a PIN after business creation", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const social = await app.inject({
+      method: "POST",
+      url: "/auth/social/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        provider: "google",
+        email: "Owner@Social.example",
+        displayName: "Social Owner"
+      })
+    });
+    const sessionCookie = extractSessionCookie(social.headers["set-cookie"]);
+    const socialBody = social.json<VerifyOtpResponse>();
+
+    expect(social.statusCode).toBe(200);
+    expect(socialBody.user.id).toBeTruthy();
+    expect(sessionCookie).toContain("soko_session=");
+
+    const business = await postJson<CreateBusinessResponse>(
+      app,
+      "/businesses",
+      {
+        name: "Social Shop",
+        language: "en"
+      },
+      sessionCookie
+    );
+    const pinSetup = await postJson<VerifyOtpResponse>(
+      app,
+      "/auth/pin/setup",
+      {
+        pin: "2468"
+      },
+      sessionCookie
+    );
+    const ownerRole = await postJson<RoleCheckResponse>(
+      app,
+      "/roles/check",
+      {
+        businessId: business.business.id,
+        role: "owner"
+      },
+      sessionCookie
+    );
+    const resumed = await app.inject({
+      method: "POST",
+      url: "/auth/social/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        provider: "google",
+        email: "owner@social.example"
+      })
+    });
+
+    expect(pinSetup.account.id).toBe(socialBody.account.id);
+    expect(ownerRole.allowed).toBe(true);
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json<VerifyOtpResponse>().resumed).toBe(true);
+    expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["auth.social_login", "business.created", "auth.pin_set"])
+    );
+
+    await app.close();
+  });
+
   it("sets and verifies an owner login PIN after OTP", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
