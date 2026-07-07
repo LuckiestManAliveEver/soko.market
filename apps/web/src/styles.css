@@ -60,6 +60,14 @@ button:disabled {
   padding-top: 76px;
 }
 
+.app-credits {
+  color: #65746a;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 10px 14px 14px;
+  text-align: center;
+}
+
 .top-bar {
   align-items: center;
   background: #ffffff;
@@ -1034,7 +1042,7 @@ button:disabled {
   border: 1px solid #dbe4dc;
   border-radius: 8px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   margin: 0 auto;
   max-width: 920px;
   min-height: calc(100vh - 24px);

@@ -1074,6 +1074,7 @@ function OwnerApp() {
 
   const shouldShowLogin = business !== null && ownerAuth !== null && !isWorkspaceUnlocked;
   const setupComplete = business !== null && !shouldShowLogin;
+  const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
   const activeImportJob =
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
@@ -1119,9 +1120,26 @@ function OwnerApp() {
 
   useEffect(() => {
     if (business !== null) {
-      setAgentSettings((agent) =>
-        agent.globalAgentId.length === 0 ? createDefaultAgent(business) : agent
-      );
+      setAgentSettings((agent) => {
+        const defaultAgent = createDefaultAgent(business);
+
+        if (agent.globalAgentId.length === 0) {
+          return defaultAgent;
+        }
+
+        if (
+          agent.globalAgentId === defaultAgent.globalAgentId &&
+          agent.storefrontUrl === defaultAgent.storefrontUrl
+        ) {
+          return agent;
+        }
+
+        return {
+          ...agent,
+          globalAgentId: defaultAgent.globalAgentId,
+          storefrontUrl: defaultAgent.storefrontUrl
+        };
+      });
       setChatMessages((messages) =>
         messages[0]?.id === "welcome"
           ? createInitialChatMessages(business.name)
@@ -2348,11 +2366,11 @@ function OwnerApp() {
   }
 
   function openStorefront() {
-    if (!setupComplete) {
+    if (!setupComplete || business === null) {
       return;
     }
 
-    window.open(agentSettings.storefrontUrl, "_blank", "noopener,noreferrer");
+    window.location.assign(createPublicStorefrontUrl(business));
   }
 
   async function replaySyncQueue() {
@@ -3072,6 +3090,7 @@ function OwnerApp() {
             agent={agentSettings}
             business={business}
             ownerLabel={userLabel}
+            storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
             onBack={() => setView("chat")}
           />
@@ -3102,6 +3121,9 @@ function OwnerApp() {
             </ChatSurface>
           </main>
         )}
+        <footer className="app-credits">
+          Credits: Soko.market owner tools and storefront chat.
+        </footer>
       </div>
     </Surface>
   );
@@ -4565,6 +4587,9 @@ function PublicStorefrontChat(props: { agentId: string }) {
             />
             <button type="submit">Send</button>
           </form>
+          <footer className="app-credits">
+            Credits: Soko.market storefront chat and catalogue tools.
+          </footer>
         </section>
       </main>
     </Surface>
@@ -6039,6 +6064,7 @@ interface AgentProfileSurfaceProps {
   agent: AgentSettings;
   business: ActiveBusiness;
   ownerLabel: string;
+  storefrontUrl: string;
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
 }
@@ -6047,6 +6073,7 @@ function AgentProfileSurface({
   agent,
   business,
   ownerLabel,
+  storefrontUrl,
   onAgentChange,
   onBack
 }: AgentProfileSurfaceProps) {
@@ -6074,7 +6101,12 @@ function AgentProfileSurface({
   }
 
   function saveAgent() {
-    onAgentChange(draftAgent);
+    const publicAgentId = createPublicStorefrontAgentId(business);
+    onAgentChange({
+      ...draftAgent,
+      globalAgentId: publicAgentId,
+      storefrontUrl: createStorefrontUrl(publicAgentId)
+    });
     setIsEditing(false);
   }
 
@@ -6163,24 +6195,11 @@ function AgentProfileSurface({
           </div>
           <label>
             Public ID
-            <input
-              value={draftAgent.globalAgentId}
-              disabled={!isEditing}
-              onChange={(event) =>
-                updateAgent({
-                  globalAgentId: event.target.value,
-                  storefrontUrl: createStorefrontUrl(event.target.value)
-                })
-              }
-            />
+            <input value={createPublicStorefrontAgentId(business)} disabled />
           </label>
           <label>
             Storefront URL
-            <input
-              value={draftAgent.storefrontUrl}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ storefrontUrl: event.target.value })}
-            />
+            <input value={storefrontUrl} disabled />
           </label>
           <label>
             Language
@@ -6745,12 +6764,8 @@ function readSetupDraft(): SetupDraft | null {
 
 function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
   const businessName = business?.name.trim() || "Soko.market";
-  const seed = `${business?.id ?? "local"}-${businessName}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-  const globalAgentId = seed.length === 0 ? "soko-agent" : seed;
+  const globalAgentId =
+    business === null ? "local-soko-market" : createPublicStorefrontAgentId(business);
 
   return {
     id: `agent-${globalAgentId}`,
@@ -6770,6 +6785,20 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
     integrations: ["Soko.market storefront"],
     status: "active"
   };
+}
+
+function createPublicStorefrontAgentId(business: ActiveBusiness): string {
+  const seed = `${business.id}-${business.name}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+
+  return seed.length === 0 ? "soko-agent" : seed;
+}
+
+function createPublicStorefrontUrl(business: ActiveBusiness): string {
+  return createStorefrontUrl(createPublicStorefrontAgentId(business));
 }
 
 function createStorefrontUrl(agentId: string): string {
