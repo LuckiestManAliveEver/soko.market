@@ -164,6 +164,40 @@ button:disabled {
   padding: 8px;
 }
 
+.message-icon {
+  border: 2px solid currentColor;
+  border-radius: 7px;
+  display: inline-block;
+  height: 18px;
+  position: relative;
+  width: 22px;
+}
+
+.message-icon::after {
+  background: #eef2f6;
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  bottom: -5px;
+  content: "";
+  height: 7px;
+  left: 5px;
+  position: absolute;
+  transform: rotate(45deg);
+  width: 7px;
+}
+
+.header-signout-button {
+  background: #e7ede8;
+  border: 1px solid #cfdad2;
+  border-radius: 8px;
+  color: #23342a;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 42px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
 .top-bar h2,
 .section-heading h2,
 .side-panel h3,
@@ -323,14 +357,103 @@ button:disabled {
   font-size: 13px;
 }
 
+.signup-video-panel {
+  background: #ffffff;
+  border: 1px solid #dde4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.signup-video-player {
+  align-content: end;
+  aspect-ratio: 16 / 9;
+  background:
+    linear-gradient(180deg, rgba(23, 33, 27, 0.08), rgba(23, 33, 27, 0.86)),
+    url("/media/soko-signup-intro-poster.svg") center / cover;
+  border-radius: 8px;
+  color: #ffffff;
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
+  padding: 14px;
+  width: 100%;
+}
+
+.signup-video-stage {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+
+.signup-video-stage span,
+.signup-video-stage p {
+  color: #eef6f0;
+}
+
+.signup-video-stage strong {
+  color: #ffffff;
+  font-size: clamp(18px, 3vw, 28px);
+}
+
+.signup-video-controls {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.signup-video-controls button {
+  background: #ffffff;
+  border-radius: 8px;
+  color: #113f67;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 7px 12px;
+}
+
+.signup-video-controls > span {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.signup-video-progress {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.signup-video-progress span {
+  background: #40c07a;
+  display: block;
+  height: 100%;
+}
+
+.signup-video-panel > div:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.signup-video-panel > div:last-child span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.signup-video-panel > div:last-child strong {
+  font-size: 17px;
+}
+
 .social-signup-grid {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.social-email-input {
-  grid-column: 1 / -1;
 }
 
 .panel .social-signup-button {
@@ -1050,7 +1173,9 @@ button:disabled {
 .public-storefront-shell {
   background: #eef2f0;
   display: grid;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px;
 }
 
@@ -1062,7 +1187,7 @@ button:disabled {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   margin: 0 auto;
   max-width: 920px;
-  min-height: calc(100vh - 24px);
+  min-height: 0;
   overflow: hidden;
   width: 100%;
 }
@@ -1072,7 +1197,7 @@ button:disabled {
   border-bottom: 1px solid #dde4dc;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 12px;
 }
 
@@ -1095,17 +1220,39 @@ button:disabled {
   font-weight: 800;
 }
 
+.public-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: end;
+}
+
+.public-chat-actions button {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  color: #17211b;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 36px;
+  padding: 7px 9px;
+  white-space: nowrap;
+}
+
 .public-message-list {
   align-content: start;
   display: grid;
   gap: 10px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px;
 }
 
 .storefront-product-card,
 .storefront-cart-summary,
 .storefront-crm-card,
+.storefront-receipt,
 .storefront-checkout {
   background: #f7f8f6;
   border: 1px solid #dbe4dc;
@@ -1120,6 +1267,7 @@ button:disabled {
 
 .storefront-product-card > div:first-child,
 .storefront-cart-summary > div:first-child,
+.storefront-receipt > div:first-child,
 .storefront-crm-card > div:first-child {
   display: grid;
   gap: 2px;
@@ -1127,6 +1275,7 @@ button:disabled {
 
 .storefront-product-card span,
 .storefront-cart-summary span,
+.storefront-receipt span,
 .storefront-crm-card span {
   color: #516258;
   font-size: 12px;
@@ -1136,7 +1285,7 @@ button:disabled {
 .storefront-crm-actions {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .storefront-crm-actions button {
@@ -1163,9 +1312,12 @@ button:disabled {
 }
 
 .storefront-product-grid {
-  display: grid;
+  display: flex;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scroll-snap-type: x proximity;
 }
 
 .storefront-product-tile {
@@ -1174,10 +1326,12 @@ button:disabled {
   border: 1px solid #dbe4dc;
   border-radius: 8px;
   display: grid;
+  flex: 0 0 clamp(172px, 32vw, 220px);
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 76px;
   padding: 10px;
+  scroll-snap-align: start;
 }
 
 .storefront-product-tile div {
@@ -1205,6 +1359,22 @@ button:disabled {
 .storefront-cart-lines {
   display: grid;
   gap: 8px;
+}
+
+.storefront-receipt-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.storefront-receipt-lines div {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
 }
 
 .storefront-cart-lines div {
@@ -1392,7 +1562,8 @@ button:disabled {
   }
 
   .status-pill,
-  .icon-button {
+  .icon-button,
+  .header-signout-button {
     min-height: 34px;
   }
 
@@ -1476,15 +1647,31 @@ button:disabled {
     border-left: 0;
     border-radius: 0;
     border-right: 0;
-    min-height: 100vh;
+    min-height: 0;
   }
 
-  .storefront-product-grid,
+  .public-chat-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .public-chat-actions {
+    grid-column: 1 / -1;
+    justify-content: start;
+  }
+
   .storefront-product-tile,
   .storefront-cart-lines div,
   .storefront-crm-actions,
   .storefront-share-actions {
     grid-template-columns: 1fr;
+  }
+
+  .storefront-product-grid {
+    display: flex;
+  }
+
+  .storefront-product-tile {
+    flex-basis: min(76vw, 220px);
   }
 
   .storefront-product-tile button,

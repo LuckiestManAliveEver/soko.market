@@ -138,6 +138,12 @@ interface OwnerAuthRecord {
   provider?: SocialSignupProvider;
 }
 
+interface StoredSocialIdentity {
+  displayName: string;
+  email: string;
+  provider: SocialSignupProvider;
+}
+
 interface ProductSummary {
   id: string;
   businessId: string;
@@ -184,6 +190,21 @@ interface StorefrontCrmNote {
   id: string;
   label: string;
   body: string;
+}
+
+interface ContactPickerContact {
+  name?: string[];
+  tel?: string[];
+  email?: string[];
+}
+
+interface ContactPickerNavigator extends Navigator {
+  contacts?: {
+    select: (
+      properties: Array<"name" | "tel" | "email">,
+      options?: { multiple?: boolean }
+    ) => Promise<ContactPickerContact[]>;
+  };
 }
 
 interface CustomerSummary {
@@ -844,6 +865,7 @@ const activeBusinessStorageKey = "soko.cp3.activeBusiness";
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
+const socialIdentityStorageKey = "soko.chatFirst.socialIdentities";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -855,6 +877,30 @@ const socialSignupProviders: Array<{
   { id: "x", label: "X", mark: "X" },
   { id: "linkedin", label: "LinkedIn", mark: "in" },
   { id: "other", label: "Other social account", mark: "+" }
+];
+
+const signupIntroDurationSeconds = 30;
+const signupIntroScenes = [
+  {
+    startsAt: 0,
+    title: "Start with your shop",
+    body: "Create a Soko shop, get a permanent Shop ID, and open your storefront."
+  },
+  {
+    startsAt: 7,
+    title: "Run daily work in chat",
+    body: "Ask the agent to add products, find customers, prepare invoices, and check payments."
+  },
+  {
+    startsAt: 15,
+    title: "Serve customers from the storefront",
+    body: "Customers browse the catalogue, chat, request support, and prepare checkout."
+  },
+  {
+    startsAt: 23,
+    title: "Keep selling on mobile",
+    body: "Use contacts, invite links, offline sync, and receipts to keep the shop moving."
+  }
 ];
 
 const countryDialCodes: Array<{
@@ -1010,9 +1056,6 @@ function OwnerApp() {
       : initialSetupDraft?.channel === "phone"
         ? stripDialCode(initialSetupDraft.destination, initialSetupDraft.countryCode)
         : (initialSetupDraft?.destination ?? "")
-  );
-  const [socialEmail, setSocialEmail] = useState(
-    initialOwnerAuth?.contact.includes("@") ? initialOwnerAuth.contact : ""
   );
   const [socialProvider, setSocialProvider] = useState<SocialSignupProvider | null>(
     initialOwnerAuth?.provider ?? null
@@ -1347,23 +1390,18 @@ function OwnerApp() {
 
   async function authenticateSocialProfile(provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
-    const email = socialEmail.trim().toLowerCase();
-
-    if (!isValidContact("email", email)) {
-      setStatusMessage("Enter the email connected to your social profile");
-      return;
-    }
+    const identity = getOrCreateSocialIdentity(provider);
+    const email = identity.email;
 
     try {
       const response = await postJson<SessionResponse>("/auth/social/login", {
         provider,
         email,
-        displayName: email.split("@")[0]
+        displayName: identity.displayName
       });
       setSession(response);
       setChannel("email");
       setDestination(email);
-      setSocialEmail(email);
       setSocialProvider(provider);
       setChallenge(null);
       setOtp("");
@@ -1376,7 +1414,24 @@ function OwnerApp() {
         });
 
         if (!roleCheck.allowed) {
-          setStatusMessage("This social profile is not an owner for this workspace");
+          if (ownerAuth === null) {
+            setStatusMessage("This social profile is not linked to this Soko shop yet");
+            return;
+          }
+
+          const linkedOwnerAuth: OwnerAuthRecord = {
+            contact: email,
+            countryCode,
+            pinSet: true,
+            provider
+          };
+          setOwnerAuth(linkedOwnerAuth);
+          localStorage.setItem(ownerAuthStorageKey, JSON.stringify(linkedOwnerAuth));
+          setIsWorkspaceUnlocked(true);
+          setView("chat");
+          setStatusMessage(
+            `${selectedProvider?.label ?? "Social"} profile linked to this Soko shop`
+          );
           return;
         }
 
@@ -3090,18 +3145,24 @@ function OwnerApp() {
               className="icon-button"
               type="button"
               onClick={() => setupComplete && setView("notifications")}
-              aria-label="Notifications"
+              aria-label="Messages"
             >
-              !
+              <span className="message-icon" aria-hidden="true" />
             </button>
-            <button
-              className="icon-button"
-              type="button"
-              onClick={() => (setupComplete ? void logout() : void refreshSession())}
-              aria-label={setupComplete ? "Logout" : "Refresh"}
-            >
-              ...
-            </button>
+            {setupComplete ? (
+              <button className="header-signout-button" type="button" onClick={() => void logout()}>
+                Sign out
+              </button>
+            ) : (
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => void refreshSession()}
+                aria-label="Refresh"
+              >
+                ...
+              </button>
+            )}
           </div>
         </header>
 
@@ -3115,7 +3176,6 @@ function OwnerApp() {
             isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
-            socialEmail={socialEmail}
             businessName={businessName}
             language={language}
             session={session}
@@ -3131,7 +3191,6 @@ function OwnerApp() {
             onCreateBusiness={() => void createBusiness()}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
-            onSocialEmailChange={setSocialEmail}
             onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
           />
         ) : shouldShowLogin ? (
@@ -3146,7 +3205,6 @@ function OwnerApp() {
             hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
-            socialEmail={socialEmail}
             statusMessage={statusMessage}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -3160,7 +3218,6 @@ function OwnerApp() {
             onCancelPinRecovery={cancelPinRecovery}
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
-            onSocialEmailChange={setSocialEmail}
             onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
             onLogin={() => void loginWithPin()}
           />
@@ -3217,7 +3274,6 @@ interface SetupPanelProps {
   isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
-  socialEmail: string;
   businessName: string;
   language: SupportedLanguage;
   session: SessionResponse | null;
@@ -3233,7 +3289,6 @@ interface SetupPanelProps {
   onCreateBusiness: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
-  onSocialEmailChange: (email: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
 }
 
@@ -3244,22 +3299,13 @@ function SetupPanel(props: SetupPanelProps) {
 
   return (
     <main className="setup-grid">
+      <SignupIntroPlayer />
       <section className="panel">
         <div className="section-heading">
           <p className="eyebrow">Step 1</p>
-          <h2>Owner access</h2>
+          <h2>Signup or login</h2>
         </div>
         <div className="social-signup-grid" aria-label="Social signup options">
-          <label className="social-email-input">
-            Social profile email
-            <input
-              value={props.socialEmail}
-              onChange={(event) => props.onSocialEmailChange(event.target.value)}
-              inputMode="email"
-              type="email"
-              placeholder="you@example.com"
-            />
-          </label>
           {socialSignupProviders.map((provider) => (
             <button
               className={`social-signup-button ${provider.id}`}
@@ -3268,7 +3314,7 @@ function SetupPanel(props: SetupPanelProps) {
               onClick={() => props.onSocialSignup(provider.id)}
             >
               <span>{provider.mark}</span>
-              {provider.label}
+              Continue with {provider.label}
             </button>
           ))}
         </div>
@@ -3430,6 +3476,81 @@ function SetupPanel(props: SetupPanelProps) {
   );
 }
 
+function SignupIntroPlayer() {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const fallbackScene = {
+    startsAt: 0,
+    title: "Start with your shop",
+    body: "Create a Soko shop, get a permanent Shop ID, and open your storefront."
+  };
+  const activeScene = signupIntroScenes.reduce(
+    (currentScene, scene) => (elapsedSeconds >= scene.startsAt ? scene : currentScene),
+    fallbackScene
+  );
+  const progress = Math.min(100, (elapsedSeconds / signupIntroDurationSeconds) * 100);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds((current) => {
+        if (current >= signupIntroDurationSeconds) {
+          setIsPlaying(false);
+          return signupIntroDurationSeconds;
+        }
+
+        return current + 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isPlaying]);
+
+  function togglePlayback() {
+    if (elapsedSeconds >= signupIntroDurationSeconds) {
+      setElapsedSeconds(0);
+      setIsPlaying(true);
+      return;
+    }
+
+    setIsPlaying((current) => !current);
+  }
+
+  return (
+    <section className="signup-video-panel" aria-label="Soko.market intro video">
+      <div
+        aria-label="30 second introduction to Soko.market"
+        className="signup-video-player"
+        role="group"
+      >
+        <div className="signup-video-stage">
+          <span>30 sec guide</span>
+          <strong>{activeScene?.title ?? fallbackScene.title}</strong>
+          <p>{activeScene?.body ?? fallbackScene.body}</p>
+        </div>
+        <div className="signup-video-controls">
+          <button type="button" onClick={togglePlayback}>
+            {isPlaying ? "Pause" : elapsedSeconds >= signupIntroDurationSeconds ? "Replay" : "Play"}
+          </button>
+          <div className="signup-video-progress" aria-hidden="true">
+            <span style={{ width: `${progress}%` }} />
+          </div>
+          <span>
+            {elapsedSeconds}s / {signupIntroDurationSeconds}s
+          </span>
+        </div>
+      </div>
+      <div>
+        <span>Signup guide</span>
+        <strong>How Soko.market works</strong>
+      </div>
+    </section>
+  );
+}
+
 interface LoginPanelProps {
   countryCode: CountryDialCode;
   destination: string;
@@ -3441,7 +3562,6 @@ interface LoginPanelProps {
   hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
-  socialEmail: string;
   statusMessage: string;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -3455,7 +3575,6 @@ interface LoginPanelProps {
   onCancelPinRecovery: () => void;
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
-  onSocialEmailChange: (email: string) => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
   onLogin: () => void;
 }
@@ -3471,8 +3590,8 @@ function LoginPanel(props: LoginPanelProps) {
     <main className="setup-grid login-grid">
       <section className="panel">
         <div className="section-heading">
-          <p className="eyebrow">Owner login</p>
-          <h2>{needsOtp ? "Phone verification" : "Phone login"}</h2>
+          <p className="eyebrow">Step 1</p>
+          <h2>Signup or login</h2>
         </div>
         <div className="phone-contact-row">
           <label>
@@ -3529,16 +3648,6 @@ function LoginPanel(props: LoginPanelProps) {
         <div className="signup-divider">
           <span>or use social profile</span>
         </div>
-        <label>
-          Social profile email
-          <input
-            value={props.socialEmail}
-            onChange={(event) => props.onSocialEmailChange(event.target.value)}
-            inputMode="email"
-            type="email"
-            placeholder="you@example.com"
-          />
-        </label>
         <div className="social-signup-grid" aria-label="Social login options">
           {socialSignupProviders.map((provider) => (
             <button
@@ -3548,7 +3657,7 @@ function LoginPanel(props: LoginPanelProps) {
               onClick={() => props.onSocialLogin(provider.id)}
             >
               <span>{provider.mark}</span>
-              {provider.label}
+              Continue with {provider.label}
             </button>
           ))}
         </div>
@@ -4356,6 +4465,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [crmNotes, setCrmNotes] = useState<StorefrontCrmNote[]>([]);
   const [draft, setDraft] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
   const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
     name: "",
     phone: "",
@@ -4363,6 +4473,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   });
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
+  const messageListRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -4400,6 +4511,19 @@ function PublicStorefrontChat(props: { agentId: string }) {
       return product === undefined ? null : { ...product, quantity: item.quantity };
     })
     .filter((item): item is PublicStorefrontProductSummary & { quantity: number } => item !== null);
+
+  useEffect(() => {
+    const messageList = messageListRef.current;
+
+    if (messageList === null) {
+      return;
+    }
+
+    messageList.scrollTo({
+      top: messageList.scrollHeight,
+      behavior: "smooth"
+    });
+  }, [messages.length, cartProducts.length, checkoutOpen, receiptOpen, crmNotes.length]);
 
   function appendMessage(author: StorefrontChatMessage["author"], body: string) {
     setMessages((currentMessages) => [
@@ -4455,6 +4579,90 @@ function PublicStorefrontChat(props: { agentId: string }) {
     appendMessage(
       "agent",
       "Tell me what you need help with. Add your contact details below if you want the store to follow up."
+    );
+  }
+
+  async function shareStorefrontInvite() {
+    if (storefront === null) {
+      return;
+    }
+
+    const url = createStorefrontUrl(storefront.sokoId);
+    const shareData = {
+      title: `${storefront.businessName} on Soko.market`,
+      text: `Open ${storefront.businessName} with Soko Shop ID ${storefront.sokoId}.`,
+      url
+    };
+
+    try {
+      if (navigator.share !== undefined) {
+        await navigator.share(shareData);
+      } else {
+        await copyTextToClipboard(`${shareData.text} ${url}`);
+      }
+      addCrmNote("Invite shared", `Shared storefront invite for ${storefront.sokoId}.`);
+      appendMessage("agent", "The invite link is ready to share from this device.");
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+      appendMessage("agent", "I could not open sharing on this device. Copy the shop ID instead.");
+    }
+  }
+
+  async function syncPhoneContacts() {
+    const contactNavigator = navigator as ContactPickerNavigator;
+
+    if (contactNavigator.contacts?.select === undefined) {
+      appendMessage(
+        "agent",
+        "Contact sync is available on supported mobile browsers. You can still invite customers with the storefront link."
+      );
+      await shareStorefrontInvite();
+      return;
+    }
+
+    try {
+      const selectedContacts = await contactNavigator.contacts.select(["name", "tel", "email"], {
+        multiple: true
+      });
+
+      if (selectedContacts.length === 0) {
+        return;
+      }
+
+      const labels = selectedContacts
+        .map((contact) => contact.name?.[0] ?? contact.tel?.[0] ?? contact.email?.[0])
+        .filter((label): label is string => label !== undefined && label.trim().length > 0);
+      addCrmNote("Contacts selected", labels.slice(0, 5).join(", "));
+      appendMessage(
+        "agent",
+        `I found ${selectedContacts.length} selected contact${
+          selectedContacts.length === 1 ? "" : "s"
+        }. Share the storefront invite with anyone who is not on Soko.market yet.`
+      );
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+      appendMessage("agent", "I could not access contacts on this device.");
+    }
+  }
+
+  function registerNewCustomerByAgent() {
+    if (storefront === null) {
+      return;
+    }
+
+    setCheckoutOpen(true);
+    addCrmNote(
+      "Assisted registration",
+      "Customer asked the storefront agent to help register someone."
+    );
+    appendMessage("customer", "Help me register someone new.");
+    appendMessage(
+      "agent",
+      `Share ${storefront.sokoId} or the invite link with them. If they are unfamiliar with Soko.market, add their name and phone below and the store can follow up.`
     );
   }
 
@@ -4649,6 +4857,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
     );
   }
 
+  const storefrontUrl = createStorefrontUrl(storefront.sokoId);
+
   return (
     <Surface title={`${storefront.businessName} storefront`}>
       <main className="public-storefront-shell">
@@ -4659,9 +4869,20 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <strong>{storefront.businessName}</strong>
               <span>{storefront.sokoId}</span>
             </div>
+            <div className="public-chat-actions">
+              <button type="button" onClick={() => void syncPhoneContacts()}>
+                Contacts
+              </button>
+              <button type="button" onClick={() => void shareStorefrontInvite()}>
+                Invite
+              </button>
+              <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
+                Receipt {cartCount > 0 ? cartCount : ""}
+              </button>
+            </div>
           </div>
 
-          <div className="public-message-list">
+          <div className="public-message-list" ref={messageListRef}>
             <div className="message sokoclaw">
               <span>Agent</span>
               <p>
@@ -4673,10 +4894,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
             <section className="storefront-product-card" aria-label="Product list">
               <div>
-                <span>Available products</span>
-                <strong>
-                  {products.length === 0 ? "No products listed" : `${products.length} listed`}
-                </strong>
+                <span>Catalogue</span>
+                <strong>{products.length === 0 ? "No products listed" : "Swipe products"}</strong>
               </div>
               <div className="storefront-product-grid">
                 {products.length === 0 ? (
@@ -4696,6 +4915,34 @@ function PublicStorefrontChat(props: { agentId: string }) {
                 )}
               </div>
             </section>
+
+            {receiptOpen ? (
+              <section className="storefront-receipt" aria-label="Receipt">
+                <div>
+                  <span>Receipt</span>
+                  <strong>
+                    {cartCount} item{cartCount === 1 ? "" : "s"}
+                  </strong>
+                </div>
+                {cartProducts.length === 0 ? (
+                  <p>No purchases selected yet. Add products to build a receipt.</p>
+                ) : (
+                  <>
+                    <div className="storefront-receipt-lines">
+                      {cartProducts.map((product) => (
+                        <div key={product.id}>
+                          <span>{product.name}</span>
+                          <strong>
+                            {product.quantity} {product.unit}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                    <p>Storefront: {storefrontUrl}</p>
+                  </>
+                )}
+              </section>
+            ) : null}
 
             {cartProducts.length > 0 ? (
               <section className="storefront-cart-summary" aria-label="Cart">
@@ -4745,6 +4992,9 @@ function PublicStorefrontChat(props: { agentId: string }) {
                 </button>
                 <button type="button" onClick={requestSupport}>
                   Support
+                </button>
+                <button type="button" onClick={registerNewCustomerByAgent}>
+                  Register customer
                 </button>
               </div>
               {crmNotes.length > 0 ? (
@@ -6896,13 +7146,29 @@ async function getJson<TResponse>(path: string): Promise<TResponse> {
 }
 
 function readStorefrontAgentId(): string | null {
-  const match = window.location.pathname.match(/^\/agent\/([^/]+)\/?$/);
+  const pathname = window.location.pathname;
+  const match =
+    pathname.match(/^\/agent\/([^/]+)\/?$/) ??
+    pathname.match(/^\/(?:shop|soko)\/([^/]+)\/?$/) ??
+    pathname.match(/^(\/\+\d{1,3}-A\d{8})\/?$/);
 
   if (match === null) {
     return null;
   }
 
-  return decodeURIComponent(match[1] ?? "").trim() || null;
+  const rawAgentId = (match[1] ?? "").replace(/^\//, "");
+  const agentId = decodeURIComponent(rawAgentId).trim();
+
+  if (agentId.length === 0) {
+    return null;
+  }
+
+  if (!pathname.startsWith("/agent/")) {
+    const canonicalAgentId = isSokoId(agentId) ? agentId : encodeURIComponent(agentId);
+    window.history.replaceState(null, "", `/agent/${canonicalAgentId}${window.location.search}`);
+  }
+
+  return agentId;
 }
 
 function readStoredBusiness(): ActiveBusiness | null {
@@ -6993,6 +7259,59 @@ function readStoredOwnerAuth(): OwnerAuthRecord | null {
   }
 
   return null;
+}
+
+function getOrCreateSocialIdentity(provider: SocialSignupProvider): StoredSocialIdentity {
+  const identities = readStoredSocialIdentities();
+  const existing = identities[provider];
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const providerLabel =
+    socialSignupProviders.find((item) => item.id === provider)?.label ?? "Social";
+  const id =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+  const next: StoredSocialIdentity = {
+    provider,
+    displayName: `${providerLabel} owner`,
+    email: `${provider}.${id.replace(/[^a-z0-9-]/gi, "").toLowerCase()}@social.soko.local`
+  };
+  const nextIdentities = {
+    ...identities,
+    [provider]: next
+  };
+  localStorage.setItem(socialIdentityStorageKey, JSON.stringify(nextIdentities));
+  return next;
+}
+
+function readStoredSocialIdentities(): Partial<Record<SocialSignupProvider, StoredSocialIdentity>> {
+  const stored = localStorage.getItem(socialIdentityStorageKey);
+
+  if (stored === null) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<
+      Record<SocialSignupProvider, StoredSocialIdentity>
+    >;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [SocialSignupProvider, StoredSocialIdentity] =>
+          isSocialSignupProvider(entry[0]) &&
+          typeof entry[1]?.email === "string" &&
+          typeof entry[1]?.displayName === "string" &&
+          entry[1].provider === entry[0]
+      )
+    );
+  } catch {
+    localStorage.removeItem(socialIdentityStorageKey);
+    return {};
+  }
 }
 
 function readSetupDraft(): SetupDraft | null {
