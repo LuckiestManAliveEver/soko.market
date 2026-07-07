@@ -34,7 +34,8 @@ import {
   readSessionCookie,
   serializeSessionCookie,
   type Cp2Store,
-  type OtpChallengeDelivery
+  type OtpChallengeDelivery,
+  type RuntimeAgentProfile
 } from "./store.js";
 import { createOtpProviderFromEnvironment, type OtpProvider } from "./otp-provider.js";
 
@@ -75,6 +76,10 @@ interface RoleCheckBody {
 
 interface BusinessParams {
   businessId: string;
+}
+
+interface StorefrontParams {
+  agentId: string;
 }
 
 interface ProductParams extends BusinessParams {
@@ -196,6 +201,13 @@ interface SupplierImportConfirmBody {
 }
 
 interface RuntimeTurnBody {
+  agentProfile?: {
+    knowledge?: string;
+    model?: string;
+    role?: string;
+    instructions?: string;
+    tools?: string[];
+  };
   runtimeSessionId?: string;
   message?: string;
   confirmationToken?: string;
@@ -466,6 +478,19 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get(
+    "/public/storefronts/:agentId",
+    async (request: FastifyRequest<{ Params: StorefrontParams }>, reply) => {
+      try {
+        return store.getPublicStorefront({
+          agentId: parseString(request.params.agentId, "agentId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get(
     "/businesses/:businessId/products",
@@ -1773,6 +1798,7 @@ function parseOptionalRowNumbers(value: unknown): number[] | undefined {
 }
 
 function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
+  agentProfile?: RuntimeAgentProfile;
   runtimeSessionId?: string;
   message: string;
   confirmationToken?: string;
@@ -1789,11 +1815,31 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   const parsed = {
     message: parseString(record.message, "message")
   };
+  const agentProfile =
+    record.agentProfile === undefined ? undefined : parseRuntimeAgentProfile(record.agentProfile);
 
   return {
     ...parsed,
+    ...(agentProfile === undefined ? {} : { agentProfile }),
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
     ...(confirmationToken === undefined ? {} : { confirmationToken })
+  };
+}
+
+function parseRuntimeAgentProfile(value: unknown): RuntimeAgentProfile {
+  const record = parseRequestBody(value);
+  const tools = record.tools;
+
+  if (!Array.isArray(tools)) {
+    throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.tools must be an array.");
+  }
+
+  return {
+    knowledge: parseString(record.knowledge, "agentProfile.knowledge"),
+    model: parseString(record.model, "agentProfile.model"),
+    role: parseString(record.role, "agentProfile.role"),
+    instructions: parseString(record.instructions, "agentProfile.instructions"),
+    tools: tools.map((tool, index) => parseString(tool, `agentProfile.tools.${index}`))
   };
 }
 

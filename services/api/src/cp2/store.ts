@@ -199,6 +199,19 @@ const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const maxRuntimeTurnsPerSession = 20;
 
+export interface PublicStorefrontProductSummary {
+  id: string;
+  name: string;
+  unit: string;
+  available: boolean;
+}
+
+export interface PublicStorefrontSummary {
+  agentId: string;
+  businessName: string;
+  products: PublicStorefrontProductSummary[];
+}
+
 export class Cp2Error extends Error {
   constructor(
     readonly statusCode: number,
@@ -226,6 +239,14 @@ export interface OtpChallengeDelivery {
   channel: AuthChannel;
   destination: string;
   expiresAt: string;
+}
+
+export interface RuntimeAgentProfile {
+  knowledge: string;
+  model: string;
+  role: string;
+  instructions: string;
+  tools: string[];
 }
 
 interface SessionRecord extends SessionSummary {
@@ -732,6 +753,29 @@ export class Cp2Store {
   }): ProductSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
     return [...this.products.values()].filter((product) => product.businessId === input.businessId);
+  }
+
+  getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
+    const business = [...this.businesses.values()].find(
+      (candidate) => createPublicAgentId(candidate) === input.agentId
+    );
+
+    if (business === undefined) {
+      throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
+    }
+
+    return {
+      agentId: input.agentId,
+      businessName: business.name,
+      products: this.productsForBusiness(business.id)
+        .filter((product) => product.quantity > 0)
+        .map((product) => ({
+          id: product.id,
+          name: product.name,
+          unit: product.unit,
+          available: true
+        }))
+    };
   }
 
   createProduct(input: {
@@ -2885,6 +2929,7 @@ export class Cp2Store {
     businessId: string;
     runtimeSessionId?: string;
     message: string;
+    agentProfile?: RuntimeAgentProfile;
     confirmationToken?: string;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
@@ -3002,12 +3047,20 @@ export class Cp2Store {
     }
 
     const parserResult = parseMerchantCommand(input.message);
-    const modelRoute = await this.createRuntimeModelRoute({
+    const modelRouteInput = {
       message: input.message,
       context,
       now,
       appendTelemetry
-    });
+    };
+    const modelRoute = await this.createRuntimeModelRoute(
+      input.agentProfile === undefined
+        ? modelRouteInput
+        : {
+            ...modelRouteInput,
+            agentProfile: input.agentProfile
+          }
+    );
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
@@ -4740,6 +4793,7 @@ export class Cp2Store {
   }
 
   private async createRuntimeModelRoute(input: {
+    agentProfile?: RuntimeAgentProfile;
     message: string;
     context: RuntimeContextSummary;
     now: Date;
@@ -4763,10 +4817,14 @@ export class Cp2Store {
       };
     }
 
-    const prompt = buildRuntimeModelPrompt(input.message, input.context);
+    const prompt = buildRuntimeModelPrompt(
+      formatRuntimeModelMessage(input.message, input.agentProfile),
+      input.context
+    );
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
       allowedToolCount: prompt.allowedTools.length,
+      modelProfile: input.agentProfile?.model ?? null,
       messageLength: input.message.trim().length,
       productCount: input.context.productCount,
       invoiceCount: input.context.invoiceCount
@@ -5056,6 +5114,36 @@ export class Cp2Store {
 
 export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
   return new Cp2Store(options);
+}
+
+function createPublicAgentId(business: BusinessSummary): string {
+  const seed = `${business.id}-${business.name}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+
+  return seed.length === 0 ? "soko-agent" : seed;
+}
+
+function formatRuntimeModelMessage(
+  message: string,
+  agentProfile: RuntimeAgentProfile | undefined
+): string {
+  if (agentProfile === undefined) {
+    return message;
+  }
+
+  return [
+    `Selected model profile: ${agentProfile.model}.`,
+    `Agent role: ${agentProfile.role}.`,
+    `Agent responsibilities: ${agentProfile.instructions}`,
+    `Agent knowledge: ${agentProfile.knowledge}`,
+    `Enabled tools: ${agentProfile.tools.join(", ") || "none"}.`,
+    "Infer the user's intent from the business menu data and request text.",
+    "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
+    `User message: ${message}`
+  ].join("\n");
 }
 
 function buildRuntimeModelPrompt(

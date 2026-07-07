@@ -38,6 +38,24 @@ interface RoleCheckResponse {
   role: string;
 }
 
+interface ProductResponse {
+  id: string;
+  name: string;
+  unit: string;
+  quantity: number;
+}
+
+interface PublicStorefrontResponse {
+  agentId: string;
+  businessName: string;
+  products: Array<{
+    id: string;
+    name: string;
+    unit: string;
+    available: boolean;
+  }>;
+}
+
 describe("CP2 auth and business creation", () => {
   it("creates an owner account, session, business, language preference, role, and audit events", async () => {
     const store = createCp2Store();
@@ -505,6 +523,91 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("serves a public storefront product list without exposing business data", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      channel: "phone",
+      destination: "254700000004"
+    });
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        challengeId: otpResponse.challengeId,
+        code: otpResponse.devOtp
+      })
+    });
+    const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+    const businessName = "Public Shop";
+    const business = await postJson<CreateBusinessResponse>(
+      app,
+      "/businesses",
+      {
+        name: businessName,
+        language: "en"
+      },
+      sessionCookie
+    );
+    const stockedProduct = await postJson<ProductResponse>(
+      app,
+      `/businesses/${business.business.id}/products`,
+      {
+        name: "Soko Rice",
+        sku: "PRIVATE-SKU",
+        unit: "2 kg bag",
+        quantity: 4
+      },
+      sessionCookie
+    );
+
+    await postJson<ProductResponse>(
+      app,
+      `/businesses/${business.business.id}/products`,
+      {
+        name: "Out of stock beans",
+        sku: "HIDDEN-SKU",
+        unit: "kg",
+        quantity: 0
+      },
+      sessionCookie
+    );
+
+    const agentId = createExpectedAgentId(business.business.id, businessName);
+    const publicResponse = await app.inject({
+      method: "GET",
+      url: `/public/storefronts/${agentId}`
+    });
+    const privateProducts = await app.inject({
+      method: "GET",
+      url: `/businesses/${business.business.id}/products`
+    });
+
+    expect(publicResponse.statusCode).toBe(200);
+    expect(privateProducts.statusCode).toBe(401);
+    expect(publicResponse.json<PublicStorefrontResponse>()).toEqual({
+      agentId,
+      businessName,
+      products: [
+        {
+          id: stockedProduct.id,
+          name: "Soko Rice",
+          unit: "2 kg bag",
+          available: true
+        }
+      ]
+    });
+    expect(publicResponse.json().products[0]).not.toHaveProperty("businessId");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("sku");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("quantity");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("createdAt");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("updatedAt");
+
+    await app.close();
+  });
+
   it("uses an external OTP provider without exposing a development code", async () => {
     const store = createCp2Store();
     const provider = new FakeOtpProvider("123456");
@@ -594,6 +697,16 @@ class FakeOtpProvider implements OtpProvider {
     this.verifications.push(input);
     return input.code === this.acceptedCode;
   }
+}
+
+function createExpectedAgentId(businessId: string, businessName: string): string {
+  const seed = `${businessId}-${businessName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+
+  return seed.length === 0 ? "soko-agent" : seed;
 }
 
 async function postJson<TResponse>(

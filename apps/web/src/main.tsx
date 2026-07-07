@@ -1,10 +1,14 @@
-import { StrictMode, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
 import {
-  parseMerchantCommand,
-  shouldUseStructuredFallback,
-  type ParseResult
-} from "@soko/tool-core";
+  StrictMode,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode
+} from "react";
+import { createRoot } from "react-dom/client";
+import { parseMerchantCommand, type ParseResult } from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import {
   createInitialChatMessages,
@@ -88,11 +92,7 @@ type ActiveBusiness = BusinessResponse["business"] & {
   role: string;
 };
 
-type AgentModel =
-  | "qwen2.5-0.5b-android"
-  | "sokoclaw-local"
-  | "openai-fast"
-  | "openai-reasoning";
+type AgentModel = "qwen2.5-0.5b-android" | "sokoclaw-local" | "openai-fast" | "openai-reasoning";
 
 interface AgentSettings {
   id: string;
@@ -109,6 +109,14 @@ interface AgentSettings {
   tools: string[];
   integrations: string[];
   status: "active" | "draft";
+}
+
+interface AgentRuntimeProfile {
+  knowledge: string;
+  model: AgentModel;
+  role: string;
+  instructions: string;
+  tools: string[];
 }
 
 interface SetupDraft {
@@ -135,6 +143,36 @@ interface ProductSummary {
   quantity: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface PublicStorefrontProductSummary {
+  id: string;
+  name: string;
+  unit: string;
+  available: boolean;
+}
+
+interface PublicStorefrontSummary {
+  agentId: string;
+  businessName: string;
+  products: PublicStorefrontProductSummary[];
+}
+
+interface StorefrontChatMessage {
+  id: string;
+  author: "agent" | "customer";
+  body: string;
+}
+
+interface StorefrontCartItem {
+  productId: string;
+  quantity: number;
+}
+
+interface StorefrontCheckoutDetails {
+  name: string;
+  phone: string;
+  note: string;
 }
 
 interface CustomerSummary {
@@ -933,6 +971,16 @@ const emptyNotificationSummary: NotificationInboxSummary = {
 };
 
 function App() {
+  const storefrontAgentId = readStorefrontAgentId();
+
+  if (storefrontAgentId !== null) {
+    return <PublicStorefrontChat agentId={storefrontAgentId} />;
+  }
+
+  return <OwnerApp />;
+}
+
+function OwnerApp() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
@@ -2451,7 +2499,8 @@ function App() {
     try {
       const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
         runtimeSessionId,
-        message: runtimeMessage
+        message: runtimeMessage,
+        agentProfile: createAgentRuntimeProfile(agentSettings)
       });
       setRuntimeSessionId(result.session.id);
       setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
@@ -2556,34 +2605,98 @@ function App() {
   }
 
   function createLocalParserReply(message: string): ChatMessage {
-    const parserResult = parseMerchantCommand(message);
-    const useFallback = shouldUseStructuredFallback(parserResult, clarificationCount);
+    const decision = createAgentRuntimeDecision({
+      agent: agentSettings,
+      clarificationCount,
+      customers,
+      customerDebts,
+      invoices,
+      message,
+      products
+    });
     const reply: ChatMessage = {
       id: `sokoclaw-${Date.now()}`,
       author: "sokoclaw",
-      body: useFallback
-        ? createStructuredFallbackReply(parserResult)
-        : createParserReply(parserResult)
+      body: decision.response
     };
 
-    if (parserResult.nextAction.type === "navigate") {
-      setView(parserResult.nextAction.view);
+    if (decision.kind === "act" && decision.result.nextAction.type === "navigate") {
+      setView(decision.result.nextAction.view);
     }
 
-    if (parserResult.intent === "create_invoice" && parserResult.nextAction.type === "draft") {
+    if (
+      decision.kind === "act" &&
+      decision.result.intent === "add_product" &&
+      decision.result.nextAction.type === "draft"
+    ) {
+      setProductForm((form) => ({
+        ...form,
+        name: decision.result.slots.productName ?? form.name,
+        quantity:
+          decision.result.slots.quantity === undefined
+            ? form.quantity
+            : String(decision.result.slots.quantity),
+        unit: decision.result.slots.unit ?? form.unit
+      }));
+      setView("products");
+    }
+
+    if (
+      decision.kind === "act" &&
+      decision.result.intent === "add_customer" &&
+      decision.result.nextAction.type === "draft"
+    ) {
+      setCustomerForm((form) => ({
+        ...form,
+        name: decision.result.slots.customerName ?? form.name
+      }));
+      setView("customers");
+    }
+
+    if (
+      decision.kind === "act" &&
+      decision.result.intent === "create_invoice" &&
+      decision.result.nextAction.type === "draft"
+    ) {
       setInvoiceForm((form) => ({
         ...form,
-        customerName: parserResult.slots.customerName ?? form.customerName,
+        customerId: decision.matchedCustomer?.id ?? form.customerId,
+        customerName:
+          decision.matchedCustomer === null
+            ? (decision.result.slots.customerName ?? form.customerName)
+            : "",
+        productId: decision.matchedProduct?.id ?? form.productId,
         quantity:
-          parserResult.slots.quantity === undefined
+          decision.result.slots.quantity === undefined
             ? form.quantity
-            : String(parserResult.slots.quantity)
+            : String(decision.result.slots.quantity)
       }));
       setInvoicePreview(null);
       setView("invoices");
     }
 
-    setClarificationCount(parserResult.nextAction.type === "clarify" ? clarificationCount + 1 : 0);
+    if (
+      decision.kind === "act" &&
+      decision.result.intent === "record_payment" &&
+      decision.result.nextAction.type === "draft"
+    ) {
+      const invoice = findInvoiceForPayment(invoices, decision.matchedCustomer);
+      setPaymentForm((form) => ({
+        ...form,
+        invoiceId: invoice?.id ?? form.invoiceId,
+        amount:
+          decision.result.slots.amount === undefined
+            ? form.amount
+            : String(decision.result.slots.amount)
+      }));
+      setView("payments");
+    }
+
+    if (decision.kind === "act" && decision.result.intent === "check_debt") {
+      setView("payments");
+    }
+
+    setClarificationCount(decision.kind === "act" ? 0 : clarificationCount + 1);
     return reply;
   }
 
@@ -3255,9 +3368,7 @@ function LoginPanel(props: LoginPanelProps) {
           <p className="eyebrow">
             {isSettingPin ? "PIN setup" : props.isRecoveringPin ? "PIN recovery" : "Login PIN"}
           </p>
-          <h2>
-            {isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}
-          </h2>
+          <h2>{isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
         </div>
         {props.isRecoveringPin || isSettingPin ? (
           <>
@@ -4043,6 +4154,370 @@ interface ProductSurfaceProps {
   onStockQuantityAfterChange: (quantity: string) => void;
   onStockReasonChange: (reason: string) => void;
   onAdjustStock: () => void;
+}
+
+function PublicStorefrontChat(props: { agentId: string }) {
+  const [storefront, setStorefront] = useState<PublicStorefrontSummary | null>(null);
+  const [messages, setMessages] = useState<StorefrontChatMessage[]>([]);
+  const [cart, setCart] = useState<StorefrontCartItem[]>([]);
+  const [draft, setDraft] = useState("");
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
+    name: "",
+    phone: "",
+    note: ""
+  });
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let isActive = true;
+
+    setStatus("loading");
+    setError("");
+    getJson<PublicStorefrontSummary>(`/public/storefronts/${encodeURIComponent(props.agentId)}`)
+      .then((nextStorefront) => {
+        if (!isActive) {
+          return;
+        }
+
+        setStorefront(nextStorefront);
+        setStatus("ready");
+      })
+      .catch((caught: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        setError(caught instanceof Error ? caught.message : "Storefront could not be loaded.");
+        setStatus("error");
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [props.agentId]);
+
+  const products = storefront?.products ?? [];
+  const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
+  const cartProducts = cart
+    .map((item) => {
+      const product = products.find((candidate) => candidate.id === item.productId);
+      return product === undefined ? null : { ...product, quantity: item.quantity };
+    })
+    .filter((item): item is PublicStorefrontProductSummary & { quantity: number } => item !== null);
+
+  function appendMessage(author: StorefrontChatMessage["author"], body: string) {
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: `${author}-${Date.now()}-${currentMessages.length}`,
+        author,
+        body
+      }
+    ]);
+  }
+
+  function addProductToCart(product: PublicStorefrontProductSummary) {
+    setCart((currentCart) => {
+      const existing = currentCart.find((item) => item.productId === product.id);
+
+      if (existing === undefined) {
+        return [...currentCart, { productId: product.id, quantity: 1 }];
+      }
+
+      return currentCart.map((item) =>
+        item.productId === product.id ? { ...item, quantity: item.quantity + 1 } : item
+      );
+    });
+    appendMessage("customer", `Add ${product.name} to my order.`);
+    appendMessage(
+      "agent",
+      `${product.name} is in your order. I will ask for your contact details only when you check out.`
+    );
+  }
+
+  function updateCartQuantity(productId: string, quantity: number) {
+    setCart((currentCart) =>
+      quantity <= 0
+        ? currentCart.filter((item) => item.productId !== productId)
+        : currentCart.map((item) => (item.productId === productId ? { ...item, quantity } : item))
+    );
+  }
+
+  function handleDraftSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+
+    if (message.length === 0) {
+      return;
+    }
+
+    setDraft("");
+    appendMessage("customer", message);
+
+    const lowerMessage = message.toLowerCase();
+    const matchedProduct = findBestPublicProduct(
+      message,
+      products.filter((product) => product.available)
+    );
+
+    if (matchedProduct !== null && hasUseVerb(message)) {
+      setCart((currentCart) => {
+        const existing = currentCart.find((item) => item.productId === matchedProduct.id);
+
+        if (existing === undefined) {
+          return [...currentCart, { productId: matchedProduct.id, quantity: 1 }];
+        }
+
+        return currentCart.map((item) =>
+          item.productId === matchedProduct.id ? { ...item, quantity: item.quantity + 1 } : item
+        );
+      });
+      appendMessage(
+        "agent",
+        `${matchedProduct.name} is in your order. Resend checkout when you are ready to finish.`
+      );
+      return;
+    }
+
+    if (matchedProduct !== null) {
+      appendMessage(
+        "agent",
+        `I found ${matchedProduct.name}. Resend with an action, for example: add ${matchedProduct.name} to my order.`
+      );
+      return;
+    }
+
+    if (lowerMessage.includes("checkout") || lowerMessage.includes("order")) {
+      if (cartCount === 0) {
+        appendMessage("agent", "Choose at least one product first, then I can help you check out.");
+        return;
+      }
+
+      setCheckoutOpen(true);
+      appendMessage("agent", "I can prepare checkout now. Please add your details below.");
+      return;
+    }
+
+    if (
+      lowerMessage.includes("product") ||
+      lowerMessage.includes("list") ||
+      lowerMessage.includes("browse")
+    ) {
+      appendMessage(
+        "agent",
+        products.length === 0
+          ? "There are no available products listed right now."
+          : `I found ${products.length} available product${products.length === 1 ? "" : "s"}. Use the product list above to add items.`
+      );
+      return;
+    }
+
+    appendMessage(
+      "agent",
+      "I can help you browse products and prepare checkout. Pick an item above or ask for the product list."
+    );
+  }
+
+  function handleCheckoutSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (
+      cartCount === 0 ||
+      checkoutDetails.name.trim() === "" ||
+      checkoutDetails.phone.trim() === ""
+    ) {
+      appendMessage(
+        "agent",
+        "I need your name, phone number, and at least one product to prepare checkout."
+      );
+      return;
+    }
+
+    setCheckoutOpen(false);
+    appendMessage(
+      "agent",
+      `Your checkout request is prepared for ${cartCount} item${cartCount === 1 ? "" : "s"}. The store can use these details to follow up without requiring an account.`
+    );
+  }
+
+  if (status === "loading") {
+    return (
+      <Surface title="Soko.market">
+        <main className="public-storefront-shell">
+          <section className="public-chat-panel">
+            <div className="message sokoclaw">
+              <span>Agent</span>
+              <p>Loading storefront...</p>
+            </div>
+          </section>
+        </main>
+      </Surface>
+    );
+  }
+
+  if (status === "error" || storefront === null) {
+    return (
+      <Surface title="Soko.market">
+        <main className="public-storefront-shell">
+          <section className="public-chat-panel">
+            <div className="message sokoclaw">
+              <span>Agent</span>
+              <p>{error || "Storefront was not found."}</p>
+            </div>
+          </section>
+        </main>
+      </Surface>
+    );
+  }
+
+  return (
+    <Surface title={`${storefront.businessName} storefront`}>
+      <main className="public-storefront-shell">
+        <section className="public-chat-panel" aria-label="Storefront chat">
+          <div className="public-chat-header">
+            <span className="agent-avatar">S</span>
+            <div>
+              <strong>{storefront.businessName}</strong>
+              <span>Product browsing chat</span>
+            </div>
+          </div>
+
+          <div className="public-message-list">
+            <div className="message sokoclaw">
+              <span>Agent</span>
+              <p>
+                Karibu to {storefront.businessName}. I can help you browse products and prepare
+                checkout when you are ready.
+              </p>
+            </div>
+
+            <section className="storefront-product-card" aria-label="Product list">
+              <div>
+                <span>Available products</span>
+                <strong>
+                  {products.length === 0 ? "No products listed" : `${products.length} listed`}
+                </strong>
+              </div>
+              <div className="storefront-product-grid">
+                {products.length === 0 ? (
+                  <p>No products are available right now.</p>
+                ) : (
+                  products.map((product) => (
+                    <article key={product.id} className="storefront-product-tile">
+                      <div>
+                        <strong>{product.name}</strong>
+                        <span>{product.unit}</span>
+                      </div>
+                      <button type="button" onClick={() => addProductToCart(product)}>
+                        Add
+                      </button>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+
+            {cartProducts.length > 0 ? (
+              <section className="storefront-cart-summary" aria-label="Cart">
+                <div>
+                  <span>Order</span>
+                  <strong>
+                    {cartCount} item{cartCount === 1 ? "" : "s"}
+                  </strong>
+                </div>
+                <div className="storefront-cart-lines">
+                  {cartProducts.map((product) => (
+                    <div key={product.id}>
+                      <span>{product.name}</span>
+                      <input
+                        aria-label={`${product.name} quantity`}
+                        min="0"
+                        inputMode="numeric"
+                        type="number"
+                        value={product.quantity}
+                        onChange={(event) =>
+                          updateCartQuantity(
+                            product.id,
+                            Number.parseInt(event.target.value, 10) || 0
+                          )
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setCheckoutOpen(true)}>
+                  Checkout
+                </button>
+              </section>
+            ) : null}
+
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`message ${message.author === "agent" ? "sokoclaw" : "merchant"}`}
+              >
+                <span>{message.author === "agent" ? "Agent" : "You"}</span>
+                <p>{message.body}</p>
+              </div>
+            ))}
+
+            {checkoutOpen ? (
+              <form className="storefront-checkout" onSubmit={handleCheckoutSubmit}>
+                <div className="section-heading">
+                  <p className="eyebrow">Checkout</p>
+                  <h3>Contact details</h3>
+                </div>
+                <label>
+                  Name
+                  <input
+                    value={checkoutDetails.name}
+                    onChange={(event) =>
+                      setCheckoutDetails({ ...checkoutDetails, name: event.target.value })
+                    }
+                    required
+                  />
+                </label>
+                <label>
+                  Phone
+                  <input
+                    value={checkoutDetails.phone}
+                    inputMode="tel"
+                    onChange={(event) =>
+                      setCheckoutDetails({ ...checkoutDetails, phone: event.target.value })
+                    }
+                    required
+                  />
+                </label>
+                <label>
+                  Note
+                  <textarea
+                    value={checkoutDetails.note}
+                    onChange={(event) =>
+                      setCheckoutDetails({ ...checkoutDetails, note: event.target.value })
+                    }
+                    rows={3}
+                  />
+                </label>
+                <button type="submit">Prepare checkout</button>
+              </form>
+            ) : null}
+          </div>
+
+          <form className="storefront-composer" onSubmit={handleDraftSubmit}>
+            <input
+              aria-label="Message the storefront agent"
+              placeholder="Ask about products or type checkout"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </main>
+    </Surface>
+  );
 }
 
 function ProductSurface(props: ProductSurfaceProps) {
@@ -6006,6 +6481,16 @@ async function getJson<TResponse>(path: string): Promise<TResponse> {
   return (await response.json()) as TResponse;
 }
 
+function readStorefrontAgentId(): string | null {
+  const match = window.location.pathname.match(/^\/agent\/([^/]+)\/?$/);
+
+  if (match === null) {
+    return null;
+  }
+
+  return decodeURIComponent(match[1] ?? "").trim() || null;
+}
+
 function readStoredBusiness(): ActiveBusiness | null {
   const stored = localStorage.getItem(activeBusinessStorageKey);
 
@@ -6150,7 +6635,14 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
 }
 
 function createStorefrontUrl(agentId: string): string {
-  return `https://soko.market/agent/${agentId.trim()}`;
+  const normalizedAgentId = encodeURIComponent(agentId.trim());
+  const localOrigins = ["localhost", "127.0.0.1", "0.0.0.0"];
+
+  if (localOrigins.includes(window.location.hostname)) {
+    return `${window.location.origin}/agent/${normalizedAgentId}`;
+  }
+
+  return `https://soko.market/agent/${normalizedAgentId}`;
 }
 
 function splitListInput(value: string): string[] {
@@ -6347,30 +6839,321 @@ function viewLabel(view: ShellView): string {
   return action?.label ?? "Business home";
 }
 
-function createParserReply(result: ParseResult): string {
-  if (result.nextAction.type === "clarify") {
-    return `${result.nextAction.question} Intent: ${result.intent}. Confidence: ${formatConfidence(
-      result.confidence
-    )}.`;
-  }
+type AgentRuntimeDecision =
+  | {
+      kind: "act";
+      matchedCustomer: CustomerSummary | null;
+      matchedProduct: ProductSummary | null;
+      response: string;
+      result: ParseResult;
+    }
+  | {
+      kind: "options" | "resubmit";
+      response: string;
+    };
 
-  if (result.nextAction.type === "navigate") {
-    return `Opening ${viewLabel(result.nextAction.view)}. Intent: ${result.intent}. Confidence: ${formatConfidence(
-      result.confidence
-    )}. No business record was changed.`;
-  }
-
-  return `Draft parsed as ${result.intent}. Confidence: ${formatConfidence(
-    result.confidence
-  )}. ${formatSlots(result.slots)}No business record was changed.`;
+function createAgentRuntimeProfile(agent: AgentSettings): AgentRuntimeProfile {
+  return {
+    knowledge: agent.knowledge,
+    model: agent.model,
+    role: agent.role,
+    instructions: agent.instructions,
+    tools: agent.tools
+  };
 }
 
-function createStructuredFallbackReply(result: ParseResult): string {
-  return `I still need a clearer command. Use quick actions for Products, Customers, Invoices, or Payments, or try a direct command like "show products". Intent: ${result.intent}. No business record was changed.`;
+function createAgentRuntimeDecision(input: {
+  agent: AgentSettings;
+  clarificationCount: number;
+  customers: CustomerSummary[];
+  customerDebts: CustomerDebtSummary[];
+  invoices: InvoiceSummary[];
+  message: string;
+  products: ProductSummary[];
+}): AgentRuntimeDecision {
+  const parserResult = parseMerchantCommand(input.message);
+  const matchedProduct = findBestMenuProduct(input.message, input.products);
+  const matchedCustomer = findBestCustomer(input.message, input.customers);
+  const menuResult =
+    parserResult.intent === "unknown" && matchedProduct !== null && hasUseVerb(input.message)
+      ? createMenuInvoiceResult(input.message, matchedProduct, matchedCustomer)
+      : parserResult;
+  const confidence = getAgentConfidence({
+    matchedCustomer,
+    matchedProduct,
+    message: input.message,
+    result: menuResult
+  });
+
+  if (confidence >= 0.75 && menuResult.nextAction.type !== "clarify") {
+    return {
+      kind: "act",
+      matchedCustomer,
+      matchedProduct,
+      response: createAgentActionReply({
+        agent: input.agent,
+        customer: matchedCustomer,
+        product: matchedProduct,
+        result: menuResult
+      }),
+      result: menuResult
+    };
+  }
+
+  if (confidence >= 0.5 || input.clarificationCount === 0) {
+    return {
+      kind: "options",
+      response: createAgentOptionsReply({
+        customers: input.customers,
+        customerDebts: input.customerDebts,
+        invoices: input.invoices,
+        matchedCustomer,
+        matchedProduct,
+        products: input.products,
+        result: menuResult
+      })
+    };
+  }
+
+  return {
+    kind: "resubmit",
+    response:
+      "Please resend the task with the action and item name together, for example: show products, create invoice for Mary with Sugar, or record payment 500 for invoice INV-001."
+  };
 }
 
-function formatConfidence(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`;
+function getAgentConfidence(input: {
+  matchedCustomer: CustomerSummary | null;
+  matchedProduct: ProductSummary | null;
+  message: string;
+  result: ParseResult;
+}): number {
+  if (input.result.intent !== "unknown" && input.result.nextAction.type !== "clarify") {
+    return Math.max(input.result.confidence, 0.76);
+  }
+
+  if (input.matchedProduct !== null && hasUseVerb(input.message)) {
+    return 0.82;
+  }
+
+  if (input.matchedProduct !== null || input.matchedCustomer !== null) {
+    return 0.55;
+  }
+
+  if (input.result.intent !== "unknown") {
+    return 0.5;
+  }
+
+  return input.result.confidence;
+}
+
+function createAgentActionReply(input: {
+  agent: AgentSettings;
+  customer: CustomerSummary | null;
+  product: ProductSummary | null;
+  result: ParseResult;
+}): string {
+  const modelLabel = formatAgentModel(input.agent.model);
+
+  if (input.result.nextAction.type === "navigate") {
+    return `${modelLabel} opened ${viewLabel(input.result.nextAction.view)}.`;
+  }
+
+  if (input.result.intent === "add_product") {
+    return `${modelLabel} prepared a product draft. Review it, then save it.`;
+  }
+
+  if (input.result.intent === "add_customer") {
+    return `${modelLabel} prepared a customer draft. Review it, then save it.`;
+  }
+
+  if (input.result.intent === "create_invoice") {
+    const productText = input.product === null ? "" : ` with ${input.product.name}`;
+    const customerText = input.customer === null ? "" : ` for ${input.customer.name}`;
+    return `${modelLabel} opened an invoice draft${customerText}${productText}. Review it before saving or confirming.`;
+  }
+
+  if (input.result.intent === "record_payment") {
+    return `${modelLabel} opened the payment form with the details it could match. Review it before recording payment.`;
+  }
+
+  if (input.result.intent === "check_debt") {
+    return `${modelLabel} opened payments and debt records.`;
+  }
+
+  return `${modelLabel} prepared the matching workspace action.`;
+}
+
+function createAgentOptionsReply(input: {
+  customers: CustomerSummary[];
+  customerDebts: CustomerDebtSummary[];
+  invoices: InvoiceSummary[];
+  matchedCustomer: CustomerSummary | null;
+  matchedProduct: ProductSummary | null;
+  products: ProductSummary[];
+  result: ParseResult;
+}): string {
+  const options = buildAgentOptions(input);
+
+  if (input.result.nextAction.type === "clarify" && input.result.intent !== "unknown") {
+    return `${input.result.nextAction.question} Resend the task with that detail included.`;
+  }
+
+  return `I found a few possible matches. Resend the task with one option: ${options.join("; ")}.`;
+}
+
+function buildAgentOptions(input: {
+  customers: CustomerSummary[];
+  customerDebts: CustomerDebtSummary[];
+  invoices: InvoiceSummary[];
+  matchedCustomer: CustomerSummary | null;
+  matchedProduct: ProductSummary | null;
+  products: ProductSummary[];
+}): string[] {
+  const options = [
+    input.matchedProduct === null ? null : `use product ${input.matchedProduct.name}`,
+    input.matchedCustomer === null ? null : `use customer ${input.matchedCustomer.name}`,
+    input.products.length > 0 ? "show products" : null,
+    input.customers.length > 0 ? "show customers" : null,
+    input.invoices.length > 0 ? "show invoices" : null,
+    input.customerDebts.length > 0 ? "check customer debt" : null
+  ].filter((option): option is string => option !== null);
+
+  return options.length === 0
+    ? ["show products", "create invoice for a customer", "record payment for an invoice"]
+    : options.slice(0, 4);
+}
+
+function createMenuInvoiceResult(
+  message: string,
+  product: ProductSummary,
+  customer: CustomerSummary | null
+): ParseResult {
+  const slots: ParseResult["slots"] = {
+    productName: product.name,
+    quantity: extractFirstNumber(message) ?? 1,
+    unit: product.unit
+  };
+
+  if (customer !== null) {
+    slots.customerName = customer.name;
+  }
+
+  return {
+    confidence: 0.82,
+    intent: "create_invoice",
+    nextAction: {
+      type: "draft",
+      reason: "Matched a requested menu item to an invoice draft."
+    },
+    normalizedInput: normalizeSearchText(message),
+    slots
+  };
+}
+
+function findInvoiceForPayment(
+  invoices: InvoiceSummary[],
+  customer: CustomerSummary | null
+): InvoiceSummary | null {
+  const candidates =
+    customer === null
+      ? invoices
+      : invoices.filter(
+          (invoice) =>
+            invoice.customerId === customer.id ||
+            normalizeSearchText(invoice.customerName ?? "") === normalizeSearchText(customer.name)
+        );
+  return candidates.find((invoice) => invoice.status !== "confirmed") ?? candidates[0] ?? null;
+}
+
+function findBestMenuProduct(message: string, products: ProductSummary[]): ProductSummary | null {
+  return findBestByName(message, products, (product) =>
+    [product.name, product.sku ?? "", product.unit].join(" ")
+  );
+}
+
+function findBestPublicProduct(
+  message: string,
+  products: PublicStorefrontProductSummary[]
+): PublicStorefrontProductSummary | null {
+  return findBestByName(message, products, (product) => [product.name, product.unit].join(" "));
+}
+
+function findBestCustomer(message: string, customers: CustomerSummary[]): CustomerSummary | null {
+  return findBestByName(message, customers, (customer) =>
+    [customer.name, customer.phone ?? "", customer.email ?? ""].join(" ")
+  );
+}
+
+function findBestByName<TItem>(
+  message: string,
+  items: TItem[],
+  getSearchText: (item: TItem) => string
+): TItem | null {
+  const messageTokens = new Set(tokenizeSearchText(message));
+  let best: { item: TItem; score: number } | null = null;
+
+  for (const item of items) {
+    const itemTokens = tokenizeSearchText(getSearchText(item));
+    if (itemTokens.length === 0) {
+      continue;
+    }
+
+    const score = itemTokens.filter((token) => messageTokens.has(token)).length / itemTokens.length;
+
+    if (score > 0 && (best === null || score > best.score)) {
+      best = { item, score };
+    }
+  }
+
+  return best !== null && best.score >= 0.34 ? best.item : null;
+}
+
+function hasUseVerb(message: string): boolean {
+  const tokens = new Set(tokenizeSearchText(message));
+  return ["add", "buy", "get", "invoice", "need", "order", "sell", "take", "use", "want"].some(
+    (verb) => tokens.has(verb)
+  );
+}
+
+function extractFirstNumber(message: string): number | undefined {
+  const match = message.match(/\b\d+(?:\.\d+)?\b/);
+
+  if (match === null) {
+    return undefined;
+  }
+
+  const value = Number(match[0]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokenizeSearchText(value: string): string[] {
+  return normalizeSearchText(value)
+    .split(" ")
+    .filter((token) => token.length > 1);
+}
+
+function formatAgentModel(model: AgentModel): string {
+  if (model === "qwen2.5-0.5b-android") {
+    return "Qwen local agent";
+  }
+
+  if (model === "sokoclaw-local") {
+    return "Sokoclaw local agent";
+  }
+
+  if (model === "openai-fast") {
+    return "OpenAI fast agent";
+  }
+
+  return "OpenAI reasoning agent";
 }
 
 function formatMoney(value: number): string {
@@ -6388,16 +7171,6 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-KE", {
     dateStyle: "medium"
   }).format(new Date(value));
-}
-
-function formatSlots(slots: ParseResult["slots"]): string {
-  const entries = Object.entries(slots);
-
-  if (entries.length === 0) {
-    return "";
-  }
-
-  return `Slots: ${entries.map(([key, value]) => `${key}=${String(value)}`).join(", ")}. `;
 }
 
 const root = document.getElementById("root");
