@@ -38,6 +38,16 @@ import {
   type RuntimeAgentProfile
 } from "./store.js";
 import { createOtpProviderFromEnvironment, type OtpProvider } from "./otp-provider.js";
+import {
+  createOAuthStartPayload,
+  exchangeOAuthCode,
+  fetchOAuthProfile,
+  getOAuthProviderConfig,
+  listOAuthProviders,
+  parseOAuthProvider,
+  type OAuthProfile,
+  type OAuthTokenResponse
+} from "./oauth.js";
 
 export interface Cp2RouteOptions {
   otpProvider?: OtpProvider;
@@ -63,6 +73,32 @@ interface SocialAuthBody {
   displayName?: string;
   email?: string;
   provider?: string;
+}
+
+interface OAuthStartBody {
+  provider?: string;
+  redirectUri?: string;
+}
+
+interface OAuthCallbackBody {
+  code?: string;
+  csrfToken?: string;
+  profile?: {
+    providerSubject?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    displayName?: string | null;
+  };
+  provider?: string;
+  state?: string;
+  tokens?: {
+    accessToken?: string;
+    refreshToken?: string;
+    idToken?: string;
+    tokenType?: string;
+    expiresIn?: number;
+    scope?: string;
+  };
 }
 
 interface PinBody {
@@ -397,6 +433,79 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get("/auth/oauth/providers", async () => ({
+    providers: listOAuthProviders()
+  }));
+
+  app.post(
+    "/auth/oauth/start",
+    async (request: FastifyRequest<{ Body: OAuthStartBody }>, reply) => {
+      try {
+        const provider = parseOAuthProvider(request.body.provider);
+        const providerConfig = getOAuthProviderConfig(provider);
+        const redirectUri =
+          parseOptionalString(request.body.redirectUri) ?? defaultOAuthRedirectUri(request);
+        const startPayload = createOAuthStartPayload({
+          provider: providerConfig,
+          redirectUri
+        });
+        return store.beginOAuthSession({
+          accountSessionId: readSessionCookie(request.headers.cookie),
+          authorizationUrl: startPayload.authorizationUrl,
+          codeChallenge: startPayload.codeChallenge,
+          codeVerifier: startPayload.codeVerifier,
+          csrfToken: startPayload.csrfToken,
+          provider,
+          redirectUri: startPayload.redirectUri,
+          state: startPayload.state
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/oauth/callback",
+    async (request: FastifyRequest<{ Body: OAuthCallbackBody }>, reply) => {
+      try {
+        const provider = parseOAuthProvider(request.body.provider);
+        const state = parseString(request.body.state, "state");
+        const csrfToken = parseString(request.body.csrfToken, "csrfToken");
+        const providerConfig = getOAuthProviderConfig(provider);
+        const exchangeData = store.getOAuthExchangeData({
+          provider,
+          state,
+          csrfToken
+        });
+        const bodyTokens = parseOptionalOAuthTokens(request.body.tokens);
+        const tokens =
+          bodyTokens ??
+          (await exchangeOAuthCode({
+            provider: providerConfig,
+            code: parseString(request.body.code, "code"),
+            codeVerifier: exchangeData.codeVerifier,
+            redirectUri: exchangeData.redirectUri
+          }));
+        const profile =
+          request.body.profile === undefined
+            ? await fetchOAuthProfile({ provider: providerConfig, tokens })
+            : parseOAuthProfileBody(request.body.profile);
+        const result = store.completeOAuthCallback({
+          provider,
+          state,
+          csrfToken,
+          profile,
+          tokens
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post(
     "/auth/social/login",
@@ -1712,15 +1821,81 @@ function parseOptionalString(value: unknown): string | undefined {
 function parseSocialProvider(value: string | undefined): string {
   if (
     value === "google" ||
-    value === "meta" ||
-    value === "x" ||
-    value === "linkedin" ||
-    value === "other"
+    value === "facebook" ||
+    value === "apple" ||
+    value === "github" ||
+    value === "microsoft"
   ) {
     return value;
   }
 
   throw new Cp2Error(400, "provider_invalid", "Social provider is not supported.");
+}
+
+function parseOAuthProfileBody(value: OAuthCallbackBody["profile"]): OAuthProfile {
+  if (value === undefined || value === null || typeof value !== "object") {
+    throw new Cp2Error(400, "oauth_profile_required", "OAuth profile is required.");
+  }
+
+  const email = value.email;
+  const displayName = value.displayName;
+
+  return {
+    providerSubject: parseString(value.providerSubject, "providerSubject"),
+    email: email === undefined || email === null ? null : parseString(email, "email"),
+    emailVerified:
+      typeof value.emailVerified === "boolean"
+        ? value.emailVerified
+        : email !== undefined && email !== null,
+    displayName:
+      displayName === undefined || displayName === null
+        ? null
+        : parseString(displayName, "displayName")
+  };
+}
+
+function parseOptionalOAuthTokens(value: OAuthCallbackBody["tokens"]): OAuthTokenResponse | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "object") {
+    throw new Cp2Error(400, "oauth_tokens_invalid", "OAuth tokens must be an object.");
+  }
+
+  return compactOAuthTokenResponse({
+    accessToken: parseOptionalString(value.accessToken),
+    refreshToken: parseOptionalString(value.refreshToken),
+    idToken: parseOptionalString(value.idToken),
+    tokenType: parseOptionalString(value.tokenType),
+    expiresIn:
+      value.expiresIn === undefined ? undefined : parseNumber(value.expiresIn, "expiresIn"),
+    scope: parseOptionalString(value.scope)
+  });
+}
+
+function defaultOAuthRedirectUri(request: FastifyRequest): string {
+  const origin = request.headers.origin ?? "http://127.0.0.1:5173";
+  const url = new URL("/auth/oauth/callback", origin);
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Cp2Error(400, "redirect_uri_invalid", "OAuth redirect URI is invalid.");
+  }
+
+  return url.toString();
+}
+
+function compactOAuthTokenResponse(input: {
+  accessToken?: string | undefined;
+  refreshToken?: string | undefined;
+  idToken?: string | undefined;
+  tokenType?: string | undefined;
+  expiresIn?: number | undefined;
+  scope?: string | undefined;
+}): OAuthTokenResponse {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined)
+  ) as OAuthTokenResponse;
 }
 
 function parseAuthChannel(value: string | undefined): AuthChannel {

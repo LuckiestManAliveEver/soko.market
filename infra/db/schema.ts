@@ -1,4 +1,13 @@
-import { integer, jsonb, numeric, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  text,
+  timestamp,
+  uuid
+} from "drizzle-orm/pg-core";
 
 export const businessEvents = pgTable("business_events", {
   id: uuid("id").primaryKey(),
@@ -35,6 +44,57 @@ export const users = pgTable("users", {
     .references(() => accounts.id),
   displayName: text("display_name").notNull(),
   language: text("language").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const identityProviders = pgTable("identity_providers", {
+  id: text("id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  authorizationUrl: text("authorization_url").notNull(),
+  tokenUrl: text("token_url").notNull(),
+  userInfoUrl: text("user_info_url"),
+  scopes: jsonb("scopes").notNull(),
+  pkce: boolean("pkce").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const userIdentities = pgTable("user_identities", {
+  id: uuid("id").primaryKey(),
+  accountId: uuid("account_id")
+    .notNull()
+    .references(() => accounts.id),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  providerId: text("provider_id")
+    .notNull()
+    .references(() => identityProviders.id),
+  providerSubject: text("provider_subject").notNull(),
+  email: text("email"),
+  displayName: text("display_name"),
+  encryptedAccessToken: text("encrypted_access_token"),
+  encryptedRefreshToken: text("encrypted_refresh_token"),
+  encryptedIdToken: text("encrypted_id_token"),
+  tokenType: text("token_type"),
+  tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+  scope: text("scope"),
+  linkedAt: timestamp("linked_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const oauthSessions = pgTable("oauth_sessions", {
+  id: uuid("id").primaryKey(),
+  providerId: text("provider_id")
+    .notNull()
+    .references(() => identityProviders.id),
+  accountId: uuid("account_id").references(() => accounts.id),
+  stateHash: text("state_hash").notNull(),
+  csrfHash: text("csrf_hash").notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  encryptedCodeVerifier: text("encrypted_code_verifier").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 

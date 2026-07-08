@@ -44,6 +44,8 @@ import type {
   MembershipSummary,
   NotificationInbox,
   OfflineCacheSnapshot,
+  OAuthProvider,
+  OAuthSessionSummary,
   PaymentSummary,
   ProductSummary,
   RuntimeContextSummary,
@@ -67,6 +69,7 @@ import type {
   SupplierImportDraft,
   SupplierSummary,
   SupportedLanguage,
+  UserIdentitySummary,
   VerificationTierSummary,
   SecurityReviewSummary,
   UserSummary
@@ -78,6 +81,13 @@ import {
   markSyncSynced,
   summarizeSyncQueue
 } from "@soko/sync-core";
+import {
+  assertOAuthSecretMatches,
+  encryptOAuthToken,
+  hashOAuthSecret,
+  type OAuthProfile,
+  type OAuthTokenResponse
+} from "./oauth.js";
 import {
   accountDeletionScheduledEvent,
   betaAccessUpdatedEvent,
@@ -262,6 +272,25 @@ interface SessionRecord extends SessionSummary {
   createdAt: string;
 }
 
+interface UserIdentityRecord extends UserIdentitySummary {
+  encryptedAccessToken: string | null;
+  encryptedRefreshToken: string | null;
+  encryptedIdToken: string | null;
+  tokenType: string | null;
+  tokenExpiresAt: string | null;
+  scope: string | null;
+  updatedAt: string;
+}
+
+interface OAuthSessionRecord extends OAuthSessionSummary {
+  accountId: string | null;
+  stateHash: string;
+  csrfHash: string;
+  codeChallenge: string;
+  codeVerifier: string;
+  redirectUri: string;
+}
+
 interface DocumentImportSourceRecord extends DocumentImportSourceSummary {
   content: string;
 }
@@ -281,6 +310,20 @@ export interface OtpRequestResult {
 }
 
 export interface VerifyOtpResult extends AuthSessionView {
+  resumed: boolean;
+}
+
+export interface OAuthStartResult {
+  authorizationUrl: string;
+  csrfToken: string;
+  expiresAt: string;
+  provider: OAuthProvider;
+  state: string;
+}
+
+export interface OAuthCallbackResult extends AuthSessionView {
+  identity: UserIdentitySummary;
+  linked: boolean;
   resumed: boolean;
 }
 
@@ -327,6 +370,8 @@ export interface Cp2Snapshot {
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
   sessions: SessionRecord[];
+  userIdentities: UserIdentitySummary[];
+  oauthSessions: OAuthSessionSummary[];
   auditEvents: BusinessEvent[];
 }
 
@@ -376,6 +421,10 @@ export class Cp2Store {
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly userIdentities = new Map<string, UserIdentityRecord>();
+  private readonly identityByProviderSubject = new Map<string, string>();
+  private readonly identityByEmail = new Map<string, string>();
+  private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
   private readonly auditEvents: BusinessEvent[] = [];
 
@@ -465,38 +514,230 @@ export class Cp2Store {
     displayName?: string;
     now?: Date;
   }): VerifyOtpResult {
-    const now = input.now ?? new Date();
-    const destination = normalizeDestination("email", input.email);
-    const destinationKey = destinationAccountKey("email", destination);
-    const existingAccountId = this.accountByDestination.get(destinationKey);
-    const resumed = existingAccountId !== undefined;
-    const account =
-      existingAccountId === undefined
-        ? this.createAccount("email", destination, now)
-        : this.requireAccount(existingAccountId);
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    const displayName = input.displayName?.trim();
+    const result = this.completeOAuthProfileAuthentication({
+      provider: input.provider as OAuthProvider,
+      profile: {
+        providerSubject: normalizeDestination("email", input.email),
+        email: input.email,
+        emailVerified: true,
+        displayName: input.displayName ?? null
+      },
+      tokens: {},
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
 
-    if (displayName !== undefined && displayName.length > 0) {
+    return {
+      account: result.account,
+      user: result.user,
+      session: result.session,
+      resumed: result.resumed
+    };
+  }
+
+  beginOAuthSession(input: {
+    accountSessionId: string | null;
+    authorizationUrl: string;
+    codeChallenge: string;
+    codeVerifier: string;
+    csrfToken: string;
+    provider: OAuthProvider;
+    redirectUri: string;
+    state: string;
+    now?: Date;
+  }): OAuthStartResult {
+    const now = input.now ?? new Date();
+    const accountSession =
+      input.accountSessionId === null ? null : this.getSession(input.accountSessionId, now);
+    const oauthSession: OAuthSessionRecord = {
+      id: randomUUID(),
+      provider: input.provider,
+      accountId: accountSession?.account.id ?? null,
+      stateHash: hashOAuthSecret(input.state),
+      csrfHash: hashOAuthSecret(input.csrfToken),
+      codeChallenge: input.codeChallenge,
+      codeVerifier: input.codeVerifier,
+      redirectUri: input.redirectUri,
+      expiresAt: new Date(now.getTime() + otpTtlMs).toISOString(),
+      completedAt: null,
+      createdAt: now.toISOString()
+    };
+
+    this.oauthSessions.set(oauthSession.id, oauthSession);
+    this.recordAuditEvent({
+      type: "auth.oauth_started",
+      aggregateType: "oauth_session",
+      aggregateId: oauthSession.id,
+      actorId: accountSession?.user.id ?? "anonymous",
+      occurredAt: now.toISOString(),
+      payload: {
+        provider: input.provider,
+        accountId: accountSession?.account.id ?? null
+      }
+    });
+
+    return {
+      authorizationUrl: input.authorizationUrl,
+      csrfToken: input.csrfToken,
+      expiresAt: oauthSession.expiresAt,
+      provider: input.provider,
+      state: input.state
+    };
+  }
+
+  getOAuthExchangeData(input: {
+    provider: OAuthProvider;
+    state: string;
+    csrfToken: string;
+    now?: Date;
+  }): { codeVerifier: string; redirectUri: string } {
+    const oauthSession = this.getOAuthSessionForCallback(input);
+
+    return {
+      codeVerifier: oauthSession.codeVerifier,
+      redirectUri: oauthSession.redirectUri
+    };
+  }
+
+  private getOAuthSessionForCallback(input: {
+    provider: OAuthProvider;
+    state: string;
+    csrfToken: string;
+    now?: Date;
+  }): OAuthSessionRecord {
+    const now = input.now ?? new Date();
+    const stateHash = hashOAuthSecret(input.state);
+    const oauthSession = [...this.oauthSessions.values()].find(
+      (session) =>
+        session.provider === input.provider &&
+        session.completedAt === null &&
+        session.stateHash === stateHash
+    );
+
+    if (oauthSession === undefined) {
+      throw new Cp2Error(404, "oauth_session_not_found", "OAuth session was not found.");
+    }
+
+    if (Date.parse(oauthSession.expiresAt) <= now.getTime()) {
+      throw new Cp2Error(410, "oauth_session_expired", "OAuth session has expired.");
+    }
+
+    assertOAuthSecretMatches(input.state, oauthSession.stateHash, "oauth_state_invalid");
+    assertOAuthSecretMatches(input.csrfToken, oauthSession.csrfHash, "oauth_csrf_invalid");
+
+    return oauthSession;
+  }
+
+  completeOAuthCallback(input: {
+    provider: OAuthProvider;
+    state: string;
+    csrfToken: string;
+    profile: OAuthProfile;
+    tokens: OAuthTokenResponse;
+    now?: Date;
+  }): OAuthCallbackResult {
+    const now = input.now ?? new Date();
+    const oauthSession = this.getOAuthSessionForCallback({
+      provider: input.provider,
+      state: input.state,
+      csrfToken: input.csrfToken,
+      now
+    });
+    const result = this.completeOAuthProfileAuthentication({
+      provider: input.provider,
+      profile: input.profile,
+      tokens: input.tokens,
+      linkAccountId: oauthSession.accountId,
+      now
+    });
+
+    oauthSession.completedAt = now.toISOString();
+
+    return result;
+  }
+
+  completeOAuthProfileAuthentication(input: {
+    provider: OAuthProvider;
+    profile: OAuthProfile;
+    tokens: OAuthTokenResponse;
+    linkAccountId?: string | null;
+    now?: Date;
+  }): OAuthCallbackResult {
+    const now = input.now ?? new Date();
+    const normalizedEmail =
+      input.profile.email === null ? null : normalizeDestination("email", input.profile.email);
+    const providerSubject = input.profile.providerSubject.trim();
+
+    if (providerSubject.length === 0) {
+      throw new Cp2Error(400, "oauth_profile_invalid", "OAuth profile subject is required.");
+    }
+
+    const linkedIdentityId = this.identityByProviderSubject.get(
+      oauthProviderSubjectKey(input.provider, providerSubject)
+    );
+    const emailIdentityId =
+      normalizedEmail === null
+        ? undefined
+        : this.identityByEmail.get(oauthIdentityEmailKey(input.provider, normalizedEmail));
+    const emailAccountId =
+      normalizedEmail === null
+        ? undefined
+        : this.accountByDestination.get(destinationAccountKey("email", normalizedEmail));
+    const accountId =
+      input.linkAccountId ??
+      (linkedIdentityId === undefined
+        ? undefined
+        : this.userIdentities.get(linkedIdentityId)?.accountId) ??
+      (emailIdentityId === undefined
+        ? undefined
+        : this.userIdentities.get(emailIdentityId)?.accountId) ??
+      emailAccountId;
+    const primaryDestination =
+      normalizedEmail ??
+      `${input.provider}.${oauthEmailLocalPart(providerSubject)}@oauth.soko.local`;
+    const account =
+      accountId === undefined
+        ? this.createAccount("email", primaryDestination, now)
+        : this.requireAccount(accountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const displayName = input.profile.displayName?.trim();
+
+    if (displayName !== undefined && displayName.length > 0 && user.displayName !== displayName) {
       this.users.set(user.id, {
         ...user,
         displayName
       });
     }
 
+    if (normalizedEmail !== null) {
+      this.accountByDestination.set(destinationAccountKey("email", normalizedEmail), account.id);
+    }
+
     const nextUser = this.requireUser(user.id);
+    const identity = this.upsertUserIdentity({
+      account,
+      user: nextUser,
+      provider: input.provider,
+      providerSubject,
+      email: normalizedEmail,
+      displayName: displayName ?? null,
+      tokens: input.tokens,
+      now
+    });
     const session = this.createSession(account, nextUser, now);
     this.markSessionPinVerified(session.id, now);
+    const resumed = accountId !== undefined;
 
     this.recordAuditEvent({
-      type: "auth.social_login",
+      type: "auth.oauth_completed",
       aggregateType: "account",
       aggregateId: account.id,
       actorId: nextUser.id,
       occurredAt: now.toISOString(),
       payload: {
         provider: input.provider,
-        destination
+        identityId: identity.id,
+        linked: resumed,
+        email: normalizedEmail
       }
     });
 
@@ -516,6 +757,8 @@ export class Cp2Store {
       account,
       user: nextUser,
       session,
+      identity: userIdentityView(identity),
+      linked: resumed,
       resumed
     };
   }
@@ -544,7 +787,12 @@ export class Cp2Store {
   private completeOtpVerification(challenge: OtpChallenge, now: Date): VerifyOtpResult {
     challenge.verifiedAt = now.toISOString();
     const destinationKey = destinationAccountKey(challenge.channel, challenge.destination);
-    const existingAccountId = this.accountByDestination.get(destinationKey);
+    const linkedIdentity =
+      challenge.channel === "email"
+        ? this.findIdentityByVerifiedEmail(challenge.destination)
+        : undefined;
+    const existingAccountId =
+      this.accountByDestination.get(destinationKey) ?? linkedIdentity?.accountId;
     const resumed = existingAccountId !== undefined;
     const account =
       existingAccountId === undefined
@@ -3367,6 +3615,8 @@ export class Cp2Store {
       inventoryMovements: [...this.inventoryMovements.values()],
       syncQueue: [...this.syncQueue.values()],
       sessions: [...this.sessions.values()],
+      userIdentities: [...this.userIdentities.values()].map(userIdentityView),
+      oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
       auditEvents: [...this.auditEvents]
     };
   }
@@ -3402,6 +3652,65 @@ export class Cp2Store {
     });
 
     return account;
+  }
+
+  private upsertUserIdentity(input: {
+    account: AccountSummary;
+    user: UserSummary;
+    provider: OAuthProvider;
+    providerSubject: string;
+    email: string | null;
+    displayName: string | null;
+    tokens: OAuthTokenResponse;
+    now: Date;
+  }): UserIdentityRecord {
+    const providerSubjectKey = oauthProviderSubjectKey(input.provider, input.providerSubject);
+    const existingIdentityId = this.identityByProviderSubject.get(providerSubjectKey);
+    const tokenExpiresAt =
+      input.tokens.expiresIn === undefined
+        ? null
+        : new Date(input.now.getTime() + input.tokens.expiresIn * 1000).toISOString();
+    const existingIdentity =
+      existingIdentityId === undefined ? undefined : this.userIdentities.get(existingIdentityId);
+    const identity: UserIdentityRecord = {
+      id: existingIdentity?.id ?? randomUUID(),
+      accountId: input.account.id,
+      userId: input.user.id,
+      provider: input.provider,
+      providerSubject: input.providerSubject,
+      email: input.email,
+      displayName: input.displayName,
+      encryptedAccessToken:
+        input.tokens.accessToken === undefined
+          ? (existingIdentity?.encryptedAccessToken ?? null)
+          : encryptOAuthToken(input.tokens.accessToken),
+      encryptedRefreshToken:
+        input.tokens.refreshToken === undefined
+          ? (existingIdentity?.encryptedRefreshToken ?? null)
+          : encryptOAuthToken(input.tokens.refreshToken),
+      encryptedIdToken:
+        input.tokens.idToken === undefined
+          ? (existingIdentity?.encryptedIdToken ?? null)
+          : encryptOAuthToken(input.tokens.idToken),
+      tokenType: input.tokens.tokenType ?? existingIdentity?.tokenType ?? null,
+      tokenExpiresAt: tokenExpiresAt ?? existingIdentity?.tokenExpiresAt ?? null,
+      scope: input.tokens.scope ?? existingIdentity?.scope ?? null,
+      linkedAt: existingIdentity?.linkedAt ?? input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+
+    this.userIdentities.set(identity.id, identity);
+    this.identityByProviderSubject.set(providerSubjectKey, identity.id);
+
+    if (input.email !== null) {
+      this.identityByEmail.set(oauthIdentityEmailKey(input.provider, input.email), identity.id);
+    }
+
+    return identity;
+  }
+
+  private findIdentityByVerifiedEmail(email: string): UserIdentityRecord | undefined {
+    return [...this.userIdentities.values()].find((identity) => identity.email === email);
   }
 
   private createSession(account: AccountSummary, user: UserSummary, now: Date): SessionSummary {
@@ -5485,11 +5794,11 @@ export function serializeSessionCookie(
   sessionId: string,
   maxAgeSeconds = sessionTtlMs / 1000
 ): string {
-  return `${sessionCookieName}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+  return `${sessionCookieName}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureCookieSuffix()}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix()}`;
 }
 
 export function readSessionCookie(cookieHeader: string | undefined): string | null {
@@ -5565,6 +5874,24 @@ function deepFreeze<TValue>(value: TValue): TValue {
 
 function destinationAccountKey(channel: AuthChannel, destination: string): string {
   return `${channel}:${destination}`;
+}
+
+function oauthProviderSubjectKey(provider: OAuthProvider, subject: string): string {
+  return `${provider}:${subject}`;
+}
+
+function oauthIdentityEmailKey(provider: OAuthProvider, email: string): string {
+  return `${provider}:${email}`;
+}
+
+function oauthEmailLocalPart(subject: string): string {
+  return (
+    subject
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, "-")
+      .replace(/-+/g, "-")
+      .slice(0, 64) || "profile"
+  );
 }
 
 function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): string {
@@ -5700,6 +6027,16 @@ function hashOtp(challengeId: string, code: string): string {
   return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
 }
 
+function secureCookieSuffix(): string {
+  const explicit = process.env.SESSION_COOKIE_SECURE?.trim().toLowerCase();
+
+  if (explicit === "true" || explicit === "1" || process.env.NODE_ENV === "production") {
+    return "; Secure";
+  }
+
+  return "";
+}
+
 function hashPin(accountId: string, pin: string): string {
   return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
 }
@@ -5712,6 +6049,29 @@ function sessionView(session: SessionRecord): SessionSummary {
   return {
     id: session.id,
     expiresAt: session.expiresAt
+  };
+}
+
+function userIdentityView(identity: UserIdentityRecord): UserIdentitySummary {
+  return {
+    id: identity.id,
+    accountId: identity.accountId,
+    userId: identity.userId,
+    provider: identity.provider,
+    providerSubject: identity.providerSubject,
+    email: identity.email,
+    displayName: identity.displayName,
+    linkedAt: identity.linkedAt
+  };
+}
+
+function oauthSessionView(session: OAuthSessionRecord): OAuthSessionSummary {
+  return {
+    id: session.id,
+    provider: session.provider,
+    expiresAt: session.expiresAt,
+    completedAt: session.completedAt,
+    createdAt: session.createdAt
   };
 }
 

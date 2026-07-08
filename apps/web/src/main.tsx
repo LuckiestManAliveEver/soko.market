@@ -21,7 +21,7 @@ import "./styles.css";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
-type SocialSignupProvider = "google" | "meta" | "x" | "linkedin" | "other";
+type SocialSignupProvider = "google" | "facebook" | "apple" | "github" | "microsoft";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const chatAttachmentAccept = [
@@ -65,6 +65,20 @@ interface SessionResponse {
   session: {
     expiresAt: string;
   };
+}
+
+interface OAuthStartResponse {
+  authorizationUrl: string;
+  csrfToken: string;
+  expiresAt: string;
+  provider: SocialSignupProvider;
+  state: string;
+}
+
+interface PendingOAuthLogin {
+  csrfToken: string;
+  provider: SocialSignupProvider;
+  state: string;
 }
 
 interface PinStatusResponse {
@@ -138,12 +152,6 @@ interface OwnerAuthRecord {
   countryCode: CountryDialCode;
   pinSet?: boolean;
   provider?: SocialSignupProvider;
-}
-
-interface StoredSocialIdentity {
-  displayName: string;
-  email: string;
-  provider: SocialSignupProvider;
 }
 
 interface ProductSummary {
@@ -871,7 +879,7 @@ const activeBusinessStorageKey = "soko.cp3.activeBusiness";
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
-const socialIdentityStorageKey = "soko.chatFirst.socialIdentities";
+const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -879,10 +887,10 @@ const socialSignupProviders: Array<{
   mark: string;
 }> = [
   { id: "google", label: "Google", mark: "G" },
-  { id: "meta", label: "Meta", mark: "M" },
-  { id: "x", label: "X", mark: "X" },
-  { id: "linkedin", label: "LinkedIn", mark: "in" },
-  { id: "other", label: "Other social account", mark: "+" }
+  { id: "facebook", label: "Facebook", mark: "f" },
+  { id: "apple", label: "Apple", mark: "A" },
+  { id: "github", label: "GitHub", mark: "GH" },
+  { id: "microsoft", label: "Microsoft", mark: "M" }
 ];
 
 const signupIntroDurationSeconds = 30;
@@ -1173,7 +1181,11 @@ function OwnerApp() {
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
   useEffect(() => {
-    void refreshSession();
+    void handleOAuthCallback().then((handled) => {
+      if (!handled) {
+        void refreshSession();
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -1311,6 +1323,80 @@ function OwnerApp() {
     }
   }, [business, setupComplete, view]);
 
+  async function handleOAuthCallback(): Promise<boolean> {
+    if (window.location.pathname !== "/auth/oauth/callback") {
+      return false;
+    }
+
+    const parameters = new URLSearchParams(window.location.search);
+    const code = parameters.get("code");
+    const state = parameters.get("state");
+    const pendingOAuth = readPendingOAuthLogin();
+
+    if (code === null || state === null || pendingOAuth === null || state !== pendingOAuth.state) {
+      setStatusMessage("Social sign-in could not be verified. Please try again.");
+      sessionStorage.removeItem(pendingOAuthStorageKey);
+      window.history.replaceState({}, document.title, "/");
+      return true;
+    }
+
+    try {
+      const response = await postJson<SessionResponse>("/auth/oauth/callback", {
+        provider: pendingOAuth.provider,
+        state,
+        code,
+        csrfToken: pendingOAuth.csrfToken
+      });
+      sessionStorage.removeItem(pendingOAuthStorageKey);
+      window.history.replaceState({}, document.title, "/");
+      await completeOAuthSession(response, pendingOAuth.provider);
+    } catch (error) {
+      sessionStorage.removeItem(pendingOAuthStorageKey);
+      window.history.replaceState({}, document.title, "/");
+      setStatusMessage(getErrorMessage(error));
+    }
+
+    return true;
+  }
+
+  async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
+    const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
+    setSession(response);
+    setSocialProvider(provider);
+    setChallenge(null);
+    setOtp("");
+    setIsOtpVerified(true);
+
+    if (business !== null) {
+      const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
+        businessId: business.id,
+        role: "owner"
+      });
+
+      if (!roleCheck.allowed) {
+        setStatusMessage("This social profile is not linked to this Soko shop yet");
+        return;
+      }
+
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: `oauth:${provider}:${response.account.id}`,
+        countryCode,
+        pinSet: true,
+        provider
+      };
+      setOwnerAuth(nextOwnerAuth);
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+      setIsWorkspaceUnlocked(true);
+      setView("chat");
+      setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete`);
+      return;
+    }
+
+    setStatusMessage(
+      `${selectedProvider?.label ?? "Social"} profile verified. Register the business, then set your PIN to finish.`
+    );
+  }
+
   async function refreshSession() {
     try {
       const response = await fetch(`${apiBaseUrl}/session`, {
@@ -1423,68 +1509,20 @@ function OwnerApp() {
 
   async function authenticateSocialProfile(provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
-    const identity = getOrCreateSocialIdentity(provider);
-    const email = identity.email;
 
     try {
-      const response = await postJson<SessionResponse>("/auth/social/login", {
+      const response = await postJson<OAuthStartResponse>("/auth/oauth/start", {
         provider,
-        email,
-        displayName: identity.displayName
+        redirectUri: `${window.location.origin}/auth/oauth/callback`
       });
-      setSession(response);
-      setChannel("email");
-      setDestination(email);
-      setSocialProvider(provider);
-      setChallenge(null);
-      setOtp("");
-      setIsOtpVerified(true);
-
-      if (business !== null) {
-        const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
-          businessId: business.id,
-          role: "owner"
-        });
-
-        if (!roleCheck.allowed) {
-          if (ownerAuth === null) {
-            setStatusMessage("This social profile is not linked to this Soko shop yet");
-            return;
-          }
-
-          const linkedOwnerAuth: OwnerAuthRecord = {
-            contact: email,
-            countryCode,
-            pinSet: true,
-            provider
-          };
-          setOwnerAuth(linkedOwnerAuth);
-          localStorage.setItem(ownerAuthStorageKey, JSON.stringify(linkedOwnerAuth));
-          setIsWorkspaceUnlocked(true);
-          setView("chat");
-          setStatusMessage(
-            `${selectedProvider?.label ?? "Social"} profile linked to this Soko shop`
-          );
-          return;
-        }
-
-        const nextOwnerAuth: OwnerAuthRecord = {
-          contact: email,
-          countryCode,
-          pinSet: true,
-          ...(provider === undefined ? {} : { provider })
-        };
-        setOwnerAuth(nextOwnerAuth);
-        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-        setIsWorkspaceUnlocked(true);
-        setView("chat");
-        setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete`);
-        return;
-      }
-
-      setStatusMessage(
-        `${selectedProvider?.label ?? "Social"} profile verified. Register the business, then set your PIN to finish.`
-      );
+      const pendingOAuth: PendingOAuthLogin = {
+        csrfToken: response.csrfToken,
+        provider: response.provider,
+        state: response.state
+      };
+      sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));
+      setStatusMessage(`Opening ${selectedProvider?.label ?? "social"} sign-in`);
+      window.location.assign(response.authorizationUrl);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -7440,57 +7478,30 @@ function readStoredOwnerAuth(): OwnerAuthRecord | null {
   return null;
 }
 
-function getOrCreateSocialIdentity(provider: SocialSignupProvider): StoredSocialIdentity {
-  const identities = readStoredSocialIdentities();
-  const existing = identities[provider];
-
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const providerLabel =
-    socialSignupProviders.find((item) => item.id === provider)?.label ?? "Social";
-  const id =
-    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
-  const next: StoredSocialIdentity = {
-    provider,
-    displayName: `${providerLabel} owner`,
-    email: `${provider}.${id.replace(/[^a-z0-9-]/gi, "").toLowerCase()}@social.soko.local`
-  };
-  const nextIdentities = {
-    ...identities,
-    [provider]: next
-  };
-  localStorage.setItem(socialIdentityStorageKey, JSON.stringify(nextIdentities));
-  return next;
-}
-
-function readStoredSocialIdentities(): Partial<Record<SocialSignupProvider, StoredSocialIdentity>> {
-  const stored = localStorage.getItem(socialIdentityStorageKey);
+function readPendingOAuthLogin(): PendingOAuthLogin | null {
+  const stored = sessionStorage.getItem(pendingOAuthStorageKey);
 
   if (stored === null) {
-    return {};
+    return null;
   }
 
   try {
-    const parsed = JSON.parse(stored) as Partial<
-      Record<SocialSignupProvider, StoredSocialIdentity>
-    >;
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [SocialSignupProvider, StoredSocialIdentity] =>
-          isSocialSignupProvider(entry[0]) &&
-          typeof entry[1]?.email === "string" &&
-          typeof entry[1]?.displayName === "string" &&
-          entry[1].provider === entry[0]
-      )
-    );
+    const parsed = JSON.parse(stored) as PendingOAuthLogin;
+
+    if (
+      isSocialSignupProvider(parsed.provider) &&
+      typeof parsed.state === "string" &&
+      parsed.state.length > 0 &&
+      typeof parsed.csrfToken === "string" &&
+      parsed.csrfToken.length > 0
+    ) {
+      return parsed;
+    }
   } catch {
-    localStorage.removeItem(socialIdentityStorageKey);
-    return {};
+    sessionStorage.removeItem(pendingOAuthStorageKey);
   }
+
+  return null;
 }
 
 function readSetupDraft(): SetupDraft | null {
@@ -7659,10 +7670,10 @@ function isAgentModel(value: unknown): value is AgentModel {
 function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
   return (
     value === "google" ||
-    value === "meta" ||
-    value === "x" ||
-    value === "linkedin" ||
-    value === "other"
+    value === "facebook" ||
+    value === "apple" ||
+    value === "github" ||
+    value === "microsoft"
   );
 }
 

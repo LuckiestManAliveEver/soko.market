@@ -345,7 +345,7 @@ describe("CP2 auth and business creation", () => {
     expect(resumed.json<VerifyOtpResponse>().resumed).toBe(true);
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining([
-        "auth.social_login",
+        "auth.oauth_completed",
         "business.created",
         "business.global_shop_id_created",
         "auth.pin_set"

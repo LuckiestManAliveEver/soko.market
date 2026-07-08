@@ -28,6 +28,8 @@ export interface FeatureFlag {
 
 export type AuthChannel = "email" | "phone";
 
+export type OAuthProvider = "google" | "facebook" | "apple" | "github" | "microsoft";
+
 export type BusinessRole = "owner" | "manager" | "sales_agent" | "cashier" | "view_only";
 
 export type SupportedLanguage = "en" | "sw";
@@ -68,6 +70,35 @@ export interface AuthSessionView {
   account: AccountSummary;
   user: UserSummary;
   session: SessionSummary;
+}
+
+export interface IdentityProviderSummary {
+  id: OAuthProvider;
+  displayName: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  userInfoUrl: string | null;
+  scopes: string[];
+  pkce: boolean;
+}
+
+export interface UserIdentitySummary {
+  id: string;
+  accountId: string;
+  userId: string;
+  provider: OAuthProvider;
+  providerSubject: string;
+  email: string | null;
+  displayName: string | null;
+  linkedAt: string;
+}
+
+export interface OAuthSessionSummary {
+  id: string;
+  provider: OAuthProvider;
+  expiresAt: string;
+  completedAt: string | null;
+  createdAt: string;
 }
 
 export interface ProductSummary {

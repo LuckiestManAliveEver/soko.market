@@ -485,20 +485,20 @@ button:disabled {
   background: #1a73e8;
 }
 
-.social-signup-button.meta span {
+.social-signup-button.facebook span {
   background: #0866ff;
 }
 
-.social-signup-button.x span {
+.social-signup-button.apple span {
   background: #111111;
 }
 
-.social-signup-button.linkedin span {
-  background: #0a66c2;
+.social-signup-button.github span {
+  background: #24292f;
 }
 
-.social-signup-button.other span {
-  background: #47606b;
+.social-signup-button.microsoft span {
+  background: #737373;
 }
 
 .signup-divider {
