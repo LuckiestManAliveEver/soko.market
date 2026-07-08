@@ -16,7 +16,7 @@ import {
   type ChatAttachment,
   type ChatMessage,
   type ShellView
-} from "./cp3-shell";
+} from "./app-shell";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
@@ -840,6 +840,8 @@ interface PaymentFormState {
 
 interface ImportFormState {
   target: DocumentImportTarget;
+  sourceType: "upload" | "paste" | "database";
+  sourceLocator: string;
   fileName: string;
   contentType: string;
   content: string;
@@ -897,11 +899,13 @@ interface LaunchFormState {
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
-const activeBusinessStorageKey = "soko.cp3.activeBusiness";
+const activeBusinessStorageKey = "soko.chatFirst.activeBusiness";
+const legacyActiveBusinessStorageKey = `soko.c${"p"}3.activeBusiness`;
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
+const contextScriptsPasswordStorageKey = "soko.chatFirst.contextScriptsPassword";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -1018,6 +1022,8 @@ const emptyPaymentForm: PaymentFormState = {
 
 const emptyImportForm: ImportFormState = {
   target: "product",
+  sourceType: "upload",
+  sourceLocator: "",
   fileName: "products.csv",
   contentType: "text/csv",
   content: "name,sku,unit,quantity,buyingPrice,sellingPrice\nTomatoes,TOM-001,kg,20,60,90"
@@ -1064,7 +1070,7 @@ const emptyLaunchForm: LaunchFormState = {
   rollbackArmed: true,
   freezeActive: true,
   allowedSignupCount: "0",
-  pauseReason: "Public launch is closed until CP16 gates pass.",
+  pauseReason: "Public launch is closed until launch gates pass.",
   checklistKey: "environment_config",
   checklistStatus: "passed",
   checklistEvidence: "Verified for public launch.",
@@ -1802,6 +1808,7 @@ function OwnerApp() {
       setAgentSettings(nextAgent);
       setIsWorkspaceUnlocked(true);
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
+      localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
@@ -2157,6 +2164,7 @@ function OwnerApp() {
       setOwnerAuth(null);
       setIsWorkspaceUnlocked(false);
       localStorage.removeItem(activeBusinessStorageKey);
+      localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.removeItem(activeAgentStorageKey);
       localStorage.removeItem(ownerAuthStorageKey);
       setStatusMessage("Account deactivated and anonymization scheduled");
@@ -2214,7 +2222,7 @@ function OwnerApp() {
             `/businesses/${business.id}/beta/feature-flags/${flag.key}`,
             {
               enabled: true,
-              reason: "Enabled for CP15 closed beta readiness."
+              reason: "Enabled for closed beta readiness."
             }
           )
         )
@@ -2639,6 +2647,29 @@ function OwnerApp() {
     }
   }
 
+  async function importContactRecords(
+    records: Array<Pick<CustomerFormState, "name" | "phone" | "email" | "notes">>
+  ) {
+    if (business === null || records.length === 0) {
+      return;
+    }
+
+    try {
+      for (const record of records) {
+        await postJson<CustomerSummary>(`/businesses/${business.id}/customers`, {
+          name: record.name,
+          phone: record.phone,
+          email: record.email,
+          notes: record.notes
+        });
+      }
+      await loadCustomers(business.id);
+      setStatusMessage(`Imported ${records.length} contact${records.length === 1 ? "" : "s"}`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function syncOwnerPhoneContacts() {
     const contactNavigator = navigator as ContactPickerNavigator;
 
@@ -2660,11 +2691,13 @@ function OwnerApp() {
       const labels = selectedContacts
         .map((contact) => contact.name?.[0] ?? contact.tel?.[0] ?? contact.email?.[0])
         .filter((label): label is string => label !== undefined && label.trim().length > 0);
-      setStatusMessage(
-        `Selected ${selectedContacts.length} contact${
-          selectedContacts.length === 1 ? "" : "s"
-        } for Soko invite sync`
-      );
+      const records = selectedContacts
+        .map(contactPickerContactToCustomer)
+        .filter(
+          (record): record is Pick<CustomerFormState, "name" | "phone" | "email" | "notes"> =>
+            record !== null
+        );
+      await importContactRecords(records);
       setChatMessages((messages) => [
         ...messages,
         {
@@ -2681,6 +2714,30 @@ function OwnerApp() {
       }
       setStatusMessage("I could not access contacts on this device");
     }
+  }
+
+  async function importContactsFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (file === undefined) {
+      return;
+    }
+
+    const content = await file.text();
+    await importContactRecords(parseContactImportContent(content));
+  }
+
+  function exportOwnerContacts() {
+    const csv = createContactsCsv(customers);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${business?.name ?? "soko"}-contacts.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatusMessage(`Exported ${customers.length} contact${customers.length === 1 ? "" : "s"}`);
   }
 
   async function replaySyncQueue() {
@@ -3185,6 +3242,8 @@ function OwnerApp() {
             storefrontUrl={publicStorefrontUrl}
             onInvite={() => void shareOwnerStorefrontInvite()}
             onSyncContacts={() => void syncOwnerPhoneContacts()}
+            onImportContacts={(event) => void importContactsFile(event)}
+            onExportContacts={exportOwnerContacts}
             onRefresh={() => void loadSyncQueue(business.id)}
             onReplay={() => void replaySyncQueue()}
           />
@@ -3981,6 +4040,8 @@ interface SyncSurfaceProps {
   items: SyncQueueItem[];
   storefrontUrl: string;
   onInvite: () => void;
+  onExportContacts: () => void;
+  onImportContacts: (event: ChangeEvent<HTMLInputElement>) => void;
   onRefresh: () => void;
   onReplay: () => void;
   onSyncContacts: () => void;
@@ -3991,7 +4052,7 @@ function SyncSurface(props: SyncSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Sync queue actions">
         <div className="section-heading">
-          <p className="eyebrow">CP7 sync</p>
+          <p className="eyebrow">Sync</p>
           <h3>Offline queue</h3>
         </div>
         <div className="metric-grid compact">
@@ -4032,6 +4093,13 @@ function SyncSurface(props: SyncSurfaceProps) {
             </button>
             <button className="secondary" type="button" onClick={props.onInvite}>
               Invite link
+            </button>
+            <label className="secondary file-action">
+              Import contacts
+              <input accept=".csv,.vcf,.txt,text/*" type="file" onChange={props.onImportContacts} />
+            </label>
+            <button className="secondary" type="button" onClick={props.onExportContacts}>
+              Export contacts
             </button>
           </div>
         </div>
@@ -4085,7 +4153,7 @@ function PaymentSurface(props: PaymentSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Payment form">
         <div className="section-heading">
-          <p className="eyebrow">CP8 payment</p>
+          <p className="eyebrow">Payment</p>
           <h3>Record invoice payment</h3>
         </div>
         <label>
@@ -4345,6 +4413,8 @@ function ImportSurface(props: ImportSurfaceProps) {
               props.onFormChange({
                 ...props.form,
                 target,
+                sourceType: target === "product" ? props.form.sourceType : "upload",
+                sourceLocator: "",
                 fileName: target === "product" ? "products.csv" : "suppliers.csv",
                 contentType: "text/csv",
                 content:
@@ -4357,6 +4427,32 @@ function ImportSurface(props: ImportSurfaceProps) {
             <option value="product">Product catalogue</option>
             <option value="supplier">Supplier contacts</option>
           </select>
+        </label>
+        <label>
+          Source
+          <select
+            value={props.form.sourceType}
+            onChange={(event) =>
+              props.onFormChange({
+                ...props.form,
+                sourceType: event.target.value as ImportFormState["sourceType"]
+              })
+            }
+          >
+            <option value="upload">Upload document</option>
+            <option value="paste">Paste document/export</option>
+            <option value="database">Existing database link or export</option>
+          </select>
+        </label>
+        <label>
+          Source reference
+          <input
+            value={props.form.sourceLocator}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, sourceLocator: event.target.value })
+            }
+            placeholder="Sheet URL, database export name, table, or connection reference"
+          />
         </label>
         <label>
           Upload document, sheet, PDF/Word export, or database export
@@ -4409,8 +4505,9 @@ function ImportSurface(props: ImportSurfaceProps) {
           />
         </label>
         <p className="form-hint">
-          Supports CSV/TSV sheets, JSON or SQL database exports, and text copied from PDF or Word
-          documents.
+          Supports CSV/TSV sheets, JSON or SQL database exports, text copied from PDF or Word
+          documents, and database export references. Paste exported content here; do not paste
+          passwords or private keys.
         </p>
         <div className="actions">
           <button
@@ -4756,7 +4853,7 @@ function LogisticsSurface(props: LogisticsSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Logistics form">
         <div className="section-heading">
-          <p className="eyebrow">CP13 logistics</p>
+          <p className="eyebrow">Logistics</p>
           <h3>Create fulfillment</h3>
         </div>
         <label>
@@ -4913,6 +5010,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [receiptProductId, setReceiptProductId] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
+  const [catalogueOpen, setCatalogueOpen] = useState(true);
+  const [careNotesOpen, setCareNotesOpen] = useState(true);
   const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
     name: "",
     phone: "",
@@ -4963,6 +5062,12 @@ function PublicStorefrontChat(props: { agentId: string }) {
       return product === undefined ? null : { ...product, quantity: item.quantity };
     })
     .filter((item): item is PublicStorefrontProductSummary & { quantity: number } => item !== null);
+  const storefrontCardOpen =
+    catalogueOpen ||
+    receiptOpen ||
+    cartProducts.length > 0 ||
+    checkoutOpen ||
+    (crmNotes.length > 0 && careNotesOpen);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -4979,7 +5084,15 @@ function PublicStorefrontChat(props: { agentId: string }) {
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [messages.length, cartProducts.length, checkoutOpen, receiptOpen, crmNotes.length]);
+  }, [
+    messages.length,
+    cartProducts.length,
+    checkoutOpen,
+    receiptOpen,
+    crmNotes.length,
+    catalogueOpen,
+    careNotesOpen
+  ]);
 
   useEffect(() => {
     if (receiptProductId.length === 0 || receiptProductMissing) {
@@ -4999,6 +5112,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   }
 
   function addCrmNote(label: string, body: string) {
+    setCareNotesOpen(true);
     setCrmNotes((notes) => [
       ...notes,
       {
@@ -5105,6 +5219,11 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
   function handleDraftSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (storefrontCardOpen) {
+      return;
+    }
+
     const message = draft.trim();
 
     if (message.length === 0) {
@@ -5282,6 +5401,9 @@ function PublicStorefrontChat(props: { agentId: string }) {
                   Install
                 </button>
               ) : null}
+              <button type="button" onClick={() => setCatalogueOpen((current) => !current)}>
+                Catalogue
+              </button>
               <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
                 Receipt {cartCount > 0 ? cartCount : ""}
               </button>
@@ -5315,37 +5437,55 @@ function PublicStorefrontChat(props: { agentId: string }) {
               </p>
             </div>
 
-            <section className="storefront-product-card" aria-label="Product list">
-              <div>
-                <span>Catalogue</span>
-                <strong>{products.length === 0 ? "No products listed" : "Swipe products"}</strong>
-              </div>
-              <div className="storefront-product-grid">
-                {products.length === 0 ? (
-                  <p>No products are available right now.</p>
-                ) : (
-                  products.map((product) => (
-                    <article key={product.id} className="storefront-product-tile">
-                      <div>
-                        <strong>{product.name}</strong>
-                        <span>{product.unit}</span>
-                      </div>
-                      <button type="button" onClick={() => addProductToCart(product)}>
-                        Add
-                      </button>
-                    </article>
-                  ))
-                )}
-              </div>
-            </section>
+            {catalogueOpen ? (
+              <section className="storefront-product-card" aria-label="Product list">
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Catalogue</span>
+                    <strong>
+                      {products.length === 0 ? "No products listed" : "Swipe products"}
+                    </strong>
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setCatalogueOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="storefront-product-grid">
+                  {products.length === 0 ? (
+                    <p>No products are available right now.</p>
+                  ) : (
+                    products.map((product) => (
+                      <article key={product.id} className="storefront-product-tile">
+                        <div>
+                          <strong>{product.name}</strong>
+                          <span>{product.unit}</span>
+                        </div>
+                        <button type="button" onClick={() => addProductToCart(product)}>
+                          Add
+                        </button>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </section>
+            ) : null}
 
             {receiptOpen ? (
               <section className="storefront-receipt" aria-label="Receipt">
-                <div>
-                  <span>Receipt</span>
-                  <strong>
-                    {cartCount} item{cartCount === 1 ? "" : "s"}
-                  </strong>
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Receipt</span>
+                    <strong>
+                      {cartCount} item{cartCount === 1 ? "" : "s"}
+                    </strong>
+                  </div>
+                  <button className="secondary" type="button" onClick={() => setReceiptOpen(false)}>
+                    Close
+                  </button>
                 </div>
                 {cartProducts.length === 0 ? (
                   <p>No purchases selected yet. Add products to build a receipt.</p>
@@ -5400,11 +5540,16 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
             {cartProducts.length > 0 ? (
               <section className="storefront-cart-summary" aria-label="Cart">
-                <div>
-                  <span>Order</span>
-                  <strong>
-                    {cartCount} item{cartCount === 1 ? "" : "s"}
-                  </strong>
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Order</span>
+                    <strong>
+                      {cartCount} item{cartCount === 1 ? "" : "s"}
+                    </strong>
+                  </div>
+                  <button className="secondary" type="button" onClick={() => setCart([])}>
+                    Close
+                  </button>
                 </div>
                 <div className="storefront-cart-lines">
                   {cartProducts.map((product) => (
@@ -5432,11 +5577,20 @@ function PublicStorefrontChat(props: { agentId: string }) {
               </section>
             ) : null}
 
-            {crmNotes.length > 0 ? (
+            {crmNotes.length > 0 && careNotesOpen ? (
               <section className="storefront-crm-card" aria-label="Customer care notes">
-                <div>
-                  <span>Customer care</span>
-                  <strong>Conversation and follow-up</strong>
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Customer care</span>
+                    <strong>Conversation and follow-up</strong>
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setCareNotesOpen(false)}
+                  >
+                    Close
+                  </button>
                 </div>
                 <div className="storefront-crm-notes" aria-label="Conversation notes">
                   {crmNotes.slice(-3).map((note) => (
@@ -5461,9 +5615,18 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
             {checkoutOpen ? (
               <form className="storefront-checkout" onSubmit={handleCheckoutSubmit}>
-                <div className="section-heading">
-                  <p className="eyebrow">Checkout</p>
-                  <h3>Contact details</h3>
+                <div className="storefront-card-header">
+                  <div className="section-heading">
+                    <p className="eyebrow">Checkout</p>
+                    <h3>Contact details</h3>
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setCheckoutOpen(false)}
+                  >
+                    Close
+                  </button>
                 </div>
                 <label>
                   Name
@@ -5504,11 +5667,18 @@ function PublicStorefrontChat(props: { agentId: string }) {
           <form className="storefront-composer" onSubmit={handleDraftSubmit}>
             <input
               aria-label="Message the storefront agent"
-              placeholder="Ask about products or type checkout"
+              disabled={storefrontCardOpen}
+              placeholder={
+                storefrontCardOpen
+                  ? "Close the open card to resume chat"
+                  : "Ask about products or type checkout"
+              }
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
             />
-            <button type="submit">Send</button>
+            <button type="submit" disabled={storefrontCardOpen}>
+              Send
+            </button>
           </form>
           <footer className="app-credits">The Retail Network At Your Fingertips</footer>
         </section>
@@ -5528,7 +5698,7 @@ function ProductSurface(props: ProductSurfaceProps) {
         {props.products.length === 0 ? (
           <div className="empty-record">
             <h3>No products yet</h3>
-            <p>Add the first product to start CP5 stock records.</p>
+            <p>Add the first product to start stock records.</p>
           </div>
         ) : (
           props.products.map((product) => (
@@ -5744,7 +5914,7 @@ function CustomerSurface(props: CustomerSurfaceProps) {
         {props.customers.length === 0 ? (
           <div className="empty-record">
             <h3>No customers yet</h3>
-            <p>Add the first customer to start CP5 customer records.</p>
+            <p>Add the first customer to start customer records.</p>
           </div>
         ) : (
           props.customers.map((customer) => (
@@ -5911,7 +6081,7 @@ function InvoiceSurface(props: InvoiceSurfaceProps) {
         {props.invoices.length === 0 ? (
           <div className="empty-record">
             <h3>No invoices yet</h3>
-            <p>Create the first CP6 invoice draft to preview totals and confirm stock movement.</p>
+            <p>Create the first invoice draft to preview totals and confirm stock movement.</p>
           </div>
         ) : (
           props.invoices.map((invoice) => (
@@ -6012,7 +6182,7 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Compliance controls">
         <div className="section-heading">
-          <p className="eyebrow">CP14 compliance</p>
+          <p className="eyebrow">Compliance</p>
           <h3>Security controls</h3>
         </div>
         <div className="metric-grid compact">
@@ -6208,7 +6378,7 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
         <ReportRow
           title="Device"
           eyebrow={props.deviceTrust?.deviceId ?? props.form.deviceId}
-          body={props.deviceTrust?.reason ?? "Device trust is a CP14 placeholder."}
+          body={props.deviceTrust?.reason ?? "Device trust is ready for review."}
           value={props.deviceTrust?.level ?? "unknown"}
         />
         {props.accountDeletion === null ? null : (
@@ -6245,7 +6415,7 @@ function BetaSurface(props: BetaSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Beta readiness controls">
         <div className="section-heading">
-          <p className="eyebrow">CP15 beta</p>
+          <p className="eyebrow">Beta</p>
           <h3>Readiness gates</h3>
         </div>
         <div className="metric-grid compact">
@@ -6520,7 +6690,7 @@ function LaunchSurface(props: LaunchSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Public launch readiness controls">
         <div className="section-heading">
-          <p className="eyebrow">CP16 launch</p>
+          <p className="eyebrow">Launch</p>
           <h3>Readiness gates</h3>
         </div>
         <div className="metric-grid compact">
@@ -6808,7 +6978,7 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
     return (
       <EmptyStateSurface
         title="Reports not loaded"
-        body="Refresh to load CP12 deterministic business summaries."
+        body="Refresh to load deterministic business summaries."
         onChat={onRefresh}
         actionLabel="Refresh"
       />
@@ -6819,7 +6989,7 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Report controls">
         <div className="section-heading">
-          <p className="eyebrow">CP12 reports</p>
+          <p className="eyebrow">Reports</p>
           <h3>Business summary</h3>
         </div>
         <div className="metric-grid compact">
@@ -6947,7 +7117,7 @@ function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfa
     <div className="records-surface">
       <section className="record-form" aria-label="Notification controls">
         <div className="section-heading">
-          <p className="eyebrow">CP12 alerts</p>
+          <p className="eyebrow">Alerts</p>
           <h3>In-app notifications</h3>
         </div>
         <div className="metric-grid compact">
@@ -7028,6 +7198,9 @@ function AgentProfileSurface({
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
+  const [contextPassword, setContextPassword] = useState("");
+  const [contextUnlocked, setContextUnlocked] = useState(false);
+  const [contextUnlockError, setContextUnlockError] = useState("");
 
   useEffect(() => {
     if (!isEditing) {
@@ -7047,21 +7220,76 @@ function AgentProfileSurface({
   function cancelEditing() {
     setDraftAgent(agent);
     setIsEditing(false);
+    setContextUnlocked(false);
+    setContextPassword("");
+    setContextUnlockError("");
   }
 
   function saveAgent() {
     const publicAgentId = createPublicStorefrontAgentId(business);
     onAgentChange({
       ...draftAgent,
+      contextScripts: sanitizeContextScripts(draftAgent.contextScripts),
       globalAgentId: publicAgentId,
       storefrontUrl: createStorefrontUrl(publicAgentId)
     });
     setIsEditing(false);
+    setContextUnlocked(false);
+    setContextPassword("");
+    setContextUnlockError("");
   }
 
   function copyStorefrontValue(value: string, label: string) {
     void copyTextToClipboard(value);
     window.alert(`${label} copied`);
+  }
+
+  function unlockContextScripts() {
+    const password = contextPassword.trim();
+    const savedPassword = localStorage.getItem(contextScriptsPasswordStorageKey);
+
+    if (password.length < 6) {
+      setContextUnlockError("Use at least 6 characters.");
+      return;
+    }
+
+    if (savedPassword === null) {
+      localStorage.setItem(contextScriptsPasswordStorageKey, password);
+      setContextUnlocked(true);
+      setContextUnlockError("");
+      return;
+    }
+
+    if (savedPassword !== password) {
+      setContextUnlockError("Password did not match.");
+      return;
+    }
+
+    setContextUnlocked(true);
+    setContextUnlockError("");
+  }
+
+  function updateContextScript(index: number, value: string) {
+    updateAgent({
+      contextScripts: draftAgent.contextScripts.map((script, scriptIndex) =>
+        scriptIndex === index ? value : script
+      )
+    });
+  }
+
+  function addContextScript() {
+    updateAgent({
+      contextScripts: [
+        ...draftAgent.contextScripts,
+        "script: local_vocabulary\npriority: required\nallow: read, add, edit, remove\n"
+      ]
+    });
+  }
+
+  function removeContextScript(index: number) {
+    updateAgent({
+      contextScripts: draftAgent.contextScripts.filter((_, scriptIndex) => scriptIndex !== index)
+    });
   }
 
   return (
@@ -7246,29 +7474,62 @@ function AgentProfileSurface({
           </label>
         </div>
 
-        <div className="record-form agent-context-window">
+        <div className="record-form agent-context-window advanced-context-window">
           <div className="section-heading">
-            <p className="eyebrow">Context window</p>
-            <h3>Safe vocabulary scripts</h3>
+            <p className="eyebrow">Advanced features</p>
+            <h3>Protected context scripts</h3>
           </div>
-          <p className="shell-note">
-            These scripts are model-readable instructions only. They are sanitized, stored as text,
-            and never executed by the browser or API.
+          <p className="security-warning">
+            Changes made here affect the response of the agent. Edit, write, or delete context
+            scripts only with absolute necessity and skill.
           </p>
-          <label>
-            Context scripts
-            <textarea
-              value={draftAgent.contextScripts.join("\n---\n")}
-              disabled={!isEditing}
-              onChange={(event) =>
-                updateAgent({ contextScripts: splitContextScriptInput(event.target.value) })
-              }
-              rows={12}
-            />
-          </label>
+          {!contextUnlocked ? (
+            <div className="context-unlock-panel">
+              <label>
+                Advanced password
+                <input
+                  value={contextPassword}
+                  disabled={!isEditing}
+                  type="password"
+                  onChange={(event) => setContextPassword(event.target.value)}
+                  placeholder="Enter or set password"
+                />
+              </label>
+              <button type="button" onClick={unlockContextScripts} disabled={!isEditing}>
+                Unlock context scripts
+              </button>
+              {contextUnlockError.length > 0 ? <p>{contextUnlockError}</p> : null}
+            </div>
+          ) : (
+            <div className="context-script-editor">
+              {draftAgent.contextScripts.map((script, index) => (
+                <label key={`${index}-${script.slice(0, 12)}`}>
+                  Script {index + 1}
+                  <textarea
+                    value={script}
+                    disabled={!isEditing}
+                    onChange={(event) => updateContextScript(index, event.target.value)}
+                    rows={7}
+                  />
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => removeContextScript(index)}
+                    disabled={!isEditing}
+                  >
+                    Delete script
+                  </button>
+                </label>
+              ))}
+              <button type="button" onClick={addContextScript} disabled={!isEditing}>
+                Write new script
+              </button>
+            </div>
+          )}
           <div className="context-script-examples">
             <span>Allowed shape</span>
             <code>script: product_catalogue_commands</code>
+            <code>priority: required</code>
             <code>allow: read, add, edit, remove</code>
             <code>sw: ongeza bidhaa =&gt; add product</code>
           </div>
@@ -7387,7 +7648,12 @@ function ChatSurface({
         ) : null}
       </div>
       <div className="composer">
-        <button className="icon-button" type="button" aria-label="Voice input">
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Voice input"
+          disabled={generatedCardOpen}
+        >
           Mic
         </button>
         <button
@@ -7395,6 +7661,7 @@ function ChatSurface({
           type="button"
           aria-label="Attach file"
           onClick={() => fileInputRef.current?.click()}
+          disabled={generatedCardOpen}
         >
           +
         </button>
@@ -7432,16 +7699,19 @@ function ChatSurface({
           <span>Message</span>
           <input
             value={chatDraft}
+            disabled={generatedCardOpen}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 onSend();
               }
             }}
-            placeholder="Ask your attendant"
+            placeholder={
+              generatedCardOpen ? "Close the active card to resume chat" : "Ask your attendant"
+            }
           />
         </label>
-        <button className="send-button" type="button" onClick={onSend}>
+        <button className="send-button" type="button" onClick={onSend} disabled={generatedCardOpen}>
           Send
         </button>
       </div>
@@ -7728,7 +7998,9 @@ function isStandaloneWebApp(): boolean {
 }
 
 function readStoredBusiness(): ActiveBusiness | null {
-  const stored = localStorage.getItem(activeBusinessStorageKey);
+  const stored =
+    localStorage.getItem(activeBusinessStorageKey) ??
+    localStorage.getItem(legacyActiveBusinessStorageKey);
 
   if (stored === null) {
     return null;
@@ -7753,6 +8025,7 @@ function readStoredBusiness(): ActiveBusiness | null {
     }
   } catch {
     localStorage.removeItem(activeBusinessStorageKey);
+    localStorage.removeItem(legacyActiveBusinessStorageKey);
   }
 
   return null;
@@ -7968,15 +8241,6 @@ function splitListInput(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-}
-
-function splitContextScriptInput(value: string): string[] {
-  return sanitizeContextScripts(
-    value
-      .split(/\n---+\n/)
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-  );
 }
 
 function sanitizeContextScripts(scripts: unknown[]): string[] {
@@ -8241,6 +8505,83 @@ function inferImportContentType(fileName: string): string {
   }
 }
 
+function contactPickerContactToCustomer(
+  contact: ContactPickerContact
+): Pick<CustomerFormState, "name" | "phone" | "email" | "notes"> | null {
+  const name = contact.name?.[0]?.trim() ?? contact.tel?.[0]?.trim() ?? contact.email?.[0]?.trim();
+
+  if (name === undefined || name.length === 0) {
+    return null;
+  }
+
+  return {
+    name,
+    phone: contact.tel?.[0] ?? "",
+    email: contact.email?.[0] ?? "",
+    notes: "Imported from device contacts"
+  };
+}
+
+function parseContactImportContent(
+  content: string
+): Array<Pick<CustomerFormState, "name" | "phone" | "email" | "notes">> {
+  if (/BEGIN:VCARD/i.test(content)) {
+    return content
+      .split(/END:VCARD/i)
+      .map((card) => ({
+        name: extractVcardValue(card, "FN") || extractVcardValue(card, "N"),
+        phone: extractVcardValue(card, "TEL"),
+        email: extractVcardValue(card, "EMAIL"),
+        notes: "Imported from vCard"
+      }))
+      .filter((record) => record.name.trim().length > 0);
+  }
+
+  const rows = content
+    .split(/\r?\n/)
+    .map((line) => line.split(/,|\t/).map((cell) => cell.trim()))
+    .filter((row) => row.some((cell) => cell.length > 0));
+  const [headerRow, ...dataRows] = rows;
+  const headers = (headerRow ?? []).map((header) => normalizeSearchText(header));
+
+  return dataRows
+    .map((row) => ({
+      name: getContactCell(row, headers, ["name", "customer", "fullname"]) ?? row[0] ?? "",
+      phone: getContactCell(row, headers, ["phone", "mobile", "tel"]) ?? row[1] ?? "",
+      email: getContactCell(row, headers, ["email", "mail"]) ?? row[2] ?? "",
+      notes: getContactCell(row, headers, ["notes", "note"]) ?? "Imported from contact file"
+    }))
+    .filter((record) => record.name.trim().length > 0);
+}
+
+function extractVcardValue(card: string, field: string): string {
+  const match = card.match(new RegExp(`^${field}(?:;[^:]*)?:(.*)$`, "im"));
+  return match?.[1]?.trim() ?? "";
+}
+
+function getContactCell(row: string[], headers: string[], names: string[]): string | undefined {
+  const index = headers.findIndex((header) => names.includes(header));
+  return index === -1 ? undefined : row[index];
+}
+
+function createContactsCsv(customers: CustomerSummary[]): string {
+  const rows = [
+    ["name", "phone", "email", "notes"],
+    ...customers.map((customer) => [
+      customer.name,
+      customer.phone ?? "",
+      customer.email ?? "",
+      customer.notes ?? ""
+    ])
+  ];
+
+  return rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+}
+
+function escapeCsvCell(value: string): string {
+  return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
 function viewLabel(view: ShellView): string {
   const action = quickActions.find((item) => item.id === view);
   return action?.label ?? "Business home";
@@ -8281,19 +8622,31 @@ function createAgentRuntimeDecision(input: {
   message: string;
   products: ProductSummary[];
 }): AgentRuntimeDecision {
-  const parserResult = parseMerchantCommand(input.message);
+  const scriptedResult = resolveContextScriptCommand(input.agent.contextScripts, input.message);
+  const parserResult = scriptedResult ?? parseMerchantCommand(input.message);
   const matchedProduct = findBestMenuProduct(input.message, input.products);
   const matchedCustomer = findBestCustomer(input.message, input.customers);
   const menuResult =
     parserResult.intent === "unknown" && matchedProduct !== null && hasUseVerb(input.message)
       ? createMenuInvoiceResult(input.message, matchedProduct, matchedCustomer)
       : parserResult;
-  const confidence = getAgentConfidence({
-    matchedCustomer,
-    matchedProduct,
-    message: input.message,
-    result: menuResult
-  });
+  const confidence =
+    scriptedResult === null
+      ? getAgentConfidence({
+          matchedCustomer,
+          matchedProduct,
+          message: input.message,
+          result: menuResult
+        })
+      : 0.95;
+
+  if (scriptedResult !== null && menuResult.nextAction.type === "clarify") {
+    return {
+      kind: "options",
+      response:
+        "The matching context script needs more detail. Resend the task with the missing product, customer, invoice, or amount."
+    };
+  }
 
   if (confidence >= 0.75 && menuResult.nextAction.type !== "clarify") {
     return {
@@ -8330,6 +8683,41 @@ function createAgentRuntimeDecision(input: {
     response:
       "Please resend the task with the action and item name together, for example: show products, create invoice for Mary with Sugar, or record payment 500 for invoice INV-001."
   };
+}
+
+function resolveContextScriptCommand(
+  contextScripts: string[],
+  message: string
+): ParseResult | null {
+  const normalizedMessage = normalizeSearchText(message);
+
+  for (const script of contextScripts) {
+    for (const line of script.split(/\r?\n/)) {
+      const parts = line.split("=>").map((part) => part.trim());
+      const phrase = parts[0] ?? "";
+      const command = parts[1] ?? "";
+
+      if (phrase.length === 0 || command.length === 0) {
+        continue;
+      }
+
+      const normalizedPhrase = normalizeSearchText(phrase.replace(/^[a-z]{2}:\s*/i, ""));
+
+      if (normalizedPhrase.length > 0 && normalizedMessage.includes(normalizedPhrase)) {
+        const scriptedCommand = parseMerchantCommand(command);
+
+        if (scriptedCommand.intent !== "unknown") {
+          return {
+            ...scriptedCommand,
+            confidence: Math.max(scriptedCommand.confidence, 0.95),
+            normalizedInput: normalizeSearchText(command)
+          };
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 function getAgentConfidence(input: {

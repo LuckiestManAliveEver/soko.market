@@ -1326,9 +1326,11 @@ button:disabled {
   border: 1px solid #d8e0e7;
   border-radius: 8px;
   box-shadow: 0 18px 42px rgba(23, 33, 27, 0.16);
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  min-width: 190px;
+  max-width: min(76vw, 320px);
+  min-width: min(190px, 76vw);
   padding: 8px;
   position: absolute;
   right: 0;
@@ -1337,8 +1339,10 @@ button:disabled {
 }
 
 .customer-care-dropdown button {
+  flex: 1 1 120px;
   justify-content: start;
-  width: 100%;
+  min-height: 34px;
+  width: auto;
 }
 
 .public-message-list {
@@ -1373,6 +1377,18 @@ button:disabled {
 .storefront-crm-card > div:first-child {
   display: grid;
   gap: 2px;
+}
+
+.storefront-card-header {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.storefront-card-header button {
+  min-height: 34px;
+  padding: 7px 9px;
 }
 
 .storefront-product-card span,
@@ -1632,6 +1648,31 @@ button:disabled {
   min-height: 260px;
 }
 
+.advanced-context-window {
+  border-color: #c4b17b;
+}
+
+.security-warning {
+  background: #fff6d8;
+  border: 1px solid #dfc979;
+  border-radius: 8px;
+  color: #4b3d12;
+  font-weight: 800;
+  padding: 10px;
+}
+
+.context-unlock-panel,
+.context-script-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.context-script-editor label {
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  padding: 10px;
+}
+
 .context-script-examples {
   background: #ffffff;
   border: 1px solid #dbe4dc;
@@ -1652,6 +1693,25 @@ button:disabled {
   color: #17211b;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.file-action {
+  align-items: center;
+  background: #e7ede8;
+  border: 0;
+  border-radius: 8px;
+  color: #23342a;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 42px;
+  padding: 9px 12px;
+}
+
+.file-action input {
+  display: none;
 }
 
 @media (min-width: 760px) {
@@ -1831,6 +1891,7 @@ button:disabled {
 
   .customer-care-dropdown {
     left: 0;
+    position: static;
     right: auto;
   }
 

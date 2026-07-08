@@ -52,7 +52,7 @@ export const quickActions: QuickAction[] = [
   {
     id: "chat",
     label: "Chat",
-    summary: "Plan work through the CP10 runtime"
+    summary: "Plan work through the agent runtime"
   },
   {
     id: "products",
@@ -120,62 +120,62 @@ export const emptyStates: EmptyState[] = [
   {
     id: "products",
     title: "No products yet",
-    body: "Create the first CP5 product record to start stock tracking."
+    body: "Create the first product record to start stock tracking."
   },
   {
     id: "customers",
     title: "No customers yet",
-    body: "Create the first CP5 customer record to replace paper customer notes."
+    body: "Create the first customer record to replace paper customer notes."
   },
   {
     id: "invoices",
     title: "No invoices yet",
-    body: "Create the first CP6 invoice draft to preview totals and confirm stock movement."
+    body: "Create the first invoice draft to preview totals and confirm stock movement."
   },
   {
     id: "sync",
     title: "No queued work",
-    body: "CP7 sync keeps offline mutations queued until server replay confirms them."
+    body: "Sync keeps offline mutations queued until server replay confirms them."
   },
   {
     id: "payments",
     title: "No payments yet",
-    body: "CP8 records manual invoice payments and customer debt. Live M-Pesa integration is intentionally deferred."
+    body: "Manual payment records track invoice payments and customer debt. Live M-Pesa integration is intentionally deferred."
   },
   {
     id: "imports",
     title: "No imports yet",
-    body: "CP9 previews supplier CSV rows before any confirmed business record is written."
+    body: "Imports preview catalogue and supplier rows before any confirmed business record is written."
   },
   {
     id: "logistics",
     title: "No logistics yet",
-    body: "CP13 tracks pickup and delivery fulfillment for confirmed invoices."
+    body: "Logistics tracks pickup and delivery fulfillment for confirmed invoices."
   },
   {
     id: "compliance",
     title: "Compliance not reviewed yet",
-    body: "CP14 keeps export, deletion, verification, tax, and device trust workflows explicit and audited."
+    body: "Compliance keeps export, deletion, verification, tax, and device trust workflows explicit and audited."
   },
   {
     id: "beta",
     title: "Beta readiness not reviewed yet",
-    body: "CP15 keeps closed beta access, support, sync, payment, and telemetry gates explicit before selected merchant use."
+    body: "Beta readiness keeps access, support, sync, payment, and telemetry gates explicit before selected merchant use."
   },
   {
     id: "launch",
     title: "Launch readiness not reviewed yet",
-    body: "CP16 keeps public onboarding, production checklist, support, telemetry, and rollback gates explicit before launch."
+    body: "Launch readiness keeps public onboarding, production checklist, support, telemetry, and rollback gates explicit before launch."
   },
   {
     id: "reports",
     title: "No report data yet",
-    body: "CP12 reports summarize deterministic business records once products, invoices, payments, imports, or sync work exists."
+    body: "Reports summarize deterministic business records once products, invoices, payments, imports, or sync work exists."
   },
   {
     id: "notifications",
     title: "No notifications yet",
-    body: "CP12 in-app alerts appear when deterministic business rules find low stock, debt, sync conflicts, or failed imports."
+    body: "In-app alerts appear when deterministic business rules find low stock, debt, sync conflicts, or failed imports."
   }
 ];
 

@@ -4,10 +4,10 @@ import {
   emptyStates,
   getEmptyState,
   quickActions
-} from "../apps/web/src/cp3-shell";
+} from "../apps/web/src/app-shell";
 
-describe("CP3 shell contract", () => {
-  it("exposes chat, active CP5 records, active CP6 invoices, active CP7 sync, active CP8 payments, CP9 imports, CP12 reports, CP13 logistics, CP14 compliance, CP15 beta, and CP16 launch", () => {
+describe("owner shell contract", () => {
+  it("exposes chat, records, invoices, sync, payments, imports, reports, logistics, compliance, beta, and launch views", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
@@ -40,17 +40,17 @@ describe("CP3 shell contract", () => {
       "notifications"
     ]);
     expect(getEmptyState("chat")).toBeUndefined();
-    expect(getEmptyState("products")?.body).toContain("CP5 product record");
-    expect(getEmptyState("invoices")?.body).toContain("CP6 invoice draft");
-    expect(getEmptyState("sync")?.body).toContain("CP7 sync");
-    expect(getEmptyState("payments")?.body).toContain("CP8");
-    expect(getEmptyState("imports")?.body).toContain("CP9");
-    expect(getEmptyState("logistics")?.body).toContain("CP13");
-    expect(getEmptyState("compliance")?.body).toContain("CP14");
-    expect(getEmptyState("beta")?.body).toContain("CP15");
-    expect(getEmptyState("launch")?.body).toContain("CP16");
-    expect(getEmptyState("reports")?.body).toContain("CP12");
-    expect(getEmptyState("notifications")?.body).toContain("CP12");
+    expect(getEmptyState("products")?.body).toContain("product record");
+    expect(getEmptyState("invoices")?.body).toContain("invoice draft");
+    expect(getEmptyState("sync")?.body).toContain("offline mutations");
+    expect(getEmptyState("payments")?.body).toContain("payment records");
+    expect(getEmptyState("imports")?.body).toContain("Imports preview");
+    expect(getEmptyState("logistics")?.body).toContain("pickup and delivery");
+    expect(getEmptyState("compliance")?.body).toContain("export, deletion");
+    expect(getEmptyState("beta")?.body).toContain("Beta readiness");
+    expect(getEmptyState("launch")?.body).toContain("Launch readiness");
+    expect(getEmptyState("reports")?.body).toContain("Reports summarize");
+    expect(getEmptyState("notifications")?.body).toContain("In-app alerts");
   });
 
   it("creates the initial owner-facing welcome message", () => {
