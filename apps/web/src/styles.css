@@ -1299,6 +1299,48 @@ button:disabled {
   white-space: nowrap;
 }
 
+.customer-care-menu {
+  position: relative;
+}
+
+.customer-care-menu summary {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  color: #17211b;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  list-style: none;
+  min-height: 36px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.customer-care-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.customer-care-dropdown {
+  background: #ffffff;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(23, 33, 27, 0.16);
+  display: grid;
+  gap: 6px;
+  min-width: 190px;
+  padding: 8px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+}
+
+.customer-care-dropdown button {
+  justify-content: start;
+  width: 100%;
+}
+
 .public-message-list {
   align-content: start;
   display: grid;
@@ -1647,6 +1689,7 @@ button:disabled {
 
   .app-frame {
     height: 100dvh;
+    grid-template-rows: auto minmax(0, 1fr) minmax(34px, auto);
   }
 
   .top-bar {
@@ -1786,11 +1829,15 @@ button:disabled {
     justify-content: start;
   }
 
+  .customer-care-dropdown {
+    left: 0;
+    right: auto;
+  }
+
   .storefront-product-tile,
   .storefront-cart-lines div,
   .storefront-receipt-lines div,
   .storefront-receipt-add,
-  .storefront-crm-actions,
   .storefront-share-actions {
     grid-template-columns: 1fr;
   }
@@ -1805,12 +1852,16 @@ button:disabled {
 
   .storefront-product-tile button,
   .storefront-cart-summary button,
-  .storefront-crm-actions button,
   .storefront-checkout button,
   .storefront-receipt button,
   .storefront-composer button {
     justify-self: start;
     width: auto;
+  }
+
+  .app-credits {
+    line-height: 1.2;
+    padding: 6px 10px max(8px, env(safe-area-inset-bottom, 0px));
   }
 
   .storefront-composer {

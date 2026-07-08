@@ -337,6 +337,12 @@ describe("business core foundation", () => {
       }
     );
     expect(validateDocumentImportSource({ fileName: "suppliers.txt", content: "name\nA" }).ok).toBe(
+      true
+    );
+    expect(validateDocumentImportSource({ fileName: "products.sql", content: "name\nA" }).ok).toBe(
+      true
+    );
+    expect(validateDocumentImportSource({ fileName: "products.exe", content: "name\nA" }).ok).toBe(
       false
     );
     expect(preview.fieldMapping).toMatchObject({

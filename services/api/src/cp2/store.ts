@@ -47,6 +47,7 @@ import type {
   OAuthProvider,
   OAuthSessionSummary,
   PaymentSummary,
+  ProductImportDraft,
   ProductSummary,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
@@ -101,6 +102,7 @@ import {
   customerUpdatedEvent,
   createInvoicePreview,
   createInvoicePaymentSummary,
+  createProductImportPreview,
   createSupplierImportPreview,
   dataExportCreatedEvent,
   deviceTrustUpdatedEvent,
@@ -3121,6 +3123,69 @@ export class Cp2Store {
     return job;
   }
 
+  createProductCatalogueImport(input: {
+    sessionId: string | null;
+    businessId: string;
+    source: DocumentImportSourceInput;
+    now?: Date;
+  }): DocumentImportJobSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    assertValid(validateDocumentImportSource(input.source));
+    const source: DocumentImportSourceRecord = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      fileName: input.source.fileName.trim(),
+      contentType: input.source.contentType?.trim() || "text/plain",
+      sizeBytes: Buffer.byteLength(input.source.content),
+      checksum: createHash("sha256").update(input.source.content).digest("hex"),
+      content: input.source.content,
+      createdAt: now.toISOString()
+    };
+    const preview = createProductImportPreview({
+      content: source.content
+    });
+    const job: DocumentImportJobSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      source: documentImportSourceView(source),
+      target: "product",
+      status: preview.rows.length === 0 ? "failed" : "previewed",
+      fieldMapping: preview.fieldMapping,
+      rows: preview.rows,
+      confirmedCount: 0,
+      errorMessage: preview.rows.length === 0 ? "Import file does not contain product rows." : null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      confirmedAt: null
+    };
+
+    this.documentImportSources.set(source.id, source);
+    this.documentImports.set(job.id, job);
+    this.appendBusinessEvent(
+      job.status === "failed"
+        ? documentImportFailedEvent({
+            id: randomUUID(),
+            importJob: job,
+            actorId: session.user.id,
+            occurredAt: now.toISOString()
+          })
+        : documentImportPreviewedEvent({
+            id: randomUUID(),
+            importJob: job,
+            actorId: session.user.id,
+            occurredAt: now.toISOString()
+          })
+    );
+
+    return job;
+  }
+
   listDocumentImports(input: {
     sessionId: string | null;
     businessId: string;
@@ -3155,6 +3220,10 @@ export class Cp2Store {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
     const job = this.requireDocumentImport(input.businessId, input.importJobId);
 
+    if (job.target !== "supplier") {
+      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a supplier import.");
+    }
+
     if (job.status !== "previewed") {
       throw new Cp2Error(409, "import_not_editable", "Only previewed imports can be edited.");
     }
@@ -3166,6 +3235,57 @@ export class Cp2Store {
     }
 
     const validation = validateContactRecordInput(input.mapped, "Supplier");
+    const rows = job.rows.map((row, index): DocumentImportPreviewRow => {
+      if (index !== rowIndex) {
+        return row;
+      }
+
+      return {
+        ...row,
+        mapped: input.mapped,
+        errors: validation.errors,
+        warnings: [],
+        selected: input.selected ?? (validation.ok && row.selected)
+      };
+    });
+    const updated: DocumentImportJobSummary = {
+      ...job,
+      rows,
+      updatedAt: now.toISOString()
+    };
+
+    this.documentImports.set(updated.id, updated);
+    return updated;
+  }
+
+  updateProductImportRow(input: {
+    sessionId: string | null;
+    businessId: string;
+    importJobId: string;
+    rowNumber: number;
+    mapped: ProductImportDraft;
+    selected?: boolean;
+    now?: Date;
+  }): DocumentImportJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const job = this.requireDocumentImport(input.businessId, input.importJobId);
+
+    if (job.target !== "product") {
+      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a product catalogue.");
+    }
+
+    if (job.status !== "previewed") {
+      throw new Cp2Error(409, "import_not_editable", "Only previewed imports can be edited.");
+    }
+
+    const rowIndex = job.rows.findIndex((row) => row.rowNumber === input.rowNumber);
+
+    if (rowIndex === -1) {
+      throw new Cp2Error(404, "import_row_not_found", "Import row was not found.");
+    }
+
+    const validation = validateProductInput(input.mapped);
     const rows = job.rows.map((row, index): DocumentImportPreviewRow => {
       if (index !== rowIndex) {
         return row;
@@ -3205,6 +3325,10 @@ export class Cp2Store {
     );
     const job = this.requireDocumentImport(input.businessId, input.importJobId);
 
+    if (job.target !== "supplier") {
+      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a supplier import.");
+    }
+
     if (job.status !== "previewed") {
       throw new Cp2Error(409, "import_not_confirmable", "Only previewed imports can be confirmed.");
     }
@@ -3216,7 +3340,7 @@ export class Cp2Store {
     }
 
     const invalidRows = selectedRows.filter(
-      (row) => !validateContactRecordInput(row.mapped, "Supplier").ok
+      (row) => !validateContactRecordInput(row.mapped as SupplierImportDraft, "Supplier").ok
     );
 
     if (invalidRows.length > 0) {
@@ -3231,7 +3355,7 @@ export class Cp2Store {
       this.createSupplier({
         sessionId: input.sessionId,
         businessId: input.businessId,
-        supplier: row.mapped,
+        supplier: row.mapped as SupplierImportDraft,
         now
       })
     );
@@ -3256,6 +3380,80 @@ export class Cp2Store {
     return {
       job: confirmed,
       suppliers
+    };
+  }
+
+  confirmProductImport(input: {
+    sessionId: string | null;
+    businessId: string;
+    importJobId: string;
+    selectedRowNumbers?: number[];
+    now?: Date;
+  }): DocumentImportConfirmResult {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    const job = this.requireDocumentImport(input.businessId, input.importJobId);
+
+    if (job.target !== "product") {
+      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a product catalogue.");
+    }
+
+    if (job.status !== "previewed") {
+      throw new Cp2Error(409, "import_not_confirmable", "Only previewed imports can be confirmed.");
+    }
+
+    const selectedRows = this.selectImportRows(job, input.selectedRowNumbers);
+
+    if (selectedRows.length === 0) {
+      throw new Cp2Error(400, "import_rows_required", "At least one import row must be selected.");
+    }
+
+    const invalidRows = selectedRows.filter(
+      (row) => !validateProductInput(row.mapped as ProductImportDraft).ok
+    );
+
+    if (invalidRows.length > 0) {
+      throw new Cp2Error(
+        409,
+        "import_rows_invalid",
+        `Import has invalid selected rows: ${invalidRows.map((row) => row.rowNumber).join(", ")}.`
+      );
+    }
+
+    const products = selectedRows.map((row) =>
+      this.createProduct({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        product: row.mapped as ProductInput,
+        now
+      })
+    );
+    const confirmed: DocumentImportJobSummary = {
+      ...job,
+      status: "confirmed",
+      confirmedCount: products.length,
+      updatedAt: now.toISOString(),
+      confirmedAt: now.toISOString()
+    };
+
+    this.documentImports.set(confirmed.id, confirmed);
+    this.appendBusinessEvent(
+      documentImportConfirmedEvent({
+        id: randomUUID(),
+        importJob: confirmed,
+        actorId: session.user.id,
+        occurredAt: now.toISOString()
+      })
+    );
+
+    return {
+      job: confirmed,
+      products
     };
   }
 

@@ -632,7 +632,7 @@ export interface CustomerDebtSummary {
   balanceDue: number;
 }
 
-export type DocumentImportTarget = "supplier";
+export type DocumentImportTarget = "supplier" | "product";
 
 export type DocumentImportStatus = "previewed" | "confirmed" | "failed";
 
@@ -653,10 +653,21 @@ export interface SupplierImportDraft {
   notes: string | null;
 }
 
+export interface ProductImportDraft {
+  name: string;
+  sku: string | null;
+  unit: string;
+  quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
+}
+
+export type DocumentImportDraft = SupplierImportDraft | ProductImportDraft;
+
 export interface DocumentImportPreviewRow {
   rowNumber: number;
   raw: Record<string, string>;
-  mapped: SupplierImportDraft;
+  mapped: DocumentImportDraft;
   errors: string[];
   warnings: string[];
   selected: boolean;
@@ -668,7 +679,7 @@ export interface DocumentImportJobSummary {
   source: DocumentImportSourceSummary;
   target: DocumentImportTarget;
   status: DocumentImportStatus;
-  fieldMapping: Record<string, keyof SupplierImportDraft>;
+  fieldMapping: Record<string, keyof SupplierImportDraft | keyof ProductImportDraft>;
   rows: DocumentImportPreviewRow[];
   confirmedCount: number;
   errorMessage: string | null;
@@ -679,7 +690,8 @@ export interface DocumentImportJobSummary {
 
 export interface DocumentImportConfirmResult {
   job: DocumentImportJobSummary;
-  suppliers: SupplierSummary[];
+  suppliers?: SupplierSummary[];
+  products?: ProductSummary[];
 }
 
 export type InventoryMovementType = "manual_adjustment" | "sale";

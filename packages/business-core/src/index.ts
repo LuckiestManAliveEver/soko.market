@@ -41,6 +41,7 @@ import type {
   LogisticsSummary,
   PaymentMethod,
   PaymentSummary,
+  ProductImportDraft,
   ProductSummary,
   SupplierImportDraft,
   SupplierSummary,
@@ -570,6 +571,11 @@ export interface SupplierImportPreview {
   rows: DocumentImportPreviewRow[];
 }
 
+export interface ProductImportPreview {
+  fieldMapping: Record<string, keyof ProductImportDraft>;
+  rows: DocumentImportPreviewRow[];
+}
+
 export function validateProductInput(input: ProductInput): ValidationResult {
   const errors: string[] = [];
 
@@ -1073,18 +1079,45 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
   const errors: string[] = [];
   const fileName = normalizeRequiredText(input.fileName);
   const contentType = normalizeOptionalText(input.contentType);
+  const extension = fileName.toLowerCase().split(".").pop() ?? "";
+  const supportedExtensions = new Set([
+    "csv",
+    "tsv",
+    "txt",
+    "json",
+    "sql",
+    "pdf",
+    "doc",
+    "docx",
+    "odt",
+    "ods",
+    "xls",
+    "xlsx"
+  ]);
 
-  if (fileName.length < 5 || !fileName.toLowerCase().endsWith(".csv")) {
-    errors.push("Import file must be a CSV file.");
+  if (fileName.length < 5 || !supportedExtensions.has(extension)) {
+    errors.push("Import file must be CSV, sheet, PDF, Word, text, JSON, SQL, or database export.");
   }
 
   if (
     contentType.length > 0 &&
-    contentType !== "text/csv" &&
-    contentType !== "application/csv" &&
-    contentType !== "application/vnd.ms-excel"
+    ![
+      "text/csv",
+      "text/tab-separated-values",
+      "text/plain",
+      "application/csv",
+      "application/json",
+      "application/pdf",
+      "application/sql",
+      "application/msword",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.oasis.opendocument.text"
+    ].includes(contentType)
   ) {
-    errors.push("Import content type must be CSV.");
+    errors.push("Import content type is not supported.");
   }
 
   if (input.content.trim().length === 0) {
@@ -1107,6 +1140,32 @@ export function createSupplierImportPreview(input: {
   const rows = records.rows.map((row, index) => {
     const mapped = mapSupplierRow(row, fieldMapping);
     const validation = validateContactRecordInput(mapped, "Supplier");
+
+    return {
+      rowNumber: index + 1,
+      raw: row,
+      mapped,
+      errors: validation.errors,
+      warnings: [],
+      selected: validation.ok
+    };
+  });
+
+  return {
+    fieldMapping,
+    rows
+  };
+}
+
+export function createProductImportPreview(input: {
+  content: string;
+  fieldMapping?: Record<string, keyof ProductImportDraft>;
+}): ProductImportPreview {
+  const records = parseFlexibleImportRecords(input.content);
+  const fieldMapping = input.fieldMapping ?? inferProductFieldMapping(records.headers);
+  const rows = records.rows.map((row, index) => {
+    const mapped = mapProductRow(row, fieldMapping);
+    const validation = validateProductInput(mapped);
 
     return {
       rowNumber: index + 1,
@@ -2453,6 +2512,183 @@ function parseCsvRecords(content: string): {
   };
 }
 
+function parseFlexibleImportRecords(content: string): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} {
+  const trimmed = content.trim();
+
+  if (trimmed.length === 0) {
+    return {
+      headers: [],
+      rows: []
+    };
+  }
+
+  const jsonRecords = parseJsonProductRecords(trimmed);
+
+  if (jsonRecords !== null) {
+    return jsonRecords;
+  }
+
+  const sqlRecords = parseSqlInsertRecords(trimmed);
+
+  if (sqlRecords !== null && sqlRecords.rows.length > 0) {
+    return sqlRecords;
+  }
+
+  if (trimmed.includes("\t")) {
+    return parseDelimitedRecords(trimmed, "\t");
+  }
+
+  const csvRecords = parseCsvRecords(trimmed);
+
+  if (csvRecords.headers.length > 1 || csvRecords.rows.length > 0) {
+    return csvRecords;
+  }
+
+  return parseLooseProductLines(trimmed);
+}
+
+function parseDelimitedRecords(
+  content: string,
+  delimiter: string
+): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} {
+  const records = content
+    .split(/\r?\n/)
+    .map((line) => line.split(delimiter).map((cell) => normalizeOptionalText(cell)))
+    .filter((row) => row.some((cell) => cell.length > 0));
+  const headerRecord = records[0] ?? [];
+  const headers = headerRecord.map((header, index) => header || `column_${index + 1}`);
+  const rows = records
+    .slice(1)
+    .map((record) =>
+      Object.fromEntries(headers.map((header, index) => [header, record[index] ?? ""]))
+    );
+
+  return {
+    headers,
+    rows
+  };
+}
+
+function parseJsonProductRecords(content: string): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} | null {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    const records = Array.isArray(parsed)
+      ? parsed
+      : isObjectRecord(parsed) && Array.isArray(parsed.products)
+        ? parsed.products
+        : null;
+
+    if (records === null) {
+      return null;
+    }
+
+    const rows = records
+      .filter(isObjectRecord)
+      .map((record) =>
+        Object.fromEntries(
+          Object.entries(record).map(([key, value]) => [key, value === null ? "" : String(value)])
+        )
+      );
+    const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+
+    return {
+      headers,
+      rows
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSqlInsertRecords(content: string): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} | null {
+  const match = content.match(/insert\s+into\s+\S+\s*\(([^)]+)\)\s*values\s*([\s\S]+?);?$/i);
+
+  if (match === null) {
+    return null;
+  }
+
+  const headerSection = match[1];
+  const valueSection = match[2];
+
+  if (headerSection === undefined || valueSection === undefined) {
+    return null;
+  }
+
+  const headers = headerSection.split(",").map((header) => normalizeSqlToken(header));
+  const rowMatches = [...valueSection.matchAll(/\(([^()]*)\)/g)];
+  const rows = rowMatches.map((rowMatch) => {
+    const cells = parseCsv(rowMatch[1] ?? "").at(0) ?? [];
+    return Object.fromEntries(
+      headers.map((header, index) => [header, normalizeSqlToken(cells[index] ?? "")])
+    );
+  });
+
+  return {
+    headers,
+    rows
+  };
+}
+
+function parseLooseProductLines(content: string): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+} {
+  const headers = ["name", "quantity", "unit", "sellingPrice"];
+  const rows = content
+    .split(/\r?\n/)
+    .map((line) => normalizeOptionalText(line))
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const parts = line
+        .split(/\s{2,}|\s+\|\s+|\s+-\s+|\s+,\s+/)
+        .map((part) => normalizeOptionalText(part))
+        .filter((part) => part.length > 0);
+      const priceMatch = line.match(/(?:ksh|kes|usd|\$)?\s*(\d+(?:\.\d{1,2})?)\s*$/i);
+
+      return {
+        name: parts[0] ?? line,
+        quantity: parts[1] ?? "0",
+        unit: parts[2] ?? "unit",
+        sellingPrice: parts[3] ?? priceMatch?.[1] ?? ""
+      };
+    });
+
+  return {
+    headers,
+    rows
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeSqlToken(value: string): string {
+  const trimmed = normalizeOptionalText(value).replace(/;$/, "");
+
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("`") && trimmed.endsWith("`"))
+  ) {
+    return trimmed.slice(1, -1).replace(/''/g, "'");
+  }
+
+  return trimmed;
+}
+
 function parseCsv(content: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -2546,4 +2782,101 @@ function mapSupplierRow(
   }
 
   return normalizeSupplierImportDraft(mapped);
+}
+
+function inferProductFieldMapping(headers: string[]): Record<string, keyof ProductImportDraft> {
+  const mapping: Record<string, keyof ProductImportDraft> = {};
+
+  for (const header of headers) {
+    const normalized = header.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    if (
+      normalized === "name" ||
+      normalized === "product" ||
+      normalized === "productname" ||
+      normalized === "item" ||
+      normalized === "itemname"
+    ) {
+      mapping[header] = "name";
+    } else if (normalized === "sku" || normalized === "code" || normalized === "barcode") {
+      mapping[header] = "sku";
+    } else if (
+      normalized === "unit" ||
+      normalized === "measure" ||
+      normalized === "uom" ||
+      normalized === "pack"
+    ) {
+      mapping[header] = "unit";
+    } else if (
+      normalized === "quantity" ||
+      normalized === "qty" ||
+      normalized === "stock" ||
+      normalized === "onhand"
+    ) {
+      mapping[header] = "quantity";
+    } else if (
+      normalized === "buyingprice" ||
+      normalized === "buyprice" ||
+      normalized === "cost" ||
+      normalized === "costprice" ||
+      normalized === "purchaseprice"
+    ) {
+      mapping[header] = "buyingPrice";
+    } else if (
+      normalized === "sellingprice" ||
+      normalized === "sellprice" ||
+      normalized === "price" ||
+      normalized === "retailprice" ||
+      normalized === "saleprice"
+    ) {
+      mapping[header] = "sellingPrice";
+    }
+  }
+
+  return mapping;
+}
+
+function mapProductRow(
+  row: Record<string, string>,
+  fieldMapping: Record<string, keyof ProductImportDraft>
+): ProductImportDraft {
+  const mapped: ProductImportDraft = {
+    name: "",
+    sku: null,
+    unit: "unit",
+    quantity: 0,
+    buyingPrice: null,
+    sellingPrice: null
+  };
+
+  for (const [sourceField, targetField] of Object.entries(fieldMapping)) {
+    const value = row[sourceField] ?? "";
+
+    if (targetField === "name") {
+      mapped.name = value;
+    } else if (targetField === "sku") {
+      mapped.sku = nullableText(value);
+    } else if (targetField === "unit") {
+      mapped.unit = normalizeOptionalText(value) || "unit";
+    } else if (targetField === "quantity") {
+      mapped.quantity = parseImportNumber(value) ?? 0;
+    } else if (targetField === "buyingPrice") {
+      mapped.buyingPrice = parseImportNumber(value);
+    } else {
+      mapped.sellingPrice = parseImportNumber(value);
+    }
+  }
+
+  return normalizeProductInput(mapped);
+}
+
+function parseImportNumber(value: string): number | null {
+  const normalized = normalizeOptionalText(value).replace(/[^0-9.-]/g, "");
+
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }

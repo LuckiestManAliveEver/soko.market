@@ -480,10 +480,22 @@ interface SupplierImportDraft {
   notes: string | null;
 }
 
+interface ProductImportDraft {
+  name: string;
+  sku: string | null;
+  unit: string;
+  quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
+}
+
+type DocumentImportDraft = SupplierImportDraft | ProductImportDraft;
+type DocumentImportTarget = "supplier" | "product";
+
 interface DocumentImportPreviewRow {
   rowNumber: number;
   raw: Record<string, string>;
-  mapped: SupplierImportDraft;
+  mapped: DocumentImportDraft;
   errors: string[];
   warnings: string[];
   selected: boolean;
@@ -499,7 +511,7 @@ interface DocumentImportJobSummary {
     checksum: string;
     createdAt: string;
   };
-  target: "supplier";
+  target: DocumentImportTarget;
   status: "previewed" | "confirmed" | "failed";
   rows: DocumentImportPreviewRow[];
   confirmedCount: number;
@@ -827,7 +839,9 @@ interface PaymentFormState {
 }
 
 interface ImportFormState {
+  target: DocumentImportTarget;
   fileName: string;
+  contentType: string;
   content: string;
 }
 
@@ -1003,8 +1017,10 @@ const emptyPaymentForm: PaymentFormState = {
 };
 
 const emptyImportForm: ImportFormState = {
-  fileName: "suppliers.csv",
-  content: "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier"
+  target: "product",
+  fileName: "products.csv",
+  contentType: "text/csv",
+  content: "name,sku,unit,quantity,buyingPrice,sellingPrice\nTomatoes,TOM-001,kg,20,60,90"
 };
 
 const emptyLogisticsForm: LogisticsFormState = {
@@ -2421,17 +2437,18 @@ function OwnerApp() {
     }
   }
 
-  async function createSupplierCsvImport() {
+  async function createDocumentImport() {
     if (business === null) {
       return;
     }
 
     try {
+      const endpoint = importForm.target === "product" ? "product-catalogue" : "supplier-csv";
       const job = await postJson<DocumentImportJobSummary>(
-        `/businesses/${business.id}/imports/supplier-csv`,
+        `/businesses/${business.id}/imports/${endpoint}`,
         {
           fileName: importForm.fileName,
-          contentType: "text/csv",
+          contentType: importForm.contentType,
           content: importForm.content
         }
       );
@@ -2446,7 +2463,7 @@ function OwnerApp() {
   function updateImportRowLocal(input: {
     importJobId: string;
     rowNumber: number;
-    mapped: SupplierImportDraft;
+    mapped: DocumentImportDraft;
     selected: boolean;
   }) {
     setImportJobs((jobs) =>
@@ -2475,8 +2492,9 @@ function OwnerApp() {
     }
 
     try {
+      const rowEndpoint = job.target === "product" ? "product-rows" : "rows";
       const updated = await patchJson<DocumentImportJobSummary>(
-        `/businesses/${business.id}/imports/${job.id}/rows/${row.rowNumber}`,
+        `/businesses/${business.id}/imports/${job.id}/${rowEndpoint}/${row.rowNumber}`,
         {
           mapped: row.mapped,
           selected: row.selected
@@ -2495,8 +2513,9 @@ function OwnerApp() {
     }
 
     try {
+      const confirmEndpoint = job.target === "product" ? "confirm-products" : "confirm";
       const response = await postJson<DocumentImportConfirmResult>(
-        `/businesses/${business.id}/imports/${job.id}/confirm`,
+        `/businesses/${business.id}/imports/${job.id}/${confirmEndpoint}`,
         {
           selectedRowNumbers: job.rows.filter((row) => row.selected).map((row) => row.rowNumber)
         }
@@ -2505,7 +2524,11 @@ function OwnerApp() {
         jobs.map((item) => (item.id === response.job.id ? response.job : item))
       );
       await loadDocumentImports(business.id);
-      setStatusMessage(`${response.job.confirmedCount} supplier rows imported`);
+      setStatusMessage(
+        `${response.job.confirmedCount} ${
+          response.job.target === "product" ? "product" : "supplier"
+        } row${response.job.confirmedCount === 1 ? "" : "s"} imported`
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3187,7 +3210,7 @@ function OwnerApp() {
             activeImportJob={activeImportJob}
             selectedImportJobId={selectedImportJobId}
             onFormChange={setImportForm}
-            onCreate={() => void createSupplierCsvImport()}
+            onCreate={() => void createDocumentImport()}
             onSelectJob={setSelectedImportJobId}
             onRowChange={updateImportRowLocal}
             onSaveRow={(job, row) => void saveImportRow(job, row)}
@@ -4277,7 +4300,7 @@ interface ImportSurfaceProps {
   onRowChange: (input: {
     importJobId: string;
     rowNumber: number;
-    mapped: SupplierImportDraft;
+    mapped: DocumentImportDraft;
     selected: boolean;
   }) => void;
   onSaveRow: (job: DocumentImportJobSummary, row: DocumentImportPreviewRow) => void;
@@ -4289,13 +4312,76 @@ function ImportSurface(props: ImportSurfaceProps) {
   const selectedRows = props.activeImportJob?.rows.filter((row) => row.selected) ?? [];
   const invalidSelectedRows = selectedRows.filter((row) => row.errors.length > 0);
 
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (file === undefined) {
+      return;
+    }
+
+    const content = await file.text();
+    props.onFormChange({
+      ...props.form,
+      fileName: file.name,
+      contentType: file.type || inferImportContentType(file.name),
+      content
+    });
+    event.target.value = "";
+  }
+
   return (
     <div className="records-surface">
-      <section className="record-form" aria-label="Supplier CSV import">
+      <section className="record-form" aria-label="Catalogue document import">
         <div className="section-heading">
-          <p className="eyebrow">CP9 import</p>
-          <h3>Supplier CSV preview</h3>
+          <p className="eyebrow">Catalogue import</p>
+          <h3>Upload or retrieve products</h3>
         </div>
+        <label>
+          Import target
+          <select
+            value={props.form.target}
+            onChange={(event) => {
+              const target = event.target.value as DocumentImportTarget;
+              props.onFormChange({
+                ...props.form,
+                target,
+                fileName: target === "product" ? "products.csv" : "suppliers.csv",
+                contentType: "text/csv",
+                content:
+                  target === "product"
+                    ? "name,sku,unit,quantity,buyingPrice,sellingPrice\nTomatoes,TOM-001,kg,20,60,90"
+                    : "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier"
+              });
+            }}
+          >
+            <option value="product">Product catalogue</option>
+            <option value="supplier">Supplier contacts</option>
+          </select>
+        </label>
+        <label>
+          Upload document, sheet, PDF/Word export, or database export
+          <input
+            accept={[
+              ".csv",
+              ".tsv",
+              ".txt",
+              ".json",
+              ".sql",
+              ".pdf",
+              ".doc",
+              ".docx",
+              ".odt",
+              ".ods",
+              ".xls",
+              ".xlsx",
+              "text/*",
+              "application/json",
+              "application/pdf"
+            ].join(",")}
+            type="file"
+            onChange={(event) => void handleFileChange(event)}
+          />
+        </label>
         <label>
           File name
           <input
@@ -4306,13 +4392,26 @@ function ImportSurface(props: ImportSurfaceProps) {
           />
         </label>
         <label>
-          CSV content
+          Content type
+          <input
+            value={props.form.contentType}
+            onChange={(event) =>
+              props.onFormChange({ ...props.form, contentType: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Document or export content
           <textarea
             value={props.form.content}
             onChange={(event) => props.onFormChange({ ...props.form, content: event.target.value })}
             rows={7}
           />
         </label>
+        <p className="form-hint">
+          Supports CSV/TSV sheets, JSON or SQL database exports, and text copied from PDF or Word
+          documents.
+        </p>
         <div className="actions">
           <button
             type="button"
@@ -4335,14 +4434,14 @@ function ImportSurface(props: ImportSurfaceProps) {
         {props.importJobs.length === 0 ? (
           <div className="empty-record">
             <h3>No imports yet</h3>
-            <p>Preview a supplier CSV before confirming new records.</p>
+            <p>Preview a catalogue document before confirming new records.</p>
           </div>
         ) : (
           props.importJobs.map((job) => (
             <article className="record-row" key={job.id}>
               <div>
                 <strong>
-                  {job.source.fileName} - {job.status}
+                  {job.source.fileName} - {job.target} - {job.status}
                 </strong>
                 <span>
                   {job.rows.length} row{job.rows.length === 1 ? "" : "s"} - {job.confirmedCount}{" "}
@@ -4387,18 +4486,31 @@ function ImportSurface(props: ImportSurfaceProps) {
               <p>{props.activeImportJob.errorMessage}</p>
             </div>
           ) : null}
-          {props.activeImportJob.rows.map((row) => (
-            <ImportRowEditor
-              importJobId={props.activeImportJob?.id ?? ""}
-              key={row.rowNumber}
-              row={row}
-              disabled={props.activeImportJob?.status !== "previewed"}
-              onRowChange={props.onRowChange}
-              onSave={() =>
-                props.activeImportJob !== null && props.onSaveRow(props.activeImportJob, row)
-              }
-            />
-          ))}
+          {props.activeImportJob.rows.map((row) =>
+            props.activeImportJob?.target === "product" ? (
+              <ProductImportRowEditor
+                importJobId={props.activeImportJob.id}
+                key={row.rowNumber}
+                row={row}
+                disabled={props.activeImportJob.status !== "previewed"}
+                onRowChange={props.onRowChange}
+                onSave={() =>
+                  props.activeImportJob !== null && props.onSaveRow(props.activeImportJob, row)
+                }
+              />
+            ) : (
+              <SupplierImportRowEditor
+                importJobId={props.activeImportJob?.id ?? ""}
+                key={row.rowNumber}
+                row={row}
+                disabled={props.activeImportJob?.status !== "previewed"}
+                onRowChange={props.onRowChange}
+                onSave={() =>
+                  props.activeImportJob !== null && props.onSaveRow(props.activeImportJob, row)
+                }
+              />
+            )
+          )}
           <button
             type="button"
             onClick={() => props.activeImportJob !== null && props.onConfirm(props.activeImportJob)}
@@ -4423,13 +4535,15 @@ interface ImportRowEditorProps {
   onRowChange: (input: {
     importJobId: string;
     rowNumber: number;
-    mapped: SupplierImportDraft;
+    mapped: DocumentImportDraft;
     selected: boolean;
   }) => void;
   onSave: () => void;
 }
 
-function ImportRowEditor(props: ImportRowEditorProps) {
+function SupplierImportRowEditor(props: ImportRowEditorProps) {
+  const mapped = asSupplierImportDraft(props.row.mapped);
+
   function updateMapped(mapped: SupplierImportDraft, selected = props.row.selected) {
     props.onRowChange({
       importJobId: props.importJobId,
@@ -4451,7 +4565,7 @@ function ImportRowEditor(props: ImportRowEditorProps) {
               props.onRowChange({
                 importJobId: props.importJobId,
                 rowNumber: props.row.rowNumber,
-                mapped: props.row.mapped,
+                mapped,
                 selected: event.target.checked
               })
             }
@@ -4464,19 +4578,17 @@ function ImportRowEditor(props: ImportRowEditorProps) {
         <label>
           Name
           <input
-            value={props.row.mapped.name}
+            value={mapped.name}
             disabled={props.disabled}
-            onChange={(event) => updateMapped({ ...props.row.mapped, name: event.target.value })}
+            onChange={(event) => updateMapped({ ...mapped, name: event.target.value })}
           />
         </label>
         <label>
           Phone
           <input
-            value={props.row.mapped.phone ?? ""}
+            value={mapped.phone ?? ""}
             disabled={props.disabled}
-            onChange={(event) =>
-              updateMapped({ ...props.row.mapped, phone: event.target.value || null })
-            }
+            onChange={(event) => updateMapped({ ...mapped, phone: event.target.value || null })}
           />
         </label>
       </div>
@@ -4484,20 +4596,131 @@ function ImportRowEditor(props: ImportRowEditorProps) {
         <label>
           Email
           <input
-            value={props.row.mapped.email ?? ""}
+            value={mapped.email ?? ""}
             disabled={props.disabled}
-            onChange={(event) =>
-              updateMapped({ ...props.row.mapped, email: event.target.value || null })
-            }
+            onChange={(event) => updateMapped({ ...mapped, email: event.target.value || null })}
           />
         </label>
         <label>
           Notes
           <input
-            value={props.row.mapped.notes ?? ""}
+            value={mapped.notes ?? ""}
+            disabled={props.disabled}
+            onChange={(event) => updateMapped({ ...mapped, notes: event.target.value || null })}
+          />
+        </label>
+      </div>
+      {props.row.errors.length > 0 ? <p>{props.row.errors.join(" ")}</p> : null}
+      <button type="button" onClick={props.onSave} disabled={props.disabled}>
+        Save row
+      </button>
+    </article>
+  );
+}
+
+function ProductImportRowEditor(props: ImportRowEditorProps) {
+  const mapped = asProductImportDraft(props.row.mapped);
+
+  function updateMapped(mapped: ProductImportDraft, selected = props.row.selected) {
+    props.onRowChange({
+      importJobId: props.importJobId,
+      rowNumber: props.row.rowNumber,
+      mapped,
+      selected
+    });
+  }
+
+  return (
+    <article className="import-row">
+      <div className="import-row-header">
+        <label className="inline-check">
+          <input
+            checked={props.row.selected}
+            disabled={props.disabled}
+            type="checkbox"
+            onChange={(event) =>
+              props.onRowChange({
+                importJobId: props.importJobId,
+                rowNumber: props.row.rowNumber,
+                mapped,
+                selected: event.target.checked
+              })
+            }
+          />
+          Row {props.row.rowNumber}
+        </label>
+        <span>{props.row.errors.length === 0 ? "Valid" : "Needs correction"}</span>
+      </div>
+      <div className="form-row">
+        <label>
+          Name
+          <input
+            value={mapped.name}
+            disabled={props.disabled}
+            onChange={(event) => updateMapped({ ...mapped, name: event.target.value })}
+          />
+        </label>
+        <label>
+          SKU
+          <input
+            value={mapped.sku ?? ""}
+            disabled={props.disabled}
+            onChange={(event) => updateMapped({ ...mapped, sku: event.target.value || null })}
+          />
+        </label>
+      </div>
+      <div className="form-row">
+        <label>
+          Unit
+          <input
+            value={mapped.unit}
+            disabled={props.disabled}
+            onChange={(event) => updateMapped({ ...mapped, unit: event.target.value || "unit" })}
+          />
+        </label>
+        <label>
+          Quantity
+          <input
+            min="0"
+            type="number"
+            value={mapped.quantity}
             disabled={props.disabled}
             onChange={(event) =>
-              updateMapped({ ...props.row.mapped, notes: event.target.value || null })
+              updateMapped({ ...mapped, quantity: Number.parseFloat(event.target.value) || 0 })
+            }
+          />
+        </label>
+      </div>
+      <div className="form-row">
+        <label>
+          Buying price
+          <input
+            min="0"
+            type="number"
+            value={mapped.buyingPrice ?? ""}
+            disabled={props.disabled}
+            onChange={(event) =>
+              updateMapped({
+                ...mapped,
+                buyingPrice:
+                  event.target.value === "" ? null : Number.parseFloat(event.target.value)
+              })
+            }
+          />
+        </label>
+        <label>
+          Selling price
+          <input
+            min="0"
+            type="number"
+            value={mapped.sellingPrice ?? ""}
+            disabled={props.disabled}
+            onChange={(event) =>
+              updateMapped({
+                ...mapped,
+                sellingPrice:
+                  event.target.value === "" ? null : Number.parseFloat(event.target.value)
+              })
             }
           />
         </label>
@@ -5062,6 +5285,23 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
                 Receipt {cartCount > 0 ? cartCount : ""}
               </button>
+              <details className="customer-care-menu">
+                <summary>Customer care</summary>
+                <div className="customer-care-dropdown">
+                  <button type="button" onClick={requestCallback}>
+                    Request callback
+                  </button>
+                  <button type="button" onClick={requestQuote}>
+                    Request quote
+                  </button>
+                  <button type="button" onClick={requestSupport}>
+                    Support
+                  </button>
+                  <button type="button" onClick={registerNewCustomerByAgent}>
+                    Register customer
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -5192,26 +5432,12 @@ function PublicStorefrontChat(props: { agentId: string }) {
               </section>
             ) : null}
 
-            <section className="storefront-crm-card" aria-label="Customer support">
-              <div>
-                <span>Customer care</span>
-                <strong>Conversation and follow-up</strong>
-              </div>
-              <div className="storefront-crm-actions">
-                <button type="button" onClick={requestCallback}>
-                  Request callback
-                </button>
-                <button type="button" onClick={requestQuote}>
-                  Request quote
-                </button>
-                <button type="button" onClick={requestSupport}>
-                  Support
-                </button>
-                <button type="button" onClick={registerNewCustomerByAgent}>
-                  Register customer
-                </button>
-              </div>
-              {crmNotes.length > 0 ? (
+            {crmNotes.length > 0 ? (
+              <section className="storefront-crm-card" aria-label="Customer care notes">
+                <div>
+                  <span>Customer care</span>
+                  <strong>Conversation and follow-up</strong>
+                </div>
                 <div className="storefront-crm-notes" aria-label="Conversation notes">
                   {crmNotes.slice(-3).map((note) => (
                     <p key={note.id}>
@@ -5220,10 +5446,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
                     </p>
                   ))}
                 </div>
-              ) : (
-                <p>Ask about products, delivery, quotes, support, returns, or follow-up.</p>
-              )}
-            </section>
+              </section>
+            ) : null}
 
             {messages.map((message) => (
               <div
@@ -7968,6 +8192,53 @@ function formatFileSize(size: number): string {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
+}
+
+function asSupplierImportDraft(mapped: DocumentImportDraft): SupplierImportDraft {
+  return {
+    name: mapped.name,
+    phone: "phone" in mapped ? mapped.phone : null,
+    email: "email" in mapped ? mapped.email : null,
+    notes: "notes" in mapped ? mapped.notes : null
+  };
+}
+
+function asProductImportDraft(mapped: DocumentImportDraft): ProductImportDraft {
+  return {
+    name: mapped.name,
+    sku: "sku" in mapped ? mapped.sku : null,
+    unit: "unit" in mapped ? mapped.unit : "unit",
+    quantity: "quantity" in mapped ? mapped.quantity : 0,
+    buyingPrice: "buyingPrice" in mapped ? mapped.buyingPrice : null,
+    sellingPrice: "sellingPrice" in mapped ? mapped.sellingPrice : null
+  };
+}
+
+function inferImportContentType(fileName: string): string {
+  const extension = fileName.toLowerCase().split(".").pop();
+
+  switch (extension) {
+    case "csv":
+      return "text/csv";
+    case "tsv":
+      return "text/tab-separated-values";
+    case "json":
+      return "application/json";
+    case "pdf":
+      return "application/pdf";
+    case "doc":
+      return "application/msword";
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xls":
+      return "application/vnd.ms-excel";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "sql":
+      return "application/sql";
+    default:
+      return "text/plain";
+  }
 }
 
 function viewLabel(view: ShellView): string {

@@ -19,6 +19,7 @@ import type {
   LaunchIncidentCategory,
   LaunchIncidentSeverity,
   LaunchIncidentStatus,
+  ProductImportDraft,
   SupplierImportDraft,
   TaxCountryCode,
   SyncMutationPayload,
@@ -242,8 +243,19 @@ interface SupplierCsvImportBody {
   content?: string;
 }
 
+interface ProductCatalogueImportBody {
+  fileName?: string;
+  contentType?: string | null;
+  content?: string;
+}
+
 interface SupplierImportRowBody {
   mapped?: Partial<SupplierImportDraft>;
+  selected?: boolean;
+}
+
+interface ProductImportRowBody {
+  mapped?: Partial<ProductImportDraft>;
   selected?: boolean;
 }
 
@@ -1499,6 +1511,24 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/imports/product-catalogue",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ProductCatalogueImportBody }>,
+      reply
+    ) => {
+      try {
+        return store.createProductCatalogueImport({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          source: parseProductCatalogueImportBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/businesses/:businessId/imports",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -1548,6 +1578,26 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.patch(
+    "/businesses/:businessId/imports/:importJobId/product-rows/:rowNumber",
+    async (
+      request: FastifyRequest<{ Params: DocumentImportRowParams; Body: ProductImportRowBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateProductImportRow({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          importJobId: request.params.importJobId,
+          rowNumber: parseIntegerString(request.params.rowNumber, "rowNumber"),
+          ...parseProductImportRowBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/imports/:importJobId/confirm",
     async (
@@ -1562,6 +1612,29 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           importJobId: request.params.importJobId
         };
         return store.confirmSupplierImport({
+          ...input,
+          ...(selectedRowNumbers === undefined ? {} : { selectedRowNumbers })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/imports/:importJobId/confirm-products",
+    async (
+      request: FastifyRequest<{ Params: DocumentImportParams; Body: SupplierImportConfirmBody }>,
+      reply
+    ) => {
+      try {
+        const selectedRowNumbers = parseOptionalRowNumbers(request.body?.selectedRowNumbers);
+        const input = {
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          importJobId: request.params.importJobId
+        };
+        return store.confirmProductImport({
           ...input,
           ...(selectedRowNumbers === undefined ? {} : { selectedRowNumbers })
         });
@@ -2037,6 +2110,16 @@ function parseSupplierCsvImportBody(body: SupplierCsvImportBody | null | undefin
   };
 }
 
+function parseProductCatalogueImportBody(body: ProductCatalogueImportBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    fileName: parseString(record.fileName, "fileName"),
+    contentType: parseNullableString(record.contentType),
+    content: parseString(record.content, "content")
+  };
+}
+
 function parseSupplierImportRowBody(body: SupplierImportRowBody | null | undefined): {
   mapped: SupplierImportDraft;
   selected?: boolean;
@@ -2049,6 +2132,31 @@ function parseSupplierImportRowBody(body: SupplierImportRowBody | null | undefin
       phone: parseNullableString(mapped.phone),
       email: parseNullableString(mapped.email),
       notes: parseNullableString(mapped.notes)
+    }
+  };
+
+  return record.selected === undefined
+    ? parsed
+    : {
+        ...parsed,
+        selected: parseBoolean(record.selected, "selected")
+      };
+}
+
+function parseProductImportRowBody(body: ProductImportRowBody | null | undefined): {
+  mapped: ProductImportDraft;
+  selected?: boolean;
+} {
+  const record = parseRequestBody(body);
+  const mapped = parseRequestBody(record.mapped);
+  const parsed = {
+    mapped: {
+      name: parseString(mapped.name, "mapped.name"),
+      sku: parseNullableString(mapped.sku),
+      unit: parseString(mapped.unit, "mapped.unit"),
+      quantity: parseNumber(mapped.quantity, "mapped.quantity"),
+      buyingPrice: parseNullableNumber(mapped.buyingPrice, "mapped.buyingPrice"),
+      sellingPrice: parseNullableNumber(mapped.sellingPrice, "mapped.sellingPrice")
     }
   };
 

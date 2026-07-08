@@ -27,20 +27,26 @@ interface SupplierResponse {
   notes: string | null;
 }
 
+interface ProductResponse {
+  id: string;
+  name: string;
+  sku: string | null;
+  unit: string;
+  quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
+}
+
 interface ImportPreviewRowResponse {
   rowNumber: number;
-  mapped: {
-    name: string;
-    phone: string | null;
-    email: string | null;
-    notes: string | null;
-  };
+  mapped: Record<string, unknown>;
   errors: string[];
   selected: boolean;
 }
 
 interface ImportJobResponse {
   id: string;
+  target: "supplier" | "product";
   status: "previewed" | "confirmed" | "failed";
   source: {
     fileName: string;
@@ -54,7 +60,8 @@ interface ImportJobResponse {
 
 interface ImportConfirmResponse {
   job: ImportJobResponse;
-  suppliers: SupplierResponse[];
+  suppliers?: SupplierResponse[];
+  products?: ProductResponse[];
 }
 
 describe("CP9 document import", () => {
@@ -142,7 +149,7 @@ describe("CP9 document import", () => {
       status: "confirmed",
       confirmedCount: 2
     });
-    expect(confirmed.suppliers.map((supplier) => supplier.name)).toEqual([
+    expect(confirmed.suppliers?.map((supplier) => supplier.name)).toEqual([
       "Wholesale Depot",
       "Lake Produce"
     ]);
@@ -154,6 +161,84 @@ describe("CP9 document import", () => {
         "document_import.confirmed"
       ])
     );
+
+    await app.close();
+  });
+
+  it("previews and confirms product catalogue rows from document and database exports", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const sheetImport = await postJson<ImportJobResponse>(
+      app,
+      `/businesses/${businessId}/imports/product-catalogue`,
+      {
+        fileName: "products.tsv",
+        contentType: "text/tab-separated-values",
+        content:
+          "Product\tSKU\tUnit\tStock\tCost\tPrice\nTomatoes\tTOM-001\tkg\t20\t60\t90\nMaize Flour\tMAI-002\tbag\t8\t110\t145"
+      },
+      sessionCookie
+    );
+
+    expect(sheetImport).toMatchObject({
+      target: "product",
+      status: "previewed"
+    });
+    expect(sheetImport.rows).toHaveLength(2);
+    expect(sheetImport.rows[0]).toMatchObject({
+      selected: true,
+      mapped: {
+        name: "Tomatoes",
+        sku: "TOM-001",
+        quantity: 20,
+        buyingPrice: 60,
+        sellingPrice: 90
+      }
+    });
+
+    const confirmedSheet = await postJson<ImportConfirmResponse>(
+      app,
+      `/businesses/${businessId}/imports/${sheetImport.id}/confirm-products`,
+      {},
+      sessionCookie
+    );
+    expect(confirmedSheet.job).toMatchObject({
+      status: "confirmed",
+      confirmedCount: 2
+    });
+    expect(confirmedSheet.products?.map((product) => product.name)).toEqual([
+      "Tomatoes",
+      "Maize Flour"
+    ]);
+
+    const databaseImport = await postJson<ImportJobResponse>(
+      app,
+      `/businesses/${businessId}/imports/product-catalogue`,
+      {
+        fileName: "legacy-products.sql",
+        contentType: "application/sql",
+        content:
+          "INSERT INTO products (name, sku, unit, quantity, buying_price, selling_price) VALUES ('Rice', 'RIC-003', 'bag', 5, 120, 180);"
+      },
+      sessionCookie
+    );
+    expect(databaseImport).toMatchObject({
+      target: "product",
+      status: "previewed"
+    });
+    expect(databaseImport.rows[0]).toMatchObject({
+      mapped: {
+        name: "Rice",
+        sku: "RIC-003",
+        quantity: 5
+      }
+    });
+
+    expect(store.snapshot().products.map((product) => product.name)).toEqual([
+      "Tomatoes",
+      "Maize Flour"
+    ]);
 
     await app.close();
   });
