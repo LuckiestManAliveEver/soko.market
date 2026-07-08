@@ -668,6 +668,12 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.record-row small {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .record-row button {
   min-width: 72px;
 }
@@ -716,6 +722,55 @@ button:disabled {
   font-weight: 800;
   min-height: 46px;
   padding: 10px 12px;
+}
+
+.sync-share-panel {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px;
+}
+
+.sync-share-panel div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sync-share-panel span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.sync-share-panel p {
+  color: #516258;
+  overflow-wrap: anywhere;
+}
+
+.sync-share-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
+}
+
+.sync-share-actions button {
+  background: #117a4f;
+  border-radius: 6px;
+  color: #ffffff;
+  font-weight: 800;
+  min-height: 42px;
+  padding: 9px 10px;
+}
+
+.sync-share-actions button.secondary {
+  background: #e7ede8;
+  color: #23342a;
 }
 
 .invoice-document {
@@ -1347,6 +1402,7 @@ button:disabled {
 .storefront-product-tile button,
 .storefront-cart-summary button,
 .storefront-checkout button,
+.storefront-receipt button,
 .storefront-composer button {
   background: #117a4f;
   border-radius: 8px;
@@ -1373,8 +1429,46 @@ button:disabled {
   border-radius: 8px;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 72px auto;
   padding: 8px;
+}
+
+.storefront-receipt-lines input {
+  appearance: none;
+  background: #ffffff;
+  border: 1px solid #b8c5bc;
+  border-radius: 8px;
+  color: #17211b;
+  font-size: 16px;
+  min-height: 40px;
+  min-width: 0;
+  padding: 8px;
+  text-align: center;
+  width: 100%;
+}
+
+.storefront-receipt-lines button {
+  background: #e7ede8;
+  color: #23342a;
+}
+
+.storefront-receipt-add {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.storefront-receipt-add select {
+  appearance: none;
+  background: #ffffff;
+  border: 1px solid #b8c5bc;
+  border-radius: 8px;
+  color: #17211b;
+  font-size: 16px;
+  min-height: 42px;
+  min-width: 0;
+  padding: 9px 12px;
+  width: 100%;
 }
 
 .storefront-cart-lines div {
@@ -1484,6 +1578,33 @@ button:disabled {
 .agent-settings-grid {
   display: grid;
   gap: 12px;
+}
+
+.agent-context-window textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  min-height: 260px;
+}
+
+.context-script-examples {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.context-script-examples span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.context-script-examples code {
+  color: #17211b;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 @media (min-width: 760px) {
@@ -1661,6 +1782,8 @@ button:disabled {
 
   .storefront-product-tile,
   .storefront-cart-lines div,
+  .storefront-receipt-lines div,
+  .storefront-receipt-add,
   .storefront-crm-actions,
   .storefront-share-actions {
     grid-template-columns: 1fr;
@@ -1678,6 +1801,7 @@ button:disabled {
   .storefront-cart-summary button,
   .storefront-crm-actions button,
   .storefront-checkout button,
+  .storefront-receipt button,
   .storefront-composer button {
     justify-self: start;
     width: auto;

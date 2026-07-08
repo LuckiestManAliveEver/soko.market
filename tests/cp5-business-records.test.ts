@@ -26,6 +26,8 @@ interface ProductResponse {
   sku: string | null;
   unit: string;
   quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
 }
 
 interface CustomerResponse {
@@ -68,7 +70,9 @@ describe("CP5 business core records", () => {
         name: " Maize   Flour ",
         sku: "MF-1",
         unit: "packet",
-        quantity: 10
+        quantity: 10,
+        buyingPrice: 80,
+        sellingPrice: 120
       },
       sessionCookie
     );
@@ -78,7 +82,9 @@ describe("CP5 business core records", () => {
       name: "Maize Flour",
       sku: "MF-1",
       unit: "packet",
-      quantity: 10
+      quantity: 10,
+      buyingPrice: 80,
+      sellingPrice: 120
     });
 
     const updatedProduct = await patchJson<ProductResponse>(
@@ -88,7 +94,9 @@ describe("CP5 business core records", () => {
         name: "Maize Flour 2kg",
         sku: "",
         unit: "bag",
-        quantity: 8
+        quantity: 8,
+        buyingPrice: null,
+        sellingPrice: 150
       },
       sessionCookie
     );
@@ -98,7 +106,9 @@ describe("CP5 business core records", () => {
       name: "Maize Flour 2kg",
       sku: null,
       unit: "bag",
-      quantity: 8
+      quantity: 8,
+      buyingPrice: null,
+      sellingPrice: 150
     });
 
     const stock = await postJson<StockAdjustmentResponse>(
@@ -204,6 +214,10 @@ describe("CP5 business core records", () => {
     );
 
     expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({
+      buyingPrice: null,
+      sellingPrice: 150
+    });
     expect(customers).toHaveLength(1);
     expect(suppliers).toHaveLength(1);
     expect(suppliers[0]).toMatchObject({

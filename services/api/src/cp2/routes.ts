@@ -144,6 +144,8 @@ interface ProductBody {
   sku?: string | null;
   unit?: string | null;
   quantity?: number;
+  buyingPrice?: number | null;
+  sellingPrice?: number | null;
 }
 
 interface ContactRecordBody {
@@ -216,6 +218,7 @@ interface SupplierImportConfirmBody {
 interface RuntimeTurnBody {
   agentProfile?: {
     behavior?: string;
+    contextScripts?: string[];
     integrations?: string[];
     knowledge?: string;
     model?: string;
@@ -1743,7 +1746,15 @@ function parseProductBody(body: ProductBody | null | undefined) {
     name: parseString(record.name, "name"),
     sku: parseNullableString(record.sku),
     unit: parseNullableString(record.unit),
-    quantity: record.quantity === undefined ? 0 : parseNumber(record.quantity, "quantity")
+    quantity: record.quantity === undefined ? 0 : parseNumber(record.quantity, "quantity"),
+    buyingPrice:
+      record.buyingPrice === undefined || record.buyingPrice === null
+        ? null
+        : parseNumber(record.buyingPrice, "buyingPrice"),
+    sellingPrice:
+      record.sellingPrice === undefined || record.sellingPrice === null
+        ? null
+        : parseNumber(record.sellingPrice, "sellingPrice")
   };
 }
 
@@ -1918,10 +1929,19 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
 function parseRuntimeAgentProfile(value: unknown): RuntimeAgentProfile {
   const record = parseRequestBody(value);
   const tools = record.tools;
+  const contextScripts = record.contextScripts;
   const integrations = record.integrations;
 
   if (tools !== undefined && !Array.isArray(tools)) {
     throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.tools must be an array.");
+  }
+
+  if (contextScripts !== undefined && !Array.isArray(contextScripts)) {
+    throw new Cp2Error(
+      400,
+      "agent_profile_invalid",
+      "agentProfile.contextScripts must be an array."
+    );
   }
 
   if (integrations !== undefined && !Array.isArray(integrations)) {
@@ -1932,6 +1952,9 @@ function parseRuntimeAgentProfile(value: unknown): RuntimeAgentProfile {
 
   return {
     behavior: parseOptionalString(record.behavior) ?? instructions,
+    contextScripts: (contextScripts ?? []).map((script, index) =>
+      parseString(script, `agentProfile.contextScripts.${index}`)
+    ),
     integrations: (integrations ?? []).map((integration, index) =>
       parseString(integration, `agentProfile.integrations.${index}`)
     ),

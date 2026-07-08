@@ -176,7 +176,10 @@ describe("CP11 local model adapter", () => {
           model: "qwen2.5-0.5b-android",
           role: "Store attendant",
           instructions: "Only promise items the store can actually supply.",
-          tools: ["Products", "Invoices"]
+          tools: ["Products", "Invoices"],
+          contextScripts: [
+            "script: product_catalogue_commands\nallow: read, add, edit, remove\nsw: onyesha bidhaa => products.list"
+          ]
         }
       },
       sessionCookie
@@ -199,6 +202,8 @@ describe("CP11 local model adapter", () => {
     expect(llamaPrompt).toContain("Agent capabilities: Products, Invoices.");
     expect(llamaPrompt).toContain("Agent integrations: Soko.market storefront.");
     expect(llamaPrompt).toContain("Only promise items the store can actually supply.");
+    expect(llamaPrompt).toContain("Context scripts: script: product_catalogue_commands");
+    expect(llamaPrompt).toContain("sw: onyesha bidhaa => products.list");
     expect(turn.turn).toMatchObject({
       status: "completed",
       model: {

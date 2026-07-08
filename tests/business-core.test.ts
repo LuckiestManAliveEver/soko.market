@@ -67,12 +67,22 @@ describe("business core foundation", () => {
       ok: true,
       errors: []
     });
-    expect(normalizeProductInput({ name: " Maize   Flour ", quantity: 2 })).toMatchObject({
+    expect(
+      normalizeProductInput({
+        name: " Maize   Flour ",
+        quantity: 2,
+        buyingPrice: 80,
+        sellingPrice: null
+      })
+    ).toMatchObject({
       name: "Maize Flour",
       unit: "unit",
-      quantity: 2
+      quantity: 2,
+      buyingPrice: 80,
+      sellingPrice: null
     });
     expect(validateProductInput({ name: "x", quantity: -1 }).ok).toBe(false);
+    expect(validateProductInput({ name: "Rice", buyingPrice: Number.NaN }).ok).toBe(false);
     expect(validateStockAdjustmentInput({ quantityAfter: Number.NaN }).ok).toBe(false);
   });
 
@@ -92,6 +102,8 @@ describe("business core foundation", () => {
       sku: null,
       unit: "packet",
       quantity: 4,
+      buyingPrice: null,
+      sellingPrice: null,
       createdAt: "2026-07-02T00:00:00.000Z",
       updatedAt: "2026-07-02T00:00:00.000Z"
     };
@@ -152,6 +164,8 @@ describe("business core foundation", () => {
       sku: null,
       unit: "packet",
       quantity: 10,
+      buyingPrice: null,
+      sellingPrice: null,
       createdAt: "2026-07-02T00:00:00.000Z",
       updatedAt: "2026-07-02T00:00:00.000Z"
     };

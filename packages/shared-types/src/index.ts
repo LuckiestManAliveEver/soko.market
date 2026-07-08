@@ -77,6 +77,8 @@ export interface ProductSummary {
   sku: string | null;
   unit: string;
   quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
   createdAt: string;
   updatedAt: string;
 }

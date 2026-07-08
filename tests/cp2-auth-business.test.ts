@@ -44,6 +44,8 @@ interface ProductResponse {
   name: string;
   unit: string;
   quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
 }
 
 interface PublicStorefrontResponse {
@@ -602,7 +604,9 @@ describe("CP2 auth and business creation", () => {
         name: "Soko Rice",
         sku: "PRIVATE-SKU",
         unit: "2 kg bag",
-        quantity: 4
+        quantity: 4,
+        buyingPrice: 120,
+        sellingPrice: 180
       },
       sessionCookie
     );
@@ -655,6 +659,8 @@ describe("CP2 auth and business creation", () => {
     expect(publicResponse.json().products[0]).not.toHaveProperty("businessId");
     expect(publicResponse.json().products[0]).not.toHaveProperty("sku");
     expect(publicResponse.json().products[0]).not.toHaveProperty("quantity");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("buyingPrice");
+    expect(publicResponse.json().products[0]).not.toHaveProperty("sellingPrice");
     expect(publicResponse.json().products[0]).not.toHaveProperty("createdAt");
     expect(publicResponse.json().products[0]).not.toHaveProperty("updatedAt");
 

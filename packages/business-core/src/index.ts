@@ -285,6 +285,8 @@ export interface ProductInput {
   sku?: string | null;
   unit?: string | null;
   quantity?: number;
+  buyingPrice?: number | null;
+  sellingPrice?: number | null;
 }
 
 export interface ContactRecordInput {
@@ -429,6 +431,8 @@ export interface NormalizedProductInput {
   sku: string | null;
   unit: string;
   quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
 }
 
 export interface NormalizedContactRecordInput {
@@ -575,6 +579,22 @@ export function validateProductInput(input: ProductInput): ValidationResult {
 
   if (!isValidQuantity(input.quantity ?? 0)) {
     errors.push("Product quantity must be a finite non-negative number.");
+  }
+
+  if (
+    input.buyingPrice !== null &&
+    input.buyingPrice !== undefined &&
+    !isValidMoney(input.buyingPrice)
+  ) {
+    errors.push("Product buying price must be a finite non-negative amount.");
+  }
+
+  if (
+    input.sellingPrice !== null &&
+    input.sellingPrice !== undefined &&
+    !isValidMoney(input.sellingPrice)
+  ) {
+    errors.push("Product selling price must be a finite non-negative amount.");
   }
 
   if (normalizeOptionalText(input.unit).length > 32) {
@@ -1109,7 +1129,15 @@ export function normalizeProductInput(input: ProductInput): NormalizedProductInp
     name: normalizeRequiredText(input.name),
     sku: nullableText(input.sku),
     unit: normalizeOptionalText(input.unit) || "unit",
-    quantity: input.quantity ?? 0
+    quantity: input.quantity ?? 0,
+    buyingPrice:
+      input.buyingPrice === null || input.buyingPrice === undefined
+        ? null
+        : roundMoney(input.buyingPrice),
+    sellingPrice:
+      input.sellingPrice === null || input.sellingPrice === undefined
+        ? null
+        : roundMoney(input.sellingPrice)
   };
 }
 

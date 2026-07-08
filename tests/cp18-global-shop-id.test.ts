@@ -20,6 +20,8 @@ interface ProductResponse {
   id: string;
   name: string;
   unit: string;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
 }
 
 interface PublicStorefrontResponse {
@@ -53,7 +55,9 @@ describe("CP18 Global Shop ID", () => {
         name: "Tilapia pack",
         sku: "PRIVATE-FISH-001",
         unit: "box",
-        quantity: 5
+        quantity: 5,
+        buyingPrice: 350,
+        sellingPrice: 500
       },
       first.sessionCookie
     );
@@ -95,6 +99,8 @@ describe("CP18 Global Shop ID", () => {
     });
     expect(rawStorefront.json<PublicStorefrontResponse>().sokoId).toBe(first.business.sokoId);
     expect(storefront.json().products[0]).not.toHaveProperty("sku");
+    expect(storefront.json().products[0]).not.toHaveProperty("buyingPrice");
+    expect(storefront.json().products[0]).not.toHaveProperty("sellingPrice");
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining(["business.global_shop_id_created"])
     );

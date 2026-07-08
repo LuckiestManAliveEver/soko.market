@@ -91,6 +91,8 @@ export const products = pgTable("products", {
   sku: text("sku"),
   unit: text("unit").notNull(),
   quantity: numeric("quantity").notNull(),
+  buyingPrice: numeric("buying_price"),
+  sellingPrice: numeric("selling_price"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
 });

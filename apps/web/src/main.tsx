@@ -109,11 +109,13 @@ interface AgentSettings {
   knowledge: string;
   tools: string[];
   integrations: string[];
+  contextScripts: string[];
   status: "active" | "draft";
 }
 
 interface AgentRuntimeProfile {
   behavior: string;
+  contextScripts: string[];
   integrations: string[];
   knowledge: string;
   model: AgentModel;
@@ -151,6 +153,8 @@ interface ProductSummary {
   sku: string | null;
   unit: string;
   quantity: number;
+  buyingPrice: number | null;
+  sellingPrice: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -776,6 +780,8 @@ interface ProductFormState {
   sku: string;
   unit: string;
   quantity: string;
+  buyingPrice: string;
+  sellingPrice: string;
 }
 
 interface CustomerFormState {
@@ -903,6 +909,31 @@ const signupIntroScenes = [
   }
 ];
 
+const defaultAgentContextScripts = [
+  [
+    "script: product_catalogue_commands",
+    "scope: products",
+    "allow: read, add, edit, remove",
+    "en: show products => list existing catalogue before suggesting changes",
+    "en: add product <name> => open product card and request missing stock or price fields",
+    "en: edit product <name> => find closest product, open edit card, confirm changes",
+    "en: remove product <name> => find closest product, require confirmation before delete",
+    "sw: bidhaa => products",
+    "sw: ongeza bidhaa => add product",
+    "sw: hariri bidhaa => edit product",
+    "sw: toa bidhaa => remove product"
+  ].join("\n"),
+  [
+    "script: local_language_negotiation",
+    "scope: storefront_conversation",
+    "allow: explain, negotiate, request_confirmation",
+    "en: negotiate politely, protect the owner's margin, and offer alternatives",
+    "sw: salimia mteja, eleza bei kwa heshima, toa punguzo tu ikiwa mmiliki ameruhusu",
+    "sheng: keep tone friendly but do not invent discounts",
+    "rule: never finalize a discount, delivery promise, refund, or payment without owner confirmation"
+  ].join("\n")
+];
+
 const countryDialCodes: Array<{
   code: CountryDialCode;
   country: string;
@@ -924,7 +955,9 @@ const emptyProductForm: ProductFormState = {
   name: "",
   sku: "",
   unit: "unit",
-  quantity: "0"
+  quantity: "0",
+  buyingPrice: "",
+  sellingPrice: ""
 };
 
 const emptyCustomerForm: CustomerFormState = {
@@ -1735,7 +1768,11 @@ function OwnerApp() {
         name: productForm.name,
         sku: productForm.sku,
         unit: productForm.unit,
-        quantity: Number(productForm.quantity)
+        quantity: Number(productForm.quantity),
+        buyingPrice:
+          productForm.buyingPrice.trim().length === 0 ? null : Number(productForm.buyingPrice),
+        sellingPrice:
+          productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice)
       };
       const product =
         productForm.id === null
@@ -2501,6 +2538,76 @@ function OwnerApp() {
     window.location.assign(createPublicStorefrontUrl(business));
   }
 
+  async function shareOwnerStorefrontInvite() {
+    if (business === null) {
+      return;
+    }
+
+    const shareData = {
+      title: `${business.name} on Soko.market`,
+      text: `Open ${business.name} with Soko Shop ID ${business.sokoId}.`,
+      url: publicStorefrontUrl
+    };
+
+    try {
+      if (navigator.share !== undefined) {
+        await navigator.share(shareData);
+      } else {
+        await copyTextToClipboard(`${shareData.text} ${publicStorefrontUrl}`);
+      }
+      setStatusMessage("Storefront invite ready to share");
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+      setStatusMessage("Invite sharing is not available on this device");
+    }
+  }
+
+  async function syncOwnerPhoneContacts() {
+    const contactNavigator = navigator as ContactPickerNavigator;
+
+    if (contactNavigator.contacts?.select === undefined) {
+      setStatusMessage("Contact sync is available on supported mobile browsers");
+      await shareOwnerStorefrontInvite();
+      return;
+    }
+
+    try {
+      const selectedContacts = await contactNavigator.contacts.select(["name", "tel", "email"], {
+        multiple: true
+      });
+
+      if (selectedContacts.length === 0) {
+        return;
+      }
+
+      const labels = selectedContacts
+        .map((contact) => contact.name?.[0] ?? contact.tel?.[0] ?? contact.email?.[0])
+        .filter((label): label is string => label !== undefined && label.trim().length > 0);
+      setStatusMessage(
+        `Selected ${selectedContacts.length} contact${
+          selectedContacts.length === 1 ? "" : "s"
+        } for Soko invite sync`
+      );
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          id: `sokoclaw-contacts-${Date.now()}`,
+          author: "sokoclaw",
+          body: `I found ${selectedContacts.length} contact${
+            selectedContacts.length === 1 ? "" : "s"
+          }: ${labels.slice(0, 5).join(", ") || "selected contacts"}. Use Invite to share your storefront link.`
+        }
+      ]);
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+      setStatusMessage("I could not access contacts on this device");
+    }
+  }
+
   async function replaySyncQueue() {
     if (business === null) {
       return;
@@ -2917,7 +3024,9 @@ function OwnerApp() {
                 name: product.name,
                 sku: product.sku ?? "",
                 unit: product.unit,
-                quantity: String(product.quantity)
+                quantity: String(product.quantity),
+                buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
+                sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
               });
               setStockProductId(product.id);
               setStockQuantityAfter(String(product.quantity));
@@ -2989,6 +3098,9 @@ function OwnerApp() {
           <SyncSurface
             summary={syncSummary}
             items={syncQueue}
+            storefrontUrl={publicStorefrontUrl}
+            onInvite={() => void shareOwnerStorefrontInvite()}
+            onSyncContacts={() => void syncOwnerPhoneContacts()}
             onRefresh={() => void loadSyncQueue(business.id)}
             onReplay={() => void replaySyncQueue()}
           />
@@ -3257,9 +3369,7 @@ function OwnerApp() {
             </ChatSurface>
           </main>
         )}
-        <footer className="app-credits">
-          Credits: Soko.market owner tools and storefront chat.
-        </footer>
+        <footer className="app-credits">The Retail Network At Your Fingertips</footer>
       </div>
     </Surface>
   );
@@ -3752,8 +3862,11 @@ function LoginPanel(props: LoginPanelProps) {
 interface SyncSurfaceProps {
   summary: SyncQueueSummary;
   items: SyncQueueItem[];
+  storefrontUrl: string;
+  onInvite: () => void;
   onRefresh: () => void;
   onReplay: () => void;
+  onSyncContacts: () => void;
 }
 
 function SyncSurface(props: SyncSurfaceProps) {
@@ -3789,6 +3902,21 @@ function SyncSurface(props: SyncSurfaceProps) {
           <button className="secondary" type="button" onClick={props.onRefresh}>
             Refresh
           </button>
+        </div>
+        <div className="sync-share-panel">
+          <div>
+            <span>Customer network</span>
+            <strong>Contacts and invites</strong>
+            <p>{props.storefrontUrl}</p>
+          </div>
+          <div className="sync-share-actions">
+            <button type="button" onClick={props.onSyncContacts}>
+              Sync contacts
+            </button>
+            <button className="secondary" type="button" onClick={props.onInvite}>
+              Invite link
+            </button>
+          </div>
         </div>
       </section>
 
@@ -4464,6 +4592,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [cart, setCart] = useState<StorefrontCartItem[]>([]);
   const [crmNotes, setCrmNotes] = useState<StorefrontCrmNote[]>([]);
   const [draft, setDraft] = useState("");
+  const [receiptProductId, setReceiptProductId] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
@@ -4504,6 +4633,11 @@ function PublicStorefrontChat(props: { agentId: string }) {
   }, [props.agentId]);
 
   const products = storefront?.products ?? [];
+  const availableProducts = products.filter((product) => product.available);
+  const firstAvailableProductId = products.find((product) => product.available)?.id ?? "";
+  const receiptProductMissing =
+    receiptProductId.length > 0 &&
+    products.every((product) => product.id !== receiptProductId || !product.available);
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
   const cartProducts = cart
     .map((item) => {
@@ -4513,17 +4647,27 @@ function PublicStorefrontChat(props: { agentId: string }) {
     .filter((item): item is PublicStorefrontProductSummary & { quantity: number } => item !== null);
 
   useEffect(() => {
-    const messageList = messageListRef.current;
+    const frameId = window.requestAnimationFrame(() => {
+      const messageList = messageListRef.current;
 
-    if (messageList === null) {
-      return;
-    }
+      if (messageList === null) {
+        return;
+      }
 
-    messageList.scrollTo({
-      top: messageList.scrollHeight,
-      behavior: "smooth"
+      messageList.scrollTo({
+        top: messageList.scrollHeight,
+        behavior: "smooth"
+      });
     });
+
+    return () => window.cancelAnimationFrame(frameId);
   }, [messages.length, cartProducts.length, checkoutOpen, receiptOpen, crmNotes.length]);
+
+  useEffect(() => {
+    if (receiptProductId.length === 0 || receiptProductMissing) {
+      setReceiptProductId(firstAvailableProductId);
+    }
+  }, [firstAvailableProductId, receiptProductId, receiptProductMissing]);
 
   function appendMessage(author: StorefrontChatMessage["author"], body: string) {
     setMessages((currentMessages) => [
@@ -4582,73 +4726,6 @@ function PublicStorefrontChat(props: { agentId: string }) {
     );
   }
 
-  async function shareStorefrontInvite() {
-    if (storefront === null) {
-      return;
-    }
-
-    const url = createStorefrontUrl(storefront.sokoId);
-    const shareData = {
-      title: `${storefront.businessName} on Soko.market`,
-      text: `Open ${storefront.businessName} with Soko Shop ID ${storefront.sokoId}.`,
-      url
-    };
-
-    try {
-      if (navigator.share !== undefined) {
-        await navigator.share(shareData);
-      } else {
-        await copyTextToClipboard(`${shareData.text} ${url}`);
-      }
-      addCrmNote("Invite shared", `Shared storefront invite for ${storefront.sokoId}.`);
-      appendMessage("agent", "The invite link is ready to share from this device.");
-    } catch (caught) {
-      if (caught instanceof DOMException && caught.name === "AbortError") {
-        return;
-      }
-      appendMessage("agent", "I could not open sharing on this device. Copy the shop ID instead.");
-    }
-  }
-
-  async function syncPhoneContacts() {
-    const contactNavigator = navigator as ContactPickerNavigator;
-
-    if (contactNavigator.contacts?.select === undefined) {
-      appendMessage(
-        "agent",
-        "Contact sync is available on supported mobile browsers. You can still invite customers with the storefront link."
-      );
-      await shareStorefrontInvite();
-      return;
-    }
-
-    try {
-      const selectedContacts = await contactNavigator.contacts.select(["name", "tel", "email"], {
-        multiple: true
-      });
-
-      if (selectedContacts.length === 0) {
-        return;
-      }
-
-      const labels = selectedContacts
-        .map((contact) => contact.name?.[0] ?? contact.tel?.[0] ?? contact.email?.[0])
-        .filter((label): label is string => label !== undefined && label.trim().length > 0);
-      addCrmNote("Contacts selected", labels.slice(0, 5).join(", "));
-      appendMessage(
-        "agent",
-        `I found ${selectedContacts.length} selected contact${
-          selectedContacts.length === 1 ? "" : "s"
-        }. Share the storefront invite with anyone who is not on Soko.market yet.`
-      );
-    } catch (caught) {
-      if (caught instanceof DOMException && caught.name === "AbortError") {
-        return;
-      }
-      appendMessage("agent", "I could not access contacts on this device.");
-    }
-  }
-
   function registerNewCustomerByAgent() {
     if (storefront === null) {
       return;
@@ -4685,12 +4762,27 @@ function PublicStorefrontChat(props: { agentId: string }) {
     );
   }
 
+  function addReceiptProduct() {
+    const product = availableProducts.find((item) => item.id === receiptProductId);
+
+    if (product === undefined) {
+      return;
+    }
+
+    addProductToCart(product);
+    setReceiptOpen(true);
+  }
+
   function updateCartQuantity(productId: string, quantity: number) {
     setCart((currentCart) =>
       quantity <= 0
         ? currentCart.filter((item) => item.productId !== productId)
         : currentCart.map((item) => (item.productId === productId ? { ...item, quantity } : item))
     );
+  }
+
+  function removeCartItem(productId: string) {
+    setCart((currentCart) => currentCart.filter((item) => item.productId !== productId));
   }
 
   function handleDraftSubmit(event: FormEvent<HTMLFormElement>) {
@@ -4705,10 +4797,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
     appendMessage("customer", message);
 
     const lowerMessage = message.toLowerCase();
-    const matchedProduct = findBestPublicProduct(
-      message,
-      products.filter((product) => product.available)
-    );
+    const matchedProduct = findBestPublicProduct(message, availableProducts);
 
     if (matchedProduct !== null && hasUseVerb(message)) {
       setCart((currentCart) => {
@@ -4870,12 +4959,6 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <span>{storefront.sokoId}</span>
             </div>
             <div className="public-chat-actions">
-              <button type="button" onClick={() => void syncPhoneContacts()}>
-                Contacts
-              </button>
-              <button type="button" onClick={() => void shareStorefrontInvite()}>
-                Invite
-              </button>
               <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
                 Receipt {cartCount > 0 ? cartCount : ""}
               </button>
@@ -4927,20 +5010,51 @@ function PublicStorefrontChat(props: { agentId: string }) {
                 {cartProducts.length === 0 ? (
                   <p>No purchases selected yet. Add products to build a receipt.</p>
                 ) : (
-                  <>
-                    <div className="storefront-receipt-lines">
-                      {cartProducts.map((product) => (
-                        <div key={product.id}>
-                          <span>{product.name}</span>
-                          <strong>
-                            {product.quantity} {product.unit}
-                          </strong>
-                        </div>
-                      ))}
-                    </div>
-                    <p>Storefront: {storefrontUrl}</p>
-                  </>
+                  <div className="storefront-receipt-lines">
+                    {cartProducts.map((product) => (
+                      <div key={product.id}>
+                        <span>{product.name}</span>
+                        <input
+                          aria-label={`${product.name} receipt quantity`}
+                          min="0"
+                          inputMode="numeric"
+                          type="number"
+                          value={product.quantity}
+                          onChange={(event) =>
+                            updateCartQuantity(
+                              product.id,
+                              Number.parseInt(event.target.value, 10) || 0
+                            )
+                          }
+                        />
+                        <button type="button" onClick={() => removeCartItem(product.id)}>
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
+                <div className="storefront-receipt-add">
+                  <select
+                    aria-label="Add receipt item"
+                    value={receiptProductId}
+                    onChange={(event) => setReceiptProductId(event.target.value)}
+                  >
+                    {availableProducts.map((product) => (
+                      <option key={product.id} value={product.id}>
+                        {product.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={addReceiptProduct}
+                    disabled={receiptProductId === ""}
+                  >
+                    Add item
+                  </button>
+                </div>
+                <p>Storefront: {storefrontUrl}</p>
               </section>
             ) : null}
 
@@ -5072,9 +5186,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
             />
             <button type="submit">Send</button>
           </form>
-          <footer className="app-credits">
-            Credits: Soko.market storefront chat and catalogue tools.
-          </footer>
+          <footer className="app-credits">The Retail Network At Your Fingertips</footer>
         </section>
       </main>
     </Surface>
@@ -5103,6 +5215,10 @@ function ProductSurface(props: ProductSurfaceProps) {
                   {product.quantity} {product.unit}
                   {product.sku === null ? "" : ` · ${product.sku}`}
                 </span>
+                <small>
+                  Buy {formatOptionalMoney(product.buyingPrice)} · Sell{" "}
+                  {formatOptionalMoney(product.sellingPrice)}
+                </small>
               </div>
               <div className="row-actions compact-actions">
                 <button type="button" onClick={() => props.onEdit(product)}>
@@ -5164,6 +5280,30 @@ function ProductSurface(props: ProductSurfaceProps) {
             inputMode="decimal"
           />
         </label>
+        <div className="form-row">
+          <label>
+            Buying price
+            <input
+              value={props.form.buyingPrice}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, buyingPrice: event.target.value })
+              }
+              inputMode="decimal"
+              placeholder="Optional"
+            />
+          </label>
+          <label>
+            Selling price
+            <input
+              value={props.form.sellingPrice}
+              onChange={(event) =>
+                props.onFormChange({ ...props.form, sellingPrice: event.target.value })
+              }
+              inputMode="decimal"
+              placeholder="Optional"
+            />
+          </label>
+        </div>
         <div className="actions">
           <button type="button" onClick={props.onSave}>
             {props.form.id === null ? "Create" : "Save"}
@@ -6781,6 +6921,34 @@ function AgentProfileSurface({
             />
           </label>
         </div>
+
+        <div className="record-form agent-context-window">
+          <div className="section-heading">
+            <p className="eyebrow">Context window</p>
+            <h3>Safe vocabulary scripts</h3>
+          </div>
+          <p className="shell-note">
+            These scripts are model-readable instructions only. They are sanitized, stored as text,
+            and never executed by the browser or API.
+          </p>
+          <label>
+            Context scripts
+            <textarea
+              value={draftAgent.contextScripts.join("\n---\n")}
+              disabled={!isEditing}
+              onChange={(event) =>
+                updateAgent({ contextScripts: splitContextScriptInput(event.target.value) })
+              }
+              rows={12}
+            />
+          </label>
+          <div className="context-script-examples">
+            <span>Allowed shape</span>
+            <code>script: product_catalogue_commands</code>
+            <code>allow: read, add, edit, remove</code>
+            <code>sw: ongeza bidhaa =&gt; add product</code>
+          </div>
+        </div>
       </section>
     </main>
   );
@@ -6833,12 +7001,18 @@ function ChatSurface({
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const generatedCardOpen = activeView !== "chat" && activeView !== "home";
 
   useEffect(() => {
-    messageListRef.current?.scrollTo({
-      top: messageListRef.current.scrollHeight
+    const frameId = window.requestAnimationFrame(() => {
+      messageListRef.current?.scrollTo({
+        top: messageListRef.current.scrollHeight,
+        behavior: "smooth"
+      });
     });
-  }, [activeView, messages]);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeView, generatedCardOpen, messages.length]);
 
   return (
     <div className="chat-surface">
@@ -7227,7 +7401,12 @@ function readStoredAgent(): AgentSettings | null {
       Array.isArray(parsed.tools) &&
       Array.isArray(parsed.integrations)
     ) {
-      return parsed;
+      return {
+        ...parsed,
+        contextScripts: Array.isArray(parsed.contextScripts)
+          ? sanitizeContextScripts(parsed.contextScripts)
+          : defaultAgentContextScripts
+      };
     }
   } catch {
     localStorage.removeItem(activeAgentStorageKey);
@@ -7366,6 +7545,7 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
       "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
     tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
     integrations: ["Soko.market storefront"],
+    contextScripts: defaultAgentContextScripts,
     status: "active"
   };
 }
@@ -7433,6 +7613,38 @@ function splitListInput(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function splitContextScriptInput(value: string): string[] {
+  return sanitizeContextScripts(
+    value
+      .split(/\n---+\n/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+  );
+}
+
+function sanitizeContextScripts(scripts: unknown[]): string[] {
+  return scripts
+    .map((script) => (typeof script === "string" ? sanitizeContextScript(script) : ""))
+    .filter((script) => script.length > 0)
+    .slice(0, 12);
+}
+
+function sanitizeContextScript(script: string): string {
+  return script
+    .replace(/<\s*\/?\s*script[^>]*>/gi, "")
+    .replace(
+      /\b(eval|Function|import|require|fetch|XMLHttpRequest|localStorage|document|window)\b/gi,
+      "[blocked]"
+    )
+    .replace(/[;&|`$<>]/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 40)
+    .join("\n")
+    .slice(0, 2400);
 }
 
 function isAgentModel(value: unknown): value is AgentModel {
@@ -7648,6 +7860,7 @@ type AgentRuntimeDecision =
 function createAgentRuntimeProfile(agent: AgentSettings): AgentRuntimeProfile {
   return {
     behavior: agent.personality,
+    contextScripts: sanitizeContextScripts(agent.contextScripts),
     integrations: agent.integrations,
     knowledge: agent.knowledge,
     model: agent.model,
@@ -7944,6 +8157,10 @@ function formatMoney(value: number): string {
     currency: "KES",
     style: "currency"
   }).format(value);
+}
+
+function formatOptionalMoney(value: number | null): string {
+  return value === null ? "not set" : formatMoney(value);
 }
 
 function formatPercent(value: number): string {

@@ -245,6 +245,7 @@ export interface OtpChallengeDelivery {
 
 export interface RuntimeAgentProfile {
   behavior: string;
+  contextScripts: string[];
   integrations: string[];
   knowledge: string;
   model: string;
@@ -935,6 +936,8 @@ export class Cp2Store {
       sku: normalized.sku,
       unit: normalized.unit,
       quantity: normalized.quantity,
+      buyingPrice: normalized.buyingPrice,
+      sellingPrice: normalized.sellingPrice,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString()
     };
@@ -987,6 +990,8 @@ export class Cp2Store {
       sku: normalized.sku,
       unit: normalized.unit,
       quantity: normalized.quantity,
+      buyingPrice: normalized.buyingPrice,
+      sellingPrice: normalized.sellingPrice,
       updatedAt: now.toISOString()
     };
 
@@ -5351,6 +5356,7 @@ function formatRuntimeModelMessage(
     `Agent capabilities: ${agentProfile.tools.join(", ") || "none"}.`,
     `Agent integrations: ${agentProfile.integrations.join(", ") || "none"}.`,
     `Store knowledge: ${agentProfile.knowledge}`,
+    `Context scripts: ${agentProfile.contextScripts.join("\n---\n") || "none"}`,
     "Infer the user's intent from the business menu data and request text.",
     "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
     `User message: ${message}`
