@@ -81,6 +81,14 @@ interface PendingOAuthLogin {
   state: string;
 }
 
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{
+    outcome: "accepted" | "dismissed";
+    platform: string;
+  }>;
+}
+
 interface PinStatusResponse {
   hasPin: boolean;
 }
@@ -1069,6 +1077,10 @@ const emptyNotificationSummary: NotificationInboxSummary = {
 };
 
 function App() {
+  useEffect(() => {
+    registerAppServiceWorker();
+  }, []);
+
   const storefrontAgentId = readStorefrontAgentId();
 
   if (storefrontAgentId !== null) {
@@ -1082,6 +1094,7 @@ function OwnerApp() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
+  const installPrompt = useInstallPrompt();
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null ? (initialSetupDraft?.channel ?? "phone") : "phone"
   );
@@ -1175,6 +1188,7 @@ function OwnerApp() {
 
   const shouldShowLogin = business !== null && ownerAuth !== null && !isWorkspaceUnlocked;
   const setupComplete = business !== null && !shouldShowLogin;
+  const isAuthScreen = business === null || shouldShowLogin;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
   const activeImportJob =
@@ -2750,7 +2764,12 @@ function OwnerApp() {
   }
 
   async function logout() {
-    await postJson<{ revoked: boolean }>("/auth/logout", {});
+    try {
+      await postJson<{ revoked: boolean }>("/auth/logout", {});
+    } catch {
+      // Local state still needs to lock immediately if the API is unavailable.
+    }
+
     setSession(null);
     setProducts([]);
     setCustomers([]);
@@ -2782,15 +2801,19 @@ function OwnerApp() {
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
+    setPendingAttachments([]);
     setChallenge(null);
     setOtp("");
     setIsOtpVerified(false);
+    setSignupPin("");
+    setSignupPinConfirm("");
     setLoginPin("");
     setIsRecoveringPin(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
+    setSocialProvider(null);
     setView("chat");
-    setStatusMessage("Signed out");
+    setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
     setIsWorkspaceUnlocked(ownerAuth === null);
   }
 
@@ -3262,59 +3285,74 @@ function OwnerApp() {
 
   return (
     <Surface title="Soko.market">
-      <div className="app-frame">
-        <header className="top-bar">
-          <button
-            className="brand-lockup"
-            type="button"
-            onClick={() => setupComplete && setView("agent")}
-          >
-            <span className="logo-mark">S</span>
-            <span>
-              <strong>Soko.market</strong>
-              <span>{business?.name ?? "Owner setup"}</span>
-              <small>{setupComplete ? agentSettings.name : statusMessage}</small>
-              {business?.sokoId ? <small>{business.sokoId}</small> : null}
-            </span>
-          </button>
-          <div className="header-actions">
-            <div className="status-stack" aria-label="Shell status">
-              <span className={isOnline ? "status-pill online" : "status-pill offline"}>
-                {isOnline ? "Online" : "Offline"}
-              </span>
-              <button
-                className="status-pill storefront"
-                type="button"
-                onClick={openStorefront}
-                disabled={!setupComplete}
-              >
-                Storefront
-              </button>
-            </div>
+      <div className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}>
+        {!isAuthScreen ? (
+          <header className="top-bar">
             <button
-              className="icon-button"
+              className="brand-lockup"
               type="button"
-              onClick={() => setupComplete && setView("notifications")}
-              aria-label="Messages"
+              onClick={() => setupComplete && setView("agent")}
             >
-              <span className="message-icon" aria-hidden="true" />
+              <span className="logo-mark">S</span>
+              <span>
+                <strong>Soko.market</strong>
+                <span>{business?.name ?? "Soko.market"}</span>
+                <small>{setupComplete ? agentSettings.name : statusMessage}</small>
+                {business?.sokoId ? <small>{business.sokoId}</small> : null}
+              </span>
             </button>
-            {setupComplete ? (
-              <button className="header-signout-button" type="button" onClick={() => void logout()}>
-                Sign out
-              </button>
-            ) : (
+            <div className="header-actions">
+              <div className="status-stack" aria-label="Shell status">
+                <span className={isOnline ? "status-pill online" : "status-pill offline"}>
+                  {isOnline ? "Online" : "Offline"}
+                </span>
+                <button
+                  className="status-pill storefront"
+                  type="button"
+                  onClick={openStorefront}
+                  disabled={!setupComplete}
+                >
+                  Storefront
+                </button>
+              </div>
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => void refreshSession()}
-                aria-label="Refresh"
+                onClick={() => setupComplete && setView("notifications")}
+                aria-label="Messages"
               >
-                ...
+                <span className="message-icon" aria-hidden="true" />
               </button>
-            )}
-          </div>
-        </header>
+              {installPrompt.canInstall ? (
+                <button
+                  className="header-install-button"
+                  type="button"
+                  onClick={() => void installPrompt.installApp()}
+                >
+                  Install
+                </button>
+              ) : null}
+              {setupComplete ? (
+                <button
+                  className="header-signout-button"
+                  type="button"
+                  onClick={() => void logout()}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => void refreshSession()}
+                  aria-label="Refresh"
+                >
+                  ...
+                </button>
+              )}
+            </div>
+          </header>
+        ) : null}
 
         {business === null ? (
           <SetupPanel
@@ -3342,6 +3380,8 @@ function OwnerApp() {
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
+            canInstall={installPrompt.canInstall}
+            onInstall={() => void installPrompt.installApp()}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -3370,6 +3410,8 @@ function OwnerApp() {
             onSetMissingPin={() => void setMissingLoginPin()}
             onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
             onLogin={() => void loginWithPin()}
+            canInstall={installPrompt.canInstall}
+            onInstall={() => void installPrompt.installApp()}
           />
         ) : view === "agent" ? (
           <AgentProfileSurface
@@ -3414,6 +3456,7 @@ function OwnerApp() {
 }
 
 interface SetupPanelProps {
+  canInstall: boolean;
   channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
@@ -3438,6 +3481,7 @@ interface SetupPanelProps {
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
+  onInstall: () => void;
 }
 
 function SetupPanel(props: SetupPanelProps) {
@@ -3453,6 +3497,11 @@ function SetupPanel(props: SetupPanelProps) {
           <p className="eyebrow">Step 1</p>
           <h2>Signup or login</h2>
         </div>
+        {props.canInstall ? (
+          <button className="secondary" type="button" onClick={props.onInstall}>
+            Install app
+          </button>
+        ) : null}
         <div className="social-signup-grid" aria-label="Social signup options">
           {socialSignupProviders.map((provider) => (
             <button
@@ -3700,6 +3749,7 @@ function SignupIntroPlayer() {
 }
 
 interface LoginPanelProps {
+  canInstall: boolean;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -3725,6 +3775,7 @@ interface LoginPanelProps {
   onSetMissingPin: () => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
   onLogin: () => void;
+  onInstall: () => void;
 }
 
 function LoginPanel(props: LoginPanelProps) {
@@ -3741,6 +3792,11 @@ function LoginPanel(props: LoginPanelProps) {
           <p className="eyebrow">Step 1</p>
           <h2>Signup or login</h2>
         </div>
+        {props.canInstall ? (
+          <button className="secondary" type="button" onClick={props.onInstall}>
+            Install app
+          </button>
+        ) : null}
         <div className="phone-contact-row">
           <label>
             Country code
@@ -4625,6 +4681,7 @@ interface ProductSurfaceProps {
 }
 
 function PublicStorefrontChat(props: { agentId: string }) {
+  const installPrompt = useInstallPrompt();
   const [storefront, setStorefront] = useState<PublicStorefrontSummary | null>(null);
   const [messages, setMessages] = useState<StorefrontChatMessage[]>([]);
   const [cart, setCart] = useState<StorefrontCartItem[]>([]);
@@ -4997,6 +5054,11 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <span>{storefront.sokoId}</span>
             </div>
             <div className="public-chat-actions">
+              {installPrompt.canInstall ? (
+                <button type="button" onClick={() => void installPrompt.installApp()}>
+                  Install
+                </button>
+              ) : null}
               <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
                 Receipt {cartCount > 0 ? cartCount : ""}
               </button>
@@ -7381,6 +7443,64 @@ function readStorefrontAgentId(): string | null {
   }
 
   return agentId;
+}
+
+function useInstallPrompt() {
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const canInstall = installPrompt !== null && !isStandaloneWebApp();
+
+  useEffect(() => {
+    function handleBeforeInstallPrompt(event: Event) {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    }
+
+    function handleAppInstalled() {
+      setInstallPrompt(null);
+    }
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
+
+  async function installApp() {
+    if (installPrompt === null) {
+      return;
+    }
+
+    await installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
+
+  return {
+    canInstall,
+    installApp
+  };
+}
+
+function registerAppServiceWorker() {
+  if (!("serviceWorker" in navigator) || import.meta.env.DEV) {
+    return;
+  }
+
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js");
+  });
+}
+
+function isStandaloneWebApp(): boolean {
+  const navigatorWithStandalone = window.navigator as Navigator & { standalone?: boolean };
+
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    navigatorWithStandalone.standalone === true
+  );
 }
 
 function readStoredBusiness(): ActiveBusiness | null {

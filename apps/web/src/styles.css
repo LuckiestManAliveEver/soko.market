@@ -67,6 +67,10 @@ button:disabled {
   padding-top: 0;
 }
 
+.app-frame.auth-frame {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .app-credits {
   color: #65746a;
   font-size: 12px;
@@ -186,6 +190,7 @@ button:disabled {
   width: 7px;
 }
 
+.header-install-button,
 .header-signout-button {
   background: #e7ede8;
   border: 1px solid #cfdad2;
@@ -1684,6 +1689,7 @@ button:disabled {
 
   .status-pill,
   .icon-button,
+  .header-install-button,
   .header-signout-button {
     min-height: 34px;
   }
