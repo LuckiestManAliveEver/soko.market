@@ -75,6 +75,16 @@ interface OAuthStartResponse {
   state: string;
 }
 
+interface OAuthProviderSummary {
+  configured: boolean;
+  displayName: string;
+  id: SocialSignupProvider;
+}
+
+interface OAuthProvidersResponse {
+  providers: OAuthProviderSummary[];
+}
+
 interface PendingOAuthLogin {
   csrfToken: string;
   provider: SocialSignupProvider;
@@ -1196,6 +1206,8 @@ function OwnerApp() {
   const [recoveryPin, setRecoveryPin] = useState("");
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
+  const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
+  const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
@@ -1267,6 +1279,7 @@ function OwnerApp() {
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
   useEffect(() => {
+    void loadOAuthProviders();
     void handleOAuthCallback().then((handled) => {
       if (!handled) {
         void refreshSession();
@@ -1449,6 +1462,17 @@ function OwnerApp() {
     return true;
   }
 
+  async function loadOAuthProviders() {
+    try {
+      const response = await getJson<OAuthProvidersResponse>("/auth/oauth/providers");
+      setOauthProviders(response.providers);
+    } catch {
+      setOauthProviders([]);
+    } finally {
+      setOauthProvidersLoaded(true);
+    }
+  }
+
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     setSession(response);
@@ -1599,6 +1623,19 @@ function OwnerApp() {
 
   async function authenticateSocialProfile(provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
+    const providerConfig = oauthProviders.find((item) => item.id === provider);
+
+    if (!oauthProvidersLoaded) {
+      setStatusMessage("Social sign-in is still loading. Try again in a moment.");
+      return;
+    }
+
+    if (providerConfig?.configured !== true) {
+      setStatusMessage(
+        `${selectedProvider?.label ?? "Social"} sign-in is not configured yet. Add the provider client ID and secret on the API.`
+      );
+      return;
+    }
 
     try {
       const response = await postJson<OAuthStartResponse>("/auth/oauth/start", {
@@ -1611,7 +1648,9 @@ function OwnerApp() {
         state: response.state
       };
       sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));
-      setStatusMessage(`Opening ${selectedProvider?.label ?? "social"} sign-in`);
+      setStatusMessage(
+        `Redirecting to ${selectedProvider?.label ?? "social"} to continue with your account.`
+      );
       window.location.assign(response.authorizationUrl);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3587,6 +3626,8 @@ function OwnerApp() {
             businessName={businessName}
             language={language}
             session={session}
+            oauthProviders={oauthProviders}
+            oauthProvidersLoaded={oauthProvidersLoaded}
             statusMessage={statusMessage}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
@@ -3615,6 +3656,8 @@ function OwnerApp() {
             hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
+            oauthProviders={oauthProviders}
+            oauthProvidersLoaded={oauthProvidersLoaded}
             statusMessage={statusMessage}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -3694,6 +3737,8 @@ interface SetupPanelProps {
   businessName: string;
   language: SupportedLanguage;
   session: SessionResponse | null;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
   statusMessage: string;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
@@ -3729,17 +3774,27 @@ function SetupPanel(props: SetupPanelProps) {
           </button>
         ) : null}
         <div className="social-signup-grid" aria-label="Social signup options">
-          {socialSignupProviders.map((provider) => (
-            <button
-              className={`social-signup-button ${provider.id}`}
-              key={provider.id}
-              type="button"
-              onClick={() => props.onSocialSignup(provider.id)}
-            >
-              <span>{provider.mark}</span>
-              Continue with {provider.label}
-            </button>
-          ))}
+          {socialSignupProviders.map((provider) => {
+            const providerConfig = props.oauthProviders.find((item) => item.id === provider.id);
+            const isConfigured = props.oauthProvidersLoaded && providerConfig?.configured === true;
+            return (
+              <button
+                className={`social-signup-button ${provider.id}`}
+                disabled={!isConfigured}
+                key={provider.id}
+                title={
+                  isConfigured
+                    ? `Redirect to ${provider.label} to sign up or sign in`
+                    : `${provider.label} sign-in is not configured yet`
+                }
+                type="button"
+                onClick={() => props.onSocialSignup(provider.id)}
+              >
+                <span>{provider.mark}</span>
+                Use {provider.label} account
+              </button>
+            );
+          })}
         </div>
         <div className="signup-divider">
           <span>or use OTP</span>
@@ -3986,6 +4041,8 @@ interface LoginPanelProps {
   hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
   statusMessage: string;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -4024,17 +4081,27 @@ function LoginPanel(props: LoginPanelProps) {
           </button>
         ) : null}
         <div className="social-signup-grid" aria-label="Social login options">
-          {socialSignupProviders.map((provider) => (
-            <button
-              className={`social-signup-button ${provider.id}`}
-              key={provider.id}
-              type="button"
-              onClick={() => props.onSocialLogin(provider.id)}
-            >
-              <span>{provider.mark}</span>
-              Continue with {provider.label}
-            </button>
-          ))}
+          {socialSignupProviders.map((provider) => {
+            const providerConfig = props.oauthProviders.find((item) => item.id === provider.id);
+            const isConfigured = props.oauthProvidersLoaded && providerConfig?.configured === true;
+            return (
+              <button
+                className={`social-signup-button ${provider.id}`}
+                disabled={!isConfigured}
+                key={provider.id}
+                title={
+                  isConfigured
+                    ? `Redirect to ${provider.label} to log in or sign in`
+                    : `${provider.label} sign-in is not configured yet`
+                }
+                type="button"
+                onClick={() => props.onSocialLogin(provider.id)}
+              >
+                <span>{provider.mark}</span>
+                Use {provider.label} account
+              </button>
+            );
+          })}
         </div>
         <div className="signup-divider">
           <span>or use phone and PIN</span>

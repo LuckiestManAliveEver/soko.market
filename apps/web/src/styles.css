@@ -506,6 +506,16 @@ button:disabled {
   background: #737373;
 }
 
+.panel .social-signup-button:disabled {
+  background: #f3f5f3;
+  border-color: #e1e7e1;
+  color: #728077;
+}
+
+.panel .social-signup-button:disabled span {
+  opacity: 0.58;
+}
+
 .signup-divider {
   align-items: center;
   color: #65746a;

@@ -47,6 +47,7 @@ import {
   exchangeOAuthCode,
   fetchOAuthProfile,
   getOAuthProviderConfig,
+  isOAuthProviderConfigured,
   listOAuthProviders,
   parseOAuthProvider,
   type OAuthProfile,
@@ -503,6 +504,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       try {
         const provider = parseOAuthProvider(request.body.provider);
         const providerConfig = getOAuthProviderConfig(provider);
+
+        if (!isOAuthProviderConfigured(providerConfig)) {
+          throw new Cp2Error(
+            503,
+            "oauth_provider_unconfigured",
+            `${providerConfig.displayName} sign-in is not configured.`
+          );
+        }
+
         const redirectUri =
           parseOptionalString(request.body.redirectUri) ?? defaultOAuthRedirectUri(request);
         const startPayload = createOAuthStartPayload({

@@ -151,6 +151,10 @@ export function getOAuthProviderConfig(provider: OAuthProvider): OAuthProviderCo
   return config;
 }
 
+export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolean {
+  return getOAuthClientId(provider).length > 0;
+}
+
 export function createOAuthStartPayload(input: {
   provider: OAuthProviderConfig;
   redirectUri: string;

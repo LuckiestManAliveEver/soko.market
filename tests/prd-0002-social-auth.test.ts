@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import type { OAuthProvider } from "../packages/shared-types/src";
@@ -29,8 +29,33 @@ interface OAuthStartResponse {
 }
 
 const providers: OAuthProvider[] = ["google", "facebook", "apple", "github", "microsoft"];
+const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
+  apple: "OAUTH_APPLE_CLIENT_ID",
+  facebook: "OAUTH_FACEBOOK_CLIENT_ID",
+  github: "OAUTH_GITHUB_CLIENT_ID",
+  google: "OAUTH_GOOGLE_CLIENT_ID",
+  microsoft: "OAUTH_MICROSOFT_CLIENT_ID"
+};
+const previousOAuthClientIds = new Map<string, string | undefined>();
 
 describe("PRD-0002 social sign-in authentication", () => {
+  beforeAll(() => {
+    for (const [provider, envName] of Object.entries(oauthClientIdEnvByProvider)) {
+      previousOAuthClientIds.set(envName, process.env[envName]);
+      process.env[envName] = `${provider}-test-client-id`;
+    }
+  });
+
+  afterAll(() => {
+    for (const [envName, value] of previousOAuthClientIds.entries()) {
+      if (value === undefined) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = value;
+      }
+    }
+  });
+
   it("keeps phone and email OTP working beside OAuth providers", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
