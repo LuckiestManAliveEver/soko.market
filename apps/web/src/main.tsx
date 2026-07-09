@@ -4918,9 +4918,21 @@ interface ImportSurfaceProps {
   onRefresh: () => void;
 }
 
+interface ImportSourceTemplate {
+  id: string;
+  label: string;
+  summary: string;
+  sourceType: ImportFormState["sourceType"];
+  sourceLocator: string;
+  fileName: string;
+  contentType: string;
+  content: string;
+}
+
 function ImportSurface(props: ImportSurfaceProps) {
   const selectedRows = props.activeImportJob?.rows.filter((row) => row.selected) ?? [];
   const invalidSelectedRows = selectedRows.filter((row) => row.errors.length > 0);
+  const sourceTemplates = createImportSourceTemplates(props.form.target);
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -4937,6 +4949,17 @@ function ImportSurface(props: ImportSurfaceProps) {
       content
     });
     event.target.value = "";
+  }
+
+  function applySourceTemplate(template: ImportSourceTemplate) {
+    props.onFormChange({
+      ...props.form,
+      sourceType: template.sourceType,
+      sourceLocator: template.sourceLocator,
+      fileName: template.fileName,
+      contentType: template.contentType,
+      content: template.content
+    });
   }
 
   return (
@@ -4996,6 +5019,19 @@ function ImportSurface(props: ImportSurfaceProps) {
             placeholder="Sheet URL, database export name, table, or connection reference"
           />
         </label>
+        <div className="import-source-grid" aria-label="Import source options">
+          {sourceTemplates.map((template) => (
+            <button
+              key={template.id}
+              className={props.form.fileName === template.fileName ? "active" : ""}
+              type="button"
+              onClick={() => applySourceTemplate(template)}
+            >
+              <span>{template.label}</span>
+              <small>{template.summary}</small>
+            </button>
+          ))}
+        </div>
         <label>
           Upload document, sheet, PDF/Word export, or database export
           <input
@@ -5552,7 +5588,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [receiptProductId, setReceiptProductId] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState(false);
-  const [catalogueOpen, setCatalogueOpen] = useState(true);
+  const [catalogueOpen, setCatalogueOpen] = useState(false);
   const [careNotesOpen, setCareNotesOpen] = useState(true);
   const [checkoutDetails, setCheckoutDetails] = useState<StorefrontCheckoutDetails>({
     name: "",
@@ -5604,12 +5640,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
       return product === undefined ? null : { ...product, quantity: item.quantity };
     })
     .filter((item): item is PublicStorefrontProductSummary & { quantity: number } => item !== null);
-  const storefrontCardOpen =
-    catalogueOpen ||
-    receiptOpen ||
-    cartProducts.length > 0 ||
-    checkoutOpen ||
-    (crmNotes.length > 0 && careNotesOpen);
+  const storefrontCardOpen = receiptOpen || cartProducts.length > 0 || checkoutOpen;
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -5852,6 +5883,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
       lowerMessage.includes("list") ||
       lowerMessage.includes("browse")
     ) {
+      setCatalogueOpen(true);
       appendMessage(
         "agent",
         products.length === 0
@@ -5975,7 +6007,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <p>
                 Karibu to {storefront.businessName}. I can help you browse products and prepare
                 checkout when you are ready. Use {storefront.sokoId} any time you want to return to
-                this shop.
+                this shop. Open Catalogue to browse without leaving the conversation.
               </p>
             </div>
 
@@ -9186,6 +9218,82 @@ function asProductImportDraft(mapped: DocumentImportDraft): ProductImportDraft {
     buyingPrice: "buyingPrice" in mapped ? mapped.buyingPrice : null,
     sellingPrice: "sellingPrice" in mapped ? mapped.sellingPrice : null
   };
+}
+
+function createImportSourceTemplates(target: DocumentImportTarget): ImportSourceTemplate[] {
+  if (target === "supplier") {
+    return [
+      {
+        id: "supplier-sheet",
+        label: "Spreadsheet",
+        summary: "CSV, TSV, XLS, XLSX, Google Sheets export",
+        sourceType: "upload",
+        sourceLocator: "Upload or paste a supplier sheet export",
+        fileName: "supplier-contacts.csv",
+        contentType: "text/csv",
+        content:
+          "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier\nRegional Foods,+254700000011,regional@example.com,Backup supplier"
+      },
+      {
+        id: "supplier-document",
+        label: "PDF or Word",
+        summary: "Extract supplier rows from copied document text",
+        sourceType: "paste",
+        sourceLocator: "Paste text extracted from PDF, DOC, DOCX, or scanned document",
+        fileName: "supplier-document.txt",
+        contentType: "text/plain",
+        content:
+          "name,phone,email,notes\nMarket Distributor,+254700000012,market@example.com,Imported from document\nCounty Wholesaler,+254700000013,county@example.com,Imported from document"
+      },
+      {
+        id: "supplier-database",
+        label: "Existing database",
+        summary: "Paste an exported table or reference a supplier source",
+        sourceType: "database",
+        sourceLocator: "suppliers table export",
+        fileName: "supplier-database-export.csv",
+        contentType: "text/csv",
+        content:
+          "name,phone,email,notes\nDatabase Supplier,+254700000014,db-supplier@example.com,Imported from database export"
+      }
+    ];
+  }
+
+  return [
+    {
+      id: "product-sheet",
+      label: "Spreadsheet",
+      summary: "CSV, TSV, XLS, XLSX, Google Sheets export",
+      sourceType: "upload",
+      sourceLocator: "Upload or paste a catalogue sheet export",
+      fileName: "product-catalogue.csv",
+      contentType: "text/csv",
+      content:
+        "name,sku,unit,quantity,buyingPrice,sellingPrice\nTomatoes,TOM-001,kg,20,60,90\nCooking Oil,OIL-001,litre,12,220,260"
+    },
+    {
+      id: "product-document",
+      label: "PDF or Word",
+      summary: "Extract product rows from copied document text",
+      sourceType: "paste",
+      sourceLocator: "Paste text extracted from PDF, DOC, DOCX, or scanned catalogue",
+      fileName: "product-document.txt",
+      contentType: "text/plain",
+      content:
+        "name,sku,unit,quantity,buyingPrice,sellingPrice\nRice,RIC-001,kg,30,120,155\nBeans,BEA-001,kg,25,90,130"
+    },
+    {
+      id: "product-database",
+      label: "Existing database",
+      summary: "Paste an exported table or reference a product source",
+      sourceType: "database",
+      sourceLocator: "products table export",
+      fileName: "product-database-export.csv",
+      contentType: "text/csv",
+      content:
+        "name,sku,unit,quantity,buyingPrice,sellingPrice\nDatabase Product,DB-001,unit,10,100,140"
+    }
+  ];
 }
 
 function inferImportContentType(fileName: string): string {

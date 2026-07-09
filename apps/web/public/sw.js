@@ -1,6 +1,6 @@
 /* global URL, caches, self */
 
-const CACHE_NAME = "soko-market-app-v1";
+const CACHE_NAME = "soko-market-app-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/soko-icon.svg"];
 
 self.addEventListener("install", (event) => {
