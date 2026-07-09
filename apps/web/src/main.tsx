@@ -218,6 +218,55 @@ interface ContactPickerContact {
   email?: string[];
 }
 
+type NetworkNodeDegree = 0 | 1 | 2;
+
+interface NetworkNodeSummary {
+  id: string;
+  displayName: string;
+  degree: NetworkNodeDegree;
+  sourceType: "owner" | "phone_contact" | "social";
+  sourcePlatform: string | null;
+  visibilityStatus: "direct" | "agent_mediated" | "private";
+  consentStatus: "granted" | "pending" | "agent_required" | "rejected" | "revoked";
+}
+
+interface NetworkEdgeSummary {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  degree: 1 | 2;
+  sourceType: string;
+  sourcePlatform: string | null;
+}
+
+interface NetworkSyncSourceSummary {
+  id: string;
+  sourceType: "phone_contact" | "social";
+  sourcePlatform: string;
+  displayName: string;
+  importedCount: number;
+  directCount: number;
+  extendedCount: number;
+  status: "active" | "disconnected";
+}
+
+interface AgentRouteSummary {
+  id: string;
+  requestText: string;
+  status: "pending_permission" | "forwarded" | "suggested" | "blocked" | "approved" | "rejected";
+  path: string[];
+  viaAgentLabel: string;
+}
+
+interface NetworkGraphSummary {
+  ownerUserId: string;
+  generatedAt: string;
+  nodes: NetworkNodeSummary[];
+  edges: NetworkEdgeSummary[];
+  sources: NetworkSyncSourceSummary[];
+  routes: AgentRouteSummary[];
+}
+
 interface ContactPickerNavigator extends Navigator {
   contacts?: {
     select: (
@@ -1176,6 +1225,7 @@ function OwnerApp() {
   const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
+  const [networkGraph, setNetworkGraph] = useState<NetworkGraphSummary | null>(null);
   const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
   const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
   const [notificationInbox, setNotificationInbox] = useState<NotificationInbox>({
@@ -1322,6 +1372,10 @@ function OwnerApp() {
 
     if (view === "home" || view === "sync") {
       void loadSyncQueue(business.id);
+    }
+
+    if (view === "chat" || view === "home" || view === "network") {
+      void loadNetworkGraph();
     }
 
     if (view === "home" || view === "reports") {
@@ -1965,6 +2019,69 @@ function OwnerApp() {
       const response = await getJson<SyncQueueResponse>(`/businesses/${businessId}/sync-queue`);
       setSyncSummary(response.summary);
       setSyncQueue(response.items);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadNetworkGraph() {
+    try {
+      setNetworkGraph(await getJson<NetworkGraphSummary>("/network"));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function syncPhoneNetwork() {
+    try {
+      const graph = await postJson<NetworkGraphSummary>("/network/sync/contacts", {
+        sourceName: "Phone contacts",
+        contacts: createPhoneNetworkSeed(customers)
+      });
+      setNetworkGraph(graph);
+      setStatusMessage("Phone commerce network synced");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function syncSocialNetwork(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
+    try {
+      const graph = await postJson<NetworkGraphSummary>(`/network/sync/social/${provider}`, {
+        sourceName: `${provider} commerce graph`,
+        profiles: createSocialNetworkSeed(provider)
+      });
+      setNetworkGraph(graph);
+      setStatusMessage(`${provider} network synced`);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function requestNetworkRoute(targetNodeId?: string) {
+    try {
+      const route = await postJson<AgentRouteSummary>("/network/routes", {
+        requestText: "Find suppliers through my network",
+        ...(targetNodeId === undefined ? {} : { targetNodeId })
+      });
+      setNetworkGraph((graph) =>
+        graph === null
+          ? graph
+          : {
+              ...graph,
+              routes: [...graph.routes.filter((item) => item.id !== route.id), route]
+            }
+      );
+      setStatusMessage("Agent route requested");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function disconnectNetworkSource(sourceId: string) {
+    try {
+      setNetworkGraph(await deleteJson<NetworkGraphSummary>(`/network/sources/${sourceId}`));
+      setStatusMessage("Network source disconnected");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2958,10 +3075,20 @@ function OwnerApp() {
         setView("invoices");
       }
 
+      if (isNetworkDiscoveryRequest(message)) {
+        await loadNetworkGraph();
+        await requestNetworkRoute();
+        setView("network");
+      }
+
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
       const parserReply = createLocalParserReply(message);
       setChatMessages((messages) => [...messages, parserReply]);
+      if (isNetworkDiscoveryRequest(message)) {
+        await loadNetworkGraph();
+        setView("network");
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -3232,6 +3359,17 @@ function OwnerApp() {
             }}
             onConfirm={(invoiceId) => void confirmInvoice(invoiceId)}
             onPrint={printInvoice}
+          />
+        );
+      case "network":
+        return (
+          <NetworkSurface
+            graph={networkGraph}
+            onRefresh={() => void loadNetworkGraph()}
+            onSyncContacts={() => void syncPhoneNetwork()}
+            onSyncSocial={(provider) => void syncSocialNetwork(provider)}
+            onRoute={(targetNodeId) => void requestNetworkRoute(targetNodeId)}
+            onDisconnectSource={(sourceId) => void disconnectNetworkSource(sourceId)}
           />
         );
       case "sync":
@@ -3515,6 +3653,12 @@ function OwnerApp() {
               invoiceCount={invoices.length}
               messages={chatMessages}
               notificationCount={notificationInbox.summary.unread}
+              networkDirectCount={
+                networkGraph?.nodes.filter((node) => node.degree === 1).length ?? 0
+              }
+              networkExtendedCount={
+                networkGraph?.nodes.filter((node) => node.degree === 2).length ?? 0
+              }
               pendingAttachments={pendingAttachments}
               productCount={products.length}
               report={reportSummary}
@@ -3879,6 +4023,22 @@ function LoginPanel(props: LoginPanelProps) {
             Install app
           </button>
         ) : null}
+        <div className="social-signup-grid" aria-label="Social login options">
+          {socialSignupProviders.map((provider) => (
+            <button
+              className={`social-signup-button ${provider.id}`}
+              key={provider.id}
+              type="button"
+              onClick={() => props.onSocialLogin(provider.id)}
+            >
+              <span>{provider.mark}</span>
+              Continue with {provider.label}
+            </button>
+          ))}
+        </div>
+        <div className="signup-divider">
+          <span>or use phone and PIN</span>
+        </div>
         <div className="phone-contact-row">
           <label>
             Country code
@@ -3931,22 +4091,6 @@ function LoginPanel(props: LoginPanelProps) {
         ) : (
           <p className="shell-note">Use your saved phone number and PIN to unlock this device.</p>
         )}
-        <div className="signup-divider">
-          <span>or use social profile</span>
-        </div>
-        <div className="social-signup-grid" aria-label="Social login options">
-          {socialSignupProviders.map((provider) => (
-            <button
-              className={`social-signup-button ${provider.id}`}
-              key={provider.id}
-              type="button"
-              onClick={() => props.onSocialLogin(provider.id)}
-            >
-              <span>{provider.mark}</span>
-              Continue with {provider.label}
-            </button>
-          ))}
-        </div>
       </section>
 
       <section className="panel">
@@ -4045,6 +4189,145 @@ interface SyncSurfaceProps {
   onRefresh: () => void;
   onReplay: () => void;
   onSyncContacts: () => void;
+}
+
+interface NetworkSurfaceProps {
+  graph: NetworkGraphSummary | null;
+  onRefresh: () => void;
+  onSyncContacts: () => void;
+  onSyncSocial: (provider: "instagram" | "whatsapp" | "tiktok" | "x") => void;
+  onRoute: (targetNodeId?: string) => void;
+  onDisconnectSource: (sourceId: string) => void;
+}
+
+function NetworkSurface(props: NetworkSurfaceProps) {
+  const directNodes = props.graph?.nodes.filter((node) => node.degree === 1) ?? [];
+  const directPhoneNodes = directNodes.filter((node) => node.sourceType === "phone_contact");
+  const directSocialNodes = directNodes.filter((node) => node.sourceType === "social");
+  const extendedNodes = props.graph?.nodes.filter((node) => node.degree === 2) ?? [];
+  const activeSources = props.graph?.sources.filter((source) => source.status === "active") ?? [];
+
+  return (
+    <section className="record-list network-card">
+      <div className="surface-header-row">
+        <div>
+          <p className="eyebrow">Commerce graph</p>
+          <h3>Network</h3>
+          <p className="shell-note">
+            Your contacts help Soko build your first commerce network. Social connections expand it;
+            friends-of-friends are reached through friends' agents.
+          </p>
+        </div>
+        <button className="secondary" type="button" onClick={props.onRefresh}>
+          Refresh
+        </button>
+      </div>
+
+      <div className="network-actions">
+        <button type="button" onClick={props.onSyncContacts}>
+          Sync contacts
+        </button>
+        {(["instagram", "whatsapp", "tiktok", "x"] as const).map((provider) => (
+          <button
+            className="secondary"
+            key={provider}
+            type="button"
+            onClick={() => props.onSyncSocial(provider)}
+          >
+            Connect {provider}
+          </button>
+        ))}
+      </div>
+
+      <div className="network-metrics">
+        <span>
+          <strong>{directPhoneNodes.length}</strong>
+          Phone contacts
+        </span>
+        <span>
+          <strong>{directSocialNodes.length}</strong>
+          Social connections
+        </span>
+        <span>
+          <strong>{extendedNodes.length}</strong>
+          Agent-routed
+        </span>
+      </div>
+
+      <div className="network-columns">
+        <NetworkNodeList title="Direct contacts" nodes={directPhoneNodes} />
+        <NetworkNodeList title="Direct social" nodes={directSocialNodes} />
+        <div className="network-list">
+          <h4>Reachable through agents</h4>
+          {extendedNodes.length === 0 ? (
+            <p className="shell-note">Second-degree people appear here after sync.</p>
+          ) : (
+            extendedNodes.map((node) => (
+              <article key={node.id}>
+                <span>{node.displayName}</span>
+                <small>{node.visibilityStatus.replace("_", " ")}</small>
+                <button className="secondary" type="button" onClick={() => props.onRoute(node.id)}>
+                  Route through agent
+                </button>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
+
+      {activeSources.length > 0 ? (
+        <div className="network-source-list">
+          <h4>Connected sources</h4>
+          {activeSources.map((source) => (
+            <article key={source.id}>
+              <span>{source.displayName}</span>
+              <small>
+                {source.directCount} direct · {source.extendedCount} extended
+              </small>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => props.onDisconnectSource(source.id)}
+              >
+                Disconnect
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      {props.graph !== null && props.graph.routes.length > 0 ? (
+        <div className="network-route-list">
+          <h4>Agent routes</h4>
+          {props.graph.routes.map((route) => (
+            <article key={route.id}>
+              <span>{route.status.replace("_", " ")}</span>
+              <strong>{route.path.join(" -> ")}</strong>
+              <small>{route.requestText}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function NetworkNodeList({ nodes, title }: { nodes: NetworkNodeSummary[]; title: string }) {
+  return (
+    <div className="network-list">
+      <h4>{title}</h4>
+      {nodes.length === 0 ? (
+        <p className="shell-note">No entries yet.</p>
+      ) : (
+        nodes.map((node) => (
+          <article key={node.id}>
+            <span>{node.displayName}</span>
+            <small>{node.sourcePlatform ?? node.sourceType}</small>
+          </article>
+        ))
+      )}
+    </div>
+  );
 }
 
 function SyncSurface(props: SyncSurfaceProps) {
@@ -7548,6 +7831,8 @@ interface ChatSurfaceProps {
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  networkDirectCount: number;
+  networkExtendedCount: number;
   notificationCount: number;
   pendingAttachments: ChatAttachment[];
   productCount: number;
@@ -7571,6 +7856,8 @@ function ChatSurface({
   customerCount,
   invoiceCount,
   messages,
+  networkDirectCount,
+  networkExtendedCount,
   notificationCount,
   pendingAttachments,
   productCount,
@@ -7607,6 +7894,8 @@ function ChatSurface({
           productCount={productCount}
           customerCount={customerCount}
           invoiceCount={invoiceCount}
+          networkDirectCount={networkDirectCount}
+          networkExtendedCount={networkExtendedCount}
           notificationCount={notificationCount}
           report={report}
           syncSummary={syncSummary}
@@ -7724,6 +8013,8 @@ interface ContextualBusinessCardsProps {
   productCount: number;
   customerCount: number;
   invoiceCount: number;
+  networkDirectCount: number;
+  networkExtendedCount: number;
   notificationCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
@@ -7735,6 +8026,8 @@ function ContextualBusinessCards({
   productCount,
   customerCount,
   invoiceCount,
+  networkDirectCount,
+  networkExtendedCount,
   notificationCount,
   report,
   syncSummary,
@@ -7766,6 +8059,12 @@ function ContextualBusinessCards({
       title: "Customers",
       body: "Customer contacts and notes",
       value: String(customerCount)
+    },
+    {
+      view: "network",
+      title: "Network",
+      body: `${networkExtendedCount} reachable through agents`,
+      value: String(networkDirectCount)
     },
     {
       view: "payments",
@@ -8576,6 +8875,73 @@ function createContactsCsv(customers: CustomerSummary[]): string {
   ];
 
   return rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+}
+
+function createPhoneNetworkSeed(customers: CustomerSummary[]) {
+  const importedCustomers = customers.slice(0, 12).map((customer, index) => ({
+    name: customer.name,
+    phone: customer.phone,
+    email: customer.email,
+    connections: [
+      {
+        name: `${customer.name.split(" ")[0] || "Customer"} supplier ${index + 1}`
+      }
+    ]
+  }));
+
+  return importedCustomers.length > 0
+    ? importedCustomers
+    : [
+        {
+          name: "Jane Supplier",
+          phone: "+254700000901",
+          connections: [{ name: "Egg Wholesaler" }]
+        },
+        {
+          name: "Market Buyer",
+          phone: "+254700000902",
+          connections: [{ name: "Milk Distributor" }]
+        }
+      ];
+}
+
+function createSocialNetworkSeed(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
+  return [
+    {
+      name: `${provider} Market Circle`,
+      handle: `@soko_${provider}_market`,
+      relationship: "interaction",
+      connections: [
+        {
+          name: "Regional Supplier",
+          handle: `@${provider}_supplier`
+        }
+      ]
+    },
+    {
+      name: `${provider} Customer Group`,
+      handle: `@soko_${provider}_customers`,
+      relationship: "followed",
+      connections: [
+        {
+          name: "Bulk Buyer",
+          handle: `@${provider}_bulk_buyer`
+        }
+      ]
+    }
+  ];
+}
+
+function isNetworkDiscoveryRequest(message: string): boolean {
+  const normalized = normalizeSearchText(message);
+  return (
+    normalized.includes("through my network") ||
+    normalized.includes("connected to") ||
+    normalized.includes("contacts who") ||
+    normalized.includes("friends know") ||
+    normalized.includes("my network") ||
+    (normalized.includes("find") && normalized.includes("supplier"))
+  );
 }
 
 function escapeCsvCell(value: string): string {

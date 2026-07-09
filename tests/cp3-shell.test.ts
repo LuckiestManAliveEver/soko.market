@@ -14,6 +14,7 @@ describe("owner shell contract", () => {
       "products",
       "customers",
       "invoices",
+      "network",
       "sync",
       "payments",
       "imports",
@@ -29,6 +30,7 @@ describe("owner shell contract", () => {
       "products",
       "customers",
       "invoices",
+      "network",
       "sync",
       "payments",
       "imports",
@@ -42,6 +44,7 @@ describe("owner shell contract", () => {
     expect(getEmptyState("chat")).toBeUndefined();
     expect(getEmptyState("products")?.body).toContain("product record");
     expect(getEmptyState("invoices")?.body).toContain("invoice draft");
+    expect(getEmptyState("network")?.body).toContain("trusted commerce graph");
     expect(getEmptyState("sync")?.body).toContain("offline mutations");
     expect(getEmptyState("payments")?.body).toContain("payment records");
     expect(getEmptyState("imports")?.body).toContain("Imports preview");

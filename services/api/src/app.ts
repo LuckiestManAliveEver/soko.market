@@ -21,7 +21,7 @@ export function buildApi(options: BuildApiOptions = {}) {
     if (origin !== undefined && allowedCorsOrigins.has(origin)) {
       reply.header("access-control-allow-origin", origin);
       reply.header("access-control-allow-credentials", "true");
-      reply.header("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
+      reply.header("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
       reply.header("access-control-allow-headers", "content-type");
     }
 

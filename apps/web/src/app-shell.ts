@@ -5,6 +5,7 @@ export type ShellView =
   | "products"
   | "customers"
   | "invoices"
+  | "network"
   | "sync"
   | "payments"
   | "imports"
@@ -70,6 +71,11 @@ export const quickActions: QuickAction[] = [
     summary: "Create invoice drafts and confirm sales"
   },
   {
+    id: "network",
+    label: "Network",
+    summary: "Build and route trusted commerce connections"
+  },
+  {
     id: "sync",
     label: "Sync",
     summary: "Review offline queue and conflicts"
@@ -131,6 +137,11 @@ export const emptyStates: EmptyState[] = [
     id: "invoices",
     title: "No invoices yet",
     body: "Create the first invoice draft to preview totals and confirm stock movement."
+  },
+  {
+    id: "network",
+    title: "No network yet",
+    body: "Sync contacts or connect social profiles to build a trusted commerce graph."
   },
   {
     id: "sync",

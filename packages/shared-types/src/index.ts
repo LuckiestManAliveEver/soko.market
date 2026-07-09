@@ -125,6 +125,167 @@ export interface CustomerSummary {
   updatedAt: string;
 }
 
+export type NetworkSyncSourceType = "phone_contact" | "social";
+
+export type NetworkEdgeSourceType =
+  "phone_contact" | "social_follow" | "social_interaction" | "imported_contact" | "agent_route";
+
+export type NetworkVisibilityStatus = "direct" | "agent_mediated" | "private";
+
+export type NetworkConsentStatus =
+  "granted" | "pending" | "agent_required" | "rejected" | "revoked";
+
+export type NetworkNodeKind = "soko_user" | "soko_shop" | "external_contact" | "external_social";
+
+export type SocialNetworkProvider =
+  | "facebook"
+  | "instagram"
+  | "whatsapp"
+  | "tiktok"
+  | "x"
+  | "linkedin"
+  | "google"
+  | "microsoft"
+  | "github"
+  | "apple";
+
+export interface ContactHashSummary {
+  id: string;
+  ownerUserId: string;
+  hashType: "phone" | "email" | "social";
+  hashValue: string;
+  displayHint: string | null;
+  createdAt: string;
+}
+
+export interface ExternalIdentitySummary {
+  id: string;
+  ownerUserId: string;
+  provider: string;
+  providerSubjectHash: string;
+  displayName: string;
+  handle: string | null;
+  createdAt: string;
+}
+
+export interface SokoIdentityLinkSummary {
+  id: string;
+  ownerUserId: string;
+  nodeId: string;
+  linkedUserId: string | null;
+  linkedBusinessId: string | null;
+  linkedAgentId: string | null;
+  confidence: number;
+  createdAt: string;
+}
+
+export interface NetworkNodeSummary {
+  id: string;
+  ownerUserId: string;
+  kind: NetworkNodeKind;
+  displayName: string;
+  degree: 0 | 1 | 2;
+  sourceId: string | null;
+  sourceType: NetworkSyncSourceType | "owner";
+  sourcePlatform: string | null;
+  sokoUserId: string | null;
+  sokoBusinessId: string | null;
+  sokoAgentId: string | null;
+  contactHashIds: string[];
+  externalIdentityId: string | null;
+  visibilityStatus: NetworkVisibilityStatus;
+  consentStatus: NetworkConsentStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NetworkEdgeSummary {
+  id: string;
+  ownerUserId: string;
+  sourceType: NetworkEdgeSourceType;
+  sourcePlatform: string | null;
+  fromNodeId: string;
+  toNodeId: string;
+  degree: 1 | 2;
+  trustWeight: number;
+  interactionWeight: number;
+  visibilityStatus: NetworkVisibilityStatus;
+  consentStatus: NetworkConsentStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContactSyncSourceSummary {
+  id: string;
+  ownerUserId: string;
+  sourceType: "phone_contact";
+  sourcePlatform: "phone";
+  displayName: string;
+  importedCount: number;
+  directCount: number;
+  extendedCount: number;
+  status: "active" | "disconnected";
+  createdAt: string;
+  updatedAt: string;
+  disconnectedAt: string | null;
+}
+
+export interface SocialSyncSourceSummary {
+  id: string;
+  ownerUserId: string;
+  sourceType: "social";
+  sourcePlatform: SocialNetworkProvider;
+  displayName: string;
+  importedCount: number;
+  directCount: number;
+  extendedCount: number;
+  status: "active" | "disconnected";
+  createdAt: string;
+  updatedAt: string;
+  disconnectedAt: string | null;
+}
+
+export type NetworkSyncSourceSummary = ContactSyncSourceSummary | SocialSyncSourceSummary;
+
+export interface NetworkPermissionSummary {
+  id: string;
+  ownerUserId: string;
+  routeId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  status: NetworkConsentStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentRouteStatus =
+  "pending_permission" | "forwarded" | "suggested" | "blocked" | "approved" | "rejected";
+
+export interface AgentRouteSummary {
+  id: string;
+  ownerUserId: string;
+  requestText: string;
+  status: AgentRouteStatus;
+  directNodeId: string;
+  targetNodeId: string;
+  viaAgentLabel: string;
+  path: string[];
+  permissionId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NetworkGraphSummary {
+  ownerUserId: string;
+  generatedAt: string;
+  nodes: NetworkNodeSummary[];
+  edges: NetworkEdgeSummary[];
+  sources: NetworkSyncSourceSummary[];
+  routes: AgentRouteSummary[];
+  permissions: NetworkPermissionSummary[];
+  identityLinks: SokoIdentityLinkSummary[];
+}
+
 export interface SupplierSummary {
   id: string;
   businessId: string;

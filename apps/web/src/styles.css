@@ -688,6 +688,91 @@ button:disabled {
   color: #23342a;
 }
 
+.surface-header-row {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.network-card {
+  background: #f6f8f7;
+}
+
+.network-actions,
+.network-metrics,
+.network-columns,
+.network-source-list,
+.network-route-list {
+  display: grid;
+  gap: 10px;
+}
+
+.network-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.network-actions button {
+  min-height: 40px;
+  padding: 8px;
+}
+
+.network-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.network-metrics span,
+.network-list,
+.network-source-list article,
+.network-route-list article {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.network-metrics strong {
+  font-size: 20px;
+}
+
+.network-columns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.network-list h4,
+.network-source-list h4,
+.network-route-list h4 {
+  font-size: 14px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.network-list article {
+  align-items: center;
+  border-top: 1px solid #edf1ed;
+  display: grid;
+  gap: 4px;
+  padding: 8px 0 0;
+}
+
+.network-list article button {
+  justify-self: start;
+  min-height: 34px;
+  width: auto;
+}
+
+.network-source-list article,
+.network-route-list article {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.network-source-list article button,
+.network-route-list article small {
+  grid-column: 1 / -1;
+}
+
 .invoice-row {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1821,6 +1906,12 @@ button:disabled {
   .form-row,
   .record-row,
   .row-actions,
+  .surface-header-row,
+  .network-actions,
+  .network-metrics,
+  .network-columns,
+  .network-source-list article,
+  .network-route-list article,
   .invoice-line {
     grid-template-columns: 1fr;
   }
