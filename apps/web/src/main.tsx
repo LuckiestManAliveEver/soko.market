@@ -21,6 +21,7 @@ import "./styles.css";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
+type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
   "google" | "facebook" | "x" | "linkedin" | "apple" | "github" | "microsoft";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
@@ -1258,14 +1259,27 @@ function App() {
     return <PublicStorefrontChat agentId={storefrontAgentId} />;
   }
 
+  if (window.location.pathname === "/marketplace") {
+    return <MarketplacePlaceholder />;
+  }
+
   return <OwnerApp />;
+}
+
+function MarketplacePlaceholder() {
+  return (
+    <Surface title="Soko.market">
+      <div className="marketplace-placeholder">
+        <h1>Marketplace coming soon</h1>
+      </div>
+    </Surface>
+  );
 }
 
 function OwnerApp() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
-  const installPrompt = useInstallPrompt();
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null ? (initialSetupDraft?.channel ?? "phone") : "phone"
   );
@@ -1310,6 +1324,8 @@ function OwnerApp() {
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>("chat");
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
+  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
@@ -3027,6 +3043,15 @@ function OwnerApp() {
     window.location.assign(createPublicStorefrontUrl(business));
   }
 
+  function openMarketplace() {
+    window.location.assign("/marketplace");
+  }
+
+  function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
+    setShopPresenceStatus(nextStatus);
+    setStatusMessage(`Shop status set to ${nextStatus}`);
+  }
+
   async function shareOwnerStorefrontInvite() {
     if (business === null) {
       return;
@@ -3885,15 +3910,32 @@ function OwnerApp() {
           )}
           {!isAuthScreen && setupComplete ? (
             <div className="header-actions">
-              {installPrompt.canInstall ? (
-                <button
-                  className="header-install-button"
-                  type="button"
-                  onClick={() => void installPrompt.installApp()}
-                >
-                  Install
-                </button>
-              ) : null}
+              <button
+                className="header-action-button workspace"
+                type="button"
+                onClick={() => setIsWorkspacePanelOpen(true)}
+              >
+                Workspace
+              </button>
+              <button className="header-action-button" type="button" onClick={openStorefront}>
+                Storefront
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setView("notifications")}
+                aria-label="Messages"
+              >
+                <span className="message-icon" aria-hidden="true" />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={openMarketplace}
+                aria-label="Explore marketplace"
+              >
+                World
+              </button>
               <button className="header-signout-button" type="button" onClick={() => void logout()}>
                 Sign out
               </button>
@@ -3980,31 +4022,26 @@ function OwnerApp() {
             <ChatSurface
               activeView={view}
               agent={agentSettings}
-              business={business}
               chatDraft={chatDraft}
               customerCount={customers.length}
               invoiceCount={invoices.length}
               messages={chatMessages}
               notificationCount={notificationInbox.summary.unread}
-              networkDirectCount={
-                networkGraph?.nodes.filter((node) => node.degree === 1).length ?? 0
-              }
-              networkExtendedCount={
-                networkGraph?.nodes.filter((node) => node.degree === 2).length ?? 0
-              }
               pendingAttachments={pendingAttachments}
               productCount={products.length}
-              runtimeSessionCount={runtimeSessions.length}
-              supplierCount={suppliers.length}
               report={reportSummary}
+              shopPresenceStatus={shopPresenceStatus}
+              workspaceOpen={isWorkspacePanelOpen}
               syncSummary={syncSummary}
               onAttachmentChange={handleChatAttachmentChange}
+              onAddWorkspaceCard={() => setStatusMessage("Custom workspace cards are coming soon")}
               onBackToChat={() => setView("chat")}
               onConfirm={(token) => void confirmRuntimeAction(token)}
               onDraftChange={setChatDraft}
-              onOpenStorefront={openStorefront}
+              onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
               onNavigate={setView}
               onRemoveAttachment={removePendingAttachment}
+              onStatusChange={updateShopPresenceStatus}
               onSend={() => void sendChatDraft()}
             >
               {renderActiveWorkspace()}
@@ -8560,27 +8597,26 @@ function AgentProfileSurface({
 interface ChatSurfaceProps {
   activeView: ShellView;
   agent: AgentSettings;
-  business: ActiveBusiness;
   chatDraft: string;
   children: ReactNode;
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
-  networkDirectCount: number;
-  networkExtendedCount: number;
   notificationCount: number;
   pendingAttachments: ChatAttachment[];
   productCount: number;
-  runtimeSessionCount: number;
-  supplierCount: number;
   report: BusinessReportSummary | null;
+  shopPresenceStatus: ShopPresenceStatus;
   syncSummary: SyncQueueSummary;
+  workspaceOpen: boolean;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onAddWorkspaceCard: () => void;
   onBackToChat: () => void;
+  onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
-  onOpenStorefront: () => void;
   onNavigate: (view: ShellView) => void;
   onRemoveAttachment: (attachmentId: string) => void;
+  onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
   onSend: () => void;
 }
@@ -8588,27 +8624,26 @@ interface ChatSurfaceProps {
 function ChatSurface({
   activeView,
   agent,
-  business,
   chatDraft,
   children,
   customerCount,
   invoiceCount,
   messages,
-  networkDirectCount,
-  networkExtendedCount,
   notificationCount,
   pendingAttachments,
   productCount,
-  runtimeSessionCount,
-  supplierCount,
   report,
+  shopPresenceStatus,
   syncSummary,
+  workspaceOpen,
   onAttachmentChange,
+  onAddWorkspaceCard,
   onBackToChat,
+  onCloseWorkspace,
   onDraftChange,
-  onOpenStorefront,
   onNavigate,
   onRemoveAttachment,
+  onStatusChange,
   onConfirm,
   onSend
 }: ChatSurfaceProps) {
@@ -8630,24 +8665,21 @@ function ChatSurface({
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite" ref={messageListRef}>
-        <ContextualBusinessCards
-          business={business}
-          productCount={productCount}
-          runtimeSessionCount={runtimeSessionCount}
-          supplierCount={supplierCount}
-          customerCount={customerCount}
-          invoiceCount={invoiceCount}
-          networkDirectCount={networkDirectCount}
-          networkExtendedCount={networkExtendedCount}
-          notificationCount={notificationCount}
-          report={report}
-          syncSummary={syncSummary}
-          onNavigate={onNavigate}
-          onOpenStorefront={onOpenStorefront}
-        />
         {messages.map((message) => (
           <article className={`message ${message.author}`} key={message.id}>
-            <span>{message.author === "merchant" ? "You" : agent.name}</span>
+            <span className="message-author">
+              {message.author === "merchant" ? (
+                "You"
+              ) : (
+                <>
+                  {agent.name}
+                  <ShopPresenceButtons
+                    activeStatus={shopPresenceStatus}
+                    onStatusChange={onStatusChange}
+                  />
+                </>
+              )}
+            </span>
             <p>{message.body}</p>
             {message.attachments !== undefined && message.attachments.length > 0 ? (
               <div className="message-attachments" aria-label="Message attachments">
@@ -8680,6 +8712,36 @@ function ChatSurface({
           </section>
         ) : null}
       </div>
+      {workspaceOpen ? (
+        <div className="workspace-panel-backdrop" role="presentation">
+          <section
+            className="workspace-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Workspace cards"
+          >
+            <div className="workspace-panel-heading">
+              <h2>Workspace cards</h2>
+              <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
+                x
+              </button>
+            </div>
+            <ContextualBusinessCards
+              productCount={productCount}
+              customerCount={customerCount}
+              invoiceCount={invoiceCount}
+              notificationCount={notificationCount}
+              report={report}
+              syncSummary={syncSummary}
+              onAddCard={onAddWorkspaceCard}
+              onNavigate={(nextView) => {
+                onNavigate(nextView);
+                onCloseWorkspace();
+              }}
+            />
+          </section>
+        </div>
+      ) : null}
       <div className="composer">
         {generatedCardOpen ? (
           <div className="composer-card-lock" role="status">
@@ -8761,56 +8823,40 @@ function ChatSurface({
 }
 
 interface ContextualBusinessCardsProps {
-  business: ActiveBusiness;
   productCount: number;
-  runtimeSessionCount: number;
-  supplierCount: number;
   customerCount: number;
   invoiceCount: number;
-  networkDirectCount: number;
-  networkExtendedCount: number;
   notificationCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
+  onAddCard: () => void;
   onNavigate: (view: ShellView) => void;
-  onOpenStorefront: () => void;
 }
 
 function ContextualBusinessCards({
-  business,
   productCount,
-  runtimeSessionCount,
-  supplierCount,
   customerCount,
   invoiceCount,
-  networkDirectCount,
-  networkExtendedCount,
   notificationCount,
   report,
   syncSummary,
-  onNavigate,
-  onOpenStorefront
+  onAddCard,
+  onNavigate
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
     syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
 
-  const primaryCards: Array<{
+  const workspaceCards: Array<{
     title: string;
     body: string;
     onClick: () => void;
     value: string;
   }> = [
     {
-      title: "Catalogue",
+      title: "Products",
       body: "Stock, SKUs, units and adjustments",
       onClick: () => onNavigate("products"),
       value: String(productCount)
-    },
-    {
-      title: "Storefront",
-      body: "Open the customer chat and product window",
-      onClick: onOpenStorefront,
-      value: "Open"
     },
     {
       title: "Make a Sale",
@@ -8825,12 +8871,6 @@ function ContextualBusinessCards({
       value: String(customerCount)
     },
     {
-      title: "Network",
-      body: `${networkExtendedCount} reachable through agents`,
-      onClick: () => onNavigate("network"),
-      value: String(networkDirectCount)
-    },
-    {
       title: "Payments",
       body: "Record payments and track balances",
       onClick: () => onNavigate("payments"),
@@ -8838,7 +8878,7 @@ function ContextualBusinessCards({
     },
     {
       title: "Business Summary",
-      body: `${business.name} sales and stock health`,
+      body: "Sales and stock health",
       onClick: () => onNavigate("reports"),
       value: formatMoney(report?.sales.grossSales ?? 0)
     },
@@ -8847,15 +8887,6 @@ function ContextualBusinessCards({
       body: "Low stock, debt and sync notices",
       onClick: () => onNavigate("notifications"),
       value: String(notificationCount)
-    }
-  ];
-
-  const moreCards: typeof primaryCards = [
-    {
-      title: "Suppliers",
-      body: "Supplier contacts and import-ready records",
-      onClick: () => onNavigate("suppliers"),
-      value: String(supplierCount)
     },
     {
       title: "Sync",
@@ -8864,28 +8895,10 @@ function ContextualBusinessCards({
       value: String(activeQueueCount)
     },
     {
-      title: "Runtime",
-      body: "Agent sessions, turns and tool plans",
-      onClick: () => onNavigate("runtime"),
-      value: String(runtimeSessionCount)
-    },
-    {
       title: "Knowledge",
       body: "Supplier files and business records",
       onClick: () => onNavigate("imports"),
       value: "CSV"
-    },
-    {
-      title: "Compliance",
-      body: "Export, deletion, tax and device trust",
-      onClick: () => onNavigate("compliance"),
-      value: report?.compliance.verificationTier.replace("_", " ") ?? "Review"
-    },
-    {
-      title: "Beta",
-      body: "Access gates, support and telemetry checks",
-      onClick: () => onNavigate("beta"),
-      value: report?.beta.gates.every((gate) => gate.passed) === true ? "Ready" : "Check"
     },
     {
       title: "Delivery",
@@ -8894,17 +8907,17 @@ function ContextualBusinessCards({
       value: "Track"
     },
     {
-      title: "Settings",
-      body: "Agent profile, tools and instructions",
-      onClick: () => onNavigate("agent"),
-      value: "Edit"
+      title: "+ Add card",
+      body: "Add more business cards later",
+      onClick: onAddCard,
+      value: "+"
     }
   ];
 
   return (
-    <section className="generated-card-message" aria-label="Conversation starter cards">
+    <section className="generated-card-message" aria-label="Workspace cards">
       <div className="generated-card-grid">
-        {primaryCards.map((card) => (
+        {workspaceCards.map((card) => (
           <button key={card.title} type="button" onClick={card.onClick}>
             <span>{card.title}</span>
             <strong>{card.value}</strong>
@@ -8912,19 +8925,36 @@ function ContextualBusinessCards({
           </button>
         ))}
       </div>
-      <details className="generated-card-more">
-        <summary>More actions</summary>
-        <div className="generated-card-grid">
-          {moreCards.map((card) => (
-            <button key={card.title} type="button" onClick={card.onClick}>
-              <span>{card.title}</span>
-              <strong>{card.value}</strong>
-              <small>{card.body}</small>
-            </button>
-          ))}
-        </div>
-      </details>
     </section>
+  );
+}
+
+function ShopPresenceButtons({
+  activeStatus,
+  onStatusChange
+}: {
+  activeStatus: ShopPresenceStatus;
+  onStatusChange: (status: ShopPresenceStatus) => void;
+}) {
+  const statuses: Array<{ id: ShopPresenceStatus; label: string }> = [
+    { id: "online", label: "Online" },
+    { id: "private", label: "Private" },
+    { id: "offline", label: "Offline" }
+  ];
+
+  return (
+    <span className="shop-presence-buttons" aria-label="Shop status">
+      {statuses.map((status) => (
+        <button
+          aria-label={status.label}
+          className={`presence-dot ${status.id} ${activeStatus === status.id ? "active" : ""}`}
+          key={status.id}
+          type="button"
+          title={status.label}
+          onClick={() => onStatusChange(status.id)}
+        />
+      ))}
+    </span>
   );
 }
 

@@ -221,7 +221,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `Karibu back, ${businessName}! I'm your AI attendant and I'm here to help you run your business smoothly. Everything looks good. What would you like to do today?`
+      body: `Hi, I'm ${businessName}'s attendant. I can help you manage products, sales, customers, payments, delivery and stock.`
     }
   ];
 }

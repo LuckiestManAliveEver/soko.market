@@ -65,7 +65,7 @@ describe("owner shell contract", () => {
   it("creates the initial owner-facing welcome message", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("Karibu back, Jane's Shop")
+      body: expect.stringContaining("Hi, I'm Jane's Shop's attendant")
     });
   });
 });

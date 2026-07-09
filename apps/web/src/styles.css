@@ -159,6 +159,7 @@ button:disabled {
   align-items: center;
   display: flex;
   gap: 8px;
+  min-width: 0;
 }
 
 .auth-top-bar {
@@ -185,6 +186,27 @@ button:disabled {
   min-height: 42px;
   min-width: 42px;
   padding: 8px;
+}
+
+.header-action-button {
+  align-items: center;
+  background: #e7ede8;
+  border: 1px solid #cfdad2;
+  border-radius: 8px;
+  color: #23342a;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  justify-content: center;
+  min-height: 42px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.header-action-button.workspace {
+  background: #117a4f;
+  border-color: #117a4f;
+  color: #ffffff;
 }
 
 .message-icon {
@@ -348,6 +370,22 @@ button:disabled {
 
 .status-pill.storefront {
   background: #47606b;
+}
+
+.marketplace-placeholder {
+  align-content: center;
+  background: #f4f6f2;
+  display: grid;
+  min-height: 100vh;
+  padding: 24px;
+  text-align: center;
+}
+
+.marketplace-placeholder h1 {
+  color: #17211b;
+  font-size: 24px;
+  letter-spacing: 0;
+  margin: 0;
 }
 
 .setup-grid,
@@ -1352,6 +1390,47 @@ button:disabled {
   font-weight: 800;
 }
 
+.message-author {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shop-presence-buttons {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.presence-dot {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  height: 10px;
+  min-height: 10px;
+  min-width: 10px;
+  padding: 0;
+  width: 10px;
+}
+
+.presence-dot.online {
+  background: #117a4f;
+}
+
+.presence-dot.private {
+  background: #c77716;
+}
+
+.presence-dot.offline {
+  background: #a43d2a;
+}
+
+.presence-dot.active {
+  box-shadow:
+    0 0 0 2px #ffffff,
+    0 0 0 4px #113f67;
+}
+
 .message.sokoclaw {
   background: #edf4ee;
 }
@@ -1504,6 +1583,61 @@ button:disabled {
   font-size: 13px;
   font-weight: 900;
   padding: 2px 0;
+}
+
+.workspace-panel-backdrop {
+  align-items: end;
+  background: rgba(23, 33, 27, 0.34);
+  display: flex;
+  inset: 0;
+  padding: 12px;
+  position: fixed;
+  z-index: 35;
+}
+
+.workspace-panel {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin: 0 auto;
+  max-height: min(78vh, 680px);
+  max-width: 760px;
+  overflow-y: auto;
+  padding: 14px;
+  width: 100%;
+}
+
+.workspace-panel-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.workspace-panel-heading h2 {
+  font-size: 18px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.workspace-panel-heading button {
+  align-items: center;
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  color: #17211b;
+  display: inline-flex;
+  font-weight: 900;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.workspace-panel .generated-card-message {
+  justify-self: stretch;
+  max-width: 100%;
 }
 
 .generated-card-detail {
@@ -2221,11 +2355,13 @@ button:disabled {
   }
 
   .header-actions {
-    justify-content: space-between;
+    flex-wrap: wrap;
+    justify-content: start;
   }
 
   .status-pill,
   .icon-button,
+  .header-action-button,
   .header-install-button,
   .header-signout-button {
     min-height: 34px;
@@ -2233,6 +2369,13 @@ button:disabled {
 
   .icon-button {
     min-width: 38px;
+  }
+
+  .header-action-button,
+  .header-signout-button {
+    flex: 1 1 auto;
+    min-width: max-content;
+    padding: 7px 8px;
   }
 
   .bottom-nav {
