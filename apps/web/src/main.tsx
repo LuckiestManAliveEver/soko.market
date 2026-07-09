@@ -21,7 +21,8 @@ import "./styles.css";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
-type SocialSignupProvider = "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin";
+type SocialSignupProvider =
+  "google" | "facebook" | "x" | "linkedin" | "apple" | "github" | "microsoft";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const chatAttachmentAccept = [
@@ -79,6 +80,7 @@ interface OAuthProviderSummary {
   configured: boolean;
   displayName: string;
   id: SocialSignupProvider;
+  implemented?: boolean;
 }
 
 interface OAuthProvidersResponse {
@@ -1027,37 +1029,58 @@ const contextScriptsPasswordStorageKey = "soko.chatFirst.contextScriptsPassword"
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
   label: string;
-  mark: string;
+  icon: string;
+  authRedirectPath: string;
+  primary: boolean;
 }> = [
-  { id: "google", label: "Google", mark: "G" },
-  { id: "facebook", label: "Facebook", mark: "f" },
-  { id: "apple", label: "Apple", mark: "A" },
-  { id: "github", label: "GitHub", mark: "GH" },
-  { id: "microsoft", label: "Microsoft", mark: "M" },
-  { id: "linkedin", label: "LinkedIn", mark: "in" }
-];
-
-const signupIntroDurationSeconds = 30;
-const signupIntroScenes = [
   {
-    startsAt: 0,
-    title: "Start with your shop",
-    body: "Create a Soko shop, get a permanent Shop ID, and open your storefront."
+    id: "google",
+    label: "Google",
+    icon: "G",
+    authRedirectPath: "/auth/oauth/start",
+    primary: true
   },
   {
-    startsAt: 7,
-    title: "Run daily work in chat",
-    body: "Ask the agent to add products, find customers, prepare invoices, and check payments."
+    id: "facebook",
+    label: "Meta",
+    icon: "M",
+    authRedirectPath: "/auth/oauth/start",
+    primary: true
   },
   {
-    startsAt: 15,
-    title: "Serve customers from the storefront",
-    body: "Customers browse the catalogue, chat, request support, and prepare checkout."
+    id: "x",
+    label: "X",
+    icon: "X",
+    authRedirectPath: "/auth/oauth/start",
+    primary: true
   },
   {
-    startsAt: 23,
-    title: "Keep selling on mobile",
-    body: "Use contacts, invite links, offline sync, and receipts to keep the shop moving."
+    id: "linkedin",
+    label: "LinkedIn",
+    icon: "in",
+    authRedirectPath: "/auth/oauth/start",
+    primary: true
+  },
+  {
+    id: "apple",
+    label: "Apple",
+    icon: "A",
+    authRedirectPath: "/auth/oauth/start",
+    primary: false
+  },
+  {
+    id: "github",
+    label: "GitHub",
+    icon: "GH",
+    authRedirectPath: "/auth/oauth/start",
+    primary: false
+  },
+  {
+    id: "microsoft",
+    label: "Microsoft",
+    icon: "MS",
+    authRedirectPath: "/auth/oauth/start",
+    primary: false
   }
 ];
 
@@ -1275,6 +1298,7 @@ function OwnerApp() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
+  const [isOtherSocialOpen, setIsOtherSocialOpen] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
@@ -1718,10 +1742,8 @@ function OwnerApp() {
       return;
     }
 
-    if (providerConfig?.configured !== true) {
-      setStatusMessage(
-        `${selectedProvider?.label ?? "Social"} sign-in is not configured yet. Add the provider client ID and secret on the API.`
-      );
+    if (providerConfig?.implemented === false || providerConfig?.configured !== true) {
+      setStatusMessage("This social login provider is not configured yet.");
       return;
     }
 
@@ -1736,6 +1758,7 @@ function OwnerApp() {
         state: response.state
       };
       sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));
+      setIsOtherSocialOpen(false);
       setStatusMessage(
         `Redirecting to ${selectedProvider?.label ?? "social"} to continue with your account.`
       );
@@ -1743,22 +1766,6 @@ function OwnerApp() {
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
-  }
-
-  function exploreStorefrontById() {
-    const input = window.prompt("Soko ID or storefront URL");
-    const value = input?.trim();
-
-    if (value === undefined || value.length === 0) {
-      return;
-    }
-
-    if (/^https?:\/\//i.test(value)) {
-      window.location.assign(value);
-      return;
-    }
-
-    window.location.assign(`/agent/${encodeURIComponent(value)}`);
   }
 
   function updateOwnerPinSet(pinSet: boolean) {
@@ -2208,7 +2215,9 @@ function OwnerApp() {
 
   async function loadOfflineCache(businessId: string) {
     try {
-      setOfflineCache(await getJson<OfflineCacheSnapshot>(`/businesses/${businessId}/offline-cache`));
+      setOfflineCache(
+        await getJson<OfflineCacheSnapshot>(`/businesses/${businessId}/offline-cache`)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3856,8 +3865,10 @@ function OwnerApp() {
   return (
     <Surface title="Soko.market">
       <div className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}>
-        {!isAuthScreen ? (
-          <header className="top-bar">
+        <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
+          {business === null ? (
+            <div className="auth-brand-title">soko.market</div>
+          ) : (
             <button
               className="brand-lockup"
               type="button"
@@ -3866,33 +3877,14 @@ function OwnerApp() {
               <span className="logo-mark">S</span>
               <span>
                 <strong>Soko.market</strong>
-                <span>{business?.name ?? "Soko.market"}</span>
-                <small>{setupComplete ? agentSettings.name : statusMessage}</small>
-                {business?.sokoId ? <small>{business.sokoId}</small> : null}
+                <span>{business.name}</span>
+                <small>{shouldShowLogin ? "Saved workspace loaded" : agentSettings.name}</small>
+                <small>{business.sokoId}</small>
               </span>
             </button>
+          )}
+          {!isAuthScreen && setupComplete ? (
             <div className="header-actions">
-              <div className="status-stack" aria-label="Shell status">
-                <span className={isOnline ? "status-pill online" : "status-pill offline"}>
-                  {isOnline ? "Online" : "Offline"}
-                </span>
-                <button
-                  className="status-pill storefront"
-                  type="button"
-                  onClick={openStorefront}
-                  disabled={!setupComplete}
-                >
-                  Storefront
-                </button>
-              </div>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => setupComplete && setView("notifications")}
-                aria-label="Messages"
-              >
-                <span className="message-icon" aria-hidden="true" />
-              </button>
               {installPrompt.canInstall ? (
                 <button
                   className="header-install-button"
@@ -3902,27 +3894,12 @@ function OwnerApp() {
                   Install
                 </button>
               ) : null}
-              {setupComplete ? (
-                <button
-                  className="header-signout-button"
-                  type="button"
-                  onClick={() => void logout()}
-                >
-                  Sign out
-                </button>
-              ) : (
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => void refreshSession()}
-                  aria-label="Refresh"
-                >
-                  ...
-                </button>
-              )}
+              <button className="header-signout-button" type="button" onClick={() => void logout()}>
+                Sign out
+              </button>
             </div>
-          </header>
-        ) : null}
+          ) : null}
+        </header>
 
         {business === null ? (
           <SetupPanel
@@ -3939,6 +3916,7 @@ function OwnerApp() {
             session={session}
             oauthProviders={oauthProviders}
             oauthProvidersLoaded={oauthProvidersLoaded}
+            isOtherSocialOpen={isOtherSocialOpen}
             statusMessage={statusMessage}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
@@ -3952,9 +3930,8 @@ function OwnerApp() {
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
-            onExplore={exploreStorefrontById}
-            canInstall={installPrompt.canInstall}
-            onInstall={() => void installPrompt.installApp()}
+            onOpenOtherSocial={() => setIsOtherSocialOpen(true)}
+            onCloseOtherSocial={() => setIsOtherSocialOpen(false)}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -3970,6 +3947,7 @@ function OwnerApp() {
             recoveryPinConfirm={recoveryPinConfirm}
             oauthProviders={oauthProviders}
             oauthProvidersLoaded={oauthProvidersLoaded}
+            isOtherSocialOpen={isOtherSocialOpen}
             statusMessage={statusMessage}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -3984,10 +3962,9 @@ function OwnerApp() {
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
             onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
+            onOpenOtherSocial={() => setIsOtherSocialOpen(true)}
+            onCloseOtherSocial={() => setIsOtherSocialOpen(false)}
             onLogin={() => void loginWithPin()}
-            onExplore={exploreStorefrontById}
-            canInstall={installPrompt.canInstall}
-            onInstall={() => void installPrompt.installApp()}
           />
         ) : view === "agent" ? (
           <AgentProfileSurface
@@ -4041,7 +4018,6 @@ function OwnerApp() {
 }
 
 interface SetupPanelProps {
-  canInstall: boolean;
   channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
@@ -4055,6 +4031,7 @@ interface SetupPanelProps {
   session: SessionResponse | null;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
+  isOtherSocialOpen: boolean;
   statusMessage: string;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
@@ -4068,8 +4045,107 @@ interface SetupPanelProps {
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
-  onExplore: () => void;
-  onInstall: () => void;
+  onOpenOtherSocial: () => void;
+  onCloseOtherSocial: () => void;
+}
+
+interface SocialLoginOptionsProps {
+  mode: "signup" | "login";
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
+  isOtherSocialOpen: boolean;
+  onSelectProvider: (provider: SocialSignupProvider) => void;
+  onOpenOther: () => void;
+  onCloseOther: () => void;
+}
+
+function SocialLoginOptions(props: SocialLoginOptionsProps) {
+  const primaryProviders = socialSignupProviders.filter((provider) => provider.primary);
+  const otherProviders = socialSignupProviders.filter((provider) => !provider.primary);
+  const actionText = props.mode === "signup" ? "sign up or sign in" : "log in or sign in";
+
+  return (
+    <>
+      <div className="social-signup-grid" aria-label={`Social ${props.mode} options`}>
+        {primaryProviders.map((provider) => {
+          const config = getAuthProviderConfig(
+            provider,
+            props.oauthProviders,
+            props.oauthProvidersLoaded
+          );
+
+          return (
+            <button
+              className={`social-signup-button ${provider.id} ${config.enabled ? "" : "unconfigured"}`}
+              key={provider.id}
+              title={
+                config.enabled
+                  ? `Redirect to ${provider.label} to ${actionText}`
+                  : "This social login provider is not configured yet."
+              }
+              type="button"
+              aria-disabled={!config.enabled}
+              onClick={() => props.onSelectProvider(provider.id)}
+            >
+              <span>{provider.icon}</span>
+              Continue with {provider.label}
+            </button>
+          );
+        })}
+        <button className="social-signup-button other" type="button" onClick={props.onOpenOther}>
+          <span>+</span>
+          Continue with Other social account
+        </button>
+      </div>
+
+      {props.isOtherSocialOpen ? (
+        <div className="auth-modal-backdrop" role="presentation">
+          <div
+            aria-label="Choose another social login provider"
+            aria-modal="true"
+            className="auth-provider-modal"
+            role="dialog"
+          >
+            <div className="auth-modal-heading">
+              <h3>Other social account</h3>
+              <button type="button" onClick={props.onCloseOther} aria-label="Close">
+                x
+              </button>
+            </div>
+            <div className="social-signup-grid">
+              {otherProviders.map((provider) => {
+                const config = getAuthProviderConfig(
+                  provider,
+                  props.oauthProviders,
+                  props.oauthProvidersLoaded
+                );
+
+                return (
+                  <button
+                    className={`social-signup-button ${provider.id} ${
+                      config.enabled ? "" : "unconfigured"
+                    }`}
+                    key={provider.id}
+                    title={
+                      config.enabled
+                        ? `Redirect to ${provider.label} to ${actionText}`
+                        : "This social login provider is not configured yet."
+                    }
+                    type="button"
+                    aria-disabled={!config.enabled}
+                    onClick={() => props.onSelectProvider(provider.id)}
+                  >
+                    <span>{provider.icon}</span>
+                    Continue with {provider.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function SetupPanel(props: SetupPanelProps) {
@@ -4079,52 +4155,12 @@ function SetupPanel(props: SetupPanelProps) {
 
   return (
     <main className="setup-grid">
-      <SignupIntroPlayer />
       <section className="panel">
         <div className="auth-heading-row">
           <div className="section-heading">
             <p className="eyebrow">Step 1</p>
             <h2>Signup or login</h2>
           </div>
-          <button
-            className="icon-button auth-explore-button"
-            type="button"
-            onClick={props.onExplore}
-            aria-label="Explore storefront"
-          >
-            ◎
-          </button>
-        </div>
-        {props.canInstall ? (
-          <button className="secondary" type="button" onClick={props.onInstall}>
-            Install app
-          </button>
-        ) : null}
-        <div className="social-signup-grid" aria-label="Social signup options">
-          {socialSignupProviders.map((provider) => {
-            const providerConfig = props.oauthProviders.find((item) => item.id === provider.id);
-            const isConfigured = props.oauthProvidersLoaded && providerConfig?.configured === true;
-            return (
-              <button
-                className={`social-signup-button ${provider.id}`}
-                disabled={!isConfigured}
-                key={provider.id}
-                title={
-                  isConfigured
-                    ? `Redirect to ${provider.label} to sign up or sign in`
-                    : `${provider.label} sign-in is not configured yet`
-                }
-                type="button"
-                onClick={() => props.onSocialSignup(provider.id)}
-              >
-                <span>{provider.mark}</span>
-                Use {provider.label} account
-              </button>
-            );
-          })}
-        </div>
-        <div className="signup-divider">
-          <span>or use OTP</span>
         </div>
         <div className="segmented" aria-label="Auth channel">
           <button
@@ -4203,6 +4239,18 @@ function SetupPanel(props: SetupPanelProps) {
         <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
           Verify OTP
         </button>
+        <div className="signup-divider">
+          <span>or use social profile</span>
+        </div>
+        <SocialLoginOptions
+          mode="signup"
+          oauthProviders={props.oauthProviders}
+          oauthProvidersLoaded={props.oauthProvidersLoaded}
+          isOtherSocialOpen={props.isOtherSocialOpen}
+          onSelectProvider={props.onSocialSignup}
+          onOpenOther={props.onOpenOtherSocial}
+          onCloseOther={props.onCloseOtherSocial}
+        />
         <p className="setup-status">{props.statusMessage}</p>
       </section>
 
@@ -4281,83 +4329,7 @@ function SetupPanel(props: SetupPanelProps) {
   );
 }
 
-function SignupIntroPlayer() {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const fallbackScene = {
-    startsAt: 0,
-    title: "Start with your shop",
-    body: "Create a Soko shop, get a permanent Shop ID, and open your storefront."
-  };
-  const activeScene = signupIntroScenes.reduce(
-    (currentScene, scene) => (elapsedSeconds >= scene.startsAt ? scene : currentScene),
-    fallbackScene
-  );
-  const progress = Math.min(100, (elapsedSeconds / signupIntroDurationSeconds) * 100);
-
-  useEffect(() => {
-    if (!isPlaying) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      setElapsedSeconds((current) => {
-        if (current >= signupIntroDurationSeconds) {
-          setIsPlaying(false);
-          return signupIntroDurationSeconds;
-        }
-
-        return current + 1;
-      });
-    }, 1000);
-
-    return () => window.clearInterval(intervalId);
-  }, [isPlaying]);
-
-  function togglePlayback() {
-    if (elapsedSeconds >= signupIntroDurationSeconds) {
-      setElapsedSeconds(0);
-      setIsPlaying(true);
-      return;
-    }
-
-    setIsPlaying((current) => !current);
-  }
-
-  return (
-    <section className="signup-video-panel" aria-label="Soko.market intro video">
-      <div
-        aria-label="30 second introduction to Soko.market"
-        className="signup-video-player"
-        role="group"
-      >
-        <div className="signup-video-stage">
-          <span>30 sec guide</span>
-          <strong>{activeScene?.title ?? fallbackScene.title}</strong>
-          <p>{activeScene?.body ?? fallbackScene.body}</p>
-        </div>
-        <div className="signup-video-controls">
-          <button type="button" onClick={togglePlayback}>
-            {isPlaying ? "Pause" : elapsedSeconds >= signupIntroDurationSeconds ? "Replay" : "Play"}
-          </button>
-          <div className="signup-video-progress" aria-hidden="true">
-            <span style={{ width: `${progress}%` }} />
-          </div>
-          <span>
-            {elapsedSeconds}s / {signupIntroDurationSeconds}s
-          </span>
-        </div>
-      </div>
-      <div>
-        <span>Signup guide</span>
-        <strong>How Soko.market works</strong>
-      </div>
-    </section>
-  );
-}
-
 interface LoginPanelProps {
-  canInstall: boolean;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -4370,6 +4342,7 @@ interface LoginPanelProps {
   recoveryPinConfirm: string;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
+  isOtherSocialOpen: boolean;
   statusMessage: string;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -4384,9 +4357,9 @@ interface LoginPanelProps {
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
+  onOpenOtherSocial: () => void;
+  onCloseOtherSocial: () => void;
   onLogin: () => void;
-  onExplore: () => void;
-  onInstall: () => void;
 }
 
 function LoginPanel(props: LoginPanelProps) {
@@ -4404,45 +4377,6 @@ function LoginPanel(props: LoginPanelProps) {
             <p className="eyebrow">Step 1</p>
             <h2>Signup or login</h2>
           </div>
-          <button
-            className="icon-button auth-explore-button"
-            type="button"
-            onClick={props.onExplore}
-            aria-label="Explore storefront"
-          >
-            ◎
-          </button>
-        </div>
-        {props.canInstall ? (
-          <button className="secondary" type="button" onClick={props.onInstall}>
-            Install app
-          </button>
-        ) : null}
-        <div className="social-signup-grid" aria-label="Social login options">
-          {socialSignupProviders.map((provider) => {
-            const providerConfig = props.oauthProviders.find((item) => item.id === provider.id);
-            const isConfigured = props.oauthProvidersLoaded && providerConfig?.configured === true;
-            return (
-              <button
-                className={`social-signup-button ${provider.id}`}
-                disabled={!isConfigured}
-                key={provider.id}
-                title={
-                  isConfigured
-                    ? `Redirect to ${provider.label} to log in or sign in`
-                    : `${provider.label} sign-in is not configured yet`
-                }
-                type="button"
-                onClick={() => props.onSocialLogin(provider.id)}
-              >
-                <span>{provider.mark}</span>
-                Use {provider.label} account
-              </button>
-            );
-          })}
-        </div>
-        <div className="signup-divider">
-          <span>or use phone and PIN</span>
         </div>
         <div className="phone-contact-row">
           <label>
@@ -4496,6 +4430,18 @@ function LoginPanel(props: LoginPanelProps) {
         ) : (
           <p className="shell-note">Use your saved phone number and PIN to unlock this device.</p>
         )}
+        <div className="signup-divider">
+          <span>or use social profile</span>
+        </div>
+        <SocialLoginOptions
+          mode="login"
+          oauthProviders={props.oauthProviders}
+          oauthProvidersLoaded={props.oauthProvidersLoaded}
+          isOtherSocialOpen={props.isOtherSocialOpen}
+          onSelectProvider={props.onSocialLogin}
+          onOpenOther={props.onOpenOtherSocial}
+          onCloseOther={props.onCloseOtherSocial}
+        />
       </section>
 
       <section className="panel">
@@ -9441,10 +9387,37 @@ function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
   return (
     value === "google" ||
     value === "facebook" ||
+    value === "x" ||
     value === "apple" ||
     value === "github" ||
-    value === "microsoft"
+    value === "microsoft" ||
+    value === "linkedin"
   );
+}
+
+function getAuthProviderConfig(
+  provider: (typeof socialSignupProviders)[number],
+  summaries: OAuthProviderSummary[],
+  loaded: boolean
+): {
+  id: SocialSignupProvider;
+  label: string;
+  icon: string;
+  enabled: boolean;
+  configured: boolean;
+  authRedirectPath: string;
+} {
+  const summary = summaries.find((item) => item.id === provider.id);
+  const configured = loaded && summary?.configured === true && summary.implemented !== false;
+
+  return {
+    id: provider.id,
+    label: provider.label,
+    icon: provider.icon,
+    enabled: configured,
+    configured,
+    authRedirectPath: provider.authRedirectPath
+  };
 }
 
 function composeSignupContact(

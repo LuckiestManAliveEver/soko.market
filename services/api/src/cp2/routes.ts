@@ -505,6 +505,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         const provider = parseOAuthProvider(request.body.provider);
         const providerConfig = getOAuthProviderConfig(provider);
 
+        // TODO: implement the X OAuth 2.0 callback/profile flow before enabling redirects.
+        if (!providerConfig.implemented) {
+          throw new Cp2Error(
+            501,
+            "oauth_provider_not_implemented",
+            `${providerConfig.displayName} sign-in is not implemented yet.`
+          );
+        }
+
         if (!isOAuthProviderConfigured(providerConfig)) {
           throw new Cp2Error(
             503,
@@ -543,6 +552,16 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         const state = parseString(request.body.state, "state");
         const csrfToken = parseString(request.body.csrfToken, "csrfToken");
         const providerConfig = getOAuthProviderConfig(provider);
+
+        // TODO: implement the X OAuth 2.0 callback/profile flow before accepting callbacks.
+        if (!providerConfig.implemented) {
+          throw new Cp2Error(
+            501,
+            "oauth_provider_not_implemented",
+            `${providerConfig.displayName} sign-in is not implemented yet.`
+          );
+        }
+
         const exchangeData = store.getOAuthExchangeData({
           provider,
           state,

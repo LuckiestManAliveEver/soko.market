@@ -34,15 +34,18 @@ const providers: OAuthProvider[] = [
   "apple",
   "github",
   "microsoft",
-  "linkedin"
+  "linkedin",
+  "x"
 ];
+const implementedProviders = providers.filter((provider) => provider !== "x");
 const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
   apple: "OAUTH_APPLE_CLIENT_ID",
   facebook: "OAUTH_FACEBOOK_CLIENT_ID",
   github: "OAUTH_GITHUB_CLIENT_ID",
   google: "OAUTH_GOOGLE_CLIENT_ID",
   linkedin: "OAUTH_LINKEDIN_CLIENT_ID",
-  microsoft: "OAUTH_MICROSOFT_CLIENT_ID"
+  microsoft: "OAUTH_MICROSOFT_CLIENT_ID",
+  x: "OAUTH_X_CLIENT_ID"
 };
 const previousOAuthClientIds = new Map<string, string | undefined>();
 
@@ -95,21 +98,46 @@ describe("PRD-0002 social sign-in authentication", () => {
     await app.close();
   });
 
-  it.each(providers)("creates a normal authenticated session with %s", async (provider) => {
+  it.each(implementedProviders)(
+    "creates a normal authenticated session with %s",
+    async (provider) => {
+      const store = createCp2Store();
+      const app = buildApi({ cp2: { store } });
+
+      const result = await completeOAuth(app, provider, {
+        email: `${provider}@example.com`,
+        providerSubject: `${provider}-subject`
+      });
+
+      expect(result.session.id).toBeTruthy();
+      expect(result.identity).toMatchObject({
+        provider,
+        email: `${provider}@example.com`
+      });
+      expect(extractSessionCookie(result.setCookie)).toContain("soko_session=");
+
+      await app.close();
+    }
+  );
+
+  it("returns an explicit 501 placeholder for X OAuth", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
-    const result = await completeOAuth(app, provider, {
-      email: `${provider}@example.com`,
-      providerSubject: `${provider}-subject`
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/oauth/start",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        provider: "x",
+        redirectUri: "http://127.0.0.1:5173/auth/oauth/callback"
+      })
     });
 
-    expect(result.session.id).toBeTruthy();
-    expect(result.identity).toMatchObject({
-      provider,
-      email: `${provider}@example.com`
+    expect(response.statusCode).toBe(501);
+    expect(response.json()).toMatchObject({
+      code: "oauth_provider_not_implemented"
     });
-    expect(extractSessionCookie(result.setCookie)).toContain("soko_session=");
 
     await app.close();
   });

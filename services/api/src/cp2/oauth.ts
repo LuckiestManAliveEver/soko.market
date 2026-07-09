@@ -11,6 +11,7 @@ import { Cp2Error } from "./store.js";
 export interface OAuthProviderConfig {
   id: OAuthProvider;
   displayName: string;
+  implemented: boolean;
   authorizationUrl: string;
   tokenUrl: string;
   userInfoUrl: string | null;
@@ -23,6 +24,7 @@ export interface OAuthProviderConfig {
 export interface PublicOAuthProviderConfig {
   id: OAuthProvider;
   displayName: string;
+  implemented: boolean;
   authorizationUrl: string;
   tokenUrl: string;
   userInfoUrl: string | null;
@@ -60,6 +62,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "google",
     displayName: "Google",
+    implemented: true,
     authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     userInfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
@@ -71,6 +74,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "facebook",
     displayName: "Facebook",
+    implemented: true,
     authorizationUrl: "https://www.facebook.com/v20.0/dialog/oauth",
     tokenUrl: "https://graph.facebook.com/v20.0/oauth/access_token",
     userInfoUrl: "https://graph.facebook.com/me?fields=id,name,email",
@@ -82,6 +86,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "apple",
     displayName: "Apple",
+    implemented: true,
     authorizationUrl: "https://appleid.apple.com/auth/authorize",
     tokenUrl: "https://appleid.apple.com/auth/token",
     userInfoUrl: null,
@@ -93,6 +98,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "github",
     displayName: "GitHub",
+    implemented: true,
     authorizationUrl: "https://github.com/login/oauth/authorize",
     tokenUrl: "https://github.com/login/oauth/access_token",
     userInfoUrl: "https://api.github.com/user",
@@ -104,6 +110,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "microsoft",
     displayName: "Microsoft",
+    implemented: true,
     authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     userInfoUrl: "https://graph.microsoft.com/oidc/userinfo",
@@ -115,6 +122,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "linkedin",
     displayName: "LinkedIn",
+    implemented: true,
     authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
     tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
     userInfoUrl: "https://api.linkedin.com/v2/userinfo",
@@ -122,6 +130,18 @@ const oauthProviders: OAuthProviderConfig[] = [
     pkce: true,
     clientIdEnv: "OAUTH_LINKEDIN_CLIENT_ID",
     clientSecretEnv: "OAUTH_LINKEDIN_CLIENT_SECRET"
+  },
+  {
+    id: "x",
+    displayName: "X",
+    implemented: false,
+    authorizationUrl: "https://twitter.com/i/oauth2/authorize",
+    tokenUrl: "https://api.twitter.com/2/oauth2/token",
+    userInfoUrl: null,
+    scopes: ["users.read", "tweet.read", "offline.access"],
+    pkce: true,
+    clientIdEnv: "OAUTH_X_CLIENT_ID",
+    clientSecretEnv: "OAUTH_X_CLIENT_SECRET"
   }
 ];
 
@@ -129,12 +149,13 @@ export function listOAuthProviders(): PublicOAuthProviderConfig[] {
   return oauthProviders.map((provider) => ({
     id: provider.id,
     displayName: provider.displayName,
+    implemented: provider.implemented,
     authorizationUrl: provider.authorizationUrl,
     tokenUrl: provider.tokenUrl,
     userInfoUrl: provider.userInfoUrl,
     scopes: provider.scopes,
     pkce: provider.pkce,
-    configured: getOAuthClientId(provider).length > 0
+    configured: provider.implemented && getOAuthClientId(provider).length > 0
   }));
 }
 
@@ -145,7 +166,8 @@ export function parseOAuthProvider(value: unknown): OAuthProvider {
     value === "apple" ||
     value === "github" ||
     value === "microsoft" ||
-    value === "linkedin"
+    value === "linkedin" ||
+    value === "x"
   ) {
     return value;
   }
@@ -164,7 +186,7 @@ export function getOAuthProviderConfig(provider: OAuthProvider): OAuthProviderCo
 }
 
 export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolean {
-  return getOAuthClientId(provider).length > 0;
+  return provider.implemented && getOAuthClientId(provider).length > 0;
 }
 
 export function createOAuthStartPayload(input: {
