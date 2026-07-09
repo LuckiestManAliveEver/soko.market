@@ -401,9 +401,22 @@ export interface Cp2Snapshot {
   runtimeTurns: RuntimeTurnSummary[];
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
+  otpChallenges: OtpChallenge[];
   sessions: SessionRecord[];
   userIdentities: UserIdentitySummary[];
   oauthSessions: OAuthSessionSummary[];
+  accountPinHashes: Array<{
+    accountId: string;
+    pinHash: string;
+  }>;
+  networkNodes: NetworkNodeSummary[];
+  networkEdges: NetworkEdgeSummary[];
+  networkSources: NetworkSyncSourceSummary[];
+  networkPermissions: NetworkPermissionSummary[];
+  networkRoutes: AgentRouteSummary[];
+  contactHashes: ContactHashSummary[];
+  externalIdentities: ExternalIdentitySummary[];
+  sokoIdentityLinks: SokoIdentityLinkSummary[];
   auditEvents: BusinessEvent[];
 }
 
@@ -4187,11 +4200,313 @@ export class Cp2Store {
       runtimeTurns: [...this.runtimeTurns.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
       syncQueue: [...this.syncQueue.values()],
+      otpChallenges: [...this.otpChallenges.values()],
       sessions: [...this.sessions.values()],
       userIdentities: [...this.userIdentities.values()].map(userIdentityView),
       oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
+      accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
+        accountId,
+        pinHash
+      })),
+      networkNodes: [...this.networkNodes.values()],
+      networkEdges: [...this.networkEdges.values()],
+      networkSources: [...this.networkSources.values()],
+      networkPermissions: [...this.networkPermissions.values()],
+      networkRoutes: [...this.networkRoutes.values()],
+      contactHashes: [...this.contactHashes.values()],
+      externalIdentities: [...this.externalIdentities.values()],
+      sokoIdentityLinks: [...this.sokoIdentityLinks.values()],
       auditEvents: [...this.auditEvents]
     };
+  }
+
+  hydrateSnapshot(snapshot: Cp2Snapshot): void {
+    this.accounts.clear();
+    this.accountByDestination.clear();
+    this.users.clear();
+    this.userByAccount.clear();
+    this.businesses.clear();
+    this.memberships.clear();
+    this.products.clear();
+    this.customers.clear();
+    this.suppliers.clear();
+    this.invoices.clear();
+    this.payments.clear();
+    this.logistics.clear();
+    this.logisticsByInvoice.clear();
+    this.dataExports.clear();
+    this.accountDeletionRequests.clear();
+    this.verificationTiers.clear();
+    this.taxConfigs.clear();
+    this.deviceTrust.clear();
+    this.betaAccess.clear();
+    this.betaFeatureFlags.clear();
+    this.betaDeviceTests.clear();
+    this.betaSupportTickets.clear();
+    this.betaTelemetryEvents.clear();
+    this.launchSettings.clear();
+    this.launchChecklist.clear();
+    this.launchIncidents.clear();
+    this.documentImports.clear();
+    this.documentImportSources.clear();
+    this.notifications.clear();
+    this.notificationByRuleKey.clear();
+    this.runtimeSessions.clear();
+    this.runtimeTurns.clear();
+    this.pendingRuntimeActions.clear();
+    this.nextInvoiceNumberByBusiness.clear();
+    this.inventoryMovements.clear();
+    this.syncQueue.clear();
+    this.syncQueueIdByIdempotency.clear();
+    this.otpChallenges.clear();
+    this.sessions.clear();
+    this.userIdentities.clear();
+    this.identityByProviderSubject.clear();
+    this.identityByEmail.clear();
+    this.oauthSessions.clear();
+    this.accountPinHashes.clear();
+    this.networkNodes.clear();
+    this.networkEdges.clear();
+    this.networkSources.clear();
+    this.networkPermissions.clear();
+    this.networkRoutes.clear();
+    this.contactHashes.clear();
+    this.contactHashIdByValue.clear();
+    this.externalIdentities.clear();
+    this.externalIdentityIdBySubject.clear();
+    this.sokoIdentityLinks.clear();
+    this.auditEvents.splice(0, this.auditEvents.length);
+
+    for (const account of snapshot.accounts) {
+      this.accounts.set(account.id, account);
+      this.accountByDestination.set(
+        destinationAccountKey(account.primaryAuthChannel, account.primaryAuthDestination),
+        account.id
+      );
+    }
+
+    for (const user of snapshot.users) {
+      this.users.set(user.id, user);
+      this.userByAccount.set(user.accountId, user.id);
+    }
+
+    for (const business of snapshot.businesses) {
+      this.businesses.set(business.id, business);
+    }
+
+    for (const membership of snapshot.memberships) {
+      this.memberships.set(membership.id, membership);
+    }
+
+    for (const product of snapshot.products) {
+      this.products.set(product.id, product);
+    }
+
+    for (const customer of snapshot.customers) {
+      this.customers.set(customer.id, customer);
+    }
+
+    for (const supplier of snapshot.suppliers) {
+      this.suppliers.set(supplier.id, supplier);
+    }
+
+    for (const invoice of snapshot.invoices) {
+      this.invoices.set(invoice.id, invoice);
+      const invoiceNumber = Number(invoice.invoiceNumber.replace(/^INV-/, ""));
+      const nextNumber = Number.isInteger(invoiceNumber) ? invoiceNumber + 1 : 1;
+      this.nextInvoiceNumberByBusiness.set(
+        invoice.businessId,
+        Math.max(this.nextInvoiceNumberByBusiness.get(invoice.businessId) ?? 1, nextNumber)
+      );
+    }
+
+    for (const payment of snapshot.payments) {
+      this.payments.set(payment.id, payment);
+    }
+
+    for (const logisticsItem of snapshot.logistics) {
+      this.logistics.set(logisticsItem.id, logisticsItem);
+      this.logisticsByInvoice.set(logisticsItem.invoiceId, logisticsItem.id);
+    }
+
+    for (const dataExport of snapshot.dataExports) {
+      this.dataExports.set(dataExport.id, dataExport as DataExportBundle);
+    }
+
+    for (const item of snapshot.accountDeletionRequests) {
+      this.accountDeletionRequests.set(item.id, item);
+    }
+
+    for (const item of snapshot.verificationTiers) {
+      this.verificationTiers.set(item.businessId, item);
+    }
+
+    for (const item of snapshot.taxConfigs) {
+      this.taxConfigs.set(item.businessId, item);
+    }
+
+    for (const item of snapshot.deviceTrust) {
+      this.deviceTrust.set(deviceTrustKey(item.businessId, item.userId, item.deviceId), item);
+    }
+
+    for (const item of snapshot.betaAccess) {
+      this.betaAccess.set(item.businessId, item);
+    }
+
+    for (const item of snapshot.betaFeatureFlags) {
+      this.betaFeatureFlags.set(betaFeatureFlagMapKey(item.businessId, item.key), item);
+    }
+
+    for (const item of snapshot.betaDeviceTests) {
+      this.betaDeviceTests.set(item.id, item);
+    }
+
+    for (const item of snapshot.betaSupportTickets) {
+      this.betaSupportTickets.set(item.id, item);
+    }
+
+    for (const item of snapshot.betaTelemetryEvents) {
+      this.betaTelemetryEvents.set(item.id, item);
+    }
+
+    for (const item of snapshot.launchSettings) {
+      this.launchSettings.set(item.businessId, item);
+    }
+
+    for (const item of snapshot.launchChecklist) {
+      this.launchChecklist.set(launchChecklistMapKey(item.businessId, item.key), item);
+    }
+
+    for (const item of snapshot.launchIncidents) {
+      this.launchIncidents.set(item.id, item);
+    }
+
+    for (const item of snapshot.documentImports) {
+      this.documentImports.set(item.id, item);
+    }
+
+    for (const item of snapshot.documentImportSources) {
+      this.documentImportSources.set(item.id, {
+        ...item,
+        content: ""
+      });
+    }
+
+    for (const notification of snapshot.notifications) {
+      this.notifications.set(notification.id, notification);
+      this.notificationByRuleKey.set(
+        `${notification.businessId}:${notification.type}`,
+        notification.id
+      );
+    }
+
+    for (const item of snapshot.runtimeSessions) {
+      this.runtimeSessions.set(item.id, item);
+    }
+
+    for (const item of snapshot.runtimeTurns) {
+      this.runtimeTurns.set(item.id, item);
+    }
+
+    for (const item of snapshot.inventoryMovements) {
+      this.inventoryMovements.set(item.id, item);
+    }
+
+    for (const item of snapshot.syncQueue) {
+      this.syncQueue.set(item.id, item);
+      this.syncQueueIdByIdempotency.set(
+        syncQueueIdempotencyKey(item.businessId, item.idempotencyKey),
+        item.id
+      );
+    }
+
+    for (const challenge of snapshot.otpChallenges ?? []) {
+      this.otpChallenges.set(challenge.id, challenge);
+    }
+
+    for (const session of snapshot.sessions) {
+      this.sessions.set(session.id, session);
+    }
+
+    for (const identity of snapshot.userIdentities) {
+      const record = {
+        ...identity,
+        encryptedAccessToken: null,
+        encryptedRefreshToken: null,
+        encryptedIdToken: null,
+        tokenType: null,
+        tokenExpiresAt: null,
+        scope: null,
+        updatedAt: identity.linkedAt
+      };
+      this.userIdentities.set(record.id, record);
+      this.identityByProviderSubject.set(
+        oauthProviderSubjectKey(record.provider, record.providerSubject),
+        record.id
+      );
+
+      if (record.email !== null) {
+        this.identityByEmail.set(oauthIdentityEmailKey(record.provider, record.email), record.id);
+      }
+    }
+
+    for (const oauthSession of snapshot.oauthSessions) {
+      this.oauthSessions.set(oauthSession.id, {
+        ...oauthSession,
+        accountId: null,
+        stateHash: "",
+        csrfHash: "",
+        codeChallenge: "",
+        codeVerifier: "",
+        redirectUri: ""
+      });
+    }
+
+    for (const pinHash of snapshot.accountPinHashes ?? []) {
+      this.accountPinHashes.set(pinHash.accountId, pinHash.pinHash);
+    }
+
+    for (const node of snapshot.networkNodes ?? []) {
+      this.networkNodes.set(node.id, node);
+    }
+
+    for (const edge of snapshot.networkEdges ?? []) {
+      this.networkEdges.set(edge.id, edge);
+    }
+
+    for (const source of snapshot.networkSources ?? []) {
+      this.networkSources.set(source.id, source);
+    }
+
+    for (const permission of snapshot.networkPermissions ?? []) {
+      this.networkPermissions.set(permission.id, permission);
+    }
+
+    for (const route of snapshot.networkRoutes ?? []) {
+      this.networkRoutes.set(route.id, route);
+    }
+
+    for (const contactHash of snapshot.contactHashes ?? []) {
+      this.contactHashes.set(contactHash.id, contactHash);
+      this.contactHashIdByValue.set(
+        `${contactHash.ownerUserId}:${contactHash.hashType}:${contactHash.hashValue}`,
+        contactHash.id
+      );
+    }
+
+    for (const identity of snapshot.externalIdentities ?? []) {
+      this.externalIdentities.set(identity.id, identity);
+      this.externalIdentityIdBySubject.set(
+        `${identity.ownerUserId}:${identity.provider}:${identity.providerSubjectHash}`,
+        identity.id
+      );
+    }
+
+    for (const link of snapshot.sokoIdentityLinks ?? []) {
+      this.sokoIdentityLinks.set(link.id, link);
+    }
+
+    this.auditEvents.push(...snapshot.auditEvents.map((event) => createAuditEvent(event)));
   }
 
   private createAccount(channel: AuthChannel, destination: string, now: Date): AccountSummary {

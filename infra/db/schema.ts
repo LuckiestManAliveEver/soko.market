@@ -332,3 +332,10 @@ export const documentImportRows = pgTable("document_import_rows", {
   warnings: jsonb("warnings").notNull(),
   selected: integer("selected").notNull().default(0)
 });
+
+export const cp2StoreSnapshots = pgTable("cp2_store_snapshots", {
+  id: text("id").primaryKey(),
+  version: integer("version").notNull(),
+  data: jsonb("data").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
