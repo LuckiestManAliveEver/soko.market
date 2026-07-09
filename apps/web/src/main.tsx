@@ -439,6 +439,30 @@ interface SyncQueueResponse {
   items: SyncQueueItem[];
 }
 
+interface OfflineCacheSnapshot {
+  businessId: string;
+  capturedAt: string;
+  source: "server_cache";
+  products: ProductSummary[];
+  customers: CustomerSummary[];
+  suppliers: SupplierSummary[];
+  invoices: InvoiceSummary[];
+  payments: PaymentSummary[];
+  logistics: LogisticsSummary[];
+  invoicePaymentSummaries: InvoicePaymentSummary[];
+  customerDebts: CustomerDebtSummary[];
+  inventoryMovements: Array<{
+    id: string;
+    productId: string;
+    type: string;
+    quantityBefore: number;
+    quantityAfter: number;
+    delta: number;
+    reason: string;
+    createdAt: string;
+  }>;
+}
+
 interface BusinessReportSummary {
   businessId: string;
   generatedAt: string;
@@ -597,7 +621,28 @@ interface DocumentImportConfirmResult {
 
 interface RuntimeSessionSummary {
   id: string;
+  businessId: string;
+  userId: string;
+  status: "active" | "closed";
   turnCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RuntimeTurnSummary {
+  id: string;
+  sessionId: string;
+  businessId: string;
+  actorId: string;
+  message: string;
+  normalizedInput: string;
+  status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
+  plan: {
+    toolName: string;
+    confirmationToken: string | null;
+  };
+  response: string;
+  createdAt: string;
 }
 
 interface RuntimeTurnResult {
@@ -1260,6 +1305,12 @@ function OwnerApp() {
   const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
+  const [offlineCache, setOfflineCache] = useState<OfflineCacheSnapshot | null>(null);
+  const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
+  const [selectedRuntimeHistorySessionId, setSelectedRuntimeHistorySessionId] = useState<
+    string | null
+  >(null);
+  const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
   const [networkGraph, setNetworkGraph] = useState<NetworkGraphSummary | null>(null);
   const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
   const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
@@ -1392,6 +1443,7 @@ function OwnerApp() {
       void loadSyncQueue(business.id);
       void loadReports(business.id);
       void loadNotifications(business.id);
+      void loadRuntimeSessions(business.id);
     }
 
     if (view === "products") {
@@ -1414,10 +1466,15 @@ function OwnerApp() {
 
     if (view === "home" || view === "sync") {
       void loadSyncQueue(business.id);
+      void loadOfflineCache(business.id);
     }
 
     if (view === "chat" || view === "home" || view === "network") {
       void loadNetworkGraph();
+    }
+
+    if (view === "runtime") {
+      void loadRuntimeSessions(business.id);
     }
 
     if (view === "home" || view === "reports") {
@@ -2144,6 +2201,64 @@ function OwnerApp() {
       const response = await getJson<SyncQueueResponse>(`/businesses/${businessId}/sync-queue`);
       setSyncSummary(response.summary);
       setSyncQueue(response.items);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadOfflineCache(businessId: string) {
+    try {
+      setOfflineCache(await getJson<OfflineCacheSnapshot>(`/businesses/${businessId}/offline-cache`));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadRuntimeSessions(businessId: string) {
+    try {
+      const sessions = await getJson<RuntimeSessionSummary[]>(
+        `/businesses/${businessId}/runtime/sessions`
+      );
+      setRuntimeSessions(sessions);
+      const nextSessionId = selectedRuntimeHistorySessionId ?? sessions.at(-1)?.id ?? null;
+      setSelectedRuntimeHistorySessionId(nextSessionId);
+      if (nextSessionId !== null) {
+        await loadRuntimeTurns(businessId, nextSessionId);
+      } else {
+        setRuntimeTurns([]);
+      }
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createRuntimeHistorySession() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const session = await postJson<RuntimeSessionSummary>(
+        `/businesses/${business.id}/runtime/sessions`,
+        {}
+      );
+      setRuntimeSessions((sessions) => [...sessions, session]);
+      setSelectedRuntimeHistorySessionId(session.id);
+      setRuntimeTurns([]);
+      setRuntimeSessionId(session.id);
+      setStatusMessage("Runtime session created");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadRuntimeTurns(businessId: string, sessionId: string) {
+    try {
+      setRuntimeTurns(
+        await getJson<RuntimeTurnSummary[]>(
+          `/businesses/${businessId}/runtime/sessions/${sessionId}/turns`
+        )
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3030,12 +3145,33 @@ function OwnerApp() {
     try {
       await postJson(`/businesses/${business.id}/sync-queue/replay`, {});
       await loadSyncQueue(business.id);
+      await loadOfflineCache(business.id);
       await loadProducts(business.id);
       await loadCustomers(business.id);
       await loadInvoices(business.id);
       await loadPaymentData(business.id);
       await loadLogistics(business.id);
       setStatusMessage("Sync queue replayed");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function replaySyncQueueItem(syncItemId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson(`/businesses/${business.id}/sync-queue/${syncItemId}/replay`, {});
+      await loadSyncQueue(business.id);
+      await loadOfflineCache(business.id);
+      await loadProducts(business.id);
+      await loadCustomers(business.id);
+      await loadInvoices(business.id);
+      await loadPaymentData(business.id);
+      await loadLogistics(business.id);
+      setStatusMessage("Sync item replayed");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3144,6 +3280,10 @@ function OwnerApp() {
     setImportJobs([]);
     setSelectedImportJobId(null);
     setSecurityReview(null);
+    setOfflineCache(null);
+    setRuntimeSessions([]);
+    setSelectedRuntimeHistorySessionId(null);
+    setRuntimeTurns([]);
     setDataExport(null);
     setAccountDeletion(null);
     setVerificationTier(null);
@@ -3248,6 +3388,7 @@ function OwnerApp() {
         setView("network");
       }
 
+      await loadRuntimeSessions(business.id);
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
       const parserReply = createLocalParserReply(message);
@@ -3299,6 +3440,7 @@ function OwnerApp() {
         setView("customers");
       }
 
+      await loadRuntimeSessions(business.id);
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3566,13 +3708,32 @@ function OwnerApp() {
           <SyncSurface
             summary={syncSummary}
             items={syncQueue}
+            offlineCache={offlineCache}
             storefrontUrl={publicStorefrontUrl}
             onInvite={() => void shareOwnerStorefrontInvite()}
             onSyncContacts={() => void syncOwnerPhoneContacts()}
             onImportContacts={(event) => void importContactsFile(event)}
             onExportContacts={exportOwnerContacts}
-            onRefresh={() => void loadSyncQueue(business.id)}
+            onRefresh={() => {
+              void loadSyncQueue(business.id);
+              void loadOfflineCache(business.id);
+            }}
             onReplay={() => void replaySyncQueue()}
+            onReplayItem={(syncItemId) => void replaySyncQueueItem(syncItemId)}
+          />
+        );
+      case "runtime":
+        return (
+          <RuntimeSurface
+            sessions={runtimeSessions}
+            selectedSessionId={selectedRuntimeHistorySessionId}
+            turns={runtimeTurns}
+            onCreateSession={() => void createRuntimeHistorySession()}
+            onRefresh={() => void loadRuntimeSessions(business.id)}
+            onSelectSession={(sessionId) => {
+              setSelectedRuntimeHistorySessionId(sessionId);
+              void loadRuntimeTurns(business.id, sessionId);
+            }}
           />
         );
       case "payments":
@@ -3856,6 +4017,7 @@ function OwnerApp() {
               }
               pendingAttachments={pendingAttachments}
               productCount={products.length}
+              runtimeSessionCount={runtimeSessions.length}
               supplierCount={suppliers.length}
               report={reportSummary}
               syncSummary={syncSummary}
@@ -4425,12 +4587,14 @@ function LoginPanel(props: LoginPanelProps) {
 interface SyncSurfaceProps {
   summary: SyncQueueSummary;
   items: SyncQueueItem[];
+  offlineCache: OfflineCacheSnapshot | null;
   storefrontUrl: string;
   onInvite: () => void;
   onExportContacts: () => void;
   onImportContacts: (event: ChangeEvent<HTMLInputElement>) => void;
   onRefresh: () => void;
   onReplay: () => void;
+  onReplayItem: (syncItemId: string) => void;
   onSyncContacts: () => void;
 }
 
@@ -4647,6 +4811,56 @@ function SyncSurface(props: SyncSurfaceProps) {
         </div>
       </section>
 
+      <section className="record-list" aria-label="Offline cache">
+        <div className="surface-header-row">
+          <div className="section-heading">
+            <p className="eyebrow">Offline cache</p>
+            <h3>Server snapshot available on device</h3>
+          </div>
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+        </div>
+        {props.offlineCache === null ? (
+          <div className="empty-record">
+            <h3>No cache snapshot loaded</h3>
+            <p>Refresh sync to load the current offline-readable business snapshot.</p>
+          </div>
+        ) : (
+          <>
+            <p className="shell-note">
+              Captured {new Date(props.offlineCache.capturedAt).toLocaleString()}
+            </p>
+            <div className="metric-grid compact">
+              <div className="metric">
+                <span>Products</span>
+                <strong>{props.offlineCache.products.length}</strong>
+              </div>
+              <div className="metric">
+                <span>Customers</span>
+                <strong>{props.offlineCache.customers.length}</strong>
+              </div>
+              <div className="metric">
+                <span>Suppliers</span>
+                <strong>{props.offlineCache.suppliers.length}</strong>
+              </div>
+              <div className="metric">
+                <span>Invoices</span>
+                <strong>{props.offlineCache.invoices.length}</strong>
+              </div>
+              <div className="metric">
+                <span>Payments</span>
+                <strong>{props.offlineCache.payments.length}</strong>
+              </div>
+              <div className="metric">
+                <span>Movements</span>
+                <strong>{props.offlineCache.inventoryMovements.length}</strong>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
       <section className="record-list" aria-label="Sync queue list">
         {props.items.length === 0 ? (
           <EmptyStateSurface
@@ -4664,7 +4878,123 @@ function SyncSurface(props: SyncSurfaceProps) {
                 <p>{new Date(item.clientCreatedAt).toLocaleString()}</p>
                 {item.conflict !== null ? <p>{item.conflict.message}</p> : null}
               </div>
-              <strong>{item.attempts}</strong>
+              <div className="row-actions compact-actions">
+                <strong>{item.attempts}</strong>
+                {item.status === "failed" || item.status === "conflict" ? (
+                  <button type="button" onClick={() => props.onReplayItem(item.id)}>
+                    Retry
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
+interface RuntimeSurfaceProps {
+  sessions: RuntimeSessionSummary[];
+  selectedSessionId: string | null;
+  turns: RuntimeTurnSummary[];
+  onCreateSession: () => void;
+  onRefresh: () => void;
+  onSelectSession: (sessionId: string) => void;
+}
+
+function RuntimeSurface(props: RuntimeSurfaceProps) {
+  const selectedSession = props.sessions.find((session) => session.id === props.selectedSessionId);
+
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Runtime controls">
+        <div className="surface-header-row">
+          <div className="section-heading">
+            <p className="eyebrow">Agent runtime</p>
+            <h3>Sessions and turns</h3>
+          </div>
+          <button type="button" onClick={props.onCreateSession}>
+            New session
+          </button>
+        </div>
+        <div className="actions">
+          <button className="secondary" type="button" onClick={props.onRefresh}>
+            Refresh
+          </button>
+          {selectedSession === undefined ? null : (
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => props.onSelectSession(selectedSession.id)}
+            >
+              Reload turns
+            </button>
+          )}
+        </div>
+        <p className="shell-note">
+          Review what the agent understood, which tool it planned, and the response returned for
+          each owner task.
+        </p>
+      </section>
+
+      <section className="record-list" aria-label="Runtime sessions">
+        <div className="section-heading">
+          <p className="eyebrow">Sessions</p>
+          <h3>Conversation runs</h3>
+        </div>
+        {props.sessions.length === 0 ? (
+          <EmptyStateSurface
+            title="No runtime sessions yet"
+            body="Send an owner chat task or create a session to start tracking turns."
+            onChat={props.onCreateSession}
+            actionLabel="Create session"
+          />
+        ) : (
+          props.sessions.map((session) => (
+            <article className="record-row" key={session.id}>
+              <div>
+                <p className="eyebrow">{session.status}</p>
+                <h4>{session.turnCount} turn runtime session</h4>
+                <p>{new Date(session.createdAt).toLocaleString()}</p>
+              </div>
+              <button
+                className={props.selectedSessionId === session.id ? "active" : ""}
+                type="button"
+                onClick={() => props.onSelectSession(session.id)}
+              >
+                View
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+
+      <section className="record-list" aria-label="Runtime turns">
+        <div className="section-heading">
+          <p className="eyebrow">Turns</p>
+          <h3>{selectedSession === undefined ? "Select a session" : "Runtime history"}</h3>
+        </div>
+        {selectedSession === undefined ? (
+          <div className="empty-record">
+            <h3>No session selected</h3>
+            <p>Select a runtime session to inspect its turns.</p>
+          </div>
+        ) : props.turns.length === 0 ? (
+          <div className="empty-record">
+            <h3>No turns in this session</h3>
+            <p>Use the chat composer to send a task through this runtime session.</p>
+          </div>
+        ) : (
+          props.turns.map((turn) => (
+            <article className="record-row runtime-turn-row" key={turn.id}>
+              <div>
+                <p className="eyebrow">{turn.status}</p>
+                <h4>{turn.plan.toolName}</h4>
+                <p>{turn.message}</p>
+                <small>{turn.response}</small>
+              </div>
+              <span>{new Date(turn.createdAt).toLocaleTimeString()}</span>
             </article>
           ))
         )}
@@ -8245,6 +8575,7 @@ interface ChatSurfaceProps {
   notificationCount: number;
   pendingAttachments: ChatAttachment[];
   productCount: number;
+  runtimeSessionCount: number;
   supplierCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
@@ -8272,6 +8603,7 @@ function ChatSurface({
   notificationCount,
   pendingAttachments,
   productCount,
+  runtimeSessionCount,
   supplierCount,
   report,
   syncSummary,
@@ -8305,6 +8637,7 @@ function ChatSurface({
         <ContextualBusinessCards
           business={business}
           productCount={productCount}
+          runtimeSessionCount={runtimeSessionCount}
           supplierCount={supplierCount}
           customerCount={customerCount}
           invoiceCount={invoiceCount}
@@ -8426,6 +8759,7 @@ function ChatSurface({
 interface ContextualBusinessCardsProps {
   business: ActiveBusiness;
   productCount: number;
+  runtimeSessionCount: number;
   supplierCount: number;
   customerCount: number;
   invoiceCount: number;
@@ -8441,6 +8775,7 @@ interface ContextualBusinessCardsProps {
 function ContextualBusinessCards({
   business,
   productCount,
+  runtimeSessionCount,
   supplierCount,
   customerCount,
   invoiceCount,
@@ -8520,6 +8855,12 @@ function ContextualBusinessCards({
       body: "Offline queue and conflict replay",
       onClick: () => onNavigate("sync"),
       value: String(activeQueueCount)
+    },
+    {
+      title: "Runtime",
+      body: "Agent sessions, turns and tool plans",
+      onClick: () => onNavigate("runtime"),
+      value: String(runtimeSessionCount)
     },
     {
       title: "Knowledge",

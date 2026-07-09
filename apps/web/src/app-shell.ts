@@ -8,6 +8,7 @@ export type ShellView =
   | "invoices"
   | "network"
   | "sync"
+  | "runtime"
   | "payments"
   | "imports"
   | "logistics"
@@ -87,6 +88,11 @@ export const quickActions: QuickAction[] = [
     summary: "Review offline queue and conflicts"
   },
   {
+    id: "runtime",
+    label: "Runtime",
+    summary: "Review agent sessions and turns"
+  },
+  {
     id: "payments",
     label: "Payments",
     summary: "Record payments and review debt"
@@ -158,6 +164,11 @@ export const emptyStates: EmptyState[] = [
     id: "sync",
     title: "No queued work",
     body: "Sync keeps offline mutations queued until server replay confirms them."
+  },
+  {
+    id: "runtime",
+    title: "No runtime turns yet",
+    body: "Agent runtime sessions appear after the owner sends chat tasks."
   },
   {
     id: "payments",
