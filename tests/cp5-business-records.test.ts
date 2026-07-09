@@ -331,6 +331,31 @@ describe("CP5 business core records", () => {
     await app.close();
   });
 
+  it("keeps configurable product fields explicit until the API is implemented", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/products/fields`,
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({
+        fields: [{ label: "Shelf", inputType: "text" }]
+      })
+    });
+
+    expect(response.statusCode).toBe(501);
+    expect(response.json()).toMatchObject({
+      code: "product_fields_not_implemented"
+    });
+
+    await app.close();
+  });
+
   it("keeps CP5 records scoped to their owning business", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

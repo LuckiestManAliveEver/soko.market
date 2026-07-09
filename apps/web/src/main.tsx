@@ -930,6 +930,16 @@ interface ProductFormState {
   sellingPrice: string;
 }
 
+type ProductFieldInputType = "text" | "number" | "select" | "textarea" | "yes_no";
+
+interface ProductFieldDraft {
+  id: string;
+  inputType: ProductFieldInputType;
+  label: string;
+  required: boolean;
+  value: string;
+}
+
 interface CustomerFormState {
   id: string | null;
   name: string;
@@ -2129,6 +2139,24 @@ function OwnerApp() {
       await loadProducts(business.id);
       setStockQuantityAfter(String(response.product.quantity));
       setStatusMessage("Stock adjusted");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveProductFieldStructure(fields: ProductFieldDraft[]) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<{ code: string; message: string }>(
+        `/businesses/${business.id}/products/fields`,
+        {
+          fields
+        }
+      );
+      setStatusMessage("Product field structure saved");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4028,7 +4056,9 @@ function OwnerApp() {
               messages={chatMessages}
               notificationCount={notificationInbox.summary.unread}
               pendingAttachments={pendingAttachments}
+              productForm={productForm}
               productCount={products.length}
+              products={products}
               report={reportSummary}
               shopPresenceStatus={shopPresenceStatus}
               workspaceOpen={isWorkspacePanelOpen}
@@ -4040,6 +4070,24 @@ function OwnerApp() {
               onDraftChange={setChatDraft}
               onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
               onNavigate={setView}
+              onProductEdit={(product) => {
+                setProductForm({
+                  id: product.id,
+                  name: product.name,
+                  sku: product.sku ?? "",
+                  unit: product.unit,
+                  quantity: String(product.quantity),
+                  buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
+                  sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
+                });
+                setStockProductId(product.id);
+                setStockQuantityAfter(String(product.quantity));
+              }}
+              onProductFieldsSave={(fields) => void saveProductFieldStructure(fields)}
+              onProductFormChange={setProductForm}
+              onProductRemove={(productId) => void deleteProduct(productId)}
+              onProductReset={() => setProductForm(emptyProductForm)}
+              onProductSave={() => saveProduct()}
               onRemoveAttachment={removePendingAttachment}
               onStatusChange={updateShopPresenceStatus}
               onSend={() => void sendChatDraft()}
@@ -8604,7 +8652,9 @@ interface ChatSurfaceProps {
   messages: ChatMessage[];
   notificationCount: number;
   pendingAttachments: ChatAttachment[];
+  productForm: ProductFormState;
   productCount: number;
+  products: ProductSummary[];
   report: BusinessReportSummary | null;
   shopPresenceStatus: ShopPresenceStatus;
   syncSummary: SyncQueueSummary;
@@ -8615,6 +8665,12 @@ interface ChatSurfaceProps {
   onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
   onNavigate: (view: ShellView) => void;
+  onProductEdit: (product: ProductSummary) => void;
+  onProductFieldsSave: (fields: ProductFieldDraft[]) => void;
+  onProductFormChange: (form: ProductFormState) => void;
+  onProductRemove: (productId: string) => void;
+  onProductReset: () => void;
+  onProductSave: () => Promise<void>;
   onRemoveAttachment: (attachmentId: string) => void;
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
@@ -8631,7 +8687,9 @@ function ChatSurface({
   messages,
   notificationCount,
   pendingAttachments,
+  productForm,
   productCount,
+  products,
   report,
   shopPresenceStatus,
   syncSummary,
@@ -8642,6 +8700,12 @@ function ChatSurface({
   onCloseWorkspace,
   onDraftChange,
   onNavigate,
+  onProductEdit,
+  onProductFieldsSave,
+  onProductFormChange,
+  onProductRemove,
+  onProductReset,
+  onProductSave,
   onRemoveAttachment,
   onStatusChange,
   onConfirm,
@@ -8649,7 +8713,16 @@ function ChatSurface({
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const [workspaceCardView, setWorkspaceCardView] = useState<
+    "cards" | "catalogue" | "addProduct" | "editProduct" | "deleteProduct" | "manageFields"
+  >("cards");
   const generatedCardOpen = activeView !== "chat" && activeView !== "home";
+
+  useEffect(() => {
+    if (!workspaceOpen) {
+      setWorkspaceCardView("cards");
+    }
+  }, [workspaceOpen]);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -8721,24 +8794,60 @@ function ChatSurface({
             aria-label="Workspace cards"
           >
             <div className="workspace-panel-heading">
-              <h2>Workspace cards</h2>
+              <h2>{workspaceCardView === "cards" ? "Workspace" : "Catalogue"}</h2>
               <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
                 x
               </button>
             </div>
-            <ContextualBusinessCards
-              productCount={productCount}
-              customerCount={customerCount}
-              invoiceCount={invoiceCount}
-              notificationCount={notificationCount}
-              report={report}
-              syncSummary={syncSummary}
-              onAddCard={onAddWorkspaceCard}
-              onNavigate={(nextView) => {
-                onNavigate(nextView);
-                onCloseWorkspace();
-              }}
-            />
+            {workspaceCardView === "cards" ? (
+              <ContextualBusinessCards
+                productCount={productCount}
+                customerCount={customerCount}
+                invoiceCount={invoiceCount}
+                notificationCount={notificationCount}
+                report={report}
+                syncSummary={syncSummary}
+                onAddCard={onAddWorkspaceCard}
+                onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
+                onNavigate={(nextView) => {
+                  onNavigate(nextView);
+                  onCloseWorkspace();
+                }}
+              />
+            ) : (
+              <CatalogueNestedCard
+                form={productForm}
+                products={products}
+                view={workspaceCardView}
+                onBack={() =>
+                  setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
+                }
+                onChangeForm={onProductFormChange}
+                onDeleteProduct={onProductRemove}
+                onEditProduct={onProductEdit}
+                onOpenAdd={() => {
+                  onProductReset();
+                  setWorkspaceCardView("addProduct");
+                }}
+                onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
+                onOpenEdit={() => {
+                  if (products[0] !== undefined) {
+                    onProductEdit(products[0]);
+                  }
+                  setWorkspaceCardView("editProduct");
+                }}
+                onOpenFields={() => setWorkspaceCardView("manageFields")}
+                onOpenProduct={(product) => {
+                  onProductEdit(product);
+                  setWorkspaceCardView("editProduct");
+                }}
+                onSaveFields={onProductFieldsSave}
+                onSaveProduct={async () => {
+                  await onProductSave();
+                  setWorkspaceCardView("catalogue");
+                }}
+              />
+            )}
           </section>
         </div>
       ) : null}
@@ -8830,6 +8939,7 @@ interface ContextualBusinessCardsProps {
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
   onAddCard: () => void;
+  onOpenCatalogue: () => void;
   onNavigate: (view: ShellView) => void;
 }
 
@@ -8841,6 +8951,7 @@ function ContextualBusinessCards({
   report,
   syncSummary,
   onAddCard,
+  onOpenCatalogue,
   onNavigate
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
@@ -8853,9 +8964,9 @@ function ContextualBusinessCards({
     value: string;
   }> = [
     {
-      title: "Products",
+      title: "Catalogue",
       body: "Stock, SKUs, units and adjustments",
-      onClick: () => onNavigate("products"),
+      onClick: onOpenCatalogue,
       value: String(productCount)
     },
     {
@@ -8927,6 +9038,480 @@ function ContextualBusinessCards({
       </div>
     </section>
   );
+}
+
+function CatalogueNestedCard({
+  form,
+  products,
+  view,
+  onBack,
+  onChangeForm,
+  onDeleteProduct,
+  onEditProduct,
+  onOpenAdd,
+  onOpenDelete,
+  onOpenEdit,
+  onOpenFields,
+  onOpenProduct,
+  onSaveFields,
+  onSaveProduct
+}: {
+  form: ProductFormState;
+  products: ProductSummary[];
+  view: "catalogue" | "addProduct" | "editProduct" | "deleteProduct" | "manageFields";
+  onBack: () => void;
+  onChangeForm: (form: ProductFormState) => void;
+  onDeleteProduct: (productId: string) => void;
+  onEditProduct: (product: ProductSummary) => void;
+  onOpenAdd: () => void;
+  onOpenDelete: () => void;
+  onOpenEdit: () => void;
+  onOpenFields: () => void;
+  onOpenProduct: (product: ProductSummary) => void;
+  onSaveFields: (fields: ProductFieldDraft[]) => void;
+  onSaveProduct: () => Promise<void>;
+}) {
+  const [customProductFields, setCustomProductFields] = useState<ProductFieldDraft[]>([]);
+  const [managedFields, setManagedFields] = useState<ProductFieldDraft[]>(() =>
+    createDefaultProductFieldDrafts()
+  );
+
+  function addCustomProductField() {
+    setCustomProductFields((fields) => [...fields, createProductFieldDraft("Custom field")]);
+  }
+
+  function updateCustomProductField(fieldId: string, value: string) {
+    setCustomProductFields((fields) =>
+      fields.map((field) => (field.id === fieldId ? { ...field, value } : field))
+    );
+  }
+
+  function removeCustomProductField(fieldId: string) {
+    setCustomProductFields((fields) => fields.filter((field) => field.id !== fieldId));
+  }
+
+  function updateManagedField(fieldId: string, patch: Partial<ProductFieldDraft>) {
+    setManagedFields((fields) =>
+      fields.map((field) => (field.id === fieldId ? { ...field, ...patch } : field))
+    );
+  }
+
+  function moveManagedField(fieldId: string, direction: -1 | 1) {
+    setManagedFields((fields) => {
+      const index = fields.findIndex((field) => field.id === fieldId);
+      const nextIndex = index + direction;
+
+      if (index < 0 || nextIndex < 0 || nextIndex >= fields.length) {
+        return fields;
+      }
+
+      const nextFields = [...fields];
+      const [field] = nextFields.splice(index, 1);
+
+      if (field === undefined) {
+        return fields;
+      }
+
+      nextFields.splice(nextIndex, 0, field);
+      return nextFields;
+    });
+  }
+
+  function removeManagedField(fieldId: string) {
+    setManagedFields((fields) => fields.filter((field) => field.id !== fieldId || field.required));
+  }
+
+  if (view === "catalogue") {
+    return (
+      <div className="nested-card catalogue-card">
+        <button className="nested-breadcrumb" type="button" onClick={onBack}>
+          &lt; Workspace
+        </button>
+        <div className="nested-card-title-row">
+          <div>
+            <h3>Catalogue</h3>
+            <p>Manage your products and menu</p>
+          </div>
+          <span className="count-badge">{products.length}</span>
+        </div>
+        <div className="catalogue-action-grid" aria-label="Catalogue actions">
+          <button className="success" type="button" onClick={onOpenAdd}>
+            <span>+</span>
+            Add Product
+          </button>
+          <button type="button" onClick={onOpenEdit}>
+            <span>Edit</span>
+            Edit Product
+          </button>
+          <button className="danger" type="button" onClick={onOpenDelete}>
+            <span>Del</span>
+            Delete Product
+          </button>
+          <button className="secondary" type="button" onClick={onOpenFields}>
+            <span>Fields</span>
+            Manage Fields
+          </button>
+        </div>
+        <div className="nested-list-heading">
+          <strong>Existing products</strong>
+          <span>{products.length}</span>
+        </div>
+        {products.length === 0 ? (
+          <div className="catalogue-empty-state">
+            <div className="catalogue-empty-icon" aria-hidden="true" />
+            <h3>No products yet</h3>
+            <p>Add the first product to start stock records.</p>
+            <button type="button" onClick={onOpenAdd}>
+              Add product
+            </button>
+          </div>
+        ) : (
+          <div className="nested-product-list">
+            {products.map((product) => (
+              <button type="button" key={product.id} onClick={() => onOpenProduct(product)}>
+                <span>
+                  <strong>{product.name}</strong>
+                  <small>
+                    {product.sku ?? "No SKU"} - {product.quantity} {product.unit} -{" "}
+                    {formatOptionalMoney(product.sellingPrice)}
+                  </small>
+                </span>
+                <span aria-hidden="true">&gt;</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (view === "deleteProduct") {
+    return (
+      <div className="nested-card">
+        <button className="nested-breadcrumb" type="button" onClick={onBack}>
+          &lt; Catalogue
+        </button>
+        <div className="nested-card-title-row">
+          <div>
+            <h3>Delete Product</h3>
+            <p>Select a product to remove from stock records.</p>
+          </div>
+        </div>
+        {products.length === 0 ? (
+          <div className="catalogue-empty-state compact">
+            <h3>No products yet</h3>
+            <p>There are no product records to delete.</p>
+          </div>
+        ) : (
+          <div className="nested-product-list danger-list">
+            {products.map((product) => (
+              <button type="button" key={product.id} onClick={() => onDeleteProduct(product.id)}>
+                <span>
+                  <strong>{product.name}</strong>
+                  <small>{product.sku ?? "No SKU"}</small>
+                </span>
+                <span>Delete</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (view === "manageFields") {
+    return (
+      <div className="nested-card">
+        <button className="nested-breadcrumb" type="button" onClick={onBack}>
+          &lt; Catalogue
+        </button>
+        <div className="nested-card-title-row">
+          <div>
+            <h3>Manage Fields</h3>
+            <p>Add, remove, or reorder catalogue fields.</p>
+          </div>
+          <button
+            className="small-outline-button"
+            type="button"
+            onClick={() =>
+              setManagedFields((fields) => [...fields, createProductFieldDraft("Custom field")])
+            }
+          >
+            + Add field
+          </button>
+        </div>
+        <div className="field-manager-list">
+          {managedFields.map((field, index) => (
+            <div className="field-manager-row" key={field.id}>
+              <span className="drag-handle">::</span>
+              <label>
+                Label
+                <input
+                  value={field.label}
+                  onChange={(event) => updateManagedField(field.id, { label: event.target.value })}
+                />
+              </label>
+              <label>
+                Type
+                <select
+                  value={field.inputType}
+                  onChange={(event) =>
+                    updateManagedField(field.id, {
+                      inputType: event.target.value as ProductFieldInputType
+                    })
+                  }
+                >
+                  <option value="text">Text</option>
+                  <option value="number">Number</option>
+                  <option value="select">Select</option>
+                  <option value="textarea">Textarea</option>
+                  <option value="yes_no">Yes/no</option>
+                </select>
+              </label>
+              <div className="field-manager-actions">
+                <button
+                  type="button"
+                  onClick={() => moveManagedField(field.id, -1)}
+                  disabled={index === 0}
+                >
+                  Up
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moveManagedField(field.id, 1)}
+                  disabled={index === managedFields.length - 1}
+                >
+                  Down
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => removeManagedField(field.id)}
+                  disabled={field.required}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="nested-form-actions">
+          <button className="secondary" type="button" onClick={onBack}>
+            Cancel
+          </button>
+          <button type="button" onClick={() => onSaveFields(managedFields)}>
+            Save structure
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ProductNestedEditor
+      customFields={customProductFields}
+      form={form}
+      isEdit={view === "editProduct"}
+      products={products}
+      onAddField={addCustomProductField}
+      onBack={onBack}
+      onChangeCustomField={updateCustomProductField}
+      onChangeForm={onChangeForm}
+      onEditProduct={onEditProduct}
+      onRemoveCustomField={removeCustomProductField}
+      onSave={onSaveProduct}
+    />
+  );
+}
+
+function ProductNestedEditor({
+  customFields,
+  form,
+  isEdit,
+  products,
+  onAddField,
+  onBack,
+  onChangeCustomField,
+  onChangeForm,
+  onEditProduct,
+  onRemoveCustomField,
+  onSave
+}: {
+  customFields: ProductFieldDraft[];
+  form: ProductFormState;
+  isEdit: boolean;
+  products: ProductSummary[];
+  onAddField: () => void;
+  onBack: () => void;
+  onChangeCustomField: (fieldId: string, value: string) => void;
+  onChangeForm: (form: ProductFormState) => void;
+  onEditProduct: (product: ProductSummary) => void;
+  onRemoveCustomField: (fieldId: string) => void;
+  onSave: () => Promise<void>;
+}) {
+  return (
+    <div className="nested-card">
+      <button className="nested-breadcrumb" type="button" onClick={onBack}>
+        &lt; Catalogue
+      </button>
+      <div className="nested-card-title-row">
+        <div>
+          <h3>{isEdit ? "Edit Product" : "Add Product"}</h3>
+          <p>{isEdit ? "Update stock item details." : "Create a new stock item."}</p>
+        </div>
+        <button className="small-outline-button" type="button" onClick={onAddField}>
+          + Add field
+        </button>
+      </div>
+      {isEdit ? (
+        <label>
+          Product
+          <select
+            value={form.id ?? ""}
+            onChange={(event) => {
+              const product = products.find((item) => item.id === event.target.value);
+
+              if (product !== undefined) {
+                onEditProduct(product);
+              }
+            }}
+          >
+            <option value="">Select product</option>
+            {products.map((product) => (
+              <option key={product.id} value={product.id}>
+                {product.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <div className="nested-form-section">
+        <div className="nested-form-section-heading">
+          <strong>Basic details</strong>
+          <button className="small-outline-button" type="button" onClick={onAddField}>
+            + Add field
+          </button>
+        </div>
+        <label>
+          Name *
+          <input
+            value={form.name}
+            placeholder="Enter product name"
+            onChange={(event) => onChangeForm({ ...form, name: event.target.value })}
+          />
+        </label>
+        <label>
+          SKU *
+          <input
+            value={form.sku}
+            placeholder="Enter SKU"
+            onChange={(event) => onChangeForm({ ...form, sku: event.target.value })}
+          />
+        </label>
+        <label>
+          Unit
+          <select
+            value={form.unit}
+            onChange={(event) => onChangeForm({ ...form, unit: event.target.value })}
+          >
+            <option value="unit">unit</option>
+            <option value="piece">piece</option>
+            <option value="kg">kg</option>
+            <option value="litre">litre</option>
+            <option value="box">box</option>
+          </select>
+        </label>
+        <label>
+          Quantity
+          <input
+            value={form.quantity}
+            inputMode="decimal"
+            onChange={(event) => onChangeForm({ ...form, quantity: event.target.value })}
+          />
+        </label>
+        <label>
+          Selling Price
+          <input
+            value={form.sellingPrice}
+            inputMode="decimal"
+            placeholder="0.00"
+            onChange={(event) => onChangeForm({ ...form, sellingPrice: event.target.value })}
+          />
+        </label>
+        {customFields.map((field) => (
+          <div className="custom-product-field-row" key={field.id}>
+            <span className="drag-handle">::</span>
+            <label>
+              {field.label}
+              <input
+                value={field.value}
+                placeholder={field.label}
+                onChange={(event) => onChangeCustomField(field.id, event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => onRemoveCustomField(field.id)}
+              aria-label="Remove field"
+            >
+              x
+            </button>
+          </div>
+        ))}
+      </div>
+      <details className="nested-form-section">
+        <summary>Advanced details</summary>
+        <label>
+          Buying price
+          <input
+            value={form.buyingPrice}
+            inputMode="decimal"
+            placeholder="Optional"
+            onChange={(event) => onChangeForm({ ...form, buyingPrice: event.target.value })}
+          />
+        </label>
+        <button className="small-outline-button" type="button" onClick={onAddField}>
+          + Add field
+        </button>
+      </details>
+      <div className="nested-form-actions">
+        <button className="secondary" type="button" onClick={onBack}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void onSave()}
+          disabled={form.name.trim().length === 0}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function createDefaultProductFieldDrafts(): ProductFieldDraft[] {
+  return [
+    createProductFieldDraft("Name", "text", true),
+    createProductFieldDraft("SKU", "text", true),
+    createProductFieldDraft("Unit", "select", true),
+    createProductFieldDraft("Quantity", "number", true),
+    createProductFieldDraft("Selling Price", "number", true)
+  ];
+}
+
+function createProductFieldDraft(
+  label: string,
+  inputType: ProductFieldInputType = "text",
+  required = false
+): ProductFieldDraft {
+  return {
+    id: `product-field-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    inputType,
+    label,
+    required,
+    value: ""
+  };
 }
 
 function ShopPresenceButtons({

@@ -189,6 +189,10 @@ interface ProductBody {
   sellingPrice?: number | null;
 }
 
+interface ProductFieldStructureBody {
+  fields?: unknown[];
+}
+
 interface ContactRecordBody {
   name?: string;
   phone?: string | null;
@@ -906,6 +910,31 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       } catch (error) {
         return sendCp2Error(reply, error);
       }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/products/fields",
+    async (_request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      // TODO: persist configurable catalogue field structure per business.
+      return reply.code(501).send({
+        code: "product_fields_not_implemented",
+        message: "Product field management is not implemented yet."
+      });
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/products/fields",
+    async (
+      _request: FastifyRequest<{ Params: BusinessParams; Body: ProductFieldStructureBody }>,
+      reply
+    ) => {
+      // TODO: validate and persist configurable catalogue field structure per business.
+      return reply.code(501).send({
+        code: "product_fields_not_implemented",
+        message: "Product field management is not implemented yet."
+      });
     }
   );
 
