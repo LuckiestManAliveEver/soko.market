@@ -192,6 +192,29 @@ describe("Network Sync Graph", () => {
 
     await app.close();
   });
+
+  it("keeps provider graph synchronization explicit until OAuth import is implemented", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { sessionCookie } = await createOwnerBusiness(app, "254700000307");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/network/providers/google/sync",
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({})
+    });
+
+    expect(response.statusCode).toBe(501);
+    expect(response.json()).toMatchObject({
+      code: "network_provider_sync_not_implemented"
+    });
+
+    await app.close();
+  });
 });
 
 async function createOwnerBusiness(

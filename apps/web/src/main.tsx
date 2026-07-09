@@ -24,6 +24,8 @@ type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
   "google" | "facebook" | "x" | "linkedin" | "apple" | "github" | "microsoft";
+type NetworkSyncProviderId =
+  "phone" | "google" | "facebook" | "instagram" | "x" | "linkedin" | "whatsapp" | "other";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const chatAttachmentAccept = [
@@ -235,10 +237,14 @@ type NetworkNodeDegree = 0 | 1 | 2;
 
 interface NetworkNodeSummary {
   id: string;
+  kind?: "soko_user" | "soko_shop" | "external_contact" | "external_social";
   displayName: string;
   degree: NetworkNodeDegree;
   sourceType: "owner" | "phone_contact" | "social";
   sourcePlatform: string | null;
+  sokoUserId?: string | null;
+  sokoBusinessId?: string | null;
+  sokoAgentId?: string | null;
   visibilityStatus: "direct" | "agent_mediated" | "private";
   consentStatus: "granted" | "pending" | "agent_required" | "rejected" | "revoked";
 }
@@ -261,6 +267,9 @@ interface NetworkSyncSourceSummary {
   directCount: number;
   extendedCount: number;
   status: "active" | "disconnected";
+  createdAt?: string;
+  updatedAt?: string;
+  disconnectedAt?: string | null;
 }
 
 interface AgentRouteSummary {
@@ -271,6 +280,17 @@ interface AgentRouteSummary {
   viaAgentLabel: string;
 }
 
+interface SokoIdentityLinkSummary {
+  id: string;
+  ownerUserId: string;
+  nodeId: string;
+  linkedUserId: string | null;
+  linkedBusinessId: string | null;
+  linkedAgentId: string | null;
+  confidence: number;
+  createdAt: string;
+}
+
 interface NetworkGraphSummary {
   ownerUserId: string;
   generatedAt: string;
@@ -278,6 +298,7 @@ interface NetworkGraphSummary {
   edges: NetworkEdgeSummary[];
   sources: NetworkSyncSourceSummary[];
   routes: AgentRouteSummary[];
+  identityLinks?: SokoIdentityLinkSummary[];
 }
 
 interface ContactPickerNavigator extends Navigator {
@@ -1092,6 +1113,71 @@ const socialSignupProviders: Array<{
     icon: "MS",
     authRedirectPath: "/auth/oauth/start",
     primary: false
+  }
+];
+
+const networkSyncProviders: Array<{
+  id: NetworkSyncProviderId;
+  label: string;
+  detail: string;
+  icon: string;
+  oauthProvider: SocialSignupProvider | null;
+}> = [
+  {
+    id: "phone",
+    label: "Phone Contacts",
+    detail: "Read contacts with explicit device permission",
+    icon: "PH",
+    oauthProvider: null
+  },
+  {
+    id: "google",
+    label: "Google Contacts",
+    detail: "Connect your Google identity",
+    icon: "G",
+    oauthProvider: "google"
+  },
+  {
+    id: "facebook",
+    label: "Facebook Friends",
+    detail: "Connect your Meta account",
+    icon: "f",
+    oauthProvider: "facebook"
+  },
+  {
+    id: "instagram",
+    label: "Instagram",
+    detail: "Provider graph import is not configured",
+    icon: "IG",
+    oauthProvider: null
+  },
+  {
+    id: "x",
+    label: "X",
+    detail: "OAuth flow is pending backend implementation",
+    icon: "X",
+    oauthProvider: "x"
+  },
+  {
+    id: "linkedin",
+    label: "LinkedIn",
+    detail: "Connect your LinkedIn identity",
+    icon: "in",
+    oauthProvider: "linkedin"
+  },
+  {
+    id: "whatsapp",
+    label: "WhatsApp",
+    detail: "Connect where platform APIs permit",
+    icon: "WA",
+    oauthProvider: null
+  },
+  {
+    id: "other",
+    label: "Other Provider",
+    detail: "Additional providers will appear here",
+    icon: "+",
+    oauthProvider: null
   }
 ];
 
@@ -2326,10 +2412,17 @@ function OwnerApp() {
   }
 
   async function syncPhoneNetwork() {
+    const contacts = createPhoneNetworkSeed(customers);
+
+    if (contacts.length === 0) {
+      setStatusMessage("Use Network Sync to grant phone contact access before importing contacts.");
+      return;
+    }
+
     try {
       const graph = await postJson<NetworkGraphSummary>("/network/sync/contacts", {
         sourceName: "Phone contacts",
-        contacts: createPhoneNetworkSeed(customers)
+        contacts
       });
       setNetworkGraph(graph);
       setStatusMessage("Phone commerce network synced");
@@ -2338,17 +2431,47 @@ function OwnerApp() {
     }
   }
 
-  async function syncSocialNetwork(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
+  async function syncSelectedNetworkPhoneContacts(
+    selectedContacts: ContactPickerContact[]
+  ): Promise<NetworkGraphSummary | null> {
+    const contacts = selectedContacts.map(contactPickerContactToNetworkContact).filter(
+      (
+        contact
+      ): contact is {
+        name: string;
+        phone: string | null;
+        email: string | null;
+      } => contact !== null
+    );
+
+    if (contacts.length === 0) {
+      setStatusMessage("No contacts with a usable name were selected.");
+      return null;
+    }
+
     try {
-      const graph = await postJson<NetworkGraphSummary>(`/network/sync/social/${provider}`, {
-        sourceName: `${provider} commerce graph`,
-        profiles: createSocialNetworkSeed(provider)
+      const graph = await postJson<NetworkGraphSummary>("/network/sync/contacts", {
+        sourceName: "Phone Contacts",
+        contacts
       });
       setNetworkGraph(graph);
-      setStatusMessage(`${provider} network synced`);
+      setStatusMessage(
+        `Imported ${contacts.length} contact${contacts.length === 1 ? "" : "s"} into Network Sync.`
+      );
+      return graph;
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
+      return null;
     }
+  }
+
+  async function syncSocialNetwork(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
+    if (provider === "x") {
+      await authenticateSocialProfile("x");
+      return;
+    }
+
+    setStatusMessage("This social login provider is not configured yet.");
   }
 
   async function requestNetworkRoute(targetNodeId?: string) {
@@ -4054,7 +4177,10 @@ function OwnerApp() {
               customerCount={customers.length}
               invoiceCount={invoices.length}
               messages={chatMessages}
+              networkGraph={networkGraph}
               notificationCount={notificationInbox.summary.unread}
+              oauthProviders={oauthProviders}
+              oauthProvidersLoaded={oauthProvidersLoaded}
               pendingAttachments={pendingAttachments}
               productForm={productForm}
               productCount={products.length}
@@ -4088,6 +4214,10 @@ function OwnerApp() {
               onProductRemove={(productId) => void deleteProduct(productId)}
               onProductReset={() => setProductForm(emptyProductForm)}
               onProductSave={() => saveProduct()}
+              onNetworkDisconnectSource={(sourceId) => void disconnectNetworkSource(sourceId)}
+              onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
+              onNetworkProviderOAuth={authenticateSocialProfile}
+              onNetworkRefresh={() => void loadNetworkGraph()}
               onRemoveAttachment={removePendingAttachment}
               onStatusChange={updateShopPresenceStatus}
               onSend={() => void sendChatDraft()}
@@ -4820,7 +4950,7 @@ function SyncSurface(props: SyncSurfaceProps) {
         </div>
         <div className="sync-share-panel">
           <div>
-            <span>Customer network</span>
+            <span>Network Sync</span>
             <strong>Contacts and invites</strong>
             <p>{props.storefrontUrl}</p>
           </div>
@@ -8650,7 +8780,10 @@ interface ChatSurfaceProps {
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  networkGraph: NetworkGraphSummary | null;
   notificationCount: number;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
   pendingAttachments: ChatAttachment[];
   productForm: ProductFormState;
   productCount: number;
@@ -8671,6 +8804,12 @@ interface ChatSurfaceProps {
   onProductRemove: (productId: string) => void;
   onProductReset: () => void;
   onProductSave: () => Promise<void>;
+  onNetworkDisconnectSource: (sourceId: string) => void;
+  onNetworkPhoneContactsSync: (
+    selectedContacts: ContactPickerContact[]
+  ) => Promise<NetworkGraphSummary | null>;
+  onNetworkProviderOAuth: (provider: SocialSignupProvider) => Promise<void>;
+  onNetworkRefresh: () => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
@@ -8685,7 +8824,10 @@ function ChatSurface({
   customerCount,
   invoiceCount,
   messages,
+  networkGraph,
   notificationCount,
+  oauthProviders,
+  oauthProvidersLoaded,
   pendingAttachments,
   productForm,
   productCount,
@@ -8706,6 +8848,10 @@ function ChatSurface({
   onProductRemove,
   onProductReset,
   onProductSave,
+  onNetworkDisconnectSource,
+  onNetworkPhoneContactsSync,
+  onNetworkProviderOAuth,
+  onNetworkRefresh,
   onRemoveAttachment,
   onStatusChange,
   onConfirm,
@@ -8714,7 +8860,13 @@ function ChatSurface({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
-    "cards" | "catalogue" | "addProduct" | "editProduct" | "deleteProduct" | "manageFields"
+    | "cards"
+    | "catalogue"
+    | "addProduct"
+    | "editProduct"
+    | "deleteProduct"
+    | "manageFields"
+    | "networkSync"
   >("cards");
   const generatedCardOpen = activeView !== "chat" && activeView !== "home";
 
@@ -8794,7 +8946,7 @@ function ChatSurface({
             aria-label="Workspace cards"
           >
             <div className="workspace-panel-heading">
-              <h2>{workspaceCardView === "cards" ? "Workspace" : "Catalogue"}</h2>
+              <h2>{workspacePanelTitle(workspaceCardView)}</h2>
               <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
                 x
               </button>
@@ -8809,10 +8961,22 @@ function ChatSurface({
                 syncSummary={syncSummary}
                 onAddCard={onAddWorkspaceCard}
                 onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
+                onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
                 onNavigate={(nextView) => {
                   onNavigate(nextView);
                   onCloseWorkspace();
                 }}
+              />
+            ) : workspaceCardView === "networkSync" ? (
+              <NetworkSyncNestedCard
+                graph={networkGraph}
+                oauthProviders={oauthProviders}
+                oauthProvidersLoaded={oauthProvidersLoaded}
+                onBack={() => setWorkspaceCardView("cards")}
+                onDisconnectSource={onNetworkDisconnectSource}
+                onOAuthProvider={onNetworkProviderOAuth}
+                onPhoneContactsSync={onNetworkPhoneContactsSync}
+                onRefresh={onNetworkRefresh}
               />
             ) : (
               <CatalogueNestedCard
@@ -8940,6 +9104,7 @@ interface ContextualBusinessCardsProps {
   syncSummary: SyncQueueSummary;
   onAddCard: () => void;
   onOpenCatalogue: () => void;
+  onOpenNetworkSync: () => void;
   onNavigate: (view: ShellView) => void;
 }
 
@@ -8952,6 +9117,7 @@ function ContextualBusinessCards({
   syncSummary,
   onAddCard,
   onOpenCatalogue,
+  onOpenNetworkSync,
   onNavigate
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
@@ -9000,9 +9166,9 @@ function ContextualBusinessCards({
       value: String(notificationCount)
     },
     {
-      title: "Sync",
-      body: "Offline queue and conflict replay",
-      onClick: () => onNavigate("sync"),
+      title: "Network Sync",
+      body: "Contacts, social graphs and invites",
+      onClick: onOpenNetworkSync,
       value: String(activeQueueCount)
     },
     {
@@ -9038,6 +9204,387 @@ function ContextualBusinessCards({
       </div>
     </section>
   );
+}
+
+function workspacePanelTitle(
+  view:
+    | "cards"
+    | "catalogue"
+    | "addProduct"
+    | "editProduct"
+    | "deleteProduct"
+    | "manageFields"
+    | "networkSync"
+): string {
+  if (view === "cards") {
+    return "Workspace";
+  }
+
+  if (view === "networkSync") {
+    return "Network Sync";
+  }
+
+  return "Catalogue";
+}
+
+function NetworkSyncNestedCard({
+  graph,
+  oauthProviders,
+  oauthProvidersLoaded,
+  onBack,
+  onDisconnectSource,
+  onOAuthProvider,
+  onPhoneContactsSync,
+  onRefresh
+}: {
+  graph: NetworkGraphSummary | null;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
+  onBack: () => void;
+  onDisconnectSource: (sourceId: string) => void;
+  onOAuthProvider: (provider: SocialSignupProvider) => Promise<void>;
+  onPhoneContactsSync: (
+    selectedContacts: ContactPickerContact[]
+  ) => Promise<NetworkGraphSummary | null>;
+  onRefresh: () => void;
+}) {
+  const [view, setView] = useState<"providers" | "phone">("providers");
+  const [localGraph, setLocalGraph] = useState<NetworkGraphSummary | null>(graph);
+  const [selectedContacts, setSelectedContacts] = useState<ContactPickerContact[]>([]);
+  const [selectedContactKeys, setSelectedContactKeys] = useState<string[]>([]);
+  const [contactSearch, setContactSearch] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setLocalGraph(graph);
+  }, [graph]);
+
+  const activeGraph = localGraph ?? graph;
+  const phoneSource = getActiveNetworkSource(activeGraph, "phone");
+  const alreadyOnSokoCount =
+    activeGraph?.nodes.filter(
+      (node) =>
+        node.sourceType === "phone_contact" &&
+        node.degree === 1 &&
+        (node.kind === "soko_user" || node.sokoUserId != null)
+    ).length ?? 0;
+  const filteredContacts = selectedContacts.filter((contact) =>
+    getContactDisplayName(contact).toLowerCase().includes(contactSearch.trim().toLowerCase())
+  );
+  const inviteContacts = filteredContacts.filter((contact) => {
+    const converted = contactPickerContactToNetworkContact(contact);
+    return converted !== null && (converted.phone !== null || converted.email !== null);
+  });
+  const unknownContacts = filteredContacts.filter((contact) => {
+    const converted = contactPickerContactToNetworkContact(contact);
+    return converted === null || (converted.phone === null && converted.email === null);
+  });
+
+  async function requestPhoneContacts() {
+    const contactNavigator = navigator as ContactPickerNavigator;
+
+    if (contactNavigator.contacts?.select === undefined) {
+      setMessage("Contact permission is only available on supported Android mobile browsers.");
+      return;
+    }
+
+    try {
+      const contacts = await contactNavigator.contacts.select(["name", "tel", "email"], {
+        multiple: true
+      });
+
+      if (contacts.length === 0) {
+        setMessage("No contacts selected.");
+        return;
+      }
+
+      const nextGraph = await onPhoneContactsSync(contacts);
+      setSelectedContacts(contacts);
+      setSelectedContactKeys(contacts.map(contactSelectionKey));
+      if (nextGraph !== null) {
+        setLocalGraph(nextGraph);
+      }
+      setMessage(
+        `Imported ${contacts.length} selected contact${contacts.length === 1 ? "" : "s"}.`
+      );
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+      setMessage("Contact access was denied. You can allow it later from your browser settings.");
+    }
+  }
+
+  async function connectProvider(providerId: NetworkSyncProviderId) {
+    const provider = networkSyncProviders.find((item) => item.id === providerId);
+
+    if (provider?.id === "phone") {
+      setView("phone");
+      return;
+    }
+
+    if (provider?.oauthProvider === null || provider === undefined) {
+      setMessage("This social login provider is not configured yet.");
+      return;
+    }
+
+    const oauthConfig = oauthProviders.find((item) => item.id === provider.oauthProvider);
+
+    if (!oauthProvidersLoaded) {
+      setMessage("Social providers are still loading. Try again in a moment.");
+      return;
+    }
+
+    if (oauthConfig?.implemented === false || oauthConfig?.configured !== true) {
+      setMessage("This social login provider is not configured yet.");
+      return;
+    }
+
+    await onOAuthProvider(provider.oauthProvider);
+  }
+
+  function selectAllVisibleContacts() {
+    setSelectedContactKeys(filteredContacts.map(contactSelectionKey));
+  }
+
+  function inviteSelectedContacts() {
+    if (selectedContactKeys.length === 0) {
+      setMessage("Select contacts to invite first.");
+      return;
+    }
+
+    setMessage("Invite delivery endpoints are not implemented yet.");
+  }
+
+  function disconnectPhoneSource() {
+    if (phoneSource === null) {
+      setMessage("Phone contacts are not connected yet.");
+      return;
+    }
+
+    onDisconnectSource(phoneSource.id);
+    setLocalGraph((current) =>
+      current === null
+        ? current
+        : {
+            ...current,
+            sources: current.sources.map((source) =>
+              source.id === phoneSource.id
+                ? { ...source, status: "disconnected", importedCount: 0 }
+                : source
+            )
+          }
+    );
+    setMessage("Phone contact access was revoked for this workspace.");
+  }
+
+  if (view === "phone") {
+    return (
+      <section className="nested-card network-sync-card" aria-label="Phone Contacts">
+        <button className="nested-breadcrumb" type="button" onClick={() => setView("providers")}>
+          &lt; Network Sync
+        </button>
+        <div className="nested-card-title-row">
+          <div>
+            <h3>Phone Contacts</h3>
+            <p>Allow Soko to access contacts only when you tap Allow Access.</p>
+          </div>
+          <span className={phoneSource === null ? "network-status disconnected" : "network-status"}>
+            {phoneSource === null ? "Not Connected" : "Connected"}
+          </span>
+        </div>
+        <div className="permission-checklist">
+          <span>Read contacts</span>
+          <span>Detect existing Soko users</span>
+          <span>Invite non-users</span>
+          <span>Keep contacts synchronized</span>
+        </div>
+        <div className="nested-form-actions">
+          <button type="button" onClick={() => void requestPhoneContacts()}>
+            Allow Access
+          </button>
+          <button className="secondary" type="button" onClick={() => void requestPhoneContacts()}>
+            Refresh
+          </button>
+          <button className="secondary" type="button" onClick={disconnectPhoneSource}>
+            Disconnect
+          </button>
+        </div>
+        {selectedContacts.length > 0 ? (
+          <div className="phone-contact-manager">
+            <label className="network-search">
+              <span>Search</span>
+              <input
+                value={contactSearch}
+                onChange={(event) => setContactSearch(event.target.value)}
+                placeholder="Search imported contacts"
+              />
+            </label>
+            <div className="nested-form-actions">
+              <button className="secondary" type="button" onClick={selectAllVisibleContacts}>
+                Select All
+              </button>
+              <button type="button" onClick={inviteSelectedContacts}>
+                Invite Selected
+              </button>
+            </div>
+            <NetworkContactGroup
+              contacts={[]}
+              count={alreadyOnSokoCount}
+              title="Already using Soko"
+            />
+            <NetworkContactGroup
+              contacts={inviteContacts}
+              selectedContactKeys={selectedContactKeys}
+              title="Invite to Soko"
+              onToggle={(key) =>
+                setSelectedContactKeys((keys) =>
+                  keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key]
+                )
+              }
+            />
+            <NetworkContactGroup contacts={unknownContacts} title="Unknown contacts" />
+          </div>
+        ) : null}
+        {message.length > 0 ? <p className="setup-status">{message}</p> : null}
+      </section>
+    );
+  }
+
+  return (
+    <section className="nested-card network-sync-card" aria-label="Network Sync providers">
+      <button className="nested-breadcrumb" type="button" onClick={onBack}>
+        &lt; Workspace
+      </button>
+      <div className="nested-card-title-row">
+        <div>
+          <h3>Network Sync</h3>
+          <p>Connect relationship sources for your shop agent.</p>
+        </div>
+        <button className="small-outline-button" type="button" onClick={onRefresh}>
+          Refresh
+        </button>
+      </div>
+      <div className="network-provider-list">
+        {networkSyncProviders.map((provider) => {
+          const source = getActiveNetworkSource(activeGraph, provider.id);
+          const oauthConfig =
+            provider.oauthProvider === null
+              ? null
+              : oauthProviders.find((item) => item.id === provider.oauthProvider);
+          const configured =
+            provider.id === "phone" ||
+            (oauthProvidersLoaded && oauthConfig?.implemented !== false && oauthConfig?.configured);
+          const statusText =
+            source === null ? (configured ? "Connect" : "Not configured") : "Connected";
+
+          return (
+            <article className="network-provider-row" key={provider.id}>
+              <button type="button" onClick={() => void connectProvider(provider.id)}>
+                <span className="network-provider-icon">{provider.icon}</span>
+                <span>
+                  <strong>{provider.label}</strong>
+                  <small>{provider.detail}</small>
+                  <small>
+                    {source === null
+                      ? "Last sync: never"
+                      : `Last sync: ${new Date(source.updatedAt ?? source.createdAt ?? Date.now()).toLocaleString()}`}
+                  </small>
+                </span>
+              </button>
+              <div>
+                <span
+                  className={source === null ? "network-status disconnected" : "network-status"}
+                >
+                  {statusText}
+                </span>
+                <strong>{source?.importedCount ?? 0}</strong>
+                <small>contacts</small>
+              </div>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() =>
+                  source === null
+                    ? void connectProvider(provider.id)
+                    : onDisconnectSource(source.id)
+                }
+              >
+                {source === null ? "Sync" : "Disconnect"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+      {message.length > 0 ? <p className="setup-status">{message}</p> : null}
+    </section>
+  );
+}
+
+function NetworkContactGroup({
+  contacts,
+  count,
+  selectedContactKeys,
+  title,
+  onToggle
+}: {
+  contacts: ContactPickerContact[];
+  count?: number;
+  selectedContactKeys?: string[];
+  title: string;
+  onToggle?: (key: string) => void;
+}) {
+  return (
+    <section className="network-contact-group">
+      <h4>
+        {title} ({count ?? contacts.length})
+      </h4>
+      {contacts.length === 0 ? (
+        <p className="shell-note">No contacts in this group yet.</p>
+      ) : (
+        contacts.slice(0, 30).map((contact) => {
+          const key = contactSelectionKey(contact);
+          const converted = contactPickerContactToNetworkContact(contact);
+
+          return (
+            <label key={key}>
+              {onToggle !== undefined ? (
+                <input
+                  checked={selectedContactKeys?.includes(key) ?? false}
+                  type="checkbox"
+                  onChange={() => onToggle(key)}
+                />
+              ) : null}
+              <span>
+                <strong>{getContactDisplayName(contact)}</strong>
+                <small>{converted?.phone ?? converted?.email ?? "No phone or email"}</small>
+              </span>
+            </label>
+          );
+        })
+      )}
+    </section>
+  );
+}
+
+function getActiveNetworkSource(
+  graph: NetworkGraphSummary | null,
+  providerId: NetworkSyncProviderId
+): NetworkSyncSourceSummary | null {
+  if (graph === null) {
+    return null;
+  }
+
+  const platform = providerId === "phone" ? "phone" : providerId;
+  return (
+    graph.sources.find(
+      (source) => source.sourcePlatform === platform && source.status === "active"
+    ) ?? null
+  );
+}
+
+function contactSelectionKey(contact: ContactPickerContact): string {
+  return `${getContactDisplayName(contact)}:${contact.tel?.[0] ?? ""}:${contact.email?.[0] ?? ""}`;
 }
 
 function CatalogueNestedCard({
@@ -10348,6 +10895,33 @@ function contactPickerContactToCustomer(
   };
 }
 
+function contactPickerContactToNetworkContact(contact: ContactPickerContact): {
+  name: string;
+  phone: string | null;
+  email: string | null;
+} | null {
+  const name = contact.name?.[0]?.trim() ?? contact.tel?.[0]?.trim() ?? contact.email?.[0]?.trim();
+
+  if (name === undefined || name.length === 0) {
+    return null;
+  }
+
+  return {
+    name,
+    phone: contact.tel?.[0]?.trim() || null,
+    email: contact.email?.[0]?.trim() || null
+  };
+}
+
+function getContactDisplayName(contact: ContactPickerContact): string {
+  return (
+    contact.name?.[0]?.trim() ??
+    contact.tel?.[0]?.trim() ??
+    contact.email?.[0]?.trim() ??
+    "Unnamed contact"
+  );
+}
+
 function parseContactImportContent(
   content: string
 ): Array<Pick<CustomerFormState, "name" | "phone" | "email" | "notes">> {
@@ -10405,7 +10979,7 @@ function createContactsCsv(customers: CustomerSummary[]): string {
 }
 
 function createPhoneNetworkSeed(customers: CustomerSummary[]) {
-  const importedCustomers = customers.slice(0, 12).map((customer, index) => ({
+  return customers.slice(0, 12).map((customer, index) => ({
     name: customer.name,
     phone: customer.phone,
     email: customer.email,
@@ -10415,48 +10989,6 @@ function createPhoneNetworkSeed(customers: CustomerSummary[]) {
       }
     ]
   }));
-
-  return importedCustomers.length > 0
-    ? importedCustomers
-    : [
-        {
-          name: "Jane Supplier",
-          phone: "+254700000901",
-          connections: [{ name: "Egg Wholesaler" }]
-        },
-        {
-          name: "Market Buyer",
-          phone: "+254700000902",
-          connections: [{ name: "Milk Distributor" }]
-        }
-      ];
-}
-
-function createSocialNetworkSeed(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
-  return [
-    {
-      name: `${provider} Market Circle`,
-      handle: `@soko_${provider}_market`,
-      relationship: "interaction",
-      connections: [
-        {
-          name: "Regional Supplier",
-          handle: `@${provider}_supplier`
-        }
-      ]
-    },
-    {
-      name: `${provider} Customer Group`,
-      handle: `@soko_${provider}_customers`,
-      relationship: "followed",
-      connections: [
-        {
-          name: "Bulk Buyer",
-          handle: `@${provider}_bulk_buyer`
-        }
-      ]
-    }
-  ];
 }
 
 function isNetworkDiscoveryRequest(message: string): boolean {

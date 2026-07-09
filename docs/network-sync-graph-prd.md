@@ -51,6 +51,7 @@ Each edge stores ownerUserId, sourceType, sourcePlatform, fromNodeId, toNodeId, 
 
 - `POST /network/sync/contacts`
 - `POST /network/sync/social/:provider`
+- `POST /network/providers/:provider/sync` returns `501 network_provider_sync_not_implemented` until OAuth tokens are connected to provider-specific graph/contact APIs.
 - `GET /network`
 - `GET /network/direct`
 - `GET /network/extended`
@@ -64,6 +65,11 @@ Each edge stores ownerUserId, sourceType, sourcePlatform, fromNodeId, toNodeId, 
 
 - During signup, explain that synced contacts build the first commerce network.
 - Social account connection explains that friends-of-friends can be reached through friends' agents.
+- In Workspace, the Sync business card is labeled `Network Sync` and opens a nested mobile card.
+- The nested card lists Phone Contacts, Google Contacts, Facebook Friends, Instagram, X, LinkedIn, WhatsApp, and Other Provider with status, last sync, contact count, and sync/disconnect actions.
+- Phone Contacts uses the browser Contacts Picker API on supported Android browsers and posts selected contacts to `POST /network/sync/contacts` only after explicit user action.
+- Social providers start the existing OAuth flow when implemented and configured. Missing or not-yet-implemented providers show `This social login provider is not configured yet.`
+- The frontend must not generate fake social profiles for provider buttons. Provider graph imports stay behind explicit API placeholders until real provider APIs are wired.
 - In the app, a Network card shows direct contacts, social connections, reachable extended nodes, and the mutual path.
 - Second-degree private details remain hidden.
 

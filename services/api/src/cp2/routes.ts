@@ -311,6 +311,10 @@ interface NetworkSocialParams {
   provider: string;
 }
 
+interface NetworkProviderSyncParams {
+  provider: string;
+}
+
 interface SupplierImportConfirmBody {
   selectedRowNumbers?: number[];
 }
@@ -727,6 +731,22 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           provider: parseNetworkSocialProvider(request.params.provider),
           profiles: parseSocialProfileNetworkBodies(request.body.profiles),
           ...(sourceName === undefined ? {} : { sourceName })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/network/providers/:provider/sync",
+    async (request: FastifyRequest<{ Params: NetworkProviderSyncParams }>, reply) => {
+      try {
+        parseNetworkSocialProvider(request.params.provider);
+        // TODO: connect provider OAuth tokens to provider-specific graph/contact APIs.
+        return reply.code(501).send({
+          code: "network_provider_sync_not_implemented",
+          message: "Network provider synchronization is not implemented yet."
         });
       } catch (error) {
         return sendCp2Error(reply, error);
