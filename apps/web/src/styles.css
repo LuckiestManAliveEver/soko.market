@@ -897,7 +897,8 @@ button:disabled {
 }
 
 .network-source-list article button,
-.network-route-list article small {
+.network-route-list article small,
+.network-route-list article .row-actions {
   grid-column: 1 / -1;
 }
 

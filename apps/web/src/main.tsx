@@ -297,6 +297,17 @@ interface CustomerSummary {
   updatedAt: string;
 }
 
+interface SupplierSummary {
+  id: string;
+  businessId: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface StockAdjustmentResponse {
   product: ProductSummary;
 }
@@ -879,6 +890,8 @@ interface CustomerFormState {
   notes: string;
 }
 
+type SupplierFormState = CustomerFormState;
+
 interface InvoiceFormState {
   id: string | null;
   customerId: string;
@@ -1062,6 +1075,14 @@ const emptyCustomerForm: CustomerFormState = {
   notes: ""
 };
 
+const emptySupplierForm: SupplierFormState = {
+  id: null,
+  name: "",
+  phone: "",
+  email: "",
+  notes: ""
+};
+
 const emptyInvoiceForm: InvoiceFormState = {
   id: null,
   customerId: "",
@@ -1228,6 +1249,7 @@ function OwnerApp() {
     createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
   );
   const [products, setProducts] = useState<ProductSummary[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
@@ -1258,6 +1280,7 @@ function OwnerApp() {
   const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
+  const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
   const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
@@ -1363,6 +1386,7 @@ function OwnerApp() {
 
     if (view === "chat") {
       void loadProducts(business.id);
+      void loadSuppliers(business.id);
       void loadCustomers(business.id);
       void loadInvoices(business.id);
       void loadSyncQueue(business.id);
@@ -1372,6 +1396,10 @@ function OwnerApp() {
 
     if (view === "products") {
       void loadProducts(business.id);
+    }
+
+    if (view === "suppliers") {
+      void loadSuppliers(business.id);
     }
 
     if (view === "customers") {
@@ -1407,6 +1435,8 @@ function OwnerApp() {
 
     if (view === "imports") {
       void loadDocumentImports(business.id);
+      void loadSuppliers(business.id);
+      void loadProducts(business.id);
     }
 
     if (view === "logistics") {
@@ -2032,6 +2062,45 @@ function OwnerApp() {
     }
   }
 
+  async function loadSuppliers(businessId: string) {
+    try {
+      setSuppliers(await getJson<SupplierSummary[]>(`/businesses/${businessId}/suppliers`));
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveSupplier() {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const payload = {
+        name: supplierForm.name,
+        phone: supplierForm.phone,
+        email: supplierForm.email,
+        notes: supplierForm.notes
+      };
+
+      if (supplierForm.id === null) {
+        await postJson<SupplierSummary>(`/businesses/${business.id}/suppliers`, payload);
+      } else {
+        await patchJson<SupplierSummary>(
+          `/businesses/${business.id}/suppliers/${supplierForm.id}`,
+          payload
+        );
+      }
+
+      setSupplierForm(emptySupplierForm);
+      await loadSuppliers(business.id);
+      await loadReports(business.id);
+      setStatusMessage(supplierForm.id === null ? "Supplier created" : "Supplier updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function saveCustomer() {
     if (business === null) {
       return;
@@ -2129,6 +2198,40 @@ function OwnerApp() {
             }
       );
       setStatusMessage("Agent route requested");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function approveNetworkRoute(routeId: string) {
+    try {
+      const route = await postJson<AgentRouteSummary>(`/network/routes/${routeId}/approve`, {});
+      setNetworkGraph((graph) =>
+        graph === null
+          ? graph
+          : {
+              ...graph,
+              routes: graph.routes.map((item) => (item.id === route.id ? route : item))
+            }
+      );
+      setStatusMessage("Agent route approved");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function rejectNetworkRoute(routeId: string) {
+    try {
+      const route = await postJson<AgentRouteSummary>(`/network/routes/${routeId}/reject`, {});
+      setNetworkGraph((graph) =>
+        graph === null
+          ? graph
+          : {
+              ...graph,
+              routes: graph.routes.map((item) => (item.id === route.id ? route : item))
+            }
+      );
+      setStatusMessage("Agent route rejected");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2705,6 +2808,12 @@ function OwnerApp() {
         jobs.map((item) => (item.id === response.job.id ? response.job : item))
       );
       await loadDocumentImports(business.id);
+      if (response.job.target === "product") {
+        await loadProducts(business.id);
+      } else {
+        await loadSuppliers(business.id);
+      }
+      await loadReports(business.id);
       setStatusMessage(
         `${response.job.confirmedCount} ${
           response.job.target === "product" ? "product" : "supplier"
@@ -3025,6 +3134,7 @@ function OwnerApp() {
 
     setSession(null);
     setProducts([]);
+    setSuppliers([]);
     setCustomers([]);
     setInvoices([]);
     setPayments([]);
@@ -3045,6 +3155,7 @@ function OwnerApp() {
     setLaunchIncidents([]);
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
+    setSupplierForm(emptySupplierForm);
     setCustomerForm(emptyCustomerForm);
     setInvoiceForm(emptyInvoiceForm);
     setPaymentForm(emptyPaymentForm);
@@ -3366,6 +3477,26 @@ function OwnerApp() {
             onRemove={(productId) => void deleteProduct(productId)}
           />
         );
+      case "suppliers":
+        return (
+          <SupplierSurface
+            suppliers={suppliers}
+            form={supplierForm}
+            onFormChange={setSupplierForm}
+            onSave={() => void saveSupplier()}
+            onReset={() => setSupplierForm(emptySupplierForm)}
+            onEdit={(supplier) =>
+              setSupplierForm({
+                id: supplier.id,
+                name: supplier.name,
+                phone: supplier.phone ?? "",
+                email: supplier.email ?? "",
+                notes: supplier.notes ?? ""
+              })
+            }
+            onImport={() => setView("imports")}
+          />
+        );
       case "customers":
         return (
           <CustomerSurface
@@ -3425,6 +3556,8 @@ function OwnerApp() {
             onSyncContacts={() => void syncPhoneNetwork()}
             onSyncSocial={(provider) => void syncSocialNetwork(provider)}
             onRoute={(targetNodeId) => void requestNetworkRoute(targetNodeId)}
+            onApproveRoute={(routeId) => void approveNetworkRoute(routeId)}
+            onRejectRoute={(routeId) => void rejectNetworkRoute(routeId)}
             onDisconnectSource={(sourceId) => void disconnectNetworkSource(sourceId)}
           />
         );
@@ -3723,6 +3856,7 @@ function OwnerApp() {
               }
               pendingAttachments={pendingAttachments}
               productCount={products.length}
+              supplierCount={suppliers.length}
               report={reportSummary}
               syncSummary={syncSummary}
               onAttachmentChange={handleChatAttachmentChange}
@@ -4306,6 +4440,8 @@ interface NetworkSurfaceProps {
   onSyncContacts: () => void;
   onSyncSocial: (provider: "instagram" | "whatsapp" | "tiktok" | "x") => void;
   onRoute: (targetNodeId?: string) => void;
+  onApproveRoute: (routeId: string) => void;
+  onRejectRoute: (routeId: string) => void;
   onDisconnectSource: (sourceId: string) => void;
 }
 
@@ -4413,6 +4549,20 @@ function NetworkSurface(props: NetworkSurfaceProps) {
               <span>{route.status.replace("_", " ")}</span>
               <strong>{route.path.join(" -> ")}</strong>
               <small>{route.requestText}</small>
+              {route.status === "pending_permission" ? (
+                <div className="row-actions compact-actions">
+                  <button type="button" onClick={() => props.onApproveRoute(route.id)}>
+                    Approve
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => props.onRejectRoute(route.id)}
+                  >
+                    Reject
+                  </button>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>
@@ -6342,6 +6492,108 @@ function CustomerSurface(props: CustomerSurfaceProps) {
   );
 }
 
+interface SupplierSurfaceProps {
+  suppliers: SupplierSummary[];
+  form: SupplierFormState;
+  onFormChange: (form: SupplierFormState) => void;
+  onSave: () => void;
+  onReset: () => void;
+  onEdit: (supplier: SupplierSummary) => void;
+  onImport: () => void;
+}
+
+function SupplierSurface(props: SupplierSurfaceProps) {
+  return (
+    <div className="records-surface">
+      <section className="record-form" aria-label="Supplier form">
+        <div className="section-heading with-action">
+          <div>
+            <p className="eyebrow">{props.form.id === null ? "New supplier" : "Edit supplier"}</p>
+            <h3>{props.form.id === null ? "Add supplier" : "Update supplier"}</h3>
+          </div>
+          <button className="secondary" type="button" onClick={props.onImport}>
+            Import
+          </button>
+        </div>
+        <label>
+          Name
+          <input
+            value={props.form.name}
+            onChange={(event) => props.onFormChange({ ...props.form, name: event.target.value })}
+          />
+        </label>
+        <div className="form-row">
+          <label>
+            Phone
+            <input
+              value={props.form.phone}
+              onChange={(event) => props.onFormChange({ ...props.form, phone: event.target.value })}
+              inputMode="tel"
+            />
+          </label>
+          <label>
+            Email
+            <input
+              value={props.form.email}
+              onChange={(event) => props.onFormChange({ ...props.form, email: event.target.value })}
+              inputMode="email"
+            />
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea
+            value={props.form.notes}
+            onChange={(event) => props.onFormChange({ ...props.form, notes: event.target.value })}
+            rows={3}
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={props.onSave}>
+            {props.form.id === null ? "Create" : "Save"}
+          </button>
+          <button className="secondary" type="button" onClick={props.onReset}>
+            Clear
+          </button>
+        </div>
+      </section>
+
+      <section className="record-list" aria-label="Suppliers">
+        <div className="surface-header-row">
+          <div className="section-heading">
+            <p className="eyebrow">Supplier records</p>
+            <h3>Existing suppliers</h3>
+          </div>
+          <button type="button" onClick={props.onImport}>
+            Upload
+          </button>
+        </div>
+        {props.suppliers.length === 0 ? (
+          <div className="empty-record">
+            <h3>No suppliers yet</h3>
+            <p>Add a supplier manually or import supplier contacts from documents.</p>
+          </div>
+        ) : (
+          props.suppliers.map((supplier) => (
+            <article className="record-row" key={supplier.id}>
+              <div>
+                <strong>{supplier.name}</strong>
+                <span>{supplier.phone ?? supplier.email ?? "No contact saved"}</span>
+                {supplier.notes === null || supplier.notes.length === 0 ? null : (
+                  <small>{supplier.notes}</small>
+                )}
+              </div>
+              <button type="button" onClick={() => props.onEdit(supplier)}>
+                Edit
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+    </div>
+  );
+}
+
 interface InvoiceSurfaceProps {
   products: ProductSummary[];
   customers: CustomerSummary[];
@@ -7961,6 +8213,7 @@ interface ChatSurfaceProps {
   notificationCount: number;
   pendingAttachments: ChatAttachment[];
   productCount: number;
+  supplierCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -7987,6 +8240,7 @@ function ChatSurface({
   notificationCount,
   pendingAttachments,
   productCount,
+  supplierCount,
   report,
   syncSummary,
   onAttachmentChange,
@@ -8019,6 +8273,7 @@ function ChatSurface({
         <ContextualBusinessCards
           business={business}
           productCount={productCount}
+          supplierCount={supplierCount}
           customerCount={customerCount}
           invoiceCount={invoiceCount}
           networkDirectCount={networkDirectCount}
@@ -8139,6 +8394,7 @@ function ChatSurface({
 interface ContextualBusinessCardsProps {
   business: ActiveBusiness;
   productCount: number;
+  supplierCount: number;
   customerCount: number;
   invoiceCount: number;
   networkDirectCount: number;
@@ -8153,6 +8409,7 @@ interface ContextualBusinessCardsProps {
 function ContextualBusinessCards({
   business,
   productCount,
+  supplierCount,
   customerCount,
   invoiceCount,
   networkDirectCount,
@@ -8177,6 +8434,12 @@ function ContextualBusinessCards({
       body: "Stock, SKUs, units and adjustments",
       onClick: () => onNavigate("products"),
       value: String(productCount)
+    },
+    {
+      title: "Suppliers",
+      body: "Supplier contacts and import-ready records",
+      onClick: () => onNavigate("suppliers"),
+      value: String(supplierCount)
     },
     {
       title: "Storefront",
@@ -8231,6 +8494,18 @@ function ContextualBusinessCards({
       body: "Supplier files and business records",
       onClick: () => onNavigate("imports"),
       value: "CSV"
+    },
+    {
+      title: "Compliance",
+      body: "Export, deletion, tax and device trust",
+      onClick: () => onNavigate("compliance"),
+      value: report?.compliance.verificationTier.replace("_", " ") ?? "Review"
+    },
+    {
+      title: "Beta",
+      body: "Access gates, support and telemetry checks",
+      onClick: () => onNavigate("beta"),
+      value: report?.beta.gates.every((gate) => gate.passed) === true ? "Ready" : "Check"
     },
     {
       title: "Delivery",

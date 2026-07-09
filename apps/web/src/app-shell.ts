@@ -3,6 +3,7 @@ export type ShellView =
   | "chat"
   | "agent"
   | "products"
+  | "suppliers"
   | "customers"
   | "invoices"
   | "network"
@@ -59,6 +60,11 @@ export const quickActions: QuickAction[] = [
     id: "products",
     label: "Products",
     summary: "Manage stock records"
+  },
+  {
+    id: "suppliers",
+    label: "Suppliers",
+    summary: "Manage supplier contacts"
   },
   {
     id: "customers",
@@ -127,6 +133,11 @@ export const emptyStates: EmptyState[] = [
     id: "products",
     title: "No products yet",
     body: "Create the first product record to start stock tracking."
+  },
+  {
+    id: "suppliers",
+    title: "No suppliers yet",
+    body: "Create the first supplier contact or confirm supplier imports."
   },
   {
     id: "customers",
