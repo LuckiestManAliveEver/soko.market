@@ -5928,6 +5928,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const storefrontFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -6034,6 +6035,28 @@ function PublicStorefrontChat(props: { agentId: string }) {
       "agent",
       "I can help with that. Add your name, phone number, and a note below so the store can follow up."
     );
+  }
+
+  function requestVoiceInput() {
+    appendMessage("customer", "Voice message");
+    appendMessage(
+      "agent",
+      "Voice input can be connected on supported mobile browsers. Type the message or attach a file here and the store can follow up."
+    );
+  }
+
+  function handleStorefrontAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+
+    if (files.length === 0) {
+      return;
+    }
+
+    const names = files.map((file) => file.name).join(", ");
+    addCrmNote("Customer attachment", names);
+    appendMessage("customer", `Attached ${names}`);
+    appendMessage("agent", "Attachment received. The store can review it with your request.");
   }
 
   function requestQuote() {
@@ -6569,6 +6592,32 @@ function PublicStorefrontChat(props: { agentId: string }) {
           </div>
 
           <form className="storefront-composer" onSubmit={handleDraftSubmit}>
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Voice input"
+              onClick={requestVoiceInput}
+              disabled={storefrontCardOpen}
+            >
+              <span className="mic-icon" aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Attach file"
+              onClick={() => storefrontFileInputRef.current?.click()}
+              disabled={storefrontCardOpen}
+            >
+              <span className="attach-icon" aria-hidden="true" />
+            </button>
+            <input
+              ref={storefrontFileInputRef}
+              className="chat-file-input"
+              type="file"
+              multiple
+              accept={chatAttachmentAccept}
+              onChange={handleStorefrontAttachmentChange}
+            />
             <input
               aria-label="Message the storefront agent"
               disabled={storefrontCardOpen}
@@ -6581,7 +6630,8 @@ function PublicStorefrontChat(props: { agentId: string }) {
               onChange={(event) => setDraft(event.target.value)}
             />
             <button type="submit" disabled={storefrontCardOpen}>
-              Send
+              <span className="send-icon" aria-hidden="true" />
+              <span className="visually-hidden">Send</span>
             </button>
           </form>
           <footer className="app-credits">The Retail Network At Your Fingertips</footer>
@@ -8685,22 +8735,29 @@ function ChatSurface({
         ) : null}
       </div>
       <div className="composer">
+        {generatedCardOpen ? (
+          <div className="composer-card-lock" role="status">
+            Active card open. Use the card actions or close it to continue chatting.
+          </div>
+        ) : null}
         <button
-          className="icon-button"
+          className="icon-button composer-icon-button"
           type="button"
           aria-label="Voice input"
+          title="Voice input"
           disabled={generatedCardOpen}
         >
-          Mic
+          <span className="mic-icon" aria-hidden="true" />
         </button>
         <button
-          className="icon-button"
+          className="icon-button composer-icon-button"
           type="button"
           aria-label="Attach file"
+          title="Attach file"
           onClick={() => fileInputRef.current?.click()}
           disabled={generatedCardOpen}
         >
-          +
+          <span className="attach-icon" aria-hidden="true" />
         </button>
         <input
           ref={fileInputRef}
@@ -8749,7 +8806,8 @@ function ChatSurface({
           />
         </label>
         <button className="send-button" type="button" onClick={onSend} disabled={generatedCardOpen}>
-          Send
+          <span className="send-icon" aria-hidden="true" />
+          <span className="visually-hidden">Send</span>
         </button>
       </div>
     </div>
@@ -8790,23 +8848,17 @@ function ContextualBusinessCards({
   const activeQueueCount =
     syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
 
-  const cards: Array<{
+  const primaryCards: Array<{
     title: string;
     body: string;
     onClick: () => void;
     value: string;
   }> = [
     {
-      title: "Products",
+      title: "Catalogue",
       body: "Stock, SKUs, units and adjustments",
       onClick: () => onNavigate("products"),
       value: String(productCount)
-    },
-    {
-      title: "Suppliers",
-      body: "Supplier contacts and import-ready records",
-      onClick: () => onNavigate("suppliers"),
-      value: String(supplierCount)
     },
     {
       title: "Storefront",
@@ -8849,6 +8901,15 @@ function ContextualBusinessCards({
       body: "Low stock, debt and sync notices",
       onClick: () => onNavigate("notifications"),
       value: String(notificationCount)
+    }
+  ];
+
+  const moreCards: typeof primaryCards = [
+    {
+      title: "Suppliers",
+      body: "Supplier contacts and import-ready records",
+      onClick: () => onNavigate("suppliers"),
+      value: String(supplierCount)
     },
     {
       title: "Sync",
@@ -8885,13 +8946,19 @@ function ContextualBusinessCards({
       body: "Pickup and delivery fulfillment",
       onClick: () => onNavigate("logistics"),
       value: "Track"
+    },
+    {
+      title: "Settings",
+      body: "Agent profile, tools and instructions",
+      onClick: () => onNavigate("agent"),
+      value: "Edit"
     }
   ];
 
   return (
     <section className="generated-card-message" aria-label="Conversation starter cards">
       <div className="generated-card-grid">
-        {cards.map((card) => (
+        {primaryCards.map((card) => (
           <button key={card.title} type="button" onClick={card.onClick}>
             <span>{card.title}</span>
             <strong>{card.value}</strong>
@@ -8899,6 +8966,18 @@ function ContextualBusinessCards({
           </button>
         ))}
       </div>
+      <details className="generated-card-more">
+        <summary>More actions</summary>
+        <div className="generated-card-grid">
+          {moreCards.map((card) => (
+            <button key={card.title} type="button" onClick={card.onClick}>
+              <span>{card.title}</span>
+              <strong>{card.value}</strong>
+              <small>{card.body}</small>
+            </button>
+          ))}
+        </div>
+      </details>
     </section>
   );
 }

@@ -39,6 +39,14 @@ button:disabled {
   opacity: 0.62;
 }
 
+.visually-hidden {
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+
 .soko-surface {
   background: #f4f6f2;
   min-height: 100vh;
@@ -188,6 +196,80 @@ button:disabled {
   position: absolute;
   transform: rotate(45deg);
   width: 7px;
+}
+
+.composer-icon-button {
+  position: relative;
+}
+
+.mic-icon,
+.attach-icon,
+.send-icon {
+  display: inline-block;
+  position: relative;
+}
+
+.mic-icon {
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  height: 18px;
+  width: 12px;
+}
+
+.mic-icon::before {
+  border: 2px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  bottom: -6px;
+  content: "";
+  height: 9px;
+  left: -5px;
+  position: absolute;
+  width: 18px;
+}
+
+.mic-icon::after {
+  background: currentColor;
+  bottom: -10px;
+  content: "";
+  height: 6px;
+  left: 3px;
+  position: absolute;
+  width: 2px;
+}
+
+.attach-icon {
+  height: 20px;
+  width: 20px;
+}
+
+.attach-icon::before,
+.attach-icon::after {
+  background: currentColor;
+  content: "";
+  left: 9px;
+  position: absolute;
+  top: 2px;
+}
+
+.attach-icon::before {
+  height: 16px;
+  width: 2px;
+}
+
+.attach-icon::after {
+  height: 2px;
+  left: 2px;
+  top: 9px;
+  width: 16px;
+}
+
+.send-icon {
+  border-bottom: 8px solid transparent;
+  border-left: 18px solid currentColor;
+  border-top: 8px solid transparent;
+  height: 0;
+  width: 0;
 }
 
 .header-install-button,
@@ -1345,6 +1427,19 @@ button:disabled {
   -webkit-box-orient: vertical;
 }
 
+.generated-card-more {
+  display: grid;
+  gap: 8px;
+}
+
+.generated-card-more summary {
+  color: #23342a;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 2px 0;
+}
+
 .generated-card-detail {
   background: #ffffff;
   border: 1px solid #dbe4dc;
@@ -1379,6 +1474,18 @@ button:disabled {
   padding: 10px;
   position: sticky;
   bottom: 0;
+}
+
+.composer-card-lock {
+  background: #eef7f1;
+  border: 1px solid #b9d9c6;
+  border-radius: 8px;
+  color: #23342a;
+  font-size: 12px;
+  font-weight: 800;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  padding: 8px 10px;
 }
 
 .composer .icon-button {
@@ -1469,12 +1576,15 @@ button:disabled {
 }
 
 .send-button {
+  align-items: center;
   background: #117a4f;
   border-radius: 8px;
   color: #ffffff;
+  display: inline-flex;
   font-weight: 900;
+  justify-content: center;
   min-height: 42px;
-  min-width: 58px;
+  min-width: 46px;
   padding: 8px 12px;
   white-space: nowrap;
 }
@@ -1724,6 +1834,15 @@ button:disabled {
   padding: 8px 12px;
 }
 
+.storefront-composer .icon-button {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  color: #17211b;
+  min-height: 42px;
+  min-width: 42px;
+  padding: 8px;
+}
+
 .storefront-cart-lines {
   display: grid;
   gap: 8px;
@@ -1820,7 +1939,7 @@ button:disabled {
   border-top: 1px solid #dde4dc;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 10px;
 }
@@ -2182,7 +2301,7 @@ button:disabled {
   }
 
   .storefront-composer {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
   }
 
   .business-card-editor-header,
