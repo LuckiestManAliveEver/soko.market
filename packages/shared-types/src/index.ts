@@ -28,7 +28,7 @@ export interface FeatureFlag {
 
 export type AuthChannel = "email" | "phone";
 
-export type OAuthProvider = "google" | "facebook" | "apple" | "github" | "microsoft";
+export type OAuthProvider = "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin";
 
 export type BusinessRole = "owner" | "manager" | "sales_agent" | "cashier" | "view_only";
 

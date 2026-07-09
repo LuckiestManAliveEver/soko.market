@@ -28,12 +28,20 @@ interface OAuthStartResponse {
   state: string;
 }
 
-const providers: OAuthProvider[] = ["google", "facebook", "apple", "github", "microsoft"];
+const providers: OAuthProvider[] = [
+  "google",
+  "facebook",
+  "apple",
+  "github",
+  "microsoft",
+  "linkedin"
+];
 const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
   apple: "OAUTH_APPLE_CLIENT_ID",
   facebook: "OAUTH_FACEBOOK_CLIENT_ID",
   github: "OAUTH_GITHUB_CLIENT_ID",
   google: "OAUTH_GOOGLE_CLIENT_ID",
+  linkedin: "OAUTH_LINKEDIN_CLIENT_ID",
   microsoft: "OAUTH_MICROSOFT_CLIENT_ID"
 };
 const previousOAuthClientIds = new Map<string, string | undefined>();

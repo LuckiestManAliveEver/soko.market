@@ -111,6 +111,17 @@ const oauthProviders: OAuthProviderConfig[] = [
     pkce: true,
     clientIdEnv: "OAUTH_MICROSOFT_CLIENT_ID",
     clientSecretEnv: "OAUTH_MICROSOFT_CLIENT_SECRET"
+  },
+  {
+    id: "linkedin",
+    displayName: "LinkedIn",
+    authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
+    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
+    userInfoUrl: "https://api.linkedin.com/v2/userinfo",
+    scopes: ["openid", "profile", "email"],
+    pkce: true,
+    clientIdEnv: "OAUTH_LINKEDIN_CLIENT_ID",
+    clientSecretEnv: "OAUTH_LINKEDIN_CLIENT_SECRET"
   }
 ];
 
@@ -133,7 +144,8 @@ export function parseOAuthProvider(value: unknown): OAuthProvider {
     value === "facebook" ||
     value === "apple" ||
     value === "github" ||
-    value === "microsoft"
+    value === "microsoft" ||
+    value === "linkedin"
   ) {
     return value;
   }

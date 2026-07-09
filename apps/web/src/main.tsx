@@ -21,7 +21,7 @@ import "./styles.css";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
-type SocialSignupProvider = "google" | "facebook" | "apple" | "github" | "microsoft";
+type SocialSignupProvider = "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const chatAttachmentAccept = [
@@ -975,7 +975,8 @@ const socialSignupProviders: Array<{
   { id: "facebook", label: "Facebook", mark: "f" },
   { id: "apple", label: "Apple", mark: "A" },
   { id: "github", label: "GitHub", mark: "GH" },
-  { id: "microsoft", label: "Microsoft", mark: "M" }
+  { id: "microsoft", label: "Microsoft", mark: "M" },
+  { id: "linkedin", label: "LinkedIn", mark: "in" }
 ];
 
 const signupIntroDurationSeconds = 30;
@@ -1655,6 +1656,22 @@ function OwnerApp() {
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
+  }
+
+  function exploreStorefrontById() {
+    const input = window.prompt("Soko ID or storefront URL");
+    const value = input?.trim();
+
+    if (value === undefined || value.length === 0) {
+      return;
+    }
+
+    if (/^https?:\/\//i.test(value)) {
+      window.location.assign(value);
+      return;
+    }
+
+    window.location.assign(`/agent/${encodeURIComponent(value)}`);
   }
 
   function updateOwnerPinSet(pinSet: boolean) {
@@ -3641,6 +3658,7 @@ function OwnerApp() {
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
+            onExplore={exploreStorefrontById}
             canInstall={installPrompt.canInstall}
             onInstall={() => void installPrompt.installApp()}
           />
@@ -3673,6 +3691,7 @@ function OwnerApp() {
             onSetMissingPin={() => void setMissingLoginPin()}
             onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
             onLogin={() => void loginWithPin()}
+            onExplore={exploreStorefrontById}
             canInstall={installPrompt.canInstall}
             onInstall={() => void installPrompt.installApp()}
           />
@@ -3710,6 +3729,7 @@ function OwnerApp() {
               onBackToChat={() => setView("chat")}
               onConfirm={(token) => void confirmRuntimeAction(token)}
               onDraftChange={setChatDraft}
+              onOpenStorefront={openStorefront}
               onNavigate={setView}
               onRemoveAttachment={removePendingAttachment}
               onSend={() => void sendChatDraft()}
@@ -3752,6 +3772,7 @@ interface SetupPanelProps {
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
+  onExplore: () => void;
   onInstall: () => void;
 }
 
@@ -3764,9 +3785,19 @@ function SetupPanel(props: SetupPanelProps) {
     <main className="setup-grid">
       <SignupIntroPlayer />
       <section className="panel">
-        <div className="section-heading">
-          <p className="eyebrow">Step 1</p>
-          <h2>Signup or login</h2>
+        <div className="auth-heading-row">
+          <div className="section-heading">
+            <p className="eyebrow">Step 1</p>
+            <h2>Signup or login</h2>
+          </div>
+          <button
+            className="icon-button auth-explore-button"
+            type="button"
+            onClick={props.onExplore}
+            aria-label="Explore storefront"
+          >
+            ◎
+          </button>
         </div>
         {props.canInstall ? (
           <button className="secondary" type="button" onClick={props.onInstall}>
@@ -4058,6 +4089,7 @@ interface LoginPanelProps {
   onSetMissingPin: () => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
   onLogin: () => void;
+  onExplore: () => void;
   onInstall: () => void;
 }
 
@@ -4071,9 +4103,19 @@ function LoginPanel(props: LoginPanelProps) {
   return (
     <main className="setup-grid login-grid">
       <section className="panel">
-        <div className="section-heading">
-          <p className="eyebrow">Step 1</p>
-          <h2>Signup or login</h2>
+        <div className="auth-heading-row">
+          <div className="section-heading">
+            <p className="eyebrow">Step 1</p>
+            <h2>Signup or login</h2>
+          </div>
+          <button
+            className="icon-button auth-explore-button"
+            type="button"
+            onClick={props.onExplore}
+            aria-label="Explore storefront"
+          >
+            ◎
+          </button>
         </div>
         {props.canInstall ? (
           <button className="secondary" type="button" onClick={props.onInstall}>
@@ -6039,60 +6081,33 @@ function PublicStorefrontChat(props: { agentId: string }) {
 
 function ProductSurface(props: ProductSurfaceProps) {
   return (
-    <div className="records-surface">
-      <section className="record-list" aria-label="Product catalogue">
-        <div className="section-heading">
-          <p className="eyebrow">Catalogue</p>
-          <h3>Existing products</h3>
-        </div>
-        {props.products.length === 0 ? (
-          <div className="empty-record">
-            <h3>No products yet</h3>
-            <p>Add the first product to start stock records.</p>
+    <div className="records-surface product-business-card-surface">
+      <section className="record-form business-card-editor" aria-label="Product form">
+        <div className="business-card-editor-header">
+          <div className="section-heading">
+            <p className="eyebrow">{props.form.id === null ? "New product" : "Edit product"}</p>
+            <h3>{props.form.id === null ? "Add stock item" : "Update stock item"}</h3>
           </div>
-        ) : (
-          props.products.map((product) => (
-            <article className="record-row" key={product.id}>
-              <div>
-                <strong>{product.name}</strong>
-                <span>
-                  {product.quantity} {product.unit}
-                  {product.sku === null ? "" : ` · ${product.sku}`}
-                </span>
-                <small>
-                  Buy {formatOptionalMoney(product.buyingPrice)} · Sell{" "}
-                  {formatOptionalMoney(product.sellingPrice)}
-                </small>
-              </div>
-              <div className="row-actions compact-actions">
-                <button type="button" onClick={() => props.onEdit(product)}>
-                  Edit
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => props.onRemove(product.id)}
-                >
-                  Remove
-                </button>
-              </div>
-            </article>
-          ))
-        )}
-        <div className="actions">
-          <button type="button" onClick={props.onAdd}>
-            Add product
-          </button>
-        </div>
-      </section>
-
-      <section className="record-form" aria-label="Product form">
-        <div className="section-heading">
-          <p className="eyebrow">{props.form.id === null ? "New product" : "Edit product"}</p>
-          <h3>{props.form.id === null ? "Add stock item" : "Update stock item"}</h3>
+          <div className="business-card-editor-actions">
+            <button type="button" onClick={props.onSave}>
+              Save
+            </button>
+            <button className="secondary" type="button" onClick={props.onReset}>
+              Clear
+            </button>
+            {props.form.id === null ? null : (
+              <button
+                className="danger"
+                type="button"
+                onClick={() => props.onRemove(props.form.id ?? "")}
+              >
+                Delete
+              </button>
+            )}
+          </div>
         </div>
         <label>
-          Name
+          Item name
           <input
             value={props.form.name}
             onChange={(event) => props.onFormChange({ ...props.form, name: event.target.value })}
@@ -6124,41 +6139,84 @@ function ProductSurface(props: ProductSurfaceProps) {
             inputMode="decimal"
           />
         </label>
-        <div className="form-row">
-          <label>
-            Buying price
-            <input
-              value={props.form.buyingPrice}
-              onChange={(event) =>
-                props.onFormChange({ ...props.form, buyingPrice: event.target.value })
-              }
-              inputMode="decimal"
-              placeholder="Optional"
-            />
-          </label>
-          <label>
-            Selling price
-            <input
-              value={props.form.sellingPrice}
-              onChange={(event) =>
-                props.onFormChange({ ...props.form, sellingPrice: event.target.value })
-              }
-              inputMode="decimal"
-              placeholder="Optional"
-            />
-          </label>
-        </div>
-        <div className="actions">
-          <button type="button" onClick={props.onSave}>
-            {props.form.id === null ? "Create" : "Save"}
-          </button>
-          <button className="secondary" type="button" onClick={props.onReset}>
-            Clear
-          </button>
-        </div>
+        <details className="optional-card-fields">
+          <summary>Prices</summary>
+          <div className="form-row">
+            <label>
+              Buying price
+              <input
+                value={props.form.buyingPrice}
+                onChange={(event) =>
+                  props.onFormChange({ ...props.form, buyingPrice: event.target.value })
+                }
+                inputMode="decimal"
+                placeholder="Optional"
+              />
+            </label>
+            <label>
+              Selling price
+              <input
+                value={props.form.sellingPrice}
+                onChange={(event) =>
+                  props.onFormChange({ ...props.form, sellingPrice: event.target.value })
+                }
+                inputMode="decimal"
+                placeholder="Optional"
+              />
+            </label>
+          </div>
+        </details>
       </section>
 
-      <section className="record-form" aria-label="Stock adjustment">
+      <section className="record-list product-card-list" aria-label="Product catalogue">
+        <div className="surface-header-row">
+          <div className="section-heading">
+            <p className="eyebrow">Catalogue</p>
+            <h3>Existing products</h3>
+          </div>
+          <button type="button" onClick={props.onAdd}>
+            Add
+          </button>
+        </div>
+        {props.products.length === 0 ? (
+          <div className="empty-record">
+            <h3>No products yet</h3>
+            <p>Add the first product to start stock records.</p>
+          </div>
+        ) : (
+          <div className="product-card-list-grid">
+            {props.products.map((product) => (
+              <article className="product-card-list-item" key={product.id}>
+                <div>
+                  <strong>{product.name}</strong>
+                  <span>
+                    {product.quantity} {product.unit}
+                    {product.sku === null ? "" : ` · ${product.sku}`}
+                  </span>
+                  <small>
+                    Buy {formatOptionalMoney(product.buyingPrice)} · Sell{" "}
+                    {formatOptionalMoney(product.sellingPrice)}
+                  </small>
+                </div>
+                <div className="compact-actions">
+                  <button type="button" onClick={() => props.onEdit(product)}>
+                    Edit
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => props.onRemove(product.id)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="record-form compact-stock-card" aria-label="Stock adjustment">
         <div className="section-heading">
           <p className="eyebrow">Inventory</p>
           <h3>Adjust stock</h3>
@@ -7908,6 +7966,7 @@ interface ChatSurfaceProps {
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onBackToChat: () => void;
   onDraftChange: (draft: string) => void;
+  onOpenStorefront: () => void;
   onNavigate: (view: ShellView) => void;
   onRemoveAttachment: (attachmentId: string) => void;
   onConfirm: (confirmationToken: string) => void;
@@ -7933,6 +7992,7 @@ function ChatSurface({
   onAttachmentChange,
   onBackToChat,
   onDraftChange,
+  onOpenStorefront,
   onNavigate,
   onRemoveAttachment,
   onConfirm,
@@ -7967,6 +8027,7 @@ function ChatSurface({
           report={report}
           syncSummary={syncSummary}
           onNavigate={onNavigate}
+          onOpenStorefront={onOpenStorefront}
         />
         {messages.map((message) => (
           <article className={`message ${message.author}`} key={message.id}>
@@ -8086,6 +8147,7 @@ interface ContextualBusinessCardsProps {
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
   onNavigate: (view: ShellView) => void;
+  onOpenStorefront: () => void;
 }
 
 function ContextualBusinessCards({
@@ -8098,75 +8160,82 @@ function ContextualBusinessCards({
   notificationCount,
   report,
   syncSummary,
-  onNavigate
+  onNavigate,
+  onOpenStorefront
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
     syncSummary.pending + syncSummary.processing + syncSummary.failed + syncSummary.conflict;
 
   const cards: Array<{
-    view: ShellView;
     title: string;
     body: string;
+    onClick: () => void;
     value: string;
   }> = [
     {
-      view: "products",
       title: "Products",
       body: "Stock, SKUs, units and adjustments",
+      onClick: () => onNavigate("products"),
       value: String(productCount)
     },
     {
-      view: "invoices",
+      title: "Storefront",
+      body: "Open the customer chat and product window",
+      onClick: onOpenStorefront,
+      value: "Open"
+    },
+    {
       title: "Make a Sale",
       body: "Create, preview and confirm invoices",
+      onClick: () => onNavigate("invoices"),
       value: String(invoiceCount)
     },
     {
-      view: "customers",
       title: "Customers",
       body: "Customer contacts and notes",
+      onClick: () => onNavigate("customers"),
       value: String(customerCount)
     },
     {
-      view: "network",
       title: "Network",
       body: `${networkExtendedCount} reachable through agents`,
+      onClick: () => onNavigate("network"),
       value: String(networkDirectCount)
     },
     {
-      view: "payments",
       title: "Payments",
       body: "Record payments and track balances",
+      onClick: () => onNavigate("payments"),
       value: formatMoney(report?.payments.totalPaid ?? 0)
     },
     {
-      view: "reports",
       title: "Business Summary",
       body: `${business.name} sales and stock health`,
+      onClick: () => onNavigate("reports"),
       value: formatMoney(report?.sales.grossSales ?? 0)
     },
     {
-      view: "notifications",
       title: "Alerts",
       body: "Low stock, debt and sync notices",
+      onClick: () => onNavigate("notifications"),
       value: String(notificationCount)
     },
     {
-      view: "sync",
       title: "Sync",
       body: "Offline queue and conflict replay",
+      onClick: () => onNavigate("sync"),
       value: String(activeQueueCount)
     },
     {
-      view: "imports",
       title: "Knowledge",
       body: "Supplier files and business records",
+      onClick: () => onNavigate("imports"),
       value: "CSV"
     },
     {
-      view: "logistics",
       title: "Delivery",
       body: "Pickup and delivery fulfillment",
+      onClick: () => onNavigate("logistics"),
       value: "Track"
     }
   ];
@@ -8175,7 +8244,7 @@ function ContextualBusinessCards({
     <section className="generated-card-message" aria-label="Conversation starter cards">
       <div className="generated-card-grid">
         {cards.map((card) => (
-          <button key={card.view} type="button" onClick={() => onNavigate(card.view)}>
+          <button key={card.title} type="button" onClick={card.onClick}>
             <span>{card.title}</span>
             <strong>{card.value}</strong>
             <small>{card.body}</small>

@@ -2095,7 +2095,8 @@ function parseSocialProvider(value: string | undefined): string {
     value === "facebook" ||
     value === "apple" ||
     value === "github" ||
-    value === "microsoft"
+    value === "microsoft" ||
+    value === "linkedin"
   ) {
     return value;
   }
