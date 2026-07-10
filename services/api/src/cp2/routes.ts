@@ -160,6 +160,10 @@ interface ReceiptOCRParams extends BusinessParams {
   ocrJobId: string;
 }
 
+interface PurchaseReceiptParams extends BusinessParams {
+  receiptId: string;
+}
+
 interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
@@ -225,6 +229,8 @@ interface ReceiptOCRBody {
   fileName?: string;
   contentType?: string;
   extractedText?: string;
+  fileSizeBytes?: number;
+  fileSignature?: string;
 }
 
 interface ReceiptOCRConfirmBody {
@@ -1327,7 +1333,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: request.params.businessId,
           sourceFileName: body.fileName,
           contentType: body.contentType,
-          extractedText: body.extractedText
+          extractedText: body.extractedText,
+          fileSizeBytes: body.fileSizeBytes,
+          fileSignature: body.fileSignature
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1351,6 +1359,35 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           salesAgentId: body.salesAgentId,
           createSupplier: body.createSupplier,
           createSalesAgent: body.createSalesAgent
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/purchase-receipts",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listPurchaseReceipts({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/purchase-receipts/:receiptId",
+    async (request: FastifyRequest<{ Params: PurchaseReceiptParams }>, reply) => {
+      try {
+        return store.getPurchaseReceipt({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          receiptId: request.params.receiptId
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -2647,7 +2684,15 @@ function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
   return {
     fileName: parseString(record.fileName, "fileName"),
     contentType: parseString(record.contentType, "contentType"),
-    extractedText: typeof record.extractedText === "string" ? record.extractedText : ""
+    extractedText: typeof record.extractedText === "string" ? record.extractedText : "",
+    fileSizeBytes:
+      record.fileSizeBytes === undefined
+        ? null
+        : parsePositiveInteger(record.fileSizeBytes, "fileSizeBytes"),
+    fileSignature:
+      typeof record.fileSignature === "string" && record.fileSignature.trim().length > 0
+        ? record.fileSignature.trim()
+        : null
   };
 }
 

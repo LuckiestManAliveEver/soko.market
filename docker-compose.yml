@@ -28,6 +28,21 @@ services:
     volumes:
       - soko-redis-data:/data
 
+  receipt-ocr-worker:
+    profiles: ["ocr"]
+    build:
+      context: ./services/receipt-ocr-service
+    environment:
+      OCR_ENGINE_PRIMARY: ${OCR_ENGINE_PRIMARY:-paddleocr}
+      OCR_ENGINE_FALLBACK: ${OCR_ENGINE_FALLBACK:-tesseract}
+      OCR_FALLBACK_ENABLED: ${OCR_FALLBACK_ENABLED:-true}
+      OCR_PROFILE: ${OCR_PROFILE:-balanced}
+      OCR_LANGUAGE_HINTS: ${OCR_LANGUAGE_HINTS:-en,sw}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   soko-postgres-data:
   soko-redis-data:

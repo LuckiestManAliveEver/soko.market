@@ -360,14 +360,74 @@ export interface PurchaseReceiptSummary {
   lineItems: ReceiptLineItemSummary[];
 }
 
-export type ReceiptOCRJobStatus = "pending" | "matched" | "needs_review" | "failed" | "confirmed";
+export type ReceiptOCREngine = "paddleocr" | "tesseract";
+export type ReceiptOCRProfile = "mobile" | "balanced" | "accurate";
+
+export type ReceiptOCRJobStatus =
+  | "UPLOADED"
+  | "QUEUED"
+  | "VALIDATING"
+  | "PREPROCESSING"
+  | "OCR_RUNNING"
+  | "PARSING"
+  | "MATCHING"
+  | "REVIEW_REQUIRED"
+  | "CONFIRMED"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "CLEANUP_PENDING"
+  | "IMAGE_DELETED"
+  | "pending"
+  | "matched"
+  | "needs_review"
+  | "failed"
+  | "confirmed";
+
+export interface ReceiptOCRBlockSummary {
+  id: string;
+  page: number;
+  text: string;
+  confidence: number;
+  boundingBox: Array<{ x: number; y: number }> | null;
+}
+
+export interface ReceiptFieldEvidenceSummary {
+  field: string;
+  value: string | number | null;
+  confidence: number;
+  sourceText: string | null;
+}
+
+export interface ReceiptMatchCandidateSummary {
+  id: string;
+  name: string;
+  confidence: number;
+  reason: string;
+}
 
 export interface ReceiptOCRJobSummary {
   id: string;
   businessId: string;
+  tenantId: string;
+  shopId: string;
+  uploadedBy: string;
   status: ReceiptOCRJobStatus;
   sourceFileName: string;
   contentType: string;
+  engine: ReceiptOCREngine;
+  engineVersion: string;
+  modelVersion: string;
+  profile: ReceiptOCRProfile;
+  fallbackUsed: boolean;
+  languageHints: string[];
+  blocks: ReceiptOCRBlockSummary[];
+  fullText: string;
+  averageConfidence: number;
+  warnings: string[];
+  fieldEvidence: ReceiptFieldEvidenceSummary[];
+  supplierCandidates: ReceiptMatchCandidateSummary[];
+  salesAgentCandidates: ReceiptMatchCandidateSummary[];
   supplierName: string | null;
   salesAgentName: string | null;
   phone: string | null;
@@ -382,7 +442,16 @@ export interface ReceiptOCRJobSummary {
   matchedSupplierId: string | null;
   matchedSalesAgentId: string | null;
   errorMessage: string | null;
+  failureCode: string | null;
+  imageStorageKey: string | null;
+  imageHash: string | null;
   imageRetained: boolean;
+  imageDeletedAt: string | null;
+  cleanupPending: boolean;
+  retryCount: number;
+  processingStartedAt: string | null;
+  completedAt: string | null;
+  temporaryImageExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
   confirmedAt: string | null;
@@ -1267,6 +1336,13 @@ export type RuntimeToolName =
   | "customer.create"
   | "invoice.draft"
   | "payment.record"
+  | "receipt.scan"
+  | "receipt.review"
+  | "receipt.confirm"
+  | "receipt.correct"
+  | "receipt.cancel"
+  | "receipt.lookup"
+  | "receipt.list"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =

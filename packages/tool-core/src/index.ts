@@ -76,6 +76,13 @@ export type RuntimeToolName =
   | "customer.create"
   | "invoice.draft"
   | "payment.record"
+  | "receipt.scan"
+  | "receipt.review"
+  | "receipt.confirm"
+  | "receipt.correct"
+  | "receipt.cancel"
+  | "receipt.lookup"
+  | "receipt.list"
   | "unknown.clarify";
 
 export interface RuntimeToolDefinition {
@@ -98,6 +105,29 @@ export type RuntimeModelOutputKind = "tool" | "clarification" | "response";
 export interface ParsedRuntimeModelOutput {
   kind: RuntimeModelOutputKind;
   proposal: RuntimeToolProposal;
+}
+
+export type ReceiptContextScriptIntent =
+  | "RECEIPT_SCAN"
+  | "RECEIPT_REVIEW"
+  | "RECEIPT_CONFIRM"
+  | "RECEIPT_CORRECT"
+  | "RECEIPT_CANCEL"
+  | "RECEIPT_LOOKUP"
+  | "RECEIPT_LIST";
+
+export interface ReceiptContextScriptMatch {
+  scriptId: "receipt_ocr_commands";
+  intent: ReceiptContextScriptIntent;
+  matchedPhrase: string;
+  confidence: number;
+  source: "default";
+  clarificationRequired: boolean;
+  entities: {
+    supplierName?: string;
+    itemName?: string;
+    dateRange?: string;
+  };
 }
 
 export interface RuntimeModelOutputParseResult {
@@ -464,6 +494,55 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     readOnly: false,
     requiredPermission: "payment:write"
   },
+  "receipt.scan": {
+    name: "receipt.scan",
+    risk: "medium",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "import:write"
+  },
+  "receipt.review": {
+    name: "receipt.review",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "import:read"
+  },
+  "receipt.confirm": {
+    name: "receipt.confirm",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "import:write"
+  },
+  "receipt.correct": {
+    name: "receipt.correct",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "import:write"
+  },
+  "receipt.cancel": {
+    name: "receipt.cancel",
+    risk: "medium",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "import:write"
+  },
+  "receipt.lookup": {
+    name: "receipt.lookup",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "import:read"
+  },
+  "receipt.list": {
+    name: "receipt.list",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "import:read"
+  },
   "unknown.clarify": {
     name: "unknown.clarify",
     risk: "low",
@@ -689,6 +768,174 @@ export function parseProductContextScriptCommand(input: {
   return matchProductVocabulary(input.message, script);
 }
 
+export function parseReceiptContextScriptCommand(input: {
+  message: string;
+  tenantId?: string | null;
+  contextScripts?: string[];
+}): ReceiptContextScriptMatch | null {
+  const enabled =
+    input.contextScripts === undefined ||
+    input.contextScripts.length === 0 ||
+    input.contextScripts.includes("receipt_ocr_commands");
+
+  if (!enabled) {
+    return null;
+  }
+
+  const normalized = normalizeContextText(input.message);
+  const exactMatches: Array<{
+    phrases: string[];
+    intent: ReceiptContextScriptIntent;
+  }> = [
+    {
+      intent: "RECEIPT_SCAN",
+      phrases: [
+        "upload receipt",
+        "scan receipt",
+        "upload this receipt",
+        "scan this receipt",
+        "skani risiti"
+      ]
+    },
+    {
+      intent: "RECEIPT_REVIEW",
+      phrases: ["review receipt", "show receipt ocr", "check receipt scan"]
+    },
+    {
+      intent: "RECEIPT_CONFIRM",
+      phrases: ["confirm receipt", "save receipt", "save purchase receipt"]
+    },
+    {
+      intent: "RECEIPT_CORRECT",
+      phrases: ["correct receipt", "fix receipt", "edit receipt"]
+    },
+    {
+      intent: "RECEIPT_CANCEL",
+      phrases: ["cancel receipt", "discard receipt", "delete receipt scan"]
+    },
+    {
+      intent: "RECEIPT_LOOKUP",
+      phrases: ["which supplier sold", "find receipt", "lookup receipt", "search receipts"]
+    },
+    {
+      intent: "RECEIPT_LIST",
+      phrases: ["show receipts", "list receipts", "show purchase receipts"]
+    }
+  ];
+
+  for (const definition of exactMatches) {
+    const matchedPhrase = definition.phrases.find((phrase) => normalized.includes(phrase));
+
+    if (matchedPhrase !== undefined) {
+      return {
+        scriptId: "receipt_ocr_commands",
+        intent: definition.intent,
+        matchedPhrase,
+        confidence: 0.94,
+        source: "default",
+        clarificationRequired:
+          definition.intent === "RECEIPT_SCAN" && !normalized.includes("receipt"),
+        entities: extractReceiptEntities(normalized)
+      };
+    }
+  }
+
+  return null;
+}
+
+export function receiptContextScriptMatchToParseResult(
+  match: ReceiptContextScriptMatch
+): ParseResult {
+  return {
+    confidence: match.confidence,
+    intent:
+      match.intent === "RECEIPT_LIST" || match.intent === "RECEIPT_LOOKUP"
+        ? "show_invoices"
+        : "unknown",
+    nextAction: match.clarificationRequired
+      ? {
+          type: "clarify",
+          question: "Attach or take a receipt photo before I scan it.",
+          reason: "Receipt OCR command matched but no receipt attachment was provided."
+        }
+      : {
+          type: "draft",
+          reason: `Receipt OCR context script routed ${match.intent}.`
+        },
+    normalizedInput: normalizeContextText(match.matchedPhrase),
+    slots: {}
+  };
+}
+
+export function createRuntimeToolProposalFromReceiptContextScript(
+  match: ReceiptContextScriptMatch
+): RuntimeToolProposal {
+  const baseInput = {
+    source: match.source,
+    supplierName: match.entities.supplierName ?? null,
+    itemName: match.entities.itemName ?? null,
+    dateRange: match.entities.dateRange ?? null
+  };
+
+  switch (match.intent) {
+    case "RECEIPT_SCAN":
+      return {
+        toolName: "receipt.scan",
+        input: baseInput,
+        reason: `Receipt OCR commands matched "${match.matchedPhrase}" before model fallback.`,
+        validation: invalid("Attach or take a receipt photo before I scan it.")
+      };
+
+    case "RECEIPT_REVIEW":
+      return {
+        toolName: "receipt.review",
+        input: baseInput,
+        reason: `Receipt OCR commands routed review from "${match.matchedPhrase}".`,
+        validation: valid()
+      };
+
+    case "RECEIPT_CONFIRM":
+      return {
+        toolName: "receipt.confirm",
+        input: baseInput,
+        reason: `Receipt OCR commands routed confirmation from "${match.matchedPhrase}".`,
+        validation: invalid("Which receipt scan should I confirm?")
+      };
+
+    case "RECEIPT_CORRECT":
+      return {
+        toolName: "receipt.correct",
+        input: baseInput,
+        reason: `Receipt OCR commands routed correction from "${match.matchedPhrase}".`,
+        validation: invalid("Which receipt field should I correct?")
+      };
+
+    case "RECEIPT_CANCEL":
+      return {
+        toolName: "receipt.cancel",
+        input: baseInput,
+        reason: `Receipt OCR commands routed cancellation from "${match.matchedPhrase}".`,
+        validation: invalid("Which receipt scan should I cancel?")
+      };
+
+    case "RECEIPT_LOOKUP":
+      return {
+        toolName: "receipt.lookup",
+        input: baseInput,
+        reason: `Receipt OCR commands routed lookup from "${match.matchedPhrase}".`,
+        validation: valid()
+      };
+
+    case "RECEIPT_LIST":
+      return {
+        toolName: "receipt.list",
+        input: baseInput,
+        reason: `Receipt OCR commands routed list from "${match.matchedPhrase}".`,
+        validation: valid()
+      };
+  }
+}
+
 export function productContextScriptMatchToParseResult(
   match: ProductContextScriptMatch
 ): ParseResult {
@@ -830,8 +1077,29 @@ export function validateRuntimeToolInput(
   switch (toolName) {
     case "products.list":
     case "invoices.list":
+    case "receipt.review":
+    case "receipt.lookup":
+    case "receipt.list":
     case "unknown.clarify":
       return valid();
+
+    case "receipt.scan":
+      return invalid("Attach or take a receipt photo before I scan it.");
+
+    case "receipt.confirm":
+      return typeof input.ocrJobId === "string" && input.ocrJobId.trim().length > 0
+        ? valid()
+        : invalid("Which receipt scan should I confirm?");
+
+    case "receipt.correct":
+      return typeof input.ocrJobId === "string" && input.ocrJobId.trim().length > 0
+        ? valid()
+        : invalid("Which receipt field should I correct?");
+
+    case "receipt.cancel":
+      return typeof input.ocrJobId === "string" && input.ocrJobId.trim().length > 0
+        ? valid()
+        : invalid("Which receipt scan should I cancel?");
 
     case "product.create": {
       const errors: string[] = [];
@@ -1725,6 +1993,28 @@ function isProductContextLanguage(value: unknown): value is ProductContextScript
 
 function isProductContextCardinality(value: unknown): value is ProductContextScriptCardinality {
   return typeof value === "string" && ["single", "multiple", "unknown"].includes(value);
+}
+
+function extractReceiptEntities(normalizedMessage: string): ReceiptContextScriptMatch["entities"] {
+  const supplierMatch = normalizedMessage.match(/(?:for|from|supplier)\s+([a-z0-9\s.-]{2,48})/u);
+  const itemMatch = normalizedMessage.match(
+    /sold me\s+([a-z0-9\s.-]{2,48}?)(?:\s+(?:last|this|on)|\?|$)/u
+  );
+  const dateRange = normalizedMessage.includes("last week")
+    ? "last_week"
+    : normalizedMessage.includes("today")
+      ? "today"
+      : normalizedMessage.includes("yesterday")
+        ? "yesterday"
+        : null;
+
+  return {
+    ...(supplierMatch?.[1] === undefined
+      ? {}
+      : { supplierName: titleCase(supplierMatch[1].trim()) }),
+    ...(itemMatch?.[1] === undefined ? {} : { itemName: itemMatch[1].trim() }),
+    ...(dateRange === null ? {} : { dateRange })
+  };
 }
 
 function escapeRegExp(value: string): string {

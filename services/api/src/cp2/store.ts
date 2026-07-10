@@ -217,9 +217,12 @@ import {
   type VerificationTierInput
 } from "@soko/business-core";
 import {
+  createRuntimeToolProposalFromReceiptContextScript,
   createRuntimeToolProposalFromProductContextScript,
   createRuntimeToolProposal,
+  parseReceiptContextScriptCommand,
   parseProductContextScriptCommand,
+  receiptContextScriptMatchToParseResult,
   productContextScriptMatchToParseResult,
   parseRuntimeModelOutput,
   parseMerchantCommand,
@@ -233,6 +236,21 @@ const otpTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const maxRuntimeTurnsPerSession = 20;
+const receiptOCRDefaultPrimaryEngine = "paddleocr";
+const receiptOCRDefaultFallbackEngine = "tesseract";
+const receiptOCRDefaultProfile = "balanced";
+const receiptOCRDefaultLanguageHints = ["en", "sw"];
+const receiptOCRSupportedContentTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "application/pdf",
+  "text/plain",
+  "text/csv",
+  "application/vnd.ms-excel"
+]);
 
 export interface PublicStorefrontProductSummary {
   id: string;
@@ -1937,10 +1955,28 @@ export class Cp2Store {
     sourceFileName: string;
     contentType: string;
     extractedText: string;
+    fileSizeBytes?: number | null;
+    fileSignature?: string | null;
     now?: Date;
   }): ReceiptOCRJobSummary {
     const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    const contentType = normalizeReceiptContentType(input.contentType);
+    const validation = validateReceiptUpload({
+      contentType,
+      fileSizeBytes: input.fileSizeBytes ?? null,
+      fileSignature: input.fileSignature ?? null
+    });
+
+    if (!validation.ok) {
+      throw new Cp2Error(400, validation.code, validation.message);
+    }
+
     const parsed = parseReceiptText(input.extractedText);
     const matchedSupplier = this.matchSupplier(input.businessId, parsed.supplierName, parsed.phone);
     const matchedAgent =
@@ -1953,16 +1989,63 @@ export class Cp2Store {
             parsed.phone
           );
     const hasContent = input.extractedText.trim().length > 0;
+    const ocrConfig = readReceiptOCRConfig();
+    const blocks = buildReceiptOCRBlocks(input.extractedText, hasContent ? 0.9 : 0);
+    const warnings = buildReceiptOCRWarnings(parsed, hasContent);
+    const sourceFileName = input.sourceFileName.trim() || "receipt-upload";
+    const imageStorageKey =
+      contentType.startsWith("image/") || contentType === "application/pdf"
+        ? `tmp/receipt-ocr/${input.businessId}/${randomUUID()}`
+        : null;
+    const imageHash = createHash("sha256")
+      .update(`${sourceFileName}:${contentType}:${input.extractedText}`)
+      .digest("hex");
     const job: ReceiptOCRJobSummary = {
       id: randomUUID(),
       businessId: input.businessId,
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      uploadedBy: session.user.id,
       status: !hasContent
-        ? "failed"
+        ? "FAILED"
         : matchedSupplier === null || parsed.items.length === 0
-          ? "needs_review"
-          : "matched",
-      sourceFileName: input.sourceFileName.trim() || "receipt-upload",
-      contentType: input.contentType.trim() || "application/octet-stream",
+          ? "REVIEW_REQUIRED"
+          : "MATCHING",
+      sourceFileName,
+      contentType,
+      engine: ocrConfig.primaryEngine,
+      engineVersion: ocrConfig.engineVersion,
+      modelVersion: ocrConfig.modelVersion,
+      profile: ocrConfig.profile,
+      fallbackUsed: ocrConfig.primaryEngine === receiptOCRDefaultFallbackEngine,
+      languageHints: ocrConfig.languageHints,
+      blocks,
+      fullText: input.extractedText,
+      averageConfidence: averageReceiptBlockConfidence(blocks),
+      warnings,
+      fieldEvidence: buildReceiptFieldEvidence(parsed, input.extractedText),
+      supplierCandidates:
+        matchedSupplier === null
+          ? []
+          : [
+              {
+                id: matchedSupplier.id,
+                name: matchedSupplier.name,
+                confidence: 0.9,
+                reason: "Matched supplier name or phone from OCR text."
+              }
+            ],
+      salesAgentCandidates:
+        matchedAgent === null
+          ? []
+          : [
+              {
+                id: matchedAgent.id,
+                name: matchedAgent.name,
+                confidence: 0.86,
+                reason: "Matched sales agent name or phone from OCR text."
+              }
+            ],
       supplierName: parsed.supplierName,
       salesAgentName: parsed.salesAgentName,
       phone: parsed.phone,
@@ -1974,7 +2057,17 @@ export class Cp2Store {
       errorMessage: hasContent
         ? null
         : "OCR could not read this receipt. Retry upload or enter receipt details manually.",
-      imageRetained: false,
+      failureCode: hasContent ? null : "ocr_empty_text",
+      imageStorageKey,
+      imageHash,
+      imageRetained: imageStorageKey !== null && hasContent,
+      imageDeletedAt: null,
+      cleanupPending: imageStorageKey !== null && hasContent,
+      retryCount: 0,
+      processingStartedAt: now.toISOString(),
+      completedAt: hasContent ? now.toISOString() : null,
+      temporaryImageExpiresAt:
+        imageStorageKey === null ? null : addHours(now, readReceiptTempTTLHours()).toISOString(),
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       confirmedAt: null
@@ -1998,7 +2091,7 @@ export class Cp2Store {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
     const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
 
-    if (job.status === "failed") {
+    if (job.status === "failed" || job.status === "FAILED") {
       throw new Cp2Error(409, "receipt_ocr_failed", job.errorMessage ?? "Receipt OCR failed.");
     }
 
@@ -2084,10 +2177,13 @@ export class Cp2Store {
     };
     const confirmedJob: ReceiptOCRJobSummary = {
       ...job,
-      status: "confirmed",
+      status: "COMPLETED",
       matchedSupplierId: supplier.id,
       matchedSalesAgentId: salesAgent?.id ?? null,
       imageRetained: false,
+      imageDeletedAt: now.toISOString(),
+      cleanupPending: false,
+      completedAt: now.toISOString(),
       updatedAt: now.toISOString(),
       confirmedAt: now.toISOString()
     };
@@ -2103,6 +2199,40 @@ export class Cp2Store {
     }
 
     return receipt;
+  }
+
+  listPurchaseReceipts(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): PurchaseReceiptSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
+    return [...this.purchaseReceipts.values()]
+      .filter((receipt) => receipt.businessId === input.businessId)
+      .map((receipt) => ({
+        ...receipt,
+        lineItems: this.receiptLineItemsForReceipt(receipt.id)
+      }))
+      .sort((left, right) => right.receiptDate.localeCompare(left.receiptDate));
+  }
+
+  getPurchaseReceipt(input: {
+    sessionId: string | null;
+    businessId: string;
+    receiptId: string;
+    now?: Date;
+  }): PurchaseReceiptSummary {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
+    const receipt = this.purchaseReceipts.get(input.receiptId);
+
+    if (receipt === undefined || receipt.businessId !== input.businessId) {
+      throw new Cp2Error(404, "purchase_receipt_not_found", "Purchase receipt was not found.");
+    }
+
+    return {
+      ...receipt,
+      lineItems: this.receiptLineItemsForReceipt(receipt.id)
+    };
   }
 
   previewInvoice(input: {
@@ -4617,17 +4747,25 @@ export class Cp2Store {
       });
     }
 
+    const receiptContextScriptMatch = parseReceiptContextScriptCommand({
+      message: input.message,
+      tenantId: input.businessId,
+      contextScripts: input.agentProfile?.contextScripts ?? []
+    });
     const contextScriptMatch = parseProductContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
       contextScripts: input.agentProfile?.contextScripts ?? []
     });
+    const effectiveContextScriptMatch = receiptContextScriptMatch ?? contextScriptMatch;
     const parserResult =
-      contextScriptMatch === null
+      effectiveContextScriptMatch === null
         ? parseMerchantCommand(input.message)
-        : productContextScriptMatchToParseResult(contextScriptMatch);
+        : receiptContextScriptMatch !== null
+          ? receiptContextScriptMatchToParseResult(receiptContextScriptMatch)
+          : productContextScriptMatchToParseResult(contextScriptMatch!);
     const modelRoute =
-      contextScriptMatch === null
+      effectiveContextScriptMatch === null
         ? await this.createRuntimeModelRoute(
             input.agentProfile === undefined
               ? {
@@ -4652,22 +4790,24 @@ export class Cp2Store {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
       source:
-        contextScriptMatch === null
+        effectiveContextScriptMatch === null
           ? modelRoute.proposal === null
             ? "parser"
             : "local_model"
           : "context_script",
-      scriptId: contextScriptMatch?.scriptId ?? null,
-      matchedPhrase: contextScriptMatch?.matchedPhrase ?? null,
-      canonicalIntent: contextScriptMatch?.intent ?? null,
+      scriptId: effectiveContextScriptMatch?.scriptId ?? null,
+      matchedPhrase: effectiveContextScriptMatch?.matchedPhrase ?? null,
+      canonicalIntent: effectiveContextScriptMatch?.intent ?? null,
       cardinality: contextScriptMatch?.cardinality ?? null,
-      clarificationRequired: contextScriptMatch?.clarificationRequired ?? false,
-      fallbackReason: contextScriptMatch === null ? "no_context_script_match" : null
+      clarificationRequired: effectiveContextScriptMatch?.clarificationRequired ?? false,
+      fallbackReason: effectiveContextScriptMatch === null ? "no_context_script_match" : null
     });
     const proposal =
-      contextScriptMatch === null
+      effectiveContextScriptMatch === null
         ? (modelRoute.proposal ?? createRuntimeToolProposal(parserResult))
-        : createRuntimeToolProposalFromProductContextScript(contextScriptMatch);
+        : receiptContextScriptMatch !== null
+          ? createRuntimeToolProposalFromReceiptContextScript(receiptContextScriptMatch)
+          : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!);
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
     const confirmationToken =
@@ -6172,8 +6312,37 @@ export class Cp2Store {
 
       case "invoice.draft":
       case "payment.record":
+      case "receipt.scan":
+      case "receipt.confirm":
+      case "receipt.correct":
+      case "receipt.cancel":
       case "unknown.clarify":
         return null;
+
+      case "receipt.review":
+      case "receipt.list":
+        return this.listPurchaseReceipts({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        });
+
+      case "receipt.lookup":
+        return this.listPurchaseReceipts({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        }).filter((receipt) => {
+          const supplierName = String(input.action.input.supplierName ?? "").toLowerCase();
+          const itemName = String(input.action.input.itemName ?? "").toLowerCase();
+          const supplierMatches =
+            supplierName.length === 0 || receipt.supplierName.toLowerCase().includes(supplierName);
+          const itemMatches =
+            itemName.length === 0 ||
+            receipt.lineItems.some((item) => item.name.toLowerCase().includes(itemName));
+
+          return supplierMatches && itemMatches;
+        });
     }
   }
 
@@ -8624,6 +8793,215 @@ function parseReceiptLineItems(lines: string[]): ParsedReceiptText["items"] {
   }
 
   return items;
+}
+
+function normalizeReceiptContentType(contentType: string): string {
+  const normalized = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return normalized.length === 0 ? "application/octet-stream" : normalized;
+}
+
+function validateReceiptUpload(input: {
+  contentType: string;
+  fileSizeBytes: number | null;
+  fileSignature: string | null;
+}): { ok: true } | { ok: false; code: string; message: string } {
+  const maxBytes = readPositiveIntegerEnv("OCR_MAX_UPLOAD_MB", 10) * 1024 * 1024;
+
+  if (!receiptOCRSupportedContentTypes.has(input.contentType)) {
+    return {
+      ok: false,
+      code: "receipt_ocr_unsupported_type",
+      message: "Receipt upload must be JPEG, PNG, WebP, HEIC/HEIF, PDF, or text for manual retry."
+    };
+  }
+
+  if (input.fileSizeBytes !== null && input.fileSizeBytes > maxBytes) {
+    return {
+      ok: false,
+      code: "receipt_ocr_file_too_large",
+      message: `Receipt upload must be ${readPositiveIntegerEnv("OCR_MAX_UPLOAD_MB", 10)} MB or smaller.`
+    };
+  }
+
+  if (
+    input.fileSignature !== null &&
+    input.fileSignature.trim().length > 0 &&
+    !receiptSignatureMatches(input.contentType, input.fileSignature)
+  ) {
+    return {
+      ok: false,
+      code: "receipt_ocr_signature_mismatch",
+      message: "Receipt file contents do not match the declared upload type."
+    };
+  }
+
+  return { ok: true };
+}
+
+function receiptSignatureMatches(contentType: string, signature: string): boolean {
+  const hex = signature.replace(/[^a-f0-9]/giu, "").toLowerCase();
+
+  if (contentType === "image/jpeg") {
+    return hex.startsWith("ffd8ff");
+  }
+
+  if (contentType === "image/png") {
+    return hex.startsWith("89504e47");
+  }
+
+  if (contentType === "image/webp") {
+    return hex.startsWith("52494646") && hex.slice(16, 24) === "57454250";
+  }
+
+  if (contentType === "application/pdf") {
+    return hex.startsWith("25504446");
+  }
+
+  if (contentType === "image/heic" || contentType === "image/heif") {
+    return ["6674797068656963", "6674797068656966", "667479706d696631"].some((brand) =>
+      hex.includes(brand)
+    );
+  }
+
+  return contentType.startsWith("text/") || contentType === "application/vnd.ms-excel";
+}
+
+function readReceiptOCRConfig(): {
+  primaryEngine: ReceiptOCRJobSummary["engine"];
+  engineVersion: string;
+  modelVersion: string;
+  profile: ReceiptOCRJobSummary["profile"];
+  languageHints: string[];
+} {
+  const primaryEngine =
+    process.env.OCR_ENGINE_PRIMARY === receiptOCRDefaultFallbackEngine
+      ? receiptOCRDefaultFallbackEngine
+      : receiptOCRDefaultPrimaryEngine;
+  const profile =
+    process.env.OCR_PROFILE === "mobile" || process.env.OCR_PROFILE === "accurate"
+      ? process.env.OCR_PROFILE
+      : receiptOCRDefaultProfile;
+  const languageHints = (process.env.OCR_LANGUAGE_HINTS ?? receiptOCRDefaultLanguageHints.join(","))
+    .split(",")
+    .map((language) => language.trim())
+    .filter((language) => language.length > 0);
+
+  return {
+    primaryEngine,
+    engineVersion: process.env.OCR_ENGINE_VERSION ?? "paddleocr-2.8.1",
+    modelVersion: process.env.OCR_MODEL_VERSION ?? `${profile}-cpu`,
+    profile,
+    languageHints
+  };
+}
+
+function readReceiptTempTTLHours(): number {
+  return readPositiveIntegerEnv("OCR_TEMP_IMAGE_TTL_HOURS", 24);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function addHours(value: Date, hours: number): Date {
+  return new Date(value.getTime() + hours * 60 * 60 * 1000);
+}
+
+function buildReceiptOCRBlocks(text: string, confidence: number): ReceiptOCRJobSummary["blocks"] {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line, index) => ({
+      id: `block-${index + 1}`,
+      page: 1,
+      text: line,
+      confidence,
+      boundingBox: null
+    }));
+}
+
+function averageReceiptBlockConfidence(blocks: ReceiptOCRJobSummary["blocks"]): number {
+  if (blocks.length === 0) {
+    return 0;
+  }
+
+  return roundMoney(blocks.reduce((sum, block) => sum + block.confidence, 0) / blocks.length);
+}
+
+function buildReceiptFieldEvidence(
+  parsed: ParsedReceiptText,
+  fullText: string
+): ReceiptOCRJobSummary["fieldEvidence"] {
+  return [
+    {
+      field: "supplierName",
+      value: parsed.supplierName,
+      confidence: parsed.supplierName === null ? 0 : 0.86,
+      sourceText: findEvidenceLine(fullText, parsed.supplierName)
+    },
+    {
+      field: "salesAgentName",
+      value: parsed.salesAgentName,
+      confidence: parsed.salesAgentName === null ? 0 : 0.82,
+      sourceText: findEvidenceLine(fullText, parsed.salesAgentName)
+    },
+    {
+      field: "phone",
+      value: parsed.phone,
+      confidence: parsed.phone === null ? 0 : 0.88,
+      sourceText: findEvidenceLine(fullText, parsed.phone)
+    },
+    {
+      field: "receiptDate",
+      value: parsed.receiptDate,
+      confidence: parsed.receiptDate === null ? 0 : 0.84,
+      sourceText: findEvidenceLine(fullText, parsed.receiptDate)
+    },
+    {
+      field: "total",
+      value: parsed.total,
+      confidence: parsed.total === null ? 0 : 0.86,
+      sourceText: parsed.total === null ? null : findEvidenceLine(fullText, String(parsed.total))
+    }
+  ];
+}
+
+function findEvidenceLine(fullText: string, value: string | number | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const normalizedValue = String(value).toLowerCase();
+  return (
+    fullText
+      .split(/\r?\n/u)
+      .find((line) => line.toLowerCase().includes(normalizedValue))
+      ?.trim() ?? null
+  );
+}
+
+function buildReceiptOCRWarnings(parsed: ParsedReceiptText, hasContent: boolean): string[] {
+  const warnings: string[] = [];
+
+  if (!hasContent) {
+    warnings.push("OCR produced no text. Retry the scan or enter the receipt manually.");
+  }
+
+  if (parsed.items.length === 0) {
+    warnings.push("No line items were parsed. Review and correct the receipt before saving.");
+  }
+
+  if (parsed.total !== null && parsed.items.length > 0) {
+    const itemTotal = roundMoney(parsed.items.reduce((sum, item) => sum + item.total, 0));
+
+    if (Math.abs(itemTotal - parsed.total) > 1) {
+      warnings.push("Line item total does not match the receipt total.");
+    }
+  }
+
+  return warnings;
 }
 
 function inferCountryNamespace(destination: string): string {

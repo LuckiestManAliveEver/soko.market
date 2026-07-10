@@ -391,9 +391,65 @@ interface PurchaseReceiptSummary {
 interface ReceiptOCRJobSummary {
   id: string;
   businessId: string;
-  status: "pending" | "matched" | "needs_review" | "failed" | "confirmed";
+  tenantId: string;
+  shopId: string;
+  uploadedBy: string;
+  status:
+    | "UPLOADED"
+    | "QUEUED"
+    | "VALIDATING"
+    | "PREPROCESSING"
+    | "OCR_RUNNING"
+    | "PARSING"
+    | "MATCHING"
+    | "REVIEW_REQUIRED"
+    | "CONFIRMED"
+    | "COMPLETED"
+    | "FAILED"
+    | "CANCELLED"
+    | "CLEANUP_PENDING"
+    | "IMAGE_DELETED"
+    | "pending"
+    | "matched"
+    | "needs_review"
+    | "failed"
+    | "confirmed";
   sourceFileName: string;
   contentType: string;
+  engine: "paddleocr" | "tesseract";
+  engineVersion: string;
+  modelVersion: string;
+  profile: "mobile" | "balanced" | "accurate";
+  fallbackUsed: boolean;
+  languageHints: string[];
+  blocks: Array<{
+    id: string;
+    page: number;
+    text: string;
+    confidence: number;
+    boundingBox: Array<{ x: number; y: number }> | null;
+  }>;
+  fullText: string;
+  averageConfidence: number;
+  warnings: string[];
+  fieldEvidence: Array<{
+    field: string;
+    value: string | number | null;
+    confidence: number;
+    sourceText: string | null;
+  }>;
+  supplierCandidates: Array<{
+    id: string;
+    name: string;
+    confidence: number;
+    reason: string;
+  }>;
+  salesAgentCandidates: Array<{
+    id: string;
+    name: string;
+    confidence: number;
+    reason: string;
+  }>;
   supplierName: string | null;
   salesAgentName: string | null;
   phone: string | null;
@@ -408,7 +464,16 @@ interface ReceiptOCRJobSummary {
   matchedSupplierId: string | null;
   matchedSalesAgentId: string | null;
   errorMessage: string | null;
+  failureCode: string | null;
+  imageStorageKey: string | null;
+  imageHash: string | null;
   imageRetained: boolean;
+  imageDeletedAt: string | null;
+  cleanupPending: boolean;
+  retryCount: number;
+  processingStartedAt: string | null;
+  completedAt: string | null;
+  temporaryImageExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
   confirmedAt: string | null;
@@ -2627,6 +2692,11 @@ function OwnerApp() {
     }
   }
 
+  async function readFileSignature(file: File): Promise<string> {
+    const buffer = await file.slice(0, 16).arrayBuffer();
+    return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   async function uploadSupplierReceipt(file: File): Promise<ReceiptOCRJobSummary | null> {
     if (business === null) {
       return null;
@@ -2639,11 +2709,13 @@ function OwnerApp() {
         {
           fileName: file.name,
           contentType: file.type || "application/octet-stream",
-          extractedText
+          extractedText,
+          fileSizeBytes: file.size,
+          fileSignature: await readFileSignature(file)
         }
       );
       setStatusMessage(
-        job.status === "failed"
+        job.status === "failed" || job.status === "FAILED"
           ? "Receipt OCR failed. Retry or enter the receipt manually."
           : "Receipt OCR complete. Confirm matched supplier and agent."
       );
@@ -7745,7 +7817,7 @@ function SupplierSurface(props: SupplierSurfaceProps) {
                 <label className="button-like">
                   Upload receipt
                   <input
-                    accept="image/*,.txt,.csv,text/*"
+                    accept="image/*,.heic,.heif,.pdf,.txt,.csv,text/*,application/pdf"
                     type="file"
                     onChange={(event) => void handleReceiptFile(event)}
                   />
@@ -7873,15 +7945,34 @@ function SupplierSurface(props: SupplierSurfaceProps) {
                         {receiptJob.errorMessage !== null ? (
                           <span>{receiptJob.errorMessage}</span>
                         ) : null}
+                        <span>
+                          Engine: {receiptJob.engine} ({receiptJob.profile})
+                        </span>
+                        <span>Confidence: {Math.round(receiptJob.averageConfidence * 100)}%</span>
                         <span>Supplier: {receiptJob.supplierName ?? "No match"}</span>
                         <span>Sales agent: {receiptJob.salesAgentName ?? "No match"}</span>
                         <span>Items: {receiptJob.items.length}</span>
                         <span>
-                          Uploaded image retained: {receiptJob.imageRetained ? "Yes" : "No"}
+                          Uploaded image retained temporarily:{" "}
+                          {receiptJob.imageRetained ? "Yes" : "No"}
                         </span>
+                        {receiptJob.imageDeletedAt !== null ? (
+                          <span>Uploaded image deleted after processing.</span>
+                        ) : receiptJob.cleanupPending ? (
+                          <span>Image cleanup pending after confirmation.</span>
+                        ) : null}
+                        {receiptJob.warnings.length > 0 ? (
+                          <ul>
+                            {receiptJob.warnings.map((warning) => (
+                              <li key={warning}>{warning}</li>
+                            ))}
+                          </ul>
+                        ) : null}
                         <button
                           type="button"
-                          disabled={receiptJob.status === "failed"}
+                          disabled={
+                            receiptJob.status === "failed" || receiptJob.status === "FAILED"
+                          }
                           onClick={() => props.onConfirmReceipt(receiptJob)}
                         >
                           Confirm and save
