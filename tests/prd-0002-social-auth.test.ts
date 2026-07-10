@@ -37,7 +37,7 @@ const providers: OAuthProvider[] = [
   "linkedin",
   "x"
 ];
-const implementedProviders = providers.filter((provider) => provider !== "x");
+const implementedProviders = providers;
 const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
   apple: "OAUTH_APPLE_CLIENT_ID",
   facebook: "OAUTH_FACEBOOK_CLIENT_ID",
@@ -120,7 +120,9 @@ describe("PRD-0002 social sign-in authentication", () => {
     }
   );
 
-  it("returns an explicit 501 placeholder for X OAuth", async () => {
+  it("returns an explicit unconfigured error when provider credentials are missing", async () => {
+    const previous = process.env.OAUTH_X_CLIENT_ID;
+    delete process.env.OAUTH_X_CLIENT_ID;
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
@@ -134,11 +136,12 @@ describe("PRD-0002 social sign-in authentication", () => {
       })
     });
 
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({
-      code: "oauth_provider_not_implemented"
+      code: "oauth_provider_unconfigured"
     });
 
+    process.env.OAUTH_X_CLIENT_ID = previous;
     await app.close();
   });
 
@@ -219,6 +222,22 @@ describe("PRD-0002 social sign-in authentication", () => {
         .userIdentities.map((identity) => identity.provider)
         .sort()
     ).toEqual(["apple", "google"]);
+
+    await app.close();
+  });
+
+  it("does not merge accounts using an unverified provider email", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const otp = await verifyOtp(app, "email", "unverified@example.com");
+    const oauth = await completeOAuth(app, "google", {
+      email: "unverified@example.com",
+      providerSubject: "google-unverified",
+      emailVerified: false
+    });
+
+    expect(oauth.account.id).not.toBe(otp.account.id);
+    expect(store.snapshot().accounts).toHaveLength(2);
 
     await app.close();
   });
@@ -305,6 +324,7 @@ async function completeOAuth(
   profile: {
     providerSubject: string;
     email: string;
+    emailVerified?: boolean;
   },
   cookie?: string
 ): Promise<
@@ -327,7 +347,7 @@ async function completeOAuth(
       csrfToken: start.csrfToken,
       profile: {
         ...profile,
-        emailVerified: true,
+        emailVerified: profile.emailVerified ?? true,
         displayName: `${provider} owner`
       },
       tokens: {

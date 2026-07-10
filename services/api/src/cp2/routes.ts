@@ -378,6 +378,25 @@ interface AccountDeletionBody {
   reason?: string | null;
 }
 
+interface ShopDeletionRequestBody {
+  shopId?: string;
+}
+
+interface ShopDeletionFinalizeBody {
+  acknowledgement?: boolean;
+  idempotencyKey?: string | null;
+  otpCode?: string;
+  pin?: string;
+}
+
+interface ShopDeletionParams extends BusinessParams {
+  requestId: string;
+}
+
+interface SocialIdentityParams extends BusinessParams {
+  identityId: string;
+}
+
 interface VerificationTierBody {
   tier?: string;
   evidenceType?: string | null;
@@ -547,7 +566,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         const provider = parseOAuthProvider(request.body.provider);
         const providerConfig = getOAuthProviderConfig(provider);
 
-        // TODO: implement the X OAuth 2.0 callback/profile flow before enabling redirects.
         if (!providerConfig.implemented) {
           throw new Cp2Error(
             501,
@@ -595,7 +613,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         const csrfToken = parseString(request.body.csrfToken, "csrfToken");
         const providerConfig = getOAuthProviderConfig(provider);
 
-        // TODO: implement the X OAuth 2.0 callback/profile flow before accepting callbacks.
         if (!providerConfig.implemented) {
           throw new Cp2Error(
             501,
@@ -1636,6 +1653,94 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           deletion: parseAccountDeletionBody(request.body)
+        });
+        reply.header("set-cookie", clearSessionCookie());
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/social-accounts",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          accounts: store.listConnectedSocialAccounts({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/social-accounts/:identityId",
+    async (request: FastifyRequest<{ Params: SocialIdentityParams }>, reply) => {
+      try {
+        return store.disconnectSocialAccount({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          identityId: request.params.identityId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/shop-deletion/preview",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getShopDeletionPreview({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/shop-deletion/request",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ShopDeletionRequestBody }>,
+      reply
+    ) => {
+      try {
+        return store.requestShopDeletion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          shopId: parseString(request.body.shopId, "shopId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/shop-deletion/:requestId/finalize",
+    async (
+      request: FastifyRequest<{ Params: ShopDeletionParams; Body: ShopDeletionFinalizeBody }>,
+      reply
+    ) => {
+      try {
+        const idempotencyKey = parseOptionalString(request.body.idempotencyKey);
+        const result = store.finalizeShopDeletion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          requestId: request.params.requestId,
+          pin: parseString(request.body.pin, "pin"),
+          otpCode: parseString(request.body.otpCode, "otpCode"),
+          acknowledgement: parseBoolean(request.body.acknowledgement, "acknowledgement"),
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey })
         });
         reply.header("set-cookie", clearSessionCookie());
         return result;

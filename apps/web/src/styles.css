@@ -1294,6 +1294,82 @@ button:disabled {
   padding: 5px 8px;
 }
 
+.shop-profile-card,
+.danger-zone-card {
+  border: 1px solid rgba(17, 122, 79, 0.14);
+}
+
+.danger-zone-card {
+  background: rgba(255, 247, 245, 0.8);
+  border-color: rgba(180, 35, 24, 0.28);
+}
+
+.connected-social-list,
+.shop-deletion-card {
+  display: grid;
+  gap: 12px;
+}
+
+.connected-social-card {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(17, 122, 79, 0.14);
+  border-radius: 20px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.connected-social-card strong,
+.shop-deletion-card strong {
+  color: #17211b;
+  display: block;
+}
+
+.connected-social-card p,
+.shop-deletion-card p {
+  margin: 4px 0 0;
+}
+
+.connected-social-meta {
+  color: #516258;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  gap: 8px;
+}
+
+.shop-deletion-card {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(180, 35, 24, 0.22);
+  border-radius: 22px;
+  padding: 14px;
+}
+
+.shop-deletion-card ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.destructive-button {
+  background: #b42318;
+  border-color: #b42318;
+  color: #ffffff;
+}
+
+.destructive-button:disabled {
+  opacity: 0.5;
+}
+
 .supplier-contact-tools,
 .nested-agent-form {
   grid-template-columns: minmax(0, 1fr);

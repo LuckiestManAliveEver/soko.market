@@ -86,10 +86,14 @@ interface OAuthStartResponse {
 }
 
 interface OAuthProviderSummary {
+  callbackPath?: string;
   configured: boolean;
   displayName: string;
+  enabled?: boolean;
+  icon?: string;
   id: SocialSignupProvider;
   implemented?: boolean;
+  scopes?: string[];
 }
 
 interface OAuthProvidersResponse {
@@ -804,7 +808,16 @@ interface DataExportBundle {
 
 interface AccountDeletionRequestSummary {
   id: string;
-  status: "scheduled";
+  status:
+    | "scheduled"
+    | "PENDING_VERIFICATION"
+    | "VERIFIED"
+    | "QUEUED"
+    | "RUNNING"
+    | "COMPLETED"
+    | "PARTIALLY_FAILED"
+    | "FAILED"
+    | "CANCELLED";
   requestedAt: string;
   deactivatedAt: string;
   anonymizeAfter: string;
@@ -814,6 +827,51 @@ interface AccountDeletionRequestSummary {
     retainedLogisticsCount: number;
     retainedAuditEventCount: number;
     directIdentifierFieldsRemoved: number;
+  };
+}
+
+interface ConnectedSocialAccountSummary {
+  id: string;
+  provider: SocialSignupProvider;
+  providerName: string;
+  connected: boolean;
+  displayName: string | null;
+  email: string | null;
+  connectedAt: string;
+  lastUsedAt: string | null;
+}
+
+interface ConnectedSocialAccountsResponse {
+  accounts: ConnectedSocialAccountSummary[];
+}
+
+interface ShopDeletionPreviewSummary {
+  businessId: string;
+  shopId: string;
+  generatedAt: string;
+  counts: {
+    products: number;
+    customers: number;
+    suppliers: number;
+    salesAgents: number;
+    salesRecords: number;
+    messages: number;
+    notifications: number;
+    connectedProviders: number;
+    uploadedFiles: number;
+    installedIntegrations: number;
+  };
+  retentionNotice: string;
+}
+
+interface ShopDeletionRequestResult {
+  request: AccountDeletionRequestSummary;
+  preview: ShopDeletionPreviewSummary;
+  otp: {
+    challengeId: string;
+    destination: string;
+    expiresAt: string;
+    devOtp?: string;
   };
 }
 
@@ -1979,7 +2037,7 @@ function OwnerApp() {
     }
 
     if (providerConfig?.implemented === false || providerConfig?.configured !== true) {
-      setStatusMessage("This social login provider is not configured yet.");
+      setStatusMessage("This login provider is not configured yet.");
       return;
     }
 
@@ -2795,7 +2853,7 @@ function OwnerApp() {
       return;
     }
 
-    setStatusMessage("This social login provider is not configured yet.");
+    setStatusMessage("This login provider is not configured yet.");
   }
 
   async function requestNetworkRoute(targetNodeId?: string) {
@@ -4542,6 +4600,7 @@ function OwnerApp() {
           <AgentProfileSurface
             agent={agentSettings}
             business={business}
+            oauthProviders={oauthProviders}
             ownerLabel={userLabel}
             storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
@@ -4678,7 +4737,7 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
               title={
                 config.enabled
                   ? `Redirect to ${provider.label} to ${actionText}`
-                  : "This social login provider is not configured yet."
+                  : "This login provider is not configured yet."
               }
               type="button"
               aria-disabled={!config.enabled}
@@ -4726,7 +4785,7 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
                     title={
                       config.enabled
                         ? `Redirect to ${provider.label} to ${actionText}`
-                        : "This social login provider is not configured yet."
+                        : "This login provider is not configured yet."
                     }
                     type="button"
                     aria-disabled={!config.enabled}
@@ -9100,6 +9159,7 @@ function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfa
 interface AgentProfileSurfaceProps {
   agent: AgentSettings;
   business: ActiveBusiness;
+  oauthProviders: OAuthProviderSummary[];
   ownerLabel: string;
   storefrontUrl: string;
   onAgentChange: (agent: AgentSettings) => void;
@@ -9109,6 +9169,7 @@ interface AgentProfileSurfaceProps {
 function AgentProfileSurface({
   agent,
   business,
+  oauthProviders,
   ownerLabel,
   storefrontUrl,
   onAgentChange,
@@ -9119,12 +9180,116 @@ function AgentProfileSurface({
   const [contextPassword, setContextPassword] = useState("");
   const [contextUnlocked, setContextUnlocked] = useState(false);
   const [contextUnlockError, setContextUnlockError] = useState("");
+  const [connectedSocialAccounts, setConnectedSocialAccounts] = useState<
+    ConnectedSocialAccountSummary[]
+  >([]);
+  const [profileMessage, setProfileMessage] = useState("");
+  const [deletionStep, setDeletionStep] = useState<"idle" | "confirm" | "verify" | "status">(
+    "idle"
+  );
+  const [deletionPreview, setDeletionPreview] = useState<ShopDeletionPreviewSummary | null>(null);
+  const [deletionRequest, setDeletionRequest] = useState<AccountDeletionRequestSummary | null>(
+    null
+  );
+  const [deletionShopId, setDeletionShopId] = useState("");
+  const [deletionPin, setDeletionPin] = useState("");
+  const [deletionOtp, setDeletionOtp] = useState("");
+  const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
+  const [deletionOtpDestination, setDeletionOtpDestination] = useState("");
 
   useEffect(() => {
     if (!isEditing) {
       setDraftAgent(agent);
     }
   }, [agent, isEditing]);
+
+  useEffect(() => {
+    void loadConnectedSocialAccounts();
+    void loadShopDeletionPreview();
+  }, [business.id]);
+
+  async function loadConnectedSocialAccounts() {
+    try {
+      const response = await getJson<ConnectedSocialAccountsResponse>(
+        `/businesses/${business.id}/social-accounts`
+      );
+      setConnectedSocialAccounts(response.accounts);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadShopDeletionPreview() {
+    try {
+      const preview = await getJson<ShopDeletionPreviewSummary>(
+        `/businesses/${business.id}/shop-deletion/preview`
+      );
+      setDeletionPreview(preview);
+    } catch {
+      setDeletionPreview(null);
+    }
+  }
+
+  async function disconnectSocialAccount(identityId: string) {
+    try {
+      await deleteJson<{ disconnected: true; identityId: string }>(
+        `/businesses/${business.id}/social-accounts/${identityId}`
+      );
+      await loadConnectedSocialAccounts();
+      setProfileMessage("Social account disconnected.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function startShopDeletion() {
+    try {
+      const response = await postJson<ShopDeletionRequestResult>(
+        `/businesses/${business.id}/shop-deletion/request`,
+        {
+          shopId: deletionShopId
+        }
+      );
+      setDeletionRequest(response.request);
+      setDeletionPreview(response.preview);
+      setDeletionOtpDestination(response.otp.destination);
+      setDeletionStep("verify");
+      setProfileMessage(
+        response.otp.devOtp !== undefined && response.otp.devOtp.length > 0
+          ? `Verification code sent. Dev code: ${response.otp.devOtp}`
+          : "Verification code sent."
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function finalizeShopDeletion() {
+    if (deletionRequest === null) {
+      return;
+    }
+
+    try {
+      const result = await postJson<AccountDeletionRequestSummary>(
+        `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/finalize`,
+        {
+          pin: deletionPin,
+          otpCode: deletionOtp,
+          acknowledgement: deletionAcknowledged,
+          idempotencyKey: `web-${business.id}-${deletionRequest.id}`
+        }
+      );
+      setDeletionRequest(result);
+      setDeletionStep("status");
+      setProfileMessage(
+        result.status === "COMPLETED"
+          ? "This shop and its removable data have been deleted."
+          : "Shop deletion is being processed."
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
 
   function updateAgent(patch: Partial<AgentSettings>) {
     setDraftAgent((currentAgent) => ({ ...currentAgent, ...patch }));
@@ -9332,6 +9497,215 @@ function AgentProfileSurface({
             </select>
           </label>
           <p className="shell-note">{ownerLabel} owns this public storefront assistant.</p>
+        </div>
+
+        <div className="record-form shop-profile-card">
+          <div className="section-heading">
+            <p className="eyebrow">Account</p>
+            <h3>Connected social accounts</h3>
+          </div>
+          <div className="connected-social-list">
+            {oauthProviders
+              .filter((provider) => ["google", "facebook", "x", "linkedin"].includes(provider.id))
+              .map((provider) => {
+                const connected = connectedSocialAccounts.find(
+                  (account) => account.provider === provider.id
+                );
+                return (
+                  <article className="connected-social-card" key={provider.id}>
+                    <div>
+                      <span>{provider.displayName}</span>
+                      <strong>{connected === undefined ? "Disconnected" : "Connected"}</strong>
+                      <p>
+                        {connected?.displayName ??
+                          connected?.email ??
+                          (provider.configured
+                            ? "Ready to connect"
+                            : "Login provider not configured")}
+                      </p>
+                    </div>
+                    <div className="connected-social-meta">
+                      <span>
+                        Connected:{" "}
+                        {connected === undefined ? "—" : formatDate(connected.connectedAt)}
+                      </span>
+                      <span>
+                        Last used:{" "}
+                        {connected?.lastUsedAt === null || connected === undefined
+                          ? "—"
+                          : formatDate(connected.lastUsedAt)}
+                      </span>
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={() =>
+                          setProfileMessage(
+                            provider.configured
+                              ? "Use signup/login to reconnect this provider."
+                              : "This login provider is not configured yet."
+                          )
+                        }
+                      >
+                        Reconnect
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={connected === undefined}
+                        onClick={() =>
+                          connected === undefined
+                            ? undefined
+                            : void disconnectSocialAccount(connected.id)
+                        }
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+          </div>
+          {profileMessage.length > 0 ? <p className="shell-note">{profileMessage}</p> : null}
+        </div>
+
+        <div className="record-form danger-zone-card">
+          <div className="section-heading">
+            <p className="eyebrow">Danger zone</p>
+            <h3>Delete shop account</h3>
+          </div>
+          <p className="security-warning">
+            Deleting this shop permanently removes its business data and disconnects its services.
+          </p>
+          {deletionStep === "idle" ? (
+            <button
+              className="destructive-button"
+              type="button"
+              onClick={() => setDeletionStep("confirm")}
+            >
+              Delete shop account
+            </button>
+          ) : null}
+          {deletionStep === "confirm" ? (
+            <div className="shop-deletion-card">
+              <div className="storefront-card-header">
+                <div>
+                  <span>Delete shop account</span>
+                  <strong>Step 1 of 2</strong>
+                </div>
+                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                  Cancel
+                </button>
+              </div>
+              <p>This will remove:</p>
+              <ul>
+                <li>Products and catalogue</li>
+                <li>Customers, suppliers and sales agents</li>
+                <li>Sales, invoices and payments</li>
+                <li>Messages, notifications and context scripts</li>
+                <li>Uploaded business files and connected services</li>
+              </ul>
+              {deletionPreview === null ? null : (
+                <div className="supplier-card-metrics">
+                  <span>Products: {deletionPreview.counts.products}</span>
+                  <span>Customers: {deletionPreview.counts.customers}</span>
+                  <span>Suppliers: {deletionPreview.counts.suppliers}</span>
+                  <span>Sales records: {deletionPreview.counts.salesRecords}</span>
+                  <span>Files: {deletionPreview.counts.uploadedFiles}</span>
+                </div>
+              )}
+              <label>
+                Type the shop ID to continue
+                <input
+                  value={deletionShopId}
+                  onChange={(event) => setDeletionShopId(event.target.value)}
+                  placeholder={business.sokoId}
+                />
+              </label>
+              <div className="row-actions">
+                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deletionShopId !== business.sokoId}
+                  onClick={() => void startShopDeletion()}
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {deletionStep === "verify" ? (
+            <div className="shop-deletion-card">
+              <div className="storefront-card-header">
+                <div>
+                  <span>Verify deletion</span>
+                  <strong>Step 2 of 2</strong>
+                </div>
+                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                  Cancel
+                </button>
+              </div>
+              <p>
+                A verification code was sent to{" "}
+                {deletionOtpDestination.length > 0 ? deletionOtpDestination : "your verified login"}
+                .
+              </p>
+              <label>
+                Login PIN
+                <input
+                  value={deletionPin}
+                  type="password"
+                  inputMode="numeric"
+                  onChange={(event) => setDeletionPin(event.target.value)}
+                />
+              </label>
+              <label>
+                Verification code
+                <input
+                  value={deletionOtp}
+                  inputMode="numeric"
+                  maxLength={6}
+                  onChange={(event) => setDeletionOtp(event.target.value)}
+                />
+              </label>
+              <label className="checkbox-row">
+                <input
+                  checked={deletionAcknowledged}
+                  type="checkbox"
+                  onChange={(event) => setDeletionAcknowledged(event.target.checked)}
+                />
+                I understand that this action is permanent.
+              </label>
+              <div className="row-actions">
+                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                  Cancel
+                </button>
+                <button
+                  className="destructive-button"
+                  type="button"
+                  disabled={
+                    deletionPin.length === 0 || deletionOtp.length !== 6 || !deletionAcknowledged
+                  }
+                  onClick={() => void finalizeShopDeletion()}
+                >
+                  Delete everything
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {deletionStep === "status" ? (
+            <div className="shop-deletion-card" role="status">
+              <strong>{deletionRequest?.status ?? "Processing"}</strong>
+              <p>
+                {deletionRequest?.status === "COMPLETED"
+                  ? "This shop and its removable data have been deleted."
+                  : "Your shop deletion is being processed. You can close this screen."}
+              </p>
+            </div>
+          ) : null}
         </div>
 
         <div className="record-form">
@@ -10098,7 +10472,7 @@ function NetworkSyncNestedCard({
     }
 
     if (provider?.oauthProvider === null || provider === undefined) {
-      setMessage("This social login provider is not configured yet.");
+      setMessage("This login provider is not configured yet.");
       return;
     }
 
@@ -10110,7 +10484,7 @@ function NetworkSyncNestedCard({
     }
 
     if (oauthConfig?.implemented === false || oauthConfig?.configured !== true) {
-      setMessage("This social login provider is not configured yet.");
+      setMessage("This login provider is not configured yet.");
       return;
     }
 

@@ -368,6 +368,42 @@ export interface OAuthCallbackResult extends AuthSessionView {
   resumed: boolean;
 }
 
+export interface ConnectedSocialAccountSummary {
+  id: string;
+  provider: OAuthProvider;
+  providerName: string;
+  connected: boolean;
+  displayName: string | null;
+  email: string | null;
+  connectedAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface ShopDeletionPreviewSummary {
+  businessId: string;
+  shopId: string;
+  generatedAt: string;
+  counts: {
+    products: number;
+    customers: number;
+    suppliers: number;
+    salesAgents: number;
+    salesRecords: number;
+    messages: number;
+    notifications: number;
+    connectedProviders: number;
+    uploadedFiles: number;
+    installedIntegrations: number;
+  };
+  retentionNotice: string;
+}
+
+export interface ShopDeletionRequestResult {
+  request: AccountDeletionRequestSummary;
+  preview: ShopDeletionPreviewSummary;
+  otp: OtpRequestResult;
+}
+
 export interface CreateBusinessResult {
   business: BusinessSummary;
   membership: MembershipSummary;
@@ -738,7 +774,9 @@ export class Cp2Store {
   }): OAuthCallbackResult {
     const now = input.now ?? new Date();
     const normalizedEmail =
-      input.profile.email === null ? null : normalizeDestination("email", input.profile.email);
+      input.profile.email === null || !input.profile.emailVerified
+        ? null
+        : normalizeDestination("email", input.profile.email);
     const providerSubject = input.profile.providerSubject.trim();
 
     if (providerSubject.length === 0) {
@@ -2744,6 +2782,374 @@ export class Cp2Store {
     );
 
     return deletionRequest;
+  }
+
+  listConnectedSocialAccounts(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ConnectedSocialAccountSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+
+    return [...this.userIdentities.values()]
+      .filter((identity) => identity.accountId === session.account.id)
+      .map((identity) => ({
+        id: identity.id,
+        provider: identity.provider,
+        providerName: providerDisplayName(identity.provider),
+        connected: true,
+        displayName: identity.displayName,
+        email: identity.email,
+        connectedAt: identity.linkedAt,
+        lastUsedAt: identity.updatedAt
+      }))
+      .sort((left, right) => left.provider.localeCompare(right.provider));
+  }
+
+  disconnectSocialAccount(input: {
+    sessionId: string | null;
+    businessId: string;
+    identityId: string;
+    now?: Date;
+  }): { disconnected: true; identityId: string } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const identity = this.userIdentities.get(input.identityId);
+
+    if (identity === undefined || identity.accountId !== session.account.id) {
+      throw new Cp2Error(
+        404,
+        "social_identity_not_found",
+        "Connected social account was not found."
+      );
+    }
+
+    const remainingIdentities = [...this.userIdentities.values()].filter(
+      (candidate) => candidate.accountId === session.account.id && candidate.id !== identity.id
+    );
+
+    if (!this.accountPinHashes.has(session.account.id) && remainingIdentities.length === 0) {
+      throw new Cp2Error(
+        409,
+        "last_login_method",
+        "Add and verify another login method before disconnecting the last social account."
+      );
+    }
+
+    this.userIdentities.delete(identity.id);
+    this.identityByProviderSubject.delete(
+      oauthProviderSubjectKey(identity.provider, identity.providerSubject)
+    );
+
+    if (identity.email !== null) {
+      this.identityByEmail.delete(oauthIdentityEmailKey(identity.provider, identity.email));
+    }
+
+    this.recordAuditEvent({
+      type: "auth.social_identity_disconnected",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        provider: identity.provider,
+        identityId: identity.id
+      }
+    });
+
+    return {
+      disconnected: true,
+      identityId: identity.id
+    };
+  }
+
+  getShopDeletionPreview(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ShopDeletionPreviewSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "compliance:delete",
+      now
+    );
+    this.requireOwnerMembership(input.businessId, session.user.id);
+
+    return this.buildShopDeletionPreview(input.businessId, session.account.id, now);
+  }
+
+  requestShopDeletion(input: {
+    sessionId: string | null;
+    businessId: string;
+    shopId: string;
+    now?: Date;
+  }): ShopDeletionRequestResult {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "compliance:delete",
+      now
+    );
+    this.requireOwnerMembership(input.businessId, session.user.id);
+    const business = this.requireBusiness(input.businessId);
+
+    if (input.shopId.trim() !== business.sokoId) {
+      throw new Cp2Error(400, "shop_id_mismatch", "Type the exact shop ID to continue.");
+    }
+
+    const existing = [...this.accountDeletionRequests.values()]
+      .filter(
+        (request) =>
+          request.businessId === input.businessId &&
+          request.actorId === session.user.id &&
+          request.status === "PENDING_VERIFICATION"
+      )
+      .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))[0];
+
+    if (existing !== undefined) {
+      const existingChallengeId = parseDeletionOtpChallengeId(existing.auditReference);
+      const otp =
+        existingChallengeId === null
+          ? this.requestOtp({
+              channel: session.account.primaryAuthChannel,
+              destination: session.account.primaryAuthDestination,
+              now
+            })
+          : this.getDeletionOtpDelivery(existingChallengeId, now);
+      return {
+        request: existing,
+        preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now),
+        otp
+      };
+    }
+
+    const otp = this.requestOtp({
+      channel: session.account.primaryAuthChannel,
+      destination: session.account.primaryAuthDestination,
+      now
+    });
+    const deletionRequest: AccountDeletionRequestSummary = {
+      id: randomUUID(),
+      accountId: session.account.id,
+      userId: session.user.id,
+      businessId: input.businessId,
+      actorId: session.user.id,
+      status: "PENDING_VERIFICATION",
+      reason: "Shop owner requested shop deletion",
+      requestedAt: now.toISOString(),
+      requestedByUserId: session.user.id,
+      reauthenticatedAt: null,
+      otpVerifiedAt: null,
+      startedAt: null,
+      completedAt: null,
+      failureReason: null,
+      auditReference: `otp:${otp.challengeId}`,
+      idempotencyKey: null,
+      deactivatedAt: now.toISOString(),
+      anonymizeAfter: now.toISOString(),
+      retention: this.buildComplianceRetention(input.businessId)
+    };
+
+    this.accountDeletionRequests.set(deletionRequest.id, deletionRequest);
+    this.recordSecurityNotification({
+      businessId: input.businessId,
+      type: "shop_deletion",
+      title: "Shop deletion requested",
+      body: "A deletion request was started for this shop.",
+      sourceId: deletionRequest.id,
+      now
+    });
+    this.recordAuditEvent({
+      type: "shop_deletion.requested",
+      aggregateType: "account_deletion",
+      aggregateId: deletionRequest.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        shopId: business.sokoId,
+        status: deletionRequest.status,
+        otpDestination: maskDestination(session.account.primaryAuthDestination)
+      }
+    });
+
+    return {
+      request: deletionRequest,
+      preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now),
+      otp
+    };
+  }
+
+  finalizeShopDeletion(input: {
+    sessionId: string | null;
+    businessId: string;
+    requestId: string;
+    pin: string;
+    otpCode: string;
+    acknowledgement: boolean;
+    idempotencyKey?: string | null;
+    now?: Date;
+  }): AccountDeletionRequestSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const request = this.accountDeletionRequests.get(input.requestId);
+
+    if (request === undefined || request.businessId !== input.businessId) {
+      throw new Cp2Error(404, "shop_deletion_not_found", "Shop deletion request was not found.");
+    }
+
+    if (request.status === "COMPLETED") {
+      return request;
+    }
+
+    if (input.idempotencyKey !== undefined && input.idempotencyKey !== null) {
+      const existing = [...this.accountDeletionRequests.values()].find(
+        (candidate) =>
+          candidate.businessId === input.businessId &&
+          candidate.idempotencyKey === input.idempotencyKey &&
+          candidate.status === "COMPLETED"
+      );
+
+      if (existing !== undefined) {
+        return existing;
+      }
+    }
+
+    if (request.actorId !== session.user.id || request.accountId !== session.account.id) {
+      throw new Cp2Error(403, "permission_denied", "Only the verified shop owner can delete it.");
+    }
+
+    this.requireOwnerMembership(input.businessId, session.user.id);
+
+    if (!input.acknowledgement) {
+      throw new Cp2Error(
+        400,
+        "permanent_acknowledgement_required",
+        "Confirm that you understand this action is permanent."
+      );
+    }
+
+    this.verifyAccountPinForSession(session, input.pin, now);
+    const otpChallengeId = parseDeletionOtpChallengeId(request.auditReference);
+
+    if (otpChallengeId === null) {
+      throw new Cp2Error(
+        409,
+        "shop_deletion_otp_missing",
+        "Deletion verification code is missing."
+      );
+    }
+
+    this.verifyOtpCodeOnly({
+      challengeId: otpChallengeId,
+      code: input.otpCode,
+      now
+    });
+
+    const verified: AccountDeletionRequestSummary = {
+      ...request,
+      status: "VERIFIED",
+      reauthenticatedAt: now.toISOString(),
+      otpVerifiedAt: now.toISOString(),
+      idempotencyKey: input.idempotencyKey ?? request.idempotencyKey ?? null
+    };
+    this.accountDeletionRequests.set(verified.id, verified);
+    this.recordAuditEvent({
+      type: "shop_deletion.otp_verified",
+      aggregateType: "account_deletion",
+      aggregateId: verified.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        status: verified.status
+      }
+    });
+
+    const running: AccountDeletionRequestSummary = {
+      ...verified,
+      status: "RUNNING",
+      startedAt: now.toISOString()
+    };
+    this.accountDeletionRequests.set(running.id, running);
+    this.recordSecurityNotification({
+      businessId: input.businessId,
+      type: "shop_deletion",
+      title: "Shop deletion started",
+      body: "The verified deletion job has started.",
+      sourceId: running.id,
+      now
+    });
+    this.recordAuditEvent({
+      type: "shop_deletion.started",
+      aggregateType: "account_deletion",
+      aggregateId: running.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        status: running.status
+      }
+    });
+
+    try {
+      this.deleteShopOwnedData(input.businessId, session.account.id, now);
+      const completed: AccountDeletionRequestSummary = {
+        ...running,
+        status: "COMPLETED",
+        completedAt: now.toISOString(),
+        failureReason: null
+      };
+      this.accountDeletionRequests.set(completed.id, completed);
+      this.recordAuditEvent({
+        type: "shop_deletion.completed",
+        aggregateType: "account_deletion",
+        aggregateId: completed.id,
+        actorId: session.user.id,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: input.businessId,
+          status: completed.status,
+          retainedAuditEventCount: completed.retention.retainedAuditEventCount
+        }
+      });
+      return completed;
+    } catch (error) {
+      const failed: AccountDeletionRequestSummary = {
+        ...running,
+        status: "PARTIALLY_FAILED",
+        completedAt: now.toISOString(),
+        failureReason: error instanceof Error ? error.message : "Shop deletion failed."
+      };
+      this.accountDeletionRequests.set(failed.id, failed);
+      this.recordAuditEvent({
+        type: "shop_deletion.failed",
+        aggregateType: "account_deletion",
+        aggregateId: failed.id,
+        actorId: session.user.id,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: input.businessId,
+          status: failed.status
+        }
+      });
+      return failed;
+    }
   }
 
   getVerificationTier(input: {
@@ -5287,6 +5693,55 @@ export class Cp2Store {
     return membership;
   }
 
+  private requireOwnerMembership(businessId: string, userId: string): MembershipSummary {
+    const membership = this.requireMembership(businessId, userId);
+
+    if (membership.role !== "owner") {
+      throw new Cp2Error(403, "owner_required", "Only the shop owner can delete the shop.");
+    }
+
+    return membership;
+  }
+
+  private verifyAccountPinForSession(session: AuthSessionView, pin: string, now: Date): void {
+    const normalizedPin = normalizePin(pin);
+    const pinHash = this.accountPinHashes.get(session.account.id);
+
+    if (pinHash === undefined) {
+      throw new Cp2Error(409, "pin_not_set", "Set a login PIN before deleting this shop.");
+    }
+
+    if (!hashMatches(hashPin(session.account.id, normalizedPin), pinHash)) {
+      throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
+    }
+
+    this.markSessionPinVerified(session.session.id, now);
+  }
+
+  private verifyOtpCodeOnly(input: { challengeId: string; code: string; now: Date }): void {
+    const challenge = this.otpChallenges.get(input.challengeId);
+    this.validateOtpChallenge(challenge, input.now);
+
+    if (!hashMatches(hashOtp(challenge.id, input.code), challenge.codeHash)) {
+      challenge.attempts += 1;
+      throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
+    }
+
+    challenge.verifiedAt = input.now.toISOString();
+  }
+
+  private getDeletionOtpDelivery(challengeId: string, now: Date): OtpRequestResult {
+    const challenge = this.otpChallenges.get(challengeId);
+    this.validateOtpChallenge(challenge, now);
+
+    return {
+      challengeId: challenge.id,
+      destination: challenge.destination,
+      expiresAt: challenge.expiresAt,
+      devOtp: ""
+    };
+  }
+
   private requireBusiness(businessId: string): BusinessSummary {
     const business = this.businesses.get(businessId);
 
@@ -6507,6 +6962,14 @@ export class Cp2Store {
     return [...this.suppliers.values()].filter((supplier) => supplier.businessId === businessId);
   }
 
+  private salesAgentsForBusiness(businessId: string): SalesAgentSummary[] {
+    return [...this.salesAgents.values()].filter((agent) => agent.businessId === businessId);
+  }
+
+  private runtimeTurnsForBusiness(businessId: string): RuntimeTurnSummary[] {
+    return [...this.runtimeTurns.values()].filter((turn) => turn.businessId === businessId);
+  }
+
   private supplierBusinessCard(supplier: SupplierSummary): SupplierBusinessCardSummary {
     const salesAgents = this.salesAgentsForSupplier(supplier.id).map((agent) =>
       this.salesAgentCard(agent)
@@ -7181,6 +7644,235 @@ export class Cp2Store {
         session.revokedAt = now.toISOString();
       }
     }
+  }
+
+  private buildShopDeletionPreview(
+    businessId: string,
+    accountId: string,
+    now: Date
+  ): ShopDeletionPreviewSummary {
+    const business = this.requireBusiness(businessId);
+    const invoices = this.invoicesForBusiness(businessId);
+    const payments = this.paymentsForBusiness(businessId);
+    const documentSources = [...this.documentImportSources.values()].filter(
+      (source) => source.businessId === businessId
+    );
+
+    return {
+      businessId,
+      shopId: business.sokoId,
+      generatedAt: now.toISOString(),
+      counts: {
+        products: this.productsForBusiness(businessId).length,
+        customers: this.customersForBusiness(businessId).length,
+        suppliers: this.suppliersForBusiness(businessId).length,
+        salesAgents: this.salesAgentsForBusiness(businessId).length,
+        salesRecords: invoices.length + payments.length,
+        messages: this.runtimeTurnsForBusiness(businessId).length,
+        notifications: this.sortedNotifications(businessId).length,
+        connectedProviders: [...this.userIdentities.values()].filter(
+          (identity) => identity.accountId === accountId
+        ).length,
+        uploadedFiles:
+          documentSources.length +
+          [...this.receiptOCRJobs.values()].filter((job) => job.businessId === businessId).length,
+        installedIntegrations: 0
+      },
+      retentionNotice:
+        "The shop is removed from active systems. Audit and legally required financial records may be retained with restricted access according to retention rules and backup expiry."
+    };
+  }
+
+  private recordSecurityNotification(input: {
+    businessId: string;
+    type: BusinessNotificationSummary["type"];
+    title: string;
+    body: string;
+    sourceId: string;
+    now: Date;
+  }): void {
+    this.upsertNotification({
+      businessId: input.businessId,
+      ruleKey: `${input.businessId}:${input.type}:${input.sourceId}`,
+      type: input.type,
+      severity: "critical",
+      title: input.title,
+      body: input.body,
+      sourceType: input.type === "shop_deletion" ? "shop_deletion" : "security",
+      sourceId: input.sourceId,
+      now: input.now
+    });
+  }
+
+  private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
+    const invoiceIds = new Set(this.invoicesForBusiness(businessId).map((invoice) => invoice.id));
+    const supplierIds = new Set(
+      this.suppliersForBusiness(businessId).map((supplier) => supplier.id)
+    );
+    const receiptIds = new Set(
+      [...this.purchaseReceipts.values()]
+        .filter((receipt) => receipt.businessId === businessId)
+        .map((receipt) => receipt.id)
+    );
+
+    for (const session of this.sessions.values()) {
+      if (session.accountId === accountId && session.revokedAt === null) {
+        session.revokedAt = now.toISOString();
+      }
+    }
+
+    for (const [id, identity] of this.userIdentities.entries()) {
+      if (identity.accountId === accountId) {
+        this.userIdentities.set(id, {
+          ...identity,
+          encryptedAccessToken: null,
+          encryptedRefreshToken: null,
+          encryptedIdToken: null,
+          tokenExpiresAt: null,
+          updatedAt: now.toISOString()
+        });
+      }
+    }
+
+    for (const [id, item] of this.syncQueue.entries()) {
+      if (item.businessId === businessId) {
+        this.syncQueue.delete(id);
+        this.syncQueueIdByIdempotency.delete(
+          syncQueueIdempotencyKey(item.businessId, item.idempotencyKey)
+        );
+      }
+    }
+
+    for (const [id, product] of this.products.entries()) {
+      if (product.businessId === businessId) {
+        this.products.delete(id);
+      }
+    }
+
+    for (const [id, customer] of this.customers.entries()) {
+      if (customer.businessId === businessId) {
+        this.customers.delete(id);
+      }
+    }
+
+    for (const [id, supplier] of this.suppliers.entries()) {
+      if (supplier.businessId === businessId) {
+        this.suppliers.delete(id);
+      }
+    }
+
+    for (const [id, agent] of this.salesAgents.entries()) {
+      if (agent.businessId === businessId) {
+        this.salesAgents.delete(id);
+      }
+    }
+
+    for (const [id, link] of this.supplierContactLinks.entries()) {
+      if (
+        link.businessId === businessId ||
+        (link.supplierId !== null && supplierIds.has(link.supplierId))
+      ) {
+        this.supplierContactLinks.delete(id);
+      }
+    }
+
+    for (const [id, receipt] of this.purchaseReceipts.entries()) {
+      if (receipt.businessId === businessId) {
+        this.purchaseReceipts.delete(id);
+      }
+    }
+
+    for (const [id, lineItem] of this.receiptLineItems.entries()) {
+      if (receiptIds.has(lineItem.receiptId)) {
+        this.receiptLineItems.delete(id);
+      }
+    }
+
+    for (const [id, job] of this.receiptOCRJobs.entries()) {
+      if (job.businessId === businessId) {
+        this.receiptOCRJobs.delete(id);
+      }
+    }
+
+    for (const [id, invoice] of this.invoices.entries()) {
+      if (invoice.businessId === businessId) {
+        this.invoices.delete(id);
+      }
+    }
+
+    for (const [id, payment] of this.payments.entries()) {
+      if (payment.businessId === businessId || invoiceIds.has(payment.invoiceId)) {
+        this.payments.delete(id);
+      }
+    }
+
+    for (const [id, logistics] of this.logistics.entries()) {
+      if (logistics.businessId === businessId || invoiceIds.has(logistics.invoiceId)) {
+        this.logistics.delete(id);
+        this.logisticsByInvoice.delete(logistics.invoiceId);
+      }
+    }
+
+    for (const [id, movement] of this.inventoryMovements.entries()) {
+      if (movement.businessId === businessId) {
+        this.inventoryMovements.delete(id);
+      }
+    }
+
+    for (const [id, item] of this.documentImports.entries()) {
+      if (item.businessId === businessId) {
+        this.documentImports.delete(id);
+      }
+    }
+
+    for (const [id, source] of this.documentImportSources.entries()) {
+      if (source.businessId === businessId) {
+        this.documentImportSources.delete(id);
+      }
+    }
+
+    for (const [id, notification] of this.notifications.entries()) {
+      if (notification.businessId === businessId) {
+        this.notifications.delete(id);
+        this.notificationByRuleKey.delete(`${notification.businessId}:${notification.type}`);
+      }
+    }
+
+    for (const [id, session] of this.runtimeSessions.entries()) {
+      if (session.businessId === businessId) {
+        this.runtimeSessions.delete(id);
+      }
+    }
+
+    for (const [id, turn] of this.runtimeTurns.entries()) {
+      if (turn.businessId === businessId) {
+        this.runtimeTurns.delete(id);
+      }
+    }
+
+    for (const [id, action] of this.pendingRuntimeActions.entries()) {
+      if (action.businessId === businessId) {
+        this.pendingRuntimeActions.delete(id);
+      }
+    }
+
+    for (const [id, exportBundle] of this.dataExports.entries()) {
+      if (exportBundle.businessId === businessId) {
+        this.dataExports.delete(id);
+      }
+    }
+
+    for (const [id, membership] of this.memberships.entries()) {
+      if (membership.businessId === businessId) {
+        this.memberships.delete(id);
+      }
+    }
+
+    this.verificationTiers.delete(businessId);
+    this.taxConfigs.delete(businessId);
+    this.betaAccess.delete(businessId);
+    this.launchSettings.delete(businessId);
+    this.businesses.delete(businessId);
   }
 
   private buildComplianceRetention(businessId: string): ComplianceRetentionSummary {
@@ -8348,6 +9040,42 @@ function secureCookieSuffix(): string {
 
 function hashPin(accountId: string, pin: string): string {
   return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+}
+
+function parseDeletionOtpChallengeId(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || !value.startsWith("otp:")) {
+    return null;
+  }
+
+  return value.slice("otp:".length);
+}
+
+function providerDisplayName(provider: OAuthProvider): string {
+  switch (provider) {
+    case "facebook":
+      return "Meta";
+    case "github":
+      return "GitHub";
+    case "google":
+      return "Google";
+    case "linkedin":
+      return "LinkedIn";
+    case "microsoft":
+      return "Microsoft";
+    case "apple":
+      return "Apple";
+    case "x":
+      return "X";
+  }
+}
+
+function maskDestination(destination: string): string {
+  if (destination.includes("@")) {
+    const [local, domain] = destination.split("@");
+    return `${local?.slice(0, 2) ?? ""}•••@${domain ?? "email"}`;
+  }
+
+  return `${destination.slice(0, 4)}••••${destination.slice(-2)}`;
 }
 
 function hashMatches(actual: string, expected: string): boolean {

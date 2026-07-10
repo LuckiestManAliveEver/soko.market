@@ -11,7 +11,9 @@ import { Cp2Error } from "./store.js";
 export interface OAuthProviderConfig {
   id: OAuthProvider;
   displayName: string;
+  icon: string;
   implemented: boolean;
+  enabled: boolean;
   authorizationUrl: string;
   tokenUrl: string;
   userInfoUrl: string | null;
@@ -19,13 +21,19 @@ export interface OAuthProviderConfig {
   pkce: boolean;
   clientIdEnv: string;
   clientSecretEnv: string;
+  clientIdEnvAliases?: string[];
+  clientSecretEnvAliases?: string[];
+  callbackPath: string;
 }
 
 export interface PublicOAuthProviderConfig {
   id: OAuthProvider;
   displayName: string;
+  icon: string;
   implemented: boolean;
+  enabled: boolean;
   authorizationUrl: string;
+  callbackPath: string;
   tokenUrl: string;
   userInfoUrl: string | null;
   scopes: string[];
@@ -62,86 +70,115 @@ const oauthProviders: OAuthProviderConfig[] = [
   {
     id: "google",
     displayName: "Google",
+    icon: "G",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     userInfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
     scopes: ["openid", "email", "profile"],
     pkce: true,
     clientIdEnv: "OAUTH_GOOGLE_CLIENT_ID",
-    clientSecretEnv: "OAUTH_GOOGLE_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_GOOGLE_CLIENT_SECRET",
+    clientIdEnvAliases: ["GOOGLE_CLIENT_ID"],
+    clientSecretEnvAliases: ["GOOGLE_CLIENT_SECRET"],
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "facebook",
-    displayName: "Facebook",
+    displayName: "Meta",
+    icon: "M",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://www.facebook.com/v20.0/dialog/oauth",
     tokenUrl: "https://graph.facebook.com/v20.0/oauth/access_token",
     userInfoUrl: "https://graph.facebook.com/me?fields=id,name,email",
     scopes: ["email", "public_profile"],
     pkce: true,
     clientIdEnv: "OAUTH_FACEBOOK_CLIENT_ID",
-    clientSecretEnv: "OAUTH_FACEBOOK_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_FACEBOOK_CLIENT_SECRET",
+    clientIdEnvAliases: ["META_CLIENT_ID", "FACEBOOK_CLIENT_ID"],
+    clientSecretEnvAliases: ["META_CLIENT_SECRET", "FACEBOOK_CLIENT_SECRET"],
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "apple",
     displayName: "Apple",
+    icon: "A",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://appleid.apple.com/auth/authorize",
     tokenUrl: "https://appleid.apple.com/auth/token",
     userInfoUrl: null,
     scopes: ["name", "email"],
     pkce: true,
     clientIdEnv: "OAUTH_APPLE_CLIENT_ID",
-    clientSecretEnv: "OAUTH_APPLE_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_APPLE_CLIENT_SECRET",
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "github",
     displayName: "GitHub",
+    icon: "GH",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://github.com/login/oauth/authorize",
     tokenUrl: "https://github.com/login/oauth/access_token",
     userInfoUrl: "https://api.github.com/user",
     scopes: ["read:user", "user:email"],
     pkce: false,
     clientIdEnv: "OAUTH_GITHUB_CLIENT_ID",
-    clientSecretEnv: "OAUTH_GITHUB_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_GITHUB_CLIENT_SECRET",
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "microsoft",
     displayName: "Microsoft",
+    icon: "M",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     userInfoUrl: "https://graph.microsoft.com/oidc/userinfo",
     scopes: ["openid", "email", "profile", "offline_access"],
     pkce: true,
     clientIdEnv: "OAUTH_MICROSOFT_CLIENT_ID",
-    clientSecretEnv: "OAUTH_MICROSOFT_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_MICROSOFT_CLIENT_SECRET",
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "linkedin",
     displayName: "LinkedIn",
+    icon: "in",
     implemented: true,
+    enabled: true,
     authorizationUrl: "https://www.linkedin.com/oauth/v2/authorization",
     tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
     userInfoUrl: "https://api.linkedin.com/v2/userinfo",
     scopes: ["openid", "profile", "email"],
     pkce: true,
     clientIdEnv: "OAUTH_LINKEDIN_CLIENT_ID",
-    clientSecretEnv: "OAUTH_LINKEDIN_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_LINKEDIN_CLIENT_SECRET",
+    clientIdEnvAliases: ["LINKEDIN_CLIENT_ID"],
+    clientSecretEnvAliases: ["LINKEDIN_CLIENT_SECRET"],
+    callbackPath: "/auth/oauth/callback"
   },
   {
     id: "x",
     displayName: "X",
-    implemented: false,
+    icon: "X",
+    implemented: true,
+    enabled: true,
     authorizationUrl: "https://twitter.com/i/oauth2/authorize",
     tokenUrl: "https://api.twitter.com/2/oauth2/token",
-    userInfoUrl: null,
+    userInfoUrl: "https://api.twitter.com/2/users/me?user.fields=id,name,username",
     scopes: ["users.read", "tweet.read", "offline.access"],
     pkce: true,
     clientIdEnv: "OAUTH_X_CLIENT_ID",
-    clientSecretEnv: "OAUTH_X_CLIENT_SECRET"
+    clientSecretEnv: "OAUTH_X_CLIENT_SECRET",
+    clientIdEnvAliases: ["X_CLIENT_ID"],
+    clientSecretEnvAliases: ["X_CLIENT_SECRET"],
+    callbackPath: "/auth/oauth/callback"
   }
 ];
 
@@ -149,13 +186,16 @@ export function listOAuthProviders(): PublicOAuthProviderConfig[] {
   return oauthProviders.map((provider) => ({
     id: provider.id,
     displayName: provider.displayName,
+    icon: provider.icon,
     implemented: provider.implemented,
+    enabled: provider.enabled,
     authorizationUrl: provider.authorizationUrl,
+    callbackPath: provider.callbackPath,
     tokenUrl: provider.tokenUrl,
     userInfoUrl: provider.userInfoUrl,
     scopes: provider.scopes,
     pkce: provider.pkce,
-    configured: provider.implemented && getOAuthClientId(provider).length > 0
+    configured: provider.enabled && provider.implemented && getOAuthClientId(provider).length > 0
   }));
 }
 
@@ -186,7 +226,7 @@ export function getOAuthProviderConfig(provider: OAuthProvider): OAuthProviderCo
 }
 
 export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolean {
-  return provider.implemented && getOAuthClientId(provider).length > 0;
+  return provider.enabled && provider.implemented && getOAuthClientId(provider).length > 0;
 }
 
 export function createOAuthStartPayload(input: {
@@ -357,11 +397,26 @@ function createCodeChallenge(codeVerifier: string): string {
 }
 
 function getOAuthClientId(provider: OAuthProviderConfig): string {
-  return process.env[provider.clientIdEnv]?.trim() ?? "";
+  return getFirstConfiguredEnv([provider.clientIdEnv, ...(provider.clientIdEnvAliases ?? [])]);
 }
 
 function getOAuthClientSecret(provider: OAuthProviderConfig): string {
-  return process.env[provider.clientSecretEnv]?.trim() ?? "";
+  return getFirstConfiguredEnv([
+    provider.clientSecretEnv,
+    ...(provider.clientSecretEnvAliases ?? [])
+  ]);
+}
+
+function getFirstConfiguredEnv(names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+
+    if (value !== undefined && value.length > 0) {
+      return value;
+    }
+  }
+
+  return "";
 }
 
 function getTokenEncryptionKey(): Buffer {
@@ -389,15 +444,22 @@ function parseJwtPayload(idToken: string | undefined): Record<string, unknown> {
 }
 
 function normalizeProfile(provider: OAuthProvider, payload: Record<string, unknown>): OAuthProfile {
+  const xData =
+    provider === "x" && typeof payload.data === "object" && payload.data !== null
+      ? (payload.data as Record<string, unknown>)
+      : null;
   const subject =
     optionalString(payload.sub) ??
     optionalString(payload.id) ??
-    optionalString(payload.userPrincipalName);
+    optionalString(payload.userPrincipalName) ??
+    (xData === null ? undefined : optionalString(xData.id));
   const email = optionalString(payload.email) ?? optionalString(payload.mail);
   const displayName =
     optionalString(payload.name) ??
     optionalString(payload.login) ??
-    optionalString(payload.preferred_username);
+    optionalString(payload.preferred_username) ??
+    (xData === null ? undefined : optionalString(xData.name)) ??
+    (xData === null ? undefined : optionalString(xData.username));
   const emailVerifiedValue = payload.email_verified;
 
   if (subject === undefined) {

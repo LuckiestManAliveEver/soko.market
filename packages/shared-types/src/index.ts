@@ -76,10 +76,13 @@ export interface AuthSessionView {
 export interface IdentityProviderSummary {
   id: OAuthProvider;
   displayName: string;
+  icon?: string;
   authorizationUrl: string;
+  callbackPath?: string;
   tokenUrl: string;
   userInfoUrl: string | null;
   scopes: string[];
+  enabled?: boolean;
   pkce: boolean;
 }
 
@@ -534,7 +537,16 @@ export interface DataExportBundle extends DataExportBundleSummary {
   };
 }
 
-export type AccountDeletionStatus = "scheduled";
+export type AccountDeletionStatus =
+  | "scheduled"
+  | "PENDING_VERIFICATION"
+  | "VERIFIED"
+  | "QUEUED"
+  | "RUNNING"
+  | "COMPLETED"
+  | "PARTIALLY_FAILED"
+  | "FAILED"
+  | "CANCELLED";
 
 export interface ComplianceRetentionSummary {
   businessId: string;
@@ -555,6 +567,14 @@ export interface AccountDeletionRequestSummary {
   status: AccountDeletionStatus;
   reason: string | null;
   requestedAt: string;
+  requestedByUserId?: string;
+  reauthenticatedAt?: string | null;
+  otpVerifiedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
+  auditReference?: string | null;
+  idempotencyKey?: string | null;
   deactivatedAt: string;
   anonymizeAfter: string;
   retention: ComplianceRetentionSummary;
@@ -1162,7 +1182,9 @@ export type BusinessNotificationType =
   | "import_failed"
   | "fulfillment_pending"
   | "beta_readiness"
-  | "launch_readiness";
+  | "launch_readiness"
+  | "security_event"
+  | "shop_deletion";
 
 export type BusinessNotificationSeverity = "info" | "warning" | "critical";
 
@@ -1184,7 +1206,9 @@ export interface BusinessNotificationSummary {
     | "document_import"
     | "logistics"
     | "beta_readiness"
-    | "launch_readiness";
+    | "launch_readiness"
+    | "security"
+    | "shop_deletion";
   sourceId: string | null;
   createdAt: string;
   updatedAt: string;
