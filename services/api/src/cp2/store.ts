@@ -1993,6 +1993,16 @@ export class Cp2Store {
     const blocks = buildReceiptOCRBlocks(input.extractedText, hasContent ? 0.9 : 0);
     const warnings = buildReceiptOCRWarnings(parsed, hasContent);
     const sourceFileName = input.sourceFileName.trim() || "receipt-upload";
+    const jobId = randomUUID();
+    const structuredExtraction = buildReceiptStructuredExtraction(parsed);
+    const contactMatchingResult = this.createReceiptContactMatchingResult({
+      businessId: input.businessId,
+      ownerUserId: session.user.id,
+      ocrJobId: jobId,
+      parsed,
+      matchedSupplier,
+      matchedAgent
+    });
     const imageStorageKey =
       contentType.startsWith("image/") || contentType === "application/pdf"
         ? `tmp/receipt-ocr/${input.businessId}/${randomUUID()}`
@@ -2001,7 +2011,7 @@ export class Cp2Store {
       .update(`${sourceFileName}:${contentType}:${input.extractedText}`)
       .digest("hex");
     const job: ReceiptOCRJobSummary = {
-      id: randomUUID(),
+      id: jobId,
       businessId: input.businessId,
       tenantId: input.businessId,
       shopId: input.businessId,
@@ -2024,28 +2034,10 @@ export class Cp2Store {
       averageConfidence: averageReceiptBlockConfidence(blocks),
       warnings,
       fieldEvidence: buildReceiptFieldEvidence(parsed, input.extractedText),
-      supplierCandidates:
-        matchedSupplier === null
-          ? []
-          : [
-              {
-                id: matchedSupplier.id,
-                name: matchedSupplier.name,
-                confidence: 0.9,
-                reason: "Matched supplier name or phone from OCR text."
-              }
-            ],
-      salesAgentCandidates:
-        matchedAgent === null
-          ? []
-          : [
-              {
-                id: matchedAgent.id,
-                name: matchedAgent.name,
-                confidence: 0.86,
-                reason: "Matched sales agent name or phone from OCR text."
-              }
-            ],
+      structuredExtraction,
+      contactMatchingResult,
+      supplierCandidates: contactMatchingResult.supplier.candidates,
+      salesAgentCandidates: contactMatchingResult.salesAgent.candidates,
       supplierName: parsed.supplierName,
       salesAgentName: parsed.salesAgentName,
       phone: parsed.phone,
@@ -2199,6 +2191,469 @@ export class Cp2Store {
     }
 
     return receipt;
+  }
+
+  private createReceiptContactMatchingResult(input: {
+    businessId: string;
+    ownerUserId: string;
+    ocrJobId: string;
+    parsed: ParsedReceiptText;
+    matchedSupplier: SupplierSummary | null;
+    matchedAgent: SalesAgentSummary | null;
+  }): ReceiptOCRJobSummary["contactMatchingResult"] {
+    const thresholds = readReceiptContactMatchThresholds();
+    const supplierCandidates = this.buildSupplierContactCandidates({
+      businessId: input.businessId,
+      ownerUserId: input.ownerUserId,
+      parsed: input.parsed,
+      matchedSupplier: input.matchedSupplier,
+      thresholds
+    });
+    const selectedSupplier = selectReceiptCandidate(supplierCandidates, thresholds);
+    const salesAgentCandidates = this.buildSalesAgentContactCandidates({
+      businessId: input.businessId,
+      ownerUserId: input.ownerUserId,
+      supplierId: selectedSupplier?.recordId ?? input.matchedSupplier?.id ?? null,
+      parsed: input.parsed,
+      matchedAgent: input.matchedAgent,
+      thresholds
+    });
+    const selectedSalesAgent = selectReceiptCandidate(salesAgentCandidates, thresholds);
+    const unmatchedFields = [
+      ...(supplierCandidates.length === 0 ? ["supplier"] : []),
+      ...(input.parsed.salesAgentName !== null && salesAgentCandidates.length === 0
+        ? ["salesAgent"]
+        : [])
+    ];
+    const warnings = [
+      ...(hasTiedHighConfidenceCandidates(supplierCandidates, thresholds)
+        ? ["Supplier contact matching produced tied high-confidence candidates."]
+        : []),
+      ...(hasTiedHighConfidenceCandidates(salesAgentCandidates, thresholds)
+        ? ["Sales-agent contact matching produced tied high-confidence candidates."]
+        : [])
+    ];
+
+    return {
+      matched: supplierCandidates.length > 0 || salesAgentCandidates.length > 0,
+      scriptId: "receipt_contact_matching",
+      intent: "RECEIPT_CONTACT_MATCH",
+      source: "context_script",
+      ocrJobId: input.ocrJobId,
+      supplier: {
+        extractedName: input.parsed.supplierName,
+        extractedPhone: input.parsed.phone,
+        extractedEmail: input.parsed.supplierEmail,
+        selectedRecordId: selectedSupplier?.recordId ?? null,
+        selectedContactId: selectedSupplier?.contactId ?? null,
+        confidence: selectedSupplier?.confidence ?? 0,
+        matchedBy: selectedSupplier?.matchedBy ?? [],
+        sources: selectedSupplier?.sources ?? [],
+        requiresConfirmation: selectedSupplier?.requiresConfirmation ?? true,
+        candidates: supplierCandidates
+      },
+      salesAgent: {
+        extractedName: input.parsed.salesAgentName,
+        extractedPhone: input.parsed.salesAgentPhone ?? input.parsed.phone,
+        extractedEmail: input.parsed.salesAgentEmail,
+        selectedRecordId: selectedSalesAgent?.recordId ?? null,
+        selectedContactId: selectedSalesAgent?.contactId ?? null,
+        confidence: selectedSalesAgent?.confidence ?? 0,
+        matchedBy: selectedSalesAgent?.matchedBy ?? [],
+        sources: selectedSalesAgent?.sources ?? [],
+        requiresConfirmation: selectedSalesAgent?.requiresConfirmation ?? true,
+        candidates: salesAgentCandidates
+      },
+      unmatchedFields,
+      warnings,
+      thresholds
+    };
+  }
+
+  private buildSupplierContactCandidates(input: {
+    businessId: string;
+    ownerUserId: string;
+    parsed: ParsedReceiptText;
+    matchedSupplier: SupplierSummary | null;
+    thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
+  }): ReceiptOCRJobSummary["supplierCandidates"] {
+    const candidates: ReceiptOCRJobSummary["supplierCandidates"] = [];
+    const addCandidate = (candidate: ReceiptOCRJobSummary["supplierCandidates"][number]) => {
+      const existingIndex = candidates.findIndex(
+        (existing) =>
+          existing.recordId === candidate.recordId && existing.contactId === candidate.contactId
+      );
+
+      if (existingIndex === -1) {
+        candidates.push(candidate);
+        return;
+      }
+
+      const existing = candidates[existingIndex]!;
+      candidates[existingIndex] = {
+        ...existing,
+        confidence: Math.max(existing.confidence, candidate.confidence),
+        matchedBy: [...new Set([...existing.matchedBy, ...candidate.matchedBy])],
+        sources: [...new Set([...existing.sources, ...candidate.sources])],
+        reason: `${existing.reason} ${candidate.reason}`.trim(),
+        requiresConfirmation:
+          Math.max(existing.confidence, candidate.confidence) < input.thresholds.autoSelect
+      };
+    };
+
+    for (const link of [...this.supplierContactLinks.values()]) {
+      if (link.businessId !== input.businessId || link.linkType !== "supplier") {
+        continue;
+      }
+
+      const supplier =
+        link.supplierId === null ? null : (this.suppliers.get(link.supplierId) ?? null);
+      const node = this.getAuthorizedContactNode(input.ownerUserId, link.networkNodeId);
+
+      if (supplier === null || node === null) {
+        continue;
+      }
+
+      const matchedBy = receiptSupplierMatchedBy(input.parsed, supplier, node);
+
+      if (matchedBy.includes("confirmed_contact_link") || matchedBy.length > 1) {
+        addCandidate(
+          createReceiptCandidate({
+            entityType: "supplier",
+            recordId: supplier.id,
+            contactId: node.id,
+            displayName: supplier.name,
+            confidence: matchedBy.includes("phone_exact") ? 0.98 : 0.96,
+            matchedBy,
+            sources: [contactSourceLabel(node), "confirmed_suppliers"],
+            thresholds: input.thresholds,
+            reason: "Matched supplier through an existing confirmed supplier-contact link."
+          })
+        );
+      }
+    }
+
+    for (const supplier of [...this.suppliers.values()].filter(
+      (supplier) => supplier.businessId === input.businessId
+    )) {
+      const linkedNode =
+        supplier.linkedPhonebookContactId === null
+          ? null
+          : this.getAuthorizedContactNode(input.ownerUserId, supplier.linkedPhonebookContactId);
+      const matchedBy = receiptSupplierMatchedBy(input.parsed, supplier, linkedNode).filter(
+        (match) =>
+          match === "tax_pin_exact" ||
+          match === "registration_number_exact" ||
+          match === "phone_exact" ||
+          match === "email_exact" ||
+          match === "name_exact"
+      );
+
+      if (matchedBy.length === 0) {
+        continue;
+      }
+
+      addCandidate(
+        createReceiptCandidate({
+          entityType: "supplier",
+          recordId: supplier.id,
+          contactId: linkedNode?.id ?? null,
+          displayName: supplier.name,
+          confidence: receiptIdentifierConfidence(matchedBy),
+          matchedBy,
+          sources: [
+            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
+            "confirmed_suppliers"
+          ],
+          thresholds: input.thresholds,
+          reason: "Matched supplier through deterministic supplier record identifiers."
+        })
+      );
+    }
+
+    for (const receipt of [...this.purchaseReceipts.values()].filter(
+      (receipt) => receipt.businessId === input.businessId
+    )) {
+      if (
+        input.parsed.supplierName === null ||
+        normalizeReceiptName(receipt.supplierName) !==
+          normalizeReceiptName(input.parsed.supplierName)
+      ) {
+        continue;
+      }
+
+      addCandidate(
+        createReceiptCandidate({
+          entityType: "supplier",
+          recordId: receipt.supplierId,
+          contactId: null,
+          displayName: receipt.supplierName,
+          confidence: 0.88,
+          matchedBy: ["previous_receipt_pattern"],
+          sources: ["previous_receipts"],
+          thresholds: input.thresholds,
+          reason: "Matched supplier through a previous confirmed receipt pattern."
+        })
+      );
+    }
+
+    if (input.matchedSupplier !== null) {
+      const linkedNode =
+        input.matchedSupplier.linkedPhonebookContactId === null
+          ? null
+          : this.getAuthorizedContactNode(
+              input.ownerUserId,
+              input.matchedSupplier.linkedPhonebookContactId
+            );
+      const matchedBy = receiptSupplierMatchedBy(input.parsed, input.matchedSupplier, linkedNode);
+
+      addCandidate(
+        createReceiptCandidate({
+          entityType: "supplier",
+          recordId: input.matchedSupplier.id,
+          contactId: linkedNode?.id ?? null,
+          displayName: input.matchedSupplier.name,
+          confidence: matchedBy.includes("phone_exact") ? 0.97 : 0.9,
+          matchedBy: matchedBy.length === 0 ? ["previous_receipt_pattern"] : matchedBy,
+          sources: [
+            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
+            "previous_receipts",
+            "confirmed_suppliers"
+          ],
+          thresholds: input.thresholds,
+          reason: "Matched supplier from OCR fields against confirmed supplier records."
+        })
+      );
+    }
+
+    for (const node of this.authorizedReceiptContactNodes(input.ownerUserId)) {
+      if (
+        input.parsed.supplierName !== null &&
+        normalizeReceiptName(node.displayName) === normalizeReceiptName(input.parsed.supplierName)
+      ) {
+        addCandidate(
+          createReceiptCandidate({
+            entityType: "contact",
+            recordId: null,
+            contactId: node.id,
+            displayName: node.displayName,
+            confidence: 0.82,
+            matchedBy: ["name_exact"],
+            sources: [contactSourceLabel(node)],
+            thresholds: input.thresholds,
+            reason: "Matched OCR supplier name against an authorized synced contact."
+          })
+        );
+      }
+    }
+
+    return candidates.sort(compareReceiptCandidates);
+  }
+
+  private buildSalesAgentContactCandidates(input: {
+    businessId: string;
+    ownerUserId: string;
+    supplierId: string | null;
+    parsed: ParsedReceiptText;
+    matchedAgent: SalesAgentSummary | null;
+    thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
+  }): ReceiptOCRJobSummary["salesAgentCandidates"] {
+    const candidates: ReceiptOCRJobSummary["salesAgentCandidates"] = [];
+    const addCandidate = (candidate: ReceiptOCRJobSummary["salesAgentCandidates"][number]) => {
+      const existingIndex = candidates.findIndex(
+        (existing) =>
+          existing.recordId === candidate.recordId && existing.contactId === candidate.contactId
+      );
+
+      if (existingIndex === -1) {
+        candidates.push(candidate);
+        return;
+      }
+
+      const existing = candidates[existingIndex]!;
+      candidates[existingIndex] = {
+        ...existing,
+        confidence: Math.max(existing.confidence, candidate.confidence),
+        matchedBy: [...new Set([...existing.matchedBy, ...candidate.matchedBy])],
+        sources: [...new Set([...existing.sources, ...candidate.sources])],
+        requiresConfirmation:
+          Math.max(existing.confidence, candidate.confidence) < input.thresholds.autoSelect
+      };
+    };
+
+    for (const link of [...this.supplierContactLinks.values()]) {
+      if (
+        link.businessId !== input.businessId ||
+        link.linkType !== "sales_agent" ||
+        (input.supplierId !== null && link.supplierId !== input.supplierId)
+      ) {
+        continue;
+      }
+
+      const agent =
+        link.salesAgentId === null ? null : (this.salesAgents.get(link.salesAgentId) ?? null);
+      const node = this.getAuthorizedContactNode(input.ownerUserId, link.networkNodeId);
+
+      if (agent === null || node === null) {
+        continue;
+      }
+
+      const matchedBy = receiptSalesAgentMatchedBy(input.parsed, agent, node, input.supplierId);
+
+      if (matchedBy.includes("confirmed_contact_link") || matchedBy.length > 1) {
+        addCandidate(
+          createReceiptCandidate({
+            entityType: "sales_agent",
+            recordId: agent.id,
+            contactId: node.id,
+            displayName: agent.name,
+            confidence: matchedBy.includes("phone_exact") ? 0.97 : 0.86,
+            matchedBy,
+            sources: [contactSourceLabel(node), "confirmed_sales_agents"],
+            thresholds: input.thresholds,
+            reason: "Matched sales agent through an existing confirmed contact link."
+          })
+        );
+      }
+    }
+
+    for (const agent of [...this.salesAgents.values()].filter(
+      (agent) =>
+        agent.businessId === input.businessId &&
+        (input.supplierId === null || agent.supplierId === input.supplierId)
+    )) {
+      const linkedNode =
+        agent.linkedPhonebookContactId === null
+          ? null
+          : this.getAuthorizedContactNode(input.ownerUserId, agent.linkedPhonebookContactId);
+      const matchedBy = receiptSalesAgentMatchedBy(
+        input.parsed,
+        agent,
+        linkedNode,
+        input.supplierId
+      ).filter(
+        (match) =>
+          match === "phone_exact" ||
+          match === "name_exact" ||
+          match === "name_supplier_combination" ||
+          match === "confirmed_contact_link"
+      );
+
+      if (matchedBy.length === 0) {
+        continue;
+      }
+
+      addCandidate(
+        createReceiptCandidate({
+          entityType: "sales_agent",
+          recordId: agent.id,
+          contactId: linkedNode?.id ?? null,
+          displayName: agent.name,
+          confidence: receiptIdentifierConfidence(matchedBy),
+          matchedBy,
+          sources: [
+            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
+            "confirmed_sales_agents"
+          ],
+          thresholds: input.thresholds,
+          reason: "Matched sales agent through deterministic supplier-scoped identifiers."
+        })
+      );
+    }
+
+    if (input.matchedAgent !== null) {
+      const linkedNode =
+        input.matchedAgent.linkedPhonebookContactId === null
+          ? null
+          : this.getAuthorizedContactNode(
+              input.ownerUserId,
+              input.matchedAgent.linkedPhonebookContactId
+            );
+      const matchedBy = receiptSalesAgentMatchedBy(
+        input.parsed,
+        input.matchedAgent,
+        linkedNode,
+        input.supplierId
+      );
+
+      addCandidate(
+        createReceiptCandidate({
+          entityType: "sales_agent",
+          recordId: input.matchedAgent.id,
+          contactId: linkedNode?.id ?? null,
+          displayName: input.matchedAgent.name,
+          confidence: matchedBy.includes("phone_exact") ? 0.94 : 0.86,
+          matchedBy: matchedBy.length === 0 ? ["previous_receipt_association"] : matchedBy,
+          sources: [
+            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
+            "previous_receipts",
+            "confirmed_sales_agents"
+          ],
+          thresholds: input.thresholds,
+          reason: "Matched sales agent from OCR fields against confirmed sales-agent records."
+        })
+      );
+    }
+
+    for (const node of this.authorizedReceiptContactNodes(input.ownerUserId)) {
+      if (
+        input.parsed.salesAgentName !== null &&
+        normalizeReceiptName(node.displayName) === normalizeReceiptName(input.parsed.salesAgentName)
+      ) {
+        addCandidate(
+          createReceiptCandidate({
+            entityType: "contact",
+            recordId: null,
+            contactId: node.id,
+            displayName: node.displayName,
+            confidence: 0.8,
+            matchedBy: ["name_exact"],
+            sources: [contactSourceLabel(node)],
+            thresholds: input.thresholds,
+            reason: "Matched OCR sales-agent name against an authorized synced contact."
+          })
+        );
+      }
+    }
+
+    return candidates.sort(compareReceiptCandidates);
+  }
+
+  private authorizedReceiptContactNodes(ownerUserId: string): NetworkNodeSummary[] {
+    return [...this.networkNodes.values()].filter(
+      (node) =>
+        node.ownerUserId === ownerUserId &&
+        node.degree === 1 &&
+        node.visibilityStatus === "direct" &&
+        node.consentStatus !== "revoked" &&
+        this.isNetworkSourceActive(node.sourceId)
+    );
+  }
+
+  private getAuthorizedContactNode(
+    ownerUserId: string,
+    networkNodeId: string
+  ): NetworkNodeSummary | null {
+    const node = this.networkNodes.get(networkNodeId);
+
+    if (
+      node === undefined ||
+      node.ownerUserId !== ownerUserId ||
+      node.consentStatus === "revoked" ||
+      !this.isNetworkSourceActive(node.sourceId)
+    ) {
+      return null;
+    }
+
+    return node;
+  }
+
+  private isNetworkSourceActive(sourceId: string | null): boolean {
+    if (sourceId === null) {
+      return true;
+    }
+
+    return this.networkSources.get(sourceId)?.status === "active";
   }
 
   listPurchaseReceipts(input: {
@@ -8690,15 +9145,49 @@ function createPublicAgentId(business: BusinessSummary): string {
 
 interface ParsedReceiptText {
   supplierName: string | null;
+  supplierTradingName: string | null;
+  supplierLegalName: string | null;
   salesAgentName: string | null;
   phone: string | null;
+  alternatePhone: string | null;
+  supplierEmail: string | null;
+  supplierAddress: string | null;
+  supplierTaxPin: string | null;
+  supplierRegistrationNumber: string | null;
+  supplierBranch: string | null;
+  supplierAccountNumber: string | null;
+  salesAgentPhone: string | null;
+  salesAgentEmail: string | null;
+  salesAgentNumber: string | null;
+  salesAgentSupplierRepresented: string | null;
+  salesAgentBranch: string | null;
+  salesAgentNotes: string | null;
+  receiptNumber: string | null;
+  invoiceNumber: string | null;
+  orderNumber: string | null;
   receiptDate: string | null;
+  purchaseTime: string | null;
+  currency: string | null;
+  subtotal: number | null;
+  discount: number | null;
+  tax: number | null;
   total: number | null;
+  amountPaid: number | null;
+  balance: number | null;
+  paymentMethod: string | null;
+  tillNumber: string | null;
+  paybillNumber: string | null;
+  transactionReference: string | null;
   items: Array<{
     name: string;
+    itemCode: string | null;
+    sku: string | null;
     quantity: number;
+    unit: string | null;
     unitPrice: number;
     total: number;
+    batchNumber: string | null;
+    expiryDate: string | null;
   }>;
 }
 
@@ -8711,10 +9200,64 @@ function parseReceiptText(text: string): ParsedReceiptText {
   return {
     supplierName:
       findReceiptField(lines, ["supplier", "supplier name", "vendor"]) ?? lines[0] ?? null,
+    supplierTradingName: findReceiptField(lines, ["trading name", "business name"]),
+    supplierLegalName: findReceiptField(lines, ["legal name", "registered name"]),
     salesAgentName: findReceiptField(lines, ["agent", "sales agent", "served by"]),
     phone: normalizeReceiptPhone(findReceiptField(lines, ["phone", "tel", "mobile"]) ?? text),
+    alternatePhone: normalizeReceiptPhone(
+      findReceiptField(lines, ["alternate phone", "alt phone"])
+    ),
+    supplierEmail: normalizeReceiptEmail(
+      findReceiptField(lines, ["email", "supplier email"]) ?? text
+    ),
+    supplierAddress: findReceiptField(lines, ["address", "physical address", "location"]),
+    supplierTaxPin: findReceiptField(lines, ["tax pin", "pin", "kra pin"]),
+    supplierRegistrationNumber: findReceiptField(lines, [
+      "registration",
+      "registration number",
+      "reg no"
+    ]),
+    supplierBranch: findReceiptField(lines, ["branch"]),
+    supplierAccountNumber: findReceiptField(lines, [
+      "account",
+      "account number",
+      "supplier number"
+    ]),
+    salesAgentPhone: normalizeReceiptPhone(
+      findReceiptField(lines, ["agent phone", "sales agent phone"])
+    ),
+    salesAgentEmail: normalizeReceiptEmail(
+      findReceiptField(lines, ["agent email", "sales agent email"])
+    ),
+    salesAgentNumber: findReceiptField(lines, [
+      "agent number",
+      "employee number",
+      "sales agent number"
+    ]),
+    salesAgentSupplierRepresented: findReceiptField(lines, ["supplier represented"]),
+    salesAgentBranch: findReceiptField(lines, ["agent branch", "sales agent branch"]),
+    salesAgentNotes: findReceiptField(lines, ["agent notes", "sales agent notes"]),
+    receiptNumber: findReceiptField(lines, ["receipt", "receipt number", "receipt no"]),
+    invoiceNumber: findReceiptField(lines, ["invoice", "invoice number", "invoice no"]),
+    orderNumber: findReceiptField(lines, ["order", "order number", "order no"]),
     receiptDate: normalizeReceiptDate(findReceiptField(lines, ["date"]) ?? text),
+    purchaseTime: normalizeReceiptTime(findReceiptField(lines, ["time", "purchase time"]) ?? text),
+    currency: normalizeReceiptCurrency(findReceiptField(lines, ["currency"]) ?? text),
+    subtotal: parseReceiptMoney(findReceiptField(lines, ["subtotal", "sub total"])),
+    discount: parseReceiptMoney(findReceiptField(lines, ["discount"])),
+    tax: parseReceiptMoney(findReceiptField(lines, ["tax", "vat"])),
     total: parseReceiptMoney(findReceiptField(lines, ["total", "amount"])),
+    amountPaid: parseReceiptMoney(findReceiptField(lines, ["amount paid", "paid"])),
+    balance: parseReceiptMoney(findReceiptField(lines, ["balance"])),
+    paymentMethod: findReceiptField(lines, ["payment method", "paid by", "method"]),
+    tillNumber: findReceiptField(lines, ["till", "till number"]),
+    paybillNumber: findReceiptField(lines, ["paybill", "paybill number"]),
+    transactionReference: findReceiptField(lines, [
+      "transaction",
+      "transaction reference",
+      "mpesa code",
+      "reference"
+    ]),
     items: parseReceiptLineItems(lines)
   };
 }
@@ -8744,7 +9287,32 @@ function normalizeReceiptPhone(value: string | null): string | null {
     return null;
   }
 
-  return normalizeDestination("phone", match[0].replace(/[\s-]+/gu, ""));
+  const compact = match[0].replace(/[\s-]+/gu, "");
+  const kenyanNormalized = /^0[17]\d{8}$/u.test(compact)
+    ? `+254${compact.slice(1)}`
+    : /^254[17]\d{8}$/u.test(compact)
+      ? `+${compact}`
+      : compact;
+
+  return normalizeDestination("phone", kenyanNormalized);
+}
+
+function normalizeReceiptEmail(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu);
+
+  if (match === null) {
+    return null;
+  }
+
+  try {
+    return normalizeDestination("email", match[0]);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeReceiptDate(value: string | null): string | null {
@@ -8768,6 +9336,29 @@ function parseReceiptMoney(value: string | null): number | null {
   return match === null ? null : roundMoney(Number(match[0].replace(",", ".")));
 }
 
+function normalizeReceiptTime(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/u);
+  return match?.[0] ?? null;
+}
+
+function normalizeReceiptCurrency(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/\b(KES|KSH|USD|EUR|GBP|TZS|UGX)\b/iu);
+
+  if (match === null) {
+    return null;
+  }
+
+  return match[1]?.toUpperCase() === "KSH" ? "KES" : (match[1]?.toUpperCase() ?? null);
+}
+
 function parseReceiptLineItems(lines: string[]): ParsedReceiptText["items"] {
   const items: ParsedReceiptText["items"] = [];
 
@@ -8786,13 +9377,311 @@ function parseReceiptLineItems(lines: string[]): ParsedReceiptText["items"] {
 
     items.push({
       name: match[1]?.trim() ?? "Receipt item",
+      itemCode: null,
+      sku: null,
       quantity,
+      unit: null,
       unitPrice: roundMoney(unitPrice),
-      total: roundMoney(total)
+      total: roundMoney(total),
+      batchNumber: null,
+      expiryDate: null
     });
   }
 
   return items;
+}
+
+function buildReceiptStructuredExtraction(
+  parsed: ParsedReceiptText
+): ReceiptOCRJobSummary["structuredExtraction"] {
+  return {
+    supplier: {
+      supplierName: parsed.supplierName,
+      tradingName: parsed.supplierTradingName,
+      legalName: parsed.supplierLegalName,
+      phoneNumber: parsed.phone,
+      alternatePhoneNumber: parsed.alternatePhone,
+      email: parsed.supplierEmail,
+      physicalAddress: parsed.supplierAddress,
+      taxPin: parsed.supplierTaxPin,
+      registrationNumber: parsed.supplierRegistrationNumber,
+      branch: parsed.supplierBranch,
+      accountNumber: parsed.supplierAccountNumber
+    },
+    salesAgent: {
+      name: parsed.salesAgentName,
+      phoneNumber: parsed.salesAgentPhone ?? parsed.phone,
+      email: parsed.salesAgentEmail,
+      agentNumber: parsed.salesAgentNumber,
+      supplierRepresented: parsed.salesAgentSupplierRepresented,
+      branch: parsed.salesAgentBranch,
+      notes: parsed.salesAgentNotes
+    },
+    receipt: {
+      receiptNumber: parsed.receiptNumber,
+      invoiceNumber: parsed.invoiceNumber,
+      orderNumber: parsed.orderNumber,
+      purchaseDate: parsed.receiptDate,
+      purchaseTime: parsed.purchaseTime,
+      currency: parsed.currency,
+      subtotal: parsed.subtotal,
+      discount: parsed.discount,
+      tax: parsed.tax,
+      total: parsed.total,
+      amountPaid: parsed.amountPaid,
+      balance: parsed.balance,
+      paymentMethod: parsed.paymentMethod,
+      tillNumber: parsed.tillNumber,
+      paybillNumber: parsed.paybillNumber,
+      transactionReference: parsed.transactionReference
+    },
+    products: parsed.items.map((item) => ({
+      itemName: item.name,
+      itemCode: item.itemCode,
+      sku: item.sku,
+      quantity: item.quantity,
+      unit: item.unit,
+      unitPrice: item.unitPrice,
+      lineTotal: item.total,
+      batchNumber: item.batchNumber,
+      expiryDate: item.expiryDate
+    }))
+  };
+}
+
+function readReceiptContactMatchThresholds(): ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"] {
+  return {
+    autoSelect: readDecimalEnv("OCR_CONTACT_MATCH_AUTO_SELECT", 0.95),
+    confirmationRequired: readDecimalEnv("OCR_CONTACT_MATCH_CONFIRMATION_REQUIRED", 0.8),
+    rejectBelow: readDecimalEnv("OCR_CONTACT_MATCH_REJECT_BELOW", 0.5)
+  };
+}
+
+function readDecimalEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
+}
+
+function createReceiptCandidate(input: {
+  entityType: ReceiptOCRJobSummary["supplierCandidates"][number]["entityType"];
+  recordId: string | null;
+  contactId: string | null;
+  displayName: string;
+  confidence: number;
+  matchedBy: string[];
+  sources: string[];
+  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
+  reason: string;
+}): ReceiptOCRJobSummary["supplierCandidates"][number] {
+  const id = input.recordId ?? input.contactId ?? randomUUID();
+
+  return {
+    id,
+    entityType: input.entityType,
+    recordId: input.recordId,
+    contactId: input.contactId,
+    displayName: input.displayName,
+    name: input.displayName,
+    confidence: roundMoney(input.confidence),
+    matchedBy: [...new Set(input.matchedBy)],
+    sources: [...new Set(input.sources)],
+    requiresConfirmation: input.confidence < input.thresholds.autoSelect,
+    reason: input.reason,
+    sourceProvider: input.sources[0] ?? null
+  };
+}
+
+function selectReceiptCandidate(
+  candidates: ReceiptOCRJobSummary["supplierCandidates"],
+  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"]
+): ReceiptOCRJobSummary["supplierCandidates"][number] | null {
+  const [first, second] = candidates;
+
+  if (first === undefined || first.confidence < thresholds.rejectBelow) {
+    return null;
+  }
+
+  if (
+    second !== undefined &&
+    first.confidence >= thresholds.autoSelect &&
+    second.confidence >= thresholds.autoSelect &&
+    Math.abs(first.confidence - second.confidence) < 0.01
+  ) {
+    return {
+      ...first,
+      requiresConfirmation: true
+    };
+  }
+
+  return first;
+}
+
+function hasTiedHighConfidenceCandidates(
+  candidates: ReceiptOCRJobSummary["supplierCandidates"],
+  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"]
+): boolean {
+  const [first, second] = candidates;
+  return (
+    first !== undefined &&
+    second !== undefined &&
+    first.confidence >= thresholds.autoSelect &&
+    second.confidence >= thresholds.autoSelect &&
+    Math.abs(first.confidence - second.confidence) < 0.01
+  );
+}
+
+function compareReceiptCandidates(
+  left: ReceiptOCRJobSummary["supplierCandidates"][number],
+  right: ReceiptOCRJobSummary["supplierCandidates"][number]
+): number {
+  return right.confidence - left.confidence || left.displayName.localeCompare(right.displayName);
+}
+
+function receiptSupplierMatchedBy(
+  parsed: ParsedReceiptText,
+  supplier: SupplierSummary,
+  node: NetworkNodeSummary | null
+): string[] {
+  const matchedBy: string[] = [];
+
+  if (node !== null && supplier.linkedPhonebookContactId === node.id) {
+    matchedBy.push("confirmed_contact_link");
+  }
+
+  if (
+    parsed.phone !== null &&
+    supplier.phone !== null &&
+    normalizeReceiptPhone(supplier.phone) === parsed.phone
+  ) {
+    matchedBy.push("phone_exact");
+  }
+
+  if (
+    parsed.supplierEmail !== null &&
+    supplier.email !== null &&
+    normalizeReceiptEmail(supplier.email) === parsed.supplierEmail
+  ) {
+    matchedBy.push("email_exact");
+  }
+
+  if (
+    parsed.supplierTaxPin !== null &&
+    supplier.notes !== null &&
+    normalizeReceiptIdentifier(supplier.notes).includes(
+      normalizeReceiptIdentifier(parsed.supplierTaxPin)
+    )
+  ) {
+    matchedBy.push("tax_pin_exact");
+  }
+
+  if (
+    parsed.supplierRegistrationNumber !== null &&
+    supplier.notes !== null &&
+    normalizeReceiptIdentifier(supplier.notes).includes(
+      normalizeReceiptIdentifier(parsed.supplierRegistrationNumber)
+    )
+  ) {
+    matchedBy.push("registration_number_exact");
+  }
+
+  if (
+    parsed.supplierName !== null &&
+    normalizeReceiptName(supplier.name) === normalizeReceiptName(parsed.supplierName)
+  ) {
+    matchedBy.push("name_exact");
+  }
+
+  if (
+    node !== null &&
+    parsed.supplierName !== null &&
+    normalizeReceiptName(node.displayName) === normalizeReceiptName(parsed.supplierName)
+  ) {
+    matchedBy.push("external_contact_id");
+  }
+
+  return [...new Set(matchedBy)];
+}
+
+function receiptIdentifierConfidence(matchedBy: string[]): number {
+  if (
+    matchedBy.includes("confirmed_contact_link") ||
+    matchedBy.includes("tax_pin_exact") ||
+    matchedBy.includes("registration_number_exact") ||
+    matchedBy.includes("phone_exact") ||
+    matchedBy.includes("email_exact")
+  ) {
+    return 0.97;
+  }
+
+  if (matchedBy.includes("name_supplier_combination")) {
+    return 0.86;
+  }
+
+  if (matchedBy.includes("name_exact")) {
+    return 0.82;
+  }
+
+  return 0.75;
+}
+
+function normalizeReceiptIdentifier(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]+/gu, "");
+}
+
+function receiptSalesAgentMatchedBy(
+  parsed: ParsedReceiptText,
+  agent: SalesAgentSummary,
+  node: NetworkNodeSummary | null,
+  supplierId: string | null
+): string[] {
+  const matchedBy: string[] = [];
+  const extractedPhone = parsed.salesAgentPhone ?? parsed.phone;
+
+  if (node !== null && agent.linkedPhonebookContactId === node.id) {
+    matchedBy.push("confirmed_contact_link");
+  }
+
+  if (
+    extractedPhone !== null &&
+    agent.phone !== null &&
+    normalizeReceiptPhone(agent.phone) === extractedPhone
+  ) {
+    matchedBy.push("phone_exact");
+  }
+
+  if (
+    parsed.salesAgentName !== null &&
+    normalizeReceiptName(agent.name) === normalizeReceiptName(parsed.salesAgentName)
+  ) {
+    matchedBy.push("name_exact");
+  }
+
+  if (supplierId !== null && agent.supplierId === supplierId) {
+    matchedBy.push("name_supplier_combination");
+  }
+
+  return [...new Set(matchedBy)];
+}
+
+function contactSourceLabel(node: NetworkNodeSummary): string {
+  if (node.sourceType === "phone_contact") {
+    return "phone_contacts";
+  }
+
+  if (node.sourcePlatform !== null) {
+    return `${node.sourcePlatform}_contacts`;
+  }
+
+  return node.sourceType;
+}
+
+function normalizeReceiptName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[.,'’"&/()-]+/gu, " ")
+    .replace(/\b(ltd|limited|co|company|enterprises|enterprise|traders|shop|store)\b/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function normalizeReceiptContentType(contentType: string): string {

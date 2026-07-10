@@ -114,10 +114,16 @@ export type ReceiptContextScriptIntent =
   | "RECEIPT_CORRECT"
   | "RECEIPT_CANCEL"
   | "RECEIPT_LOOKUP"
-  | "RECEIPT_LIST";
+  | "RECEIPT_LIST"
+  | "RECEIPT_CONTACT_MATCH"
+  | "RECEIPT_SUPPLIER_MATCH"
+  | "RECEIPT_SALES_AGENT_MATCH"
+  | "RECEIPT_CONTACT_LINK"
+  | "RECEIPT_CONTACT_CREATE"
+  | "RECEIPT_CONTACT_REVIEW";
 
 export interface ReceiptContextScriptMatch {
-  scriptId: "receipt_ocr_commands";
+  scriptId: "receipt_ocr_commands" | "receipt_contact_matching";
   intent: ReceiptContextScriptIntent;
   matchedPhrase: string;
   confidence: number;
@@ -129,6 +135,55 @@ export interface ReceiptContextScriptMatch {
     dateRange?: string;
   };
 }
+
+export const receiptContactMatchingContextScript = {
+  script: "receipt_contact_matching",
+  version: 1,
+  priority: "required",
+  enabled: true,
+  runtime: {
+    run_after: ["receipt_ocr_commands"],
+    run_before_model: true,
+    require_structured_result: true
+  },
+  sources: [
+    "phone_contacts",
+    "google_contacts",
+    "meta_contacts",
+    "instagram_contacts",
+    "linkedin_contacts",
+    "x_contacts",
+    "whatsapp_contacts",
+    "manual_contacts",
+    "confirmed_suppliers",
+    "confirmed_sales_agents"
+  ],
+  normalization: {
+    phones: {
+      format: "E164",
+      default_country: "shop_country"
+    },
+    names: {
+      lowercase: true,
+      collapse_spaces: true,
+      preserve_original: true
+    },
+    emails: {
+      lowercase: true,
+      validate: true
+    }
+  },
+  thresholds: {
+    auto_select: 0.95,
+    confirmation_required: 0.8,
+    reject_below: 0.5
+  },
+  safety: {
+    never_overwrite_exact_identifier_match: true,
+    never_create_contact_without_confirmation: true,
+    never_merge_contacts_without_confirmation: true
+  }
+} as const;
 
 export interface RuntimeModelOutputParseResult {
   ok: boolean;
@@ -820,6 +875,43 @@ export function parseReceiptContextScriptCommand(input: {
     {
       intent: "RECEIPT_LIST",
       phrases: ["show receipts", "list receipts", "show purchase receipts"]
+    },
+    {
+      intent: "RECEIPT_CONTACT_MATCH",
+      phrases: [
+        "match this receipt to a supplier",
+        "match receipt contacts",
+        "link this receipt to my contacts",
+        "linganisha risiti na supplier",
+        "unganisha risiti na contacts",
+        "match hii receipt na supplier",
+        "link hii risiti na phonebook"
+      ]
+    },
+    {
+      intent: "RECEIPT_SUPPLIER_MATCH",
+      phrases: [
+        "find the supplier from this receipt",
+        "find this supplier in my phonebook",
+        "tafuta supplier wa risiti",
+        "tafuta supplier kwa contacts"
+      ]
+    },
+    {
+      intent: "RECEIPT_SALES_AGENT_MATCH",
+      phrases: ["identify the sales agent", "tambua sales agent", "tafuta sales agent kwa contacts"]
+    },
+    {
+      intent: "RECEIPT_CONTACT_CREATE",
+      phrases: [
+        "save supplier from receipt",
+        "create supplier from this receipt",
+        "tengeneza supplier kutoka risiti"
+      ]
+    },
+    {
+      intent: "RECEIPT_CONTACT_REVIEW",
+      phrases: ["show receipts from this contact", "review receipt contacts"]
     }
   ];
 
@@ -927,10 +1019,19 @@ export function createRuntimeToolProposalFromReceiptContextScript(
       };
 
     case "RECEIPT_LIST":
+    case "RECEIPT_CONTACT_MATCH":
+    case "RECEIPT_SUPPLIER_MATCH":
+    case "RECEIPT_SALES_AGENT_MATCH":
+    case "RECEIPT_CONTACT_LINK":
+    case "RECEIPT_CONTACT_CREATE":
+    case "RECEIPT_CONTACT_REVIEW":
       return {
-        toolName: "receipt.list",
+        toolName:
+          match.intent === "RECEIPT_LIST" || match.intent === "RECEIPT_CONTACT_REVIEW"
+            ? "receipt.list"
+            : "receipt.review",
         input: baseInput,
-        reason: `Receipt OCR commands routed list from "${match.matchedPhrase}".`,
+        reason: `Receipt contact context routed ${match.intent} from "${match.matchedPhrase}".`,
         validation: valid()
       };
   }

@@ -388,6 +388,21 @@ interface PurchaseReceiptSummary {
   lineItems: ReceiptLineItemSummary[];
 }
 
+interface ReceiptOCRMatchCandidate {
+  id: string;
+  entityType: "supplier" | "sales_agent" | "contact";
+  recordId: string | null;
+  contactId: string | null;
+  displayName: string;
+  name: string;
+  confidence: number;
+  matchedBy: string[];
+  sources: string[];
+  requiresConfirmation: boolean;
+  reason: string;
+  sourceProvider: string | null;
+}
+
 interface ReceiptOCRJobSummary {
   id: string;
   businessId: string;
@@ -400,10 +415,13 @@ interface ReceiptOCRJobSummary {
     | "VALIDATING"
     | "PREPROCESSING"
     | "OCR_RUNNING"
+    | "FIELDS_EXTRACTED"
+    | "CONTACT_MATCHING"
     | "PARSING"
     | "MATCHING"
     | "REVIEW_REQUIRED"
     | "CONFIRMED"
+    | "PURCHASE_RECORDED"
     | "COMPLETED"
     | "FAILED"
     | "CANCELLED"
@@ -438,18 +456,99 @@ interface ReceiptOCRJobSummary {
     confidence: number;
     sourceText: string | null;
   }>;
-  supplierCandidates: Array<{
-    id: string;
-    name: string;
-    confidence: number;
-    reason: string;
-  }>;
-  salesAgentCandidates: Array<{
-    id: string;
-    name: string;
-    confidence: number;
-    reason: string;
-  }>;
+  structuredExtraction: {
+    supplier: {
+      supplierName: string | null;
+      tradingName: string | null;
+      legalName: string | null;
+      phoneNumber: string | null;
+      alternatePhoneNumber: string | null;
+      email: string | null;
+      physicalAddress: string | null;
+      taxPin: string | null;
+      registrationNumber: string | null;
+      branch: string | null;
+      accountNumber: string | null;
+    };
+    salesAgent: {
+      name: string | null;
+      phoneNumber: string | null;
+      email: string | null;
+      agentNumber: string | null;
+      supplierRepresented: string | null;
+      branch: string | null;
+      notes: string | null;
+    };
+    receipt: {
+      receiptNumber: string | null;
+      invoiceNumber: string | null;
+      orderNumber: string | null;
+      purchaseDate: string | null;
+      purchaseTime: string | null;
+      currency: string | null;
+      subtotal: number | null;
+      discount: number | null;
+      tax: number | null;
+      total: number | null;
+      amountPaid: number | null;
+      balance: number | null;
+      paymentMethod: string | null;
+      tillNumber: string | null;
+      paybillNumber: string | null;
+      transactionReference: string | null;
+    };
+    products: Array<{
+      itemName: string;
+      itemCode: string | null;
+      sku: string | null;
+      quantity: number;
+      unit: string | null;
+      unitPrice: number;
+      lineTotal: number;
+      batchNumber: string | null;
+      expiryDate: string | null;
+    }>;
+  };
+  contactMatchingResult: {
+    matched: boolean;
+    scriptId: "receipt_contact_matching";
+    intent: "RECEIPT_CONTACT_MATCH";
+    source: "context_script";
+    ocrJobId: string;
+    supplier: {
+      extractedName: string | null;
+      extractedPhone: string | null;
+      extractedEmail: string | null;
+      selectedRecordId: string | null;
+      selectedContactId: string | null;
+      confidence: number;
+      matchedBy: string[];
+      sources: string[];
+      requiresConfirmation: boolean;
+      candidates: ReceiptOCRMatchCandidate[];
+    };
+    salesAgent: {
+      extractedName: string | null;
+      extractedPhone: string | null;
+      extractedEmail: string | null;
+      selectedRecordId: string | null;
+      selectedContactId: string | null;
+      confidence: number;
+      matchedBy: string[];
+      sources: string[];
+      requiresConfirmation: boolean;
+      candidates: ReceiptOCRMatchCandidate[];
+    };
+    unmatchedFields: string[];
+    warnings: string[];
+    thresholds: {
+      autoSelect: number;
+      confirmationRequired: number;
+      rejectBelow: number;
+    };
+  };
+  supplierCandidates: ReceiptOCRMatchCandidate[];
+  salesAgentCandidates: ReceiptOCRMatchCandidate[];
   supplierName: string | null;
   salesAgentName: string | null;
   phone: string | null;
@@ -458,8 +557,13 @@ interface ReceiptOCRJobSummary {
   items: Array<{
     name: string;
     quantity: number;
+    unit?: string | null;
+    itemCode?: string | null;
+    sku?: string | null;
     unitPrice: number;
     total: number;
+    batchNumber?: string | null;
+    expiryDate?: string | null;
   }>;
   matchedSupplierId: string | null;
   matchedSalesAgentId: string | null;
@@ -7951,6 +8055,41 @@ function SupplierSurface(props: SupplierSurfaceProps) {
                         <span>Confidence: {Math.round(receiptJob.averageConfidence * 100)}%</span>
                         <span>Supplier: {receiptJob.supplierName ?? "No match"}</span>
                         <span>Sales agent: {receiptJob.salesAgentName ?? "No match"}</span>
+                        <div className="mini-card">
+                          <strong>Receipt contact matching</strong>
+                          <span>
+                            Supplier confidence:{" "}
+                            {Math.round(receiptJob.contactMatchingResult.supplier.confidence * 100)}
+                            %
+                          </span>
+                          <small>
+                            Matched from:{" "}
+                            {receiptJob.contactMatchingResult.supplier.sources.join(", ") ||
+                              "No contact match"}
+                          </small>
+                          <small>
+                            Why:{" "}
+                            {receiptJob.contactMatchingResult.supplier.matchedBy.join(", ") ||
+                              "Needs review"}
+                          </small>
+                          <span>
+                            Sales-agent confidence:{" "}
+                            {Math.round(
+                              receiptJob.contactMatchingResult.salesAgent.confidence * 100
+                            )}
+                            %
+                          </span>
+                          <small>
+                            Matched from:{" "}
+                            {receiptJob.contactMatchingResult.salesAgent.sources.join(", ") ||
+                              "No contact match"}
+                          </small>
+                          <small>
+                            Why:{" "}
+                            {receiptJob.contactMatchingResult.salesAgent.matchedBy.join(", ") ||
+                              "Needs review"}
+                          </small>
+                        </div>
                         <span>Items: {receiptJob.items.length}</span>
                         <span>
                           Uploaded image retained temporarily:{" "}

@@ -28,6 +28,19 @@ interface SupplierResponse {
   name: string;
 }
 
+interface SalesAgentResponse {
+  id: string;
+  supplierId: string;
+  name: string;
+}
+
+interface NetworkGraphResponse {
+  nodes: Array<{
+    id: string;
+    displayName: string;
+  }>;
+}
+
 interface ReceiptOCRJobResponse {
   id: string;
   status: string;
@@ -36,7 +49,61 @@ interface ReceiptOCRJobResponse {
   fallbackUsed: boolean;
   blocks: Array<{ text: string; confidence: number }>;
   fieldEvidence: Array<{ field: string; value: string | number | null }>;
-  supplierCandidates: Array<{ id: string; name: string; confidence: number }>;
+  supplierCandidates: Array<{
+    id: string;
+    name: string;
+    confidence: number;
+    matchedBy: string[];
+    sources: string[];
+    requiresConfirmation: boolean;
+    contactId: string | null;
+    recordId: string | null;
+  }>;
+  salesAgentCandidates: Array<{
+    id: string;
+    name: string;
+    confidence: number;
+    matchedBy: string[];
+    sources: string[];
+    requiresConfirmation: boolean;
+    contactId: string | null;
+    recordId: string | null;
+  }>;
+  structuredExtraction: {
+    supplier: {
+      supplierName: string | null;
+      phoneNumber: string | null;
+      email: string | null;
+      taxPin: string | null;
+    };
+    receipt: {
+      receiptNumber: string | null;
+      currency: string | null;
+      total: number | null;
+    };
+  };
+  contactMatchingResult: {
+    scriptId: "receipt_contact_matching";
+    intent: "RECEIPT_CONTACT_MATCH";
+    supplier: {
+      confidence: number;
+      matchedBy: string[];
+      sources: string[];
+      requiresConfirmation: boolean;
+      selectedRecordId: string | null;
+      selectedContactId: string | null;
+    };
+    salesAgent: {
+      confidence: number;
+      matchedBy: string[];
+      sources: string[];
+      requiresConfirmation: boolean;
+      selectedRecordId: string | null;
+      selectedContactId: string | null;
+    };
+    unmatchedFields: string[];
+    warnings: string[];
+  };
   matchedSupplierId: string | null;
   imageRetained: boolean;
   imageDeletedAt: string | null;
@@ -182,6 +249,151 @@ describe("Receipt OCR", () => {
     await app.close();
   });
 
+  it("runs receipt-contact-matching before model fallback with deterministic contact and supplier resolution", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const graph = await postJson<NetworkGraphResponse>(
+      app,
+      "/network/sync/contacts",
+      {
+        contacts: [
+          {
+            name: "Wholesale Depot Ltd",
+            phone: "+254700000010"
+          },
+          {
+            name: "Mary Wanjiku",
+            phone: "+254700000011"
+          }
+        ]
+      },
+      sessionCookie
+    );
+    const supplierContactId = graph.nodes.find(
+      (node) => node.displayName === "Wholesale Depot Ltd"
+    )?.id;
+    expect(supplierContactId).toBeTruthy();
+    const agentContactId = graph.nodes.find((node) => node.displayName === "Mary Wanjiku")?.id;
+    expect(agentContactId).toBeTruthy();
+    const supplier = await postJson<SupplierResponse>(
+      app,
+      `/businesses/${businessId}/suppliers`,
+      {
+        name: "Wholesale Depot",
+        phone: "+254700000010",
+        email: "supply@example.com",
+        notes: "Tax PIN P051234567A"
+      },
+      sessionCookie
+    );
+    await postJson<unknown>(
+      app,
+      `/businesses/${businessId}/suppliers/${supplier.id}/link-contact`,
+      {
+        networkNodeId: supplierContactId
+      },
+      sessionCookie
+    );
+    const matchingAgent = await postJson<SalesAgentResponse>(
+      app,
+      `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
+      {
+        name: "Mary Wanjiku",
+        phone: "+254700000011",
+        email: null,
+        notes: null
+      },
+      sessionCookie
+    );
+    await postJson<unknown>(
+      app,
+      `/businesses/${businessId}/sales-agents/${matchingAgent.id}/link-contact`,
+      {
+        networkNodeId: agentContactId
+      },
+      sessionCookie
+    );
+    const otherSupplier = await postJson<SupplierResponse>(
+      app,
+      `/businesses/${businessId}/suppliers`,
+      {
+        name: "Other Depot",
+        phone: "+254700000020",
+        email: null,
+        notes: null
+      },
+      sessionCookie
+    );
+    const otherAgent = await postJson<SalesAgentResponse>(
+      app,
+      `/businesses/${businessId}/suppliers/${otherSupplier.id}/sales-agents`,
+      {
+        name: "Mary Wanjiku",
+        phone: "+254700000021",
+        email: null,
+        notes: null
+      },
+      sessionCookie
+    );
+
+    const job = await postJson<ReceiptOCRJobResponse>(
+      app,
+      `/businesses/${businessId}/receipt-ocr/jobs`,
+      {
+        fileName: "receipt.txt",
+        contentType: "text/plain",
+        fileSizeBytes: 300,
+        fileSignature: "",
+        extractedText:
+          "Supplier: Wholesale Depot Ltd\nEmail: SUPPLY@example.com\nTax PIN: P051234567A\nAgent: Mary Wanjiku\nAgent Phone: 0700000011\nPhone: 0700000010\nReceipt No: R-100\nCurrency: KES\nDate: 2026-07-09\nMaize,2,100,200\nTotal: 200"
+      },
+      sessionCookie
+    );
+
+    expect(job.structuredExtraction).toMatchObject({
+      supplier: {
+        phoneNumber: "+254700000010",
+        email: "supply@example.com",
+        taxPin: "P051234567A"
+      },
+      receipt: {
+        receiptNumber: "R-100",
+        currency: "KES",
+        total: 200
+      }
+    });
+    expect(job.contactMatchingResult).toMatchObject({
+      scriptId: "receipt_contact_matching",
+      intent: "RECEIPT_CONTACT_MATCH",
+      supplier: {
+        selectedRecordId: supplier.id,
+        selectedContactId: supplierContactId,
+        requiresConfirmation: false
+      },
+      salesAgent: {
+        selectedRecordId: matchingAgent.id,
+        selectedContactId: agentContactId
+      }
+    });
+    expect(job.contactMatchingResult.supplier.matchedBy).toEqual(
+      expect.arrayContaining([
+        "confirmed_contact_link",
+        "phone_exact",
+        "email_exact",
+        "tax_pin_exact"
+      ])
+    );
+    expect(job.contactMatchingResult.salesAgent.matchedBy).toEqual(
+      expect.arrayContaining(["confirmed_contact_link", "phone_exact", "name_supplier_combination"])
+    );
+    expect(job.salesAgentCandidates.map((candidate) => candidate.recordId)).not.toContain(
+      otherAgent.id
+    );
+
+    await app.close();
+  });
+
   it("routes receipt chat commands through protected context scripts before model fallback", async () => {
     const match = parseReceiptContextScriptCommand({
       message: "Which supplier sold me maize last week?"
@@ -197,6 +409,25 @@ describe("Receipt OCR", () => {
     });
     expect(createRuntimeToolProposalFromReceiptContextScript(match!)).toMatchObject({
       toolName: "receipt.lookup",
+      validation: {
+        ok: true
+      }
+    });
+    expect(
+      parseReceiptContextScriptCommand({
+        message: "match hii receipt na supplier"
+      })
+    ).toMatchObject({
+      intent: "RECEIPT_CONTACT_MATCH"
+    });
+    expect(
+      createRuntimeToolProposalFromReceiptContextScript(
+        parseReceiptContextScriptCommand({
+          message: "find this supplier in my phonebook"
+        })!
+      )
+    ).toMatchObject({
+      toolName: "receipt.review",
       validation: {
         ok: true
       }
@@ -281,7 +512,7 @@ async function postJson<TResponse>(
   });
 
   expect(response.statusCode).toBeGreaterThanOrEqual(200);
-  expect(response.statusCode).toBeLessThan(300);
+  expect(response.statusCode, response.body).toBeLessThan(300);
   return response.json() as TResponse;
 }
 
@@ -300,7 +531,7 @@ async function getJson<TResponse>(
   });
 
   expect(response.statusCode).toBeGreaterThanOrEqual(200);
-  expect(response.statusCode).toBeLessThan(300);
+  expect(response.statusCode, response.body).toBeLessThan(300);
   return response.json() as TResponse;
 }
 

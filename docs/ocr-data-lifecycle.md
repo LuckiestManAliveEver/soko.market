@@ -11,10 +11,13 @@ Receipt OCR jobs use these lifecycle states:
 - `VALIDATING`
 - `PREPROCESSING`
 - `OCR_RUNNING`
+- `FIELDS_EXTRACTED`
+- `CONTACT_MATCHING`
 - `PARSING`
 - `MATCHING`
 - `REVIEW_REQUIRED`
 - `CONFIRMED`
+- `PURCHASE_RECORDED`
 - `COMPLETED`
 - `FAILED`
 - `CANCELLED`
@@ -56,6 +59,10 @@ Confirmed jobs set:
 - `imageRetained=false`
 - `imageDeletedAt=<confirmation timestamp>`
 - `cleanupPending=false`
+
+Receipt processing can continue when contact matching fails. In that case the OCR job remains
+reviewable, the user can manually select or create supplier/agent records, and image deletion still
+occurs after confirmation or cancellation according to retention policy.
 
 ## Security and limits
 

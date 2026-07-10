@@ -369,10 +369,13 @@ export type ReceiptOCRJobStatus =
   | "VALIDATING"
   | "PREPROCESSING"
   | "OCR_RUNNING"
+  | "FIELDS_EXTRACTED"
+  | "CONTACT_MATCHING"
   | "PARSING"
   | "MATCHING"
   | "REVIEW_REQUIRED"
   | "CONFIRMED"
+  | "PURCHASE_RECORDED"
   | "COMPLETED"
   | "FAILED"
   | "CANCELLED"
@@ -401,9 +404,101 @@ export interface ReceiptFieldEvidenceSummary {
 
 export interface ReceiptMatchCandidateSummary {
   id: string;
+  entityType: "supplier" | "sales_agent" | "contact";
+  recordId: string | null;
+  contactId: string | null;
+  displayName: string;
   name: string;
   confidence: number;
+  matchedBy: string[];
+  sources: string[];
+  requiresConfirmation: boolean;
   reason: string;
+  sourceProvider: string | null;
+}
+
+export interface ReceiptStructuredExtractionSummary {
+  supplier: {
+    supplierName: string | null;
+    tradingName: string | null;
+    legalName: string | null;
+    phoneNumber: string | null;
+    alternatePhoneNumber: string | null;
+    email: string | null;
+    physicalAddress: string | null;
+    taxPin: string | null;
+    registrationNumber: string | null;
+    branch: string | null;
+    accountNumber: string | null;
+  };
+  salesAgent: {
+    name: string | null;
+    phoneNumber: string | null;
+    email: string | null;
+    agentNumber: string | null;
+    supplierRepresented: string | null;
+    branch: string | null;
+    notes: string | null;
+  };
+  receipt: {
+    receiptNumber: string | null;
+    invoiceNumber: string | null;
+    orderNumber: string | null;
+    purchaseDate: string | null;
+    purchaseTime: string | null;
+    currency: string | null;
+    subtotal: number | null;
+    discount: number | null;
+    tax: number | null;
+    total: number | null;
+    amountPaid: number | null;
+    balance: number | null;
+    paymentMethod: string | null;
+    tillNumber: string | null;
+    paybillNumber: string | null;
+    transactionReference: string | null;
+  };
+  products: Array<{
+    itemName: string;
+    itemCode: string | null;
+    sku: string | null;
+    quantity: number;
+    unit: string | null;
+    unitPrice: number;
+    lineTotal: number;
+    batchNumber: string | null;
+    expiryDate: string | null;
+  }>;
+}
+
+export interface ReceiptContactEntityMatchSummary {
+  extractedName: string | null;
+  extractedPhone: string | null;
+  extractedEmail: string | null;
+  selectedRecordId: string | null;
+  selectedContactId: string | null;
+  confidence: number;
+  matchedBy: string[];
+  sources: string[];
+  requiresConfirmation: boolean;
+  candidates: ReceiptMatchCandidateSummary[];
+}
+
+export interface ReceiptContactMatchingResultSummary {
+  matched: boolean;
+  scriptId: "receipt_contact_matching";
+  intent: "RECEIPT_CONTACT_MATCH";
+  source: "context_script";
+  ocrJobId: string;
+  supplier: ReceiptContactEntityMatchSummary;
+  salesAgent: ReceiptContactEntityMatchSummary;
+  unmatchedFields: string[];
+  warnings: string[];
+  thresholds: {
+    autoSelect: number;
+    confirmationRequired: number;
+    rejectBelow: number;
+  };
 }
 
 export interface ReceiptOCRJobSummary {
@@ -426,6 +521,8 @@ export interface ReceiptOCRJobSummary {
   averageConfidence: number;
   warnings: string[];
   fieldEvidence: ReceiptFieldEvidenceSummary[];
+  structuredExtraction: ReceiptStructuredExtractionSummary;
+  contactMatchingResult: ReceiptContactMatchingResultSummary;
   supplierCandidates: ReceiptMatchCandidateSummary[];
   salesAgentCandidates: ReceiptMatchCandidateSummary[];
   supplierName: string | null;
@@ -436,8 +533,13 @@ export interface ReceiptOCRJobSummary {
   items: Array<{
     name: string;
     quantity: number;
+    unit?: string | null;
+    itemCode?: string | null;
+    sku?: string | null;
     unitPrice: number;
     total: number;
+    batchNumber?: string | null;
+    expiryDate?: string | null;
   }>;
   matchedSupplierId: string | null;
   matchedSalesAgentId: string | null;
