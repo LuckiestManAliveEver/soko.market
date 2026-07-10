@@ -15,11 +15,14 @@ const runtimeModelProvider = config.localModelEnabled
     })
   : undefined;
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
+const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
+
+if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
+  throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
+}
+
 const shouldUsePostgresStore =
-  cp2StoreMode === "postgres" ||
-  (cp2StoreMode !== "memory" &&
-    process.env.DATABASE_URL !== undefined &&
-    process.env.DATABASE_URL.trim() !== "");
+  cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions =
   runtimeModelProvider === undefined
     ? {}

@@ -29,6 +29,10 @@ services:
         value: 0.0.0.0
       - key: WEB_ORIGINS
         value: https://soko.market,https://www.soko.market
+      - key: CP2_STORE
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
       - key: MONGODB_URI
         sync: false
       - key: TWILIO_VERIFY_ENABLED
