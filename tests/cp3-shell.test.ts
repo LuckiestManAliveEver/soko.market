@@ -53,7 +53,7 @@ describe("owner shell contract", () => {
     expect(getEmptyState("sync")?.body).toContain("offline mutations");
     expect(getEmptyState("runtime")?.body).toContain("runtime sessions");
     expect(getEmptyState("payments")?.body).toContain("payment records");
-    expect(getEmptyState("imports")?.body).toContain("Imports preview");
+    expect(getEmptyState("imports")?.body).toContain("supplier records");
     expect(getEmptyState("logistics")?.body).toContain("pickup and delivery");
     expect(getEmptyState("compliance")?.body).toContain("export, deletion");
     expect(getEmptyState("beta")?.body).toContain("Beta readiness");

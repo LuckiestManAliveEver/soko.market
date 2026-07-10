@@ -59,6 +59,7 @@ import type {
   PaymentSummary,
   ProductImportDraft,
   ProductSummary,
+  PurchaseReceiptSummary,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
   RuntimeModelPrompt,
@@ -71,7 +72,10 @@ import type {
   RuntimeTurnStatus,
   RuntimeTurnSummary,
   RuntimeVerificationResult,
+  ReceiptLineItemSummary,
+  ReceiptOCRJobSummary,
   SessionSummary,
+  SalesAgentSummary,
   ExternalIdentitySummary,
   SocialNetworkProvider,
   SokoIdentityLinkSummary,
@@ -81,6 +85,8 @@ import type {
   SyncQueueSummary,
   SyncReplayResult,
   SupplierImportDraft,
+  SupplierBusinessCardSummary,
+  SupplierContactLinkSummary,
   SupplierSummary,
   SupportedLanguage,
   UserIdentitySummary,
@@ -378,6 +384,11 @@ export interface Cp2Snapshot {
   products: ProductSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
+  salesAgents: SalesAgentSummary[];
+  supplierContactLinks: SupplierContactLinkSummary[];
+  purchaseReceipts: PurchaseReceiptSummary[];
+  receiptLineItems: ReceiptLineItemSummary[];
+  receiptOCRJobs: ReceiptOCRJobSummary[];
   invoices: InvoiceSummary[];
   payments: PaymentSummary[];
   logistics: LogisticsSummary[];
@@ -436,6 +447,11 @@ export class Cp2Store {
   private readonly products = new Map<string, ProductSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
+  private readonly salesAgents = new Map<string, SalesAgentSummary>();
+  private readonly supplierContactLinks = new Map<string, SupplierContactLinkSummary>();
+  private readonly purchaseReceipts = new Map<string, PurchaseReceiptSummary>();
+  private readonly receiptLineItems = new Map<string, ReceiptLineItemSummary>();
+  private readonly receiptOCRJobs = new Map<string, ReceiptOCRJobSummary>();
   private readonly invoices = new Map<string, InvoiceSummary>();
   private readonly payments = new Map<string, PaymentSummary>();
   private readonly logistics = new Map<string, LogisticsSummary>();
@@ -1484,11 +1500,11 @@ export class Cp2Store {
     sessionId: string | null;
     businessId: string;
     now?: Date;
-  }): SupplierSummary[] {
+  }): SupplierBusinessCardSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
-    return [...this.suppliers.values()].filter(
-      (supplier) => supplier.businessId === input.businessId
-    );
+    return [...this.suppliers.values()]
+      .filter((supplier) => supplier.businessId === input.businessId)
+      .map((supplier) => this.supplierBusinessCard(supplier));
   }
 
   createSupplier(input: {
@@ -1511,8 +1527,13 @@ export class Cp2Store {
       businessId: input.businessId,
       name: normalized.name,
       phone: normalized.phone,
+      linkedPhonebookContactId: null,
+      linkedPhonebookContactName: null,
       email: normalized.email,
       notes: normalized.notes,
+      salesAgentCount: 0,
+      purchaseReceiptCount: 0,
+      lastPurchaseDate: null,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString()
     };
@@ -1567,6 +1588,480 @@ export class Cp2Store {
     );
 
     return updated;
+  }
+
+  deleteSupplier(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    now?: Date;
+  }): { deleted: true; supplierId: string } {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", input.now);
+    this.requireSupplier(input.businessId, input.supplierId);
+
+    for (const agent of this.salesAgentsForSupplier(input.supplierId)) {
+      this.salesAgents.delete(agent.id);
+    }
+
+    for (const link of [...this.supplierContactLinks.values()]) {
+      if (link.supplierId === input.supplierId) {
+        this.supplierContactLinks.delete(link.id);
+      }
+    }
+
+    this.suppliers.delete(input.supplierId);
+
+    return {
+      deleted: true,
+      supplierId: input.supplierId
+    };
+  }
+
+  listSalesAgents(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId?: string;
+    now?: Date;
+  }): SalesAgentSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
+    return [...this.salesAgents.values()]
+      .filter(
+        (agent) =>
+          agent.businessId === input.businessId &&
+          (input.supplierId === undefined || agent.supplierId === input.supplierId)
+      )
+      .map((agent) => this.salesAgentCard(agent));
+  }
+
+  createSalesAgent(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    agent: ContactRecordInput;
+    now?: Date;
+  }): SalesAgentSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", now);
+    const supplier = this.requireSupplier(input.businessId, input.supplierId);
+    assertValid(validateContactRecordInput(input.agent, "Sales agent"));
+    const normalized = normalizeContactRecordInput(input.agent);
+    const agent: SalesAgentSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      name: normalized.name,
+      phone: normalized.phone,
+      linkedPhonebookContactId: null,
+      linkedPhonebookContactName: null,
+      notes: normalized.notes,
+      receiptsHandled: 0,
+      lastTransactionDate: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.salesAgents.set(agent.id, agent);
+    this.refreshSupplierMetrics(supplier.id);
+
+    return this.salesAgentCard(agent);
+  }
+
+  updateSalesAgent(input: {
+    sessionId: string | null;
+    businessId: string;
+    salesAgentId: string;
+    agent: ContactRecordInput;
+    now?: Date;
+  }): SalesAgentSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", now);
+    const existing = this.requireSalesAgent(input.businessId, input.salesAgentId);
+    assertValid(validateContactRecordInput(input.agent, "Sales agent"));
+    const normalized = normalizeContactRecordInput(input.agent);
+    const updated: SalesAgentSummary = {
+      ...existing,
+      name: normalized.name,
+      phone: normalized.phone,
+      notes: normalized.notes,
+      updatedAt: now.toISOString()
+    };
+
+    this.salesAgents.set(updated.id, updated);
+    this.refreshSupplierMetrics(updated.supplierId);
+
+    return this.salesAgentCard(updated);
+  }
+
+  deleteSalesAgent(input: {
+    sessionId: string | null;
+    businessId: string;
+    salesAgentId: string;
+    now?: Date;
+  }): { deleted: true; salesAgentId: string } {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", input.now);
+    const agent = this.requireSalesAgent(input.businessId, input.salesAgentId);
+
+    for (const link of [...this.supplierContactLinks.values()]) {
+      if (link.salesAgentId === agent.id) {
+        this.supplierContactLinks.delete(link.id);
+      }
+    }
+
+    this.salesAgents.delete(agent.id);
+    this.refreshSupplierMetrics(agent.supplierId);
+
+    return {
+      deleted: true,
+      salesAgentId: agent.id
+    };
+  }
+
+  searchSupplierPhonebookContacts(input: {
+    sessionId: string | null;
+    businessId: string;
+    query: string;
+    now?: Date;
+  }): NetworkNodeSummary[] {
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:read",
+      input.now
+    );
+    const query = input.query.trim().toLowerCase();
+
+    return [...this.networkNodes.values()]
+      .filter(
+        (node) =>
+          node.ownerUserId === session.user.id &&
+          node.sourceType === "phone_contact" &&
+          node.displayName.toLowerCase().includes(query)
+      )
+      .slice(0, 25)
+      .map(sanitizeNetworkNode);
+  }
+
+  createSupplierFromPhoneContact(input: {
+    sessionId: string | null;
+    businessId: string;
+    networkNodeId: string;
+    notes?: string | null;
+    now?: Date;
+  }): SupplierBusinessCardSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
+    const supplier = this.createSupplier({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      supplier: {
+        name: node.displayName,
+        phone: null,
+        email: null,
+        notes: input.notes ?? "Created from phone contact"
+      },
+      now
+    });
+
+    this.linkSupplierContact({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      supplierId: supplier.id,
+      networkNodeId: node.id,
+      now
+    });
+
+    return this.supplierBusinessCard(this.requireSupplier(input.businessId, supplier.id));
+  }
+
+  createSalesAgentFromPhoneContact(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    networkNodeId: string;
+    notes?: string | null;
+    now?: Date;
+  }): SalesAgentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
+    const agent = this.createSalesAgent({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      supplierId: input.supplierId,
+      agent: {
+        name: node.displayName,
+        phone: null,
+        email: null,
+        notes: input.notes ?? "Created from phone contact"
+      },
+      now
+    });
+
+    this.linkSalesAgentContact({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      salesAgentId: agent.id,
+      networkNodeId: node.id,
+      now
+    });
+
+    return this.salesAgentCard(this.requireSalesAgent(input.businessId, agent.id));
+  }
+
+  linkSupplierContact(input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    networkNodeId: string;
+    now?: Date;
+  }): SupplierBusinessCardSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    const supplier = this.requireSupplier(input.businessId, input.supplierId);
+    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
+    const link = this.upsertSupplierContactLink({
+      businessId: input.businessId,
+      linkType: "supplier",
+      supplierId: supplier.id,
+      salesAgentId: null,
+      node,
+      now
+    });
+    const updated: SupplierSummary = {
+      ...supplier,
+      linkedPhonebookContactId: link.networkNodeId,
+      linkedPhonebookContactName: link.contactName,
+      updatedAt: now.toISOString()
+    };
+
+    this.suppliers.set(updated.id, updated);
+    return this.supplierBusinessCard(updated);
+  }
+
+  linkSalesAgentContact(input: {
+    sessionId: string | null;
+    businessId: string;
+    salesAgentId: string;
+    networkNodeId: string;
+    now?: Date;
+  }): SalesAgentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:write",
+      now
+    );
+    const agent = this.requireSalesAgent(input.businessId, input.salesAgentId);
+    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
+    const link = this.upsertSupplierContactLink({
+      businessId: input.businessId,
+      linkType: "sales_agent",
+      supplierId: agent.supplierId,
+      salesAgentId: agent.id,
+      node,
+      now
+    });
+    const updated: SalesAgentSummary = {
+      ...agent,
+      linkedPhonebookContactId: link.networkNodeId,
+      linkedPhonebookContactName: link.contactName,
+      updatedAt: now.toISOString()
+    };
+
+    this.salesAgents.set(updated.id, updated);
+    return this.salesAgentCard(updated);
+  }
+
+  createReceiptOCRJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    sourceFileName: string;
+    contentType: string;
+    extractedText: string;
+    now?: Date;
+  }): ReceiptOCRJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const parsed = parseReceiptText(input.extractedText);
+    const matchedSupplier = this.matchSupplier(input.businessId, parsed.supplierName, parsed.phone);
+    const matchedAgent =
+      matchedSupplier === null
+        ? null
+        : this.matchSalesAgent(
+            input.businessId,
+            matchedSupplier.id,
+            parsed.salesAgentName,
+            parsed.phone
+          );
+    const hasContent = input.extractedText.trim().length > 0;
+    const job: ReceiptOCRJobSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      status: !hasContent
+        ? "failed"
+        : matchedSupplier === null || parsed.items.length === 0
+          ? "needs_review"
+          : "matched",
+      sourceFileName: input.sourceFileName.trim() || "receipt-upload",
+      contentType: input.contentType.trim() || "application/octet-stream",
+      supplierName: parsed.supplierName,
+      salesAgentName: parsed.salesAgentName,
+      phone: parsed.phone,
+      receiptDate: parsed.receiptDate,
+      total: parsed.total,
+      items: parsed.items,
+      matchedSupplierId: matchedSupplier?.id ?? null,
+      matchedSalesAgentId: matchedAgent?.id ?? null,
+      errorMessage: hasContent
+        ? null
+        : "OCR could not read this receipt. Retry upload or enter receipt details manually.",
+      imageRetained: false,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      confirmedAt: null
+    };
+
+    this.receiptOCRJobs.set(job.id, job);
+    return job;
+  }
+
+  confirmReceiptOCRJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    ocrJobId: string;
+    supplierId?: string | null;
+    salesAgentId?: string | null;
+    createSupplier?: boolean;
+    createSalesAgent?: boolean;
+    now?: Date;
+  }): PurchaseReceiptSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
+
+    if (job.status === "failed") {
+      throw new Cp2Error(409, "receipt_ocr_failed", job.errorMessage ?? "Receipt OCR failed.");
+    }
+
+    let supplier =
+      input.supplierId === null || input.supplierId === undefined
+        ? job.matchedSupplierId === null
+          ? null
+          : this.requireSupplier(input.businessId, job.matchedSupplierId)
+        : this.requireSupplier(input.businessId, input.supplierId);
+
+    if (supplier === null && input.createSupplier === true && job.supplierName !== null) {
+      supplier = this.createSupplier({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        supplier: {
+          name: job.supplierName,
+          phone: job.phone,
+          email: null,
+          notes: "Created from purchase receipt"
+        },
+        now
+      });
+    }
+
+    if (supplier === null) {
+      throw new Cp2Error(409, "receipt_supplier_required", "Confirm or create a supplier first.");
+    }
+
+    let salesAgent =
+      input.salesAgentId === null || input.salesAgentId === undefined
+        ? job.matchedSalesAgentId === null
+          ? null
+          : this.requireSalesAgent(input.businessId, job.matchedSalesAgentId)
+        : this.requireSalesAgent(input.businessId, input.salesAgentId);
+
+    if (
+      salesAgent === null &&
+      input.createSalesAgent === true &&
+      job.salesAgentName !== null &&
+      job.salesAgentName.trim() !== ""
+    ) {
+      salesAgent = this.createSalesAgent({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        supplierId: supplier.id,
+        agent: {
+          name: job.salesAgentName,
+          phone: job.phone,
+          email: null,
+          notes: "Created from purchase receipt"
+        },
+        now
+      });
+    }
+
+    const receiptId = randomUUID();
+    const lineItems = job.items.map((item): ReceiptLineItemSummary => ({
+      id: randomUUID(),
+      receiptId,
+      name: item.name,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      total: item.total
+    }));
+    const receipt: PurchaseReceiptSummary = {
+      id: receiptId,
+      businessId: input.businessId,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      salesAgentId: salesAgent?.id ?? null,
+      salesAgentName: salesAgent?.name ?? job.salesAgentName,
+      receiptDate: job.receiptDate ?? now.toISOString(),
+      total:
+        job.total ??
+        lineItems.reduce((sum, item) => {
+          return roundMoney(sum + item.total);
+        }, 0),
+      sourceFileName: job.sourceFileName,
+      ocrJobId: job.id,
+      imageStored: false,
+      createdAt: now.toISOString(),
+      lineItems
+    };
+    const confirmedJob: ReceiptOCRJobSummary = {
+      ...job,
+      status: "confirmed",
+      matchedSupplierId: supplier.id,
+      matchedSalesAgentId: salesAgent?.id ?? null,
+      imageRetained: false,
+      updatedAt: now.toISOString(),
+      confirmedAt: now.toISOString()
+    };
+
+    this.purchaseReceipts.set(receipt.id, { ...receipt, lineItems: [] });
+    for (const item of lineItems) {
+      this.receiptLineItems.set(item.id, item);
+    }
+    this.receiptOCRJobs.set(confirmedJob.id, confirmedJob);
+    this.refreshSupplierMetrics(supplier.id);
+    if (salesAgent !== null) {
+      this.refreshSalesAgentMetrics(salesAgent.id);
+    }
+
+    return receipt;
   }
 
   previewInvoice(input: {
@@ -4177,6 +4672,14 @@ export class Cp2Store {
       products: [...this.products.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
+      salesAgents: [...this.salesAgents.values()],
+      supplierContactLinks: [...this.supplierContactLinks.values()],
+      purchaseReceipts: [...this.purchaseReceipts.values()].map((receipt) => ({
+        ...receipt,
+        lineItems: this.receiptLineItemsForReceipt(receipt.id)
+      })),
+      receiptLineItems: [...this.receiptLineItems.values()],
+      receiptOCRJobs: [...this.receiptOCRJobs.values()],
       invoices: [...this.invoices.values()],
       payments: [...this.payments.values()],
       logistics: [...this.logistics.values()],
@@ -4230,6 +4733,11 @@ export class Cp2Store {
     this.products.clear();
     this.customers.clear();
     this.suppliers.clear();
+    this.salesAgents.clear();
+    this.supplierContactLinks.clear();
+    this.purchaseReceipts.clear();
+    this.receiptLineItems.clear();
+    this.receiptOCRJobs.clear();
     this.invoices.clear();
     this.payments.clear();
     this.logistics.clear();
@@ -4307,7 +4815,37 @@ export class Cp2Store {
     }
 
     for (const supplier of snapshot.suppliers) {
-      this.suppliers.set(supplier.id, supplier);
+      this.suppliers.set(supplier.id, {
+        ...supplier,
+        linkedPhonebookContactId: supplier.linkedPhonebookContactId ?? null,
+        linkedPhonebookContactName: supplier.linkedPhonebookContactName ?? null,
+        salesAgentCount: supplier.salesAgentCount ?? 0,
+        purchaseReceiptCount: supplier.purchaseReceiptCount ?? 0,
+        lastPurchaseDate: supplier.lastPurchaseDate ?? null
+      });
+    }
+
+    for (const salesAgent of snapshot.salesAgents ?? []) {
+      this.salesAgents.set(salesAgent.id, salesAgent);
+    }
+
+    for (const contactLink of snapshot.supplierContactLinks ?? []) {
+      this.supplierContactLinks.set(contactLink.id, contactLink);
+    }
+
+    for (const receipt of snapshot.purchaseReceipts ?? []) {
+      this.purchaseReceipts.set(receipt.id, {
+        ...receipt,
+        lineItems: []
+      });
+    }
+
+    for (const lineItem of snapshot.receiptLineItems ?? []) {
+      this.receiptLineItems.set(lineItem.id, lineItem);
+    }
+
+    for (const job of snapshot.receiptOCRJobs ?? []) {
+      this.receiptOCRJobs.set(job.id, job);
     }
 
     for (const invoice of snapshot.invoices) {
@@ -4754,6 +5292,40 @@ export class Cp2Store {
     }
 
     return supplier;
+  }
+
+  private requireSalesAgent(businessId: string, salesAgentId: string): SalesAgentSummary {
+    const agent = this.salesAgents.get(salesAgentId);
+
+    if (agent === undefined || agent.businessId !== businessId) {
+      throw new Cp2Error(404, "sales_agent_not_found", "Sales agent was not found.");
+    }
+
+    return agent;
+  }
+
+  private requireReceiptOCRJob(businessId: string, ocrJobId: string): ReceiptOCRJobSummary {
+    const job = this.receiptOCRJobs.get(ocrJobId);
+
+    if (job === undefined || job.businessId !== businessId) {
+      throw new Cp2Error(404, "receipt_ocr_not_found", "Receipt OCR job was not found.");
+    }
+
+    return job;
+  }
+
+  private requirePhonebookNode(ownerUserId: string, networkNodeId: string): NetworkNodeSummary {
+    const node = this.networkNodes.get(networkNodeId);
+
+    if (
+      node === undefined ||
+      node.ownerUserId !== ownerUserId ||
+      node.sourceType !== "phone_contact"
+    ) {
+      throw new Cp2Error(404, "phonebook_contact_not_found", "Phonebook contact was not found.");
+    }
+
+    return node;
   }
 
   private requireInvoice(businessId: string, invoiceId: string): InvoiceSummary {
@@ -5844,6 +6416,165 @@ export class Cp2Store {
 
   private suppliersForBusiness(businessId: string): SupplierSummary[] {
     return [...this.suppliers.values()].filter((supplier) => supplier.businessId === businessId);
+  }
+
+  private supplierBusinessCard(supplier: SupplierSummary): SupplierBusinessCardSummary {
+    const salesAgents = this.salesAgentsForSupplier(supplier.id).map((agent) =>
+      this.salesAgentCard(agent)
+    );
+    const purchaseReceipts = this.purchaseReceiptsForSupplier(supplier.id);
+    const lastPurchaseDate =
+      purchaseReceipts
+        .map((receipt) => receipt.receiptDate)
+        .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
+    return {
+      ...supplier,
+      salesAgentCount: salesAgents.length,
+      purchaseReceiptCount: purchaseReceipts.length,
+      lastPurchaseDate,
+      salesAgents,
+      purchaseReceipts
+    };
+  }
+
+  private salesAgentCard(agent: SalesAgentSummary): SalesAgentSummary {
+    const receipts = this.purchaseReceiptsForSalesAgent(agent.id);
+    const lastTransactionDate =
+      receipts
+        .map((receipt) => receipt.receiptDate)
+        .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
+    return {
+      ...agent,
+      supplierName: this.suppliers.get(agent.supplierId)?.name ?? agent.supplierName,
+      receiptsHandled: receipts.length,
+      lastTransactionDate
+    };
+  }
+
+  private salesAgentsForSupplier(supplierId: string): SalesAgentSummary[] {
+    return [...this.salesAgents.values()].filter((agent) => agent.supplierId === supplierId);
+  }
+
+  private purchaseReceiptsForSupplier(supplierId: string): PurchaseReceiptSummary[] {
+    return [...this.purchaseReceipts.values()]
+      .filter((receipt) => receipt.supplierId === supplierId)
+      .map((receipt) => ({
+        ...receipt,
+        lineItems: this.receiptLineItemsForReceipt(receipt.id)
+      }))
+      .sort((left, right) => right.receiptDate.localeCompare(left.receiptDate));
+  }
+
+  private purchaseReceiptsForSalesAgent(salesAgentId: string): PurchaseReceiptSummary[] {
+    return [...this.purchaseReceipts.values()]
+      .filter((receipt) => receipt.salesAgentId === salesAgentId)
+      .map((receipt) => ({
+        ...receipt,
+        lineItems: this.receiptLineItemsForReceipt(receipt.id)
+      }));
+  }
+
+  private receiptLineItemsForReceipt(receiptId: string): ReceiptLineItemSummary[] {
+    return [...this.receiptLineItems.values()].filter((item) => item.receiptId === receiptId);
+  }
+
+  private refreshSupplierMetrics(supplierId: string): void {
+    const supplier = this.suppliers.get(supplierId);
+
+    if (supplier === undefined) {
+      return;
+    }
+
+    const card = this.supplierBusinessCard(supplier);
+    this.suppliers.set(supplierId, {
+      ...supplier,
+      salesAgentCount: card.salesAgentCount,
+      purchaseReceiptCount: card.purchaseReceiptCount,
+      lastPurchaseDate: card.lastPurchaseDate
+    });
+  }
+
+  private refreshSalesAgentMetrics(salesAgentId: string): void {
+    const agent = this.salesAgents.get(salesAgentId);
+
+    if (agent === undefined) {
+      return;
+    }
+
+    const card = this.salesAgentCard(agent);
+    this.salesAgents.set(salesAgentId, {
+      ...agent,
+      receiptsHandled: card.receiptsHandled,
+      lastTransactionDate: card.lastTransactionDate
+    });
+  }
+
+  private matchSupplier(
+    businessId: string,
+    supplierName: string | null,
+    phone: string | null
+  ): SupplierSummary | null {
+    const normalizedName = supplierName?.trim().toLowerCase() ?? "";
+    const normalizedPhone = phone === null ? null : normalizeDestination("phone", phone);
+
+    return (
+      this.suppliersForBusiness(businessId).find(
+        (supplier) =>
+          (normalizedPhone !== null && supplier.phone === normalizedPhone) ||
+          (normalizedName.length > 0 && supplier.name.trim().toLowerCase() === normalizedName)
+      ) ?? null
+    );
+  }
+
+  private matchSalesAgent(
+    businessId: string,
+    supplierId: string,
+    salesAgentName: string | null,
+    phone: string | null
+  ): SalesAgentSummary | null {
+    const normalizedName = salesAgentName?.trim().toLowerCase() ?? "";
+    const normalizedPhone = phone === null ? null : normalizeDestination("phone", phone);
+
+    return (
+      this.salesAgentsForSupplier(supplierId).find(
+        (agent) =>
+          agent.businessId === businessId &&
+          ((normalizedPhone !== null && agent.phone === normalizedPhone) ||
+            (normalizedName.length > 0 && agent.name.trim().toLowerCase() === normalizedName))
+      ) ?? null
+    );
+  }
+
+  private upsertSupplierContactLink(input: {
+    businessId: string;
+    linkType: "supplier" | "sales_agent";
+    supplierId: string | null;
+    salesAgentId: string | null;
+    node: NetworkNodeSummary;
+    now: Date;
+  }): SupplierContactLinkSummary {
+    const existing = [...this.supplierContactLinks.values()].find(
+      (link) =>
+        link.businessId === input.businessId &&
+        link.linkType === input.linkType &&
+        link.supplierId === input.supplierId &&
+        link.salesAgentId === input.salesAgentId
+    );
+    const link: SupplierContactLinkSummary = {
+      id: existing?.id ?? randomUUID(),
+      businessId: input.businessId,
+      linkType: input.linkType,
+      supplierId: input.supplierId,
+      salesAgentId: input.salesAgentId,
+      networkNodeId: input.node.id,
+      contactName: input.node.displayName,
+      linkedAt: input.now.toISOString()
+    };
+
+    this.supplierContactLinks.set(link.id, link);
+    return link;
   }
 
   private invoicesForBusiness(businessId: string): InvoiceSummary[] {
@@ -7005,6 +7736,113 @@ function createPublicAgentId(business: BusinessSummary): string {
     .slice(0, 48);
 
   return seed.length === 0 ? "soko-agent" : seed;
+}
+
+interface ParsedReceiptText {
+  supplierName: string | null;
+  salesAgentName: string | null;
+  phone: string | null;
+  receiptDate: string | null;
+  total: number | null;
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    total: number;
+  }>;
+}
+
+function parseReceiptText(text: string): ParsedReceiptText {
+  const lines = text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  return {
+    supplierName:
+      findReceiptField(lines, ["supplier", "supplier name", "vendor"]) ?? lines[0] ?? null,
+    salesAgentName: findReceiptField(lines, ["agent", "sales agent", "served by"]),
+    phone: normalizeReceiptPhone(findReceiptField(lines, ["phone", "tel", "mobile"]) ?? text),
+    receiptDate: normalizeReceiptDate(findReceiptField(lines, ["date"]) ?? text),
+    total: parseReceiptMoney(findReceiptField(lines, ["total", "amount"])),
+    items: parseReceiptLineItems(lines)
+  };
+}
+
+function findReceiptField(lines: string[], labels: string[]): string | null {
+  for (const line of lines) {
+    const normalized = line.toLowerCase();
+
+    for (const label of labels) {
+      if (normalized.startsWith(`${label}:`) || normalized.startsWith(`${label} -`)) {
+        return line.slice(label.length + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeReceiptPhone(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/\+?[0-9][0-9\s-]{6,18}[0-9]/u);
+
+  if (match === null) {
+    return null;
+  }
+
+  return normalizeDestination("phone", match[0].replace(/[\s-]+/gu, ""));
+}
+
+function normalizeReceiptDate(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/u);
+  const parsed = match === null ? NaN : Date.parse(match[0]);
+
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
+function parseReceiptMoney(value: string | null): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const match = value.match(/[0-9]+(?:[.,][0-9]{1,2})?/u);
+
+  return match === null ? null : roundMoney(Number(match[0].replace(",", ".")));
+}
+
+function parseReceiptLineItems(lines: string[]): ParsedReceiptText["items"] {
+  const items: ParsedReceiptText["items"] = [];
+
+  for (const line of lines) {
+    const match = line.match(
+      /^(?:item:)?\s*([A-Za-z][A-Za-z0-9\s-]{1,48})[,|]\s*([0-9]+(?:\.[0-9]+)?)[,|]\s*([0-9]+(?:\.[0-9]+)?)(?:[,|]\s*([0-9]+(?:\.[0-9]+)?))?/u
+    );
+
+    if (match === null) {
+      continue;
+    }
+
+    const quantity = Number(match[2]);
+    const unitPrice = Number(match[3]);
+    const total = match[4] === undefined ? quantity * unitPrice : Number(match[4]);
+
+    items.push({
+      name: match[1]?.trim() ?? "Receipt item",
+      quantity,
+      unitPrice: roundMoney(unitPrice),
+      total: roundMoney(total)
+    });
+  }
+
+  return items;
 }
 
 function inferCountryNamespace(destination: string): string {

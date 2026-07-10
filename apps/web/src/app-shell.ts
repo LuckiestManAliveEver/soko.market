@@ -99,8 +99,8 @@ export const quickActions: QuickAction[] = [
   },
   {
     id: "imports",
-    label: "Imports",
-    summary: "Preview supplier CSV files"
+    label: "Purchase receipts",
+    summary: "Upload receipts and review structured records"
   },
   {
     id: "logistics",
@@ -177,8 +177,8 @@ export const emptyStates: EmptyState[] = [
   },
   {
     id: "imports",
-    title: "No imports yet",
-    body: "Imports preview catalogue and supplier rows before any confirmed business record is written."
+    title: "No purchase receipts yet",
+    body: "Upload a receipt or paste supplier records to create structured supplier data."
   },
   {
     id: "logistics",

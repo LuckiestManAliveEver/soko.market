@@ -1228,6 +1228,90 @@ button:disabled {
   color: #516258;
 }
 
+.supplier-business-card,
+.sales-agent-card,
+.receipt-ocr-card,
+.mini-card {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 14px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.supplier-card-header {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.supplier-card-header h3,
+.supplier-card-header p,
+.supplier-card-header span,
+.supplier-card-header small,
+.sales-agent-card strong,
+.sales-agent-card span,
+.sales-agent-card small,
+.receipt-ocr-card strong,
+.receipt-ocr-card span,
+.mini-card strong,
+.mini-card span,
+.mini-card small {
+  display: block;
+}
+
+.supplier-card-metrics {
+  background: #f5f8f4;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.supplier-contact-tools,
+.nested-agent-form,
+.supplier-contact-results,
+.supplier-nested-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.supplier-contact-tools,
+.nested-agent-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.button-like {
+  align-items: center;
+  background: #17211b;
+  border-radius: 999px;
+  color: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 800;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.button-like input {
+  display: none;
+}
+
+@media (min-width: 720px) {
+  .supplier-card-header {
+    grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
+  }
+
+  .supplier-contact-tools,
+  .nested-agent-form {
+    align-items: end;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 .import-row {
   border: 1px solid #dbe4dc;
   border-radius: 8px;

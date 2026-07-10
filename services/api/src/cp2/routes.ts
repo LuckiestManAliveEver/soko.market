@@ -148,6 +148,18 @@ interface SupplierParams extends BusinessParams {
   supplierId: string;
 }
 
+interface SalesAgentParams extends BusinessParams {
+  salesAgentId: string;
+}
+
+interface SupplierSalesAgentParams extends SupplierParams {
+  salesAgentId: string;
+}
+
+interface ReceiptOCRParams extends BusinessParams {
+  ocrJobId: string;
+}
+
 interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
@@ -198,6 +210,28 @@ interface ContactRecordBody {
   phone?: string | null;
   email?: string | null;
   notes?: string | null;
+}
+
+interface PhonebookSearchQuery {
+  q?: string;
+}
+
+interface PhonebookLinkBody {
+  networkNodeId?: string;
+  notes?: string | null;
+}
+
+interface ReceiptOCRBody {
+  fileName?: string;
+  contentType?: string;
+  extractedText?: string;
+}
+
+interface ReceiptOCRConfirmBody {
+  supplierId?: string | null;
+  salesAgentId?: string | null;
+  createSupplier?: boolean;
+  createSalesAgent?: boolean;
 }
 
 interface StockAdjustmentBody {
@@ -1091,6 +1125,215 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: request.params.businessId,
           supplierId: request.params.supplierId,
           supplier: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/suppliers/:supplierId",
+    async (request: FastifyRequest<{ Params: SupplierParams }>, reply) => {
+      try {
+        return store.deleteSupplier({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/suppliers/phonebook/search",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: PhonebookSearchQuery }>,
+      reply
+    ) => {
+      try {
+        return store.searchSupplierPhonebookContacts({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          query: request.query.q ?? ""
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/suppliers/from-phonebook",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: PhonebookLinkBody }>, reply) => {
+      try {
+        const body = parsePhonebookLinkBody(request.body);
+        return store.createSupplierFromPhoneContact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          networkNodeId: body.networkNodeId,
+          notes: body.notes
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/suppliers/:supplierId/link-contact",
+    async (request: FastifyRequest<{ Params: SupplierParams; Body: PhonebookLinkBody }>, reply) => {
+      try {
+        return store.linkSupplierContact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId,
+          networkNodeId: parsePhonebookLinkBody(request.body).networkNodeId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/suppliers/:supplierId/sales-agents",
+    async (request: FastifyRequest<{ Params: SupplierParams }>, reply) => {
+      try {
+        return store.listSalesAgents({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/suppliers/:supplierId/sales-agents",
+    async (request: FastifyRequest<{ Params: SupplierParams; Body: ContactRecordBody }>, reply) => {
+      try {
+        return store.createSalesAgent({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId,
+          agent: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/suppliers/:supplierId/sales-agents/from-phonebook",
+    async (request: FastifyRequest<{ Params: SupplierParams; Body: PhonebookLinkBody }>, reply) => {
+      try {
+        const body = parsePhonebookLinkBody(request.body);
+        return store.createSalesAgentFromPhoneContact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          supplierId: request.params.supplierId,
+          networkNodeId: body.networkNodeId,
+          notes: body.notes
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/suppliers/:supplierId/sales-agents/:salesAgentId",
+    async (
+      request: FastifyRequest<{ Params: SupplierSalesAgentParams; Body: ContactRecordBody }>,
+      reply
+    ) => {
+      try {
+        return store.updateSalesAgent({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          salesAgentId: request.params.salesAgentId,
+          agent: parseContactRecordBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/suppliers/:supplierId/sales-agents/:salesAgentId",
+    async (request: FastifyRequest<{ Params: SupplierSalesAgentParams }>, reply) => {
+      try {
+        return store.deleteSalesAgent({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          salesAgentId: request.params.salesAgentId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/sales-agents/:salesAgentId/link-contact",
+    async (
+      request: FastifyRequest<{ Params: SalesAgentParams; Body: PhonebookLinkBody }>,
+      reply
+    ) => {
+      try {
+        return store.linkSalesAgentContact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          salesAgentId: request.params.salesAgentId,
+          networkNodeId: parsePhonebookLinkBody(request.body).networkNodeId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/receipt-ocr/jobs",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: ReceiptOCRBody }>, reply) => {
+      try {
+        const body = parseReceiptOCRBody(request.body);
+        return store.createReceiptOCRJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          sourceFileName: body.fileName,
+          contentType: body.contentType,
+          extractedText: body.extractedText
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/receipt-ocr/jobs/:ocrJobId/confirm",
+    async (
+      request: FastifyRequest<{ Params: ReceiptOCRParams; Body: ReceiptOCRConfirmBody }>,
+      reply
+    ) => {
+      try {
+        const body = parseReceiptOCRConfirmBody(request.body);
+        return store.confirmReceiptOCRJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ocrJobId: request.params.ocrJobId,
+          supplierId: body.supplierId,
+          salesAgentId: body.salesAgentId,
+          createSupplier: body.createSupplier,
+          createSalesAgent: body.createSalesAgent
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -2281,6 +2524,42 @@ function parseContactRecordBody(body: ContactRecordBody | null | undefined) {
     phone: parseNullableString(record.phone),
     email: parseNullableString(record.email),
     notes: parseNullableString(record.notes)
+  };
+}
+
+function parsePhonebookLinkBody(body: PhonebookLinkBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    networkNodeId: parseString(record.networkNodeId, "networkNodeId"),
+    notes: parseNullableString(record.notes)
+  };
+}
+
+function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    fileName: parseString(record.fileName, "fileName"),
+    contentType: parseString(record.contentType, "contentType"),
+    extractedText: typeof record.extractedText === "string" ? record.extractedText : ""
+  };
+}
+
+function parseReceiptOCRConfirmBody(body: ReceiptOCRConfirmBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    supplierId: parseNullableString(record.supplierId),
+    salesAgentId: parseNullableString(record.salesAgentId),
+    createSupplier:
+      record.createSupplier === undefined
+        ? false
+        : parseBoolean(record.createSupplier, "createSupplier"),
+    createSalesAgent:
+      record.createSalesAgent === undefined
+        ? false
+        : parseBoolean(record.createSalesAgent, "createSalesAgent")
   };
 }
 

@@ -292,10 +292,102 @@ export interface SupplierSummary {
   businessId: string;
   name: string;
   phone: string | null;
+  linkedPhonebookContactId: string | null;
+  linkedPhonebookContactName: string | null;
   email: string | null;
   notes: string | null;
+  salesAgentCount: number;
+  purchaseReceiptCount: number;
+  lastPurchaseDate: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SalesAgentSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  supplierName: string;
+  name: string;
+  phone: string | null;
+  linkedPhonebookContactId: string | null;
+  linkedPhonebookContactName: string | null;
+  notes: string | null;
+  receiptsHandled: number;
+  lastTransactionDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SupplierContactLinkType = "supplier" | "sales_agent";
+
+export interface SupplierContactLinkSummary {
+  id: string;
+  businessId: string;
+  linkType: SupplierContactLinkType;
+  supplierId: string | null;
+  salesAgentId: string | null;
+  networkNodeId: string;
+  contactName: string;
+  linkedAt: string;
+}
+
+export interface ReceiptLineItemSummary {
+  id: string;
+  receiptId: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
+export interface PurchaseReceiptSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  supplierName: string;
+  salesAgentId: string | null;
+  salesAgentName: string | null;
+  receiptDate: string;
+  total: number;
+  sourceFileName: string | null;
+  ocrJobId: string | null;
+  imageStored: boolean;
+  createdAt: string;
+  lineItems: ReceiptLineItemSummary[];
+}
+
+export type ReceiptOCRJobStatus = "pending" | "matched" | "needs_review" | "failed" | "confirmed";
+
+export interface ReceiptOCRJobSummary {
+  id: string;
+  businessId: string;
+  status: ReceiptOCRJobStatus;
+  sourceFileName: string;
+  contentType: string;
+  supplierName: string | null;
+  salesAgentName: string | null;
+  phone: string | null;
+  receiptDate: string | null;
+  total: number | null;
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    total: number;
+  }>;
+  matchedSupplierId: string | null;
+  matchedSalesAgentId: string | null;
+  errorMessage: string | null;
+  imageRetained: boolean;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+}
+
+export interface SupplierBusinessCardSummary extends SupplierSummary {
+  salesAgents: SalesAgentSummary[];
+  purchaseReceipts: PurchaseReceiptSummary[];
 }
 
 export type InvoiceStatus = "draft" | "confirmed";

@@ -326,10 +326,87 @@ interface SupplierSummary {
   businessId: string;
   name: string;
   phone: string | null;
+  linkedPhonebookContactId: string | null;
+  linkedPhonebookContactName: string | null;
   email: string | null;
   notes: string | null;
+  salesAgentCount: number;
+  purchaseReceiptCount: number;
+  lastPurchaseDate: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface SalesAgentSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  supplierName: string;
+  name: string;
+  phone: string | null;
+  linkedPhonebookContactId: string | null;
+  linkedPhonebookContactName: string | null;
+  notes: string | null;
+  receiptsHandled: number;
+  lastTransactionDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ReceiptLineItemSummary {
+  id: string;
+  receiptId: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
+interface PurchaseReceiptSummary {
+  id: string;
+  businessId: string;
+  supplierId: string;
+  supplierName: string;
+  salesAgentId: string | null;
+  salesAgentName: string | null;
+  receiptDate: string;
+  total: number;
+  sourceFileName: string | null;
+  ocrJobId: string | null;
+  imageStored: boolean;
+  createdAt: string;
+  lineItems: ReceiptLineItemSummary[];
+}
+
+interface ReceiptOCRJobSummary {
+  id: string;
+  businessId: string;
+  status: "pending" | "matched" | "needs_review" | "failed" | "confirmed";
+  sourceFileName: string;
+  contentType: string;
+  supplierName: string | null;
+  salesAgentName: string | null;
+  phone: string | null;
+  receiptDate: string | null;
+  total: number | null;
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    total: number;
+  }>;
+  matchedSupplierId: string | null;
+  matchedSalesAgentId: string | null;
+  errorMessage: string | null;
+  imageRetained: boolean;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+}
+
+interface SupplierBusinessCardSummary extends SupplierSummary {
+  salesAgents: SalesAgentSummary[];
+  purchaseReceipts: PurchaseReceiptSummary[];
 }
 
 interface StockAdjustmentResponse {
@@ -1471,7 +1548,7 @@ function OwnerApp() {
     createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
   );
   const [products, setProducts] = useState<ProductSummary[]>([]);
-  const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
@@ -2299,7 +2376,9 @@ function OwnerApp() {
 
   async function loadSuppliers(businessId: string) {
     try {
-      setSuppliers(await getJson<SupplierSummary[]>(`/businesses/${businessId}/suppliers`));
+      setSuppliers(
+        await getJson<SupplierBusinessCardSummary[]>(`/businesses/${businessId}/suppliers`)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2331,6 +2410,204 @@ function OwnerApp() {
       await loadSuppliers(business.id);
       await loadReports(business.id);
       setStatusMessage(supplierForm.id === null ? "Supplier created" : "Supplier updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function deleteSupplierCard(supplierId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await deleteJson<{ deleted: true; supplierId: string }>(
+        `/businesses/${business.id}/suppliers/${supplierId}`
+      );
+      await loadSuppliers(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Supplier deleted");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveSalesAgent(supplierId: string, agent: SupplierFormState) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      const payload = {
+        name: agent.name,
+        phone: agent.phone,
+        email: agent.email,
+        notes: agent.notes
+      };
+
+      if (agent.id === null) {
+        await postJson<SalesAgentSummary>(
+          `/businesses/${business.id}/suppliers/${supplierId}/sales-agents`,
+          payload
+        );
+      } else {
+        await patchJson<SalesAgentSummary>(
+          `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/${agent.id}`,
+          payload
+        );
+      }
+
+      await loadSuppliers(business.id);
+      setStatusMessage(agent.id === null ? "Sales agent added" : "Sales agent updated");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function deleteSalesAgentCard(supplierId: string, salesAgentId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await deleteJson<{ deleted: true; salesAgentId: string }>(
+        `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/${salesAgentId}`
+      );
+      await loadSuppliers(business.id);
+      setStatusMessage("Sales agent deleted");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function searchSupplierContacts(query: string): Promise<NetworkNodeSummary[]> {
+    if (business === null) {
+      return [];
+    }
+
+    try {
+      return await getJson<NetworkNodeSummary[]>(
+        `/businesses/${business.id}/suppliers/phonebook/search?q=${encodeURIComponent(query)}`
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+      return [];
+    }
+  }
+
+  async function linkSupplierPhoneContact(supplierId: string, networkNodeId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<SupplierBusinessCardSummary>(
+        `/businesses/${business.id}/suppliers/${supplierId}/link-contact`,
+        { networkNodeId }
+      );
+      await loadSuppliers(business.id);
+      setStatusMessage("Supplier phone contact linked");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createSupplierFromPhoneContact(networkNodeId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<SupplierBusinessCardSummary>(
+        `/businesses/${business.id}/suppliers/from-phonebook`,
+        { networkNodeId }
+      );
+      await loadSuppliers(business.id);
+      setStatusMessage("Supplier created from phone contact");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function linkSalesAgentPhoneContact(salesAgentId: string, networkNodeId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<SalesAgentSummary>(
+        `/businesses/${business.id}/sales-agents/${salesAgentId}/link-contact`,
+        { networkNodeId }
+      );
+      await loadSuppliers(business.id);
+      setStatusMessage("Sales agent phone contact linked");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createSalesAgentFromPhoneContact(supplierId: string, networkNodeId: string) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<SalesAgentSummary>(
+        `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/from-phonebook`,
+        { networkNodeId }
+      );
+      await loadSuppliers(business.id);
+      setStatusMessage("Sales agent created from phone contact");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function uploadSupplierReceipt(file: File): Promise<ReceiptOCRJobSummary | null> {
+    if (business === null) {
+      return null;
+    }
+
+    try {
+      const extractedText = file.type.startsWith("image/") ? "" : await file.text();
+      const job = await postJson<ReceiptOCRJobSummary>(
+        `/businesses/${business.id}/receipt-ocr/jobs`,
+        {
+          fileName: file.name,
+          contentType: file.type || "application/octet-stream",
+          extractedText
+        }
+      );
+      setStatusMessage(
+        job.status === "failed"
+          ? "Receipt OCR failed. Retry or enter the receipt manually."
+          : "Receipt OCR complete. Confirm matched supplier and agent."
+      );
+      return job;
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+      return null;
+    }
+  }
+
+  async function confirmSupplierReceipt(job: ReceiptOCRJobSummary) {
+    if (business === null) {
+      return;
+    }
+
+    try {
+      await postJson<PurchaseReceiptSummary>(
+        `/businesses/${business.id}/receipt-ocr/jobs/${job.id}/confirm`,
+        {
+          supplierId: job.matchedSupplierId,
+          salesAgentId: job.matchedSalesAgentId,
+          createSupplier: job.matchedSupplierId === null,
+          createSalesAgent: job.matchedSalesAgentId === null && job.salesAgentName !== null
+        }
+      );
+      await loadSuppliers(business.id);
+      await loadReports(business.id);
+      setStatusMessage("Receipt saved. Uploaded image was deleted after processing.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3562,6 +3839,30 @@ function OwnerApp() {
       return;
     }
 
+    const supplierReply = createSupplierChatReply(message, suppliers);
+
+    if (supplierReply !== null) {
+      const merchantMessage: ChatMessage = {
+        id: `merchant-${Date.now()}`,
+        author: "merchant",
+        body: message,
+        ...(attachments.length > 0 ? { attachments } : {})
+      };
+      setChatMessages((messages) => [
+        ...messages,
+        merchantMessage,
+        {
+          id: `sokoclaw-${Date.now()}`,
+          author: "sokoclaw",
+          body: supplierReply.body
+        }
+      ]);
+      setChatDraft("");
+      setPendingAttachments([]);
+      setView(supplierReply.view);
+      return;
+    }
+
     const merchantMessage: ChatMessage = {
       id: `merchant-${Date.now()}`,
       author: "merchant",
@@ -3694,6 +3995,17 @@ function OwnerApp() {
   }
 
   function createLocalParserReply(message: string): ChatMessage {
+    const supplierReply = createSupplierChatReply(message, suppliers);
+
+    if (supplierReply !== null) {
+      setView(supplierReply.view);
+      return {
+        id: `sokoclaw-${Date.now()}`,
+        author: "sokoclaw",
+        body: supplierReply.body
+      };
+    }
+
     const decision = createAgentRuntimeDecision({
       agent: agentSettings,
       clarificationCount,
@@ -3862,6 +4174,26 @@ function OwnerApp() {
                 notes: supplier.notes ?? ""
               })
             }
+            onDelete={(supplierId) => void deleteSupplierCard(supplierId)}
+            onSaveSalesAgent={(supplierId, agent) => void saveSalesAgent(supplierId, agent)}
+            onDeleteSalesAgent={(supplierId, salesAgentId) =>
+              void deleteSalesAgentCard(supplierId, salesAgentId)
+            }
+            onSearchContacts={searchSupplierContacts}
+            onLinkSupplierContact={(supplierId, networkNodeId) =>
+              void linkSupplierPhoneContact(supplierId, networkNodeId)
+            }
+            onCreateSupplierFromContact={(networkNodeId) =>
+              void createSupplierFromPhoneContact(networkNodeId)
+            }
+            onLinkSalesAgentContact={(salesAgentId, networkNodeId) =>
+              void linkSalesAgentPhoneContact(salesAgentId, networkNodeId)
+            }
+            onCreateSalesAgentFromContact={(supplierId, networkNodeId) =>
+              void createSalesAgentFromPhoneContact(supplierId, networkNodeId)
+            }
+            onUploadReceipt={uploadSupplierReceipt}
+            onConfirmReceipt={(job) => void confirmSupplierReceipt(job)}
             onImport={() => setView("imports")}
           />
         );
@@ -5501,8 +5833,8 @@ function ImportSurface(props: ImportSurfaceProps) {
     <div className="records-surface">
       <section className="record-form" aria-label="Catalogue document import">
         <div className="section-heading">
-          <p className="eyebrow">Catalogue import</p>
-          <h3>Upload or retrieve products</h3>
+          <p className="eyebrow">Purchase receipts</p>
+          <h3>Upload receipt or supplier records</h3>
         </div>
         <label>
           Import target
@@ -5638,12 +5970,12 @@ function ImportSurface(props: ImportSurfaceProps) {
 
       <section className="record-list" aria-label="Import jobs">
         <div className="section-heading">
-          <p className="eyebrow">Jobs</p>
-          <h3>Document imports</h3>
+          <p className="eyebrow">Supplier records</p>
+          <h3>Purchase receipts</h3>
         </div>
         {props.importJobs.length === 0 ? (
           <div className="empty-record">
-            <h3>No imports yet</h3>
+            <h3>No purchase receipts yet</h3>
             <p>Preview a catalogue document before confirming new records.</p>
           </div>
         ) : (
@@ -5673,8 +6005,8 @@ function ImportSurface(props: ImportSurfaceProps) {
       {props.activeImportJob !== null ? (
         <section className="record-list" aria-label="Import preview rows">
           <div className="section-heading">
-            <p className="eyebrow">{props.activeImportJob.status}</p>
-            <h3>Preview rows</h3>
+            <p className="eyebrow">Supplier records</p>
+            <h3>Review rows</h3>
           </div>
           <div className="metric-grid compact">
             <div className="metric">
@@ -7113,26 +7445,74 @@ function CustomerSurface(props: CustomerSurfaceProps) {
 }
 
 interface SupplierSurfaceProps {
-  suppliers: SupplierSummary[];
+  suppliers: SupplierBusinessCardSummary[];
   form: SupplierFormState;
   onFormChange: (form: SupplierFormState) => void;
   onSave: () => void;
   onReset: () => void;
   onEdit: (supplier: SupplierSummary) => void;
+  onDelete: (supplierId: string) => void;
+  onSaveSalesAgent: (supplierId: string, agent: SupplierFormState) => void;
+  onDeleteSalesAgent: (supplierId: string, salesAgentId: string) => void;
+  onSearchContacts: (query: string) => Promise<NetworkNodeSummary[]>;
+  onLinkSupplierContact: (supplierId: string, networkNodeId: string) => void;
+  onCreateSupplierFromContact: (networkNodeId: string) => void;
+  onLinkSalesAgentContact: (salesAgentId: string, networkNodeId: string) => void;
+  onCreateSalesAgentFromContact: (supplierId: string, networkNodeId: string) => void;
+  onUploadReceipt: (file: File) => Promise<ReceiptOCRJobSummary | null>;
+  onConfirmReceipt: (job: ReceiptOCRJobSummary) => void;
   onImport: () => void;
 }
 
 function SupplierSurface(props: SupplierSurfaceProps) {
+  const [openSupplierId, setOpenSupplierId] = useState<string | null>(
+    props.suppliers[0]?.id ?? null
+  );
+  const [agentFormBySupplier, setAgentFormBySupplier] = useState<Record<string, SupplierFormState>>(
+    {}
+  );
+  const [contactQuery, setContactQuery] = useState("");
+  const [contactResults, setContactResults] = useState<NetworkNodeSummary[]>([]);
+  const [receiptJob, setReceiptJob] = useState<ReceiptOCRJobSummary | null>(null);
+  const openSupplier = props.suppliers.find((supplier) => supplier.id === openSupplierId) ?? null;
+
+  async function searchContacts() {
+    setContactResults(await props.onSearchContacts(contactQuery));
+  }
+
+  async function handleReceiptFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (file === undefined) {
+      return;
+    }
+
+    const job = await props.onUploadReceipt(file);
+    setReceiptJob(job);
+    event.target.value = "";
+  }
+
+  function agentForm(supplierId: string): SupplierFormState {
+    return agentFormBySupplier[supplierId] ?? emptySupplierForm;
+  }
+
+  function updateAgentForm(supplierId: string, next: SupplierFormState) {
+    setAgentFormBySupplier((current) => ({
+      ...current,
+      [supplierId]: next
+    }));
+  }
+
   return (
     <div className="records-surface">
       <section className="record-form" aria-label="Supplier form">
         <div className="section-heading with-action">
           <div>
-            <p className="eyebrow">{props.form.id === null ? "New supplier" : "Edit supplier"}</p>
+            <p className="eyebrow">Suppliers</p>
             <h3>{props.form.id === null ? "Add supplier" : "Update supplier"}</h3>
           </div>
           <button className="secondary" type="button" onClick={props.onImport}>
-            Import
+            Import receipt
           </button>
         </div>
         <label>
@@ -7182,30 +7562,270 @@ function SupplierSurface(props: SupplierSurfaceProps) {
         <div className="surface-header-row">
           <div className="section-heading">
             <p className="eyebrow">Supplier records</p>
-            <h3>Existing suppliers</h3>
+            <h3>Suppliers</h3>
           </div>
           <button type="button" onClick={props.onImport}>
-            Upload
+            Upload receipt
           </button>
         </div>
+        <div className="supplier-contact-tools">
+          <label>
+            Search imported contacts
+            <input
+              value={contactQuery}
+              onChange={(event) => setContactQuery(event.target.value)}
+              placeholder="Search phonebook contacts"
+            />
+          </label>
+          <button className="secondary" type="button" onClick={() => void searchContacts()}>
+            Search
+          </button>
+        </div>
+        {contactResults.length > 0 ? (
+          <div className="supplier-contact-results">
+            {contactResults.map((contact) => (
+              <article className="mini-card" key={contact.id}>
+                <strong>{contact.displayName}</strong>
+                <span>Phonebook contact</span>
+                <div className="actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openSupplier === null
+                        ? props.onCreateSupplierFromContact(contact.id)
+                        : props.onLinkSupplierContact(openSupplier.id, contact.id)
+                    }
+                  >
+                    {openSupplier === null ? "Create supplier" : "Link supplier"}
+                  </button>
+                  {openSupplier !== null ? (
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() =>
+                        props.onCreateSalesAgentFromContact(openSupplier.id, contact.id)
+                      }
+                    >
+                      Create sales agent
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
         {props.suppliers.length === 0 ? (
           <div className="empty-record">
             <h3>No suppliers yet</h3>
-            <p>Add a supplier manually or import supplier contacts from documents.</p>
+            <p>Add a supplier manually, create one from a phone contact, or upload a receipt.</p>
           </div>
         ) : (
           props.suppliers.map((supplier) => (
-            <article className="record-row" key={supplier.id}>
-              <div>
-                <strong>{supplier.name}</strong>
-                <span>{supplier.phone ?? supplier.email ?? "No contact saved"}</span>
-                {supplier.notes === null || supplier.notes.length === 0 ? null : (
-                  <small>{supplier.notes}</small>
-                )}
+            <article className="supplier-business-card" key={supplier.id}>
+              <div className="supplier-card-header">
+                <div>
+                  <p className="eyebrow">Supplier</p>
+                  <h3>{supplier.name}</h3>
+                  <span>{supplier.phone ?? "No phone saved"}</span>
+                  <small>
+                    {supplier.linkedPhonebookContactName === null
+                      ? "Phone contact not linked"
+                      : `Linked contact: ${supplier.linkedPhonebookContactName}`}
+                  </small>
+                  {supplier.email !== null ? <small>{supplier.email}</small> : null}
+                  {supplier.notes !== null && supplier.notes.length > 0 ? (
+                    <small>{supplier.notes}</small>
+                  ) : null}
+                </div>
+                <div className="supplier-card-metrics">
+                  <span>Sales agents: {supplier.salesAgentCount}</span>
+                  <span>Receipts matched: {supplier.purchaseReceiptCount}</span>
+                  <span>
+                    Last purchase:{" "}
+                    {supplier.lastPurchaseDate === null
+                      ? "None"
+                      : new Date(supplier.lastPurchaseDate).toLocaleDateString()}
+                  </span>
+                </div>
               </div>
-              <button type="button" onClick={() => props.onEdit(supplier)}>
-                Edit
-              </button>
+              <div className="actions">
+                <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
+                  Open
+                </button>
+                <button className="secondary" type="button" onClick={() => props.onEdit(supplier)}>
+                  Edit
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => props.onDelete(supplier.id)}
+                >
+                  Delete
+                </button>
+                <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
+                  Add sales agent
+                </button>
+                <label className="button-like">
+                  Upload receipt
+                  <input
+                    accept="image/*,.txt,.csv,text/*"
+                    type="file"
+                    onChange={(event) => void handleReceiptFile(event)}
+                  />
+                </label>
+              </div>
+              {openSupplierId === supplier.id ? (
+                <div className="supplier-nested-cards">
+                  <section aria-label="Sales agents">
+                    <div className="section-heading">
+                      <p className="eyebrow">Sales agents</p>
+                      <h4>{supplier.name}</h4>
+                    </div>
+                    <div className="nested-agent-form">
+                      <input
+                        value={agentForm(supplier.id).name}
+                        onChange={(event) =>
+                          updateAgentForm(supplier.id, {
+                            ...agentForm(supplier.id),
+                            name: event.target.value
+                          })
+                        }
+                        placeholder="Sales agent name"
+                      />
+                      <input
+                        value={agentForm(supplier.id).phone}
+                        onChange={(event) =>
+                          updateAgentForm(supplier.id, {
+                            ...agentForm(supplier.id),
+                            phone: event.target.value
+                          })
+                        }
+                        placeholder="Phone number"
+                      />
+                      <input
+                        value={agentForm(supplier.id).notes}
+                        onChange={(event) =>
+                          updateAgentForm(supplier.id, {
+                            ...agentForm(supplier.id),
+                            notes: event.target.value
+                          })
+                        }
+                        placeholder="Notes"
+                      />
+                      <button
+                        type="button"
+                        disabled={agentForm(supplier.id).name.trim() === ""}
+                        onClick={() => {
+                          props.onSaveSalesAgent(supplier.id, agentForm(supplier.id));
+                          updateAgentForm(supplier.id, emptySupplierForm);
+                        }}
+                      >
+                        Save agent
+                      </button>
+                    </div>
+                    {supplier.salesAgents.length === 0 ? (
+                      <p className="form-hint">No sales agents yet.</p>
+                    ) : (
+                      supplier.salesAgents.map((agent) => (
+                        <article className="sales-agent-card" key={agent.id}>
+                          <strong>{agent.name}</strong>
+                          <span>{agent.phone ?? "No phone saved"}</span>
+                          <small>
+                            {agent.linkedPhonebookContactName === null
+                              ? "Phone contact not linked"
+                              : `Phone contact linked: ${agent.linkedPhonebookContactName}`}
+                          </small>
+                          <small>Supplier: {agent.supplierName}</small>
+                          {agent.notes !== null ? <small>{agent.notes}</small> : null}
+                          <small>Receipts: {agent.receiptsHandled}</small>
+                          <small>
+                            Last transaction:{" "}
+                            {agent.lastTransactionDate === null
+                              ? "None"
+                              : new Date(agent.lastTransactionDate).toLocaleDateString()}
+                          </small>
+                          <div className="actions">
+                            <button
+                              className="secondary"
+                              type="button"
+                              onClick={() =>
+                                updateAgentForm(supplier.id, {
+                                  id: agent.id,
+                                  name: agent.name,
+                                  phone: agent.phone ?? "",
+                                  email: "",
+                                  notes: agent.notes ?? ""
+                                })
+                              }
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="secondary"
+                              type="button"
+                              onClick={() => props.onDeleteSalesAgent(supplier.id, agent.id)}
+                            >
+                              Delete
+                            </button>
+                            {contactResults[0] !== undefined ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  props.onLinkSalesAgentContact(
+                                    agent.id,
+                                    contactResults[0]?.id ?? ""
+                                  )
+                                }
+                              >
+                                Link to phone contact
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </section>
+                  <section aria-label="Purchase receipts">
+                    <div className="section-heading">
+                      <p className="eyebrow">Purchase receipts</p>
+                      <h4>Structured records</h4>
+                    </div>
+                    {receiptJob !== null ? (
+                      <article className="receipt-ocr-card">
+                        <strong>OCR status: {receiptJob.status.replace("_", " ")}</strong>
+                        {receiptJob.errorMessage !== null ? (
+                          <span>{receiptJob.errorMessage}</span>
+                        ) : null}
+                        <span>Supplier: {receiptJob.supplierName ?? "No match"}</span>
+                        <span>Sales agent: {receiptJob.salesAgentName ?? "No match"}</span>
+                        <span>Items: {receiptJob.items.length}</span>
+                        <span>
+                          Uploaded image retained: {receiptJob.imageRetained ? "Yes" : "No"}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={receiptJob.status === "failed"}
+                          onClick={() => props.onConfirmReceipt(receiptJob)}
+                        >
+                          Confirm and save
+                        </button>
+                      </article>
+                    ) : null}
+                    {supplier.purchaseReceipts.length === 0 ? (
+                      <p className="form-hint">No purchase receipts saved yet.</p>
+                    ) : (
+                      supplier.purchaseReceipts.map((receipt) => (
+                        <article className="mini-card" key={receipt.id}>
+                          <strong>{new Date(receipt.receiptDate).toLocaleDateString()}</strong>
+                          <span>{formatMoney(receipt.total)}</span>
+                          <small>{receipt.salesAgentName ?? "No sales agent"}</small>
+                          <small>Image stored: {receipt.imageStored ? "Yes" : "No"}</small>
+                        </article>
+                      ))
+                    )}
+                  </section>
+                </div>
+              ) : null}
             </article>
           ))
         )}
@@ -11071,6 +11691,80 @@ function isNetworkDiscoveryRequest(message: string): boolean {
     normalized.includes("my network") ||
     (normalized.includes("find") && normalized.includes("supplier"))
   );
+}
+
+function createSupplierChatReply(
+  message: string,
+  suppliers: SupplierBusinessCardSummary[]
+): { body: string; view: ShellView } | null {
+  const normalized = normalizeSearchText(message);
+
+  if (normalized.includes("upload") && normalized.includes("receipt")) {
+    return {
+      view: "suppliers",
+      body: "Open Suppliers, choose a supplier card, then tap Upload receipt. I will extract supplier, sales agent, items, quantities, prices, date, and total; after confirmation the receipt image is not stored."
+    };
+  }
+
+  if (normalized.includes("add") && normalized.includes("supplier")) {
+    return {
+      view: "suppliers",
+      body: "Opening Suppliers. Add the supplier name, phone, email, notes, or create one from a linked phone contact."
+    };
+  }
+
+  if (normalized.includes("sales agent") || normalized.includes("sales agents")) {
+    const supplier = suppliers.find((item) =>
+      normalized.includes(
+        item.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim()
+      )
+    );
+
+    if (supplier !== undefined) {
+      return {
+        view: "suppliers",
+        body:
+          supplier.salesAgents.length === 0
+            ? `${supplier.name} has no linked sales agents yet.`
+            : [
+                `${supplier.name} sales agents:`,
+                ...supplier.salesAgents.map(
+                  (agent) =>
+                    `- ${agent.name}: ${agent.phone ?? "no phone"}, receipts ${agent.receiptsHandled}`
+                )
+              ].join("\n")
+      };
+    }
+  }
+
+  if (
+    normalized.includes("show my suppliers") ||
+    normalized === "suppliers" ||
+    (normalized.includes("which supplier") && normalized.includes("sold"))
+  ) {
+    return {
+      view: "suppliers",
+      body:
+        suppliers.length === 0
+          ? "No suppliers yet. Add one manually, create one from a phone contact, or upload a purchase receipt."
+          : [
+              "Supplier cards:",
+              ...suppliers.map(
+                (supplier) =>
+                  `- ${supplier.name}: ${supplier.phone ?? "no phone"}, agents ${supplier.salesAgentCount}, receipts ${supplier.purchaseReceiptCount}, last purchase ${
+                    supplier.lastPurchaseDate === null
+                      ? "none"
+                      : new Date(supplier.lastPurchaseDate).toLocaleDateString()
+                  }`
+              )
+            ].join("\n")
+    };
+  }
+
+  return null;
 }
 
 function escapeCsvCell(value: string): string {
