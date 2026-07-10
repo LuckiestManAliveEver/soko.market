@@ -3,9 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./dist/app.js",
+  "types": "./dist/app.d.ts",
   "exports": {
-    ".": "./src/app.ts"
+    ".": {
+      "types": "./dist/app.d.ts",
+      "import": "./dist/app.js"
+    }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",

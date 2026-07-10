@@ -16,7 +16,8 @@ const packageManifests = [
   "packages/tool-core/package.json",
   "packages/sync-core/package.json",
   "packages/business-core/package.json",
-  "services/ai-runtime/package.json"
+  "services/ai-runtime/package.json",
+  "services/api/package.json"
 ];
 const importPatterns = [
   /\bimport\s+(?:[^'"()]+?\s+from\s+)?["']([^"']+)["']/g,
