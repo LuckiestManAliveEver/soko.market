@@ -1,6 +1,6 @@
 /* global URL, caches, self */
 
-const CACHE_NAME = "soko-market-app-v2";
+const CACHE_NAME = "soko-market-app-v3";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/soko-icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -37,6 +37,12 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith(fetch(request).catch(() => caches.match("/")));
+    return;
+  }
+
+  const shouldCache = url.pathname.startsWith("/assets/") || APP_SHELL.includes(url.pathname);
+
+  if (!shouldCache) {
     return;
   }
 

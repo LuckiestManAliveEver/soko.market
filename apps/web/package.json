@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --host 127.0.0.1",
+    "clean:dev": "rm -rf node_modules/.vite dist",
+    "dev": "vite",
+    "dev:poll": "VITE_USE_POLLING=true vite",
     "preview": "vite preview --host 127.0.0.1",
+    "restart:dev": "pnpm clean:dev && pnpm dev",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

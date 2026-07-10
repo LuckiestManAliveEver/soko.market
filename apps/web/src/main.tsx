@@ -1050,6 +1050,13 @@ interface LaunchFormState {
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
+const buildIdentity = {
+  appName: __APP_NAME__,
+  buildTimestamp: __BUILD_TIMESTAMP__,
+  environment: import.meta.env.MODE,
+  version: __APP_VERSION__
+};
+const showBuildIdentity = import.meta.env.DEV || __DEBUG_UI__;
 const activeBusinessStorageKey = "soko.chatFirst.activeBusiness";
 const legacyActiveBusinessStorageKey = `soko.c${"p"}3.activeBusiness`;
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
@@ -1360,6 +1367,18 @@ function App() {
   }
 
   return <OwnerApp />;
+}
+
+function BuildIdentity() {
+  if (!showBuildIdentity) {
+    return null;
+  }
+
+  return (
+    <span className="build-identity">
+      {buildIdentity.environment} · v{buildIdentity.version} · built {buildIdentity.buildTimestamp}
+    </span>
+  );
 }
 
 function MarketplacePlaceholder() {
@@ -4226,7 +4245,10 @@ function OwnerApp() {
             </ChatSurface>
           </main>
         )}
-        <footer className="app-credits">The Retail Network At Your Fingertips</footer>
+        <footer className="app-credits">
+          <span>The Retail Network At Your Fingertips</span>
+          <BuildIdentity />
+        </footer>
       </div>
     </Surface>
   );
@@ -6795,7 +6817,10 @@ function PublicStorefrontChat(props: { agentId: string }) {
               <span className="visually-hidden">Send</span>
             </button>
           </form>
-          <footer className="app-credits">The Retail Network At Your Fingertips</footer>
+          <footer className="app-credits">
+            <span>The Retail Network At Your Fingertips</span>
+            <BuildIdentity />
+          </footer>
         </section>
       </main>
     </Surface>
@@ -10249,13 +10274,36 @@ function useInstallPrompt() {
 }
 
 function registerAppServiceWorker() {
-  if (!("serviceWorker" in navigator) || import.meta.env.DEV) {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  if (import.meta.env.DEV) {
+    void unregisterDevelopmentServiceWorkers();
     return;
   }
 
   window.addEventListener("load", () => {
     void navigator.serviceWorker.register("/sw.js");
   });
+}
+
+async function unregisterDevelopmentServiceWorkers() {
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+
+    if ("caches" in globalThis) {
+      const cacheNames = await globalThis.caches.keys();
+      await Promise.all(
+        cacheNames
+          .filter((cacheName) => cacheName.startsWith("soko-market-app-"))
+          .map((cacheName) => globalThis.caches.delete(cacheName))
+      );
+    }
+  } catch (error) {
+    console.warn("Unable to unregister the development service worker.", error);
+  }
 }
 
 function isStandaloneWebApp(): boolean {
@@ -11393,6 +11441,14 @@ const root = document.getElementById("root");
 if (root === null) {
   throw new Error("Root element not found.");
 }
+
+console.info(`[${buildIdentity.appName}] frontend boot`, {
+  appName: buildIdentity.appName,
+  buildTimestamp: buildIdentity.buildTimestamp,
+  environment: buildIdentity.environment,
+  url: window.location.href,
+  version: buildIdentity.version
+});
 
 createRoot(root).render(
   <StrictMode>

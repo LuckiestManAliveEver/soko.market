@@ -87,6 +87,13 @@ button:disabled {
   text-align: center;
 }
 
+.build-identity {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
 .top-bar {
   align-items: center;
   background: rgba(255, 255, 255, 0.96);
