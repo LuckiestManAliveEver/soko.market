@@ -6,7 +6,7 @@ services:
     autoDeployTrigger: commit
     plan: free
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api build
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
     startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health
     buildFilter:
@@ -45,7 +45,7 @@ services:
     runtime: static
     branch: main
     autoDeployTrigger: commit
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/web build
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/web... build
     staticPublishPath: apps/web/dist
     buildFilter:
       paths:
