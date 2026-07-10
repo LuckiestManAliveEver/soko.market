@@ -6861,18 +6861,30 @@ function PublicStorefrontChat(props: { agentId: string }) {
             </div>
             <div className="public-chat-actions">
               {installPrompt.canInstall ? (
-                <button type="button" onClick={() => void installPrompt.installApp()}>
+                <button
+                  className="header-action-button workspace"
+                  type="button"
+                  onClick={() => void installPrompt.installApp()}
+                >
                   Install
                 </button>
               ) : null}
-              <button type="button" onClick={() => setCatalogueOpen((current) => !current)}>
+              <button
+                className="header-action-button"
+                type="button"
+                onClick={() => setCatalogueOpen((current) => !current)}
+              >
                 Catalogue
               </button>
-              <button type="button" onClick={() => setReceiptOpen((current) => !current)}>
+              <button
+                className="header-action-button"
+                type="button"
+                onClick={() => setReceiptOpen((current) => !current)}
+              >
                 Receipt {cartCount > 0 ? cartCount : ""}
               </button>
               <details className="customer-care-menu">
-                <summary>Customer care</summary>
+                <summary className="header-signout-button">Customer care</summary>
                 <div className="customer-care-dropdown">
                   <button type="button" onClick={requestCallback}>
                     Request callback

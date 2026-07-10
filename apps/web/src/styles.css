@@ -2410,18 +2410,12 @@ details.nested-form-section summary {
   flex-wrap: wrap;
   gap: 6px;
   justify-content: end;
+  overflow-x: auto;
 }
 
-.public-chat-actions button {
-  background: #eef2f6;
-  border: 1px solid #d8e0e7;
-  border-radius: 8px;
-  color: #17211b;
-  font-size: 12px;
-  font-weight: 900;
-  min-height: 36px;
-  padding: 7px 9px;
-  white-space: nowrap;
+.public-chat-actions > button,
+.public-chat-actions > .customer-care-menu {
+  flex: 0 0 auto;
 }
 
 .customer-care-menu {
@@ -2429,17 +2423,11 @@ details.nested-form-section summary {
 }
 
 .customer-care-menu summary {
-  background: #eef2f6;
-  border: 1px solid #d8e0e7;
-  border-radius: 8px;
-  color: #17211b;
+  align-items: center;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 900;
+  display: inline-flex;
+  justify-content: center;
   list-style: none;
-  min-height: 36px;
-  padding: 8px 10px;
-  white-space: nowrap;
 }
 
 .customer-care-menu summary::-webkit-details-marker {
@@ -2464,9 +2452,17 @@ details.nested-form-section summary {
 }
 
 .customer-care-dropdown button {
+  background: #eef2f6;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  color: #17211b;
   flex: 1 1 120px;
+  font-size: 12px;
+  font-weight: 900;
   justify-content: start;
   min-height: 34px;
+  padding: 7px 9px;
+  white-space: nowrap;
   width: auto;
 }
 
