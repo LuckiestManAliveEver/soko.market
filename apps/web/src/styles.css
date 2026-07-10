@@ -1231,6 +1231,7 @@ button:disabled {
 .supplier-business-card,
 .sales-agent-card,
 .receipt-ocr-card,
+.product-vocabulary-card,
 .mini-card {
   background: #ffffff;
   border: 1px solid #dbe4dc;
@@ -1275,6 +1276,22 @@ button:disabled {
 .supplier-nested-cards {
   display: grid;
   gap: 10px;
+}
+
+.context-vocabulary-intents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-vocabulary-intents span {
+  background: #eef2f0;
+  border: 1px solid #dbe4dc;
+  border-radius: 999px;
+  color: #405047;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 5px 8px;
 }
 
 .supplier-contact-tools,

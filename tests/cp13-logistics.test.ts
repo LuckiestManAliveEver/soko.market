@@ -390,7 +390,7 @@ describe("CP13 logistics", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "show products"
+        message: "open products"
       },
       sessionCookie
     );

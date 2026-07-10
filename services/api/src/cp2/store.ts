@@ -217,7 +217,10 @@ import {
   type VerificationTierInput
 } from "@soko/business-core";
 import {
+  createRuntimeToolProposalFromProductContextScript,
   createRuntimeToolProposal,
+  parseProductContextScriptCommand,
+  productContextScriptMatchToParseResult,
   parseRuntimeModelOutput,
   parseMerchantCommand,
   runtimeToolRegistry,
@@ -4208,27 +4211,57 @@ export class Cp2Store {
       });
     }
 
-    const parserResult = parseMerchantCommand(input.message);
-    const modelRouteInput = {
+    const contextScriptMatch = parseProductContextScriptCommand({
       message: input.message,
-      context,
-      now,
-      appendTelemetry
-    };
-    const modelRoute = await this.createRuntimeModelRoute(
-      input.agentProfile === undefined
-        ? modelRouteInput
+      tenantId: input.businessId,
+      contextScripts: input.agentProfile?.contextScripts ?? []
+    });
+    const parserResult =
+      contextScriptMatch === null
+        ? parseMerchantCommand(input.message)
+        : productContextScriptMatchToParseResult(contextScriptMatch);
+    const modelRoute =
+      contextScriptMatch === null
+        ? await this.createRuntimeModelRoute(
+            input.agentProfile === undefined
+              ? {
+                  message: input.message,
+                  context,
+                  now,
+                  appendTelemetry
+                }
+              : {
+                  message: input.message,
+                  context,
+                  now,
+                  appendTelemetry,
+                  agentProfile: input.agentProfile
+                }
+          )
         : {
-            ...modelRouteInput,
-            agentProfile: input.agentProfile
-          }
-    );
+            proposal: null,
+            trace: null
+          };
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
-      source: modelRoute.proposal === null ? "parser" : "local_model"
+      source:
+        contextScriptMatch === null
+          ? modelRoute.proposal === null
+            ? "parser"
+            : "local_model"
+          : "context_script",
+      scriptId: contextScriptMatch?.scriptId ?? null,
+      matchedPhrase: contextScriptMatch?.matchedPhrase ?? null,
+      canonicalIntent: contextScriptMatch?.intent ?? null,
+      cardinality: contextScriptMatch?.cardinality ?? null,
+      clarificationRequired: contextScriptMatch?.clarificationRequired ?? false,
+      fallbackReason: contextScriptMatch === null ? "no_context_script_match" : null
     });
-    const proposal = modelRoute.proposal ?? createRuntimeToolProposal(parserResult);
+    const proposal =
+      contextScriptMatch === null
+        ? (modelRoute.proposal ?? createRuntimeToolProposal(parserResult))
+        : createRuntimeToolProposalFromProductContextScript(contextScriptMatch);
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
     const confirmationToken =
@@ -5631,6 +5664,44 @@ export class Cp2Store {
           now: input.now
         });
 
+      case "product.update":
+      case "product.stock_adjust":
+        return null;
+
+      case "product.delete": {
+        const product = this.findRuntimeProductByName(
+          input.businessId,
+          String(input.action.input.productName ?? "")
+        );
+
+        if (product === null) {
+          throw new Cp2Error(
+            404,
+            "runtime_product_not_found",
+            "The product selected by the context script was not found."
+          );
+        }
+
+        return this.deleteProduct({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          productId: product.id,
+          now: input.now
+        });
+      }
+
+      case "product.field.add":
+        return {
+          fieldName: String(input.action.input.fieldName ?? ""),
+          status: "planned"
+        };
+
+      case "product.field.remove":
+        return {
+          fieldName: String(input.action.input.fieldName ?? ""),
+          status: "planned"
+        };
+
       case "customer.create":
         return this.createCustomer({
           sessionId: input.sessionId,
@@ -5649,6 +5720,24 @@ export class Cp2Store {
       case "unknown.clarify":
         return null;
     }
+  }
+
+  private findRuntimeProductByName(businessId: string, productName: string): ProductSummary | null {
+    const normalizedName = normalizeRuntimeLookup(productName);
+
+    if (normalizedName.length === 0) {
+      return null;
+    }
+
+    const products = [...this.products.values()].filter(
+      (product) => product.businessId === businessId
+    );
+
+    return (
+      products.find((product) => normalizeRuntimeLookup(product.name) === normalizedName) ??
+      products.find((product) => normalizeRuntimeLookup(product.name).includes(normalizedName)) ??
+      null
+    );
   }
 
   private buildRuntimeContext(businessId: string, userId: string): RuntimeContextSummary {
@@ -7999,6 +8088,15 @@ function createRuntimeResponse(input: {
   }
 
   return input.proposalReason;
+}
+
+function normalizeRuntimeLookup(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}\s.-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function serializeSessionCookie(

@@ -345,7 +345,7 @@ describe("CP12 reports notifications and knowledge", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "show products"
+        message: "open products"
       },
       sessionCookie
     );

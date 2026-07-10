@@ -250,7 +250,7 @@ describe("CP11 local model adapter", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "please stock model sugar"
+        message: "please ask the local model to draft inventory sugar"
       },
       sessionCookie
     );
@@ -407,7 +407,7 @@ async function runFallbackCase(
     app,
     `/businesses/${businessId}/runtime/turns`,
     {
-      message: "show products"
+      message: "open products"
     },
     sessionCookie
   );
@@ -428,7 +428,7 @@ async function runThrownFallbackCase(): Promise<RuntimeTurnResponse> {
     app,
     `/businesses/${businessId}/runtime/turns`,
     {
-      message: "show products"
+      message: "open products"
     },
     sessionCookie
   );

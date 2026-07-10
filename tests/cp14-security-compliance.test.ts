@@ -278,7 +278,7 @@ describe("CP14 security compliance", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "show products"
+        message: "open products"
       },
       sessionCookie
     );

@@ -250,7 +250,7 @@ describe("CP15 beta release hardening", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "show products"
+        message: "open products"
       },
       sessionCookie
     );

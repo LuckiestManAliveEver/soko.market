@@ -249,7 +249,7 @@ describe("CP16 public launch", () => {
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "show products"
+        message: "open products"
       },
       sessionCookie
     );

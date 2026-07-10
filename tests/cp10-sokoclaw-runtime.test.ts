@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  createRuntimeToolProposalFromProductContextScript,
   createRuntimeToolProposal,
+  parseProductContextScriptCommand,
   parseMerchantCommand,
   runtimeToolRegistry
 } from "../packages/tool-core/src";
@@ -78,6 +80,77 @@ describe("CP10 Sokoclaw runtime", () => {
     }
   });
 
+  it("resolves product vocabulary context scripts before model fallback", () => {
+    const lookup = parseProductContextScriptCommand({ message: "Show products" });
+    expect(lookup).toMatchObject({
+      matched: true,
+      source: "context_script",
+      intent: "PRODUCT_LIST",
+      cardinality: "multiple"
+    });
+    expect(createRuntimeToolProposalFromProductContextScript(lookup!)).toMatchObject({
+      toolName: "products.list",
+      validation: { ok: true }
+    });
+
+    expect(parseProductContextScriptCommand({ message: "Tafuta bidhaa" })).toMatchObject({
+      intent: "PRODUCT_LIST"
+    });
+    expect(parseProductContextScriptCommand({ message: "stock iko aje" })).toMatchObject({
+      intent: "PRODUCT_LIST",
+      cardinality: "single"
+    });
+    expect(parseProductContextScriptCommand({ message: "Add product maize flour" })).toMatchObject({
+      intent: "PRODUCT_ADD",
+      cardinality: "single",
+      entities: {
+        productName: "maize flour"
+      }
+    });
+    expect(parseProductContextScriptCommand({ message: "Ongeza bidhaa tatu" })).toMatchObject({
+      intent: "PRODUCT_ADD"
+    });
+    expect(parseProductContextScriptCommand({ message: "Edit maize flour" })).toMatchObject({
+      intent: "PRODUCT_EDIT",
+      entities: {
+        productName: "maize flour"
+      }
+    });
+    expect(parseProductContextScriptCommand({ message: "Badilisha bidhaa" })).toMatchObject({
+      intent: "PRODUCT_EDIT"
+    });
+    expect(parseProductContextScriptCommand({ message: "Delete these products" })).toMatchObject({
+      intent: "PRODUCT_DELETE",
+      cardinality: "multiple",
+      requiresConfirmation: true,
+      clarificationRequired: true
+    });
+    expect(parseProductContextScriptCommand({ message: "Usifute bidhaa" })).toBeNull();
+    expect(
+      parseProductContextScriptCommand({ message: "Remove product field expiry date" })
+    ).toMatchObject({
+      intent: "PRODUCT_FIELD_REMOVE",
+      entity: "product_field",
+      entities: {
+        fieldName: "expiry date"
+      }
+    });
+    expect(
+      parseProductContextScriptCommand({ message: "Tell me how products are performing" })
+    ).toBeNull();
+
+    expect(
+      parseProductContextScriptCommand({
+        message: "show dishes",
+        tenantId: "restaurant",
+        contextScripts: ["show dishes => show products"]
+      })
+    ).toMatchObject({
+      intent: "PRODUCT_LIST",
+      matchedPhrase: "show dishes"
+    });
+  });
+
   it("executes safe read tools through a business-scoped runtime turn", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
@@ -137,6 +210,13 @@ describe("CP10 Sokoclaw runtime", () => {
         "tool.executed",
         "response.generated"
       ])
+    );
+    expect(turn.turn.telemetry.find((event) => event.state === "intent.routed")?.metadata).toEqual(
+      expect.objectContaining({
+        source: "context_script",
+        scriptId: "product-vocabulary",
+        canonicalIntent: "PRODUCT_LIST"
+      })
     );
     const runtimeEvent = store
       .snapshot()

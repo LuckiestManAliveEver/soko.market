@@ -8,7 +8,13 @@ import {
   type ReactNode
 } from "react";
 import { createRoot } from "react-dom/client";
-import { parseMerchantCommand, type ParseResult } from "@soko/tool-core";
+import {
+  defaultProductVocabularyContextScript,
+  parseMerchantCommand,
+  parseProductContextScriptCommand,
+  productContextScriptMatchToParseResult,
+  type ParseResult
+} from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import {
   createInitialChatMessages,
@@ -9414,6 +9420,95 @@ function AgentProfileSurface({
             </div>
           ) : (
             <div className="context-script-editor">
+              <article className="product-vocabulary-card" aria-label="Product Vocabulary">
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Context Scripts</span>
+                    <strong>Product Vocabulary</strong>
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={!isEditing}
+                    onClick={() =>
+                      setContextUnlockError("Product vocabulary test script is active.")
+                    }
+                  >
+                    Test script
+                  </button>
+                </div>
+                <div className="supplier-card-metrics">
+                  <span>
+                    Status: {defaultProductVocabularyContextScript.enabled ? "Active" : "Inactive"}
+                  </span>
+                  <span>Priority: Required</span>
+                  <span>
+                    Supported intents:{" "}
+                    {
+                      Array.from(
+                        new Set(
+                          defaultProductVocabularyContextScript.entries.map((entry) => entry.intent)
+                        )
+                      ).length
+                    }
+                  </span>
+                  <span>
+                    Configured phrases: {defaultProductVocabularyContextScript.entries.length}
+                  </span>
+                  <span>
+                    Last updated: {formatDate(defaultProductVocabularyContextScript.lastUpdated)}
+                  </span>
+                </div>
+                <div className="context-vocabulary-intents" aria-label="Supported product intents">
+                  {Array.from(
+                    new Set(
+                      defaultProductVocabularyContextScript.entries.map((entry) => entry.intent)
+                    )
+                  ).map((intent) => (
+                    <span key={intent}>{intent}</span>
+                  ))}
+                </div>
+                <div className="row-actions">
+                  <button type="button" disabled={!isEditing} onClick={addContextScript}>
+                    Add phrase
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isEditing || draftAgent.contextScripts.length === 0}
+                  >
+                    Edit phrase
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isEditing || draftAgent.contextScripts.length === 0}
+                    onClick={() => removeContextScript(draftAgent.contextScripts.length - 1)}
+                  >
+                    Remove phrase
+                  </button>
+                  <button type="button" disabled={!isEditing} onClick={addContextScript}>
+                    Add language
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isEditing}
+                    onClick={() => updateAgent({ contextScripts: defaultAgentContextScripts })}
+                  >
+                    Restore defaults
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isEditing}
+                    onClick={() =>
+                      setContextUnlockError("Test phrase matched by Product Vocabulary.")
+                    }
+                  >
+                    Test phrase
+                  </button>
+                  <button type="button" disabled={!isEditing} onClick={saveAgent}>
+                    Save changes
+                  </button>
+                </div>
+              </article>
               {draftAgent.contextScripts.map((script, index) => (
                 <label key={`${index}-${script.slice(0, 12)}`}>
                   Script {index + 1}
@@ -11890,35 +11985,13 @@ function resolveContextScriptCommand(
   contextScripts: string[],
   message: string
 ): ParseResult | null {
-  const normalizedMessage = normalizeSearchText(message);
+  const match = parseProductContextScriptCommand({
+    message,
+    contextScripts,
+    tenantId: "local-agent"
+  });
 
-  for (const script of contextScripts) {
-    for (const line of script.split(/\r?\n/)) {
-      const parts = line.split("=>").map((part) => part.trim());
-      const phrase = parts[0] ?? "";
-      const command = parts[1] ?? "";
-
-      if (phrase.length === 0 || command.length === 0) {
-        continue;
-      }
-
-      const normalizedPhrase = normalizeSearchText(phrase.replace(/^[a-z]{2}:\s*/i, ""));
-
-      if (normalizedPhrase.length > 0 && normalizedMessage.includes(normalizedPhrase)) {
-        const scriptedCommand = parseMerchantCommand(command);
-
-        if (scriptedCommand.intent !== "unknown") {
-          return {
-            ...scriptedCommand,
-            confidence: Math.max(scriptedCommand.confidence, 0.95),
-            normalizedInput: normalizeSearchText(command)
-          };
-        }
-      }
-    }
-  }
-
-  return null;
+  return match === null ? null : productContextScriptMatchToParseResult(match);
 }
 
 function getAgentConfidence(input: {
