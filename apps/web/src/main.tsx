@@ -1049,11 +1049,13 @@ interface LaunchFormState {
   incidentBody: string;
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4000";
+const apiBaseUrl = readApiBaseUrl();
 const buildIdentity = {
+  apiBaseUrl,
   appName: __APP_NAME__,
   buildTimestamp: __BUILD_TIMESTAMP__,
-  environment: import.meta.env.MODE,
+  commitSha: __GIT_COMMIT_SHA__,
+  environment: __DEPLOYMENT_ENV__,
   version: __APP_VERSION__
 };
 const showBuildIdentity = import.meta.env.DEV || __DEBUG_UI__;
@@ -1376,9 +1378,29 @@ function BuildIdentity() {
 
   return (
     <span className="build-identity">
-      {buildIdentity.environment} · v{buildIdentity.version} · built {buildIdentity.buildTimestamp}
+      {buildIdentity.environment} · v{buildIdentity.version} ·{" "}
+      {formatShortCommit(buildIdentity.commitSha)} · built {buildIdentity.buildTimestamp}
     </span>
   );
+}
+
+function readApiBaseUrl(): string {
+  const configuredUrl = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_URL;
+
+  if (configuredUrl !== undefined && configuredUrl.trim() !== "") {
+    return configuredUrl.trim().replace(/\/+$/, "");
+  }
+
+  if (import.meta.env.PROD) {
+    console.error("Soko.market frontend is missing VITE_API_BASE_URL; backend requests will fail.");
+    return "";
+  }
+
+  return "http://127.0.0.1:4000";
+}
+
+function formatShortCommit(commitSha: string): string {
+  return commitSha === "local" ? "local" : commitSha.slice(0, 7);
 }
 
 function MarketplacePlaceholder() {
@@ -11443,8 +11465,10 @@ if (root === null) {
 }
 
 console.info(`[${buildIdentity.appName}] frontend boot`, {
+  apiBaseUrl: buildIdentity.apiBaseUrl,
   appName: buildIdentity.appName,
   buildTimestamp: buildIdentity.buildTimestamp,
+  commitSha: buildIdentity.commitSha,
   environment: buildIdentity.environment,
   url: window.location.href,
   version: buildIdentity.version

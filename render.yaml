@@ -2,11 +2,22 @@ services:
   - type: web
     name: soko-market-api
     runtime: node
+    branch: main
+    autoDeployTrigger: commit
     plan: free
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
-    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm exec tsx services/api/src/index.ts
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api build
+    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health
+    buildFilter:
+      paths:
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - packages/**
+        - services/ai-runtime/**
+        - services/api/**
     domains:
       - api.soko.market
     envVars:
@@ -32,10 +43,36 @@ services:
   - type: web
     name: soko-market-web
     runtime: static
+    branch: main
+    autoDeployTrigger: commit
     buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/web build
     staticPublishPath: apps/web/dist
+    buildFilter:
+      paths:
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - apps/web/**
+        - packages/**
     domains:
       - soko.market
+    headers:
+      - path: /
+        name: Cache-Control
+        value: no-cache, must-revalidate
+      - path: /index.html
+        name: Cache-Control
+        value: no-cache, must-revalidate
+      - path: /sw.js
+        name: Cache-Control
+        value: no-cache, must-revalidate
+      - path: /manifest.webmanifest
+        name: Cache-Control
+        value: no-cache, must-revalidate
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
     routes:
       - type: rewrite
         source: /*
@@ -43,5 +80,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.19.0
-      - key: VITE_API_URL
+      - key: VITE_API_BASE_URL
         value: https://api.soko.market
+      - key: VITE_DEPLOYMENT_ENV
+        value: production
