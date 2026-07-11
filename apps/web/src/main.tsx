@@ -21,7 +21,8 @@ import {
   quickActions,
   type ChatAttachment,
   type ChatMessage,
-  type ShellView
+  type ShellView,
+  type SokoMode
 } from "./app-shell";
 import "./styles.css";
 
@@ -1372,6 +1373,7 @@ const showBuildIdentity = import.meta.env.DEV || __DEBUG_UI__;
 const activeBusinessStorageKey = "soko.chatFirst.activeBusiness";
 const legacyActiveBusinessStorageKey = `soko.c${"p"}3.activeBusiness`;
 const activeAgentStorageKey = "soko.chatFirst.agentSettings";
+const activeModeStorageKey = "soko.chatFirst.mode";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
@@ -1681,10 +1683,6 @@ function App() {
     return <PublicStorefrontChat agentId={storefrontAgentId} />;
   }
 
-  if (window.location.pathname === "/marketplace") {
-    return <MarketplacePlaceholder />;
-  }
-
   if (window.location.pathname === "/terms") {
     return (
       <LegalPlaceholder
@@ -1736,16 +1734,6 @@ function readApiBaseUrl(): string {
 
 function formatShortCommit(commitSha: string): string {
   return commitSha === "local" ? "local" : commitSha.slice(0, 7);
-}
-
-function MarketplacePlaceholder() {
-  return (
-    <Surface title="Soko.market">
-      <div className="marketplace-placeholder">
-        <h1>Marketplace coming soon</h1>
-      </div>
-    </Surface>
-  );
 }
 
 function LegalPlaceholder(props: { title: string; body: string }) {
@@ -1812,6 +1800,7 @@ function OwnerApp() {
   );
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>("chat");
+  const [mode, setMode] = useState<SokoMode>(readStoredSokoMode);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
@@ -1908,6 +1897,10 @@ function OwnerApp() {
   useEffect(() => {
     localStorage.setItem(activeAgentStorageKey, JSON.stringify(agentSettings));
   }, [agentSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(activeModeStorageKey, mode);
+  }, [mode]);
 
   useEffect(() => {
     if (business !== null) {
@@ -3790,16 +3783,25 @@ function OwnerApp() {
     }
   }
 
-  function openStorefront() {
-    if (!setupComplete || business === null) {
+  function switchMode(nextMode: SokoMode) {
+    if (nextMode === mode) {
       return;
     }
 
-    window.location.assign(createPublicStorefrontUrl(business));
-  }
-
-  function openMarketplace() {
-    window.location.assign("/marketplace");
+    setMode(nextMode);
+    setView("chat");
+    setIsWorkspacePanelOpen(false);
+    setChatMessages((messages) => [
+      ...messages,
+      {
+        id: `mode-${nextMode}-${Date.now()}`,
+        author: "sokoclaw",
+        body:
+          nextMode === "seller"
+            ? `Seller controls are ready for ${business?.name ?? "your shop"}. You can use a card below or tell me what to change.`
+            : "Marketplace mode restored. Tell me what you want to find, or explore a storefront below."
+      }
+    ]);
   }
 
   function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
@@ -4106,6 +4108,7 @@ function OwnerApp() {
     setRecoveryPinConfirm("");
     setSocialProvider(null);
     setView("chat");
+    setMode("marketplace");
     setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
     setIsWorkspaceUnlocked(ownerAuth === null);
   }
@@ -4721,33 +4724,24 @@ function OwnerApp() {
           {!isAuthScreen && setupComplete ? (
             <div className="header-actions">
               <button
-                className="header-action-button workspace"
+                className={
+                  mode === "seller"
+                    ? "header-action-button mode-active"
+                    : "header-action-button sell"
+                }
                 type="button"
-                onClick={() => setIsWorkspacePanelOpen(true)}
+                onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
+                aria-pressed={mode === "seller"}
               >
-                Workspace
-              </button>
-              <button className="header-action-button" type="button" onClick={openStorefront}>
-                Storefront
+                {mode === "seller" ? "Shop" : "Sell"}
               </button>
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => setView("notifications")}
-                aria-label="Messages"
+                onClick={() => setView("agent")}
+                aria-label="Account and agent settings"
               >
-                <span className="message-icon" aria-hidden="true" />
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={openMarketplace}
-                aria-label="Explore marketplace"
-              >
-                World
-              </button>
-              <button className="header-signout-button" type="button" onClick={() => void logout()}>
-                Sign out
+                <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
               </button>
             </div>
           ) : null}
@@ -4829,16 +4823,19 @@ function OwnerApp() {
             storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
             onBack={() => setView("chat")}
+            onLogout={() => void logout()}
           />
         ) : (
           <main className="chat-workspace-shell">
             <ChatSurface
               activeView={view}
               agent={agentSettings}
+              businessName={business.name}
               chatDraft={chatDraft}
               customerCount={customers.length}
               invoiceCount={invoices.length}
               messages={chatMessages}
+              mode={mode}
               networkGraph={networkGraph}
               notificationCount={notificationInbox.summary.unread}
               oauthProviders={oauthProviders}
@@ -4847,6 +4844,7 @@ function OwnerApp() {
               productForm={productForm}
               productCount={products.length}
               products={products}
+              sokoId={business.sokoId}
               report={reportSummary}
               shopPresenceStatus={shopPresenceStatus}
               workspaceOpen={isWorkspacePanelOpen}
@@ -4858,6 +4856,7 @@ function OwnerApp() {
               onDraftChange={setChatDraft}
               onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
               onNavigate={setView}
+              onModeChange={switchMode}
               onProductEdit={(product) => {
                 setProductForm({
                   id: product.id,
@@ -9610,6 +9609,7 @@ interface AgentProfileSurfaceProps {
   storefrontUrl: string;
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
+  onLogout: () => void;
 }
 
 function AgentProfileSurface({
@@ -9619,7 +9619,8 @@ function AgentProfileSurface({
   ownerLabel,
   storefrontUrl,
   onAgentChange,
-  onBack
+  onBack,
+  onLogout
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
@@ -9846,9 +9847,14 @@ function AgentProfileSurface({
               </button>
             </>
           ) : (
-            <button type="button" onClick={startEditing}>
-              Edit
-            </button>
+            <>
+              <button type="button" onClick={startEditing}>
+                Edit
+              </button>
+              <button className="secondary" type="button" onClick={onLogout}>
+                Sign out
+              </button>
+            </>
           )}
         </div>
       </section>
@@ -10382,11 +10388,13 @@ function AgentProfileSurface({
 interface ChatSurfaceProps {
   activeView: ShellView;
   agent: AgentSettings;
+  businessName: string;
   chatDraft: string;
   children: ReactNode;
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  mode: SokoMode;
   networkGraph: NetworkGraphSummary | null;
   notificationCount: number;
   oauthProviders: OAuthProviderSummary[];
@@ -10395,6 +10403,7 @@ interface ChatSurfaceProps {
   productForm: ProductFormState;
   productCount: number;
   products: ProductSummary[];
+  sokoId: string;
   report: BusinessReportSummary | null;
   shopPresenceStatus: ShopPresenceStatus;
   syncSummary: SyncQueueSummary;
@@ -10405,6 +10414,7 @@ interface ChatSurfaceProps {
   onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
   onNavigate: (view: ShellView) => void;
+  onModeChange: (mode: SokoMode) => void;
   onProductEdit: (product: ProductSummary) => void;
   onProductFieldsSave: (fields: ProductFieldDraft[]) => void;
   onProductFormChange: (form: ProductFormState) => void;
@@ -10426,11 +10436,13 @@ interface ChatSurfaceProps {
 function ChatSurface({
   activeView,
   agent,
+  businessName,
   chatDraft,
   children,
   customerCount,
   invoiceCount,
   messages,
+  mode,
   networkGraph,
   notificationCount,
   oauthProviders,
@@ -10439,6 +10451,7 @@ function ChatSurface({
   productForm,
   productCount,
   products,
+  sokoId,
   report,
   shopPresenceStatus,
   syncSummary,
@@ -10449,6 +10462,7 @@ function ChatSurface({
   onCloseWorkspace,
   onDraftChange,
   onNavigate,
+  onModeChange,
   onProductEdit,
   onProductFieldsSave,
   onProductFormChange,
@@ -10474,14 +10488,18 @@ function ChatSurface({
     | "deleteProduct"
     | "manageFields"
     | "networkSync"
+    | "storefrontPreview"
   >("cards");
-  const generatedCardOpen = activeView !== "chat" && activeView !== "home";
 
   useEffect(() => {
     if (!workspaceOpen) {
       setWorkspaceCardView("cards");
     }
   }, [workspaceOpen]);
+
+  useEffect(() => {
+    setWorkspaceCardView("cards");
+  }, [mode]);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -10492,7 +10510,7 @@ function ChatSurface({
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeView, generatedCardOpen, messages.length]);
+  }, [activeView, messages.length, mode, workspaceCardView]);
 
   return (
     <div className="chat-surface">
@@ -10543,6 +10561,95 @@ function ChatSurface({
             {children}
           </section>
         ) : null}
+        {activeView === "chat" && mode === "marketplace" ? (
+          workspaceCardView === "storefrontPreview" ? (
+            <StorefrontPreviewCard
+              businessName={businessName}
+              products={products}
+              sokoId={sokoId}
+              onBack={() => setWorkspaceCardView("cards")}
+              onSell={() => onModeChange("seller")}
+              onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+            />
+          ) : (
+            <MarketplaceModeCard
+              businessName={businessName}
+              productCount={productCount}
+              sokoId={sokoId}
+              onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
+              onPrompt={onDraftChange}
+              onSell={() => onModeChange("seller")}
+            />
+          )
+        ) : null}
+        {activeView === "chat" && mode === "seller" ? (
+          workspaceCardView === "cards" ? (
+            <ContextualBusinessCards
+              productCount={productCount}
+              customerCount={customerCount}
+              invoiceCount={invoiceCount}
+              notificationCount={notificationCount}
+              report={report}
+              syncSummary={syncSummary}
+              onAddCard={onAddWorkspaceCard}
+              onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
+              onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
+              onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
+              onNavigate={onNavigate}
+            />
+          ) : workspaceCardView === "networkSync" ? (
+            <NetworkSyncNestedCard
+              graph={networkGraph}
+              oauthProviders={oauthProviders}
+              oauthProvidersLoaded={oauthProvidersLoaded}
+              onBack={() => setWorkspaceCardView("cards")}
+              onDisconnectSource={onNetworkDisconnectSource}
+              onOAuthProvider={onNetworkProviderOAuth}
+              onPhoneContactsSync={onNetworkPhoneContactsSync}
+              onRefresh={onNetworkRefresh}
+            />
+          ) : workspaceCardView === "storefrontPreview" ? (
+            <StorefrontPreviewCard
+              businessName={businessName}
+              products={products}
+              sokoId={sokoId}
+              onBack={() => setWorkspaceCardView("cards")}
+              onSell={() => onModeChange("marketplace")}
+              onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+            />
+          ) : (
+            <CatalogueNestedCard
+              form={productForm}
+              products={products}
+              view={workspaceCardView}
+              onBack={() =>
+                setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
+              }
+              onChangeForm={onProductFormChange}
+              onDeleteProduct={onProductRemove}
+              onEditProduct={onProductEdit}
+              onOpenAdd={() => {
+                onProductReset();
+                setWorkspaceCardView("addProduct");
+              }}
+              onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
+              onOpenEdit={() => {
+                if (products[0] !== undefined) onProductEdit(products[0]);
+                setWorkspaceCardView("editProduct");
+              }}
+              onOpenFields={() => setWorkspaceCardView("manageFields")}
+              onOpenProduct={(product) => {
+                onProductEdit(product);
+                setWorkspaceCardView("editProduct");
+              }}
+              onSaveFields={onProductFieldsSave}
+              onSaveProduct={async () => {
+                await onProductSave();
+                setWorkspaceCardView("catalogue");
+              }}
+            />
+          )
+        ) : null}
       </div>
       {workspaceOpen ? (
         <div className="workspace-panel-backdrop" role="presentation">
@@ -10569,6 +10676,7 @@ function ChatSurface({
                 onAddCard={onAddWorkspaceCard}
                 onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
                 onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
+                onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
                 onNavigate={(nextView) => {
                   onNavigate(nextView);
                   onCloseWorkspace();
@@ -10584,6 +10692,15 @@ function ChatSurface({
                 onOAuthProvider={onNetworkProviderOAuth}
                 onPhoneContactsSync={onNetworkPhoneContactsSync}
                 onRefresh={onNetworkRefresh}
+              />
+            ) : workspaceCardView === "storefrontPreview" ? (
+              <StorefrontPreviewCard
+                businessName={businessName}
+                products={products}
+                sokoId={sokoId}
+                onBack={() => setWorkspaceCardView("cards")}
+                onSell={() => onModeChange("marketplace")}
+                onMessage={() => onDraftChange(`Hello ${businessName}, `)}
               />
             ) : (
               <CatalogueNestedCard
@@ -10623,17 +10740,11 @@ function ChatSurface({
         </div>
       ) : null}
       <div className="composer">
-        {generatedCardOpen ? (
-          <div className="composer-card-lock" role="status">
-            Active card open. Use the card actions or close it to continue chatting.
-          </div>
-        ) : null}
         <button
           className="icon-button composer-icon-button"
           type="button"
           aria-label="Voice input"
           title="Voice input"
-          disabled={generatedCardOpen}
         >
           <span className="mic-icon" aria-hidden="true" />
         </button>
@@ -10643,7 +10754,6 @@ function ChatSurface({
           aria-label="Attach file"
           title="Attach file"
           onClick={() => fileInputRef.current?.click()}
-          disabled={generatedCardOpen}
         >
           <span className="attach-icon" aria-hidden="true" />
         </button>
@@ -10681,7 +10791,6 @@ function ChatSurface({
           <span>Message</span>
           <input
             value={chatDraft}
-            disabled={generatedCardOpen}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -10689,16 +10798,142 @@ function ChatSurface({
               }
             }}
             placeholder={
-              generatedCardOpen ? "Close the active card to resume chat" : "Ask your attendant"
+              mode === "seller" ? "Ask your agent to manage the shop" : "What are you looking for?"
             }
           />
         </label>
-        <button className="send-button" type="button" onClick={onSend} disabled={generatedCardOpen}>
+        <button className="send-button" type="button" onClick={onSend}>
           <span className="send-icon" aria-hidden="true" />
           <span className="visually-hidden">Send</span>
         </button>
       </div>
     </div>
+  );
+}
+
+interface MarketplaceModeCardProps {
+  businessName: string;
+  productCount: number;
+  sokoId: string;
+  onOpenStore: () => void;
+  onPrompt: (prompt: string) => void;
+  onSell: () => void;
+}
+
+function MarketplaceModeCard({
+  businessName,
+  productCount,
+  sokoId,
+  onOpenStore,
+  onPrompt,
+  onSell
+}: MarketplaceModeCardProps) {
+  return (
+    <section className="generated-card-message mode-card" aria-label="Explore the marketplace">
+      <div className="mode-card-heading">
+        <span className="mode-badge">Marketplace</span>
+        <h2>What are you looking for?</h2>
+        <p>Ask naturally, or start with one of these suggestions.</p>
+      </div>
+      <div className="marketplace-prompts" aria-label="Marketplace suggestions">
+        <button type="button" onClick={() => onPrompt("Show me shops near me")}>
+          Shops near me
+        </button>
+        <button type="button" onClick={() => onPrompt("Show me today's offers")}>
+          Today&apos;s offers
+        </button>
+        <button type="button" onClick={() => onPrompt("Find affordable essentials")}>
+          Affordable essentials
+        </button>
+      </div>
+      <article className="shop-discovery-card">
+        <div>
+          <span>Your shop</span>
+          <h3>{businessName}</h3>
+          <p>
+            {sokoId} · {productCount} catalogue {productCount === 1 ? "item" : "items"}
+          </p>
+        </div>
+        <div className="compact-actions">
+          <button type="button" onClick={onOpenStore}>
+            Open store
+          </button>
+          <button className="secondary" type="button" onClick={onSell}>
+            Manage
+          </button>
+        </div>
+      </article>
+    </section>
+  );
+}
+
+interface StorefrontPreviewCardProps {
+  businessName: string;
+  products: ProductSummary[];
+  sokoId: string;
+  onBack: () => void;
+  onSell: () => void;
+  onMessage: () => void;
+}
+
+function StorefrontPreviewCard({
+  businessName,
+  products,
+  sokoId,
+  onBack,
+  onSell,
+  onMessage
+}: StorefrontPreviewCardProps) {
+  return (
+    <section
+      className="generated-card-message storefront-preview-card"
+      aria-label={`${businessName} storefront`}
+    >
+      <div className="generated-card-header">
+        <button className="secondary" type="button" onClick={onBack}>
+          Back
+        </button>
+        <span className="mode-badge">Customer view</span>
+      </div>
+      <div className="storefront-preview-heading">
+        <span className="storefront-preview-logo">{businessName.slice(0, 1).toUpperCase()}</span>
+        <div>
+          <h2>{businessName}</h2>
+          <p>{sokoId}</p>
+        </div>
+      </div>
+      {products.length === 0 ? (
+        <div className="inline-empty-state">
+          <strong>No public products yet</strong>
+          <p>Switch to seller controls and add your first catalogue item.</p>
+        </div>
+      ) : (
+        <div className="storefront-preview-products">
+          {products.slice(0, 8).map((product) => (
+            <article key={product.id}>
+              <strong>{product.name}</strong>
+              <span>{product.quantity > 0 ? "In stock" : "Out of stock"}</span>
+              <p>
+                {product.sellingPrice === null
+                  ? `Sold per ${product.unit}`
+                  : `${formatMoney(product.sellingPrice)} / ${product.unit}`}
+              </p>
+              <button type="button" disabled={product.quantity <= 0}>
+                Add to order
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+      <div className="compact-actions">
+        <button type="button" onClick={onSell}>
+          {products.length === 0 ? "Add products" : "Switch mode"}
+        </button>
+        <button className="secondary" type="button" onClick={onMessage}>
+          Message shop
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -10712,6 +10947,7 @@ interface ContextualBusinessCardsProps {
   onAddCard: () => void;
   onOpenCatalogue: () => void;
   onOpenNetworkSync: () => void;
+  onPreviewStorefront: () => void;
   onNavigate: (view: ShellView) => void;
 }
 
@@ -10725,6 +10961,7 @@ function ContextualBusinessCards({
   onAddCard,
   onOpenCatalogue,
   onOpenNetworkSync,
+  onPreviewStorefront,
   onNavigate
 }: ContextualBusinessCardsProps) {
   const activeQueueCount =
@@ -10741,6 +10978,12 @@ function ContextualBusinessCards({
       body: "Stock, SKUs, units and adjustments",
       onClick: onOpenCatalogue,
       value: String(productCount)
+    },
+    {
+      title: "Public shop view",
+      body: "See the storefront your customers see",
+      onClick: onPreviewStorefront,
+      value: "View"
     },
     {
       title: "Make a Sale",
@@ -10822,6 +11065,7 @@ function workspacePanelTitle(
     | "deleteProduct"
     | "manageFields"
     | "networkSync"
+    | "storefrontPreview"
 ): string {
   if (view === "cards") {
     return "Workspace";
@@ -10829,6 +11073,10 @@ function workspacePanelTitle(
 
   if (view === "networkSync") {
     return "Network Sync";
+  }
+
+  if (view === "storefrontPreview") {
+    return "Public shop view";
   }
 
   return "Catalogue";
@@ -11929,6 +12177,10 @@ function readStoredBusiness(): ActiveBusiness | null {
   }
 
   return null;
+}
+
+function readStoredSokoMode(): SokoMode {
+  return localStorage.getItem(activeModeStorageKey) === "seller" ? "seller" : "marketplace";
 }
 
 function readStoredAgent(): AgentSettings | null {

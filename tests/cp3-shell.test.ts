@@ -62,10 +62,10 @@ describe("owner shell contract", () => {
     expect(getEmptyState("notifications")?.body).toContain("In-app alerts");
   });
 
-  it("creates the initial owner-facing welcome message", () => {
+  it("creates the initial unified marketplace and seller welcome message", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("Hi, I'm Jane's Shop's attendant")
+      body: expect.stringContaining("your Soko agent for shopping and for running Jane's Shop")
     });
   });
 });

@@ -18,6 +18,21 @@ export type ShellView =
   | "reports"
   | "notifications";
 
+export type SokoMode = "marketplace" | "seller";
+
+export type SokoChatSurface =
+  "conversation" | "storefront" | "catalogue" | "product" | "order" | "receipt" | "owner-controls";
+
+export interface SokoSessionState {
+  accountId: string;
+  activeShopId?: string;
+  agentId: string;
+  activeModelId: string;
+  mode: SokoMode;
+  activeSurface: SokoChatSurface;
+  conversationId: string;
+}
+
 export interface QuickAction {
   id: ShellView;
   label: string;
@@ -221,7 +236,7 @@ export function createInitialChatMessages(businessName: string): ChatMessage[] {
     {
       id: "welcome",
       author: "sokoclaw",
-      body: `Hi, I'm ${businessName}'s attendant. I can help you manage products, sales, customers, payments, delivery and stock.`
+      body: `Karibu. I'm your Soko agent for shopping and for running ${businessName}. Ask me what you want to find, or tap Sell to manage your shop.`
     }
   ];
 }

@@ -220,6 +220,24 @@ button:disabled {
   color: #ffffff;
 }
 
+.header-action-button.sell,
+.header-action-button.mode-active {
+  border-radius: 999px;
+  min-width: 72px;
+}
+
+.header-action-button.sell {
+  background: #117a4f;
+  border-color: #117a4f;
+  color: #ffffff;
+}
+
+.header-action-button.mode-active {
+  background: #eef4ef;
+  border-color: #9fc3ac;
+  color: #0d6943;
+}
+
 .message-icon {
   border: 2px solid currentColor;
   border-radius: 7px;
@@ -1857,6 +1875,131 @@ button:disabled {
   justify-self: start;
   max-width: min(92%, 700px);
   padding: 10px;
+}
+
+.mode-card,
+.storefront-preview-card {
+  gap: 14px;
+  max-width: min(96%, 760px);
+  width: min(96%, 760px);
+}
+
+.mode-card-heading,
+.storefront-preview-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.mode-card-heading h2,
+.storefront-preview-heading h2,
+.shop-discovery-card h3 {
+  margin: 0;
+}
+
+.mode-badge {
+  background: #dceee2;
+  border-radius: 999px;
+  color: #0d6943;
+  font-size: 11px;
+  font-weight: 900;
+  justify-self: start;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+
+.marketplace-prompts,
+.compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.marketplace-prompts button,
+.compact-actions button,
+.storefront-preview-products button,
+.generated-card-header button {
+  background: #117a4f;
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 8px 11px;
+}
+
+.marketplace-prompts button {
+  background: #ffffff;
+  border: 1px solid #cddbd0;
+  color: #23342a;
+}
+
+.compact-actions button.secondary,
+.generated-card-header button.secondary {
+  background: #e7ede8;
+  color: #23342a;
+}
+
+.shop-discovery-card {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.shop-discovery-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.shop-discovery-card > div:first-child > span {
+  color: #117a4f;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.storefront-preview-heading {
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.storefront-preview-logo {
+  align-items: center;
+  background: #113f67;
+  border-radius: 12px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 22px;
+  font-weight: 900;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.storefront-preview-products {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+}
+
+.storefront-preview-products article,
+.inline-empty-state {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.storefront-preview-products article > span {
+  color: #117a4f;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .generated-card-grid {
