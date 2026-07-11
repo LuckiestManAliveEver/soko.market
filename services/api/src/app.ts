@@ -7,6 +7,7 @@ const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:51
 export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
   cp2?: Cp2RouteOptions;
+  databaseHealth?: () => Promise<Record<string, unknown>>;
 }
 
 export function buildApi(options: BuildApiOptions = {}) {
@@ -37,6 +38,18 @@ export function buildApi(options: BuildApiOptions = {}) {
       timestamp: new Date().toISOString()
     };
   });
+
+  if (options.databaseHealth !== undefined) {
+    app.get("/health/db", async () => {
+      const database = await options.databaseHealth?.();
+
+      return {
+        service: "api",
+        timestamp: new Date().toISOString(),
+        database
+      };
+    });
+  }
 
   registerCp2Routes(app, options.cp2);
 

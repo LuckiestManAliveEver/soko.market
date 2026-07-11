@@ -6,7 +6,8 @@ services:
     autoDeployTrigger: commit
     plan: free
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
+    preDeployCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate
     startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health
     buildFilter:
@@ -34,6 +35,18 @@ services:
         value: postgres
       - key: DATABASE_URL
         sync: false
+      - key: DIRECT_DATABASE_URL
+        sync: false
+      - key: DB_POOL_MAX
+        value: "5"
+      - key: DB_CONNECTION_TIMEOUT_MS
+        value: "5000"
+      - key: DB_IDLE_TIMEOUT_MS
+        value: "30000"
+      - key: DB_QUERY_TIMEOUT_MS
+        value: "15000"
+      - key: DB_SLOW_QUERY_MS
+        value: "500"
       - key: MONGODB_URI
         sync: false
       - key: TWILIO_VERIFY_ENABLED
@@ -83,9 +96,71 @@ services:
         source: /*
         destination: /index.html
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: NODE_VERSION
         value: 20.19.0
       - key: VITE_API_BASE_URL
         value: https://api.soko.market
       - key: VITE_DEPLOYMENT_ENV
         value: production
+
+  - type: cron
+    name: soko-market-db-backup
+    runtime: node
+    branch: main
+    schedule: "17 2 * * *"
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
+    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:backup
+    buildFilter:
+      paths:
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - services/api/scripts/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_DATABASE_URL
+        sync: false
+      - key: BACKUP_RETENTION_DAYS
+        value: "14"
+      - key: BACKUP_UPLOAD_COMMAND
+        sync: false
+
+  - type: cron
+    name: soko-market-db-health
+    runtime: node
+    branch: main
+    schedule: "*/10 * * * *"
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
+    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:health
+    buildFilter:
+      paths:
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - services/api/scripts/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_DATABASE_URL
+        sync: false
+      - key: DB_POOL_MAX
+        value: "2"
+      - key: DB_CONNECTION_TIMEOUT_MS
+        value: "5000"
+      - key: DB_IDLE_TIMEOUT_MS
+        value: "30000"
+      - key: DB_QUERY_TIMEOUT_MS
+        value: "15000"

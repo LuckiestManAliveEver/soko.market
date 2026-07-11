@@ -35,12 +35,20 @@ const cp2Store = shouldUsePostgresStore
       ...cp2StoreOptions
     })
   : createCp2Store(cp2StoreOptions);
-const app = buildApi({
+const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   cp2: {
     store: cp2Store
   }
-});
+};
+const app = buildApi(
+  isHealthyStore(cp2Store)
+    ? {
+        ...apiOptions,
+        databaseHealth: () => cp2Store.health()
+      }
+    : apiOptions
+);
 
 if (isClosableStore(cp2Store)) {
   app.addHook("onClose", async () => {
@@ -60,4 +68,10 @@ try {
 
 function isClosableStore(store: unknown): store is { close: () => Promise<void> } {
   return typeof (store as { close?: unknown }).close === "function";
+}
+
+function isHealthyStore(
+  store: unknown
+): store is { health: () => Promise<Record<string, unknown>> } {
+  return typeof (store as { health?: unknown }).health === "function";
 }

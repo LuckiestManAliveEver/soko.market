@@ -31,7 +31,9 @@ The migration runner:
 - verifies checksums on already-applied migrations;
 - uses an advisory lock so two deploys do not apply migrations concurrently.
 
-Render runs this during the API build before the compiled API starts.
+Render runs this as the API `preDeployCommand`. This keeps schema changes in a release phase instead of coupling them to TypeScript compilation.
+
+The API will fail startup if the latest required migration has not been applied.
 
 ## Create a backup
 
@@ -41,9 +43,26 @@ Install PostgreSQL client tools locally so `pg_dump` is available, then run:
 DIRECT_DATABASE_URL=postgresql://... pnpm db:backup
 ```
 
-Backups are written to `backups/` and ignored by Git.
+Backups are written to `backups/` and ignored by Git. Production backups must leave ephemeral runtime storage. Set:
+
+```bash
+BACKUP_UPLOAD_COMMAND='aws s3 cp {file} s3://your-private-bucket/soko-market/'
+BACKUP_RETENTION_DAYS=14
+```
+
+`{file}` is replaced with the generated dump path. The backup command records each run in `database_backup_runs`.
 
 For production, create a backup before every migration that changes tables, constraints, indexes, or data shape.
+
+Render also defines a daily `soko-market-db-backup` cron service. It intentionally fails in production unless `BACKUP_UPLOAD_COMMAND` is configured.
+
+## Verify a backup
+
+```bash
+DB_BACKUP_FILE=backups/soko-market-YYYY-MM-DD.dump pnpm db:backup:verify
+```
+
+This runs `pg_restore --list` and records the operational path for restore drills. A production restore drill should be performed against a disposable database branch at least monthly.
 
 ## Restore a backup
 
@@ -57,7 +76,15 @@ The restore command uses `pg_restore --clean --if-exists --no-owner`.
 
 ## Rollback procedure
 
-Forward-only migrations are the default.
+Forward-only migrations are the default, but paired rollback SQL lives in `infra/db/rollbacks` for migrations where rollback is technically possible.
+
+To roll back the latest migration:
+
+```bash
+ALLOW_DB_ROLLBACK=true DB_ROLLBACK_STEPS=1 DIRECT_DATABASE_URL=postgresql://... pnpm db:rollback
+```
+
+Rollback deletes the corresponding row from `soko_schema_migrations` and records the rollback in `soko_schema_rollbacks`.
 
 If a deployment fails after a migration:
 
@@ -72,4 +99,39 @@ Do not manually delete rows from `soko_schema_migrations` in production unless y
 
 ## Runtime persistence policy
 
-The API must fail fast when migrations are missing. It should not create tables from application startup code. This keeps deploys deterministic and makes schema changes auditable.
+The API must fail fast when migrations are missing. It must not create tables from application startup code. This keeps deploys deterministic and makes schema changes auditable.
+
+Core business records hydrate from relational tables. The `cp2_*` tables remain as compatibility tables for non-core CP2 collections while the API surface is incrementally moved to direct relational access.
+
+## Monitoring and pool settings
+
+Use:
+
+```bash
+DIRECT_DATABASE_URL=postgresql://... pnpm db:health
+```
+
+This checks connectivity, records the result in `database_health_checks`, and prints the latest applied migration.
+
+Runtime pool controls:
+
+```bash
+DB_POOL_MAX=5
+DB_CONNECTION_TIMEOUT_MS=5000
+DB_IDLE_TIMEOUT_MS=30000
+DB_QUERY_TIMEOUT_MS=15000
+DB_STATEMENT_TIMEOUT_MS=15000
+DB_SLOW_QUERY_MS=500
+```
+
+Slow persistence operations are logged by the API when they exceed `DB_SLOW_QUERY_MS`.
+
+## Failover
+
+For managed Postgres providers such as Neon:
+
+1. Use a pooled `DATABASE_URL` for runtime traffic.
+2. Use a direct `DIRECT_DATABASE_URL` for migrations, backups, restores, and health checks.
+3. Keep a documented fallback database branch or restored database URL available.
+4. During an incident, update both database URLs together and redeploy the API.
+5. Run `pnpm db:health` after failover before sending traffic back to the API.

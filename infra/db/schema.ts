@@ -1,4 +1,6 @@
 import {
+  bigserial,
+  bigint,
   boolean,
   index,
   integer,
@@ -452,6 +454,56 @@ export const receiptLineItems = pgTable(
   },
   (table) => ({
     receipt: index("receipt_line_items_receipt_idx").on(table.receiptId)
+  })
+);
+
+export const databaseBackupRuns = pgTable(
+  "database_backup_runs",
+  {
+    id: uuid("id").primaryKey(),
+    status: text("status").notNull(),
+    backupFile: text("backup_file").notNull(),
+    uploadConfigured: boolean("upload_configured").notNull(),
+    retentionDays: integer("retention_days").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    errorMessage: text("error_message")
+  },
+  (table) => ({
+    statusStarted: index("database_backup_runs_status_started_idx").on(
+      table.status,
+      table.startedAt
+    )
+  })
+);
+
+export const databaseRestoreDrills = pgTable(
+  "database_restore_drills",
+  {
+    id: uuid("id").primaryKey(),
+    backupFile: text("backup_file").notNull(),
+    status: text("status").notNull(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    notes: text("notes")
+  },
+  (table) => ({
+    checked: index("database_restore_drills_checked_idx").on(table.checkedAt)
+  })
+);
+
+export const databaseHealthChecks = pgTable(
+  "database_health_checks",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    status: text("status").notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    latestMigration: text("latest_migration"),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    errorMessage: text("error_message")
+  },
+  (table) => ({
+    checked: index("database_health_checks_checked_idx").on(table.checkedAt)
   })
 );
 

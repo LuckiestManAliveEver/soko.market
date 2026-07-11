@@ -16,7 +16,10 @@
   ],
   "scripts": {
     "db:backup": "node scripts/backup-db.mjs",
+    "db:backup:verify": "node scripts/verify-backup-db.mjs",
+    "db:health": "node scripts/check-db-health.mjs",
     "db:migrate": "node scripts/migrate-db.mjs",
+    "db:rollback": "node scripts/rollback-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
