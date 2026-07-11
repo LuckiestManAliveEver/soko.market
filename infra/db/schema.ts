@@ -157,6 +157,82 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    kind: text("kind").notNull(),
+    activeShopId: uuid("active_shop_id").references(() => businesses.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    accountUpdated: index("conversations_account_updated_idx").on(table.accountId, table.updatedAt)
+  })
+);
+
+export const conversationParticipants = pgTable(
+  "conversation_participants",
+  {
+    id: uuid("id").primaryKey(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    accountId: uuid("account_id").references(() => accounts.id),
+    businessId: uuid("business_id").references(() => businesses.id),
+    agentId: text("agent_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    conversation: index("conversation_participants_conversation_idx").on(table.conversationId)
+  })
+);
+
+export const conversationMessages = pgTable(
+  "conversation_messages",
+  {
+    id: uuid("id").primaryKey(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    clientMessageId: text("client_message_id").notNull(),
+    author: text("author").notNull(),
+    authorId: text("author_id").notNull(),
+    content: jsonb("content").notNull(),
+    clientTimestamp: timestamp("client_timestamp", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    clientMessageUnique: uniqueIndex("conversation_messages_client_message_unique_idx").on(
+      table.conversationId,
+      table.clientMessageId
+    ),
+    conversationCreated: index("conversation_messages_conversation_created_idx").on(
+      table.conversationId,
+      table.createdAt
+    )
+  })
+);
+
+export const sokoSessionContexts = pgTable("soko_session_contexts", {
+  sessionId: uuid("session_id")
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: "cascade" }),
+  conversationId: uuid("conversation_id")
+    .notNull()
+    .references(() => conversations.id),
+  activeShopId: uuid("active_shop_id").references(() => businesses.id),
+  activeModelId: text("active_model_id").notNull(),
+  mode: text("mode").notNull(),
+  activeSurface: text("active_surface").notNull(),
+  sessionVersion: integer("session_version").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
 export const accountPinHashes = pgTable("account_pin_hashes", {
   accountId: uuid("account_id")
     .primaryKey()

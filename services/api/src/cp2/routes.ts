@@ -25,6 +25,10 @@ import type {
   TaxCountryCode,
   SyncMutationPayload,
   SyncMutationType,
+  ConversationKind,
+  ConversationMessageContent,
+  SokoChatSurface,
+  SokoMode,
   VerificationTier
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
@@ -145,6 +149,30 @@ interface RoleCheckBody {
   businessId?: string;
   role?: string;
   permission?: string;
+}
+
+interface SessionContextBody {
+  mode?: string;
+  activeShopId?: string | null;
+  activeSurface?: string;
+  conversationId?: string;
+  expectedSessionVersion?: number;
+}
+
+interface CreateConversationBody {
+  kind?: string;
+  activeShopId?: string | null;
+}
+
+interface ConversationParams {
+  conversationId: string;
+}
+
+interface CreateMessageBody {
+  conversationId?: string;
+  clientMessageId?: string;
+  content?: unknown;
+  clientTimestamp?: string | null;
 }
 
 interface BusinessParams {
@@ -1224,6 +1252,110 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
 
     return session;
+  });
+
+  app.get("/v1/session/context", async (request, reply) => {
+    try {
+      return store.getSokoSessionContext({
+        sessionId: readSessionCookie(request.headers.cookie)
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.patch(
+    "/v1/session/context",
+    async (request: FastifyRequest<{ Body: SessionContextBody }>, reply) => {
+      try {
+        const expectedSessionVersion = parseOptionalNonNegativeInteger(
+          request.body.expectedSessionVersion,
+          "expectedSessionVersion"
+        );
+        const conversationId = parseOptionalString(request.body.conversationId);
+        return store.updateSokoSessionContext({
+          sessionId: readSessionCookie(request.headers.cookie),
+          mode: parseSokoMode(request.body.mode),
+          activeShopId: parseNullableString(request.body.activeShopId),
+          activeSurface: parseSokoChatSurface(request.body.activeSurface),
+          ...(conversationId === undefined ? {} : { conversationId }),
+          ...(expectedSessionVersion === undefined ? {} : { expectedSessionVersion })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/shops", async (request, reply) => {
+    try {
+      return {
+        shops: store.listAccountShops({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/v1/conversations", async (request, reply) => {
+    try {
+      return {
+        conversations: store.listConversations({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/v1/conversations",
+    async (request: FastifyRequest<{ Body: CreateConversationBody }>, reply) => {
+      try {
+        return store.createConversation({
+          sessionId: readSessionCookie(request.headers.cookie),
+          kind: parseConversationKind(request.body.kind),
+          activeShopId: parseNullableString(request.body.activeShopId)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/:conversationId",
+    async (request: FastifyRequest<{ Params: ConversationParams }>, reply) => {
+      try {
+        return store.getConversation({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/v1/messages", async (request: FastifyRequest<{ Body: CreateMessageBody }>, reply) => {
+    try {
+      const clientTimestamp =
+        request.body.clientTimestamp === undefined || request.body.clientTimestamp === null
+          ? null
+          : parseIsoTimestamp(request.body.clientTimestamp, "clientTimestamp");
+      return store.createConversationMessage({
+        sessionId: readSessionCookie(request.headers.cookie),
+        conversationId: parseString(request.body.conversationId, "conversationId"),
+        clientMessageId: parseString(request.body.clientMessageId, "clientMessageId"),
+        content: parseConversationMessageContent(request.body.content),
+        clientTimestamp
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
   });
 
   app.post("/auth/logout", async (request, reply) => {
@@ -4014,6 +4146,61 @@ function parseRequestBody(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function parseSokoMode(value: unknown): SokoMode {
+  if (value === "marketplace" || value === "seller") {
+    return value;
+  }
+
+  throw new Cp2Error(400, "mode_invalid", "mode must be marketplace or seller.");
+}
+
+function parseSokoChatSurface(value: unknown): SokoChatSurface {
+  if (
+    value === "conversation" ||
+    value === "storefront" ||
+    value === "catalogue" ||
+    value === "product" ||
+    value === "order" ||
+    value === "receipt" ||
+    value === "owner-controls"
+  ) {
+    return value;
+  }
+
+  throw new Cp2Error(400, "surface_invalid", "activeSurface is not supported.");
+}
+
+function parseConversationKind(value: unknown): ConversationKind {
+  if (value === "personal" || value === "storefront" || value === "order") {
+    return value;
+  }
+
+  throw new Cp2Error(400, "conversation_kind_invalid", "Conversation kind is not supported.");
+}
+
+function parseConversationMessageContent(value: unknown): ConversationMessageContent {
+  const content = parseRequestBody(value);
+  const type = parseString(content.type, "content.type");
+
+  if (type === "text") {
+    return { type, text: parseString(content.text, "content.text") };
+  }
+
+  if (type === "storefront" || type === "owner-controls") {
+    return { type, shopId: parseString(content.shopId, "content.shopId") };
+  }
+
+  if (type === "confirmation") {
+    return {
+      type,
+      confirmationToken: parseString(content.confirmationToken, "content.confirmationToken"),
+      prompt: parseString(content.prompt, "content.prompt")
+    };
+  }
+
+  throw new Cp2Error(400, "message_content_invalid", "Message content type is not supported.");
+}
+
 function parseNullableString(value: unknown): string | null {
   if (value === undefined || value === null) {
     return null;
@@ -4048,6 +4235,10 @@ function parseNonNegativeInteger(value: unknown, name: string): number {
   }
 
   return value;
+}
+
+function parseOptionalNonNegativeInteger(value: unknown, name: string): number | undefined {
+  return value === undefined ? undefined : parseNonNegativeInteger(value, name);
 }
 
 function parseIntegerString(value: string, name: string): number {

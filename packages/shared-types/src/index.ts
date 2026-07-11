@@ -73,6 +73,90 @@ export interface AuthSessionView {
   session: SessionSummary;
 }
 
+export type SokoMode = "marketplace" | "seller";
+
+export type SokoChatSurface =
+  "conversation" | "storefront" | "catalogue" | "product" | "order" | "receipt" | "owner-controls";
+
+export type ConversationKind = "personal" | "storefront" | "order";
+
+export type ConversationParticipantRole = "account" | "shop" | "agent";
+
+export type ConversationMessageAuthor = "user" | "agent" | "system";
+
+export type ConversationMessageContent =
+  | { type: "text"; text: string }
+  | { type: "storefront"; shopId: string }
+  | { type: "owner-controls"; shopId: string }
+  | { type: "confirmation"; confirmationToken: string; prompt: string };
+
+export interface AccountShopSummary {
+  business: BusinessSummary;
+  membership: MembershipSummary;
+}
+
+export interface ConversationParticipantSummary {
+  id: string;
+  conversationId: string;
+  role: ConversationParticipantRole;
+  accountId: string | null;
+  businessId: string | null;
+  agentId: string | null;
+  createdAt: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  accountId: string;
+  kind: ConversationKind;
+  activeShopId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationMessageSummary {
+  id: string;
+  conversationId: string;
+  clientMessageId: string;
+  author: ConversationMessageAuthor;
+  authorId: string;
+  content: ConversationMessageContent;
+  clientTimestamp: string | null;
+  createdAt: string;
+}
+
+export interface ConversationView {
+  conversation: ConversationSummary;
+  participants: ConversationParticipantSummary[];
+  messages: ConversationMessageSummary[];
+}
+
+export interface SokoSessionContext {
+  accountId: string;
+  userId: string;
+  sessionId: string;
+  conversationId: string;
+  activeShopId: string | null;
+  agentId: string;
+  activeModelId: string;
+  mode: SokoMode;
+  activeSurface: SokoChatSurface;
+  permissions: string[];
+  sessionVersion: number;
+  shops: AccountShopSummary[];
+}
+
+export interface StoredSokoSessionContext {
+  sessionId: string;
+  conversationId: string;
+  activeShopId: string | null;
+  activeModelId: string;
+  mode: SokoMode;
+  activeSurface: SokoChatSurface;
+  sessionVersion: number;
+  updatedAt: string;
+}
+
 export interface IdentityProviderSummary {
   id: OAuthProvider;
   displayName: string;

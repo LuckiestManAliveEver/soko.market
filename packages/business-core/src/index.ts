@@ -281,6 +281,10 @@ export function roleCan(role: BusinessRole, permission: BusinessPermission): boo
   return rolePermissions[role]?.has(permission) ?? false;
 }
 
+export function permissionsForRole(role: BusinessRole): BusinessPermission[] {
+  return [...(rolePermissions[role] ?? new Set<BusinessPermission>())];
+}
+
 export interface ProductInput {
   name: string;
   sku?: string | null;

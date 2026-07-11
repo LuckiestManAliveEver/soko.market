@@ -18,20 +18,8 @@ export type ShellView =
   | "reports"
   | "notifications";
 
-export type SokoMode = "marketplace" | "seller";
-
-export type SokoChatSurface =
-  "conversation" | "storefront" | "catalogue" | "product" | "order" | "receipt" | "owner-controls";
-
-export interface SokoSessionState {
-  accountId: string;
-  activeShopId?: string;
-  agentId: string;
-  activeModelId: string;
-  mode: SokoMode;
-  activeSurface: SokoChatSurface;
-  conversationId: string;
-}
+export type { SokoChatSurface, SokoMode } from "@soko/shared-types";
+export type { SokoSessionContext as SokoSessionState } from "@soko/shared-types";
 
 export interface QuickAction {
   id: ShellView;

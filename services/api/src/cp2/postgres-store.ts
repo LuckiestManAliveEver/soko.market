@@ -14,6 +14,10 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "users", tableName: "cp2_users" },
   { key: "businesses", tableName: "cp2_businesses" },
   { key: "memberships", tableName: "cp2_memberships" },
+  { key: "sessionContexts", tableName: "cp2_session_contexts" },
+  { key: "conversations", tableName: "cp2_conversations" },
+  { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
+  { key: "conversationMessages", tableName: "cp2_conversation_messages" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
@@ -73,6 +77,8 @@ const mutatingMethodNames = new Set([
   "createAgentRoute",
   "createBetaSupportTicket",
   "createBusiness",
+  "createConversation",
+  "createConversationMessage",
   "createDataExport",
   "createInvoice",
   "createLaunchIncident",
@@ -94,6 +100,7 @@ const mutatingMethodNames = new Set([
   "deleteSupplier",
   "disconnectLoginAccount",
   "enqueueSyncMutation",
+  "getSokoSessionContext",
   "linkSalesAgentContact",
   "linkSupplierContact",
   "loginWithAccountPin",
@@ -112,6 +119,7 @@ const mutatingMethodNames = new Set([
   "syncPhoneContacts",
   "syncSocialNetwork",
   "updateBetaAccess",
+  "updateSokoSessionContext",
   "updateBetaFeatureFlag",
   "updateBetaSupportTicketStatus",
   "updateCustomer",
@@ -163,7 +171,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "016_device_trust_actor_type.sql";
+const requiredMigrationFilename = "017_cp20_unified_session_conversations.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -2030,6 +2038,10 @@ function emptySnapshot(): Cp2Snapshot {
     users: [],
     businesses: [],
     memberships: [],
+    sessionContexts: [],
+    conversations: [],
+    conversationParticipants: [],
+    conversationMessages: [],
     products: [],
     customers: [],
     suppliers: [],

@@ -47,15 +47,20 @@ When documents disagree, follow this order:
    - Future expansion concept.
    - Defines continual learning through runtime traces, memory, skills, evaluation, and production feedback rather than direct model fine-tuning.
 
-10. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
+10. `CP20_UNIFIED_SESSION_FOUNDATION.md`
+
+- Active cross-platform foundation checkpoint.
+- Defines account/shop lifecycle, typed conversations, and server-authoritative session context.
+
+11. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
     - Production persistence runbook.
     - Defines the Neon Postgres and Render deployment plan, persistence scope, migration workflow, rollback notes, and production safeguards.
 
-11. `1000157660.png`, `1000157661.png`, `1000157662.png`
+12. `1000157660.png`, `1000157661.png`, `1000157662.png`
     - Mobile UI references.
     - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
 
-12. `Soko doc 4 June .pdf`
+13. `Soko doc 4 June .pdf`
     - Broken placeholder.
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.

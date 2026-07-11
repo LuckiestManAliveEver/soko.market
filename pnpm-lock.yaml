@@ -50,6 +50,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@soko/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
       '@soko/tool-core':
         specifier: workspace:*
         version: link:../../packages/tool-core

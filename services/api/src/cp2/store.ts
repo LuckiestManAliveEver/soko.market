@@ -22,6 +22,12 @@ import type {
   AgentRouteSummary,
   CountryTaxConfigSummary,
   ContactHashSummary,
+  ConversationKind,
+  ConversationMessageContent,
+  ConversationMessageSummary,
+  ConversationParticipantSummary,
+  ConversationSummary,
+  ConversationView,
   CustomerDebtSummary,
   CustomerSummary,
   DataExportBundle,
@@ -92,6 +98,10 @@ import type {
   UserIdentitySummary,
   VerificationTierSummary,
   SecurityReviewSummary,
+  SokoChatSurface,
+  SokoMode,
+  SokoSessionContext,
+  StoredSokoSessionContext,
   UserSummary
 } from "@soko/shared-types";
 import {
@@ -158,6 +168,7 @@ import {
   normalizeStockAdjustmentInput,
   normalizeVerificationTierInput,
   paymentRecordedEvent,
+  permissionsForRole,
   productCreatedEvent,
   productDeletedEvent,
   productUpdatedEvent,
@@ -236,6 +247,15 @@ const otpTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const maxRuntimeTurnsPerSession = 20;
+const sellerOnlySurfaces = new Set<SokoChatSurface>(["catalogue", "owner-controls", "receipt"]);
+const marketplacePermissions = [
+  "marketplace:search",
+  "shop:read",
+  "conversation:read",
+  "message:create",
+  "order:create",
+  "order:read-own"
+];
 const receiptOCRDefaultPrimaryEngine = "paddleocr";
 const receiptOCRDefaultFallbackEngine = "tesseract";
 const receiptOCRDefaultProfile = "balanced";
@@ -438,6 +458,10 @@ export interface Cp2Snapshot {
   users: UserSummary[];
   businesses: BusinessSummary[];
   memberships: MembershipSummary[];
+  sessionContexts: StoredSokoSessionContext[];
+  conversations: ConversationSummary[];
+  conversationParticipants: ConversationParticipantSummary[];
+  conversationMessages: ConversationMessageSummary[];
   products: ProductSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
@@ -501,6 +525,11 @@ export class Cp2Store {
   private readonly userByAccount = new Map<string, string>();
   private readonly businesses = new Map<string, BusinessSummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
+  private readonly sessionContexts = new Map<string, StoredSokoSessionContext>();
+  private readonly conversations = new Map<string, ConversationSummary>();
+  private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
+  private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly messageByClientId = new Map<string, string>();
   private readonly products = new Map<string, ProductSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
@@ -1254,6 +1283,235 @@ export class Cp2Store {
       business,
       membership
     };
+  }
+
+  listAccountShops(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): Array<{ business: BusinessSummary; membership: MembershipSummary }> {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+
+    return [...this.memberships.values()]
+      .filter((membership) => membership.userId === session.user.id)
+      .map((membership) => {
+        const business = this.businesses.get(membership.businessId);
+
+        if (business === undefined) {
+          throw new Cp2Error(500, "business_missing", "Membership business state is inconsistent.");
+        }
+
+        return { business, membership };
+      });
+  }
+
+  getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const context = this.ensureSokoSessionContext(session, now);
+    return this.sokoSessionContextView(session, context);
+  }
+
+  updateSokoSessionContext(input: {
+    sessionId: string | null;
+    mode: SokoMode;
+    activeShopId: string | null;
+    activeSurface: SokoChatSurface;
+    conversationId?: string;
+    expectedSessionVersion?: number;
+    now?: Date;
+  }): SokoSessionContext {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const current = this.ensureSokoSessionContext(session, now);
+
+    if (
+      input.expectedSessionVersion !== undefined &&
+      input.expectedSessionVersion !== current.sessionVersion
+    ) {
+      throw new Cp2Error(
+        409,
+        "session_context_conflict",
+        "Session context changed on another client. Refresh before retrying."
+      );
+    }
+
+    if (input.activeShopId !== null) {
+      this.requireMembership(input.activeShopId, session.user.id);
+    }
+
+    if (input.mode === "seller" && input.activeShopId === null) {
+      throw new Cp2Error(409, "active_shop_required", "Seller mode requires an active shop.");
+    }
+
+    if (sellerOnlySurfaces.has(input.activeSurface) && input.mode !== "seller") {
+      throw new Cp2Error(
+        400,
+        "surface_mode_invalid",
+        "This surface is only available in seller mode."
+      );
+    }
+
+    const conversationId = input.conversationId ?? current.conversationId;
+    this.requireAccountConversation(conversationId, session.account.id);
+    const next: StoredSokoSessionContext = {
+      ...current,
+      activeShopId: input.activeShopId,
+      activeSurface: input.activeSurface,
+      conversationId,
+      mode: input.mode,
+      sessionVersion: current.sessionVersion + 1,
+      updatedAt: now.toISOString()
+    };
+    this.sessionContexts.set(session.session.id, next);
+    this.recordAuditEvent({
+      type: "session.context_updated",
+      aggregateType: "session",
+      aggregateId: session.session.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        activeShopId: next.activeShopId,
+        activeSurface: next.activeSurface,
+        conversationId: next.conversationId,
+        mode: next.mode,
+        sessionVersion: next.sessionVersion
+      }
+    });
+
+    return this.sokoSessionContextView(session, next);
+  }
+
+  createConversation(input: {
+    sessionId: string | null;
+    kind: ConversationKind;
+    activeShopId: string | null;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+
+    if (input.activeShopId !== null) {
+      if (!this.businesses.has(input.activeShopId)) {
+        throw new Cp2Error(404, "business_not_found", "Conversation shop was not found.");
+      }
+      if (input.kind !== "storefront" && input.kind !== "order") {
+        this.requireMembership(input.activeShopId, session.user.id);
+      }
+    }
+
+    const conversation = this.createAccountConversation({
+      accountId: session.account.id,
+      userId: session.user.id,
+      kind: input.kind,
+      activeShopId: input.activeShopId,
+      now
+    });
+    this.recordAuditEvent({
+      type: "conversation.created",
+      aggregateType: "conversation",
+      aggregateId: conversation.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: session.account.id,
+        activeShopId: conversation.activeShopId,
+        kind: conversation.kind
+      }
+    });
+    return this.conversationView(conversation);
+  }
+
+  listConversations(input: { sessionId: string | null; now?: Date }): ConversationSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return [...this.conversations.values()].filter(
+      (conversation) => conversation.accountId === session.account.id
+    );
+  }
+
+  getConversation(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): ConversationView {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return this.conversationView(
+      this.requireAccountConversation(input.conversationId, session.account.id)
+    );
+  }
+
+  createConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    clientMessageId: string;
+    content: ConversationMessageContent;
+    clientTimestamp?: string | null;
+    now?: Date;
+  }): ConversationMessageSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const clientMessageId = input.clientMessageId.trim();
+
+    if (clientMessageId.length < 8 || clientMessageId.length > 120) {
+      throw new Cp2Error(
+        400,
+        "client_message_id_invalid",
+        "clientMessageId must be between 8 and 120 characters."
+      );
+    }
+
+    const idempotencyKey = `${conversation.id}:${clientMessageId}`;
+    const existingId = this.messageByClientId.get(idempotencyKey);
+
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+
+    validateConversationMessageContent(input.content);
+    if (input.content.type === "owner-controls") {
+      this.requireMembership(input.content.shopId, session.user.id);
+      const context = this.ensureSokoSessionContext(session, now);
+
+      if (context.mode !== "seller" || context.activeShopId !== input.content.shopId) {
+        throw new Cp2Error(
+          403,
+          "seller_context_required",
+          "Owner controls require seller mode for the active shop."
+        );
+      }
+    }
+    if (input.content.type === "storefront" && !this.businesses.has(input.content.shopId)) {
+      throw new Cp2Error(404, "business_not_found", "Storefront shop was not found.");
+    }
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId,
+      author: "user",
+      authorId: session.user.id,
+      content: input.content,
+      clientTimestamp: input.clientTimestamp ?? null,
+      createdAt: now.toISOString()
+    };
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(idempotencyKey, message.id);
+    this.conversations.set(conversation.id, {
+      ...conversation,
+      updatedAt: now.toISOString()
+    });
+    this.recordAuditEvent({
+      type: "message.created",
+      aggregateType: "conversation_message",
+      aggregateId: message.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        clientMessageId,
+        contentType: message.content.type,
+        conversationId: conversation.id
+      }
+    });
+    return message;
   }
 
   checkRole(input: {
@@ -5809,6 +6067,10 @@ export class Cp2Store {
       users: [...this.users.values()],
       businesses: [...this.businesses.values()],
       memberships: [...this.memberships.values()],
+      sessionContexts: [...this.sessionContexts.values()],
+      conversations: [...this.conversations.values()],
+      conversationParticipants: [...this.conversationParticipants.values()],
+      conversationMessages: [...this.conversationMessages.values()],
       products: [...this.products.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
@@ -5870,6 +6132,11 @@ export class Cp2Store {
     this.userByAccount.clear();
     this.businesses.clear();
     this.memberships.clear();
+    this.sessionContexts.clear();
+    this.conversations.clear();
+    this.conversationParticipants.clear();
+    this.conversationMessages.clear();
+    this.messageByClientId.clear();
     this.products.clear();
     this.customers.clear();
     this.suppliers.clear();
@@ -5944,6 +6211,26 @@ export class Cp2Store {
 
     for (const membership of snapshot.memberships) {
       this.memberships.set(membership.id, membership);
+    }
+
+    for (const context of snapshot.sessionContexts ?? []) {
+      this.sessionContexts.set(context.sessionId, context);
+    }
+
+    for (const conversation of snapshot.conversations ?? []) {
+      this.conversations.set(conversation.id, conversation);
+    }
+
+    for (const participant of snapshot.conversationParticipants ?? []) {
+      this.conversationParticipants.set(participant.id, participant);
+    }
+
+    for (const message of snapshot.conversationMessages ?? []) {
+      this.conversationMessages.set(message.id, message);
+      this.messageByClientId.set(
+        `${message.conversationId}:${message.clientMessageId}`,
+        message.id
+      );
     }
 
     for (const product of snapshot.products) {
@@ -6316,6 +6603,23 @@ export class Cp2Store {
     };
 
     this.sessions.set(session.id, session);
+    const conversation = this.createAccountConversation({
+      accountId: account.id,
+      userId: user.id,
+      kind: "personal",
+      activeShopId: null,
+      now
+    });
+    this.sessionContexts.set(session.id, {
+      sessionId: session.id,
+      conversationId: conversation.id,
+      activeShopId: null,
+      activeModelId: "sokoclaw-runtime",
+      mode: "marketplace",
+      activeSurface: "conversation",
+      sessionVersion: 1,
+      updatedAt: now.toISOString()
+    });
     this.recordAuditEvent({
       type: "auth.session_created",
       aggregateType: "session",
@@ -6328,6 +6632,145 @@ export class Cp2Store {
     });
 
     return sessionView(session);
+  }
+
+  private ensureSokoSessionContext(session: AuthSessionView, now: Date): StoredSokoSessionContext {
+    const existing = this.sessionContexts.get(session.session.id);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const conversation = this.createAccountConversation({
+      accountId: session.account.id,
+      userId: session.user.id,
+      kind: "personal",
+      activeShopId: null,
+      now
+    });
+    const context: StoredSokoSessionContext = {
+      sessionId: session.session.id,
+      conversationId: conversation.id,
+      activeShopId: null,
+      activeModelId: "sokoclaw-runtime",
+      mode: "marketplace",
+      activeSurface: "conversation",
+      sessionVersion: 1,
+      updatedAt: now.toISOString()
+    };
+    this.sessionContexts.set(session.session.id, context);
+    return context;
+  }
+
+  private sokoSessionContextView(
+    session: AuthSessionView,
+    context: StoredSokoSessionContext
+  ): SokoSessionContext {
+    const shops = this.listAccountShops({ sessionId: session.session.id });
+    const membership =
+      context.activeShopId === null
+        ? undefined
+        : shops.find((shop) => shop.business.id === context.activeShopId)?.membership;
+    const permissions =
+      context.mode === "seller" && membership !== undefined
+        ? permissionsForRole(membership.role)
+        : marketplacePermissions;
+
+    return {
+      accountId: session.account.id,
+      userId: session.user.id,
+      sessionId: session.session.id,
+      conversationId: context.conversationId,
+      activeShopId: context.activeShopId,
+      agentId: `account-${session.account.id}-agent`,
+      activeModelId: context.activeModelId,
+      mode: context.mode,
+      activeSurface: context.activeSurface,
+      permissions: [...permissions],
+      sessionVersion: context.sessionVersion,
+      shops
+    };
+  }
+
+  private createAccountConversation(input: {
+    accountId: string;
+    userId: string;
+    kind: ConversationKind;
+    activeShopId: string | null;
+    now: Date;
+  }): ConversationSummary {
+    const conversation: ConversationSummary = {
+      id: randomUUID(),
+      accountId: input.accountId,
+      kind: input.kind,
+      activeShopId: input.activeShopId,
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+    this.conversations.set(conversation.id, conversation);
+    const participants: ConversationParticipantSummary[] = [
+      {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "account",
+        accountId: input.accountId,
+        businessId: null,
+        agentId: null,
+        createdAt: input.now.toISOString()
+      },
+      {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "agent",
+        accountId: null,
+        businessId: null,
+        agentId: `account-${input.accountId}-agent`,
+        createdAt: input.now.toISOString()
+      }
+    ];
+
+    if (input.activeShopId !== null) {
+      participants.push({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "shop",
+        accountId: null,
+        businessId: input.activeShopId,
+        agentId: null,
+        createdAt: input.now.toISOString()
+      });
+    }
+
+    for (const participant of participants) {
+      this.conversationParticipants.set(participant.id, participant);
+    }
+
+    return conversation;
+  }
+
+  private requireAccountConversation(
+    conversationId: string,
+    accountId: string
+  ): ConversationSummary {
+    const conversation = this.conversations.get(conversationId);
+
+    if (conversation === undefined || conversation.accountId !== accountId) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+
+    return conversation;
+  }
+
+  private conversationView(conversation: ConversationSummary): ConversationView {
+    return {
+      conversation,
+      participants: [...this.conversationParticipants.values()].filter(
+        (participant) => participant.conversationId === conversation.id
+      ),
+      messages: [...this.conversationMessages.values()].filter(
+        (message) => message.conversationId === conversation.id
+      )
+    };
   }
 
   private requireAnySession(sessionId: string | null, now: Date): AuthSessionView {
@@ -10423,6 +10866,34 @@ function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSumma
 
 function hashOtp(challengeId: string, code: string): string {
   return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
+}
+
+function validateConversationMessageContent(content: ConversationMessageContent): void {
+  switch (content.type) {
+    case "text":
+      if (content.text.trim().length === 0 || content.text.length > 4_000) {
+        throw new Cp2Error(
+          400,
+          "message_content_invalid",
+          "Text messages must contain between 1 and 4000 characters."
+        );
+      }
+      return;
+    case "storefront":
+    case "owner-controls":
+      if (content.shopId.trim().length === 0) {
+        throw new Cp2Error(400, "message_content_invalid", "shopId is required.");
+      }
+      return;
+    case "confirmation":
+      if (content.confirmationToken.trim().length === 0 || content.prompt.trim().length === 0) {
+        throw new Cp2Error(
+          400,
+          "message_content_invalid",
+          "Confirmation token and prompt are required."
+        );
+      }
+  }
 }
 
 function secureCookieSuffix(): string {
