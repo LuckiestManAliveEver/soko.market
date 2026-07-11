@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./services/api/dist/index.js",
   "packageManager": "pnpm@10.28.2",
   "engines": {
     "node": ">=20.19.0 <21.0.0"
@@ -24,6 +25,7 @@
     "health:api": "node scripts/health-check.mjs",
     "lint": "eslint . --max-warnings=0",
     "restart:dev": "pnpm clean:dev && pnpm dev",
+    "start": "pnpm --filter @soko/api start",
     "test": "vitest run",
     "typecheck": "pnpm -r --if-present typecheck"
   },
