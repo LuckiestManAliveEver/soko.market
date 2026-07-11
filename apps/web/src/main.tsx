@@ -1403,14 +1403,14 @@ const socialSignupProviders: Array<{
     label: "X",
     icon: "X",
     authRedirectPath: "/auth/oauth/start",
-    primary: true
+    primary: false
   },
   {
     id: "linkedin",
     label: "LinkedIn",
     icon: "in",
     authRedirectPath: "/auth/oauth/start",
-    primary: true
+    primary: false
   },
   {
     id: "apple",
@@ -1678,6 +1678,24 @@ function App() {
     return <MarketplacePlaceholder />;
   }
 
+  if (window.location.pathname === "/terms") {
+    return (
+      <LegalPlaceholder
+        title="Terms of Service"
+        body="Soko.market terms are being prepared. Continue only if you agree to use the service responsibly and follow applicable commerce laws."
+      />
+    );
+  }
+
+  if (window.location.pathname === "/privacy") {
+    return (
+      <LegalPlaceholder
+        title="Privacy Policy"
+        body="Soko.market privacy details are being prepared. Account, shop, contact, and transaction data are used to operate your retail workspace."
+      />
+    );
+  }
+
   return <OwnerApp />;
 }
 
@@ -1719,6 +1737,23 @@ function MarketplacePlaceholder() {
       <div className="marketplace-placeholder">
         <h1>Marketplace coming soon</h1>
       </div>
+    </Surface>
+  );
+}
+
+function LegalPlaceholder(props: { title: string; body: string }) {
+  return (
+    <Surface title={`Soko.market ${props.title}`}>
+      <main className="legal-placeholder">
+        <a href="/" aria-label="Back to soko.market">
+          soko.market
+        </a>
+        <section className="panel">
+          <p className="eyebrow">soko.market</p>
+          <h1>{props.title}</h1>
+          <p>{props.body}</p>
+        </section>
+      </main>
     </Surface>
   );
 }
@@ -4886,6 +4921,7 @@ interface SocialLoginOptionsProps {
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
   isOtherSocialOpen: boolean;
+  onSelectPhone: () => void;
   onSelectProvider: (provider: SocialSignupProvider) => void;
   onOpenOther: () => void;
   onCloseOther: () => void;
@@ -4893,12 +4929,18 @@ interface SocialLoginOptionsProps {
 
 function SocialLoginOptions(props: SocialLoginOptionsProps) {
   const primaryProviders = socialSignupProviders.filter((provider) => provider.primary);
-  const otherProviders = socialSignupProviders.filter((provider) => !provider.primary);
+  const secondaryProviders = socialSignupProviders.filter(
+    (provider) => provider.id === "x" || provider.id === "linkedin"
+  );
+  const otherProviders = socialSignupProviders.filter(
+    (provider) => !provider.primary && provider.id !== "x" && provider.id !== "linkedin"
+  );
   const actionText = props.mode === "signup" ? "sign up or sign in" : "log in or sign in";
 
   return (
     <>
-      <div className="social-signup-grid" aria-label={`Social ${props.mode} options`}>
+      <AuthBrand />
+      <div className="auth-provider-stack" aria-label={`${props.mode} options`}>
         {primaryProviders.map((provider) => {
           const config = getAuthProviderConfig(
             provider,
@@ -4924,11 +4966,56 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
             </button>
           );
         })}
-        <button className="social-signup-button other" type="button" onClick={props.onOpenOther}>
-          <span>+</span>
-          Continue with Other social account
+        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
+          <span aria-hidden="true">☎</span>
+          Continue with phone
         </button>
       </div>
+
+      <div className="signup-divider auth-divider">
+        <span>Or</span>
+      </div>
+
+      <div className="secondary-provider-row" aria-label="Secondary login providers">
+        {secondaryProviders.map((provider) => {
+          const config = getAuthProviderConfig(
+            provider,
+            props.oauthProviders,
+            props.oauthProvidersLoaded
+          );
+
+          return (
+            <button
+              className={`secondary-provider-button ${provider.id} ${
+                config.enabled ? "" : "unconfigured"
+              }`}
+              key={provider.id}
+              title={
+                config.enabled
+                  ? `Redirect to ${provider.label} to ${actionText}`
+                  : "This login provider is not configured yet."
+              }
+              type="button"
+              aria-disabled={!config.enabled}
+              aria-label={`Continue with ${provider.label}`}
+              onClick={() => props.onSelectProvider(provider.id)}
+            >
+              {provider.icon}
+            </button>
+          );
+        })}
+        <button
+          className="secondary-provider-button other"
+          type="button"
+          title="Other social account"
+          aria-label="Other social account"
+          onClick={props.onOpenOther}
+        >
+          +
+        </button>
+      </div>
+
+      <AuthLegalFooter />
 
       {props.isOtherSocialOpen ? (
         <div className="auth-modal-backdrop" role="presentation">
@@ -4980,110 +5067,143 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
   );
 }
 
+function AuthBrand() {
+  return (
+    <div className="auth-brand">
+      <h1>soko.market</h1>
+      <p>The Retail Network At Your Fingertips</p>
+    </div>
+  );
+}
+
+function AuthLegalFooter() {
+  return (
+    <p className="auth-legal">
+      By continuing, you agree to the <a href="/terms">Terms of Service</a> and{" "}
+      <a href="/privacy">Privacy Policy</a>.
+    </p>
+  );
+}
+
 function SetupPanel(props: SetupPanelProps) {
+  const [authView, setAuthView] = useState<"options" | "phone">("options");
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
+  const showPhoneAuth = authView === "phone" || props.challenge !== null || props.isOtpVerified;
 
   return (
-    <main className="setup-grid">
-      <section className="panel">
-        <div className="auth-heading-row">
-          <div className="section-heading">
-            <p className="eyebrow">Step 1</p>
-            <h2>Signup or login</h2>
-          </div>
-        </div>
-        <div className="segmented" aria-label="Auth channel">
-          <button
-            className={props.channel === "phone" ? "active" : ""}
-            type="button"
-            onClick={() => props.onChannelChange("phone")}
-          >
-            Phone
-          </button>
-          <button
-            className={props.channel === "email" ? "active" : ""}
-            type="button"
-            onClick={() => props.onChannelChange("email")}
-          >
-            Email
-          </button>
-        </div>
-        {props.channel === "phone" ? (
-          <div className="phone-contact-row">
-            <label>
-              Country code
-              <select
-                value={props.countryCode}
-                onChange={(event) =>
-                  props.onCountryCodeChange(event.target.value as CountryDialCode)
-                }
+    <main className="setup-grid auth-landing-grid">
+      <section className="panel auth-card">
+        {!showPhoneAuth ? (
+          <SocialLoginOptions
+            mode="signup"
+            oauthProviders={props.oauthProviders}
+            oauthProvidersLoaded={props.oauthProvidersLoaded}
+            isOtherSocialOpen={props.isOtherSocialOpen}
+            onSelectPhone={() => {
+              props.onChannelChange("phone");
+              setAuthView("phone");
+            }}
+            onSelectProvider={props.onSocialSignup}
+            onOpenOther={props.onOpenOtherSocial}
+            onCloseOther={props.onCloseOtherSocial}
+          />
+        ) : (
+          <>
+            <div className="auth-heading-row">
+              <div className="section-heading">
+                <p className="eyebrow">Continue with phone</p>
+                <h2>Signup or login</h2>
+              </div>
+            </div>
+            <div className="segmented" aria-label="Auth channel">
+              <button
+                className={props.channel === "phone" ? "active" : ""}
+                type="button"
+                onClick={() => props.onChannelChange("phone")}
               >
-                {countryDialCodes.map((item) => (
-                  <option key={item.code} value={item.code}>
-                    {item.flag} {item.code} {item.country}
-                  </option>
-                ))}
-              </select>
-            </label>
+                Phone
+              </button>
+              <button
+                className={props.channel === "email" ? "active" : ""}
+                type="button"
+                onClick={() => props.onChannelChange("email")}
+              >
+                Email
+              </button>
+            </div>
+            {props.channel === "phone" ? (
+              <div className="phone-contact-row">
+                <label>
+                  Country code
+                  <select
+                    value={props.countryCode}
+                    onChange={(event) =>
+                      props.onCountryCodeChange(event.target.value as CountryDialCode)
+                    }
+                  >
+                    {countryDialCodes.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.flag} {item.code} {item.country}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Phone number
+                  <input
+                    value={phoneSuffix}
+                    onChange={(event) =>
+                      props.onDestinationChange(
+                        sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                      )
+                    }
+                    inputMode="numeric"
+                    maxLength={selectedCountryCode.suffixLength}
+                    pattern="[0-9]*"
+                    type="tel"
+                    placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                  />
+                </label>
+              </div>
+            ) : (
+              <label>
+                Email address
+                <input
+                  value={props.destination}
+                  onChange={(event) => props.onDestinationChange(event.target.value)}
+                  inputMode="email"
+                  type="email"
+                  placeholder="owner@example.com"
+                />
+              </label>
+            )}
+            <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
+              Continue
+            </button>
             <label>
-              Phone number
+              OTP
               <input
-                value={phoneSuffix}
-                onChange={(event) =>
-                  props.onDestinationChange(
-                    sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                  )
-                }
+                value={props.otp}
+                onChange={(event) => props.onOtpChange(event.target.value)}
                 inputMode="numeric"
-                maxLength={selectedCountryCode.suffixLength}
-                pattern="[0-9]*"
-                type="tel"
-                placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                autoComplete="one-time-code"
               />
             </label>
-          </div>
-        ) : (
-          <label>
-            Email address
-            <input
-              value={props.destination}
-              onChange={(event) => props.onDestinationChange(event.target.value)}
-              inputMode="email"
-              type="email"
-              placeholder="owner@example.com"
-            />
-          </label>
+            <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
+              Verify OTP
+            </button>
+            {!props.isOtpVerified ? (
+              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
+                Back to login options
+              </button>
+            ) : null}
+          </>
         )}
-        <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-          Request OTP
-        </button>
-        <label>
-          OTP
-          <input
-            value={props.otp}
-            onChange={(event) => props.onOtpChange(event.target.value)}
-            inputMode="numeric"
-            autoComplete="one-time-code"
-          />
-        </label>
-        <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
-          Verify OTP
-        </button>
-        <div className="signup-divider">
-          <span>or use social profile</span>
-        </div>
-        <SocialLoginOptions
-          mode="signup"
-          oauthProviders={props.oauthProviders}
-          oauthProvidersLoaded={props.oauthProvidersLoaded}
-          isOtherSocialOpen={props.isOtherSocialOpen}
-          onSelectProvider={props.onSocialSignup}
-          onOpenOther={props.onOpenOtherSocial}
-          onCloseOther={props.onCloseOtherSocial}
-        />
-        <p className="setup-status">{props.statusMessage}</p>
+        <p className="setup-status" role="status" aria-live="polite">
+          {props.statusMessage}
+        </p>
       </section>
 
       {props.isOtpVerified ? (
@@ -5195,169 +5315,194 @@ interface LoginPanelProps {
 }
 
 function LoginPanel(props: LoginPanelProps) {
+  const [authView, setAuthView] = useState<"options" | "phone">("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
   const needsOtp = props.isRecoveringPin || isSettingPin;
+  const showPhoneAuth =
+    authView === "phone" || props.challenge !== null || props.isRecoveringPin || !props.hasLoginPin;
 
   return (
-    <main className="setup-grid login-grid">
-      <section className="panel">
-        <div className="auth-heading-row">
-          <div className="section-heading">
-            <p className="eyebrow">Step 1</p>
-            <h2>Signup or login</h2>
-          </div>
-        </div>
-        <div className="phone-contact-row">
-          <label>
-            Country code
-            <select
-              value={props.countryCode}
-              onChange={(event) => props.onCountryCodeChange(event.target.value as CountryDialCode)}
-            >
-              {countryDialCodes.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.flag} {item.code} {item.country}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Phone number
-            <input
-              value={phoneSuffix}
-              onChange={(event) =>
-                props.onDestinationChange(
-                  sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                )
-              }
-              inputMode="numeric"
-              maxLength={selectedCountryCode.suffixLength}
-              pattern="[0-9]*"
-              type="tel"
-              placeholder={"0".repeat(selectedCountryCode.suffixLength)}
-            />
-          </label>
-        </div>
-        {needsOtp ? (
-          <>
-            <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-              Request OTP
-            </button>
-            <label>
-              OTP
-              <input
-                value={props.otp}
-                onChange={(event) => props.onOtpChange(event.target.value)}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-              />
-            </label>
-            <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
-              Verify OTP
-            </button>
-          </>
+    <main className="setup-grid auth-landing-grid login-grid">
+      <section className="panel auth-card">
+        {!showPhoneAuth ? (
+          <SocialLoginOptions
+            mode="login"
+            oauthProviders={props.oauthProviders}
+            oauthProvidersLoaded={props.oauthProvidersLoaded}
+            isOtherSocialOpen={props.isOtherSocialOpen}
+            onSelectPhone={() => setAuthView("phone")}
+            onSelectProvider={props.onSocialLogin}
+            onOpenOther={props.onOpenOtherSocial}
+            onCloseOther={props.onCloseOtherSocial}
+          />
         ) : (
-          <p className="shell-note">Use your saved phone number and PIN to unlock this device.</p>
+          <>
+            <div className="auth-heading-row">
+              <div className="section-heading">
+                <p className="eyebrow">Continue with phone</p>
+                <h2>Signup or login</h2>
+              </div>
+            </div>
+            <div className="phone-contact-row">
+              <label>
+                Country code
+                <select
+                  value={props.countryCode}
+                  onChange={(event) =>
+                    props.onCountryCodeChange(event.target.value as CountryDialCode)
+                  }
+                >
+                  {countryDialCodes.map((item) => (
+                    <option key={item.code} value={item.code}>
+                      {item.flag} {item.code} {item.country}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Phone number
+                <input
+                  value={phoneSuffix}
+                  onChange={(event) =>
+                    props.onDestinationChange(
+                      sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                    )
+                  }
+                  inputMode="numeric"
+                  maxLength={selectedCountryCode.suffixLength}
+                  pattern="[0-9]*"
+                  type="tel"
+                  placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                />
+              </label>
+            </div>
+            {needsOtp ? (
+              <>
+                <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
+                  Continue
+                </button>
+                <label>
+                  OTP
+                  <input
+                    value={props.otp}
+                    onChange={(event) => props.onOtpChange(event.target.value)}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={props.onVerifyOtp}
+                  disabled={props.challenge === null}
+                >
+                  Verify OTP
+                </button>
+              </>
+            ) : (
+              <p className="shell-note">
+                Use your saved phone number and PIN to unlock this device.
+              </p>
+            )}
+          </>
         )}
-        <div className="signup-divider">
-          <span>or use social profile</span>
-        </div>
-        <SocialLoginOptions
-          mode="login"
-          oauthProviders={props.oauthProviders}
-          oauthProvidersLoaded={props.oauthProvidersLoaded}
-          isOtherSocialOpen={props.isOtherSocialOpen}
-          onSelectProvider={props.onSocialLogin}
-          onOpenOther={props.onOpenOtherSocial}
-          onCloseOther={props.onCloseOtherSocial}
-        />
       </section>
 
-      <section className="panel">
-        <div className="section-heading">
-          <p className="eyebrow">
-            {isSettingPin ? "PIN setup" : props.isRecoveringPin ? "PIN recovery" : "Login PIN"}
-          </p>
-          <h2>{isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
-        </div>
-        {props.isRecoveringPin || isSettingPin ? (
-          <>
-            <label>
-              {isSettingPin ? "PIN" : "New PIN"}
-              <input
-                value={props.recoveryPin}
-                onChange={(event) => props.onRecoveryPinChange(sanitizePin(event.target.value))}
-                inputMode="numeric"
-                maxLength={4}
-                pattern="[0-9]*"
-                type="password"
-                placeholder="4-digit PIN"
-              />
-            </label>
-            <label>
-              {isSettingPin ? "Confirm PIN" : "Confirm new PIN"}
-              <input
-                value={props.recoveryPinConfirm}
-                onChange={(event) =>
-                  props.onRecoveryPinConfirmChange(sanitizePin(event.target.value))
+      {showPhoneAuth ? (
+        <section className="panel auth-card">
+          <div className="section-heading">
+            <p className="eyebrow">
+              {isSettingPin ? "PIN setup" : props.isRecoveringPin ? "PIN recovery" : "Login PIN"}
+            </p>
+            <h2>{isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
+          </div>
+          {props.isRecoveringPin || isSettingPin ? (
+            <>
+              <label>
+                {isSettingPin ? "PIN" : "New PIN"}
+                <input
+                  value={props.recoveryPin}
+                  onChange={(event) => props.onRecoveryPinChange(sanitizePin(event.target.value))}
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="[0-9]*"
+                  type="password"
+                  placeholder="4-digit PIN"
+                />
+              </label>
+              <label>
+                {isSettingPin ? "Confirm PIN" : "Confirm new PIN"}
+                <input
+                  value={props.recoveryPinConfirm}
+                  onChange={(event) =>
+                    props.onRecoveryPinConfirmChange(sanitizePin(event.target.value))
+                  }
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="[0-9]*"
+                  type="password"
+                  placeholder="Confirm PIN"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={isSettingPin ? props.onSetMissingPin : props.onRecoverPin}
+                disabled={
+                  !props.isOtpVerified ||
+                  !isValidPin(props.recoveryPin) ||
+                  props.recoveryPin !== props.recoveryPinConfirm
                 }
-                inputMode="numeric"
-                maxLength={4}
-                pattern="[0-9]*"
-                type="password"
-                placeholder="Confirm PIN"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={isSettingPin ? props.onSetMissingPin : props.onRecoverPin}
-              disabled={
-                !props.isOtpVerified ||
-                !isValidPin(props.recoveryPin) ||
-                props.recoveryPin !== props.recoveryPinConfirm
-              }
-            >
-              {isSettingPin ? "Set PIN" : "Reset PIN"}
-            </button>
-            {!isSettingPin ? (
-              <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
-                Back to PIN login
+              >
+                {isSettingPin ? "Set PIN" : "Reset PIN"}
               </button>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <label>
-              PIN
-              <input
-                value={props.loginPin}
-                onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
-                inputMode="numeric"
-                maxLength={4}
-                pattern="[0-9]*"
-                type="password"
-                placeholder="4-digit PIN"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={props.onLogin}
-              disabled={!contactIsValid || !isValidPin(props.loginPin)}
-            >
-              Login
-            </button>
-            {props.hasLoginPin ? (
-              <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
-                Forgot PIN?
+              {!isSettingPin ? (
+                <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
+                  Back to PIN login
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <label>
+                PIN
+                <input
+                  value={props.loginPin}
+                  onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="[0-9]*"
+                  type="password"
+                  placeholder="4-digit PIN"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={props.onLogin}
+                disabled={!contactIsValid || !isValidPin(props.loginPin)}
+              >
+                Login
               </button>
-            ) : null}
-          </>
-        )}
-        <p className="setup-status">{props.statusMessage}</p>
-      </section>
+              {props.hasLoginPin ? (
+                <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
+                  Forgot PIN?
+                </button>
+              ) : null}
+              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
+                Back to login options
+              </button>
+            </>
+          )}
+          <p className="setup-status" role="status" aria-live="polite">
+            {props.statusMessage}
+          </p>
+        </section>
+      ) : (
+        <p className="setup-status auth-status" role="status" aria-live="polite">
+          {props.statusMessage}
+        </p>
+      )}
     </main>
   );
 }
