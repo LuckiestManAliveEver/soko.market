@@ -31,6 +31,7 @@ interface OAuthStartResponse {
 const providers: OAuthProvider[] = [
   "google",
   "facebook",
+  "tiktok",
   "apple",
   "github",
   "microsoft",
@@ -45,6 +46,7 @@ const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
   google: "OAUTH_GOOGLE_CLIENT_ID",
   linkedin: "OAUTH_LINKEDIN_CLIENT_ID",
   microsoft: "OAUTH_MICROSOFT_CLIENT_ID",
+  tiktok: "OAUTH_TIKTOK_CLIENT_ID",
   x: "OAUTH_X_CLIENT_ID"
 };
 const previousOAuthClientIds = new Map<string, string | undefined>();

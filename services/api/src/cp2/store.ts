@@ -1012,6 +1012,36 @@ export class Cp2Store {
     return true;
   }
 
+  logoutAll(sessionId: string | null, now = new Date()): { revoked: number } {
+    const session = this.getSession(sessionId, now);
+
+    if (session === null) {
+      return { revoked: 0 };
+    }
+
+    let revoked = 0;
+
+    for (const candidate of this.sessions.values()) {
+      if (candidate.accountId === session.account.id && candidate.revokedAt === null) {
+        candidate.revokedAt = now.toISOString();
+        revoked += 1;
+      }
+    }
+
+    this.recordAuditEvent({
+      type: "auth.sessions_revoked_all",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        revoked
+      }
+    });
+
+    return { revoked };
+  }
+
   setAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
@@ -3367,6 +3397,82 @@ export class Cp2Store {
     );
 
     return deletionRequest;
+  }
+
+  listLoginAccounts(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): ConnectedSocialAccountSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+
+    return [...this.userIdentities.values()]
+      .filter((identity) => identity.accountId === session.account.id)
+      .map((identity) => ({
+        id: identity.id,
+        provider: identity.provider,
+        providerName: providerDisplayName(identity.provider),
+        connected: true,
+        displayName: identity.displayName,
+        email: identity.email,
+        connectedAt: identity.linkedAt,
+        lastUsedAt: identity.updatedAt
+      }))
+      .sort((left, right) => left.provider.localeCompare(right.provider));
+  }
+
+  disconnectLoginAccount(input: { sessionId: string | null; identityId: string; now?: Date }): {
+    disconnected: true;
+    identityId: string;
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const identity = this.userIdentities.get(input.identityId);
+
+    if (identity === undefined || identity.accountId !== session.account.id) {
+      throw new Cp2Error(
+        404,
+        "social_identity_not_found",
+        "Connected login account was not found."
+      );
+    }
+
+    const remainingIdentities = [...this.userIdentities.values()].filter(
+      (candidate) => candidate.accountId === session.account.id && candidate.id !== identity.id
+    );
+
+    if (!this.accountPinHashes.has(session.account.id) && remainingIdentities.length === 0) {
+      throw new Cp2Error(
+        409,
+        "last_login_method",
+        "Add and verify another login method before disconnecting the last login account."
+      );
+    }
+
+    this.userIdentities.delete(identity.id);
+    this.identityByProviderSubject.delete(
+      oauthProviderSubjectKey(identity.provider, identity.providerSubject)
+    );
+
+    if (identity.email !== null) {
+      this.identityByEmail.delete(oauthIdentityEmailKey(identity.provider, identity.email));
+    }
+
+    this.recordAuditEvent({
+      type: "auth.login_identity_disconnected",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        provider: identity.provider,
+        identityId: identity.id
+      }
+    });
+
+    return {
+      disconnected: true,
+      identityId: identity.id
+    };
   }
 
   listConnectedSocialAccounts(input: {
@@ -10345,13 +10451,15 @@ function parseDeletionOtpChallengeId(value: string | null | undefined): string |
 function providerDisplayName(provider: OAuthProvider): string {
   switch (provider) {
     case "facebook":
-      return "Meta";
+      return "Facebook";
     case "github":
       return "GitHub";
     case "google":
       return "Google";
     case "linkedin":
       return "LinkedIn";
+    case "tiktok":
+      return "TikTok";
     case "microsoft":
       return "Microsoft";
     case "apple":

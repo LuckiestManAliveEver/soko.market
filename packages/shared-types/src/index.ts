@@ -29,7 +29,7 @@ export interface FeatureFlag {
 export type AuthChannel = "email" | "phone";
 
 export type OAuthProvider =
-  "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin" | "x";
+  "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin" | "x" | "tiktok";
 
 export type BusinessRole = "owner" | "manager" | "sales_agent" | "cashier" | "view_only";
 

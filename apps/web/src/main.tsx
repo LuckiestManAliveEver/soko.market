@@ -29,7 +29,7 @@ type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
-  "google" | "facebook" | "x" | "linkedin" | "apple" | "github" | "microsoft";
+  "google" | "facebook" | "tiktok" | "x" | "linkedin" | "apple" | "github" | "microsoft";
 type NetworkSyncProviderId =
   "phone" | "google" | "facebook" | "instagram" | "x" | "linkedin" | "whatsapp" | "other";
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
@@ -1386,15 +1386,22 @@ const socialSignupProviders: Array<{
 }> = [
   {
     id: "google",
-    label: "Google",
+    label: "Gmail",
     icon: "G",
     authRedirectPath: "/auth/oauth/start",
     primary: true
   },
   {
     id: "facebook",
-    label: "Meta",
-    icon: "M",
+    label: "Facebook",
+    icon: "f",
+    authRedirectPath: "/auth/oauth/start",
+    primary: true
+  },
+  {
+    id: "tiktok",
+    label: "TikTok",
+    icon: "TT",
     authRedirectPath: "/auth/oauth/start",
     primary: true
   },
@@ -2283,16 +2290,18 @@ function OwnerApp() {
   }
 
   async function requestLoginOtp() {
-    const contactValue = composeSignupContact("phone", countryCode, destination);
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (!isSignupContactValid("phone", countryCode, destination)) {
-      setStatusMessage("Enter a valid phone number");
+    if (!isSignupContactValid(channel, countryCode, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
       return;
     }
 
     try {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        method: "phone",
+        method: channel,
         contact: contactValue
       });
       setChallenge(response);
@@ -2310,16 +2319,18 @@ function OwnerApp() {
       return;
     }
 
-    const contactValue = composeSignupContact("phone", countryCode, destination);
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (!isSignupContactValid("phone", countryCode, destination)) {
-      setStatusMessage("Enter a valid phone number");
+    if (!isSignupContactValid(channel, countryCode, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
       return;
     }
 
     try {
       const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: "phone",
+        method: channel,
         contact: contactValue,
         otp
       });
@@ -2350,7 +2361,7 @@ function OwnerApp() {
     setLoginPin("");
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setStatusMessage("Verify your phone with OTP, then set a new PIN.");
+    setStatusMessage("Verify your account with OTP, then set a new PIN.");
   }
 
   function cancelPinRecovery() {
@@ -2360,7 +2371,7 @@ function OwnerApp() {
     setIsOtpVerified(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setStatusMessage("Enter your phone number and login PIN.");
+    setStatusMessage("Enter your login contact and PIN.");
   }
 
   async function loginWithPin() {
@@ -4776,6 +4787,7 @@ function OwnerApp() {
           />
         ) : shouldShowLogin ? (
           <LoginPanel
+            channel={channel}
             countryCode={countryCode}
             destination={destination}
             challenge={challenge}
@@ -4790,6 +4802,7 @@ function OwnerApp() {
             oauthProvidersLoaded={oauthProvidersLoaded}
             isOtherSocialOpen={isOtherSocialOpen}
             statusMessage={statusMessage}
+            onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
@@ -4922,6 +4935,7 @@ interface SocialLoginOptionsProps {
   oauthProvidersLoaded: boolean;
   isOtherSocialOpen: boolean;
   onSelectPhone: () => void;
+  onSelectEmail: () => void;
   onSelectProvider: (provider: SocialSignupProvider) => void;
   onOpenOther: () => void;
   onCloseOther: () => void;
@@ -4941,6 +4955,14 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
     <>
       <AuthBrand />
       <div className="auth-provider-stack" aria-label={`${props.mode} options`}>
+        <button
+          className="social-signup-button whatsapp"
+          type="button"
+          onClick={props.onSelectPhone}
+        >
+          <span aria-hidden="true">WA</span>
+          Continue with WhatsApp
+        </button>
         {primaryProviders.map((provider) => {
           const config = getAuthProviderConfig(
             provider,
@@ -4966,14 +4988,21 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
             </button>
           );
         })}
-        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
-          <span aria-hidden="true">☎</span>
-          Continue with phone
-        </button>
       </div>
 
       <div className="signup-divider auth-divider">
         <span>Or</span>
+      </div>
+
+      <div className="auth-provider-stack" aria-label="Direct login options">
+        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
+          <span aria-hidden="true">☎</span>
+          Continue with phone
+        </button>
+        <button className="social-signup-button email" type="button" onClick={props.onSelectEmail}>
+          <span aria-hidden="true">@</span>
+          Continue with email
+        </button>
       </div>
 
       <div className="secondary-provider-row" aria-label="Secondary login providers">
@@ -5086,7 +5115,7 @@ function AuthLegalFooter() {
 }
 
 function SetupPanel(props: SetupPanelProps) {
-  const [authView, setAuthView] = useState<"options" | "phone">("options");
+  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
@@ -5105,6 +5134,10 @@ function SetupPanel(props: SetupPanelProps) {
               props.onChannelChange("phone");
               setAuthView("phone");
             }}
+            onSelectEmail={() => {
+              props.onChannelChange("email");
+              setAuthView("email");
+            }}
             onSelectProvider={props.onSocialSignup}
             onOpenOther={props.onOpenOtherSocial}
             onCloseOther={props.onCloseOtherSocial}
@@ -5113,7 +5146,7 @@ function SetupPanel(props: SetupPanelProps) {
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">Continue with phone</p>
+                <p className="eyebrow">Continue with {props.channel}</p>
                 <h2>Signup or login</h2>
               </div>
             </div>
@@ -5282,6 +5315,7 @@ function SetupPanel(props: SetupPanelProps) {
 }
 
 interface LoginPanelProps {
+  channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -5296,6 +5330,7 @@ interface LoginPanelProps {
   oauthProvidersLoaded: boolean;
   isOtherSocialOpen: boolean;
   statusMessage: string;
+  onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
@@ -5315,10 +5350,10 @@ interface LoginPanelProps {
 }
 
 function LoginPanel(props: LoginPanelProps) {
-  const [authView, setAuthView] = useState<"options" | "phone">("options");
+  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
-  const contactIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
+  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
   const needsOtp = props.isRecoveringPin || isSettingPin;
   const showPhoneAuth =
@@ -5333,7 +5368,14 @@ function LoginPanel(props: LoginPanelProps) {
             oauthProviders={props.oauthProviders}
             oauthProvidersLoaded={props.oauthProvidersLoaded}
             isOtherSocialOpen={props.isOtherSocialOpen}
-            onSelectPhone={() => setAuthView("phone")}
+            onSelectPhone={() => {
+              props.onChannelChange("phone");
+              setAuthView("phone");
+            }}
+            onSelectEmail={() => {
+              props.onChannelChange("email");
+              setAuthView("email");
+            }}
             onSelectProvider={props.onSocialLogin}
             onOpenOther={props.onOpenOtherSocial}
             onCloseOther={props.onCloseOtherSocial}
@@ -5342,43 +5384,72 @@ function LoginPanel(props: LoginPanelProps) {
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">Continue with phone</p>
+                <p className="eyebrow">Continue with {props.channel}</p>
                 <h2>Signup or login</h2>
               </div>
             </div>
-            <div className="phone-contact-row">
+            <div className="segmented" aria-label="Login channel">
+              <button
+                className={props.channel === "phone" ? "active" : ""}
+                type="button"
+                onClick={() => props.onChannelChange("phone")}
+              >
+                Phone
+              </button>
+              <button
+                className={props.channel === "email" ? "active" : ""}
+                type="button"
+                onClick={() => props.onChannelChange("email")}
+              >
+                Email
+              </button>
+            </div>
+            {props.channel === "phone" ? (
+              <div className="phone-contact-row">
+                <label>
+                  Country code
+                  <select
+                    value={props.countryCode}
+                    onChange={(event) =>
+                      props.onCountryCodeChange(event.target.value as CountryDialCode)
+                    }
+                  >
+                    {countryDialCodes.map((item) => (
+                      <option key={item.code} value={item.code}>
+                        {item.flag} {item.code} {item.country}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Phone number
+                  <input
+                    value={phoneSuffix}
+                    onChange={(event) =>
+                      props.onDestinationChange(
+                        sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                      )
+                    }
+                    inputMode="numeric"
+                    maxLength={selectedCountryCode.suffixLength}
+                    pattern="[0-9]*"
+                    type="tel"
+                    placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                  />
+                </label>
+              </div>
+            ) : (
               <label>
-                Country code
-                <select
-                  value={props.countryCode}
-                  onChange={(event) =>
-                    props.onCountryCodeChange(event.target.value as CountryDialCode)
-                  }
-                >
-                  {countryDialCodes.map((item) => (
-                    <option key={item.code} value={item.code}>
-                      {item.flag} {item.code} {item.country}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Phone number
+                Email address
                 <input
-                  value={phoneSuffix}
-                  onChange={(event) =>
-                    props.onDestinationChange(
-                      sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                    )
-                  }
-                  inputMode="numeric"
-                  maxLength={selectedCountryCode.suffixLength}
-                  pattern="[0-9]*"
-                  type="tel"
-                  placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                  value={props.destination}
+                  onChange={(event) => props.onDestinationChange(event.target.value)}
+                  inputMode="email"
+                  type="email"
+                  placeholder="owner@example.com"
                 />
               </label>
-            </div>
+            )}
             {needsOtp ? (
               <>
                 <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
@@ -9877,11 +9948,13 @@ function AgentProfileSurface({
         <div className="record-form shop-profile-card">
           <div className="section-heading">
             <p className="eyebrow">Account</p>
-            <h3>Connected social accounts</h3>
+            <h3>Login accounts</h3>
           </div>
           <div className="connected-social-list">
             {oauthProviders
-              .filter((provider) => ["google", "facebook", "x", "linkedin"].includes(provider.id))
+              .filter((provider) =>
+                ["google", "facebook", "tiktok", "x", "linkedin"].includes(provider.id)
+              )
               .map((provider) => {
                 const connected = connectedSocialAccounts.find(
                   (account) => account.provider === provider.id
@@ -9918,7 +9991,7 @@ function AgentProfileSurface({
                         onClick={() =>
                           setProfileMessage(
                             provider.configured
-                              ? "Use signup/login to reconnect this provider."
+                              ? "Use signup/login to reconnect this login account."
                               : "This login provider is not configured yet."
                           )
                         }
@@ -9943,6 +10016,17 @@ function AgentProfileSurface({
               })}
           </div>
           {profileMessage.length > 0 ? <p className="shell-note">{profileMessage}</p> : null}
+        </div>
+
+        <div className="record-form shop-profile-card">
+          <div className="section-heading">
+            <p className="eyebrow">Business channels</p>
+            <h3>Connected customer channels</h3>
+          </div>
+          <p className="shell-note">
+            These are separate from login accounts. Keep storefront, chat and customer-care channel
+            settings in their existing workspace areas.
+          </p>
         </div>
 
         <div className="record-form danger-zone-card">
@@ -12095,6 +12179,7 @@ function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
   return (
     value === "google" ||
     value === "facebook" ||
+    value === "tiktok" ||
     value === "x" ||
     value === "apple" ||
     value === "github" ||

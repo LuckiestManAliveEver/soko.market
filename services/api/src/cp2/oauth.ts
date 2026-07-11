@@ -86,7 +86,7 @@ const oauthProviders: OAuthProviderConfig[] = [
   },
   {
     id: "facebook",
-    displayName: "Meta",
+    displayName: "Facebook",
     icon: "M",
     implemented: true,
     enabled: true,
@@ -99,6 +99,24 @@ const oauthProviders: OAuthProviderConfig[] = [
     clientSecretEnv: "OAUTH_FACEBOOK_CLIENT_SECRET",
     clientIdEnvAliases: ["META_CLIENT_ID", "FACEBOOK_CLIENT_ID"],
     clientSecretEnvAliases: ["META_CLIENT_SECRET", "FACEBOOK_CLIENT_SECRET"],
+    callbackPath: "/auth/oauth/callback"
+  },
+  {
+    id: "tiktok",
+    displayName: "TikTok",
+    icon: "TT",
+    implemented: true,
+    enabled: true,
+    authorizationUrl: "https://www.tiktok.com/v2/auth/authorize/",
+    tokenUrl: "https://open.tiktokapis.com/v2/oauth/token/",
+    userInfoUrl:
+      "https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,avatar_url,display_name",
+    scopes: ["user.info.basic"],
+    pkce: true,
+    clientIdEnv: "OAUTH_TIKTOK_CLIENT_ID",
+    clientSecretEnv: "OAUTH_TIKTOK_CLIENT_SECRET",
+    clientIdEnvAliases: ["TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_ID"],
+    clientSecretEnvAliases: ["TIKTOK_CLIENT_SECRET"],
     callbackPath: "/auth/oauth/callback"
   },
   {
@@ -207,7 +225,8 @@ export function parseOAuthProvider(value: unknown): OAuthProvider {
     value === "github" ||
     value === "microsoft" ||
     value === "linkedin" ||
-    value === "x"
+    value === "x" ||
+    value === "tiktok"
   ) {
     return value;
   }
@@ -420,7 +439,8 @@ function getFirstConfiguredEnv(names: string[]): string {
 }
 
 function getTokenEncryptionKey(): Buffer {
-  const configured = process.env.OAUTH_TOKEN_ENCRYPTION_KEY?.trim();
+  const configured =
+    process.env.AUTH_TOKEN_ENCRYPTION_KEY?.trim() ?? process.env.OAUTH_TOKEN_ENCRYPTION_KEY?.trim();
   const source =
     configured === undefined || configured.length === 0
       ? "soko-market-local-oauth-token-encryption-key"
@@ -448,18 +468,30 @@ function normalizeProfile(provider: OAuthProvider, payload: Record<string, unkno
     provider === "x" && typeof payload.data === "object" && payload.data !== null
       ? (payload.data as Record<string, unknown>)
       : null;
+  const tiktokData =
+    provider === "tiktok" && typeof payload.data === "object" && payload.data !== null
+      ? (payload.data as Record<string, unknown>)
+      : null;
+  const tiktokUser =
+    tiktokData !== null && typeof tiktokData.user === "object" && tiktokData.user !== null
+      ? (tiktokData.user as Record<string, unknown>)
+      : null;
   const subject =
     optionalString(payload.sub) ??
     optionalString(payload.id) ??
     optionalString(payload.userPrincipalName) ??
-    (xData === null ? undefined : optionalString(xData.id));
+    (xData === null ? undefined : optionalString(xData.id)) ??
+    (tiktokUser === null
+      ? undefined
+      : (optionalString(tiktokUser.open_id) ?? optionalString(tiktokUser.union_id)));
   const email = optionalString(payload.email) ?? optionalString(payload.mail);
   const displayName =
     optionalString(payload.name) ??
     optionalString(payload.login) ??
     optionalString(payload.preferred_username) ??
     (xData === null ? undefined : optionalString(xData.name)) ??
-    (xData === null ? undefined : optionalString(xData.username));
+    (xData === null ? undefined : optionalString(xData.username)) ??
+    (tiktokUser === null ? undefined : optionalString(tiktokUser.display_name));
   const emailVerifiedValue = payload.email_verified;
 
   if (subject === undefined) {

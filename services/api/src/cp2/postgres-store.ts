@@ -92,11 +92,13 @@ const mutatingMethodNames = new Set([
   "deleteNetworkSource",
   "deleteProduct",
   "deleteSupplier",
+  "disconnectLoginAccount",
   "enqueueSyncMutation",
   "linkSalesAgentContact",
   "linkSupplierContact",
   "loginWithAccountPin",
   "logout",
+  "logoutAll",
   "recoverAccountPin",
   "recordBetaDeviceTest",
   "recordBetaTelemetry",
@@ -161,7 +163,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "014_cp2_phase1_auth_security_relational.sql";
+const requiredMigrationFilename = "015_social_auth_accounts_channels.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -1190,6 +1192,12 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   );
   await deleteMissingDeviceTrustRows(client, snapshotRecords(snapshot.deviceTrust));
   await deleteMissingRows(client, "oauth_sessions", snapshotRecords(snapshot.oauthSessions));
+  await deleteMissingRows(client, "auth_accounts", snapshotRecords(snapshot.userIdentities));
+  await deleteMissingRows(
+    client,
+    "verification_challenges",
+    snapshotRecords(snapshot.otpChallenges)
+  );
   await deleteMissingRows(client, "user_identities", snapshotRecords(snapshot.userIdentities));
   await deleteMissingRows(client, "otp_challenges", snapshotRecords(snapshot.otpChallenges));
   await deleteMissingAccountPinHashes(client, snapshotRecords(snapshot.accountPinHashes));
@@ -1619,6 +1627,46 @@ async function savePhase1AuthSecurityRecords(
         requiredText(record, "createdAt")
       ]
     );
+
+    await client.query(
+      `
+        insert into verification_challenges (
+          id, channel, destination, purpose, code_hash, attempts, max_attempts,
+          status, expires_at, verified_at, created_at, updated_at
+        )
+        values (
+          $1, $2, $3, 'login', $4, $5, $6,
+          case
+            when $8::timestamptz is not null then 'verified'
+            when $7::timestamptz <= now() then 'expired'
+            when $5::integer >= $6::integer then 'locked'
+            else 'pending'
+          end,
+          $7, $8, $9, coalesce($8::timestamptz, $9::timestamptz)
+        )
+        on conflict (id) do update set
+          channel = excluded.channel,
+          destination = excluded.destination,
+          code_hash = excluded.code_hash,
+          attempts = excluded.attempts,
+          max_attempts = excluded.max_attempts,
+          status = excluded.status,
+          expires_at = excluded.expires_at,
+          verified_at = excluded.verified_at,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "channel"),
+        requiredText(record, "destination"),
+        requiredText(record, "codeHash"),
+        record.attempts ?? 0,
+        record.maxAttempts ?? 5,
+        requiredText(record, "expiresAt"),
+        firstText(record, ["verifiedAt"]),
+        requiredText(record, "createdAt")
+      ]
+    );
   }
 
   for (const record of snapshotRecords(snapshot.userIdentities)) {
@@ -1659,6 +1707,35 @@ async function savePhase1AuthSecurityRecords(
         firstText(record, ["tokenType"]),
         firstText(record, ["tokenExpiresAt"]),
         firstText(record, ["scope"]),
+        requiredText(record, "linkedAt"),
+        firstText(record, ["updatedAt"]) ?? requiredText(record, "linkedAt")
+      ]
+    );
+
+    await client.query(
+      `
+        insert into auth_accounts (
+          id, account_id, user_id, provider_id, provider_subject, email, display_name,
+          linked_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        on conflict (id) do update set
+          account_id = excluded.account_id,
+          user_id = excluded.user_id,
+          provider_id = excluded.provider_id,
+          provider_subject = excluded.provider_subject,
+          email = excluded.email,
+          display_name = excluded.display_name,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "accountId"),
+        requiredText(record, "userId"),
+        requiredText(record, "provider"),
+        requiredText(record, "providerSubject"),
+        firstText(record, ["email"]),
+        firstText(record, ["displayName"]),
         requiredText(record, "linkedAt"),
         firstText(record, ["updatedAt"]) ?? requiredText(record, "linkedAt")
       ]

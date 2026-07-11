@@ -85,6 +85,14 @@ interface OAuthStartBody {
   redirectUri?: string;
 }
 
+interface OAuthStartParams {
+  provider: string;
+}
+
+interface AuthIdentityParams {
+  identityId: string;
+}
+
 interface OAuthCallbackBody {
   code?: string;
   csrfToken?: string;
@@ -104,6 +112,17 @@ interface OAuthCallbackBody {
     expiresIn?: number;
     scope?: string;
   };
+}
+
+interface OAuthCallbackParams {
+  provider: string;
+}
+
+interface OAuthCallbackQuery {
+  code?: string;
+  csrfToken?: string;
+  error?: string;
+  state?: string;
 }
 
 interface PinBody {
@@ -503,37 +522,227 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const store = options.store ?? createCp2Store();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
 
+  async function requestOtpForBody(body: OtpRequestBody) {
+    const channel = parseAuthChannel(body.method ?? body.channel);
+    const destination = parseString(body.contact ?? body.destination, "contact");
+    const otp = store.requestOtp({ channel, destination });
+
+    if (otpProvider.canHandle(channel)) {
+      await otpProvider.requestOtp({
+        channel,
+        destination: otp.destination
+      });
+    }
+
+    if (
+      otpProvider.exposesDevOtp ||
+      !otpProvider.verifiesExternally ||
+      !otpProvider.canHandle(channel)
+    ) {
+      return otp;
+    }
+
+    return {
+      challengeId: otp.challengeId,
+      destination: otp.destination,
+      expiresAt: otp.expiresAt
+    };
+  }
+
+  async function verifyOtpForBody(body: OtpVerifyBody) {
+    const code = parseString(body.otp ?? body.code, "otp");
+    const challenge =
+      body.challengeId === undefined
+        ? store.getOtpChallengeDeliveryByContact({
+            channel: parseAuthChannel(body.method),
+            destination: parseString(body.contact, "contact")
+          })
+        : store.getOtpChallengeDelivery(parseString(body.challengeId, "challengeId"));
+
+    return otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
+      ? await verifyProviderOtp(store, otpProvider, challenge.challengeId, challenge, code)
+      : store.verifyOtp({ challengeId: challenge.challengeId, code });
+  }
+
+  function enabledAuthProviders() {
+    return {
+      providers: listOAuthProviders().filter(
+        (provider) =>
+          provider.enabled !== false && provider.implemented !== false && provider.configured
+      )
+    };
+  }
+
+  function startOAuthSession(
+    request: FastifyRequest,
+    input: { provider?: unknown; redirectUri?: string | undefined }
+  ) {
+    const provider = parseOAuthProvider(input.provider);
+    const providerConfig = getOAuthProviderConfig(provider);
+
+    if (!providerConfig.implemented) {
+      throw new Cp2Error(
+        501,
+        "oauth_provider_not_implemented",
+        `${providerConfig.displayName} sign-in is not implemented yet.`
+      );
+    }
+
+    if (!isOAuthProviderConfigured(providerConfig)) {
+      throw new Cp2Error(
+        503,
+        "oauth_provider_unconfigured",
+        `${providerConfig.displayName} sign-in is not configured.`
+      );
+    }
+
+    const redirectUri = parseOptionalString(input.redirectUri) ?? defaultOAuthRedirectUri(request);
+    const startPayload = createOAuthStartPayload({
+      provider: providerConfig,
+      redirectUri
+    });
+    return store.beginOAuthSession({
+      accountSessionId: readSessionCookie(request.headers.cookie),
+      authorizationUrl: startPayload.authorizationUrl,
+      codeChallenge: startPayload.codeChallenge,
+      codeVerifier: startPayload.codeVerifier,
+      csrfToken: startPayload.csrfToken,
+      provider,
+      redirectUri: startPayload.redirectUri,
+      state: startPayload.state
+    });
+  }
+
+  async function completeOAuthSession(input: {
+    provider: unknown;
+    state: unknown;
+    csrfToken: unknown;
+    code?: unknown;
+    tokens?: OAuthCallbackBody["tokens"];
+    profile?: OAuthCallbackBody["profile"];
+  }) {
+    const provider = parseOAuthProvider(input.provider);
+    const state = parseString(input.state, "state");
+    const csrfToken = parseString(input.csrfToken, "csrfToken");
+    const providerConfig = getOAuthProviderConfig(provider);
+
+    if (!providerConfig.implemented) {
+      throw new Cp2Error(
+        501,
+        "oauth_provider_not_implemented",
+        `${providerConfig.displayName} sign-in is not implemented yet.`
+      );
+    }
+
+    const exchangeData = store.getOAuthExchangeData({
+      provider,
+      state,
+      csrfToken
+    });
+    const bodyTokens = parseOptionalOAuthTokens(input.tokens);
+    const tokens =
+      bodyTokens ??
+      (await exchangeOAuthCode({
+        provider: providerConfig,
+        code: parseString(input.code, "code"),
+        codeVerifier: exchangeData.codeVerifier,
+        redirectUri: exchangeData.redirectUri
+      }));
+    const profile =
+      input.profile === undefined
+        ? await fetchOAuthProfile({ provider: providerConfig, tokens })
+        : parseOAuthProfileBody(input.profile);
+    return store.completeOAuthCallback({
+      provider,
+      state,
+      csrfToken,
+      profile,
+      tokens
+    });
+  }
+
   app.post(
     "/auth/otp/request",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
-        const channel = parseAuthChannel(request.body.method ?? request.body.channel);
-        const destination = parseString(
-          request.body.contact ?? request.body.destination,
-          "contact"
-        );
-        const otp = store.requestOtp({ channel, destination });
+        return await requestOtpForBody(request.body);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
-        if (otpProvider.canHandle(channel)) {
-          await otpProvider.requestOtp({
-            channel,
-            destination: otp.destination
-          });
-        }
+  app.post(
+    "/auth/phone/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "phone" });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
-        if (
-          otpProvider.exposesDevOtp ||
-          !otpProvider.verifiesExternally ||
-          !otpProvider.canHandle(channel)
-        ) {
-          return otp;
-        }
+  app.post(
+    "/api/auth/otp/request",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody(request.body);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
-        return {
-          challengeId: otp.challengeId,
-          destination: otp.destination,
-          expiresAt: otp.expiresAt
-        };
+  app.post(
+    "/auth/email/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "email" });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/whatsapp/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "phone" });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/phone/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "phone" });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/email/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "email" });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/whatsapp/request-otp",
+    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
+      try {
+        return await requestOtpForBody({ ...request.body, method: "phone" });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -542,18 +751,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/otp/verify", async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
     try {
-      const code = parseString(request.body.otp ?? request.body.code, "otp");
-      const challenge =
-        request.body.challengeId === undefined
-          ? store.getOtpChallengeDeliveryByContact({
-              channel: parseAuthChannel(request.body.method),
-              destination: parseString(request.body.contact, "contact")
-            })
-          : store.getOtpChallengeDelivery(parseString(request.body.challengeId, "challengeId"));
-      const result =
-        otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
-          ? await verifyProviderOtp(store, otpProvider, challenge.challengeId, challenge, code)
-          : store.verifyOtp({ challengeId: challenge.challengeId, code });
+      const result = await verifyOtpForBody(request.body);
       reply.header("set-cookie", serializeSessionCookie(result.session.id));
       return result;
     } catch (error) {
@@ -561,48 +759,157 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.post(
+    "/auth/phone/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/otp/verify",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody(request.body);
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/email/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "email" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/whatsapp/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/phone/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/email/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "email" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/whatsapp/verify-otp",
+    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
+      try {
+        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get("/auth/oauth/providers", async () => ({
     providers: listOAuthProviders()
   }));
+
+  app.get("/api/auth/oauth/providers", async () => ({
+    providers: listOAuthProviders()
+  }));
+
+  app.get("/auth/providers", async () => enabledAuthProviders());
+  app.get("/api/auth/providers", async () => enabledAuthProviders());
 
   app.post(
     "/auth/oauth/start",
     async (request: FastifyRequest<{ Body: OAuthStartBody }>, reply) => {
       try {
-        const provider = parseOAuthProvider(request.body.provider);
-        const providerConfig = getOAuthProviderConfig(provider);
+        return startOAuthSession(request, request.body);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
-        if (!providerConfig.implemented) {
-          throw new Cp2Error(
-            501,
-            "oauth_provider_not_implemented",
-            `${providerConfig.displayName} sign-in is not implemented yet.`
-          );
-        }
+  app.post(
+    "/api/auth/oauth/start",
+    async (request: FastifyRequest<{ Body: OAuthStartBody }>, reply) => {
+      try {
+        return startOAuthSession(request, request.body);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
-        if (!isOAuthProviderConfigured(providerConfig)) {
-          throw new Cp2Error(
-            503,
-            "oauth_provider_unconfigured",
-            `${providerConfig.displayName} sign-in is not configured.`
-          );
-        }
-
-        const redirectUri =
-          parseOptionalString(request.body.redirectUri) ?? defaultOAuthRedirectUri(request);
-        const startPayload = createOAuthStartPayload({
-          provider: providerConfig,
-          redirectUri
+  app.get(
+    "/auth/oauth/:provider/start",
+    async (
+      request: FastifyRequest<{ Params: OAuthStartParams; Querystring: { redirectUri?: string } }>,
+      reply
+    ) => {
+      try {
+        return startOAuthSession(request, {
+          provider: request.params.provider,
+          redirectUri: request.query.redirectUri
         });
-        return store.beginOAuthSession({
-          accountSessionId: readSessionCookie(request.headers.cookie),
-          authorizationUrl: startPayload.authorizationUrl,
-          codeChallenge: startPayload.codeChallenge,
-          codeVerifier: startPayload.codeVerifier,
-          csrfToken: startPayload.csrfToken,
-          provider,
-          redirectUri: startPayload.redirectUri,
-          state: startPayload.state
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/api/auth/oauth/:provider/start",
+    async (
+      request: FastifyRequest<{ Params: OAuthStartParams; Querystring: { redirectUri?: string } }>,
+      reply
+    ) => {
+      try {
+        return startOAuthSession(request, {
+          provider: request.params.provider,
+          redirectUri: request.query.redirectUri
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -614,46 +921,188 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/oauth/callback",
     async (request: FastifyRequest<{ Body: OAuthCallbackBody }>, reply) => {
       try {
-        const provider = parseOAuthProvider(request.body.provider);
-        const state = parseString(request.body.state, "state");
-        const csrfToken = parseString(request.body.csrfToken, "csrfToken");
-        const providerConfig = getOAuthProviderConfig(provider);
-
-        if (!providerConfig.implemented) {
-          throw new Cp2Error(
-            501,
-            "oauth_provider_not_implemented",
-            `${providerConfig.displayName} sign-in is not implemented yet.`
-          );
-        }
-
-        const exchangeData = store.getOAuthExchangeData({
-          provider,
-          state,
-          csrfToken
-        });
-        const bodyTokens = parseOptionalOAuthTokens(request.body.tokens);
-        const tokens =
-          bodyTokens ??
-          (await exchangeOAuthCode({
-            provider: providerConfig,
-            code: parseString(request.body.code, "code"),
-            codeVerifier: exchangeData.codeVerifier,
-            redirectUri: exchangeData.redirectUri
-          }));
-        const profile =
-          request.body.profile === undefined
-            ? await fetchOAuthProfile({ provider: providerConfig, tokens })
-            : parseOAuthProfileBody(request.body.profile);
-        const result = store.completeOAuthCallback({
-          provider,
-          state,
-          csrfToken,
-          profile,
-          tokens
+        const result = await completeOAuthSession({
+          provider: request.body.provider,
+          state: request.body.state,
+          csrfToken: request.body.csrfToken,
+          code: request.body.code,
+          tokens: request.body.tokens,
+          profile: request.body.profile
         });
         reply.header("set-cookie", serializeSessionCookie(result.session.id));
         return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/oauth/callback",
+    async (request: FastifyRequest<{ Body: OAuthCallbackBody }>, reply) => {
+      try {
+        const result = await completeOAuthSession({
+          provider: request.body.provider,
+          state: request.body.state,
+          csrfToken: request.body.csrfToken,
+          code: request.body.code,
+          tokens: request.body.tokens,
+          profile: request.body.profile
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/auth/oauth/:provider/callback",
+    async (
+      request: FastifyRequest<{ Params: OAuthCallbackParams; Querystring: OAuthCallbackQuery }>,
+      reply
+    ) => {
+      try {
+        if (request.query.error !== undefined) {
+          throw new Cp2Error(401, "oauth_provider_error", request.query.error);
+        }
+
+        if (request.query.csrfToken === undefined) {
+          const relayUrl = new URL(defaultOAuthRedirectUri(request));
+          relayUrl.searchParams.set("provider", request.params.provider);
+          relayUrl.searchParams.set("state", parseString(request.query.state, "state"));
+          relayUrl.searchParams.set("code", parseString(request.query.code, "code"));
+          return reply.redirect(relayUrl.toString());
+        }
+
+        const result = await completeOAuthSession({
+          provider: request.params.provider,
+          state: request.query.state,
+          csrfToken: request.query.csrfToken,
+          code: request.query.code
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/api/auth/oauth/:provider/callback",
+    async (
+      request: FastifyRequest<{ Params: OAuthCallbackParams; Querystring: OAuthCallbackQuery }>,
+      reply
+    ) => {
+      try {
+        if (request.query.error !== undefined) {
+          throw new Cp2Error(401, "oauth_provider_error", request.query.error);
+        }
+
+        if (request.query.csrfToken === undefined) {
+          const relayUrl = new URL(defaultOAuthRedirectUri(request));
+          relayUrl.searchParams.set("provider", request.params.provider);
+          relayUrl.searchParams.set("state", parseString(request.query.state, "state"));
+          relayUrl.searchParams.set("code", parseString(request.query.code, "code"));
+          return reply.redirect(relayUrl.toString());
+        }
+
+        const result = await completeOAuthSession({
+          provider: request.params.provider,
+          state: request.query.state,
+          csrfToken: request.query.csrfToken,
+          code: request.query.code
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/auth/accounts", async (request, reply) => {
+    try {
+      return {
+        accounts: store.listLoginAccounts({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/api/auth/accounts", async (request, reply) => {
+    try {
+      return {
+        accounts: store.listLoginAccounts({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/accounts/:provider/link/start",
+    async (
+      request: FastifyRequest<{ Params: OAuthStartParams; Body: { redirectUri?: string } }>,
+      reply
+    ) => {
+      try {
+        return startOAuthSession(request, {
+          provider: request.params.provider,
+          redirectUri: request.body?.redirectUri
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/auth/accounts/:provider/link/start",
+    async (
+      request: FastifyRequest<{ Params: OAuthStartParams; Body: { redirectUri?: string } }>,
+      reply
+    ) => {
+      try {
+        return startOAuthSession(request, {
+          provider: request.params.provider,
+          redirectUri: request.body?.redirectUri
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/auth/accounts/:identityId/disconnect",
+    async (request: FastifyRequest<{ Params: AuthIdentityParams }>, reply) => {
+      try {
+        return store.disconnectLoginAccount({
+          sessionId: readSessionCookie(request.headers.cookie),
+          identityId: request.params.identityId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/api/auth/accounts/:identityId/disconnect",
+    async (request: FastifyRequest<{ Params: AuthIdentityParams }>, reply) => {
+      try {
+        return store.disconnectLoginAccount({
+          sessionId: readSessionCookie(request.headers.cookie),
+          identityId: request.params.identityId
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -751,12 +1200,58 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     return session;
   });
 
+  app.get("/auth/session", async (request, reply) => {
+    const session = store.getSession(readSessionCookie(request.headers.cookie));
+
+    if (session === null) {
+      return reply.code(401).send({
+        code: "auth_required",
+        message: "Authentication is required."
+      });
+    }
+
+    return session;
+  });
+
+  app.get("/api/auth/session", async (request, reply) => {
+    const session = store.getSession(readSessionCookie(request.headers.cookie));
+
+    if (session === null) {
+      return reply.code(401).send({
+        code: "auth_required",
+        message: "Authentication is required."
+      });
+    }
+
+    return session;
+  });
+
   app.post("/auth/logout", async (request, reply) => {
     const revoked = store.logout(readSessionCookie(request.headers.cookie));
     reply.header("set-cookie", clearSessionCookie());
     return {
       revoked
     };
+  });
+
+  app.post("/api/auth/logout", async (request, reply) => {
+    const revoked = store.logout(readSessionCookie(request.headers.cookie));
+    reply.header("set-cookie", clearSessionCookie());
+    return {
+      revoked
+    };
+  });
+
+  app.post("/auth/logout-all", async (request, reply) => {
+    const result = store.logoutAll(readSessionCookie(request.headers.cookie));
+    reply.header("set-cookie", clearSessionCookie());
+    return result;
+  });
+
+  app.post("/api/auth/logout-all", async (request, reply) => {
+    const result = store.logoutAll(readSessionCookie(request.headers.cookie));
+    reply.header("set-cookie", clearSessionCookie());
+    return result;
   });
 
   app.post(
@@ -2549,7 +3044,9 @@ function parseSocialProvider(value: string | undefined): string {
     value === "apple" ||
     value === "github" ||
     value === "microsoft" ||
-    value === "linkedin"
+    value === "linkedin" ||
+    value === "x" ||
+    value === "tiktok"
   ) {
     return value;
   }
