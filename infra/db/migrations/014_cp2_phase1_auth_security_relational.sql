@@ -14,14 +14,42 @@ create table if not exists device_trust (
   device_id text not null,
   level text not null,
   reason text,
-  updated_by uuid not null references users(id),
+  updated_by uuid references users(id),
+  updated_by_type text not null default 'user',
   updated_at timestamp with time zone not null,
   primary key (business_id, user_id, device_id),
   constraint device_trust_level_check
     check (level in ('unknown', 'trusted', 'restricted')),
   constraint device_trust_device_id_nonempty_check
-    check (btrim(device_id) <> '')
+    check (btrim(device_id) <> ''),
+  constraint device_trust_updated_by_actor_check
+    check (
+      (updated_by_type = 'user' and updated_by is not null)
+      or (updated_by_type in ('system', 'service') and updated_by is null)
+    )
 );
+
+alter table device_trust
+  add column if not exists updated_by_type text not null default 'user';
+
+alter table device_trust alter column updated_by drop not null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'device_trust_updated_by_actor_check'
+      and conrelid = 'device_trust'::regclass
+  ) then
+    alter table device_trust
+      add constraint device_trust_updated_by_actor_check
+      check (
+        (updated_by_type = 'user' and updated_by is not null)
+        or (updated_by_type in ('system', 'service') and updated_by is null)
+      );
+  end if;
+end $$;
 
 create index if not exists device_trust_business_user_idx
   on device_trust (business_id, user_id, updated_at desc);
@@ -152,28 +180,61 @@ from cp2_sessions
 where sessions.id = (cp2_sessions.record->>'id')::uuid
   and cp2_sessions.record ? 'pinVerifiedAt';
 
+with compatible_device_trust as materialized (
+  select
+    case
+      when record->>'businessId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (record->>'businessId')::uuid
+    end as business_id,
+    case
+      when record->>'userId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (record->>'userId')::uuid
+    end as user_id,
+    case
+      when record->>'updatedBy' in ('system', 'service') then null
+      when record->>'updatedBy' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (record->>'updatedBy')::uuid
+    end as updated_by,
+    case
+      when record->>'updatedBy' in ('system', 'service') then record->>'updatedBy'
+      else 'user'
+    end as updated_by_type,
+    record
+  from cp2_device_trust
+  where record ? 'businessId'
+    and record ? 'userId'
+    and record ? 'deviceId'
+    and record ? 'level'
+    and record ? 'updatedBy'
+    and record ? 'updatedAt'
+)
 insert into device_trust (
-  business_id, user_id, device_id, level, reason, updated_by, updated_at
+  business_id, user_id, device_id, level, reason,
+  updated_by, updated_by_type, updated_at
 )
 select
-  (record->>'businessId')::uuid,
-  (record->>'userId')::uuid,
-  record->>'deviceId',
-  record->>'level',
-  nullif(record->>'reason', ''),
-  (record->>'updatedBy')::uuid,
-  (record->>'updatedAt')::timestamp with time zone
-from cp2_device_trust
-where record ? 'businessId'
-  and record ? 'userId'
-  and record ? 'deviceId'
-  and record ? 'level'
-  and record ? 'updatedBy'
-  and record ? 'updatedAt'
+  candidate.business_id,
+  candidate.user_id,
+  candidate.record->>'deviceId',
+  candidate.record->>'level',
+  nullif(candidate.record->>'reason', ''),
+  actor.id,
+  candidate.updated_by_type,
+  (candidate.record->>'updatedAt')::timestamp with time zone
+from compatible_device_trust candidate
+join businesses business on business.id = candidate.business_id
+join users subject on subject.id = candidate.user_id
+left join users actor on actor.id = candidate.updated_by
+where candidate.record->>'deviceId' <> ''
+  and (
+    candidate.updated_by_type in ('system', 'service')
+    or (candidate.updated_by_type = 'user' and actor.id is not null)
+  )
 on conflict (business_id, user_id, device_id) do update set
   level = excluded.level,
   reason = excluded.reason,
   updated_by = excluded.updated_by,
+  updated_by_type = excluded.updated_by_type,
   updated_at = excluded.updated_at;
 
 insert into identity_providers (id, display_name, authorization_url, token_url, user_info_url, scopes, pkce, created_at)

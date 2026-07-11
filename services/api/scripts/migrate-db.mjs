@@ -13,7 +13,10 @@ const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
 const legacyMigrationChecksums = new Map([
   [
     "014_cp2_phase1_auth_security_relational.sql",
-    new Set(["bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a"])
+    new Set([
+      "bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a",
+      "695019b487acf03ba6dfe87c64c5dd4204bbb52bfb9d551d8623cff2519560a6"
+    ])
   ]
 ]);
 

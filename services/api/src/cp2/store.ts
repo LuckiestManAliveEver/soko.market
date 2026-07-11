@@ -7012,13 +7012,12 @@ export class Cp2Store {
     const retention = this.buildComplianceRetention(businessId);
     const verification = this.getOrCreateVerificationTier(businessId, actorId, now);
     const taxConfig = this.getOrCreateTaxConfig(businessId, actorId, now);
-    const deviceTrust = this.getOrCreateDeviceTrust(
-      businessId,
-      actorId,
-      "browser-session",
-      actorId,
-      now
-    );
+    const deviceTrust =
+      actorId === "system"
+        ? [...this.deviceTrust.values()].find(
+            (item) => item.businessId === businessId && item.userId !== "system"
+          )
+        : this.getOrCreateDeviceTrust(businessId, actorId, "browser-session", actorId, now);
     const highRiskAuditEventCount = this.auditEventsForBusiness(businessId).filter(
       (event) => event.risk === "high" || event.risk === "critical"
     ).length;
@@ -7040,7 +7039,7 @@ export class Cp2Store {
         retention.retainedAuditEventCount,
       verificationTier: verification.tier,
       taxCountryCode: taxConfig.countryCode,
-      deviceTrustLevel: deviceTrust.level,
+      deviceTrustLevel: deviceTrust?.level ?? "unknown",
       highRiskAuditEventCount
     };
   }

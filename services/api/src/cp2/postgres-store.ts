@@ -163,7 +163,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "015_social_auth_accounts_channels.sql";
+const requiredMigrationFilename = "016_device_trust_actor_type.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -1079,13 +1079,15 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     device_id: string;
     level: string;
     reason: string | null;
-    updated_by: string;
+    updated_by: string | null;
+    updated_by_type: "user" | "system" | "service";
     updated_at: Date;
   }>(
     pool,
     "load device trust",
     `
-      select business_id, user_id, device_id, level, reason, updated_by, updated_at
+      select business_id, user_id, device_id, level, reason,
+             updated_by, updated_by_type, updated_at
       from device_trust
       order by business_id, user_id, device_id
     `
@@ -1096,7 +1098,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     deviceId: row.device_id,
     level: row.level,
     reason: row.reason,
-    updatedBy: row.updated_by,
+    updatedBy: row.updated_by ?? row.updated_by_type,
     updatedAt: timestampToIso(row.updated_at)
   })) as Cp2Snapshot["deviceTrust"];
 }
@@ -1791,16 +1793,21 @@ async function savePhase1AuthSecurityRecords(
   }
 
   for (const record of snapshotRecords(snapshot.deviceTrust)) {
+    const updatedBy = requiredText(record, "updatedBy");
+    const updatedByType = updatedBy === "system" || updatedBy === "service" ? updatedBy : "user";
+
     await client.query(
       `
         insert into device_trust (
-          business_id, user_id, device_id, level, reason, updated_by, updated_at
+          business_id, user_id, device_id, level, reason,
+          updated_by, updated_by_type, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
         on conflict (business_id, user_id, device_id) do update set
           level = excluded.level,
           reason = excluded.reason,
           updated_by = excluded.updated_by,
+          updated_by_type = excluded.updated_by_type,
           updated_at = excluded.updated_at
       `,
       [
@@ -1809,7 +1816,8 @@ async function savePhase1AuthSecurityRecords(
         requiredText(record, "deviceId"),
         requiredText(record, "level"),
         firstText(record, ["reason"]),
-        requiredText(record, "updatedBy"),
+        updatedByType === "user" ? updatedBy : null,
+        updatedByType,
         requiredText(record, "updatedAt")
       ]
     );

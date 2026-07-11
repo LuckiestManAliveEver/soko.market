@@ -2,6 +2,7 @@ import {
   bigserial,
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -13,6 +14,7 @@ import {
   uniqueIndex,
   uuid
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const businessEvents = pgTable("business_events", {
   id: uuid("id").primaryKey(),
@@ -175,13 +177,17 @@ export const deviceTrust = pgTable(
     deviceId: text("device_id").notNull(),
     level: text("level").notNull(),
     reason: text("reason"),
-    updatedBy: uuid("updated_by")
-      .notNull()
-      .references(() => users.id),
+    updatedBy: uuid("updated_by").references(() => users.id),
+    updatedByType: text("updated_by_type").notNull().default("user"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
   },
   (table) => ({
     pk: primaryKey({ columns: [table.businessId, table.userId, table.deviceId] }),
+    updatedByActor: check(
+      "device_trust_updated_by_actor_check",
+      sql`(${table.updatedByType} = 'user' and ${table.updatedBy} is not null)
+        or (${table.updatedByType} in ('system', 'service') and ${table.updatedBy} is null)`
+    ),
     businessUser: index("device_trust_business_user_idx").on(
       table.businessId,
       table.userId,
