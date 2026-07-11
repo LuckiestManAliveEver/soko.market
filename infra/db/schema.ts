@@ -7,6 +7,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -149,9 +150,45 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .references(() => users.id),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  pinVerifiedAt: timestamp("pin_verified_at", { withTimezone: true }),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
+
+export const accountPinHashes = pgTable("account_pin_hashes", {
+  accountId: uuid("account_id")
+    .primaryKey()
+    .references(() => accounts.id),
+  pinHash: text("pin_hash").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+export const deviceTrust = pgTable(
+  "device_trust",
+  {
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    deviceId: text("device_id").notNull(),
+    level: text("level").notNull(),
+    reason: text("reason"),
+    updatedBy: uuid("updated_by")
+      .notNull()
+      .references(() => users.id),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.businessId, table.userId, table.deviceId] }),
+    businessUser: index("device_trust_business_user_idx").on(
+      table.businessId,
+      table.userId,
+      table.updatedAt
+    )
+  })
+);
 
 export const products = pgTable(
   "products",

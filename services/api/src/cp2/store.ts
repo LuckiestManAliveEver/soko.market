@@ -6001,15 +6001,28 @@ export class Cp2Store {
     }
 
     for (const identity of snapshot.userIdentities) {
+      const persistedIdentity = identity as UserIdentitySummary &
+        Partial<
+          Pick<
+            UserIdentityRecord,
+            | "encryptedAccessToken"
+            | "encryptedRefreshToken"
+            | "encryptedIdToken"
+            | "tokenType"
+            | "tokenExpiresAt"
+            | "scope"
+            | "updatedAt"
+          >
+        >;
       const record = {
-        ...identity,
-        encryptedAccessToken: null,
-        encryptedRefreshToken: null,
-        encryptedIdToken: null,
-        tokenType: null,
-        tokenExpiresAt: null,
-        scope: null,
-        updatedAt: identity.linkedAt
+        ...persistedIdentity,
+        encryptedAccessToken: persistedIdentity.encryptedAccessToken ?? null,
+        encryptedRefreshToken: persistedIdentity.encryptedRefreshToken ?? null,
+        encryptedIdToken: persistedIdentity.encryptedIdToken ?? null,
+        tokenType: persistedIdentity.tokenType ?? null,
+        tokenExpiresAt: persistedIdentity.tokenExpiresAt ?? null,
+        scope: persistedIdentity.scope ?? null,
+        updatedAt: persistedIdentity.updatedAt ?? identity.linkedAt
       };
       this.userIdentities.set(record.id, record);
       this.identityByProviderSubject.set(
@@ -6023,14 +6036,26 @@ export class Cp2Store {
     }
 
     for (const oauthSession of snapshot.oauthSessions) {
-      this.oauthSessions.set(oauthSession.id, {
-        ...oauthSession,
-        accountId: null,
-        stateHash: "",
-        csrfHash: "",
-        codeChallenge: "",
-        codeVerifier: "",
-        redirectUri: ""
+      const persistedSession = oauthSession as OAuthSessionSummary &
+        Partial<
+          Pick<
+            OAuthSessionRecord,
+            | "accountId"
+            | "stateHash"
+            | "csrfHash"
+            | "codeChallenge"
+            | "codeVerifier"
+            | "redirectUri"
+          >
+        >;
+      this.oauthSessions.set(persistedSession.id, {
+        ...persistedSession,
+        accountId: persistedSession.accountId ?? null,
+        stateHash: persistedSession.stateHash ?? "",
+        csrfHash: persistedSession.csrfHash ?? "",
+        codeChallenge: persistedSession.codeChallenge ?? "",
+        codeVerifier: persistedSession.codeVerifier ?? "",
+        redirectUri: persistedSession.redirectUri ?? ""
       });
     }
 

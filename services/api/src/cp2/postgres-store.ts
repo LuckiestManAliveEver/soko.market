@@ -146,6 +146,14 @@ export interface PostgresStoreHealth {
   status: "ok";
   latencyMs: number;
   latestMigration: string | null;
+  phase1Parity: Array<{
+    collection: string;
+    relationalCount: number;
+    compatibilityCount: number;
+    relationalChecksum: string;
+    compatibilityChecksum: string;
+    ok: boolean;
+  }>;
   pool: {
     idleCount: number;
     totalCount: number;
@@ -153,7 +161,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "013_production_operations_hardening.sql";
+const requiredMigrationFilename = "014_cp2_phase1_auth_security_relational.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -195,20 +203,128 @@ export async function createPostgresCp2Store(
 
   async function health(): Promise<PostgresStoreHealth> {
     const startedAt = Date.now();
-    const result = await pool.query<{ latest_migration: string | null }>(
+    const result = await pool.query<{
+      latest_migration: string | null;
+      otp_relational_count: string;
+      otp_compatibility_count: string;
+      otp_relational_checksum: string;
+      otp_compatibility_checksum: string;
+      sessions_relational_count: string;
+      sessions_compatibility_count: string;
+      sessions_relational_checksum: string;
+      sessions_compatibility_checksum: string;
+      user_identities_relational_count: string;
+      user_identities_compatibility_count: string;
+      user_identities_relational_checksum: string;
+      user_identities_compatibility_checksum: string;
+      oauth_sessions_relational_count: string;
+      oauth_sessions_compatibility_count: string;
+      oauth_sessions_relational_checksum: string;
+      oauth_sessions_compatibility_checksum: string;
+      account_pin_hashes_relational_count: string;
+      account_pin_hashes_compatibility_count: string;
+      account_pin_hashes_relational_checksum: string;
+      account_pin_hashes_compatibility_checksum: string;
+      device_trust_relational_count: string;
+      device_trust_compatibility_count: string;
+      device_trust_relational_checksum: string;
+      device_trust_compatibility_checksum: string;
+    }>(
       `
-        select filename as latest_migration
-        from soko_schema_migrations
-        order by filename desc
-        limit 1
+        select
+          (
+            select filename
+            from soko_schema_migrations
+            order by filename desc
+            limit 1
+          ) as latest_migration,
+          (select count(*) from otp_challenges)::text as otp_relational_count,
+          (select count(*) from cp2_otp_challenges)::text as otp_compatibility_count,
+          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from otp_challenges) as otp_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_otp_challenges) as otp_compatibility_checksum,
+          (select count(*) from sessions)::text as sessions_relational_count,
+          (select count(*) from cp2_sessions)::text as sessions_compatibility_count,
+          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from sessions) as sessions_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_sessions) as sessions_compatibility_checksum,
+          (select count(*) from user_identities)::text as user_identities_relational_count,
+          (select count(*) from cp2_user_identities)::text as user_identities_compatibility_count,
+          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from user_identities) as user_identities_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_user_identities) as user_identities_compatibility_checksum,
+          (select count(*) from oauth_sessions)::text as oauth_sessions_relational_count,
+          (select count(*) from cp2_oauth_sessions)::text as oauth_sessions_compatibility_count,
+          (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from oauth_sessions) as oauth_sessions_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_oauth_sessions) as oauth_sessions_compatibility_checksum,
+          (select count(*) from account_pin_hashes)::text as account_pin_hashes_relational_count,
+          (select count(*) from cp2_account_pin_hashes)::text as account_pin_hashes_compatibility_count,
+          (select md5(coalesce(string_agg(account_id::text, ',' order by account_id::text), '')) from account_pin_hashes) as account_pin_hashes_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_account_pin_hashes) as account_pin_hashes_compatibility_checksum,
+          (select count(*) from device_trust)::text as device_trust_relational_count,
+          (select count(*) from cp2_device_trust)::text as device_trust_compatibility_count,
+          (
+            select md5(coalesce(string_agg(
+              business_id::text || ':' || user_id::text || ':' || device_id,
+              ','
+              order by business_id::text, user_id::text, device_id
+            ), ''))
+            from device_trust
+          ) as device_trust_relational_checksum,
+          (select md5(coalesce(string_agg(entity_id, ',' order by entity_id), '')) from cp2_device_trust) as device_trust_compatibility_checksum
       `
     );
+    const row = result.rows[0];
 
     return {
       database: "postgres",
       status: "ok",
       latencyMs: Date.now() - startedAt,
-      latestMigration: result.rows[0]?.latest_migration ?? null,
+      latestMigration: row?.latest_migration ?? null,
+      phase1Parity:
+        row === undefined
+          ? []
+          : [
+              phase1Parity(
+                "otp_challenges",
+                row.otp_relational_count,
+                row.otp_compatibility_count,
+                row.otp_relational_checksum,
+                row.otp_compatibility_checksum
+              ),
+              phase1Parity(
+                "sessions",
+                row.sessions_relational_count,
+                row.sessions_compatibility_count,
+                row.sessions_relational_checksum,
+                row.sessions_compatibility_checksum
+              ),
+              phase1Parity(
+                "user_identities",
+                row.user_identities_relational_count,
+                row.user_identities_compatibility_count,
+                row.user_identities_relational_checksum,
+                row.user_identities_compatibility_checksum
+              ),
+              phase1Parity(
+                "oauth_sessions",
+                row.oauth_sessions_relational_count,
+                row.oauth_sessions_compatibility_count,
+                row.oauth_sessions_relational_checksum,
+                row.oauth_sessions_compatibility_checksum
+              ),
+              phase1Parity(
+                "account_pin_hashes",
+                row.account_pin_hashes_relational_count,
+                row.account_pin_hashes_compatibility_count,
+                row.account_pin_hashes_relational_checksum,
+                row.account_pin_hashes_compatibility_checksum
+              ),
+              phase1Parity(
+                "device_trust",
+                row.device_trust_relational_count,
+                row.device_trust_compatibility_count,
+                row.device_trust_relational_checksum,
+                row.device_trust_compatibility_checksum
+              )
+            ],
       pool: {
         idleCount: pool.idleCount,
         totalCount: pool.totalCount,
@@ -812,21 +928,175 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     account_id: string;
     user_id: string;
     expires_at: Date;
+    pin_verified_at: Date | null;
     revoked_at: Date | null;
     created_at: Date;
   }>(
     pool,
     "load sessions",
-    "select id, account_id, user_id, expires_at, revoked_at, created_at from sessions order by created_at, id"
+    "select id, account_id, user_id, expires_at, pin_verified_at, revoked_at, created_at from sessions order by created_at, id"
   );
   snapshot.sessions = sessionsResult.rows.map((row) => ({
     id: row.id,
     accountId: row.account_id,
     userId: row.user_id,
     expiresAt: timestampToIso(row.expires_at),
+    pinVerifiedAt: row.pin_verified_at === null ? null : timestampToIso(row.pin_verified_at),
     revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at),
     createdAt: timestampToIso(row.created_at)
   })) as Cp2Snapshot["sessions"];
+
+  const otpChallengesResult = await timedQuery<{
+    id: string;
+    channel: string;
+    destination: string;
+    code_hash: string;
+    attempts: number;
+    max_attempts: number;
+    expires_at: Date;
+    verified_at: Date | null;
+    created_at: Date;
+  }>(
+    pool,
+    "load OTP challenges",
+    `
+      select id, channel, destination, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+      from otp_challenges
+      order by created_at, id
+    `
+  );
+  snapshot.otpChallenges = otpChallengesResult.rows.map((row) => ({
+    id: row.id,
+    channel: row.channel,
+    destination: row.destination,
+    codeHash: row.code_hash,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    expiresAt: timestampToIso(row.expires_at),
+    verifiedAt: row.verified_at === null ? null : timestampToIso(row.verified_at),
+    createdAt: timestampToIso(row.created_at)
+  })) as Cp2Snapshot["otpChallenges"];
+
+  const userIdentitiesResult = await timedQuery<{
+    id: string;
+    account_id: string;
+    user_id: string;
+    provider_id: string;
+    provider_subject: string;
+    email: string | null;
+    display_name: string | null;
+    encrypted_access_token: string | null;
+    encrypted_refresh_token: string | null;
+    encrypted_id_token: string | null;
+    token_type: string | null;
+    token_expires_at: Date | null;
+    scope: string | null;
+    linked_at: Date;
+    updated_at: Date;
+  }>(
+    pool,
+    "load user identities",
+    `
+      select id, account_id, user_id, provider_id, provider_subject, email, display_name,
+             encrypted_access_token, encrypted_refresh_token, encrypted_id_token, token_type,
+             token_expires_at, scope, linked_at, updated_at
+      from user_identities
+      order by linked_at, id
+    `
+  );
+  snapshot.userIdentities = userIdentitiesResult.rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    userId: row.user_id,
+    provider: row.provider_id,
+    providerSubject: row.provider_subject,
+    email: row.email,
+    displayName: row.display_name,
+    encryptedAccessToken: row.encrypted_access_token,
+    encryptedRefreshToken: row.encrypted_refresh_token,
+    encryptedIdToken: row.encrypted_id_token,
+    tokenType: row.token_type,
+    tokenExpiresAt: row.token_expires_at === null ? null : timestampToIso(row.token_expires_at),
+    scope: row.scope,
+    linkedAt: timestampToIso(row.linked_at),
+    updatedAt: timestampToIso(row.updated_at)
+  })) as unknown as Cp2Snapshot["userIdentities"];
+
+  const oauthSessionsResult = await timedQuery<{
+    id: string;
+    provider_id: string;
+    account_id: string | null;
+    state_hash: string;
+    csrf_hash: string;
+    code_challenge: string;
+    encrypted_code_verifier: string;
+    redirect_uri: string;
+    expires_at: Date;
+    completed_at: Date | null;
+    created_at: Date;
+  }>(
+    pool,
+    "load OAuth sessions",
+    `
+      select id, provider_id, account_id, state_hash, csrf_hash, code_challenge,
+             encrypted_code_verifier, redirect_uri, expires_at, completed_at, created_at
+      from oauth_sessions
+      order by created_at, id
+    `
+  );
+  snapshot.oauthSessions = oauthSessionsResult.rows.map((row) => ({
+    id: row.id,
+    provider: row.provider_id,
+    accountId: row.account_id,
+    stateHash: row.state_hash,
+    csrfHash: row.csrf_hash,
+    codeChallenge: row.code_challenge,
+    codeVerifier: row.encrypted_code_verifier,
+    redirectUri: row.redirect_uri,
+    expiresAt: timestampToIso(row.expires_at),
+    completedAt: row.completed_at === null ? null : timestampToIso(row.completed_at),
+    createdAt: timestampToIso(row.created_at)
+  })) as unknown as Cp2Snapshot["oauthSessions"];
+
+  const accountPinHashesResult = await timedQuery<{
+    account_id: string;
+    pin_hash: string;
+  }>(
+    pool,
+    "load account PIN hashes",
+    "select account_id, pin_hash from account_pin_hashes order by account_id"
+  );
+  snapshot.accountPinHashes = accountPinHashesResult.rows.map((row) => ({
+    accountId: row.account_id,
+    pinHash: row.pin_hash
+  }));
+
+  const deviceTrustResult = await timedQuery<{
+    business_id: string;
+    user_id: string;
+    device_id: string;
+    level: string;
+    reason: string | null;
+    updated_by: string;
+    updated_at: Date;
+  }>(
+    pool,
+    "load device trust",
+    `
+      select business_id, user_id, device_id, level, reason, updated_by, updated_at
+      from device_trust
+      order by business_id, user_id, device_id
+    `
+  );
+  snapshot.deviceTrust = deviceTrustResult.rows.map((row) => ({
+    businessId: row.business_id,
+    userId: row.user_id,
+    deviceId: row.device_id,
+    level: row.level,
+    reason: row.reason,
+    updatedBy: row.updated_by,
+    updatedAt: timestampToIso(row.updated_at)
+  })) as Cp2Snapshot["deviceTrust"];
 }
 
 async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
@@ -918,6 +1188,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     "supplier_contact_links",
     snapshotRecords(snapshot.supplierContactLinks)
   );
+  await deleteMissingDeviceTrustRows(client, snapshotRecords(snapshot.deviceTrust));
+  await deleteMissingRows(client, "oauth_sessions", snapshotRecords(snapshot.oauthSessions));
+  await deleteMissingRows(client, "user_identities", snapshotRecords(snapshot.userIdentities));
+  await deleteMissingRows(client, "otp_challenges", snapshotRecords(snapshot.otpChallenges));
+  await deleteMissingAccountPinHashes(client, snapshotRecords(snapshot.accountPinHashes));
   await deleteMissingRows(client, "sales_agents", snapshotRecords(snapshot.salesAgents));
   await deleteMissingRows(client, "suppliers", snapshotRecords(snapshot.suppliers));
   await deleteMissingRows(client, "sessions", snapshotRecords(snapshot.sessions));
@@ -1134,6 +1409,8 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     );
   }
 
+  await savePhase1AuthSecurityRecords(client, snapshot);
+
   for (const record of snapshotRecords(snapshot.supplierContactLinks)) {
     await client.query(
       `
@@ -1288,10 +1565,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.sessions)) {
     await client.query(
       `
-        insert into sessions (id, account_id, user_id, expires_at, revoked_at, created_at)
-        values ($1, $2, $3, $4, $5, $6)
+        insert into sessions (id, account_id, user_id, expires_at, pin_verified_at, revoked_at, created_at)
+        values ($1, $2, $3, $4, $5, $6, $7)
         on conflict (id) do update set
           expires_at = excluded.expires_at,
+          pin_verified_at = excluded.pin_verified_at,
           revoked_at = excluded.revoked_at
       `,
       [
@@ -1299,9 +1577,197 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "accountId"),
         requiredText(record, "userId"),
         requiredText(record, "expiresAt"),
+        firstText(record, ["pinVerifiedAt"]),
         firstText(record, ["revokedAt"]),
         requiredText(record, "createdAt")
       ]
+    );
+  }
+}
+
+async function savePhase1AuthSecurityRecords(
+  client: PoolClient,
+  snapshot: Cp2Snapshot
+): Promise<void> {
+  await saveIdentityProviders(client, snapshot);
+
+  for (const record of snapshotRecords(snapshot.otpChallenges)) {
+    await client.query(
+      `
+        insert into otp_challenges (
+          id, channel, destination, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        on conflict (id) do update set
+          channel = excluded.channel,
+          destination = excluded.destination,
+          code_hash = excluded.code_hash,
+          attempts = excluded.attempts,
+          max_attempts = excluded.max_attempts,
+          expires_at = excluded.expires_at,
+          verified_at = excluded.verified_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "channel"),
+        requiredText(record, "destination"),
+        requiredText(record, "codeHash"),
+        record.attempts ?? 0,
+        record.maxAttempts ?? 5,
+        requiredText(record, "expiresAt"),
+        firstText(record, ["verifiedAt"]),
+        requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.userIdentities)) {
+    await client.query(
+      `
+        insert into user_identities (
+          id, account_id, user_id, provider_id, provider_subject, email, display_name,
+          encrypted_access_token, encrypted_refresh_token, encrypted_id_token, token_type,
+          token_expires_at, scope, linked_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        on conflict (id) do update set
+          account_id = excluded.account_id,
+          user_id = excluded.user_id,
+          provider_id = excluded.provider_id,
+          provider_subject = excluded.provider_subject,
+          email = excluded.email,
+          display_name = excluded.display_name,
+          encrypted_access_token = excluded.encrypted_access_token,
+          encrypted_refresh_token = excluded.encrypted_refresh_token,
+          encrypted_id_token = excluded.encrypted_id_token,
+          token_type = excluded.token_type,
+          token_expires_at = excluded.token_expires_at,
+          scope = excluded.scope,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "accountId"),
+        requiredText(record, "userId"),
+        requiredText(record, "provider"),
+        requiredText(record, "providerSubject"),
+        firstText(record, ["email"]),
+        firstText(record, ["displayName"]),
+        firstText(record, ["encryptedAccessToken"]),
+        firstText(record, ["encryptedRefreshToken"]),
+        firstText(record, ["encryptedIdToken"]),
+        firstText(record, ["tokenType"]),
+        firstText(record, ["tokenExpiresAt"]),
+        firstText(record, ["scope"]),
+        requiredText(record, "linkedAt"),
+        firstText(record, ["updatedAt"]) ?? requiredText(record, "linkedAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.oauthSessions)) {
+    await client.query(
+      `
+        insert into oauth_sessions (
+          id, provider_id, account_id, state_hash, csrf_hash, code_challenge,
+          encrypted_code_verifier, redirect_uri, expires_at, completed_at, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        on conflict (id) do update set
+          provider_id = excluded.provider_id,
+          account_id = excluded.account_id,
+          state_hash = excluded.state_hash,
+          csrf_hash = excluded.csrf_hash,
+          code_challenge = excluded.code_challenge,
+          encrypted_code_verifier = excluded.encrypted_code_verifier,
+          redirect_uri = excluded.redirect_uri,
+          expires_at = excluded.expires_at,
+          completed_at = excluded.completed_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "provider"),
+        firstText(record, ["accountId"]),
+        firstText(record, ["stateHash"]) ?? "",
+        firstText(record, ["csrfHash"]) ?? "",
+        firstText(record, ["codeChallenge"]) ?? "",
+        firstText(record, ["codeVerifier", "encryptedCodeVerifier"]) ?? "",
+        firstText(record, ["redirectUri"]) ?? "",
+        requiredText(record, "expiresAt"),
+        firstText(record, ["completedAt"]),
+        requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.accountPinHashes)) {
+    await client.query(
+      `
+        insert into account_pin_hashes (account_id, pin_hash, updated_at)
+        values ($1, $2, now())
+        on conflict (account_id) do update set
+          pin_hash = excluded.pin_hash,
+          updated_at = now()
+      `,
+      [requiredText(record, "accountId"), requiredText(record, "pinHash")]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.deviceTrust)) {
+    await client.query(
+      `
+        insert into device_trust (
+          business_id, user_id, device_id, level, reason, updated_by, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (business_id, user_id, device_id) do update set
+          level = excluded.level,
+          reason = excluded.reason,
+          updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "businessId"),
+        requiredText(record, "userId"),
+        requiredText(record, "deviceId"),
+        requiredText(record, "level"),
+        firstText(record, ["reason"]),
+        requiredText(record, "updatedBy"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+}
+
+async function saveIdentityProviders(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+  const providerIds = new Set<string>();
+
+  for (const record of snapshotRecords(snapshot.userIdentities)) {
+    const provider = firstText(record, ["provider"]);
+
+    if (provider !== null) {
+      providerIds.add(provider);
+    }
+  }
+
+  for (const record of snapshotRecords(snapshot.oauthSessions)) {
+    const provider = firstText(record, ["provider"]);
+
+    if (provider !== null) {
+      providerIds.add(provider);
+    }
+  }
+
+  for (const providerId of providerIds) {
+    await client.query(
+      `
+        insert into identity_providers (
+          id, display_name, authorization_url, token_url, user_info_url, scopes, pkce, created_at
+        )
+        values ($1, $1, '', '', null, '[]'::jsonb, true, now())
+        on conflict (id) do nothing
+      `,
+      [providerId]
     );
   }
 }
@@ -1350,6 +1816,38 @@ async function deleteMissingRows(
   const ids = records.map((record) => requiredText(record, "id"));
 
   await client.query(`delete from ${tableName} where not (id = any($1::uuid[]))`, [ids]);
+}
+
+async function deleteMissingAccountPinHashes(
+  client: PoolClient,
+  records: SnapshotRecord[]
+): Promise<void> {
+  const accountIds = records.map((record) => requiredText(record, "accountId"));
+
+  await client.query("delete from account_pin_hashes where not (account_id = any($1::uuid[]))", [
+    accountIds
+  ]);
+}
+
+async function deleteMissingDeviceTrustRows(
+  client: PoolClient,
+  records: SnapshotRecord[]
+): Promise<void> {
+  const keys = records.map((record) =>
+    [
+      requiredText(record, "businessId"),
+      requiredText(record, "userId"),
+      requiredText(record, "deviceId")
+    ].join(":")
+  );
+
+  await client.query(
+    `
+      delete from device_trust
+      where not ((business_id::text || ':' || user_id::text || ':' || device_id) = any($1::text[]))
+    `,
+    [keys]
+  );
 }
 
 async function deleteMissingInvoiceRows(
@@ -1621,6 +2119,26 @@ function numberFromDatabase(value: string | number): number {
 
 function nullableNumberFromDatabase(value: string | number | null): number | null {
   return value === null ? null : numberFromDatabase(value);
+}
+
+function phase1Parity(
+  collection: string,
+  relationalCountValue: string,
+  compatibilityCountValue: string,
+  relationalChecksum: string,
+  compatibilityChecksum: string
+): PostgresStoreHealth["phase1Parity"][number] {
+  const relationalCount = Number(relationalCountValue);
+  const compatibilityCount = Number(compatibilityCountValue);
+
+  return {
+    collection,
+    relationalCount,
+    compatibilityCount,
+    relationalChecksum,
+    compatibilityChecksum,
+    ok: relationalCount === compatibilityCount && relationalChecksum === compatibilityChecksum
+  };
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {
