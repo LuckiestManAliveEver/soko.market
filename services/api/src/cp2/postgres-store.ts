@@ -1,4 +1,4 @@
-import { Pool, type PoolConfig } from "pg";
+import { Pool, type PoolClient, type PoolConfig } from "pg";
 import { createCp2Store, type Cp2Snapshot, type Cp2Store, type Cp2StoreOptions } from "./store.js";
 
 const snapshotId = "default";
@@ -142,12 +142,13 @@ export type PostgresCp2Store = Cp2Store & {
   flush: () => Promise<void>;
 };
 
+const requiredMigrationFilename = "012_production_relational_core.sql";
+
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
   const pool = new Pool(poolConfig(options.databaseUrl));
-  await ensureSnapshotTable(pool);
-  await ensureNormalizedTables(pool);
+  await assertDatabaseMigrated(pool);
 
   const store = createCp2Store(
     options.runtimeModelProvider === undefined
@@ -231,50 +232,32 @@ function poolConfig(databaseUrl: string): PoolConfig {
   };
 }
 
-async function ensureSnapshotTable(pool: Pool): Promise<void> {
-  await pool.query(`
-    create table if not exists cp2_store_snapshots (
-      id text primary key,
-      version integer not null,
-      data jsonb not null,
-      updated_at timestamp with time zone not null
-    )
-  `);
-}
+async function assertDatabaseMigrated(pool: Pool): Promise<void> {
+  const tableResult = await pool.query<{ exists: boolean }>(
+    `
+      select exists(
+        select 1
+        from information_schema.tables
+        where table_schema = 'public' and table_name = 'soko_schema_migrations'
+      ) as exists
+    `
+  );
 
-async function ensureNormalizedTables(pool: Pool): Promise<void> {
-  for (const collection of normalizedCollections) {
-    await pool.query(`
-      create table if not exists ${collection.tableName} (
-        entity_id text primary key,
-        business_id text,
-        account_id text,
-        user_id text,
-        parent_id text,
-        record jsonb not null,
-        updated_at timestamp with time zone not null default now()
-      )
-    `);
-    await pool.query(`
-      create index if not exists ${collection.tableName}_business_idx
-        on ${collection.tableName} (business_id)
-        where business_id is not null
-    `);
-    await pool.query(`
-      create index if not exists ${collection.tableName}_account_idx
-        on ${collection.tableName} (account_id)
-        where account_id is not null
-    `);
-    await pool.query(`
-      create index if not exists ${collection.tableName}_user_idx
-        on ${collection.tableName} (user_id)
-        where user_id is not null
-    `);
-    await pool.query(`
-      create index if not exists ${collection.tableName}_parent_idx
-        on ${collection.tableName} (parent_id)
-        where parent_id is not null
-    `);
+  if (tableResult.rows[0]?.exists !== true) {
+    throw new Error(
+      `Database migrations are not initialized. Run "pnpm db:migrate" before starting the API. Missing ${requiredMigrationFilename}.`
+    );
+  }
+
+  const result = await pool.query<{ applied: boolean }>(
+    "select exists(select 1 from soko_schema_migrations where filename = $1) as applied",
+    [requiredMigrationFilename]
+  );
+
+  if (result.rows[0]?.applied !== true) {
+    throw new Error(
+      `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredMigrationFilename}.`
+    );
   }
 }
 
@@ -329,39 +312,546 @@ async function loadLegacySnapshot(pool: Pool): Promise<Cp2Snapshot | null> {
 }
 
 async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
-  await pool.query("begin");
+  const client = await pool.connect();
 
   try {
-    await pool.query("select pg_advisory_xact_lock(hashtext('soko.cp2.normalized_store'))");
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(hashtext('soko.cp2.normalized_store'))");
 
     for (const collection of normalizedCollections) {
-      await pool.query(`delete from ${collection.tableName}`);
-
-      for (const record of getSnapshotCollection(snapshot, collection.key)) {
-        await pool.query(
-          `
-            insert into ${collection.tableName}
-              (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
-            values ($1, $2, $3, $4, $5, $6::jsonb, now())
-          `,
-          [
-            recordEntityId(collection.key, record),
-            firstText(record, ["businessId"]),
-            firstText(record, ["accountId"]),
-            firstText(record, ["userId", "ownerUserId", "actorId"]),
-            firstText(record, ["invoiceId", "importJobId", "sourceId", "eventId", "permissionId"]),
-            JSON.stringify(record)
-          ]
-        );
-      }
+      await saveCollectionRecords(
+        client,
+        collection,
+        getSnapshotCollection(snapshot, collection.key)
+      );
     }
 
-    await pool.query("commit");
+    await saveRelationalCoreRecords(client, snapshot);
+
+    await client.query("commit");
   } catch (error) {
-    await pool.query("rollback").catch((rollbackError: unknown) => {
+    await client.query("rollback").catch((rollbackError: unknown) => {
       console.error("Failed to roll back CP2 normalized persistence transaction.", rollbackError);
     });
     throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function saveCollectionRecords(
+  client: PoolClient,
+  collection: NormalizedCollection,
+  records: SnapshotRecord[]
+): Promise<void> {
+  const desiredIds = records.map((record) => recordEntityId(collection.key, record));
+  const existingResult = await client.query<{ entity_id: string }>(
+    `select entity_id from ${collection.tableName}`
+  );
+  const desiredIdSet = new Set(desiredIds);
+  const removedIds = existingResult.rows
+    .map((row) => row.entity_id)
+    .filter((entityId) => !desiredIdSet.has(entityId));
+
+  if (removedIds.length > 0) {
+    await client.query(`delete from ${collection.tableName} where entity_id = any($1::text[])`, [
+      removedIds
+    ]);
+  }
+
+  for (const record of records) {
+    await client.query(
+      `
+        insert into ${collection.tableName}
+          (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
+        values ($1, $2, $3, $4, $5, $6::jsonb, now())
+        on conflict (entity_id) do update set
+          business_id = excluded.business_id,
+          account_id = excluded.account_id,
+          user_id = excluded.user_id,
+          parent_id = excluded.parent_id,
+          record = excluded.record,
+          updated_at = now()
+      `,
+      [
+        recordEntityId(collection.key, record),
+        firstText(record, ["businessId"]),
+        firstText(record, ["accountId"]),
+        firstText(record, ["userId", "ownerUserId", "actorId"]),
+        firstText(record, ["invoiceId", "importJobId", "sourceId", "eventId", "permissionId"]),
+        JSON.stringify(record)
+      ]
+    );
+  }
+}
+
+async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+  const now = new Date().toISOString();
+
+  for (const record of snapshotRecords(snapshot.accounts)) {
+    await client.query(
+      `
+        insert into accounts (id, primary_auth_channel, primary_auth_destination, created_at)
+        values ($1, $2, $3, $4)
+        on conflict (id) do update set
+          primary_auth_channel = excluded.primary_auth_channel,
+          primary_auth_destination = excluded.primary_auth_destination
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "primaryAuthChannel"),
+        requiredText(record, "primaryAuthDestination"),
+        now
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.users)) {
+    await client.query(
+      `
+        insert into users (id, account_id, display_name, language, created_at)
+        values ($1, $2, $3, $4, $5)
+        on conflict (id) do update set
+          account_id = excluded.account_id,
+          display_name = excluded.display_name,
+          language = excluded.language
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "accountId"),
+        requiredText(record, "displayName"),
+        requiredText(record, "language"),
+        now
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.businesses)) {
+    await client.query(
+      `
+        insert into businesses (id, name, language, soko_id, created_at)
+        values ($1, $2, $3, $4, $5)
+        on conflict (id) do update set
+          name = excluded.name,
+          language = excluded.language,
+          soko_id = excluded.soko_id
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "name"),
+        requiredText(record, "language"),
+        firstText(record, ["sokoId"]),
+        now
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.memberships)) {
+    await client.query(
+      `
+        insert into business_memberships (id, business_id, user_id, role, created_at)
+        values ($1, $2, $3, $4, $5)
+        on conflict (id) do update set
+          business_id = excluded.business_id,
+          user_id = excluded.user_id,
+          role = excluded.role
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "userId"),
+        requiredText(record, "role"),
+        now
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.products)) {
+    await client.query(
+      `
+        insert into products
+          (id, business_id, name, sku, unit, quantity, buying_price, selling_price, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        on conflict (id) do update set
+          business_id = excluded.business_id,
+          name = excluded.name,
+          sku = excluded.sku,
+          unit = excluded.unit,
+          quantity = excluded.quantity,
+          buying_price = excluded.buying_price,
+          selling_price = excluded.selling_price,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "name"),
+        firstText(record, ["sku"]),
+        requiredText(record, "unit"),
+        record.quantity,
+        record.buyingPrice ?? null,
+        record.sellingPrice ?? null,
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.customers)) {
+    await client.query(
+      `
+        insert into customers (id, business_id, name, phone, email, notes, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        on conflict (id) do update set
+          business_id = excluded.business_id,
+          name = excluded.name,
+          phone = excluded.phone,
+          email = excluded.email,
+          notes = excluded.notes,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "name"),
+        firstText(record, ["phone"]),
+        firstText(record, ["email"]),
+        firstText(record, ["notes"]),
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.suppliers)) {
+    await client.query(
+      `
+        insert into suppliers (
+          id, business_id, name, phone, linked_phonebook_contact_id, linked_phonebook_contact_name,
+          email, notes, sales_agent_count, purchase_receipt_count, last_purchase_date, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        on conflict (id) do update set
+          business_id = excluded.business_id,
+          name = excluded.name,
+          phone = excluded.phone,
+          linked_phonebook_contact_id = excluded.linked_phonebook_contact_id,
+          linked_phonebook_contact_name = excluded.linked_phonebook_contact_name,
+          email = excluded.email,
+          notes = excluded.notes,
+          sales_agent_count = excluded.sales_agent_count,
+          purchase_receipt_count = excluded.purchase_receipt_count,
+          last_purchase_date = excluded.last_purchase_date,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "name"),
+        firstText(record, ["phone"]),
+        firstText(record, ["linkedPhonebookContactId"]),
+        firstText(record, ["linkedPhonebookContactName"]),
+        firstText(record, ["email"]),
+        firstText(record, ["notes"]),
+        record.salesAgentCount ?? 0,
+        record.purchaseReceiptCount ?? 0,
+        firstText(record, ["lastPurchaseDate"]),
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.salesAgents)) {
+    await client.query(
+      `
+        insert into sales_agents (
+          id, business_id, supplier_id, supplier_name, name, phone, linked_phonebook_contact_id,
+          linked_phonebook_contact_name, notes, receipts_handled, last_transaction_date, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        on conflict (id) do update set
+          supplier_name = excluded.supplier_name,
+          name = excluded.name,
+          phone = excluded.phone,
+          linked_phonebook_contact_id = excluded.linked_phonebook_contact_id,
+          linked_phonebook_contact_name = excluded.linked_phonebook_contact_name,
+          notes = excluded.notes,
+          receipts_handled = excluded.receipts_handled,
+          last_transaction_date = excluded.last_transaction_date,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "supplierId"),
+        requiredText(record, "supplierName"),
+        requiredText(record, "name"),
+        firstText(record, ["phone"]),
+        firstText(record, ["linkedPhonebookContactId"]),
+        firstText(record, ["linkedPhonebookContactName"]),
+        firstText(record, ["notes"]),
+        record.receiptsHandled ?? 0,
+        firstText(record, ["lastTransactionDate"]),
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.receiptOCRJobs)) {
+    await client.query(
+      `
+        insert into receipt_ocr_jobs (
+          id, business_id, tenant_id, shop_id, uploaded_by, status, source_file_name, content_type,
+          engine, engine_version, model_version, profile, fallback_used, language_hints, full_text,
+          average_confidence, warnings, field_evidence, structured_extraction, contact_matching_result,
+          supplier_candidates, sales_agent_candidates, supplier_name, sales_agent_name, phone, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21::jsonb, $22::jsonb, $23, $24, $25, now())
+        on conflict (id) do update set
+          status = excluded.status,
+          full_text = excluded.full_text,
+          average_confidence = excluded.average_confidence,
+          warnings = excluded.warnings,
+          field_evidence = excluded.field_evidence,
+          structured_extraction = excluded.structured_extraction,
+          contact_matching_result = excluded.contact_matching_result,
+          supplier_candidates = excluded.supplier_candidates,
+          sales_agent_candidates = excluded.sales_agent_candidates,
+          supplier_name = excluded.supplier_name,
+          sales_agent_name = excluded.sales_agent_name,
+          phone = excluded.phone,
+          updated_at = now()
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "tenantId"),
+        requiredText(record, "shopId"),
+        requiredText(record, "uploadedBy"),
+        requiredText(record, "status"),
+        requiredText(record, "sourceFileName"),
+        requiredText(record, "contentType"),
+        requiredText(record, "engine"),
+        requiredText(record, "engineVersion"),
+        requiredText(record, "modelVersion"),
+        requiredText(record, "profile"),
+        record.fallbackUsed === true,
+        JSON.stringify(record.languageHints ?? []),
+        firstText(record, ["fullText"]) ?? "",
+        record.averageConfidence ?? 0,
+        JSON.stringify(record.warnings ?? []),
+        JSON.stringify(record.fieldEvidence ?? []),
+        JSON.stringify(record.structuredExtraction ?? {}),
+        JSON.stringify(record.contactMatchingResult ?? {}),
+        JSON.stringify(record.supplierCandidates ?? []),
+        JSON.stringify(record.salesAgentCandidates ?? []),
+        firstText(record, ["supplierName"]),
+        firstText(record, ["salesAgentName"]),
+        firstText(record, ["phone"])
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.purchaseReceipts)) {
+    await client.query(
+      `
+        insert into purchase_receipts (
+          id, business_id, supplier_id, supplier_name, sales_agent_id, sales_agent_name,
+          receipt_date, total, source_file_name, ocr_job_id, image_stored, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        on conflict (id) do update set
+          supplier_id = excluded.supplier_id,
+          supplier_name = excluded.supplier_name,
+          sales_agent_id = excluded.sales_agent_id,
+          sales_agent_name = excluded.sales_agent_name,
+          receipt_date = excluded.receipt_date,
+          total = excluded.total,
+          source_file_name = excluded.source_file_name,
+          ocr_job_id = excluded.ocr_job_id,
+          image_stored = excluded.image_stored
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "supplierId"),
+        requiredText(record, "supplierName"),
+        firstText(record, ["salesAgentId"]),
+        firstText(record, ["salesAgentName"]),
+        requiredText(record, "receiptDate"),
+        record.total,
+        firstText(record, ["sourceFileName"]),
+        firstText(record, ["ocrJobId"]),
+        record.imageStored === true,
+        requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  await replaceReceiptLineItems(client, snapshotRecords(snapshot.receiptLineItems));
+  await saveInvoicesAndItems(client, snapshotRecords(snapshot.invoices));
+
+  for (const record of snapshotRecords(snapshot.payments)) {
+    await client.query(
+      `
+        insert into payments (
+          id, business_id, invoice_id, customer_id, method, amount, reference, note, actor_id, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        on conflict (id) do update set
+          method = excluded.method,
+          amount = excluded.amount,
+          reference = excluded.reference,
+          note = excluded.note
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "invoiceId"),
+        firstText(record, ["customerId"]),
+        requiredText(record, "method"),
+        record.amount,
+        firstText(record, ["reference"]),
+        firstText(record, ["note"]),
+        requiredText(record, "actorId"),
+        requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.sessions)) {
+    await client.query(
+      `
+        insert into sessions (id, account_id, user_id, expires_at, revoked_at, created_at)
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict (id) do update set
+          expires_at = excluded.expires_at,
+          revoked_at = excluded.revoked_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "accountId"),
+        requiredText(record, "userId"),
+        requiredText(record, "expiresAt"),
+        firstText(record, ["revokedAt"]),
+        requiredText(record, "createdAt")
+      ]
+    );
+  }
+}
+
+async function replaceReceiptLineItems(
+  client: PoolClient,
+  records: SnapshotRecord[]
+): Promise<void> {
+  const receiptIds = [...new Set(records.map((record) => requiredText(record, "receiptId")))];
+
+  if (receiptIds.length > 0) {
+    await client.query("delete from receipt_line_items where receipt_id = any($1::uuid[])", [
+      receiptIds
+    ]);
+  }
+
+  for (const record of records) {
+    await client.query(
+      `
+        insert into receipt_line_items (id, receipt_id, name, quantity, unit_price, total)
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict (id) do update set
+          receipt_id = excluded.receipt_id,
+          name = excluded.name,
+          quantity = excluded.quantity,
+          unit_price = excluded.unit_price,
+          total = excluded.total
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "receiptId"),
+        requiredText(record, "name"),
+        record.quantity,
+        record.unitPrice,
+        record.total
+      ]
+    );
+  }
+}
+
+async function saveInvoicesAndItems(client: PoolClient, records: SnapshotRecord[]): Promise<void> {
+  const invoiceIds = records.map((record) => requiredText(record, "id"));
+
+  for (const record of records) {
+    await client.query(
+      `
+        insert into invoices (
+          id, business_id, invoice_number, status, customer_id, customer_name,
+          subtotal, tax_rate, tax_total, total, confirmed_at, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        on conflict (id) do update set
+          status = excluded.status,
+          customer_id = excluded.customer_id,
+          customer_name = excluded.customer_name,
+          subtotal = excluded.subtotal,
+          tax_rate = excluded.tax_rate,
+          tax_total = excluded.tax_total,
+          total = excluded.total,
+          confirmed_at = excluded.confirmed_at,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "invoiceNumber"),
+        requiredText(record, "status"),
+        firstText(record, ["customerId"]),
+        firstText(record, ["customerName"]),
+        record.subtotal,
+        record.taxRate,
+        record.taxTotal,
+        record.total,
+        firstText(record, ["confirmedAt"]),
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
+      ]
+    );
+  }
+
+  if (invoiceIds.length > 0) {
+    await client.query("delete from invoice_items where invoice_id = any($1::uuid[])", [
+      invoiceIds
+    ]);
+  }
+
+  for (const invoice of records) {
+    const items = Array.isArray(invoice.items) ? (invoice.items as SnapshotRecord[]) : [];
+
+    for (const item of items) {
+      await client.query(
+        `
+          insert into invoice_items
+            (id, invoice_id, product_id, product_name, quantity, unit_price, line_total)
+          values ($1, $2, $3, $4, $5, $6, $7)
+          on conflict (id) do update set
+            invoice_id = excluded.invoice_id,
+            product_id = excluded.product_id,
+            product_name = excluded.product_name,
+            quantity = excluded.quantity,
+            unit_price = excluded.unit_price,
+            line_total = excluded.line_total
+        `,
+        [
+          requiredText(item, "id"),
+          requiredText(item, "invoiceId"),
+          requiredText(item, "productId"),
+          requiredText(item, "productName"),
+          item.quantity,
+          item.unitPrice,
+          item.lineTotal
+        ]
+      );
+    }
   }
 }
 
@@ -439,6 +929,10 @@ function setSnapshotCollection(
 ): void {
   const target = snapshot as unknown as Record<string, SnapshotRecord[]>;
   target[key] = records;
+}
+
+function snapshotRecords(value: unknown): SnapshotRecord[] {
+  return value as SnapshotRecord[];
 }
 
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {

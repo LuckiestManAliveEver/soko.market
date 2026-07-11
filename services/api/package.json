@@ -15,6 +15,9 @@
     "dist"
   ],
   "scripts": {
+    "db:backup": "node scripts/backup-db.mjs",
+    "db:migrate": "node scripts/migrate-db.mjs",
+    "db:restore": "node scripts/restore-db.mjs",
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/index.ts",

@@ -1,11 +1,13 @@
 import {
   boolean,
+  index,
   integer,
   jsonb,
   numeric,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid
 } from "drizzle-orm/pg-core";
 
@@ -98,12 +100,19 @@ export const oauthSessions = pgTable("oauth_sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
-export const businesses = pgTable("businesses", {
-  id: uuid("id").primaryKey(),
-  name: text("name").notNull(),
-  language: text("language").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
-});
+export const businesses = pgTable(
+  "businesses",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    language: text("language").notNull(),
+    sokoId: text("soko_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    sokoIdUnique: uniqueIndex("businesses_soko_id_unique_idx").on(table.sokoId)
+  })
+);
 
 export const businessMemberships = pgTable("business_memberships", {
   id: uuid("id").primaryKey(),
@@ -142,46 +151,136 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
-export const products = pgTable("products", {
-  id: uuid("id").primaryKey(),
-  businessId: uuid("business_id")
-    .notNull()
-    .references(() => businesses.id),
-  name: text("name").notNull(),
-  sku: text("sku"),
-  unit: text("unit").notNull(),
-  quantity: numeric("quantity").notNull(),
-  buyingPrice: numeric("buying_price"),
-  sellingPrice: numeric("selling_price"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
-});
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    name: text("name").notNull(),
+    sku: text("sku"),
+    unit: text("unit").notNull(),
+    quantity: numeric("quantity").notNull(),
+    buyingPrice: numeric("buying_price"),
+    sellingPrice: numeric("selling_price"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessSkuUnique: uniqueIndex("products_business_sku_unique_idx").on(
+      table.businessId,
+      table.sku
+    ),
+    businessUpdated: index("products_business_updated_idx").on(table.businessId, table.updatedAt)
+  })
+);
 
-export const customers = pgTable("customers", {
-  id: uuid("id").primaryKey(),
-  businessId: uuid("business_id")
-    .notNull()
-    .references(() => businesses.id),
-  name: text("name").notNull(),
-  phone: text("phone"),
-  email: text("email"),
-  notes: text("notes"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
-});
+export const customers = pgTable(
+  "customers",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    email: text("email"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessContact: index("customers_business_contact_idx").on(
+      table.businessId,
+      table.phone,
+      table.email
+    )
+  })
+);
 
-export const suppliers = pgTable("suppliers", {
-  id: uuid("id").primaryKey(),
-  businessId: uuid("business_id")
-    .notNull()
-    .references(() => businesses.id),
-  name: text("name").notNull(),
-  phone: text("phone"),
-  email: text("email"),
-  notes: text("notes"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
-});
+export const suppliers = pgTable(
+  "suppliers",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    linkedPhonebookContactId: text("linked_phonebook_contact_id"),
+    linkedPhonebookContactName: text("linked_phonebook_contact_name"),
+    email: text("email"),
+    notes: text("notes"),
+    salesAgentCount: integer("sales_agent_count").notNull().default(0),
+    purchaseReceiptCount: integer("purchase_receipt_count").notNull().default(0),
+    lastPurchaseDate: timestamp("last_purchase_date", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessUpdated: index("suppliers_business_updated_idx").on(table.businessId, table.updatedAt)
+  })
+);
+
+export const salesAgents = pgTable(
+  "sales_agents",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    supplierId: uuid("supplier_id")
+      .notNull()
+      .references(() => suppliers.id),
+    supplierName: text("supplier_name").notNull(),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    linkedPhonebookContactId: text("linked_phonebook_contact_id"),
+    linkedPhonebookContactName: text("linked_phonebook_contact_name"),
+    notes: text("notes"),
+    receiptsHandled: integer("receipts_handled").notNull().default(0),
+    lastTransactionDate: timestamp("last_transaction_date", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessSupplier: index("sales_agents_business_supplier_idx").on(
+      table.businessId,
+      table.supplierId,
+      table.name
+    ),
+    businessPhone: index("sales_agents_business_phone_idx").on(table.businessId, table.phone)
+  })
+);
+
+export const supplierContactLinks = pgTable(
+  "supplier_contact_links",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    linkType: text("link_type").notNull(),
+    supplierId: uuid("supplier_id").references(() => suppliers.id),
+    salesAgentId: uuid("sales_agent_id").references(() => salesAgents.id),
+    networkNodeId: text("network_node_id").notNull(),
+    contactName: text("contact_name").notNull(),
+    linkedAt: timestamp("linked_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    supplierUnique: uniqueIndex("supplier_contact_links_supplier_unique_idx").on(
+      table.businessId,
+      table.supplierId,
+      table.networkNodeId
+    ),
+    agentUnique: uniqueIndex("supplier_contact_links_agent_unique_idx").on(
+      table.businessId,
+      table.salesAgentId,
+      table.networkNodeId
+    )
+  })
+);
 
 export const inventoryMovements = pgTable("inventory_movements", {
   id: uuid("id").primaryKey(),
@@ -234,24 +333,127 @@ export const invoiceItems = pgTable("invoice_items", {
   lineTotal: numeric("line_total").notNull()
 });
 
-export const payments = pgTable("payments", {
-  id: uuid("id").primaryKey(),
-  businessId: uuid("business_id")
-    .notNull()
-    .references(() => businesses.id),
-  invoiceId: uuid("invoice_id")
-    .notNull()
-    .references(() => invoices.id),
-  customerId: uuid("customer_id").references(() => customers.id),
-  method: text("method").notNull(),
-  amount: numeric("amount").notNull(),
-  reference: text("reference"),
-  note: text("note"),
-  actorId: uuid("actor_id")
-    .notNull()
-    .references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
-});
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id),
+    customerId: uuid("customer_id").references(() => customers.id),
+    method: text("method").notNull(),
+    amount: numeric("amount").notNull(),
+    reference: text("reference"),
+    note: text("note"),
+    actorId: uuid("actor_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessInvoice: index("payments_business_invoice_idx").on(
+      table.businessId,
+      table.invoiceId,
+      table.createdAt
+    )
+  })
+);
+
+export const receiptOCRJobs = pgTable(
+  "receipt_ocr_jobs",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    tenantId: text("tenant_id").notNull(),
+    shopId: text("shop_id").notNull(),
+    uploadedBy: text("uploaded_by").notNull(),
+    status: text("status").notNull(),
+    sourceFileName: text("source_file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    engine: text("engine").notNull(),
+    engineVersion: text("engine_version").notNull(),
+    modelVersion: text("model_version").notNull(),
+    profile: text("profile").notNull(),
+    fallbackUsed: boolean("fallback_used").notNull().default(false),
+    languageHints: jsonb("language_hints").notNull().default([]),
+    fullText: text("full_text").notNull().default(""),
+    averageConfidence: numeric("average_confidence").notNull().default("0"),
+    warnings: jsonb("warnings").notNull().default([]),
+    fieldEvidence: jsonb("field_evidence").notNull().default([]),
+    structuredExtraction: jsonb("structured_extraction").notNull().default({}),
+    contactMatchingResult: jsonb("contact_matching_result").notNull().default({}),
+    supplierCandidates: jsonb("supplier_candidates").notNull().default([]),
+    salesAgentCandidates: jsonb("sales_agent_candidates").notNull().default([]),
+    supplierName: text("supplier_name"),
+    salesAgentName: text("sales_agent_name"),
+    phone: text("phone"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    businessStatus: index("receipt_ocr_jobs_business_status_idx").on(
+      table.businessId,
+      table.status,
+      table.updatedAt
+    )
+  })
+);
+
+export const purchaseReceipts = pgTable(
+  "purchase_receipts",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    supplierId: uuid("supplier_id")
+      .notNull()
+      .references(() => suppliers.id),
+    supplierName: text("supplier_name").notNull(),
+    salesAgentId: uuid("sales_agent_id").references(() => salesAgents.id),
+    salesAgentName: text("sales_agent_name"),
+    receiptDate: timestamp("receipt_date", { withTimezone: true }).notNull(),
+    total: numeric("total").notNull(),
+    sourceFileName: text("source_file_name"),
+    ocrJobId: uuid("ocr_job_id").references(() => receiptOCRJobs.id),
+    imageStored: boolean("image_stored").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    businessSupplierDate: index("purchase_receipts_business_supplier_date_idx").on(
+      table.businessId,
+      table.supplierId,
+      table.receiptDate
+    ),
+    businessAgentDate: index("purchase_receipts_business_agent_date_idx").on(
+      table.businessId,
+      table.salesAgentId,
+      table.receiptDate
+    )
+  })
+);
+
+export const receiptLineItems = pgTable(
+  "receipt_line_items",
+  {
+    id: uuid("id").primaryKey(),
+    receiptId: uuid("receipt_id")
+      .notNull()
+      .references(() => purchaseReceipts.id),
+    name: text("name").notNull(),
+    quantity: numeric("quantity").notNull(),
+    unitPrice: numeric("unit_price").notNull(),
+    total: numeric("total").notNull()
+  },
+  (table) => ({
+    receipt: index("receipt_line_items_receipt_idx").on(table.receiptId)
+  })
+);
 
 export const invoiceNumberCounters = pgTable("invoice_number_counters", {
   businessId: uuid("business_id")

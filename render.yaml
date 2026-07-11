@@ -6,7 +6,7 @@ services:
     autoDeployTrigger: commit
     plan: free
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
     startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health
     buildFilter:
@@ -15,6 +15,7 @@ services:
         - pnpm-lock.yaml
         - pnpm-workspace.yaml
         - render.yaml
+        - infra/db/**
         - packages/**
         - services/ai-runtime/**
         - services/api/**
