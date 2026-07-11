@@ -7,6 +7,15 @@ import { Pool } from "pg";
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const migrationsDir = resolve(rootDir, "infra/db/migrations");
 const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+// Migration 014 originally copied orphaned compatibility PINs without resolving
+// their account. Databases that completed that safe subset may retain its exact
+// historical checksum; all other checksum drift still fails closed.
+const legacyMigrationChecksums = new Map([
+  [
+    "014_cp2_phase1_auth_security_relational.sql",
+    new Set(["bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a"])
+  ]
+]);
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to run database migrations.");
@@ -29,7 +38,7 @@ try {
       if (alreadyApplied.rows.length > 0) {
         const appliedChecksum = alreadyApplied.rows[0]?.checksum;
 
-        if (appliedChecksum !== migration.checksum) {
+        if (!isAcceptedChecksum(migration.filename, appliedChecksum, migration.checksum)) {
           throw new Error(
             `Migration checksum mismatch for ${migration.filename}. Refusing to continue.`
           );
@@ -55,7 +64,8 @@ try {
         console.log(`Applied migration ${migration.filename}`);
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
-        throw error;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Migration ${migration.filename} failed: ${detail}`, { cause: error });
       } finally {
         client.release();
       }
@@ -65,6 +75,13 @@ try {
   console.log("Database migrations are up to date.");
 } finally {
   await pool.end();
+}
+
+function isAcceptedChecksum(filename, appliedChecksum, currentChecksum) {
+  return (
+    appliedChecksum === currentChecksum ||
+    legacyMigrationChecksums.get(filename)?.has(appliedChecksum) === true
+  );
 }
 
 async function ensureMigrationTable() {

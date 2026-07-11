@@ -36,16 +36,83 @@ create index if not exists oauth_sessions_account_idx
   on oauth_sessions (account_id, created_at desc)
   where account_id is not null;
 
+-- Compatibility rows predate the relational foreign keys. Restore a missing
+-- parent only when the corresponding compatibility account still exists.
+with compatible_accounts as materialized (
+  select
+    case
+      when record->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (record->>'id')::uuid
+    end as id,
+    record,
+    updated_at
+  from cp2_accounts
+)
+insert into accounts (id, primary_auth_channel, primary_auth_destination, created_at)
+select distinct on (account_record.id)
+  account_record.id,
+  account_record.record->>'primaryAuthChannel',
+  account_record.record->>'primaryAuthDestination',
+  coalesce(
+    nullif(account_record.record->>'createdAt', '')::timestamp with time zone,
+    account_record.updated_at,
+    now()
+  )
+from compatible_accounts account_record
+join cp2_account_pin_hashes pin_record
+  on pin_record.record->>'accountId' = account_record.record->>'id'
+where account_record.id is not null
+  and account_record.record ? 'primaryAuthChannel'
+  and account_record.record ? 'primaryAuthDestination'
+  and account_record.record->>'primaryAuthChannel' <> ''
+  and account_record.record->>'primaryAuthDestination' <> ''
+order by account_record.id, account_record.updated_at desc
+on conflict do nothing;
+
+with compatible_pins as materialized (
+  select
+    case
+      when record->>'accountId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (record->>'accountId')::uuid
+    end as requested_account_id,
+    record,
+    updated_at
+  from cp2_account_pin_hashes
+  where record ? 'accountId'
+    and record ? 'pinHash'
+    and record->>'pinHash' <> ''
+)
 insert into account_pin_hashes (account_id, pin_hash, updated_at)
-select
-  (record->>'accountId')::uuid,
-  record->>'pinHash',
-  coalesce((record->>'updatedAt')::timestamp with time zone, now())
-from cp2_account_pin_hashes
-where record ? 'accountId'
-  and record ? 'pinHash'
-  and record->>'accountId' <> ''
-  and record->>'pinHash' <> ''
+select distinct on (resolved_account.id)
+  resolved_account.id,
+  pin_record.record->>'pinHash',
+  coalesce(
+    nullif(pin_record.record->>'updatedAt', '')::timestamp with time zone,
+    pin_record.updated_at,
+    now()
+  )
+from compatible_pins pin_record
+left join cp2_accounts account_record
+  on account_record.record->>'id' = pin_record.record->>'accountId'
+join lateral (
+  select account.id
+  from accounts account
+  where account.id = pin_record.requested_account_id
+    or (
+      account_record.record->>'primaryAuthChannel' <> ''
+      and account_record.record->>'primaryAuthDestination' <> ''
+      and account.primary_auth_channel = account_record.record->>'primaryAuthChannel'
+      and account.primary_auth_destination = account_record.record->>'primaryAuthDestination'
+    )
+  order by (account.id = pin_record.requested_account_id) desc
+  limit 1
+) resolved_account on true
+where pin_record.requested_account_id is not null
+order by resolved_account.id,
+  coalesce(
+    nullif(pin_record.record->>'updatedAt', '')::timestamp with time zone,
+    pin_record.updated_at
+  ) desc nulls last
 on conflict (account_id) do update set
   pin_hash = excluded.pin_hash,
   updated_at = excluded.updated_at;
