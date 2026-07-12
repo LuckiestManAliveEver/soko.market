@@ -18,6 +18,12 @@ interface ProductResponse {
   name: string;
 }
 
+interface SyncPageResponse {
+  accountId: string;
+  nextCursor: string;
+  changes: Array<{ accountId: string; collection: string }>;
+}
+
 const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 
@@ -41,6 +47,12 @@ describePostgres("CP2 Postgres store", () => {
       },
       sessionCookie
     );
+    const initialSyncPage = await getJson<SyncPageResponse>(
+      app,
+      "/v1/sync/changes?limit=100",
+      sessionCookie
+    );
+    expect(initialSyncPage.changes.map((change) => change.collection)).toContain("shops");
 
     await store.flush();
     await app.close();
@@ -54,6 +66,14 @@ describePostgres("CP2 Postgres store", () => {
     );
 
     expect(products).toEqual([expect.objectContaining({ id: product.id, name: "Postgres Sugar" })]);
+    const restoredSyncPage = await getJson<SyncPageResponse>(
+      restoredApp,
+      "/v1/sync/changes?limit=100",
+      sessionCookie
+    );
+    expect(restoredSyncPage.nextCursor).toBe(initialSyncPage.nextCursor);
+    expect(restoredSyncPage.changes).toEqual(initialSyncPage.changes);
+    expect((await restoredStore.health()).syncChangeCount).toBeGreaterThan(0);
 
     await restoredApp.close();
   });

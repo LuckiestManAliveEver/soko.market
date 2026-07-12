@@ -102,6 +102,9 @@ import type {
   SokoMode,
   SokoSessionContext,
   StoredSokoSessionContext,
+  SyncChange,
+  SyncCollection,
+  SyncPullPage,
   UserSummary
 } from "@soko/shared-types";
 import {
@@ -245,6 +248,7 @@ export const sessionCookieName = "soko_session";
 
 const otpTtlMs = 5 * 60 * 1000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const maxRuntimeTurnsPerSession = 20;
 const sellerOnlySurfaces = new Set<SokoChatSurface>(["catalogue", "owner-controls", "receipt"]);
@@ -462,6 +466,7 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  syncChanges: SyncChange[];
   products: ProductSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
@@ -530,6 +535,8 @@ export class Cp2Store {
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
   private readonly messageByClientId = new Map<string, string>();
+  private readonly syncChanges: SyncChange[] = [];
+  private readonly nextSyncSequenceByAccount = new Map<string, number>();
   private readonly products = new Map<string, ProductSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
@@ -1240,6 +1247,15 @@ export class Cp2Store {
       ...session.user,
       language: input.language
     });
+    this.recordSyncChange({
+      accountId: session.account.id,
+      collection: "shops",
+      entityId: business.id,
+      operation: "upsert",
+      shopId: business.id,
+      entity: { business, membership },
+      now
+    });
 
     this.recordAuditEvent({
       type: "business.created",
@@ -1304,6 +1320,47 @@ export class Cp2Store {
       });
   }
 
+  pullSyncChanges(input: {
+    sessionId: string | null;
+    cursor: string | null;
+    limit?: number;
+    now?: Date;
+  }): SyncPullPage {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const accountId = session.account.id;
+    const limit = Math.min(100, Math.max(1, input.limit ?? 50));
+    const changes = this.syncChanges
+      .filter((change) => change.accountId === accountId)
+      .sort((left, right) => left.sequence - right.sequence);
+    const originCursor = syncOriginCursor(accountId);
+    let startIndex = 0;
+
+    if (input.cursor !== null && input.cursor !== originCursor) {
+      const cursorIndex = changes.findIndex((change) => change.cursor === input.cursor);
+      if (cursorIndex < 0) {
+        throw new Cp2Error(
+          409,
+          "sync_cursor_invalid",
+          "The sync cursor is invalid or has expired. Start a full account catch-up."
+        );
+      }
+      startIndex = cursorIndex + 1;
+    }
+
+    const pageChanges = changes.slice(startIndex, startIndex + limit);
+    const nextCursor = pageChanges.at(-1)?.cursor ?? input.cursor ?? originCursor;
+
+    return {
+      accountId,
+      fromCursor: input.cursor,
+      nextCursor,
+      changes: pageChanges,
+      hasMore: startIndex + pageChanges.length < changes.length,
+      serverTime: now.toISOString()
+    };
+  }
+
   getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
@@ -1363,6 +1420,15 @@ export class Cp2Store {
       updatedAt: now.toISOString()
     };
     this.sessionContexts.set(session.session.id, next);
+    this.recordSyncChange({
+      accountId: session.account.id,
+      collection: "session_context",
+      entityId: session.session.id,
+      operation: "upsert",
+      shopId: next.activeShopId,
+      entity: next,
+      now
+    });
     this.recordAuditEvent({
       type: "session.context_updated",
       aggregateType: "session",
@@ -1498,6 +1564,24 @@ export class Cp2Store {
     this.conversations.set(conversation.id, {
       ...conversation,
       updatedAt: now.toISOString()
+    });
+    this.recordSyncChange({
+      accountId: session.account.id,
+      collection: "conversations",
+      entityId: conversation.id,
+      operation: "upsert",
+      shopId: conversation.activeShopId,
+      entity: this.conversations.get(conversation.id) as ConversationSummary,
+      now
+    });
+    this.recordSyncChange({
+      accountId: session.account.id,
+      collection: "conversation_messages",
+      entityId: message.id,
+      operation: "upsert",
+      shopId: conversation.activeShopId,
+      entity: message,
+      now
     });
     this.recordAuditEvent({
       type: "message.created",
@@ -6071,6 +6155,7 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      syncChanges: [...this.syncChanges],
       products: [...this.products.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
@@ -6137,6 +6222,8 @@ export class Cp2Store {
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
     this.messageByClientId.clear();
+    this.syncChanges.splice(0, this.syncChanges.length);
+    this.nextSyncSequenceByAccount.clear();
     this.products.clear();
     this.customers.clear();
     this.suppliers.clear();
@@ -6496,6 +6583,18 @@ export class Cp2Store {
       this.sokoIdentityLinks.set(link.id, link);
     }
 
+    for (const change of snapshot.syncChanges ?? []) {
+      this.syncChanges.push(change);
+      this.nextSyncSequenceByAccount.set(
+        change.accountId,
+        Math.max(this.nextSyncSequenceByAccount.get(change.accountId) ?? 1, change.sequence + 1)
+      );
+    }
+
+    if (this.syncChanges.length === 0) {
+      this.backfillSyncChanges();
+    }
+
     this.auditEvents.push(...snapshot.auditEvents.map((event) => createAuditEvent(event)));
   }
 
@@ -6610,7 +6709,7 @@ export class Cp2Store {
       activeShopId: null,
       now
     });
-    this.sessionContexts.set(session.id, {
+    const context: StoredSokoSessionContext = {
       sessionId: session.id,
       conversationId: conversation.id,
       activeShopId: null,
@@ -6619,6 +6718,16 @@ export class Cp2Store {
       activeSurface: "conversation",
       sessionVersion: 1,
       updatedAt: now.toISOString()
+    };
+    this.sessionContexts.set(session.id, context);
+    this.recordSyncChange({
+      accountId: account.id,
+      collection: "session_context",
+      entityId: session.id,
+      operation: "upsert",
+      shopId: null,
+      entity: context,
+      now
     });
     this.recordAuditEvent({
       type: "auth.session_created",
@@ -6659,6 +6768,15 @@ export class Cp2Store {
       updatedAt: now.toISOString()
     };
     this.sessionContexts.set(session.session.id, context);
+    this.recordSyncChange({
+      accountId: session.account.id,
+      collection: "session_context",
+      entityId: session.session.id,
+      operation: "upsert",
+      shopId: null,
+      entity: context,
+      now
+    });
     return context;
   }
 
@@ -6690,6 +6808,100 @@ export class Cp2Store {
       sessionVersion: context.sessionVersion,
       shops
     };
+  }
+
+  private recordSyncChange(input: {
+    accountId: string;
+    collection: SyncCollection;
+    entityId: string;
+    operation: "upsert" | "delete";
+    shopId: string | null;
+    entity: unknown | null;
+    now: Date;
+  }): SyncChange {
+    const sequence = this.nextSyncSequenceByAccount.get(input.accountId) ?? 1;
+    const changedAt = input.now.toISOString();
+    const change: SyncChange = {
+      accountId: input.accountId,
+      collection: input.collection,
+      entityId: input.entityId,
+      operation: input.operation,
+      sequence,
+      cursor: randomUUID(),
+      shopId: input.shopId,
+      entity: input.operation === "delete" ? null : input.entity,
+      changedAt,
+      tombstoneExpiresAt:
+        input.operation === "delete"
+          ? new Date(input.now.getTime() + syncTombstoneRetentionMs).toISOString()
+          : null
+    };
+    this.syncChanges.push(change);
+    this.nextSyncSequenceByAccount.set(input.accountId, sequence + 1);
+    return change;
+  }
+
+  private backfillSyncChanges(): void {
+    for (const membership of this.memberships.values()) {
+      const business = this.businesses.get(membership.businessId);
+      const user = this.users.get(membership.userId);
+      if (business === undefined || user === undefined) {
+        continue;
+      }
+      this.recordSyncChange({
+        accountId: user.accountId,
+        collection: "shops",
+        entityId: business.id,
+        operation: "upsert",
+        shopId: business.id,
+        entity: { business, membership },
+        now: new Date(0)
+      });
+    }
+
+    for (const conversation of this.conversations.values()) {
+      this.recordSyncChange({
+        accountId: conversation.accountId,
+        collection: "conversations",
+        entityId: conversation.id,
+        operation: "upsert",
+        shopId: conversation.activeShopId,
+        entity: conversation,
+        now: syncRecordDate(conversation.updatedAt)
+      });
+    }
+
+    for (const message of this.conversationMessages.values()) {
+      const conversation = this.conversations.get(message.conversationId);
+      if (conversation === undefined) {
+        continue;
+      }
+      this.recordSyncChange({
+        accountId: conversation.accountId,
+        collection: "conversation_messages",
+        entityId: message.id,
+        operation: "upsert",
+        shopId: conversation.activeShopId,
+        entity: message,
+        now: syncRecordDate(message.createdAt)
+      });
+    }
+
+    for (const context of this.sessionContexts.values()) {
+      const session = this.sessions.get(context.sessionId);
+      if (session === undefined) {
+        continue;
+      }
+      this.recordSyncChange({
+        accountId: session.accountId,
+        collection: "session_context",
+        entityId: context.sessionId,
+        operation: "upsert",
+        shopId: context.activeShopId,
+        entity: context,
+        now: syncRecordDate(context.updatedAt)
+      });
+    }
   }
 
   private createAccountConversation(input: {
@@ -6744,6 +6956,16 @@ export class Cp2Store {
     for (const participant of participants) {
       this.conversationParticipants.set(participant.id, participant);
     }
+
+    this.recordSyncChange({
+      accountId: input.accountId,
+      collection: "conversations",
+      entityId: conversation.id,
+      operation: "upsert",
+      shopId: conversation.activeShopId,
+      entity: conversation,
+      now: input.now
+    });
 
     return conversation;
   }
@@ -8902,6 +9124,15 @@ export class Cp2Store {
   }
 
   private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
+    this.recordSyncChange({
+      accountId,
+      collection: "shops",
+      entityId: businessId,
+      operation: "delete",
+      shopId: null,
+      entity: null,
+      now
+    });
     const invoiceIds = new Set(this.invoicesForBusiness(businessId).map((invoice) => invoice.id));
     const supplierIds = new Set(
       this.suppliersForBusiness(businessId).map((supplier) => supplier.id)
@@ -10996,6 +11227,15 @@ function documentImportSourceView(source: DocumentImportSourceRecord): DocumentI
 
 function defaultDisplayName(destination: string): string {
   return destination.includes("@") ? (destination.split("@")[0] ?? "Owner") : "Owner";
+}
+
+function syncOriginCursor(accountId: string): string {
+  return createHash("sha256").update(`soko-sync-origin:${accountId}`).digest("base64url");
+}
+
+function syncRecordDate(value: string): Date {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }
 
 function assertValid(result: { ok: boolean; errors: string[] }): void {

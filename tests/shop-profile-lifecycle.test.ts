@@ -158,6 +158,25 @@ describe("Shop profile lifecycle", () => {
     expect(snapshot.auditEvents.some((event) => event.type === "shop_deletion.completed")).toBe(
       true
     );
+    const ownerRelogin = await verifyOtp(app, "phone", "254700000701");
+    const syncPage = await getJson<{
+      changes: Array<{
+        collection: string;
+        entityId: string;
+        operation: string;
+        entity: unknown | null;
+        tombstoneExpiresAt: string | null;
+      }>;
+    }>(app, "/v1/sync/changes?limit=100", extractSessionCookie(ownerRelogin.setCookie));
+    expect(syncPage.changes).toContainEqual(
+      expect.objectContaining({
+        collection: "shops",
+        entityId: firstShop.business.id,
+        operation: "delete",
+        entity: null,
+        tombstoneExpiresAt: expect.any(String)
+      })
+    );
 
     await app.close();
   });

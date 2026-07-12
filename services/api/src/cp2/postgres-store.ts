@@ -156,6 +156,7 @@ export interface PostgresStoreHealth {
   status: "ok";
   latencyMs: number;
   latestMigration: string | null;
+  syncChangeCount: number;
   phase1Parity: Array<{
     collection: string;
     relationalCount: number;
@@ -171,7 +172,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "017_cp20_unified_session_conversations.sql";
+const requiredMigrationFilename = "018_cp21_account_sync_changes.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -190,6 +191,9 @@ export async function createPostgresCp2Store(
 
   if (snapshotHasData(savedSnapshot)) {
     store.hydrateSnapshot(savedSnapshot);
+    if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
+      await saveNormalizedSnapshot(pool, store.snapshot());
+    }
   }
 
   let saveQueue: Promise<void> = Promise.resolve();
@@ -215,6 +219,7 @@ export async function createPostgresCp2Store(
     const startedAt = Date.now();
     const result = await pool.query<{
       latest_migration: string | null;
+      sync_change_count: string;
       otp_relational_count: string;
       otp_compatibility_count: string;
       otp_relational_checksum: string;
@@ -248,6 +253,7 @@ export async function createPostgresCp2Store(
             order by filename desc
             limit 1
           ) as latest_migration,
+          (select count(*) from account_sync_changes)::text as sync_change_count,
           (select count(*) from otp_challenges)::text as otp_relational_count,
           (select count(*) from cp2_otp_challenges)::text as otp_compatibility_count,
           (select md5(coalesce(string_agg(id::text, ',' order by id::text), '')) from otp_challenges) as otp_relational_checksum,
@@ -288,6 +294,7 @@ export async function createPostgresCp2Store(
       status: "ok",
       latencyMs: Date.now() - startedAt,
       latestMigration: row?.latest_migration ?? null,
+      syncChangeCount: Number(row?.sync_change_count ?? 0),
       phase1Parity:
         row === undefined
           ? []
@@ -1109,6 +1116,41 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     updatedBy: row.updated_by ?? row.updated_by_type,
     updatedAt: timestampToIso(row.updated_at)
   })) as Cp2Snapshot["deviceTrust"];
+
+  const syncChangesResult = await timedQuery<{
+    account_id: string;
+    sequence: string;
+    cursor: string;
+    collection: Cp2Snapshot["syncChanges"][number]["collection"];
+    entity_id: string;
+    operation: Cp2Snapshot["syncChanges"][number]["operation"];
+    shop_id: string | null;
+    entity: unknown | null;
+    changed_at: Date;
+    tombstone_expires_at: Date | null;
+  }>(
+    pool,
+    "load account sync changes",
+    `
+      select account_id, sequence, cursor, collection, entity_id, operation,
+             shop_id, entity, changed_at, tombstone_expires_at
+      from account_sync_changes
+      order by account_id, sequence
+    `
+  );
+  snapshot.syncChanges = syncChangesResult.rows.map((row) => ({
+    accountId: row.account_id,
+    sequence: Number(row.sequence),
+    cursor: row.cursor,
+    collection: row.collection,
+    entityId: row.entity_id,
+    operation: row.operation,
+    shopId: row.shop_id,
+    entity: row.entity,
+    changedAt: timestampToIso(row.changed_at),
+    tombstoneExpiresAt:
+      row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
+  }));
 }
 
 async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
@@ -1601,6 +1643,39 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
       ]
     );
   }
+
+  for (const change of snapshot.syncChanges) {
+    await client.query(
+      `
+        insert into account_sync_changes (
+          account_id, sequence, cursor, collection, entity_id, operation,
+          shop_id, entity, changed_at, tombstone_expires_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+        on conflict (account_id, sequence) do update set
+          cursor = excluded.cursor,
+          collection = excluded.collection,
+          entity_id = excluded.entity_id,
+          operation = excluded.operation,
+          shop_id = excluded.shop_id,
+          entity = excluded.entity,
+          changed_at = excluded.changed_at,
+          tombstone_expires_at = excluded.tombstone_expires_at
+      `,
+      [
+        change.accountId,
+        change.sequence,
+        change.cursor,
+        change.collection,
+        change.entityId,
+        change.operation,
+        change.shopId,
+        change.entity === null ? null : JSON.stringify(change.entity),
+        change.changedAt,
+        change.tombstoneExpiresAt
+      ]
+    );
+  }
 }
 
 async function savePhase1AuthSecurityRecords(
@@ -2042,6 +2117,7 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    syncChanges: [],
     products: [],
     customers: [],
     suppliers: [],

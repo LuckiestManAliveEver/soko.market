@@ -35,7 +35,8 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | CP17       | Marketplace Foundation                                | deferred |  2026-07-07 |     pending | `checkpoint/cp17-marketplace-foundation`     | Bypassed for now; marketplace trigger gates remain unmet.                                                                                              |
 | CP18       | Global Shop ID                                        |   passed |  2026-07-07 |  2026-07-07 | `checkpoint/cp18-global-shop-id`             | Implemented from `documentation/Soko_Global_Shop_ID_Concept.docx`; establishes the Business Agent ID as the permanent storefront identity.             |
 | CP19       | Continuous Learning Architecture                      |  planned |     pending |     pending | `checkpoint/cp19-continuous-learning`        | Future expansion from `documentation/Soko.market_Continuous_Learning_Architecture_v1.pdf`; runtime, memory, skill, eval, and feedback learning layer.  |
-| CP20       | Unified Account, Conversation, and Session Foundation |   active |  2026-07-11 |     pending | `checkpoint/cp20-unified-session-foundation` | Implementation and full CI passed; checkpoint commit and tag remain pending because Git write approval reached its usage limit.                        |
+| CP20       | Unified Account, Conversation, and Session Foundation |   passed |  2026-07-11 |  2026-07-12 | `checkpoint/cp20-unified-session-foundation` | Phase 1 foundation implemented and verified; checkpoint commit and tag captured in the alternate Git directory.                                        |
+| CP21       | Offline Client Data and Catch-up Foundation           |   active |  2026-07-12 |     pending | `checkpoint/cp21-offline-client-sync`        | Phase 2 implementation and CI passed; migration 018 and restart persistence await an approved Postgres connection.                                     |
 
 ## Git Directory Note
 

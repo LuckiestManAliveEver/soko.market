@@ -53,6 +53,9 @@ importers:
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@soko/sync-core':
+        specifier: workspace:*
+        version: link:../../packages/sync-core
       '@soko/tool-core':
         specifier: workspace:*
         version: link:../../packages/tool-core

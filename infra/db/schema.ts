@@ -233,6 +233,36 @@ export const sokoSessionContexts = pgTable("soko_session_contexts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
 });
 
+export const accountSyncChanges = pgTable(
+  "account_sync_changes",
+  {
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    cursor: uuid("cursor").notNull(),
+    collection: text("collection").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    shopId: uuid("shop_id"),
+    entity: jsonb("entity"),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull(),
+    tombstoneExpiresAt: timestamp("tombstone_expires_at", { withTimezone: true })
+  },
+  (table) => ({
+    primary: primaryKey({ columns: [table.accountId, table.sequence] }),
+    accountSequence: index("account_sync_changes_account_sequence_idx").on(
+      table.accountId,
+      table.sequence
+    ),
+    cursorUnique: uniqueIndex("account_sync_changes_cursor_unique_idx").on(table.cursor),
+    validPayload: check(
+      "account_sync_changes_valid_payload_check",
+      sql`(${table.operation} = 'upsert' and ${table.entity} is not null and ${table.tombstoneExpiresAt} is null) or (${table.operation} = 'delete' and ${table.entity} is null and ${table.tombstoneExpiresAt} is not null)`
+    )
+  })
+);
+
 export const accountPinHashes = pgTable("account_pin_hashes", {
   accountId: uuid("account_id")
     .primaryKey()

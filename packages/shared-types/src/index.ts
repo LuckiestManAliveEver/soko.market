@@ -1253,6 +1253,57 @@ export interface OfflineCacheSnapshot {
   inventoryMovements: InventoryMovementSummary[];
 }
 
+export type SyncCollection =
+  "session_context" | "shops" | "conversations" | "conversation_messages";
+
+export type SyncChangeOperation = "upsert" | "delete";
+
+export interface SyncChange<T = unknown> {
+  accountId: string;
+  collection: SyncCollection;
+  entityId: string;
+  operation: SyncChangeOperation;
+  sequence: number;
+  cursor: string;
+  shopId: string | null;
+  entity: T | null;
+  changedAt: string;
+  tombstoneExpiresAt: string | null;
+}
+
+export interface SyncPullRequest {
+  cursor: string | null;
+  limit?: number;
+}
+
+export interface SyncPullPage<T = unknown> {
+  accountId: string;
+  fromCursor: string | null;
+  nextCursor: string;
+  changes: SyncChange<T>[];
+  hasMore: boolean;
+  serverTime: string;
+}
+
+export interface LocalSyncRecord<T = unknown> {
+  accountId: string;
+  collection: SyncCollection;
+  entityId: string;
+  sequence: number;
+  cursor: string;
+  shopId: string | null;
+  entity: T | null;
+  changedAt: string;
+  deletedAt: string | null;
+  tombstoneExpiresAt: string | null;
+}
+
+export interface LocalSyncSnapshot<T = unknown> {
+  accountId: string;
+  cursor: string | null;
+  records: LocalSyncRecord<T>[];
+}
+
 export type SyncQueueStatus = "pending" | "processing" | "synced" | "failed" | "conflict";
 
 export type SyncMutationType =
@@ -1356,6 +1407,10 @@ export interface SyncQueueItem {
   nextAttemptAt: string | null;
   result: unknown | null;
   conflict: SyncConflict | null;
+}
+
+export interface LocalSyncMutation extends SyncQueueItem {
+  accountId: string;
 }
 
 export interface SyncQueueSummary {

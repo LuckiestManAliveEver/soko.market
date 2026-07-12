@@ -1,8 +1,12 @@
 import type { BusinessEvent } from "@soko/event-core";
 import type {
+  LocalSyncRecord,
+  LocalSyncSnapshot,
+  SyncChange,
   SyncConflict,
   SyncMutationPayload,
   SyncMutationType,
+  SyncPullPage,
   SyncQueueItem,
   SyncQueueStatus,
   SyncQueueSummary
@@ -53,6 +57,23 @@ export interface ReplayFailureInput {
   message: string;
   statusCode: number;
   now: string;
+}
+
+export type SyncPageErrorCode =
+  | "account_mismatch"
+  | "cursor_gap"
+  | "invalid_change_order"
+  | "invalid_change_payload"
+  | "invalid_page_cursor";
+
+export class SyncPageError extends Error {
+  readonly code: SyncPageErrorCode;
+
+  constructor(code: SyncPageErrorCode, message: string) {
+    super(message);
+    this.name = "SyncPageError";
+    this.code = code;
+  }
 }
 
 export function enqueueEvent(event: BusinessEvent): LegacySyncQueueItem {
@@ -157,6 +178,122 @@ export function classifySyncConflict(input: Omit<ReplayFailureInput, "now">): Sy
     statusCode: input.statusCode,
     retryable
   };
+}
+
+export function applySyncPullPage<T>(
+  snapshot: LocalSyncSnapshot<T>,
+  page: SyncPullPage<T>
+): LocalSyncSnapshot<T> {
+  if (snapshot.accountId !== page.accountId) {
+    throw new SyncPageError(
+      "account_mismatch",
+      "A sync page cannot be applied to another account's local snapshot."
+    );
+  }
+
+  if (snapshot.cursor === page.nextCursor) {
+    return snapshot;
+  }
+
+  if (snapshot.cursor !== page.fromCursor) {
+    throw new SyncPageError("cursor_gap", "The sync page does not continue the local cursor.");
+  }
+
+  validateSyncPullPage(page);
+
+  const records = new Map(
+    snapshot.records.map((record) => [syncRecordKey(record), record] as const)
+  );
+
+  for (const change of page.changes) {
+    const record: LocalSyncRecord<T> = {
+      accountId: change.accountId,
+      collection: change.collection,
+      entityId: change.entityId,
+      sequence: change.sequence,
+      cursor: change.cursor,
+      shopId: change.shopId,
+      entity: change.entity,
+      changedAt: change.changedAt,
+      deletedAt: change.operation === "delete" ? change.changedAt : null,
+      tombstoneExpiresAt: change.tombstoneExpiresAt
+    };
+
+    records.set(syncRecordKey(record), record);
+  }
+
+  return {
+    accountId: snapshot.accountId,
+    cursor: page.nextCursor,
+    records: [...records.values()].sort((left, right) =>
+      syncRecordKey(left).localeCompare(syncRecordKey(right))
+    )
+  };
+}
+
+export function validateSyncPullPage<T>(page: SyncPullPage<T>): void {
+  if (page.nextCursor.length === 0) {
+    throw new SyncPageError("invalid_page_cursor", "A sync page requires a next cursor.");
+  }
+
+  let previousSequence = -1;
+
+  for (const change of page.changes) {
+    validateSyncChange(page.accountId, change, previousSequence);
+    previousSequence = change.sequence;
+  }
+
+  const finalChange = page.changes.at(-1);
+  if (finalChange !== undefined && finalChange.cursor !== page.nextCursor) {
+    throw new SyncPageError(
+      "invalid_page_cursor",
+      "The page cursor must match the final ordered change."
+    );
+  }
+}
+
+function validateSyncChange<T>(
+  accountId: string,
+  change: SyncChange<T>,
+  previousSequence: number
+): void {
+  if (change.accountId !== accountId) {
+    throw new SyncPageError("account_mismatch", "A page cannot contain another account's data.");
+  }
+
+  if (!Number.isSafeInteger(change.sequence) || change.sequence < 0) {
+    throw new SyncPageError("invalid_change_order", "Sync sequences must be safe integers.");
+  }
+
+  if (change.sequence <= previousSequence) {
+    throw new SyncPageError(
+      "invalid_change_order",
+      "Changes in a sync page must be strictly ordered."
+    );
+  }
+
+  if (change.cursor.length === 0 || change.entityId.length === 0) {
+    throw new SyncPageError(
+      "invalid_change_payload",
+      "Every sync change requires a cursor and entity identifier."
+    );
+  }
+
+  if (
+    (change.operation === "upsert" && change.entity === null) ||
+    (change.operation === "delete" && change.entity !== null) ||
+    (change.operation === "upsert" && change.tombstoneExpiresAt !== null) ||
+    (change.operation === "delete" && change.tombstoneExpiresAt === null)
+  ) {
+    throw new SyncPageError(
+      "invalid_change_payload",
+      "Upserts require an entity; deletes require a null entity and tombstone expiry."
+    );
+  }
+}
+
+function syncRecordKey(record: Pick<LocalSyncRecord, "collection" | "entityId">): string {
+  return `${record.collection}:${record.entityId}`;
 }
 
 function nextRetryAt(now: string, attempts: number): string {

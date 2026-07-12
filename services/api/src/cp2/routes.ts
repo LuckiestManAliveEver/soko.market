@@ -129,6 +129,11 @@ interface OAuthCallbackQuery {
   state?: string;
 }
 
+interface SyncPullQuery {
+  cursor?: string;
+  limit?: string;
+}
+
 interface PinBody {
   pin?: string;
 }
@@ -1298,6 +1303,26 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get(
+    "/v1/sync/changes",
+    async (request: FastifyRequest<{ Querystring: SyncPullQuery }>, reply) => {
+      try {
+        const cursor = parseOptionalString(request.query.cursor) ?? null;
+        const limit =
+          request.query.limit === undefined
+            ? undefined
+            : parseIntegerString(request.query.limit, "limit");
+        return store.pullSyncChanges({
+          sessionId: readSessionCookie(request.headers.cookie),
+          cursor,
+          ...(limit === undefined ? {} : { limit })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get("/v1/conversations", async (request, reply) => {
     try {

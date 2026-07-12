@@ -24,6 +24,8 @@ import {
   type ShellView,
   type SokoMode
 } from "./app-shell";
+import { openIndexedDbSyncRepository } from "./sync/indexeddb-repository";
+import { catchUpAccountSync } from "./sync/sync-client";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
@@ -1901,6 +1903,38 @@ function OwnerApp() {
   useEffect(() => {
     localStorage.setItem(activeModeStorageKey, mode);
   }, [mode]);
+
+  useEffect(() => {
+    if (session === null || globalThis.indexedDB === undefined) {
+      return;
+    }
+
+    let cancelled = false;
+    let closeRepository: (() => void) | undefined;
+    void openIndexedDbSyncRepository()
+      .then(async (repository) => {
+        if (cancelled) {
+          repository.close();
+          return;
+        }
+        closeRepository = () => repository.close();
+        await catchUpAccountSync({
+          accountId: session.account.id,
+          repository,
+          endpoint: `${apiBaseUrl}/v1/sync/changes`
+        });
+      })
+      .catch(() => {
+        if (!cancelled && !navigator.onLine) {
+          setStatusMessage("Offline data loaded; catch-up will resume when connected");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      closeRepository?.();
+    };
+  }, [session?.account.id]);
 
   useEffect(() => {
     if (business !== null) {

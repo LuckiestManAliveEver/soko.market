@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@soko/shared-types": "workspace:*",
+    "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
     "@soko/ui": "workspace:*",
     "react": "^19.0.0",
