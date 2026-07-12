@@ -83,6 +83,7 @@ const mutatingMethodNames = new Set([
   "createInvoice",
   "createLaunchIncident",
   "createLogistics",
+  "createMcpAccessToken",
   "createProduct",
   "createProductCatalogueImport",
   "createReceiptOCRJob",
@@ -115,6 +116,7 @@ const mutatingMethodNames = new Set([
   "replaySyncQueueItem",
   "requestAccountDeletion",
   "requestOtp",
+  "revokeMcpAccessToken",
   "setAccountPin",
   "syncPhoneContacts",
   "syncSocialNetwork",
@@ -172,7 +174,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "018_cp21_account_sync_changes.sql";
+const requiredMigrationFilename = "019_cp23_mcp_access_tokens.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -1151,6 +1153,44 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     tombstoneExpiresAt:
       row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
   }));
+
+  const mcpAccessTokensResult = await timedQuery<{
+    id: string;
+    account_id: string;
+    user_id: string;
+    session_id: string;
+    token_hash: string;
+    name: string;
+    scopes: Array<"mcp:read" | "mcp:act">;
+    shop_id: string | null;
+    created_at: Date;
+    expires_at: Date;
+    last_used_at: Date | null;
+    revoked_at: Date | null;
+  }>(
+    pool,
+    "load MCP access tokens",
+    `
+      select id, account_id, user_id, session_id, token_hash, name, scopes, shop_id,
+             created_at, expires_at, last_used_at, revoked_at
+      from mcp_access_tokens
+      order by account_id, created_at, id
+    `
+  );
+  snapshot.mcpAccessTokens = mcpAccessTokensResult.rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    userId: row.user_id,
+    sessionId: row.session_id,
+    tokenHash: row.token_hash,
+    name: row.name,
+    scopes: row.scopes,
+    shopId: row.shop_id,
+    createdAt: timestampToIso(row.created_at),
+    expiresAt: timestampToIso(row.expires_at),
+    lastUsedAt: row.last_used_at === null ? null : timestampToIso(row.last_used_at),
+    revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at)
+  }));
 }
 
 async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
@@ -1232,6 +1272,7 @@ async function saveCollectionRecords(
 async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
   const now = new Date().toISOString();
 
+  await deleteMissingRows(client, "mcp_access_tokens", snapshotRecords(snapshot.mcpAccessTokens));
   await deleteMissingRows(client, "receipt_line_items", snapshotRecords(snapshot.receiptLineItems));
   await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
   await deleteMissingInvoiceRows(client, snapshotRecords(snapshot.invoices));
@@ -1640,6 +1681,40 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         firstText(record, ["pinVerifiedAt"]),
         firstText(record, ["revokedAt"]),
         requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  for (const token of snapshot.mcpAccessTokens) {
+    await client.query(
+      `
+        insert into mcp_access_tokens (
+          id, account_id, user_id, session_id, token_hash, name, scopes, shop_id,
+          created_at, expires_at, last_used_at, revoked_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12)
+        on conflict (id) do update set
+          token_hash = excluded.token_hash,
+          name = excluded.name,
+          scopes = excluded.scopes,
+          shop_id = excluded.shop_id,
+          expires_at = excluded.expires_at,
+          last_used_at = excluded.last_used_at,
+          revoked_at = excluded.revoked_at
+      `,
+      [
+        token.id,
+        token.accountId,
+        token.userId,
+        token.sessionId,
+        token.tokenHash,
+        token.name,
+        token.scopes,
+        token.shopId,
+        token.createdAt,
+        token.expiresAt,
+        token.lastUsedAt,
+        token.revokedAt
       ]
     );
   }
@@ -2118,6 +2193,7 @@ function emptySnapshot(): Cp2Snapshot {
     conversationParticipants: [],
     conversationMessages: [],
     syncChanges: [],
+    mcpAccessTokens: [],
     products: [],
     customers: [],
     suppliers: [],

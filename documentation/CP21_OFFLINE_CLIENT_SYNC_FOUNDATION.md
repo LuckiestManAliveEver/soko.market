@@ -31,7 +31,7 @@ identity, permissions, session context, conversations, and structured messages.
   explicit rollback and health count.
 
 The implementation and repository CI are complete. The checkpoint remains active until migration
-018 and the Postgres restart integration test run against an approved database connection.
+018 and the read-only schema verification run against the configured Neon database.
 
 ## Invariants
 
@@ -90,5 +90,9 @@ Passed:
 
 Pending environment verification:
 
-- apply migration 018 to local/staging Postgres
-- run `tests/cp2-postgres-store.test.ts` with `CP2_POSTGRES_TEST_DATABASE_URL`
+- configure the deployed API with Neon's pooled `DATABASE_URL`
+- apply migration 018 using Neon's direct `DIRECT_DATABASE_URL`
+- run the read-only `pnpm db:verify-schema` check against the Neon branch
+
+The state-creating `tests/cp2-postgres-store.test.ts` integration test is intentionally not run
+against the sole Neon branch because it creates durable application records.

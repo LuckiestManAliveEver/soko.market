@@ -24,6 +24,11 @@ interface SyncPageResponse {
   changes: Array<{ accountId: string; collection: string }>;
 }
 
+interface McpTokenResponse {
+  accessToken: string;
+  token: { id: string };
+}
+
 const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 
@@ -35,6 +40,18 @@ describePostgres("CP2 Postgres store", () => {
     const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
     const app = buildApi({ cp2: { store } });
     const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+    await postJson(app, "/auth/pin/setup", { pin: "6138" }, sessionCookie);
+    const mcpToken = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      {
+        name: "Postgres restart token",
+        scopes: ["mcp:read", "mcp:act"],
+        shopId: business.id,
+        expiresInSeconds: 3600
+      },
+      sessionCookie
+    );
     const product = await postJson<ProductResponse>(
       app,
       `/businesses/${business.id}/products`,
@@ -59,6 +76,9 @@ describePostgres("CP2 Postgres store", () => {
 
     const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
     const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    expect(
+      restoredStore.authenticateMcpAccessToken({ accessToken: mcpToken.accessToken })
+    ).toMatchObject({ tokenId: mcpToken.token.id, shopId: business.id });
     const products = await getJson<ProductResponse[]>(
       restoredApp,
       `/businesses/${business.id}/products`,

@@ -218,6 +218,36 @@ export const conversationMessages = pgTable(
   })
 );
 
+export const mcpAccessTokens = pgTable(
+  "mcp_access_tokens",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    name: text("name").notNull(),
+    scopes: text("scopes").array().notNull(),
+    shopId: uuid("shop_id").references(() => businesses.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => ({
+    accountUpdated: index("mcp_access_tokens_account_updated_idx").on(
+      table.accountId,
+      table.createdAt
+    )
+  })
+);
+
 export const sokoSessionContexts = pgTable("soko_session_contexts", {
   sessionId: uuid("session_id")
     .primaryKey()

@@ -1,6 +1,8 @@
 import Fastify from "fastify";
+import websocket from "@fastify/websocket";
 import type { HealthResponse } from "@soko/shared-types";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
+import { registerMcpRoutes } from "./mcp/routes.js";
 
 const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:5173"];
 
@@ -15,6 +17,12 @@ export function buildApi(options: BuildApiOptions = {}) {
     logger: true
   });
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
+
+  void app.register(websocket, {
+    options: {
+      maxPayload: 1_024
+    }
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
@@ -31,27 +39,33 @@ export function buildApi(options: BuildApiOptions = {}) {
     }
   });
 
-  app.get("/health", async (): Promise<HealthResponse> => {
-    return {
-      service: "api",
-      status: "ok",
-      timestamp: new Date().toISOString()
-    };
-  });
-
-  if (options.databaseHealth !== undefined) {
-    app.get("/health/db", async () => {
-      const database = await options.databaseHealth?.();
-
+  void app.register(async (routes) => {
+    routes.get("/health", async (): Promise<HealthResponse> => {
       return {
         service: "api",
-        timestamp: new Date().toISOString(),
-        database
+        status: "ok",
+        timestamp: new Date().toISOString()
       };
     });
-  }
 
-  registerCp2Routes(app, options.cp2);
+    if (options.databaseHealth !== undefined) {
+      routes.get("/health/db", async () => {
+        const database = await options.databaseHealth?.();
+
+        return {
+          service: "api",
+          timestamp: new Date().toISOString(),
+          database
+        };
+      });
+    }
+
+    const store = registerCp2Routes(routes, {
+      ...options.cp2,
+      realtimeAllowedOrigins: [...allowedCorsOrigins]
+    });
+    registerMcpRoutes(routes, { store, allowedOrigins: [...allowedCorsOrigins] });
+  });
 
   return app;
 }

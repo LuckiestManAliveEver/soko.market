@@ -35,6 +35,18 @@ Render runs this as the API `preDeployCommand`. This keeps schema changes in a r
 
 The API will fail startup if the latest required migration has not been applied.
 
+## Verify schema without writing application data
+
+When only one managed database branch is available, verify the deployed schema with:
+
+```bash
+DIRECT_DATABASE_URL=postgresql://... pnpm db:verify-schema
+```
+
+This opens a read-only transaction and verifies the migration 018 and 019 checksums, sync and MCP
+token table columns, and required constraint types. It does not create test accounts, shops,
+products, sync records, or access tokens.
+
 ## Create a backup
 
 Install PostgreSQL client tools locally so `pg_dump` is available, then run:

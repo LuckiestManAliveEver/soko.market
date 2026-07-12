@@ -29,6 +29,7 @@ import type {
   ConversationMessageContent,
   SokoChatSurface,
   SokoMode,
+  SyncRealtimeReadyEvent,
   VerificationTier
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
@@ -60,6 +61,7 @@ import {
 
 export interface Cp2RouteOptions {
   otpProvider?: OtpProvider;
+  realtimeAllowedOrigins?: string[];
   store?: Cp2Store;
 }
 
@@ -554,6 +556,7 @@ interface LaunchIncidentStatusBody {
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
+  const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
 
   async function requestOtpForBody(body: OtpRequestBody) {
     const channel = parseAuthChannel(body.method ?? body.channel);
@@ -1321,6 +1324,62 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       } catch (error) {
         return sendCp2Error(reply, error);
       }
+    }
+  );
+
+  app.get(
+    "/v1/realtime",
+    {
+      websocket: true,
+      preValidation: async (request, reply) => {
+        const origin = request.headers.origin;
+        if (origin !== undefined && !realtimeAllowedOrigins.has(origin)) {
+          return reply.code(403).send({ code: "realtime_origin_forbidden" });
+        }
+        if (store.getSession(readSessionCookie(request.headers.cookie)) === null) {
+          return reply.code(401).send({ code: "session_required" });
+        }
+      }
+    },
+    (socket, request) => {
+      const sessionId = readSessionCookie(request.headers.cookie);
+      const session = store.getSession(sessionId);
+      if (session === null) {
+        socket.close(1008, "Session required");
+        return;
+      }
+
+      let unsubscribe: () => void = () => undefined;
+      const closeExpiredSession = () => {
+        if (store.getSession(sessionId) !== null) {
+          return false;
+        }
+        unsubscribe();
+        socket.close(1008, "Session expired");
+        return true;
+      };
+      unsubscribe = store.subscribeSyncChanges({
+        sessionId,
+        listener: (event) => {
+          if (!closeExpiredSession() && socket.readyState === 1) {
+            socket.send(JSON.stringify(event));
+          }
+        }
+      });
+      const ready: SyncRealtimeReadyEvent = {
+        type: "realtime.ready",
+        protocolVersion: 1,
+        accountId: session.account.id,
+        serverTime: new Date().toISOString()
+      };
+      socket.send(JSON.stringify(ready));
+      const sessionTimer = setInterval(closeExpiredSession, 30_000);
+      const cleanup = () => {
+        clearInterval(sessionTimer);
+        unsubscribe();
+      };
+      socket.once("close", cleanup);
+      socket.once("error", cleanup);
     }
   );
 

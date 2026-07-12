@@ -1285,6 +1285,54 @@ export interface SyncPullPage<T = unknown> {
   serverTime: string;
 }
 
+export interface SyncRealtimeReadyEvent {
+  type: "realtime.ready";
+  protocolVersion: 1;
+  accountId: string;
+  serverTime: string;
+}
+
+export interface SyncRealtimeChangesAvailableEvent {
+  type: "sync.changes_available";
+  protocolVersion: 1;
+  accountId: string;
+  cursor: string;
+  sequence: number;
+  collection: SyncCollection;
+  emittedAt: string;
+}
+
+export type SyncRealtimeEvent = SyncRealtimeReadyEvent | SyncRealtimeChangesAvailableEvent;
+
+export type McpAccessScope = "mcp:read" | "mcp:act";
+
+export interface McpAccessTokenSummary {
+  id: string;
+  accountId: string;
+  name: string;
+  scopes: McpAccessScope[];
+  shopId: string | null;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface McpAccessTokenCreated {
+  accessToken: string;
+  token: McpAccessTokenSummary;
+}
+
+export interface McpPrincipal {
+  tokenId: string;
+  accountId: string;
+  userId: string;
+  sessionId: string;
+  scopes: McpAccessScope[];
+  shopId: string | null;
+  expiresAt: string;
+}
+
 export interface LocalSyncRecord<T = unknown> {
   accountId: string;
   collection: SyncCollection;

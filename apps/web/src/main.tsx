@@ -26,6 +26,7 @@ import {
 } from "./app-shell";
 import { openIndexedDbSyncRepository } from "./sync/indexeddb-repository";
 import { catchUpAccountSync } from "./sync/sync-client";
+import { subscribeToAccountRealtime } from "./sync/realtime-client";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
@@ -1911,6 +1912,8 @@ function OwnerApp() {
 
     let cancelled = false;
     let closeRepository: (() => void) | undefined;
+    let closeRealtime: (() => void) | undefined;
+    let catchUpPromise: Promise<void> | null = null;
     void openIndexedDbSyncRepository()
       .then(async (repository) => {
         if (cancelled) {
@@ -1918,11 +1921,30 @@ function OwnerApp() {
           return;
         }
         closeRepository = () => repository.close();
-        await catchUpAccountSync({
-          accountId: session.account.id,
-          repository,
-          endpoint: `${apiBaseUrl}/v1/sync/changes`
-        });
+        const catchUp = () => {
+          if (catchUpPromise === null) {
+            catchUpPromise = catchUpAccountSync({
+              accountId: session.account.id,
+              repository,
+              endpoint: `${apiBaseUrl}/v1/sync/changes`
+            })
+              .then(() => undefined)
+              .finally(() => {
+                catchUpPromise = null;
+              });
+          }
+          return catchUpPromise;
+        };
+        await catchUp();
+        if (!cancelled) {
+          const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
+          realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
+          closeRealtime = subscribeToAccountRealtime({
+            accountId: session.account.id,
+            endpoint: realtimeUrl.toString(),
+            onChangesAvailable: catchUp
+          });
+        }
       })
       .catch(() => {
         if (!cancelled && !navigator.onLine) {
@@ -1932,6 +1954,7 @@ function OwnerApp() {
 
     return () => {
       cancelled = true;
+      closeRealtime?.();
       closeRepository?.();
     };
   }, [session?.account.id]);

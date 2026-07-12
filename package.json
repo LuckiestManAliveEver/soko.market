@@ -24,6 +24,7 @@
     "db:backup:verify": "pnpm --filter @soko/api db:backup:verify",
     "db:health": "pnpm --filter @soko/api db:health",
     "db:migrate": "pnpm --filter @soko/api db:migrate",
+    "db:verify-schema": "pnpm --filter @soko/api db:verify-schema",
     "db:rollback": "pnpm --filter @soko/api db:rollback",
     "db:restore": "pnpm --filter @soko/api db:restore",
     "format": "prettier --check .",

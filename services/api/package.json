@@ -19,6 +19,7 @@
     "db:backup:verify": "node scripts/verify-backup-db.mjs",
     "db:health": "node scripts/check-db-health.mjs",
     "db:migrate": "node scripts/migrate-db.mjs",
+    "db:verify-schema": "node scripts/verify-db-schema.mjs",
     "db:rollback": "node scripts/rollback-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",
     "build": "tsc -p tsconfig.build.json",
@@ -28,6 +29,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.3.0",
     "@soko/ai-runtime": "workspace:*",
     "@soko/business-core": "workspace:*",
     "@soko/event-core": "workspace:*",
@@ -38,6 +40,7 @@
     "pg": "^8.22.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.20.0"
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1"
   }
 }
