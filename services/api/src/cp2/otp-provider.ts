@@ -1,12 +1,18 @@
 import type { AuthChannel } from "@soko/shared-types";
 import { Cp2Error } from "./store.js";
 
+export type OtpDeliveryChannel = "sms" | "whatsapp";
+
 export interface OtpProvider {
   readonly name: string;
   readonly exposesDevOtp: boolean;
   readonly verifiesExternally: boolean;
   canHandle(channel: AuthChannel): boolean;
-  requestOtp(input: { channel: AuthChannel; destination: string }): Promise<void>;
+  requestOtp(input: {
+    channel: AuthChannel;
+    deliveryChannel: OtpDeliveryChannel;
+    destination: string;
+  }): Promise<void>;
   verifyOtp(input: { channel: AuthChannel; destination: string; code: string }): Promise<boolean>;
 }
 
@@ -14,6 +20,7 @@ interface TwilioVerifyConfig {
   accountSid: string;
   authToken: string;
   serviceSid: string;
+  whatsappEnabled: boolean;
 }
 
 interface TwilioVerificationResponse {
@@ -31,7 +38,15 @@ class LocalOtpProvider implements OtpProvider {
     return true;
   }
 
-  async requestOtp(): Promise<void> {
+  async requestOtp(input: {
+    channel: AuthChannel;
+    deliveryChannel: OtpDeliveryChannel;
+    destination: string;
+  }): Promise<void> {
+    if (input.deliveryChannel === "whatsapp") {
+      throw new Cp2Error(503, "whatsapp_otp_unconfigured", "WhatsApp OTP is not configured.");
+    }
+
     return;
   }
 
@@ -56,14 +71,22 @@ export class TwilioVerifyOtpProvider implements OtpProvider {
     return channel === "phone";
   }
 
-  async requestOtp(input: { channel: AuthChannel; destination: string }): Promise<void> {
+  async requestOtp(input: {
+    channel: AuthChannel;
+    deliveryChannel: OtpDeliveryChannel;
+    destination: string;
+  }): Promise<void> {
     if (!this.canHandle(input.channel)) {
       throw new Cp2Error(400, "otp_channel_unsupported", "Twilio Verify only handles phone OTP.");
     }
 
+    if (input.deliveryChannel === "whatsapp" && !this.config.whatsappEnabled) {
+      throw new Cp2Error(503, "whatsapp_otp_unconfigured", "WhatsApp OTP is not configured.");
+    }
+
     const response = await this.postTwilio("Verifications", {
       To: input.destination,
-      Channel: "sms"
+      Channel: input.deliveryChannel
     });
 
     if (response.status !== "pending" && response.status !== "approved") {
@@ -120,16 +143,28 @@ export class TwilioVerifyOtpProvider implements OtpProvider {
 
 export function createOtpProviderFromEnvironment(env = process.env): OtpProvider {
   const enabled = env.TWILIO_VERIFY_ENABLED?.trim().toLowerCase() === "true";
+  const whatsappEnabled = env.WHATSAPP_OTP_ENABLED?.trim().toLowerCase() === "true";
   const accountSid = env.TWILIO_ACCOUNT_SID?.trim();
   const authToken = env.TWILIO_AUTH_TOKEN?.trim();
   const serviceSid = env.TWILIO_VERIFY_SERVICE_SID?.trim();
 
-  if (enabled && accountSid !== undefined && authToken !== undefined && serviceSid !== undefined) {
+  if (whatsappEnabled && !enabled) {
+    throw new Error("WHATSAPP_OTP_ENABLED requires TWILIO_VERIFY_ENABLED=true.");
+  }
+
+  if (enabled && accountSid && authToken && serviceSid) {
     return new TwilioVerifyOtpProvider({
       accountSid,
       authToken,
-      serviceSid
+      serviceSid,
+      whatsappEnabled
     });
+  }
+
+  if (enabled) {
+    throw new Error(
+      "Twilio Verify OTP is enabled but TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or TWILIO_VERIFY_SERVICE_SID is missing."
+    );
   }
 
   return new LocalOtpProvider();

@@ -5,13 +5,13 @@ This is the deployment runbook for testing Soko Market with:
 - GitHub for source code
 - Render for the frontend and backend
 - Cloudflare for DNS
-- MongoDB Atlas for test persistence
+- Render Postgres for persistent application data
 - Web domain: `soko.market`
 - API domain: `api.soko.market`
 
-Cloudflare is already registered and active for `soko.market`. Do not repeat domain registration or nameserver setup. The remaining work is to connect Render to GitHub, deploy both Render services, add the DNS records Render asks for in Cloudflare, and prepare Atlas for database-backed persistence.
-
-Atlas is feasible for this project as the test database. The current API still uses an in-memory store, so setting `MONGODB_URI` prepares the environment but does not persist app data until a Mongo-backed store adapter is implemented.
+Cloudflare is already registered and active for `soko.market`. Do not repeat domain registration
+or nameserver setup. The Render Blueprint provisions the API, frontend, and `soko-market-db`
+Postgres database and connects them over Render's private network.
 
 ## 1. Confirm GitHub Is Ready
 
@@ -32,6 +32,7 @@ That file defines:
 
 - `soko-market-web`: Render Static Site for the Vite frontend.
 - `soko-market-api`: Render Web Service for the Fastify backend.
+- `soko-market-db`: Render Postgres for persistent application data.
 
 ## 2. Connect Render To GitHub
 
@@ -44,7 +45,7 @@ That file defines:
 7. Confirm Render detects `render.yaml`.
 8. Create the Blueprint.
 
-Render should create two services:
+Render should create two services and one database:
 
 1. `soko-market-api`
    - Type: Web Service
@@ -64,6 +65,12 @@ Render should create two services:
    - Custom domain: `soko.market`
    - API URL: `https://api.soko.market`
 
+3. `soko-market-db`
+   - Type: Render Postgres
+   - Region: Oregon
+   - Database: `soko_market`
+   - `DATABASE_URL` and `DIRECT_DATABASE_URL` are injected into the API and database jobs.
+
 ## 3. Confirm Render Environment Variables
 
 Open Render service `soko-market-api`, then go to Environment.
@@ -77,41 +84,22 @@ API_HOST=0.0.0.0
 WEB_ORIGINS=https://soko.market,https://www.soko.market
 APP_URL=https://soko.market
 AUTH_ALLOWED_REDIRECT_ORIGINS=https://soko.market,https://www.soko.market
+CP2_STORE=postgres
+DATABASE_URL=<linked from soko-market-db>
+DIRECT_DATABASE_URL=<linked from soko-market-db>
 ```
 
-Set a stable encryption secret and both credentials for every OAuth provider you want to enable:
+Social OAuth login is disabled in both the frontend and API. Do not add Google, Facebook, TikTok,
+Apple, GitHub, Microsoft, LinkedIn, or X client credentials to Render.
 
-```text
-AUTH_TOKEN_ENCRYPTION_KEY=<generated random secret>
-OAUTH_GOOGLE_CLIENT_ID=<Google client ID>
-OAUTH_GOOGLE_CLIENT_SECRET=<Google client secret>
-OAUTH_FACEBOOK_CLIENT_ID=<Facebook app ID>
-OAUTH_FACEBOOK_CLIENT_SECRET=<Facebook app secret>
-```
-
-Use the equivalent `OAUTH_<PROVIDER>_CLIENT_ID` and
-`OAUTH_<PROVIDER>_CLIENT_SECRET` variables declared in `render.yaml` for TikTok, Apple, GitHub,
-Microsoft, LinkedIn, or X. Register this exact web callback with each enabled provider:
-
-```text
-https://soko.market/auth/oauth/callback
-```
-
-OAuth remains disabled for a provider until both its client ID and client secret are present.
-
-Set these when the Twilio Verify trial is ready:
+Set these when the Twilio Verify service is ready:
 
 ```text
 TWILIO_VERIFY_ENABLED=true
+WHATSAPP_OTP_ENABLED=true
 TWILIO_ACCOUNT_SID=<Twilio account SID>
 TWILIO_AUTH_TOKEN=<Twilio auth token>
 TWILIO_VERIFY_SERVICE_SID=<Twilio Verify service SID>
-```
-
-Set this when the Atlas cluster is ready:
-
-```text
-MONGODB_URI=<Atlas test connection string>
 ```
 
 Open Render service `soko-market-web`, then go to Environment.
@@ -125,47 +113,25 @@ VITE_API_URL=https://api.soko.market
 
 If you change any frontend environment variable, redeploy `soko-market-web` because Vite reads env vars at build time.
 
-## 4. Add MongoDB Atlas For Test Persistence
+## 4. Activate Render Postgres
 
-Use Atlas Free/M0 for test persistence while the app is on Render free tier.
+1. Open the Soko Market Blueprint in Render.
+2. Click **Sync Blueprint** after the latest `render.yaml` reaches `main`.
+3. Confirm Render creates `soko-market-db` and its status becomes **Available**.
+4. Confirm the API environment shows `DATABASE_URL` and `DIRECT_DATABASE_URL` linked from that
+   database. Do not enter these values manually.
+5. Deploy `soko-market-api`.
+6. The API start command runs all SQL migrations before starting the server. This is intentionally
+   part of the start command because Render pre-deploy commands are unavailable on free web
+   services.
+7. Open `https://api.soko.market/health/db` and confirm `database.status` is `ok` and
+   `latestMigration` is `019_cp23_mcp_access_tokens.sql`.
 
-1. Log in to MongoDB Atlas.
-2. Create or open an Atlas project for Soko Market.
-3. Create a Free/M0 cluster.
-4. Choose a region close to the Render region if available.
-5. Create a database user with a generated password.
-6. Copy the Atlas connection string.
-7. Replace the username and password placeholders in the connection string.
-8. In Render, open `soko-market-api`.
-9. Go to Environment.
-10. Set `MONGODB_URI` to the Atlas connection string.
-11. Redeploy `soko-market-api`.
+The Blueprint currently uses Render's free Postgres plan for testing. Render free databases expire
+after 30 days and are not appropriate for production merchant data. Change the database plan to a
+paid Render Postgres instance before production use.
 
-For Render free-tier testing, Atlas network access needs special attention:
-
-- Render free services do not provide one stable outbound IP for Atlas allowlisting.
-- For a short test, use broad Atlas network access only if you understand the exposure.
-- Keep the database user password strong and unique.
-- Restrict Atlas network access before any real merchant data is stored.
-
-Persistence status:
-
-- `MONGODB_URI` is already present in `render.yaml`.
-- The deployment environment can receive the Atlas connection string now.
-- App data is still in-memory until the backend store is changed to use MongoDB.
-- Do not rely on Atlas for saved users, businesses, invoices, payments, launch state, or audit events until the Mongo-backed store adapter is implemented and tested.
-
-Recommended implementation order:
-
-1. Add the official MongoDB Node driver to `@soko/api`.
-2. Add a persistence interface behind the current CP2 store.
-3. Keep the in-memory store for fast tests.
-4. Add a Mongo-backed store for deployed environments.
-5. Start with auth, sessions, businesses, memberships, products, customers, invoices, and audit events.
-6. Then add payments, logistics, notifications, runtime turns, beta readiness, and launch readiness.
-7. Add indexes for `businessId`, `userId`, `sessionId`, timestamps, and high-volume list endpoints.
-
-## 5. Add Twilio Verify Free Trial For Phone OTP
+## 5. Add Twilio Verify For SMS And WhatsApp OTP
 
 Use Twilio Verify for hosted phone OTP while testing. This uses Twilio's trial/free account path, not a permanently free SMS product.
 
@@ -176,20 +142,24 @@ Use Twilio Verify for hosted phone OTP while testing. This uses Twilio's trial/f
 5. Go to Verify.
 6. Create a Verify Service for Soko Market.
 7. Copy the Verify Service SID, which starts with `VA`.
-8. If the account is a Twilio trial account, verify every recipient phone number you want to test with.
-9. In Render, open `soko-market-api`.
-10. Go to Environment.
+8. Enable the WhatsApp verification channel for that Verify Service and complete any Twilio/Meta
+   sender approval required by the Console.
+9. If the account is a Twilio trial account, verify every recipient phone number you want to test.
+10. In Render, open `soko-market-api` and go to Environment.
 11. Set `TWILIO_VERIFY_ENABLED=true`.
-12. Set `TWILIO_ACCOUNT_SID`.
-13. Set `TWILIO_AUTH_TOKEN`.
-14. Set `TWILIO_VERIFY_SERVICE_SID`.
-15. Redeploy `soko-market-api`.
+12. Set `WHATSAPP_OTP_ENABLED=true`.
+13. Set `TWILIO_ACCOUNT_SID`.
+14. Set `TWILIO_AUTH_TOKEN`.
+15. Set `TWILIO_VERIFY_SERVICE_SID`.
+16. Redeploy `soko-market-api`.
 
 Runtime behavior:
 
-- If all three Twilio env vars are set, phone OTP requests use Twilio Verify SMS.
-- `TWILIO_VERIFY_ENABLED` must be `true`; otherwise the API keeps local OTP behavior.
-- If Twilio env vars are missing, the API keeps the local dev OTP behavior.
+- Normal phone OTP requests use Twilio Verify SMS.
+- WhatsApp OTP requests use the same Verify Service with Twilio's `whatsapp` channel.
+- The Twilio credentials identify the Soko service, not individual users. Do not add one set per user.
+- If either OTP feature is enabled while a required Twilio secret is missing, the API refuses to
+  start instead of silently using local OTP behavior.
 - Email OTP still uses the local dev OTP path until an email OTP provider is added.
 - The frontend will no longer auto-fill the OTP when Twilio handles the request.
 
@@ -346,14 +316,11 @@ If Twilio is configured, test phone OTP:
 4. Enter the received code manually.
 5. Confirm login succeeds.
 
-If Atlas is configured, also verify the backend has the environment variable:
+Verify Postgres persistence:
 
-1. Open `soko-market-api` in Render.
-2. Go to Environment.
-3. Confirm `MONGODB_URI` is set.
-4. Check backend logs for database connection errors after redeploy.
-
-Remember: `MONGODB_URI` being set does not prove persistence is active until the Mongo-backed store adapter exists.
+1. Open `https://api.soko.market/health/db`.
+2. Confirm `database.status` is `ok`.
+3. Create a test account or shop, redeploy the API, and confirm the record remains available.
 
 ## 12. Troubleshooting
 
@@ -400,29 +367,31 @@ If the frontend loads but API calls fail:
 If Twilio OTP does not send:
 
 1. Confirm `TWILIO_VERIFY_ENABLED=true` is set on `soko-market-api`.
-2. Confirm `TWILIO_ACCOUNT_SID` is set on `soko-market-api`.
-3. Confirm `TWILIO_AUTH_TOKEN` is set on `soko-market-api`.
-4. Confirm `TWILIO_VERIFY_SERVICE_SID` is set on `soko-market-api`.
-5. Confirm the service SID starts with `VA`.
-6. If using a Twilio trial account, confirm the recipient phone number is verified in Twilio.
-7. Confirm the phone number is in E.164 format, for example `+254700000000`.
-8. Check Render logs for `otp_provider_failed`.
+2. For WhatsApp, confirm `WHATSAPP_OTP_ENABLED=true` and that the WhatsApp channel/sender is
+   approved in the Twilio Verify Console.
+3. Confirm `TWILIO_ACCOUNT_SID` is set on `soko-market-api`.
+4. Confirm `TWILIO_AUTH_TOKEN` is set on `soko-market-api`.
+5. Confirm `TWILIO_VERIFY_SERVICE_SID` is set on `soko-market-api`.
+6. Confirm the service SID starts with `VA`.
+7. If using a Twilio trial account, confirm the recipient phone number is verified in Twilio.
+8. Confirm the phone number is in E.164 format, for example `+254700000000`.
+9. Check Render logs for `whatsapp_otp_unconfigured` or `otp_provider_failed`.
 
-If Atlas connection fails after the Mongo adapter is implemented:
+If Postgres does not activate:
 
-1. Confirm `MONGODB_URI` is set on `soko-market-api`.
-2. Confirm the Atlas database user still exists.
-3. Confirm the Atlas password in Render matches the database user password.
-4. Confirm Atlas Network Access allows Render outbound traffic.
-5. Check Render logs for MongoDB authentication or network timeout errors.
+1. Sync the Blueprint and confirm `soko-market-db` exists in the Oregon region.
+2. Confirm the database status is **Available**, not **Suspended** or **Expired**.
+3. Confirm `DATABASE_URL` is linked from `soko-market-db` on the API service.
+4. Check the API deploy logs for `Database migrations are up to date.`
+5. Open `/health/db` and check `latestMigration` and connection latency.
 
 ## 13. Free-Tier Notes
 
 Render free web services can spin down after idle time. The first API request after idle can take about one minute.
 
-The current app store is in-memory. Test data can disappear when the API restarts, redeploys, or spins down. Use this setup for testing until persistent storage is implemented.
-
-Atlas Free/M0 is appropriate for test data and proof-of-concept usage. Do not treat it as production-ready storage for real merchant data.
+The deployed API uses Postgres when `CP2_STORE=postgres`; it does not fall back to memory if the
+database is missing. Render free Postgres is appropriate only for short-lived testing because it
+expires after 30 days and has no managed backups.
 
 Twilio's trial path is appropriate for verifying the integration, not for permanent free production SMS.
 
@@ -431,8 +400,8 @@ Twilio's trial path is appropriate for verifying the integration, not for perman
 - Render custom domains: https://render.com/docs/custom-domains
 - Render Blueprint YAML: https://render.com/docs/blueprint-spec
 - Render outbound IPs: https://render.com/docs/outbound-ip-addresses
-- MongoDB Atlas free cluster: https://www.mongodb.com/docs/atlas/tutorial/deploy-free-tier-cluster/
-- MongoDB Atlas free/shared limits: https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/
+- Render Postgres: https://render.com/docs/postgresql
+- Render free service limits: https://render.com/docs/free
 - Twilio Verify verifications: https://www.twilio.com/docs/verify/api/verification
 - Twilio Verify checks: https://www.twilio.com/docs/verify/api/verification-check
 - Twilio Verify pricing: https://www.twilio.com/en-us/verify/pricing

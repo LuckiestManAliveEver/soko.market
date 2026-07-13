@@ -30,6 +30,7 @@ import { subscribeToAccountRealtime } from "./sync/realtime-client";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
+type OtpDeliveryChannel = "sms" | "whatsapp";
 type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
@@ -1784,6 +1785,7 @@ function OwnerApp() {
   );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
+  const [otpDeliveryChannel, setOtpDeliveryChannel] = useState<OtpDeliveryChannel>("sms");
   const [isOtpVerified, setIsOtpVerified] = useState(false);
   const [signupPin, setSignupPin] = useState("");
   const [signupPinConfirm, setSignupPinConfirm] = useState("");
@@ -1795,7 +1797,6 @@ function OwnerApp() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
-  const [isOtherSocialOpen, setIsOtherSocialOpen] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
@@ -2150,6 +2151,7 @@ function OwnerApp() {
     setSession(response);
     setChallenge(null);
     setOtp("");
+    setOtpDeliveryChannel("sms");
     setIsOtpVerified(true);
 
     if (business !== null) {
@@ -2262,7 +2264,8 @@ function OwnerApp() {
     try {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
-        contact: contactValue
+        contact: contactValue,
+        deliveryChannel: channel === "phone" ? otpDeliveryChannel : "sms"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -2348,7 +2351,6 @@ function OwnerApp() {
         state: response.state
       };
       sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));
-      setIsOtherSocialOpen(false);
       setStatusMessage(
         `Redirecting to ${selectedProvider?.label ?? "social"} to continue with your account.`
       );
@@ -2387,7 +2389,8 @@ function OwnerApp() {
     try {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
-        contact: contactValue
+        contact: contactValue,
+        deliveryChannel: channel === "phone" ? otpDeliveryChannel : "sms"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -4218,6 +4221,7 @@ function OwnerApp() {
     setPendingAttachments([]);
     setChallenge(null);
     setOtp("");
+    setOtpDeliveryChannel("sms");
     setIsOtpVerified(false);
     setSignupPin("");
     setSignupPinConfirm("");
@@ -4873,26 +4877,22 @@ function OwnerApp() {
             destination={destination}
             challenge={challenge}
             otp={otp}
+            otpDeliveryChannel={otpDeliveryChannel}
             isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
             session={session}
-            oauthProviders={oauthProviders}
-            oauthProvidersLoaded={oauthProvidersLoaded}
-            isOtherSocialOpen={isOtherSocialOpen}
             statusMessage={statusMessage}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
+            onOtpDeliveryChannelChange={setOtpDeliveryChannel}
             onRequestOtp={() => void requestOtp()}
             onVerifyOtp={() => void verifyOtp()}
             onCompleteSignup={() => void completeSignup()}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
-            onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
-            onOpenOtherSocial={() => setIsOtherSocialOpen(true)}
-            onCloseOtherSocial={() => setIsOtherSocialOpen(false)}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -4901,20 +4901,19 @@ function OwnerApp() {
             destination={destination}
             challenge={challenge}
             otp={otp}
+            otpDeliveryChannel={otpDeliveryChannel}
             isOtpVerified={isOtpVerified}
             loginPin={loginPin}
             isRecoveringPin={isRecoveringPin}
             hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
-            oauthProviders={oauthProviders}
-            oauthProvidersLoaded={oauthProvidersLoaded}
-            isOtherSocialOpen={isOtherSocialOpen}
             statusMessage={statusMessage}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
+            onOtpDeliveryChannelChange={setOtpDeliveryChannel}
             onRequestOtp={() => void requestLoginOtp()}
             onVerifyOtp={() => void verifyLoginOtp()}
             onLoginPinChange={setLoginPin}
@@ -4924,9 +4923,6 @@ function OwnerApp() {
             onCancelPinRecovery={cancelPinRecovery}
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
-            onSocialLogin={(provider) => void authenticateSocialProfile(provider)}
-            onOpenOtherSocial={() => setIsOtherSocialOpen(true)}
-            onCloseOtherSocial={() => setIsOtherSocialOpen(false)}
             onLogin={() => void loginWithPin()}
           />
         ) : isBusinessSetupOpen && business === null ? (
@@ -5031,50 +5027,32 @@ interface SetupPanelProps {
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
+  otpDeliveryChannel: OtpDeliveryChannel;
   isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
   session: SessionResponse | null;
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  isOtherSocialOpen: boolean;
   statusMessage: string;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
+  onOtpDeliveryChannelChange: (channel: OtpDeliveryChannel) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCompleteSignup: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
-  onSocialSignup: (provider: SocialSignupProvider) => void;
-  onOpenOtherSocial: () => void;
-  onCloseOtherSocial: () => void;
 }
 
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  isOtherSocialOpen: boolean;
+  onSelectWhatsApp: () => void;
   onSelectPhone: () => void;
   onSelectEmail: () => void;
-  onSelectProvider: (provider: SocialSignupProvider) => void;
-  onOpenOther: () => void;
-  onCloseOther: () => void;
 }
 
 function SocialLoginOptions(props: SocialLoginOptionsProps) {
-  const primaryProviders = socialSignupProviders.filter((provider) => provider.primary);
-  const secondaryProviders = socialSignupProviders.filter(
-    (provider) => provider.id === "x" || provider.id === "linkedin"
-  );
-  const otherProviders = socialSignupProviders.filter(
-    (provider) => !provider.primary && provider.id !== "x" && provider.id !== "linkedin"
-  );
-  const actionText = props.mode === "signup" ? "sign up or sign in" : "log in or sign in";
-
   return (
     <>
       <AuthBrand />
@@ -5082,36 +5060,11 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
         <button
           className="social-signup-button whatsapp"
           type="button"
-          onClick={props.onSelectPhone}
+          onClick={props.onSelectWhatsApp}
         >
           <span aria-hidden="true">WA</span>
           Continue with WhatsApp
         </button>
-        {primaryProviders.map((provider) => {
-          const config = getAuthProviderConfig(
-            provider,
-            props.oauthProviders,
-            props.oauthProvidersLoaded
-          );
-
-          return (
-            <button
-              className={`social-signup-button ${provider.id} ${config.enabled ? "" : "unconfigured"}`}
-              key={provider.id}
-              title={
-                config.enabled
-                  ? `Redirect to ${provider.label} to ${actionText}`
-                  : "This login provider is not configured yet."
-              }
-              type="button"
-              aria-disabled={!config.enabled}
-              onClick={() => props.onSelectProvider(provider.id)}
-            >
-              <span>{provider.icon}</span>
-              Continue with {provider.label}
-            </button>
-          );
-        })}
       </div>
 
       <div className="signup-divider auth-divider">
@@ -5129,93 +5082,7 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
         </button>
       </div>
 
-      <div className="secondary-provider-row" aria-label="Secondary login providers">
-        {secondaryProviders.map((provider) => {
-          const config = getAuthProviderConfig(
-            provider,
-            props.oauthProviders,
-            props.oauthProvidersLoaded
-          );
-
-          return (
-            <button
-              className={`secondary-provider-button ${provider.id} ${
-                config.enabled ? "" : "unconfigured"
-              }`}
-              key={provider.id}
-              title={
-                config.enabled
-                  ? `Redirect to ${provider.label} to ${actionText}`
-                  : "This login provider is not configured yet."
-              }
-              type="button"
-              aria-disabled={!config.enabled}
-              aria-label={`Continue with ${provider.label}`}
-              onClick={() => props.onSelectProvider(provider.id)}
-            >
-              {provider.icon}
-            </button>
-          );
-        })}
-        <button
-          className="secondary-provider-button other"
-          type="button"
-          title="Other social account"
-          aria-label="Other social account"
-          onClick={props.onOpenOther}
-        >
-          +
-        </button>
-      </div>
-
       <AuthLegalFooter />
-
-      {props.isOtherSocialOpen ? (
-        <div className="auth-modal-backdrop" role="presentation">
-          <div
-            aria-label="Choose another social login provider"
-            aria-modal="true"
-            className="auth-provider-modal"
-            role="dialog"
-          >
-            <div className="auth-modal-heading">
-              <h3>Other social account</h3>
-              <button type="button" onClick={props.onCloseOther} aria-label="Close">
-                x
-              </button>
-            </div>
-            <div className="social-signup-grid">
-              {otherProviders.map((provider) => {
-                const config = getAuthProviderConfig(
-                  provider,
-                  props.oauthProviders,
-                  props.oauthProvidersLoaded
-                );
-
-                return (
-                  <button
-                    className={`social-signup-button ${provider.id} ${
-                      config.enabled ? "" : "unconfigured"
-                    }`}
-                    key={provider.id}
-                    title={
-                      config.enabled
-                        ? `Redirect to ${provider.label} to ${actionText}`
-                        : "This login provider is not configured yet."
-                    }
-                    type="button"
-                    aria-disabled={!config.enabled}
-                    onClick={() => props.onSelectProvider(provider.id)}
-                  >
-                    <span>{provider.icon}</span>
-                    Continue with {provider.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }
@@ -5243,34 +5110,40 @@ function SetupPanel(props: SetupPanelProps) {
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
-  const showPhoneAuth = authView === "phone" || props.challenge !== null || props.isOtpVerified;
+  const showAuthForm = authView !== "options" || props.challenge !== null || props.isOtpVerified;
 
   return (
     <main className="setup-grid auth-landing-grid">
       <section className="panel auth-card">
-        {!showPhoneAuth ? (
+        {!showAuthForm ? (
           <SocialLoginOptions
             mode="signup"
-            oauthProviders={props.oauthProviders}
-            oauthProvidersLoaded={props.oauthProvidersLoaded}
-            isOtherSocialOpen={props.isOtherSocialOpen}
+            onSelectWhatsApp={() => {
+              props.onChannelChange("phone");
+              props.onOtpDeliveryChannelChange("whatsapp");
+              setAuthView("phone");
+            }}
             onSelectPhone={() => {
               props.onChannelChange("phone");
+              props.onOtpDeliveryChannelChange("sms");
               setAuthView("phone");
             }}
             onSelectEmail={() => {
               props.onChannelChange("email");
+              props.onOtpDeliveryChannelChange("sms");
               setAuthView("email");
             }}
-            onSelectProvider={props.onSocialSignup}
-            onOpenOther={props.onOpenOtherSocial}
-            onCloseOther={props.onCloseOtherSocial}
           />
         ) : (
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">Continue with {props.channel}</p>
+                <p className="eyebrow">
+                  Continue with{" "}
+                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
+                    ? "WhatsApp"
+                    : props.channel}
+                </p>
                 <h2>Signup or login</h2>
               </div>
             </div>
@@ -5278,14 +5151,20 @@ function SetupPanel(props: SetupPanelProps) {
               <button
                 className={props.channel === "phone" ? "active" : ""}
                 type="button"
-                onClick={() => props.onChannelChange("phone")}
+                onClick={() => {
+                  props.onChannelChange("phone");
+                  props.onOtpDeliveryChannelChange("sms");
+                }}
               >
                 Phone
               </button>
               <button
                 className={props.channel === "email" ? "active" : ""}
                 type="button"
-                onClick={() => props.onChannelChange("email")}
+                onClick={() => {
+                  props.onChannelChange("email");
+                  props.onOtpDeliveryChannelChange("sms");
+                }}
               >
                 Email
               </button>
@@ -5337,7 +5216,9 @@ function SetupPanel(props: SetupPanelProps) {
               </label>
             )}
             <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-              Continue
+              {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
+                ? "Send WhatsApp OTP"
+                : "Continue"}
             </button>
             <label>
               OTP
@@ -5475,20 +5356,19 @@ interface LoginPanelProps {
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
+  otpDeliveryChannel: OtpDeliveryChannel;
   isOtpVerified: boolean;
   loginPin: string;
   isRecoveringPin: boolean;
   hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  isOtherSocialOpen: boolean;
   statusMessage: string;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
+  onOtpDeliveryChannelChange: (channel: OtpDeliveryChannel) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onLoginPinChange: (pin: string) => void;
@@ -5498,9 +5378,6 @@ interface LoginPanelProps {
   onCancelPinRecovery: () => void;
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
-  onSocialLogin: (provider: SocialSignupProvider) => void;
-  onOpenOtherSocial: () => void;
-  onCloseOtherSocial: () => void;
   onLogin: () => void;
 }
 
@@ -5510,36 +5387,46 @@ function LoginPanel(props: LoginPanelProps) {
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
-  const needsOtp = props.isRecoveringPin || isSettingPin;
-  const showPhoneAuth =
-    authView === "phone" || props.challenge !== null || props.isRecoveringPin || !props.hasLoginPin;
+  const usesWhatsAppOtp = props.channel === "phone" && props.otpDeliveryChannel === "whatsapp";
+  const needsOtp = usesWhatsAppOtp || props.isRecoveringPin || isSettingPin;
+  const showAuthForm =
+    authView !== "options" ||
+    props.challenge !== null ||
+    props.isRecoveringPin ||
+    !props.hasLoginPin;
 
   return (
     <main className="setup-grid auth-landing-grid login-grid">
       <section className="panel auth-card">
-        {!showPhoneAuth ? (
+        {!showAuthForm ? (
           <SocialLoginOptions
             mode="login"
-            oauthProviders={props.oauthProviders}
-            oauthProvidersLoaded={props.oauthProvidersLoaded}
-            isOtherSocialOpen={props.isOtherSocialOpen}
+            onSelectWhatsApp={() => {
+              props.onChannelChange("phone");
+              props.onOtpDeliveryChannelChange("whatsapp");
+              setAuthView("phone");
+            }}
             onSelectPhone={() => {
               props.onChannelChange("phone");
+              props.onOtpDeliveryChannelChange("sms");
               setAuthView("phone");
             }}
             onSelectEmail={() => {
               props.onChannelChange("email");
+              props.onOtpDeliveryChannelChange("sms");
               setAuthView("email");
             }}
-            onSelectProvider={props.onSocialLogin}
-            onOpenOther={props.onOpenOtherSocial}
-            onCloseOther={props.onCloseOtherSocial}
           />
         ) : (
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">Continue with {props.channel}</p>
+                <p className="eyebrow">
+                  Continue with{" "}
+                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
+                    ? "WhatsApp"
+                    : props.channel}
+                </p>
                 <h2>Signup or login</h2>
               </div>
             </div>
@@ -5547,14 +5434,20 @@ function LoginPanel(props: LoginPanelProps) {
               <button
                 className={props.channel === "phone" ? "active" : ""}
                 type="button"
-                onClick={() => props.onChannelChange("phone")}
+                onClick={() => {
+                  props.onChannelChange("phone");
+                  props.onOtpDeliveryChannelChange("sms");
+                }}
               >
                 Phone
               </button>
               <button
                 className={props.channel === "email" ? "active" : ""}
                 type="button"
-                onClick={() => props.onChannelChange("email")}
+                onClick={() => {
+                  props.onChannelChange("email");
+                  props.onOtpDeliveryChannelChange("sms");
+                }}
               >
                 Email
               </button>
@@ -5608,7 +5501,9 @@ function LoginPanel(props: LoginPanelProps) {
             {needsOtp ? (
               <>
                 <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-                  Continue
+                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
+                    ? "Send WhatsApp OTP"
+                    : "Continue"}
                 </button>
                 <label>
                   OTP
@@ -5636,7 +5531,7 @@ function LoginPanel(props: LoginPanelProps) {
         )}
       </section>
 
-      {showPhoneAuth ? (
+      {showAuthForm ? (
         <section className="panel auth-card">
           <div className="section-heading">
             <p className="eyebrow">
@@ -5706,7 +5601,11 @@ function LoginPanel(props: LoginPanelProps) {
               <button
                 type="button"
                 onClick={props.onLogin}
-                disabled={!contactIsValid || !isValidPin(props.loginPin)}
+                disabled={
+                  !contactIsValid ||
+                  !isValidPin(props.loginPin) ||
+                  (usesWhatsAppOtp && !props.isOtpVerified)
+                }
               >
                 Login
               </button>
@@ -12614,31 +12513,6 @@ function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
     value === "microsoft" ||
     value === "linkedin"
   );
-}
-
-function getAuthProviderConfig(
-  provider: (typeof socialSignupProviders)[number],
-  summaries: OAuthProviderSummary[],
-  loaded: boolean
-): {
-  id: SocialSignupProvider;
-  label: string;
-  icon: string;
-  enabled: boolean;
-  configured: boolean;
-  authRedirectPath: string;
-} {
-  const summary = summaries.find((item) => item.id === provider.id);
-  const configured = loaded && summary?.configured === true && summary.implemented !== false;
-
-  return {
-    id: provider.id,
-    label: provider.label,
-    icon: provider.icon,
-    enabled: configured,
-    configured,
-    authRedirectPath: provider.authRedirectPath
-  };
 }
 
 function composeSignupContact(

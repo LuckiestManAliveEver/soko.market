@@ -1,94 +1,42 @@
-# Social auth provider setup
+# Authentication provider setup
 
-## Required app URLs
+Soko Market supports phone OTP over SMS, phone OTP over WhatsApp, and the existing email OTP path.
+WhatsApp is only an OTP delivery channel; it is not a social identity or OAuth login.
 
-Local web:
+Google, Facebook, TikTok, Apple, GitHub, Microsoft, LinkedIn, and X login are disabled in the
+frontend and backend. Their OAuth client IDs and secrets are not required.
 
-```text
-http://127.0.0.1:5173
-```
+## Twilio Verify configuration
 
-Local API:
-
-```text
-http://127.0.0.1:4000
-```
-
-Frontend OAuth callback:
+Configure one Twilio account and one Verify Service for the entire Soko deployment:
 
 ```text
-http://127.0.0.1:5173/auth/oauth/callback
+TWILIO_VERIFY_ENABLED=true
+WHATSAPP_OTP_ENABLED=true
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+TWILIO_VERIFY_SERVICE_SID=VA...
 ```
 
-The API also exposes provider callback relays:
+These are Soko server credentials. Users never provide Twilio or WhatsApp credentials, and the
+same server-side configuration serves every user.
 
-```text
-/auth/oauth/:provider/callback
-/api/auth/oauth/:provider/callback
-```
+In Twilio:
 
-## Environment variables
+1. Create a Verify Service.
+2. Enable SMS verification.
+3. Enable the WhatsApp channel and complete the sender/Meta approval shown by Twilio.
+4. For a trial account, add and verify each test recipient as required by Twilio.
+5. Enter the five values above in the Render environment for `soko-market-api` and redeploy.
 
-Shared:
+Phone numbers must be normalized to E.164, for example `+254700000000`.
 
-```text
-APP_URL=
-API_URL=
-AUTH_SECRET=
-AUTH_SESSION_SECRET=
-AUTH_TOKEN_ENCRYPTION_KEY=
-AUTH_ALLOWED_REDIRECT_ORIGINS=
-```
+## Runtime behavior
 
-Google/Gmail:
-
-```text
-OAUTH_GOOGLE_CLIENT_ID=
-OAUTH_GOOGLE_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=
-```
-
-Facebook:
-
-```text
-OAUTH_FACEBOOK_CLIENT_ID=
-OAUTH_FACEBOOK_CLIENT_SECRET=
-META_REDIRECT_URI=
-```
-
-TikTok:
-
-```text
-OAUTH_TIKTOK_CLIENT_ID=
-OAUTH_TIKTOK_CLIENT_SECRET=
-TIKTOK_REDIRECT_URI=
-```
-
-WhatsApp OTP:
-
-```text
-WHATSAPP_OTP_ENABLED=false
-WHATSAPP_BUSINESS_PHONE_NUMBER_ID=
-WHATSAPP_BUSINESS_ACCESS_TOKEN=
-WHATSAPP_OTP_TEMPLATE_NAME=soko_login_otp
-WHATSAPP_OTP_TEMPLATE_LANGUAGE=en
-```
-
-## Provider notes
-
-- Gmail uses Google OIDC scopes: `openid email profile`.
-- Facebook uses `email public_profile`.
-- TikTok uses `user.info.basic`.
-- WhatsApp is not OAuth in this implementation; it is an OTP delivery channel over phone login.
-- Business/customer channel connections are separate from login accounts.
-
-## Verification checklist
-
-1. Run `pnpm db:migrate`.
-2. Start API and web.
-3. Open the signup/login screen.
-4. Confirm the six login choices are visible.
-5. Confirm unconfigured OAuth providers show a safe disabled/unconfigured state.
-6. Configure one provider and confirm OAuth redirects to the provider.
-7. Complete callback and confirm a session cookie is created.
-8. Open settings/debug area and confirm login accounts are separate from business channels.
+- `Continue with WhatsApp` requests Twilio Verify using `Channel=whatsapp`.
+- `Continue with phone` requests Twilio Verify using `Channel=sms`.
+- Both paths verify the code against the same Twilio Verify Service.
+- Email OTP continues to use the existing email/local provider path.
+- The API fails at startup if Twilio or WhatsApp OTP is enabled but a required Twilio secret is
+  missing.
+- OAuth starts, callbacks, and the legacy social-login route return `403`.

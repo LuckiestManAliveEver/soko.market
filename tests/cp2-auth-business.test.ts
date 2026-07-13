@@ -281,7 +281,7 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
-  it("authenticates a social profile and finishes setup with a PIN after business creation", async () => {
+  it("rejects the legacy social login endpoint", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
@@ -295,62 +295,11 @@ describe("CP2 auth and business creation", () => {
         displayName: "Social Owner"
       })
     });
-    const sessionCookie = extractSessionCookie(social.headers["set-cookie"]);
-    const socialBody = social.json<VerifyOtpResponse>();
 
-    expect(social.statusCode).toBe(200);
-    expect(socialBody.user.id).toBeTruthy();
-    expect(sessionCookie).toContain("soko_session=");
-
-    const business = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Social Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
-    const pinSetup = await postJson<VerifyOtpResponse>(
-      app,
-      "/auth/pin/setup",
-      {
-        pin: "2468"
-      },
-      sessionCookie
-    );
-    const ownerRole = await postJson<RoleCheckResponse>(
-      app,
-      "/roles/check",
-      {
-        businessId: business.business.id,
-        role: "owner"
-      },
-      sessionCookie
-    );
-    const resumed = await app.inject({
-      method: "POST",
-      url: "/auth/social/login",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        provider: "google",
-        email: "owner@social.example"
-      })
-    });
-
-    expect(pinSetup.account.id).toBe(socialBody.account.id);
-    expect(business.business.sokoId).toMatch(/^\+254-A\d{8}$/);
-    expect(ownerRole.allowed).toBe(true);
-    expect(resumed.statusCode).toBe(200);
-    expect(resumed.json<VerifyOtpResponse>().resumed).toBe(true);
-    expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
-      expect.arrayContaining([
-        "auth.oauth_completed",
-        "business.created",
-        "business.global_shop_id_created",
-        "auth.pin_set"
-      ])
-    );
+    expect(social.statusCode).toBe(403);
+    expect(social.json()).toMatchObject({ code: "social_login_disabled" });
+    expect(social.headers["set-cookie"]).toBeUndefined();
+    expect(store.snapshot().accounts).toHaveLength(0);
 
     await app.close();
   });
@@ -682,9 +631,19 @@ describe("CP2 auth and business creation", () => {
     expect(provider.requests).toEqual([
       {
         channel: "phone",
+        deliveryChannel: "sms",
         destination: "+254700000002"
       }
     ]);
+
+    await postJson<OtpRequestResponse>(app, "/auth/whatsapp/request-otp", {
+      contact: "254700000004"
+    });
+    expect(provider.requests[1]).toEqual({
+      channel: "phone",
+      deliveryChannel: "whatsapp",
+      destination: "+254700000004"
+    });
 
     const badOtp = await app.inject({
       method: "POST",
@@ -734,7 +693,11 @@ class FakeOtpProvider implements OtpProvider {
   readonly name = "fake";
   readonly exposesDevOtp = false;
   readonly verifiesExternally = true;
-  readonly requests: Array<{ channel: "phone" | "email"; destination: string }> = [];
+  readonly requests: Array<{
+    channel: "phone" | "email";
+    deliveryChannel: "sms" | "whatsapp";
+    destination: string;
+  }> = [];
   readonly verifications: Array<{ channel: "phone" | "email"; destination: string; code: string }> =
     [];
 
@@ -744,7 +707,11 @@ class FakeOtpProvider implements OtpProvider {
     return channel === "phone";
   }
 
-  async requestOtp(input: { channel: "phone" | "email"; destination: string }): Promise<void> {
+  async requestOtp(input: {
+    channel: "phone" | "email";
+    deliveryChannel: "sms" | "whatsapp";
+    destination: string;
+  }): Promise<void> {
     this.requests.push(input);
   }
 

@@ -41,37 +41,18 @@ pnpm dev:stack:down
 - Business-changing feature switches must be explicit and auditable.
 - AI or model provider configuration must remain outside business-core packages.
 
-## Social OAuth
+## Authentication channels
 
-The frontend reads provider status from `GET /auth/oauth/providers` and starts real redirects
-through `POST /auth/oauth/start`.
+Social OAuth login is disabled in the frontend and API, so OAuth client credentials are not
+required. WhatsApp is an OTP delivery channel, not a social login.
 
-- Implemented redirect/code-exchange providers: Google, Meta/Facebook, LinkedIn, Apple, GitHub,
-  Microsoft.
-- Placeholder provider: X. The API returns an explicit `501 oauth_provider_not_implemented` until
-  the X callback/profile flow is completed.
-- Missing client IDs or secrets are not treated as success. The UI shows
-  `This social login provider is not configured yet.`
+Production phone and WhatsApp OTP require:
 
-Required variables:
+- `TWILIO_VERIFY_ENABLED=true`
+- `WHATSAPP_OTP_ENABLED=true`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_VERIFY_SERVICE_SID`
 
-- `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`
-- `OAUTH_FACEBOOK_CLIENT_ID`, `OAUTH_FACEBOOK_CLIENT_SECRET`
-- `OAUTH_LINKEDIN_CLIENT_ID`, `OAUTH_LINKEDIN_CLIENT_SECRET`
-- Optional other-provider modal entries: `OAUTH_APPLE_CLIENT_ID`, `OAUTH_APPLE_CLIENT_SECRET`,
-  `OAUTH_GITHUB_CLIENT_ID`, `OAUTH_GITHUB_CLIENT_SECRET`, `OAUTH_MICROSOFT_CLIENT_ID`,
-  `OAUTH_MICROSOFT_CLIENT_SECRET`
-- Reserved for the X placeholder: `OAUTH_X_CLIENT_ID`, `OAUTH_X_CLIENT_SECRET`
-- `OAUTH_TOKEN_ENCRYPTION_KEY` for encrypted stored OAuth tokens.
-
-Redirect URI format:
-
-```text
-{WEB_ORIGIN}/auth/oauth/callback
-```
-
-For local development, use:
-
-```text
-http://127.0.0.1:5173/auth/oauth/callback
-```
+The same Twilio server credentials serve all users. Never collect or store individual users'
+WhatsApp credentials.

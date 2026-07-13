@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -42,28 +42,7 @@ interface ShopDeletionRequestResponse {
   };
 }
 
-const previousGoogleClientId = process.env.OAUTH_GOOGLE_CLIENT_ID;
-const previousGoogleClientSecret = process.env.OAUTH_GOOGLE_CLIENT_SECRET;
-
 describe("Shop profile lifecycle", () => {
-  beforeAll(() => {
-    process.env.OAUTH_GOOGLE_CLIENT_ID = "google-test-client-id";
-    process.env.OAUTH_GOOGLE_CLIENT_SECRET = "google-test-client-secret";
-  });
-
-  afterAll(() => {
-    if (previousGoogleClientId === undefined) {
-      delete process.env.OAUTH_GOOGLE_CLIENT_ID;
-    } else {
-      process.env.OAUTH_GOOGLE_CLIENT_ID = previousGoogleClientId;
-    }
-    if (previousGoogleClientSecret === undefined) {
-      delete process.env.OAUTH_GOOGLE_CLIENT_SECRET;
-    } else {
-      process.env.OAUTH_GOOGLE_CLIENT_SECRET = previousGoogleClientSecret;
-    }
-  });
-
   it("requires owner, exact shop ID, PIN and OTP before tenant-scoped shop deletion", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
@@ -188,43 +167,18 @@ describe("Shop profile lifecycle", () => {
     await app.close();
   });
 
-  it("blocks disconnecting the last social login method until a PIN exists", async () => {
-    const store = createCp2Store();
-    const app = buildApi({ cp2: { store } });
-    const oauth = await completeOAuth(app);
-    const cookie = extractSessionCookie(oauth.setCookie);
-    const business = await postJson<BusinessResponse>(
-      app,
-      "/businesses",
-      { name: "Social Shop", language: "en" },
-      cookie
-    );
-    const accounts = await getJson<{
-      accounts: Array<{
-        id: string;
-        provider: string;
-      }>;
-    }>(app, `/businesses/${business.business.id}/social-accounts`, cookie);
-
-    expect(accounts.accounts).toHaveLength(1);
-    const blocked = await app.inject({
-      method: "DELETE",
-      url: `/businesses/${business.business.id}/social-accounts/${accounts.accounts[0]?.id}`,
-      headers: {
-        cookie
-      }
+  it("does not allow a social identity to create a shop session", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/social/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({ provider: "google", email: "social-owner@example.com" })
     });
-    expect(blocked.statusCode).toBe(409);
 
-    await postJson<SessionResponse>(app, "/auth/pin/setup", { pin: "1234" }, cookie);
-    const disconnected = await app.inject({
-      method: "DELETE",
-      url: `/businesses/${business.business.id}/social-accounts/${accounts.accounts[0]?.id}`,
-      headers: {
-        cookie
-      }
-    });
-    expect(disconnected.statusCode).toBe(200);
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "social_login_disabled" });
+    expect(response.headers["set-cookie"]).toBeUndefined();
 
     await app.close();
   });
@@ -246,44 +200,6 @@ async function verifyOtp(
     payload: JSON.stringify({
       challengeId: otp.challengeId,
       code: otp.devOtp
-    })
-  });
-
-  expect(response.statusCode).toBe(200);
-  return {
-    ...response.json<SessionResponse>(),
-    setCookie: response.headers["set-cookie"]
-  };
-}
-
-async function completeOAuth(
-  app: ReturnType<typeof buildApi>
-): Promise<SessionResponse & { setCookie: string | string[] | undefined }> {
-  const start = await postJson<{ state: string; csrfToken: string }>(app, "/auth/oauth/start", {
-    provider: "google",
-    redirectUri: "http://127.0.0.1:5173/auth/oauth/callback"
-  });
-  const response = await app.inject({
-    method: "POST",
-    url: "/auth/oauth/callback",
-    headers: jsonHeaders(),
-    payload: JSON.stringify({
-      provider: "google",
-      state: start.state,
-      csrfToken: start.csrfToken,
-      profile: {
-        providerSubject: "google-shop-profile",
-        email: "social-owner@example.com",
-        emailVerified: true,
-        displayName: "Social Owner"
-      },
-      tokens: {
-        accessToken: "google-access-token",
-        refreshToken: "google-refresh-token",
-        tokenType: "Bearer",
-        expiresIn: 3600,
-        scope: "openid email profile"
-      }
     })
   });
 

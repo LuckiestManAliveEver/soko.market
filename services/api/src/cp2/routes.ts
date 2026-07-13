@@ -46,7 +46,11 @@ import {
   type RuntimeAgentProfile,
   type SocialProfileNetworkInput
 } from "./store.js";
-import { createOtpProviderFromEnvironment, type OtpProvider } from "./otp-provider.js";
+import {
+  createOtpProviderFromEnvironment,
+  type OtpDeliveryChannel,
+  type OtpProvider
+} from "./otp-provider.js";
 import {
   createOAuthStartPayload,
   exchangeOAuthCode,
@@ -69,6 +73,7 @@ export interface Cp2RouteOptions {
 interface OtpRequestBody {
   channel?: string;
   contact?: string;
+  deliveryChannel?: string;
   destination?: string;
   method?: string;
 }
@@ -79,12 +84,6 @@ interface OtpVerifyBody {
   contact?: string;
   method?: string;
   otp?: string;
-}
-
-interface SocialAuthBody {
-  displayName?: string;
-  email?: string;
-  provider?: string;
 }
 
 interface OAuthStartBody {
@@ -593,11 +592,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   async function requestOtpForBody(body: OtpRequestBody) {
     const channel = parseAuthChannel(body.method ?? body.channel);
     const destination = parseString(body.contact ?? body.destination, "contact");
+    const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
     const otp = store.requestOtp({ channel, destination });
 
     if (otpProvider.canHandle(channel)) {
       await otpProvider.requestOtp({
         channel,
+        deliveryChannel,
         destination: otp.destination
       });
     }
@@ -648,6 +649,10 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const provider = parseOAuthProvider(input.provider);
     const providerConfig = getOAuthProviderConfig(provider);
 
+    if (!providerConfig.enabled) {
+      throw new Cp2Error(403, "oauth_provider_disabled", "Social login is disabled.");
+    }
+
     if (!providerConfig.implemented) {
       throw new Cp2Error(
         501,
@@ -697,6 +702,10 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const state = parseString(input.state, "state");
     const csrfToken = parseString(input.csrfToken, "csrfToken");
     const providerConfig = getOAuthProviderConfig(provider);
+
+    if (!providerConfig.enabled) {
+      throw new Cp2Error(403, "oauth_provider_disabled", "Social login is disabled.");
+    }
 
     if (!providerConfig.implemented) {
       throw new Cp2Error(
@@ -781,7 +790,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/whatsapp/request-otp",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
-        return await requestOtpForBody({ ...request.body, method: "phone" });
+        return await requestOtpForBody({
+          ...request.body,
+          method: "phone",
+          deliveryChannel: "whatsapp"
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -814,7 +827,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/api/auth/whatsapp/request-otp",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
-        return await requestOtpForBody({ ...request.body, method: "phone" });
+        return await requestOtpForBody({
+          ...request.body,
+          method: "phone",
+          deliveryChannel: "whatsapp"
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1191,22 +1208,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.post(
-    "/auth/social/login",
-    async (request: FastifyRequest<{ Body: SocialAuthBody }>, reply) => {
-      try {
-        const displayName = parseOptionalString(request.body.displayName);
-        const result = store.authenticateSocialProfile({
-          email: parseString(request.body.email, "email"),
-          provider: parseSocialProvider(request.body.provider),
-          ...(displayName === undefined ? {} : { displayName })
-        });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
+  app.post("/auth/social/login", async (_request, reply) =>
+    sendCp2Error(reply, new Cp2Error(403, "social_login_disabled", "Social login is disabled."))
   );
 
   app.post("/auth/pin/setup", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
@@ -3299,23 +3302,6 @@ function parseOptionalString(value: unknown): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-function parseSocialProvider(value: string | undefined): string {
-  if (
-    value === "google" ||
-    value === "facebook" ||
-    value === "apple" ||
-    value === "github" ||
-    value === "microsoft" ||
-    value === "linkedin" ||
-    value === "x" ||
-    value === "tiktok"
-  ) {
-    return value;
-  }
-
-  throw new Cp2Error(400, "provider_invalid", "Social provider is not supported.");
-}
-
 function parseOAuthProfileBody(value: OAuthCallbackBody["profile"]): OAuthProfile {
   if (value === undefined || value === null || typeof value !== "object") {
     throw new Cp2Error(400, "oauth_profile_required", "OAuth profile is required.");
@@ -3390,6 +3376,27 @@ function parseAuthChannel(value: string | undefined): AuthChannel {
   }
 
   throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
+}
+
+function parseOtpDeliveryChannel(
+  value: string | undefined,
+  authChannel: AuthChannel
+): OtpDeliveryChannel {
+  const deliveryChannel = value ?? "sms";
+
+  if (deliveryChannel !== "sms" && deliveryChannel !== "whatsapp") {
+    throw new Cp2Error(
+      400,
+      "otp_delivery_channel_invalid",
+      "OTP delivery channel must be sms or whatsapp."
+    );
+  }
+
+  if (authChannel !== "phone" && deliveryChannel === "whatsapp") {
+    throw new Cp2Error(400, "otp_delivery_channel_invalid", "WhatsApp OTP requires a phone login.");
+  }
+
+  return deliveryChannel;
 }
 
 function parseLanguage(value: string | undefined) {
