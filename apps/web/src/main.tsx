@@ -1761,7 +1761,11 @@ function OwnerApp() {
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
   const [channel, setChannel] = useState<AuthChannel>(
-    initialOwnerAuth === null ? (initialSetupDraft?.channel ?? "phone") : "phone"
+    initialOwnerAuth === null
+      ? (initialSetupDraft?.channel ?? "phone")
+      : initialOwnerAuth.contact.includes("@")
+        ? "email"
+        : "phone"
   );
   const [countryCode, setCountryCode] = useState<CountryDialCode>(
     initialOwnerAuth?.countryCode ??
@@ -1770,14 +1774,13 @@ function OwnerApp() {
       "+254"
   );
   const [destination, setDestination] = useState(
-    initialOwnerAuth !== null && !initialOwnerAuth.contact.includes("@")
-      ? stripDialCode(initialOwnerAuth.contact, initialOwnerAuth.countryCode)
+    initialOwnerAuth !== null
+      ? initialOwnerAuth.contact.includes("@")
+        ? initialOwnerAuth.contact
+        : stripDialCode(initialOwnerAuth.contact, initialOwnerAuth.countryCode)
       : initialSetupDraft?.channel === "phone"
         ? stripDialCode(initialSetupDraft.destination, initialSetupDraft.countryCode)
         : (initialSetupDraft?.destination ?? "")
-  );
-  const [socialProvider, setSocialProvider] = useState<SocialSignupProvider | null>(
-    initialOwnerAuth?.provider ?? null
   );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
@@ -1807,6 +1810,7 @@ function OwnerApp() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
+  const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
@@ -1866,9 +1870,10 @@ function OwnerApp() {
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
 
-  const shouldShowLogin = business !== null && ownerAuth !== null && !isWorkspaceUnlocked;
+  const shouldShowLogin = ownerAuth !== null && !isWorkspaceUnlocked;
   const setupComplete = business !== null && !shouldShowLogin;
-  const isAuthScreen = business === null || shouldShowLogin;
+  const shouldShowSignup = business === null && ownerAuth === null;
+  const isAuthScreen = shouldShowSignup || shouldShowLogin;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
   const activeImportJob =
@@ -2143,7 +2148,6 @@ function OwnerApp() {
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     setSession(response);
-    setSocialProvider(provider);
     setChallenge(null);
     setOtp("");
     setIsOtpVerified(true);
@@ -2173,8 +2177,20 @@ function OwnerApp() {
       return;
     }
 
+    const nextOwnerAuth: OwnerAuthRecord = {
+      contact: `oauth:${provider}:${response.account.id}`,
+      countryCode,
+      pinSet: true,
+      provider
+    };
+    setOwnerAuth(nextOwnerAuth);
+    localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+    localStorage.removeItem(setupDraftStorageKey);
+    setIsWorkspaceUnlocked(true);
+    setMode("marketplace");
+    setView("chat");
     setStatusMessage(
-      `${selectedProvider?.label ?? "Social"} profile verified. Register the business, then set your PIN to finish.`
+      `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.`
     );
   }
 
@@ -2251,7 +2267,6 @@ function OwnerApp() {
       setChallenge(response);
       setOtp(response.devOtp ?? "");
       setIsOtpVerified(false);
-      setSocialProvider(null);
       setStatusMessage(`OTP sent to ${response.destination}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -2281,8 +2296,28 @@ function OwnerApp() {
       });
       setSession(response);
       setIsOtpVerified(true);
-      setSocialProvider(null);
-      setStatusMessage("OTP verified. Enter your PIN.");
+      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
+      setHasLoginPin(pinStatus.hasPin);
+
+      if (pinStatus.hasPin) {
+        const nextOwnerAuth: OwnerAuthRecord = {
+          contact: contactValue,
+          countryCode,
+          pinSet: true
+        };
+        setOwnerAuth(nextOwnerAuth);
+        setIsWorkspaceUnlocked(true);
+        setMode("marketplace");
+        setView("chat");
+        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+        localStorage.removeItem(setupDraftStorageKey);
+        setStatusMessage(
+          "Login complete. Browse the marketplace or tap Sell to set up a business."
+        );
+        return;
+      }
+
+      setStatusMessage("OTP verified. Create your login PIN to finish signup.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2430,10 +2465,10 @@ function OwnerApp() {
       return;
     }
 
-    const contactValue = composeSignupContact("phone", countryCode, destination);
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
     if (contactValue !== ownerAuth.contact) {
-      setStatusMessage("Phone number does not match this owner account");
+      setStatusMessage("Contact does not match this account");
       return;
     }
 
@@ -2444,7 +2479,7 @@ function OwnerApp() {
 
     try {
       const response = await postJson<SessionResponse>("/auth/pin/login", {
-        method: "phone",
+        method: channel,
         contact: contactValue,
         pin: loginPin
       });
@@ -2466,10 +2501,10 @@ function OwnerApp() {
       return;
     }
 
-    const contactValue = composeSignupContact("phone", countryCode, destination);
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
     if (contactValue !== ownerAuth.contact) {
-      setStatusMessage("Phone number does not match this owner account");
+      setStatusMessage("Contact does not match this account");
       return;
     }
 
@@ -2527,14 +2562,9 @@ function OwnerApp() {
     }
   }
 
-  async function createBusiness() {
-    if (businessName.trim().length === 0) {
-      setStatusMessage("Business name is required");
-      return;
-    }
-
-    if (!isOtpVerified) {
-      setStatusMessage("Verify OTP or social profile before finishing setup");
+  async function completeSignup() {
+    if (session === null || !isOtpVerified) {
+      setStatusMessage("Verify your account before finishing signup");
       return;
     }
 
@@ -2544,18 +2574,9 @@ function OwnerApp() {
     }
 
     try {
-      const response = await postJson<BusinessResponse>("/businesses", {
-        name: businessName.trim(),
-        language
-      });
       await postJson<SessionResponse>("/auth/pin/setup", {
         pin: signupPin
       });
-      const nextBusiness = {
-        ...response.business,
-        role: response.membership.role
-      };
-      const nextAgent = createDefaultAgent(nextBusiness);
       const contactValue =
         channel === "email"
           ? destination.trim().toLowerCase()
@@ -2563,21 +2584,56 @@ function OwnerApp() {
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: contactValue,
         countryCode,
-        pinSet: true,
-        ...(socialProvider === null ? {} : { provider: socialProvider })
+        pinSet: true
       };
-      setBusiness(nextBusiness);
       setOwnerAuth(nextOwnerAuth);
+      setHasLoginPin(true);
+      setIsWorkspaceUnlocked(true);
+      setSignupPin("");
+      setSignupPinConfirm("");
+      setMode("marketplace");
+      setView("chat");
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+      localStorage.removeItem(setupDraftStorageKey);
+      setStatusMessage("Signup complete. Browse the marketplace or tap Sell to set up a business.");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createBusiness() {
+    if (businessName.trim().length === 0) {
+      setStatusMessage("Business name is required");
+      return;
+    }
+
+    if (session === null) {
+      setStatusMessage("Sign up or log in before setting up a business");
+      return;
+    }
+
+    try {
+      const response = await postJson<BusinessResponse>("/businesses", {
+        name: businessName.trim(),
+        language
+      });
+      const nextBusiness = {
+        ...response.business,
+        role: response.membership.role
+      };
+      const nextAgent = createDefaultAgent(nextBusiness);
+      setBusiness(nextBusiness);
       setAgentSettings(nextAgent);
       setIsWorkspaceUnlocked(true);
+      setIsBusinessSetupOpen(false);
+      setMode("seller");
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
       localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
       await refreshSession();
       setView("chat");
-      setStatusMessage("Business and agent ready");
+      setStatusMessage("Business ready. Seller controls are now active.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3841,6 +3897,12 @@ function OwnerApp() {
   }
 
   function switchMode(nextMode: SokoMode) {
+    if (nextMode === "seller" && business === null) {
+      setIsBusinessSetupOpen(true);
+      setStatusMessage("Set up your business to start selling.");
+      return;
+    }
+
     if (nextMode === mode) {
       return;
     }
@@ -4163,9 +4225,9 @@ function OwnerApp() {
     setIsRecoveringPin(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setSocialProvider(null);
     setView("chat");
     setMode("marketplace");
+    setIsBusinessSetupOpen(false);
     setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
     setIsWorkspaceUnlocked(ownerAuth === null);
   }
@@ -4778,7 +4840,7 @@ function OwnerApp() {
               </span>
             </button>
           )}
-          {!isAuthScreen && setupComplete ? (
+          {!isAuthScreen ? (
             <div className="header-actions">
               <button
                 className={
@@ -4795,8 +4857,8 @@ function OwnerApp() {
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => setView("agent")}
-                aria-label="Account and agent settings"
+                onClick={() => (business === null ? void logout() : setView("agent"))}
+                aria-label={business === null ? "Sign out" : "Account and agent settings"}
               >
                 <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
               </button>
@@ -4804,7 +4866,7 @@ function OwnerApp() {
           ) : null}
         </header>
 
-        {business === null ? (
+        {shouldShowSignup ? (
           <SetupPanel
             channel={channel}
             countryCode={countryCode}
@@ -4814,8 +4876,6 @@ function OwnerApp() {
             isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
-            businessName={businessName}
-            language={language}
             session={session}
             oauthProviders={oauthProviders}
             oauthProvidersLoaded={oauthProvidersLoaded}
@@ -4825,11 +4885,9 @@ function OwnerApp() {
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
-            onBusinessNameChange={setBusinessName}
-            onLanguageChange={setLanguage}
             onRequestOtp={() => void requestOtp()}
             onVerifyOtp={() => void verifyOtp()}
-            onCreateBusiness={() => void createBusiness()}
+            onCompleteSignup={() => void completeSignup()}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             onSocialSignup={(provider) => void authenticateSocialProfile(provider)}
@@ -4871,7 +4929,20 @@ function OwnerApp() {
             onCloseOtherSocial={() => setIsOtherSocialOpen(false)}
             onLogin={() => void loginWithPin()}
           />
-        ) : view === "agent" ? (
+        ) : isBusinessSetupOpen && business === null ? (
+          <BusinessSetupPanel
+            businessName={businessName}
+            language={language}
+            statusMessage={statusMessage}
+            onBusinessNameChange={setBusinessName}
+            onLanguageChange={setLanguage}
+            onCancel={() => {
+              setIsBusinessSetupOpen(false);
+              setStatusMessage("Business setup cancelled. You can keep browsing the marketplace.");
+            }}
+            onCreateBusiness={() => void createBusiness()}
+          />
+        ) : view === "agent" && business !== null ? (
           <AgentProfileSurface
             agent={agentSettings}
             business={business}
@@ -4887,7 +4958,8 @@ function OwnerApp() {
             <ChatSurface
               activeView={view}
               agent={agentSettings}
-              businessName={business.name}
+              businessName={business?.name ?? "Your shop"}
+              hasBusiness={business !== null}
               chatDraft={chatDraft}
               customerCount={customers.length}
               invoiceCount={invoices.length}
@@ -4901,7 +4973,7 @@ function OwnerApp() {
               productForm={productForm}
               productCount={products.length}
               products={products}
-              sokoId={business.sokoId}
+              sokoId={business?.sokoId ?? "Not set up yet"}
               report={reportSummary}
               shopPresenceStatus={shopPresenceStatus}
               workspaceOpen={isWorkspacePanelOpen}
@@ -4945,7 +5017,7 @@ function OwnerApp() {
           </main>
         )}
         <footer className="app-credits">
-          <span>The Retail Network At Your Fingertips</span>
+          <span>Karibu Soko</span>
           <BuildIdentity />
         </footer>
       </div>
@@ -4962,8 +5034,6 @@ interface SetupPanelProps {
   isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
-  businessName: string;
-  language: SupportedLanguage;
   session: SessionResponse | null;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
@@ -4973,11 +5043,9 @@ interface SetupPanelProps {
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
-  onBusinessNameChange: (businessName: string) => void;
-  onLanguageChange: (language: SupportedLanguage) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
-  onCreateBusiness: () => void;
+  onCompleteSignup: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   onSocialSignup: (provider: SocialSignupProvider) => void;
@@ -5156,7 +5224,7 @@ function AuthBrand() {
   return (
     <div className="auth-brand">
       <h1>soko.market</h1>
-      <p>The Retail Network At Your Fingertips</p>
+      <p>Karibu Soko</p>
     </div>
   );
 }
@@ -5299,32 +5367,6 @@ function SetupPanel(props: SetupPanelProps) {
         <section className="panel">
           <div className="section-heading">
             <p className="eyebrow">Step 2</p>
-            <h2>Business setup</h2>
-          </div>
-          <label>
-            Business name
-            <input
-              value={props.businessName}
-              onChange={(event) => props.onBusinessNameChange(event.target.value)}
-            />
-          </label>
-          <label>
-            Language
-            <select
-              value={props.language}
-              onChange={(event) => props.onLanguageChange(event.target.value as SupportedLanguage)}
-            >
-              <option value="en">English</option>
-              <option value="sw">Swahili</option>
-            </select>
-          </label>
-        </section>
-      ) : null}
-
-      {props.isOtpVerified && props.businessName.trim().length > 0 ? (
-        <section className="panel">
-          <div className="section-heading">
-            <p className="eyebrow">Step 3</p>
             <h2>Create login PIN</h2>
           </div>
           <label>
@@ -5353,19 +5395,76 @@ function SetupPanel(props: SetupPanelProps) {
           </label>
           <button
             type="button"
-            onClick={props.onCreateBusiness}
+            onClick={props.onCompleteSignup}
             disabled={
               props.session === null ||
               !props.isOtpVerified ||
               !isValidPin(props.signupPin) ||
-              props.signupPin !== props.signupPinConfirm ||
-              props.businessName.trim().length === 0
+              props.signupPin !== props.signupPinConfirm
             }
           >
             Finish signup
           </button>
         </section>
       ) : null}
+    </main>
+  );
+}
+
+interface BusinessSetupPanelProps {
+  businessName: string;
+  language: SupportedLanguage;
+  statusMessage: string;
+  onBusinessNameChange: (businessName: string) => void;
+  onLanguageChange: (language: SupportedLanguage) => void;
+  onCancel: () => void;
+  onCreateBusiness: () => void;
+}
+
+function BusinessSetupPanel(props: BusinessSetupPanelProps) {
+  return (
+    <main className="setup-grid business-setup-grid">
+      <section className="panel auth-card">
+        <div className="section-heading">
+          <p className="eyebrow">Start selling</p>
+          <h2>Set up your business</h2>
+          <p>Create your shop once. You can update its details later.</p>
+        </div>
+        <label>
+          Business name
+          <input
+            autoFocus
+            value={props.businessName}
+            onChange={(event) => props.onBusinessNameChange(event.target.value)}
+            placeholder="Your business name"
+          />
+        </label>
+        <label>
+          Language
+          <select
+            value={props.language}
+            onChange={(event) => props.onLanguageChange(event.target.value as SupportedLanguage)}
+          >
+            <option value="en">English</option>
+            <option value="sw">Swahili</option>
+          </select>
+        </label>
+        <div className="compact-actions">
+          <button
+            type="button"
+            onClick={props.onCreateBusiness}
+            disabled={!props.businessName.trim()}
+          >
+            Create business
+          </button>
+          <button className="secondary" type="button" onClick={props.onCancel}>
+            Not now
+          </button>
+        </div>
+        <p className="setup-status" role="status" aria-live="polite">
+          {props.statusMessage}
+        </p>
+      </section>
     </main>
   );
 }
@@ -7697,7 +7796,7 @@ function PublicStorefrontChat(props: { agentId: string }) {
             </button>
           </form>
           <footer className="app-credits">
-            <span>The Retail Network At Your Fingertips</span>
+            <span>Karibu Soko</span>
             <BuildIdentity />
           </footer>
         </section>
@@ -10446,6 +10545,7 @@ interface ChatSurfaceProps {
   activeView: ShellView;
   agent: AgentSettings;
   businessName: string;
+  hasBusiness: boolean;
   chatDraft: string;
   children: ReactNode;
   customerCount: number;
@@ -10494,6 +10594,7 @@ function ChatSurface({
   activeView,
   agent,
   businessName,
+  hasBusiness,
   chatDraft,
   children,
   customerCount,
@@ -10631,6 +10732,7 @@ function ChatSurface({
           ) : (
             <MarketplaceModeCard
               businessName={businessName}
+              hasBusiness={hasBusiness}
               productCount={productCount}
               sokoId={sokoId}
               onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
@@ -10870,6 +10972,7 @@ function ChatSurface({
 
 interface MarketplaceModeCardProps {
   businessName: string;
+  hasBusiness: boolean;
   productCount: number;
   sokoId: string;
   onOpenStore: () => void;
@@ -10879,6 +10982,7 @@ interface MarketplaceModeCardProps {
 
 function MarketplaceModeCard({
   businessName,
+  hasBusiness,
   productCount,
   sokoId,
   onOpenStore,
@@ -10903,23 +11007,38 @@ function MarketplaceModeCard({
           Affordable essentials
         </button>
       </div>
-      <article className="shop-discovery-card">
-        <div>
-          <span>Your shop</span>
-          <h3>{businessName}</h3>
-          <p>
-            {sokoId} · {productCount} catalogue {productCount === 1 ? "item" : "items"}
-          </p>
-        </div>
-        <div className="compact-actions">
-          <button type="button" onClick={onOpenStore}>
-            Open store
-          </button>
-          <button className="secondary" type="button" onClick={onSell}>
-            Manage
-          </button>
-        </div>
-      </article>
+      {hasBusiness ? (
+        <article className="shop-discovery-card">
+          <div>
+            <span>Your shop</span>
+            <h3>{businessName}</h3>
+            <p>
+              {sokoId} · {productCount} catalogue {productCount === 1 ? "item" : "items"}
+            </p>
+          </div>
+          <div className="compact-actions">
+            <button type="button" onClick={onOpenStore}>
+              Open store
+            </button>
+            <button className="secondary" type="button" onClick={onSell}>
+              Manage
+            </button>
+          </div>
+        </article>
+      ) : (
+        <article className="shop-discovery-card">
+          <div>
+            <span>Want to sell?</span>
+            <h3>Set up your business</h3>
+            <p>Create your shop when you are ready. Your buyer account is already active.</p>
+          </div>
+          <div className="compact-actions">
+            <button type="button" onClick={onSell}>
+              Set up business
+            </button>
+          </div>
+        </article>
+      )}
     </section>
   );
 }
