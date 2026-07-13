@@ -63,15 +63,7 @@ services:
         value: "15000"
       - key: DB_SLOW_QUERY_MS
         value: "500"
-      - key: TWILIO_VERIFY_ENABLED
-        value: "true"
-      - key: WHATSAPP_OTP_ENABLED
-        value: "true"
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_VERIFY_SERVICE_SID
+      - key: FIREBASE_PROJECT_ID
         sync: false
 
   - type: web
@@ -120,6 +112,16 @@ services:
         value: https://api.soko.market
       - key: VITE_DEPLOYMENT_ENV
         value: production
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_PROJECT_ID
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        sync: false
 
   - type: cron
     name: soko-market-db-backup

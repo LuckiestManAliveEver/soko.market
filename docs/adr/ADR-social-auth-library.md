@@ -22,7 +22,7 @@ The product requirement asks for social signup/login without adding Prisma, Supa
 
 Continue using the existing custom CP2 auth stack and extend it for the requested social signup/login providers.
 
-Do not introduce Better Auth, Auth.js, Passport, Firebase Auth, Supabase Auth, Clerk, or another overlapping framework in this phase.
+Do not introduce Better Auth, Auth.js, Passport, Supabase Auth, Clerk, or another overlapping framework in this phase. Firebase Auth is used only as the transport for phone OTP verification, not as the application session framework.
 
 ## Rationale
 

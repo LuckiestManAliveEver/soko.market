@@ -1,7 +1,8 @@
+import { createVerify } from "node:crypto";
 import type { AuthChannel } from "@soko/shared-types";
 import { Cp2Error } from "./store.js";
 
-export type OtpDeliveryChannel = "sms" | "whatsapp";
+export type OtpDeliveryChannel = "sms";
 
 export interface OtpProvider {
   readonly name: string;
@@ -16,18 +17,38 @@ export interface OtpProvider {
   verifyOtp(input: { channel: AuthChannel; destination: string; code: string }): Promise<boolean>;
 }
 
-interface TwilioVerifyConfig {
-  accountSid: string;
-  authToken: string;
-  serviceSid: string;
-  whatsappEnabled: boolean;
+interface FirebasePhoneOtpConfig {
+  projectId: string;
 }
 
-interface TwilioVerificationResponse {
-  status?: string;
-  message?: string;
-  code?: number;
+interface FirebaseTokenHeader {
+  alg?: string;
+  kid?: string;
+  typ?: string;
 }
+
+interface FirebaseTokenPayload {
+  aud?: string;
+  exp?: number;
+  firebase?: {
+    sign_in_provider?: string;
+  };
+  iat?: number;
+  iss?: string;
+  phone_number?: string;
+  sub?: string;
+}
+
+const FIREBASE_CERT_URL =
+  "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const FIREBASE_CERT_TTL_MS = 60 * 60 * 1000;
+
+let cachedFirebaseCertificates:
+  | {
+      fetchedAt: number;
+      certs: Record<string, string>;
+    }
+  | null = null;
 
 class LocalOtpProvider implements OtpProvider {
   readonly name = "local";
@@ -43,11 +64,7 @@ class LocalOtpProvider implements OtpProvider {
     deliveryChannel: OtpDeliveryChannel;
     destination: string;
   }): Promise<void> {
-    if (input.deliveryChannel === "whatsapp") {
-      throw new Cp2Error(503, "whatsapp_otp_unconfigured", "WhatsApp OTP is not configured.");
-    }
-
-    return;
+    void input;
   }
 
   async verifyOtp(): Promise<boolean> {
@@ -55,17 +72,12 @@ class LocalOtpProvider implements OtpProvider {
   }
 }
 
-export class TwilioVerifyOtpProvider implements OtpProvider {
-  readonly name = "twilio_verify";
+class FirebasePhoneOtpProvider implements OtpProvider {
+  readonly name = "firebase_phone";
   readonly exposesDevOtp = false;
   readonly verifiesExternally = true;
-  private readonly authHeader: string;
 
-  constructor(private readonly config: TwilioVerifyConfig) {
-    this.authHeader = `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString(
-      "base64"
-    )}`;
-  }
+  constructor(private readonly config: FirebasePhoneOtpConfig) {}
 
   canHandle(channel: AuthChannel): boolean {
     return channel === "phone";
@@ -77,20 +89,11 @@ export class TwilioVerifyOtpProvider implements OtpProvider {
     destination: string;
   }): Promise<void> {
     if (!this.canHandle(input.channel)) {
-      throw new Cp2Error(400, "otp_channel_unsupported", "Twilio Verify only handles phone OTP.");
+      throw new Cp2Error(400, "otp_channel_unsupported", "Firebase phone OTP only handles phone.");
     }
 
-    if (input.deliveryChannel === "whatsapp" && !this.config.whatsappEnabled) {
-      throw new Cp2Error(503, "whatsapp_otp_unconfigured", "WhatsApp OTP is not configured.");
-    }
-
-    const response = await this.postTwilio("Verifications", {
-      To: input.destination,
-      Channel: input.deliveryChannel
-    });
-
-    if (response.status !== "pending" && response.status !== "approved") {
-      throw new Cp2Error(502, "otp_provider_failed", "Twilio did not start OTP verification.");
+    if (input.deliveryChannel !== "sms") {
+      throw new Cp2Error(400, "otp_delivery_channel_invalid", "Firebase phone OTP uses SMS only.");
     }
   }
 
@@ -103,68 +106,135 @@ export class TwilioVerifyOtpProvider implements OtpProvider {
       return false;
     }
 
-    const response = await this.postTwilio("VerificationCheck", {
-      To: input.destination,
-      Code: input.code
-    });
+    try {
+      const payload = await verifyFirebaseIdToken(input.code, this.config.projectId);
 
-    return response.status === "approved";
-  }
-
-  private async postTwilio(
-    resource: "Verifications" | "VerificationCheck",
-    values: Record<string, string>
-  ): Promise<TwilioVerificationResponse> {
-    const body = new URLSearchParams(values);
-    const response = await fetch(
-      `https://verify.twilio.com/v2/Services/${this.config.serviceSid}/${resource}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: this.authHeader,
-          "content-type": "application/x-www-form-urlencoded"
-        },
-        body
-      }
-    );
-    const payload = (await response.json().catch(() => ({}))) as TwilioVerificationResponse;
-
-    if (!response.ok) {
-      throw new Cp2Error(
-        response.status >= 500 ? 502 : 400,
-        "otp_provider_failed",
-        payload.message ?? "Twilio OTP request failed."
+      return (
+        payload !== null &&
+        payload.firebase?.sign_in_provider === "phone" &&
+        typeof payload.phone_number === "string" &&
+        payload.phone_number === input.destination
       );
+    } catch {
+      return false;
     }
-
-    return payload;
   }
 }
 
+function decodeBase64UrlJson<T>(value: string): T {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as T;
+}
+
+function readHeaderAndPayload(token: string): {
+  header: FirebaseTokenHeader;
+  payload: FirebaseTokenPayload;
+  signingInput: string;
+  signature: Buffer;
+} | null {
+  const parts = token.split(".");
+
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  try {
+    const [header, payload, signature] = parts as [string, string, string];
+
+    return {
+      header: decodeBase64UrlJson<FirebaseTokenHeader>(header),
+      payload: decodeBase64UrlJson<FirebaseTokenPayload>(payload),
+      signingInput: `${header}.${payload}`,
+      signature: Buffer.from(signature, "base64url")
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getFirebaseCertificates(): Promise<Record<string, string>> {
+  const now = Date.now();
+
+  if (
+    cachedFirebaseCertificates !== null &&
+    now - cachedFirebaseCertificates.fetchedAt < FIREBASE_CERT_TTL_MS
+  ) {
+    return cachedFirebaseCertificates.certs;
+  }
+
+  const response = await fetch(FIREBASE_CERT_URL, {
+    headers: {
+      accept: "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch Firebase public certificates.");
+  }
+
+  const certs = (await response.json()) as Record<string, string>;
+  cachedFirebaseCertificates = {
+    fetchedAt: now,
+    certs
+  };
+
+  return certs;
+}
+
+async function verifyFirebaseIdToken(
+  token: string,
+  projectId: string
+): Promise<FirebaseTokenPayload | null> {
+  const parsed = readHeaderAndPayload(token);
+
+  if (parsed === null) {
+    return null;
+  }
+
+  if (parsed.header.alg !== "RS256" || typeof parsed.header.kid !== "string") {
+    return null;
+  }
+
+  const certs = await getFirebaseCertificates();
+  const certificate = certs[parsed.header.kid];
+
+  if (typeof certificate !== "string" || certificate.length === 0) {
+    return null;
+  }
+
+  const verifier = createVerify("RSA-SHA256");
+  verifier.update(parsed.signingInput);
+  verifier.end();
+
+  if (!verifier.verify(certificate, parsed.signature)) {
+    return null;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const expectedIssuer = `https://securetoken.google.com/${projectId}`;
+
+  if (
+    parsed.payload.aud !== projectId ||
+    parsed.payload.iss !== expectedIssuer ||
+    typeof parsed.payload.sub !== "string" ||
+    parsed.payload.sub.length === 0 ||
+    typeof parsed.payload.exp !== "number" ||
+    parsed.payload.exp <= now ||
+    typeof parsed.payload.iat !== "number" ||
+    parsed.payload.iat > now + 300
+  ) {
+    return null;
+  }
+
+  return parsed.payload;
+}
+
 export function createOtpProviderFromEnvironment(env = process.env): OtpProvider {
-  const enabled = env.TWILIO_VERIFY_ENABLED?.trim().toLowerCase() === "true";
-  const whatsappEnabled = env.WHATSAPP_OTP_ENABLED?.trim().toLowerCase() === "true";
-  const accountSid = env.TWILIO_ACCOUNT_SID?.trim();
-  const authToken = env.TWILIO_AUTH_TOKEN?.trim();
-  const serviceSid = env.TWILIO_VERIFY_SERVICE_SID?.trim();
+  const projectId = env.FIREBASE_PROJECT_ID?.trim();
 
-  if (whatsappEnabled && !enabled) {
-    throw new Error("WHATSAPP_OTP_ENABLED requires TWILIO_VERIFY_ENABLED=true.");
-  }
-
-  if (enabled && accountSid && authToken && serviceSid) {
-    return new TwilioVerifyOtpProvider({
-      accountSid,
-      authToken,
-      serviceSid,
-      whatsappEnabled
+  if (projectId !== undefined && projectId.length > 0) {
+    return new FirebasePhoneOtpProvider({
+      projectId
     });
-  }
-
-  if (enabled) {
-    throw new Error(
-      "Twilio Verify OTP is enabled but TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or TWILIO_VERIFY_SERVICE_SID is missing."
-    );
   }
 
   return new LocalOtpProvider();

@@ -6,8 +6,8 @@ Social OAuth login is disabled for Google, Facebook, TikTok, Apple, GitHub, Micr
 and X. The frontend has no social-login controls, the provider registry reports every OAuth
 provider as disabled, and all OAuth start/callback paths are rejected by the API.
 
-WhatsApp is used only as a Twilio Verify OTP delivery channel. It does not create a social account.
-Normal SMS phone OTP and the existing email OTP path remain available.
+Phone OTP uses Firebase SMS verification in the browser and Firebase ID token verification on the
+API. It does not create a social account. The existing email OTP path remains available.
 
 ## Shop deletion
 

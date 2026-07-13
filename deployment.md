@@ -92,14 +92,15 @@ DIRECT_DATABASE_URL=<linked from soko-market-db>
 Social OAuth login is disabled in both the frontend and API. Do not add Google, Facebook, TikTok,
 Apple, GitHub, Microsoft, LinkedIn, or X client credentials to Render.
 
-Set these when the Twilio Verify service is ready:
+Set these when Firebase phone auth is ready:
 
 ```text
-TWILIO_VERIFY_ENABLED=true
-WHATSAPP_OTP_ENABLED=true
-TWILIO_ACCOUNT_SID=<Twilio account SID>
-TWILIO_AUTH_TOKEN=<Twilio auth token>
-TWILIO_VERIFY_SERVICE_SID=<Twilio Verify service SID>
+VITE_FIREBASE_API_KEY=<Firebase web API key>
+VITE_FIREBASE_AUTH_DOMAIN=<Firebase auth domain>
+VITE_FIREBASE_PROJECT_ID=<Firebase project ID>
+VITE_FIREBASE_APP_ID=<Firebase app ID>
+VITE_FIREBASE_MESSAGING_SENDER_ID=<Firebase sender ID>
+FIREBASE_PROJECT_ID=<Firebase project ID>
 ```
 
 Open Render service `soko-market-web`, then go to Environment.
@@ -131,44 +132,28 @@ The Blueprint currently uses Render's free Postgres plan for testing. Render fre
 after 30 days and are not appropriate for production merchant data. Change the database plan to a
 paid Render Postgres instance before production use.
 
-## 5. Add Twilio Verify For SMS And WhatsApp OTP
+## 5. Add Firebase Phone Auth
 
-Use Twilio Verify for hosted phone OTP while testing. This uses Twilio's trial/free account path, not a permanently free SMS product.
+Use Firebase Phone Authentication for hosted phone OTP. The browser sends the SMS, then the API
+verifies the Firebase ID token and turns it into the normal CP2 session.
 
-1. Create or open a Twilio account.
-2. Open the Twilio Console.
-3. Copy the Account SID.
-4. Copy the Auth Token.
-5. Go to Verify.
-6. Create a Verify Service for Soko Market.
-7. Copy the Verify Service SID, which starts with `VA`.
-8. Enable the WhatsApp verification channel for that Verify Service and complete any Twilio/Meta
-   sender approval required by the Console.
-9. If the account is a Twilio trial account, verify every recipient phone number you want to test.
-10. In Render, open `soko-market-api` and go to Environment.
-11. Set `TWILIO_VERIFY_ENABLED=true`.
-12. Set `WHATSAPP_OTP_ENABLED=true`.
-13. Set `TWILIO_ACCOUNT_SID`.
-14. Set `TWILIO_AUTH_TOKEN`.
-15. Set `TWILIO_VERIFY_SERVICE_SID`.
-16. Redeploy `soko-market-api`.
+1. Create or open a Firebase project.
+2. Add the production web domains and any preview domains under Firebase Authentication settings.
+3. Enable the Phone provider in Firebase Authentication.
+4. Create a web app in Firebase and copy the web config values into the `VITE_FIREBASE_*`
+   environment variables on `soko-market-web`.
+5. Set `FIREBASE_PROJECT_ID` on `soko-market-api`.
+6. Redeploy both Render services.
 
 Runtime behavior:
 
-- Normal phone OTP requests use Twilio Verify SMS.
-- WhatsApp OTP requests use the same Verify Service with Twilio's `whatsapp` channel.
-- The Twilio credentials identify the Soko service, not individual users. Do not add one set per user.
-- If either OTP feature is enabled while a required Twilio secret is missing, the API refuses to
-  start instead of silently using local OTP behavior.
+- Normal phone OTP requests use Firebase SMS in the browser.
+- The browser confirms the SMS code, then sends a Firebase ID token to the API.
+- The API verifies the token with Firebase public certificates and creates the CP2 session.
 - Email OTP still uses the local dev OTP path until an email OTP provider is added.
-- The frontend will no longer auto-fill the OTP when Twilio handles the request.
+- The frontend no longer exposes WhatsApp OTP.
 
-Twilio trial caveats:
-
-- Trial accounts are for testing and are temporary.
-- Trial accounts require verified recipient numbers for SMS, voice, and WhatsApp OTP.
-- Real production SMS verification is paid after the trial.
-- Keep Twilio credentials only in Render environment variables, never in Git.
+Phone numbers must be in E.164 format, for example `+254700000000`.
 
 ## 6. Deploy Both Render Services
 
@@ -308,12 +293,12 @@ Then verify the frontend can reach the backend:
 5. Confirm API calls go to `https://api.soko.market`.
 6. Confirm there are no CORS errors.
 
-If Twilio is configured, test phone OTP:
+If Firebase is configured, test phone OTP:
 
-1. Use a phone number verified in the Twilio trial console.
+1. Use a phone number allowed by your Firebase Authentication phone test setup.
 2. Request an OTP from `https://soko.market`.
 3. Confirm the code arrives by SMS.
-4. Enter the received code manually.
+4. Enter the received code in the browser prompt.
 5. Confirm login succeeds.
 
 Verify Postgres persistence:
@@ -364,18 +349,15 @@ If the frontend loads but API calls fail:
 4. Redeploy `soko-market-api`.
 5. Check the browser console for CORS errors.
 
-If Twilio OTP does not send:
+If Firebase OTP does not send:
 
-1. Confirm `TWILIO_VERIFY_ENABLED=true` is set on `soko-market-api`.
-2. For WhatsApp, confirm `WHATSAPP_OTP_ENABLED=true` and that the WhatsApp channel/sender is
-   approved in the Twilio Verify Console.
-3. Confirm `TWILIO_ACCOUNT_SID` is set on `soko-market-api`.
-4. Confirm `TWILIO_AUTH_TOKEN` is set on `soko-market-api`.
-5. Confirm `TWILIO_VERIFY_SERVICE_SID` is set on `soko-market-api`.
-6. Confirm the service SID starts with `VA`.
-7. If using a Twilio trial account, confirm the recipient phone number is verified in Twilio.
-8. Confirm the phone number is in E.164 format, for example `+254700000000`.
-9. Check Render logs for `whatsapp_otp_unconfigured` or `otp_provider_failed`.
+1. Confirm the Firebase phone provider is enabled in the Firebase console.
+2. Confirm `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and
+   `VITE_FIREBASE_APP_ID` are set on `soko-market-web`.
+3. Confirm `FIREBASE_PROJECT_ID` is set on `soko-market-api`.
+4. Confirm the production domain is authorized in Firebase Authentication settings.
+5. Confirm the phone number is in E.164 format, for example `+254700000000`.
+6. Check the browser console and Render logs for Firebase auth errors.
 
 If Postgres does not activate:
 
@@ -393,8 +375,6 @@ The deployed API uses Postgres when `CP2_STORE=postgres`; it does not fall back 
 database is missing. Render free Postgres is appropriate only for short-lived testing because it
 expires after 30 days and has no managed backups.
 
-Twilio's trial path is appropriate for verifying the integration, not for permanent free production SMS.
-
 ## 14. Reference Docs
 
 - Render custom domains: https://render.com/docs/custom-domains
@@ -402,9 +382,8 @@ Twilio's trial path is appropriate for verifying the integration, not for perman
 - Render outbound IPs: https://render.com/docs/outbound-ip-addresses
 - Render Postgres: https://render.com/docs/postgresql
 - Render free service limits: https://render.com/docs/free
-- Twilio Verify verifications: https://www.twilio.com/docs/verify/api/verification
-- Twilio Verify checks: https://www.twilio.com/docs/verify/api/verification-check
-- Twilio Verify pricing: https://www.twilio.com/en-us/verify/pricing
+- Firebase web phone auth: https://firebase.google.com/docs/auth/web/phone-auth
+- Firebase ID token verification: https://firebase.google.com/docs/auth/admin/verify-id-tokens
 - Cloudflare DNS records: https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/
 - Cloudflare apex records: https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-zone-apex/
 - Cloudflare proxy status: https://developers.cloudflare.com/dns/proxy-status/

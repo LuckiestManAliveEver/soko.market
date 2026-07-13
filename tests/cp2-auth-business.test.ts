@@ -636,14 +636,16 @@ describe("CP2 auth and business creation", () => {
       }
     ]);
 
-    await postJson<OtpRequestResponse>(app, "/auth/whatsapp/request-otp", {
-      contact: "254700000004"
+    const whatsappRequest = await app.inject({
+      method: "POST",
+      url: "/auth/whatsapp/request-otp",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        contact: "254700000004"
+      })
     });
-    expect(provider.requests[1]).toEqual({
-      channel: "phone",
-      deliveryChannel: "whatsapp",
-      destination: "+254700000004"
-    });
+
+    expect(whatsappRequest.statusCode).toBe(400);
 
     const badOtp = await app.inject({
       method: "POST",

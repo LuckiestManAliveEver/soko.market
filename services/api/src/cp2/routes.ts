@@ -82,6 +82,7 @@ interface OtpVerifyBody {
   challengeId?: string;
   code?: string;
   contact?: string;
+  firebaseIdToken?: string;
   method?: string;
   otp?: string;
 }
@@ -619,7 +620,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   }
 
   async function verifyOtpForBody(body: OtpVerifyBody) {
-    const code = parseString(body.otp ?? body.code, "otp");
+    const code = parseString(body.firebaseIdToken ?? body.otp ?? body.code, "otp");
     const challenge =
       body.challengeId === undefined
         ? store.getOtpChallengeDeliveryByContact({
@@ -3378,26 +3379,19 @@ function parseAuthChannel(value: string | undefined): AuthChannel {
   throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
 }
 
-function parseOtpDeliveryChannel(
-  value: string | undefined,
-  authChannel: AuthChannel
-): OtpDeliveryChannel {
-  const deliveryChannel = value ?? "sms";
+  function parseOtpDeliveryChannel(
+    value: string | undefined,
+    authChannel: AuthChannel
+  ): OtpDeliveryChannel {
+    void authChannel;
+    const deliveryChannel = value ?? "sms";
 
-  if (deliveryChannel !== "sms" && deliveryChannel !== "whatsapp") {
-    throw new Cp2Error(
-      400,
-      "otp_delivery_channel_invalid",
-      "OTP delivery channel must be sms or whatsapp."
-    );
+    if (deliveryChannel !== "sms") {
+      throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be sms.");
+    }
+
+    return deliveryChannel;
   }
-
-  if (authChannel !== "phone" && deliveryChannel === "whatsapp") {
-    throw new Cp2Error(400, "otp_delivery_channel_invalid", "WhatsApp OTP requires a phone login.");
-  }
-
-  return deliveryChannel;
-}
 
 function parseLanguage(value: string | undefined) {
   if (value === undefined || !isSupportedLanguage(value)) {

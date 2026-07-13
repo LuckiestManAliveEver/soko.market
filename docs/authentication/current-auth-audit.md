@@ -4,7 +4,7 @@ Date: 2026-07-11
 
 ## Framework decision
 
-The repository does not currently use Better Auth, Auth.js/NextAuth, Passport, Firebase Auth, Supabase Auth, Clerk, or Prisma.
+The repository does not currently use Better Auth, Auth.js/NextAuth, Passport, Supabase Auth, Clerk, or Prisma. It uses Firebase Auth only for phone OTP transport, while CP2 still owns sessions, accounts, and business permissions.
 
 Current auth is a custom Node/Fastify CP2 auth implementation:
 
@@ -31,10 +31,6 @@ Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token pers
 ## Implemented social-login additions
 
 - Primary frontend choices now include:
-  - Continue with WhatsApp
-  - Continue with Facebook
-  - Continue with TikTok
-  - Continue with Gmail
   - Continue with phone
   - Continue with email
 - TikTok OAuth provider metadata is now supported.
@@ -47,12 +43,12 @@ Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token pers
 - OAuth token exchange remains server-side.
 - OAuth tokens are encrypted before persistence.
 - Existing OAuth state and CSRF validation remains in place.
-- WhatsApp login uses the OTP provider abstraction over the phone auth channel.
+- Phone login uses Firebase SMS in the browser and Firebase ID token verification on the API.
 - Provider secrets stay in server environment variables and are not exposed to Vite.
 
 ## Known follow-up work
 
 - Configure production provider apps in Google, Facebook, and TikTok dashboards.
-- Enable a production WhatsApp OTP provider/template before exposing WhatsApp OTP outside dev fallback.
+- Configure Firebase phone auth and the API project ID before exposing phone OTP in production.
 - Add stricter OTP rate-limit backing storage if API instances scale horizontally.
 - Move business channel connect/disconnect UX into a dedicated channel management screen when provider APIs are fully configured.

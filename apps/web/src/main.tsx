@@ -5,7 +5,8 @@ import {
   useState,
   type ChangeEvent,
   type FormEvent,
-  type ReactNode
+  type ReactNode,
+  type RefObject
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -24,13 +25,17 @@ import {
   type ShellView,
   type SokoMode
 } from "./app-shell";
+import {
+  isFirebasePhoneAuthConfigured,
+  sendFirebasePhoneOtp,
+  type FirebaseConfirmationResult
+} from "./firebase-auth";
 import { openIndexedDbSyncRepository } from "./sync/indexeddb-repository";
 import { catchUpAccountSync } from "./sync/sync-client";
 import { subscribeToAccountRealtime } from "./sync/realtime-client";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
-type OtpDeliveryChannel = "sms" | "whatsapp";
 type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
@@ -1785,7 +1790,8 @@ function OwnerApp() {
   );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
-  const [otpDeliveryChannel, setOtpDeliveryChannel] = useState<OtpDeliveryChannel>("sms");
+  const [phoneConfirmationResult, setPhoneConfirmationResult] =
+    useState<FirebaseConfirmationResult | null>(null);
   const [isOtpVerified, setIsOtpVerified] = useState(false);
   const [signupPin, setSignupPin] = useState("");
   const [signupPinConfirm, setSignupPinConfirm] = useState("");
@@ -1870,6 +1876,8 @@ function OwnerApp() {
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
+  const phoneRecaptchaRef = useRef<HTMLDivElement | null>(null);
+  const firebasePhoneAuthConfigured = isFirebasePhoneAuthConfigured();
 
   const shouldShowLogin = ownerAuth !== null && !isWorkspaceUnlocked;
   const setupComplete = business !== null && !shouldShowLogin;
@@ -2151,7 +2159,7 @@ function OwnerApp() {
     setSession(response);
     setChallenge(null);
     setOtp("");
-    setOtpDeliveryChannel("sms");
+    setPhoneConfirmationResult(null);
     setIsOtpVerified(true);
 
     if (business !== null) {
@@ -2261,11 +2269,38 @@ function OwnerApp() {
       return;
     }
 
+    setChallenge(null);
+    setPhoneConfirmationResult(null);
+    setOtp("");
+
     try {
+      if (channel === "phone" && firebasePhoneAuthConfigured) {
+        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
+          method: "phone",
+          contact: contactValue,
+          deliveryChannel: "sms"
+        });
+
+        if (phoneRecaptchaRef.current === null) {
+          throw new Error("Phone verification is unavailable right now.");
+        }
+
+        const confirmationResult = await sendFirebasePhoneOtp(
+          contactValue,
+          phoneRecaptchaRef.current
+        );
+        setChallenge(response);
+        setPhoneConfirmationResult(confirmationResult);
+        setOtp("");
+        setIsOtpVerified(false);
+        setStatusMessage(`OTP sent to ${response.destination}`);
+        return;
+      }
+
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
         contact: contactValue,
-        deliveryChannel: channel === "phone" ? otpDeliveryChannel : "sms"
+        deliveryChannel: "sms"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -2292,13 +2327,31 @@ function OwnerApp() {
     }
 
     try {
-      const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: channel,
-        contact: contactValue,
-        otp
-      });
+      const response =
+        channel === "phone" && firebasePhoneAuthConfigured
+          ? await (async () => {
+              if (phoneConfirmationResult === null) {
+                throw new Error("Request an OTP first");
+              }
+
+              const userCredential = await phoneConfirmationResult.confirm(otp);
+              const firebaseIdToken = await userCredential.user.getIdToken(true);
+
+              return postJson<SessionResponse>("/auth/otp/verify", {
+                method: "phone",
+                contact: contactValue,
+                challengeId: challenge.challengeId,
+                firebaseIdToken
+              });
+            })()
+          : await postJson<SessionResponse>("/auth/otp/verify", {
+              method: channel,
+              contact: contactValue,
+              otp
+            });
       setSession(response);
       setIsOtpVerified(true);
+      setPhoneConfirmationResult(null);
       const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
       setHasLoginPin(pinStatus.hasPin);
 
@@ -2386,11 +2439,38 @@ function OwnerApp() {
       return;
     }
 
+    setChallenge(null);
+    setPhoneConfirmationResult(null);
+    setOtp("");
+
     try {
+      if (channel === "phone" && firebasePhoneAuthConfigured) {
+        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
+          method: "phone",
+          contact: contactValue,
+          deliveryChannel: "sms"
+        });
+
+        if (phoneRecaptchaRef.current === null) {
+          throw new Error("Phone verification is unavailable right now.");
+        }
+
+        const confirmationResult = await sendFirebasePhoneOtp(
+          contactValue,
+          phoneRecaptchaRef.current
+        );
+        setChallenge(response);
+        setPhoneConfirmationResult(confirmationResult);
+        setOtp("");
+        setIsOtpVerified(false);
+        setStatusMessage(`OTP sent to ${response.destination}`);
+        return;
+      }
+
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
         contact: contactValue,
-        deliveryChannel: channel === "phone" ? otpDeliveryChannel : "sms"
+        deliveryChannel: "sms"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -2417,11 +2497,28 @@ function OwnerApp() {
     }
 
     try {
-      const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: channel,
-        contact: contactValue,
-        otp
-      });
+      const response =
+        channel === "phone" && firebasePhoneAuthConfigured
+          ? await (async () => {
+              if (phoneConfirmationResult === null) {
+                throw new Error("Request an OTP first");
+              }
+
+              const userCredential = await phoneConfirmationResult.confirm(otp);
+              const firebaseIdToken = await userCredential.user.getIdToken(true);
+
+              return postJson<SessionResponse>("/auth/otp/verify", {
+                method: "phone",
+                contact: contactValue,
+                challengeId: challenge.challengeId,
+                firebaseIdToken
+              });
+            })()
+          : await postJson<SessionResponse>("/auth/otp/verify", {
+              method: channel,
+              contact: contactValue,
+              otp
+            });
       setSession(response);
       const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
       updateOwnerPinSet(pinStatus.hasPin);
@@ -2429,6 +2526,7 @@ function OwnerApp() {
         setIsRecoveringPin(false);
       }
       setIsOtpVerified(true);
+      setPhoneConfirmationResult(null);
       setStatusMessage(
         pinStatus.hasPin
           ? isRecoveringPin
@@ -4221,7 +4319,7 @@ function OwnerApp() {
     setPendingAttachments([]);
     setChallenge(null);
     setOtp("");
-    setOtpDeliveryChannel("sms");
+    setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
     setSignupPin("");
     setSignupPinConfirm("");
@@ -4877,7 +4975,6 @@ function OwnerApp() {
             destination={destination}
             challenge={challenge}
             otp={otp}
-            otpDeliveryChannel={otpDeliveryChannel}
             isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
@@ -4887,12 +4984,12 @@ function OwnerApp() {
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
-            onOtpDeliveryChannelChange={setOtpDeliveryChannel}
             onRequestOtp={() => void requestOtp()}
             onVerifyOtp={() => void verifyOtp()}
             onCompleteSignup={() => void completeSignup()}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
+            phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -4901,7 +4998,6 @@ function OwnerApp() {
             destination={destination}
             challenge={challenge}
             otp={otp}
-            otpDeliveryChannel={otpDeliveryChannel}
             isOtpVerified={isOtpVerified}
             loginPin={loginPin}
             isRecoveringPin={isRecoveringPin}
@@ -4913,7 +5009,6 @@ function OwnerApp() {
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
-            onOtpDeliveryChannelChange={setOtpDeliveryChannel}
             onRequestOtp={() => void requestLoginOtp()}
             onVerifyOtp={() => void verifyLoginOtp()}
             onLoginPinChange={setLoginPin}
@@ -4924,6 +5019,7 @@ function OwnerApp() {
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
             onLogin={() => void loginWithPin()}
+            phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : isBusinessSetupOpen && business === null ? (
           <BusinessSetupPanel
@@ -5027,7 +5123,6 @@ interface SetupPanelProps {
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
-  otpDeliveryChannel: OtpDeliveryChannel;
   isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
@@ -5037,17 +5132,16 @@ interface SetupPanelProps {
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
-  onOtpDeliveryChannelChange: (channel: OtpDeliveryChannel) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCompleteSignup: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
+  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
-  onSelectWhatsApp: () => void;
   onSelectPhone: () => void;
   onSelectEmail: () => void;
 }
@@ -5057,13 +5151,9 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
     <>
       <AuthBrand />
       <div className="auth-provider-stack" aria-label={`${props.mode} options`}>
-        <button
-          className="social-signup-button whatsapp"
-          type="button"
-          onClick={props.onSelectWhatsApp}
-        >
-          <span aria-hidden="true">WA</span>
-          Continue with WhatsApp
+        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
+          <span aria-hidden="true">☎</span>
+          Continue with phone
         </button>
       </div>
 
@@ -5072,10 +5162,6 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
       </div>
 
       <div className="auth-provider-stack" aria-label="Direct login options">
-        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
-          <span aria-hidden="true">☎</span>
-          Continue with phone
-        </button>
         <button className="social-signup-button email" type="button" onClick={props.onSelectEmail}>
           <span aria-hidden="true">@</span>
           Continue with email
@@ -5118,19 +5204,12 @@ function SetupPanel(props: SetupPanelProps) {
         {!showAuthForm ? (
           <SocialLoginOptions
             mode="signup"
-            onSelectWhatsApp={() => {
-              props.onChannelChange("phone");
-              props.onOtpDeliveryChannelChange("whatsapp");
-              setAuthView("phone");
-            }}
             onSelectPhone={() => {
               props.onChannelChange("phone");
-              props.onOtpDeliveryChannelChange("sms");
               setAuthView("phone");
             }}
             onSelectEmail={() => {
               props.onChannelChange("email");
-              props.onOtpDeliveryChannelChange("sms");
               setAuthView("email");
             }}
           />
@@ -5138,12 +5217,7 @@ function SetupPanel(props: SetupPanelProps) {
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">
-                  Continue with{" "}
-                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
-                    ? "WhatsApp"
-                    : props.channel}
-                </p>
+                <p className="eyebrow">Continue with {props.channel}</p>
                 <h2>Signup or login</h2>
               </div>
             </div>
@@ -5153,7 +5227,6 @@ function SetupPanel(props: SetupPanelProps) {
                 type="button"
                 onClick={() => {
                   props.onChannelChange("phone");
-                  props.onOtpDeliveryChannelChange("sms");
                 }}
               >
                 Phone
@@ -5163,7 +5236,6 @@ function SetupPanel(props: SetupPanelProps) {
                 type="button"
                 onClick={() => {
                   props.onChannelChange("email");
-                  props.onOtpDeliveryChannelChange("sms");
                 }}
               >
                 Email
@@ -5215,10 +5287,11 @@ function SetupPanel(props: SetupPanelProps) {
                 />
               </label>
             )}
+            {props.channel === "phone" ? (
+              <div ref={props.phoneRecaptchaRef} className="firebase-recaptcha" aria-hidden="true" />
+            ) : null}
             <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-              {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
-                ? "Send WhatsApp OTP"
-                : "Continue"}
+              {props.channel === "phone" ? "Send SMS code" : "Continue"}
             </button>
             <label>
               OTP
@@ -5356,7 +5429,6 @@ interface LoginPanelProps {
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
-  otpDeliveryChannel: OtpDeliveryChannel;
   isOtpVerified: boolean;
   loginPin: string;
   isRecoveringPin: boolean;
@@ -5368,7 +5440,6 @@ interface LoginPanelProps {
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
-  onOtpDeliveryChannelChange: (channel: OtpDeliveryChannel) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onLoginPinChange: (pin: string) => void;
@@ -5379,6 +5450,7 @@ interface LoginPanelProps {
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
   onLogin: () => void;
+  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
 function LoginPanel(props: LoginPanelProps) {
@@ -5387,8 +5459,7 @@ function LoginPanel(props: LoginPanelProps) {
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
-  const usesWhatsAppOtp = props.channel === "phone" && props.otpDeliveryChannel === "whatsapp";
-  const needsOtp = usesWhatsAppOtp || props.isRecoveringPin || isSettingPin;
+  const needsOtp = props.channel === "phone" || props.isRecoveringPin || isSettingPin;
   const showAuthForm =
     authView !== "options" ||
     props.challenge !== null ||
@@ -5401,19 +5472,12 @@ function LoginPanel(props: LoginPanelProps) {
         {!showAuthForm ? (
           <SocialLoginOptions
             mode="login"
-            onSelectWhatsApp={() => {
-              props.onChannelChange("phone");
-              props.onOtpDeliveryChannelChange("whatsapp");
-              setAuthView("phone");
-            }}
             onSelectPhone={() => {
               props.onChannelChange("phone");
-              props.onOtpDeliveryChannelChange("sms");
               setAuthView("phone");
             }}
             onSelectEmail={() => {
               props.onChannelChange("email");
-              props.onOtpDeliveryChannelChange("sms");
               setAuthView("email");
             }}
           />
@@ -5421,12 +5485,7 @@ function LoginPanel(props: LoginPanelProps) {
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">
-                  Continue with{" "}
-                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
-                    ? "WhatsApp"
-                    : props.channel}
-                </p>
+                <p className="eyebrow">Continue with {props.channel}</p>
                 <h2>Signup or login</h2>
               </div>
             </div>
@@ -5436,7 +5495,6 @@ function LoginPanel(props: LoginPanelProps) {
                 type="button"
                 onClick={() => {
                   props.onChannelChange("phone");
-                  props.onOtpDeliveryChannelChange("sms");
                 }}
               >
                 Phone
@@ -5446,7 +5504,6 @@ function LoginPanel(props: LoginPanelProps) {
                 type="button"
                 onClick={() => {
                   props.onChannelChange("email");
-                  props.onOtpDeliveryChannelChange("sms");
                 }}
               >
                 Email
@@ -5500,10 +5557,15 @@ function LoginPanel(props: LoginPanelProps) {
             )}
             {needsOtp ? (
               <>
+                {props.channel === "phone" ? (
+                  <div
+                    ref={props.phoneRecaptchaRef}
+                    className="firebase-recaptcha"
+                    aria-hidden="true"
+                  />
+                ) : null}
                 <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-                  {props.channel === "phone" && props.otpDeliveryChannel === "whatsapp"
-                    ? "Send WhatsApp OTP"
-                    : "Continue"}
+                  {props.channel === "phone" ? "Send SMS code" : "Continue"}
                 </button>
                 <label>
                   OTP
@@ -5518,9 +5580,9 @@ function LoginPanel(props: LoginPanelProps) {
                   type="button"
                   onClick={props.onVerifyOtp}
                   disabled={props.challenge === null}
-                >
-                  Verify OTP
-                </button>
+                  >
+                    Verify OTP
+                  </button>
               </>
             ) : (
               <p className="shell-note">
@@ -5604,7 +5666,7 @@ function LoginPanel(props: LoginPanelProps) {
                 disabled={
                   !contactIsValid ||
                   !isValidPin(props.loginPin) ||
-                  (usesWhatsAppOtp && !props.isOtpVerified)
+                  (needsOtp && !props.isOtpVerified)
                 }
               >
                 Login

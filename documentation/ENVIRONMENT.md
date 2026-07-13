@@ -44,15 +44,16 @@ pnpm dev:stack:down
 ## Authentication channels
 
 Social OAuth login is disabled in the frontend and API, so OAuth client credentials are not
-required. WhatsApp is an OTP delivery channel, not a social login.
+required. Phone OTP now uses Firebase Auth on the web client and Firebase token verification on
+the API.
 
-Production phone and WhatsApp OTP require:
+Production phone OTP requires:
 
-- `TWILIO_VERIFY_ENABLED=true`
-- `WHATSAPP_OTP_ENABLED=true`
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_VERIFY_SERVICE_SID`
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_APP_ID`
+- `FIREBASE_PROJECT_ID`
 
-The same Twilio server credentials serve all users. Never collect or store individual users'
-WhatsApp credentials.
+The web Firebase config is public but still environment-specific. The API only needs the Firebase
+project ID to verify the signed ID token.
