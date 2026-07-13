@@ -43,10 +43,12 @@ interface ShopDeletionRequestResponse {
 }
 
 const previousGoogleClientId = process.env.OAUTH_GOOGLE_CLIENT_ID;
+const previousGoogleClientSecret = process.env.OAUTH_GOOGLE_CLIENT_SECRET;
 
 describe("Shop profile lifecycle", () => {
   beforeAll(() => {
     process.env.OAUTH_GOOGLE_CLIENT_ID = "google-test-client-id";
+    process.env.OAUTH_GOOGLE_CLIENT_SECRET = "google-test-client-secret";
   });
 
   afterAll(() => {
@@ -54,6 +56,11 @@ describe("Shop profile lifecycle", () => {
       delete process.env.OAUTH_GOOGLE_CLIENT_ID;
     } else {
       process.env.OAUTH_GOOGLE_CLIENT_ID = previousGoogleClientId;
+    }
+    if (previousGoogleClientSecret === undefined) {
+      delete process.env.OAUTH_GOOGLE_CLIENT_SECRET;
+    } else {
+      process.env.OAUTH_GOOGLE_CLIENT_SECRET = previousGoogleClientSecret;
     }
   });
 

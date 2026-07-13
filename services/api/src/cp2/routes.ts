@@ -60,6 +60,7 @@ import {
 } from "./oauth.js";
 
 export interface Cp2RouteOptions {
+  oauthAllowedRedirectOrigins?: string[];
   otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
   store?: Cp2Store;
@@ -556,7 +557,38 @@ interface LaunchIncidentStatusBody {
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
+  const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
+
+  function oauthRedirectUriForRequest(
+    request: FastifyRequest,
+    providerConfig: ReturnType<typeof getOAuthProviderConfig>,
+    requestedRedirectUri?: string
+  ): string {
+    const redirectUri = requestedRedirectUri ?? defaultOAuthRedirectUri(request);
+
+    let url: URL;
+
+    try {
+      url = new URL(redirectUri);
+    } catch {
+      throw new Cp2Error(400, "redirect_uri_invalid", "OAuth redirect URI is invalid.");
+    }
+
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.pathname !== providerConfig.callbackPath ||
+      url.username.length > 0 ||
+      url.password.length > 0 ||
+      url.search.length > 0 ||
+      url.hash.length > 0 ||
+      !oauthAllowedRedirectOrigins.has(url.origin)
+    ) {
+      throw new Cp2Error(400, "redirect_uri_invalid", "OAuth redirect URI is not allowed.");
+    }
+
+    return url.toString();
+  }
 
   async function requestOtpForBody(body: OtpRequestBody) {
     const channel = parseAuthChannel(body.method ?? body.channel);
@@ -632,7 +664,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       );
     }
 
-    const redirectUri = parseOptionalString(input.redirectUri) ?? defaultOAuthRedirectUri(request);
+    const redirectUri = oauthRedirectUriForRequest(
+      request,
+      providerConfig,
+      parseOptionalString(input.redirectUri)
+    );
     const startPayload = createOAuthStartPayload({
       provider: providerConfig,
       redirectUri
@@ -1005,7 +1041,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         }
 
         if (request.query.csrfToken === undefined) {
-          const relayUrl = new URL(defaultOAuthRedirectUri(request));
+          const relayUrl = new URL(
+            oauthRedirectUriForRequest(
+              request,
+              getOAuthProviderConfig(parseOAuthProvider(request.params.provider))
+            )
+          );
           relayUrl.searchParams.set("provider", request.params.provider);
           relayUrl.searchParams.set("state", parseString(request.query.state, "state"));
           relayUrl.searchParams.set("code", parseString(request.query.code, "code"));
@@ -1038,7 +1079,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         }
 
         if (request.query.csrfToken === undefined) {
-          const relayUrl = new URL(defaultOAuthRedirectUri(request));
+          const relayUrl = new URL(
+            oauthRedirectUriForRequest(
+              request,
+              getOAuthProviderConfig(parseOAuthProvider(request.params.provider))
+            )
+          );
           relayUrl.searchParams.set("provider", request.params.provider);
           relayUrl.searchParams.set("state", parseString(request.query.state, "state"));
           relayUrl.searchParams.set("code", parseString(request.query.code, "code"));
@@ -3313,10 +3359,12 @@ function parseOptionalOAuthTokens(value: OAuthCallbackBody["tokens"]): OAuthToke
 }
 
 function defaultOAuthRedirectUri(request: FastifyRequest): string {
-  const origin = request.headers.origin ?? "http://127.0.0.1:5173";
-  const url = new URL("/auth/oauth/callback", origin);
+  const origin = request.headers.origin ?? process.env.APP_URL?.trim() ?? "http://127.0.0.1:5173";
+  let url: URL;
 
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  try {
+    url = new URL("/auth/oauth/callback", origin);
+  } catch {
     throw new Cp2Error(400, "redirect_uri_invalid", "OAuth redirect URI is invalid.");
   }
 

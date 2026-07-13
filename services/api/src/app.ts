@@ -17,6 +17,7 @@ export function buildApi(options: BuildApiOptions = {}) {
     logger: true
   });
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
+  const oauthAllowedRedirectOrigins = readOAuthAllowedRedirectOrigins([...allowedCorsOrigins]);
 
   void app.register(websocket, {
     options: {
@@ -62,10 +63,28 @@ export function buildApi(options: BuildApiOptions = {}) {
 
     const store = registerCp2Routes(routes, {
       ...options.cp2,
+      oauthAllowedRedirectOrigins:
+        options.cp2?.oauthAllowedRedirectOrigins ?? oauthAllowedRedirectOrigins,
       realtimeAllowedOrigins: [...allowedCorsOrigins]
     });
     registerMcpRoutes(routes, { store, allowedOrigins: [...allowedCorsOrigins] });
   });
 
   return app;
+}
+
+function readOAuthAllowedRedirectOrigins(fallback: string[]): string[] {
+  const configured = process.env.AUTH_ALLOWED_REDIRECT_ORIGINS;
+
+  if (configured === undefined || configured.trim().length === 0) {
+    return fallback;
+  }
+
+  const origins = configured
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0)
+    .map((origin) => new URL(origin).origin);
+
+  return origins.length > 0 ? [...new Set(origins)] : fallback;
 }

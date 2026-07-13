@@ -213,7 +213,7 @@ export function listOAuthProviders(): PublicOAuthProviderConfig[] {
     userInfoUrl: provider.userInfoUrl,
     scopes: provider.scopes,
     pkce: provider.pkce,
-    configured: provider.enabled && provider.implemented && getOAuthClientId(provider).length > 0
+    configured: isOAuthProviderConfigured(provider)
   }));
 }
 
@@ -245,7 +245,12 @@ export function getOAuthProviderConfig(provider: OAuthProvider): OAuthProviderCo
 }
 
 export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolean {
-  return provider.enabled && provider.implemented && getOAuthClientId(provider).length > 0;
+  return (
+    provider.enabled &&
+    provider.implemented &&
+    getOAuthClientId(provider).length > 0 &&
+    getOAuthClientSecret(provider).length > 0
+  );
 }
 
 export function createOAuthStartPayload(input: {

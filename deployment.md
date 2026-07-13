@@ -75,7 +75,29 @@ NODE_ENV=production
 NODE_VERSION=20.19.0
 API_HOST=0.0.0.0
 WEB_ORIGINS=https://soko.market,https://www.soko.market
+APP_URL=https://soko.market
+AUTH_ALLOWED_REDIRECT_ORIGINS=https://soko.market,https://www.soko.market
 ```
+
+Set a stable encryption secret and both credentials for every OAuth provider you want to enable:
+
+```text
+AUTH_TOKEN_ENCRYPTION_KEY=<generated random secret>
+OAUTH_GOOGLE_CLIENT_ID=<Google client ID>
+OAUTH_GOOGLE_CLIENT_SECRET=<Google client secret>
+OAUTH_FACEBOOK_CLIENT_ID=<Facebook app ID>
+OAUTH_FACEBOOK_CLIENT_SECRET=<Facebook app secret>
+```
+
+Use the equivalent `OAUTH_<PROVIDER>_CLIENT_ID` and
+`OAUTH_<PROVIDER>_CLIENT_SECRET` variables declared in `render.yaml` for TikTok, Apple, GitHub,
+Microsoft, LinkedIn, or X. Register this exact web callback with each enabled provider:
+
+```text
+https://soko.market/auth/oauth/callback
+```
+
+OAuth remains disabled for a provider until both its client ID and client secret are present.
 
 Set these when the Twilio Verify trial is ready:
 

@@ -49,18 +49,32 @@ const oauthClientIdEnvByProvider: Record<OAuthProvider, string> = {
   tiktok: "OAUTH_TIKTOK_CLIENT_ID",
   x: "OAUTH_X_CLIENT_ID"
 };
-const previousOAuthClientIds = new Map<string, string | undefined>();
+const oauthClientSecretEnvByProvider: Record<OAuthProvider, string> = {
+  apple: "OAUTH_APPLE_CLIENT_SECRET",
+  facebook: "OAUTH_FACEBOOK_CLIENT_SECRET",
+  github: "OAUTH_GITHUB_CLIENT_SECRET",
+  google: "OAUTH_GOOGLE_CLIENT_SECRET",
+  linkedin: "OAUTH_LINKEDIN_CLIENT_SECRET",
+  microsoft: "OAUTH_MICROSOFT_CLIENT_SECRET",
+  tiktok: "OAUTH_TIKTOK_CLIENT_SECRET",
+  x: "OAUTH_X_CLIENT_SECRET"
+};
+const previousOAuthCredentials = new Map<string, string | undefined>();
 
 describe("PRD-0002 social sign-in authentication", () => {
   beforeAll(() => {
     for (const [provider, envName] of Object.entries(oauthClientIdEnvByProvider)) {
-      previousOAuthClientIds.set(envName, process.env[envName]);
+      previousOAuthCredentials.set(envName, process.env[envName]);
       process.env[envName] = `${provider}-test-client-id`;
+    }
+    for (const [provider, envName] of Object.entries(oauthClientSecretEnvByProvider)) {
+      previousOAuthCredentials.set(envName, process.env[envName]);
+      process.env[envName] = `${provider}-test-client-secret`;
     }
   });
 
   afterAll(() => {
-    for (const [envName, value] of previousOAuthClientIds.entries()) {
+    for (const [envName, value] of previousOAuthCredentials.entries()) {
       if (value === undefined) {
         delete process.env[envName];
       } else {
@@ -123,8 +137,8 @@ describe("PRD-0002 social sign-in authentication", () => {
   );
 
   it("returns an explicit unconfigured error when provider credentials are missing", async () => {
-    const previous = process.env.OAUTH_X_CLIENT_ID;
-    delete process.env.OAUTH_X_CLIENT_ID;
+    const previous = process.env.OAUTH_X_CLIENT_SECRET;
+    delete process.env.OAUTH_X_CLIENT_SECRET;
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
@@ -143,7 +157,41 @@ describe("PRD-0002 social sign-in authentication", () => {
       code: "oauth_provider_unconfigured"
     });
 
-    process.env.OAUTH_X_CLIENT_ID = previous;
+    if (previous === undefined) {
+      delete process.env.OAUTH_X_CLIENT_SECRET;
+    } else {
+      process.env.OAUTH_X_CLIENT_SECRET = previous;
+    }
+    await app.close();
+  });
+
+  it("rejects OAuth callbacks outside the configured web origins", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const wrongOrigin = await app.inject({
+      method: "POST",
+      url: "/auth/oauth/start",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        provider: "google",
+        redirectUri: "https://attacker.example/auth/oauth/callback"
+      })
+    });
+    const wrongPath = await app.inject({
+      method: "POST",
+      url: "/auth/oauth/start",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        provider: "google",
+        redirectUri: "http://127.0.0.1:5173/not-the-oauth-callback"
+      })
+    });
+
+    expect(wrongOrigin.statusCode).toBe(400);
+    expect(wrongOrigin.json()).toMatchObject({ code: "redirect_uri_invalid" });
+    expect(wrongPath.statusCode).toBe(400);
+    expect(wrongPath.json()).toMatchObject({ code: "redirect_uri_invalid" });
+
     await app.close();
   });
 

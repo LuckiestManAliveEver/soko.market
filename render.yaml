@@ -31,6 +31,44 @@ services:
         value: 0.0.0.0
       - key: WEB_ORIGINS
         value: https://soko.market,https://www.soko.market
+      - key: APP_URL
+        value: https://soko.market
+      - key: AUTH_ALLOWED_REDIRECT_ORIGINS
+        value: https://soko.market,https://www.soko.market
+      - key: AUTH_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: OAUTH_GOOGLE_CLIENT_ID
+        sync: false
+      - key: OAUTH_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_FACEBOOK_CLIENT_ID
+        sync: false
+      - key: OAUTH_FACEBOOK_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_TIKTOK_CLIENT_ID
+        sync: false
+      - key: OAUTH_TIKTOK_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_APPLE_CLIENT_ID
+        sync: false
+      - key: OAUTH_APPLE_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_GITHUB_CLIENT_ID
+        sync: false
+      - key: OAUTH_GITHUB_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_MICROSOFT_CLIENT_ID
+        sync: false
+      - key: OAUTH_MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_LINKEDIN_CLIENT_ID
+        sync: false
+      - key: OAUTH_LINKEDIN_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_X_CLIENT_ID
+        sync: false
+      - key: OAUTH_X_CLIENT_SECRET
+        sync: false
       - key: CP2_STORE
         value: postgres
       - key: DATABASE_URL
