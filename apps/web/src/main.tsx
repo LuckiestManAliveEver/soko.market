@@ -1048,6 +1048,7 @@ interface ShopDeletionRequestResult {
   preview: ShopDeletionPreviewSummary;
   otp: {
     challengeId: string;
+    channel: AuthChannel;
     destination: string;
     expiresAt: string;
     devOtp?: string;
@@ -2274,7 +2275,11 @@ function OwnerApp() {
     setOtp("");
 
     try {
-      if (channel === "phone" && firebasePhoneAuthConfigured) {
+      if (channel === "phone") {
+        if (!firebasePhoneAuthConfigured) {
+          throw new Error("Firebase phone authentication is not configured for this website.");
+        }
+
         const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
           method: "phone",
           contact: contactValue,
@@ -2328,8 +2333,14 @@ function OwnerApp() {
 
     try {
       const response =
-        channel === "phone" && firebasePhoneAuthConfigured
+        channel === "phone"
           ? await (async () => {
+              if (!firebasePhoneAuthConfigured) {
+                throw new Error(
+                  "Firebase phone authentication is not configured for this website."
+                );
+              }
+
               if (phoneConfirmationResult === null) {
                 throw new Error("Request an OTP first");
               }
@@ -2444,7 +2455,11 @@ function OwnerApp() {
     setOtp("");
 
     try {
-      if (channel === "phone" && firebasePhoneAuthConfigured) {
+      if (channel === "phone") {
+        if (!firebasePhoneAuthConfigured) {
+          throw new Error("Firebase phone authentication is not configured for this website.");
+        }
+
         const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
           method: "phone",
           contact: contactValue,
@@ -2498,8 +2513,14 @@ function OwnerApp() {
 
     try {
       const response =
-        channel === "phone" && firebasePhoneAuthConfigured
+        channel === "phone"
           ? await (async () => {
+              if (!firebasePhoneAuthConfigured) {
+                throw new Error(
+                  "Firebase phone authentication is not configured for this website."
+                );
+              }
+
               if (phoneConfirmationResult === null) {
                 throw new Error("Request an OTP first");
               }
@@ -4334,6 +4355,19 @@ function OwnerApp() {
     setIsWorkspaceUnlocked(ownerAuth === null);
   }
 
+  async function finishShopDeletion() {
+    await logout();
+    setBusiness(null);
+    setOwnerAuth(null);
+    setIsWorkspaceUnlocked(false);
+    localStorage.removeItem(activeBusinessStorageKey);
+    localStorage.removeItem(legacyActiveBusinessStorageKey);
+    localStorage.removeItem(activeAgentStorageKey);
+    localStorage.removeItem(ownerAuthStorageKey);
+    localStorage.removeItem(setupDraftStorageKey);
+    setStatusMessage("Shop deleted. Sign up or log in to continue.");
+  }
+
   async function sendChatDraft() {
     const attachments = pendingAttachments;
     const message =
@@ -5044,6 +5078,7 @@ function OwnerApp() {
             onAgentChange={setAgentSettings}
             onBack={() => setView("chat")}
             onLogout={() => void logout()}
+            onShopDeleted={() => void finishShopDeletion()}
           />
         ) : (
           <main className="chat-workspace-shell">
@@ -9727,6 +9762,7 @@ interface AgentProfileSurfaceProps {
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
   onLogout: () => void;
+  onShopDeleted: () => void;
 }
 
 function AgentProfileSurface({
@@ -9737,7 +9773,8 @@ function AgentProfileSurface({
   storefrontUrl,
   onAgentChange,
   onBack,
-  onLogout
+  onLogout,
+  onShopDeleted
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
@@ -9759,7 +9796,11 @@ function AgentProfileSurface({
   const [deletionPin, setDeletionPin] = useState("");
   const [deletionOtp, setDeletionOtp] = useState("");
   const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
+  const [deletionOtpChannel, setDeletionOtpChannel] = useState<AuthChannel | null>(null);
   const [deletionOtpDestination, setDeletionOtpDestination] = useState("");
+  const [deletionPhoneConfirmation, setDeletionPhoneConfirmation] =
+    useState<FirebaseConfirmationResult | null>(null);
+  const deletionRecaptchaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isEditing) {
@@ -9807,6 +9848,9 @@ function AgentProfileSurface({
   }
 
   async function startShopDeletion() {
+    setDeletionPhoneConfirmation(null);
+    setDeletionOtp("");
+
     try {
       const response = await postJson<ShopDeletionRequestResult>(
         `/businesses/${business.id}/shop-deletion/request`,
@@ -9814,15 +9858,29 @@ function AgentProfileSurface({
           shopId: deletionShopId
         }
       );
+
+      if (response.otp.channel === "phone") {
+        if (!isFirebasePhoneAuthConfigured()) {
+          throw new Error("Firebase phone authentication is not configured for this website.");
+        }
+
+        if (deletionRecaptchaRef.current === null) {
+          throw new Error("Phone verification is unavailable right now.");
+        }
+
+        const confirmation = await sendFirebasePhoneOtp(
+          response.otp.destination,
+          deletionRecaptchaRef.current
+        );
+        setDeletionPhoneConfirmation(confirmation);
+      }
+
       setDeletionRequest(response.request);
       setDeletionPreview(response.preview);
+      setDeletionOtpChannel(response.otp.channel);
       setDeletionOtpDestination(response.otp.destination);
       setDeletionStep("verify");
-      setProfileMessage(
-        response.otp.devOtp !== undefined && response.otp.devOtp.length > 0
-          ? `Verification code sent. Dev code: ${response.otp.devOtp}`
-          : "Verification code sent."
-      );
+      setProfileMessage("Verification code sent.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -9834,11 +9892,24 @@ function AgentProfileSurface({
     }
 
     try {
+      const verification =
+        deletionOtpChannel === "phone"
+          ? await (async () => {
+              if (deletionPhoneConfirmation === null) {
+                throw new Error("Request a new Firebase verification code first.");
+              }
+
+              const userCredential = await deletionPhoneConfirmation.confirm(deletionOtp);
+              return {
+                firebaseIdToken: await userCredential.user.getIdToken(true)
+              };
+            })()
+          : { otpCode: deletionOtp };
       const result = await postJson<AccountDeletionRequestSummary>(
         `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/finalize`,
         {
           pin: deletionPin,
-          otpCode: deletionOtp,
+          ...verification,
           acknowledgement: deletionAcknowledged,
           idempotencyKey: `web-${business.id}-${deletionRequest.id}`
         }
@@ -9850,6 +9921,11 @@ function AgentProfileSurface({
           ? "This shop and its removable data have been deleted."
           : "Shop deletion is being processed."
       );
+      setDeletionPhoneConfirmation(null);
+
+      if (result.status === "COMPLETED") {
+        onShopDeleted();
+      }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -10153,6 +10229,7 @@ function AgentProfileSurface({
         </div>
 
         <div className="record-form danger-zone-card">
+          <div className="firebase-recaptcha" ref={deletionRecaptchaRef} />
           <div className="section-heading">
             <p className="eyebrow">Danger zone</p>
             <h3>Delete shop account</h3>

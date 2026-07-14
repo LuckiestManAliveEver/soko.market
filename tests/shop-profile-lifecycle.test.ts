@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
+import type { OtpProvider } from "../services/api/src/cp2/otp-provider";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 interface OtpRequestResponse {
@@ -43,6 +44,81 @@ interface ShopDeletionRequestResponse {
 }
 
 describe("Shop profile lifecycle", () => {
+  it("uses external phone verification and never exposes a deletion development OTP", async () => {
+    const store = createCp2Store();
+    const providerRequests: string[] = [];
+    const providerVerifications: string[] = [];
+    const otpProvider: OtpProvider = {
+      name: "firebase_test",
+      exposesDevOtp: false,
+      verifiesExternally: true,
+      canHandle: (channel) => channel === "phone",
+      requestOtp: async ({ destination }) => {
+        providerRequests.push(destination);
+      },
+      verifyOtp: async ({ destination, code }) => {
+        providerVerifications.push(destination);
+        return code === "firebase-id-token";
+      }
+    };
+    const app = buildApi({ cp2: { store, otpProvider } });
+    const phone = "+254700000709";
+    const otpRequest = await postJson<{ challengeId: string }>(
+      app,
+      "/auth/otp/request",
+      { method: "phone", contact: phone, deliveryChannel: "sms" }
+    );
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        challengeId: otpRequest.challengeId,
+        firebaseIdToken: "firebase-id-token"
+      })
+    });
+    expect(owner.statusCode).toBe(200);
+    const ownerCookie = extractSessionCookie(owner.headers["set-cookie"]);
+    await postJson<SessionResponse>(app, "/auth/pin/setup", { pin: "1234" }, ownerCookie);
+    const shop = await postJson<BusinessResponse>(
+      app,
+      "/businesses",
+      { name: "Firebase Delete", language: "en" },
+      ownerCookie
+    );
+
+    const deletion = await postJson<
+      ShopDeletionRequestResponse & { otp: { channel: string; devOtp?: string } }
+    >(
+      app,
+      `/businesses/${shop.business.id}/shop-deletion/request`,
+      { shopId: shop.business.sokoId },
+      ownerCookie
+    );
+    expect(deletion.otp).toMatchObject({ channel: "phone" });
+    expect(deletion.otp.devOtp).toBeUndefined();
+
+    const completed = await postJson<{ status: string }>(
+      app,
+      `/businesses/${shop.business.id}/shop-deletion/${deletion.request.id}/finalize`,
+      {
+        pin: "1234",
+        firebaseIdToken: "firebase-id-token",
+        acknowledgement: true,
+        idempotencyKey: "firebase-delete-shop"
+      },
+      ownerCookie
+    );
+    expect(completed.status).toBe("COMPLETED");
+    expect(store.snapshot().businesses).toHaveLength(0);
+    expect(providerRequests).toEqual([phone, phone]);
+    expect(providerVerifications).toEqual([phone, phone]);
+
+    await app.close();
+  });
+
   it("requires owner, exact shop ID, PIN and OTP before tenant-scoped shop deletion", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

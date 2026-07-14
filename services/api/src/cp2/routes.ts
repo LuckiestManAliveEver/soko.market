@@ -445,6 +445,7 @@ interface ShopDeletionRequestBody {
 
 interface ShopDeletionFinalizeBody {
   acknowledgement?: boolean;
+  firebaseIdToken?: string;
   idempotencyKey?: string | null;
   otpCode?: string;
   pin?: string;
@@ -2512,11 +2513,42 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        return store.requestShopDeletion({
+        const result = store.requestShopDeletion({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           shopId: parseString(request.body.shopId, "shopId")
         });
+        const challenge = store.getShopDeletionOtpDelivery({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          requestId: result.request.id
+        });
+
+        if (otpProvider.canHandle(challenge.channel)) {
+          await otpProvider.requestOtp({
+            channel: challenge.channel,
+            deliveryChannel: "sms",
+            destination: challenge.destination
+          });
+        }
+
+        const otp =
+          otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
+            ? {
+                challengeId: challenge.challengeId,
+                channel: challenge.channel,
+                destination: challenge.destination,
+                expiresAt: challenge.expiresAt
+              }
+            : {
+                ...result.otp,
+                channel: challenge.channel
+              };
+
+        return {
+          ...result,
+          otp
+        };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -2531,12 +2563,36 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     ) => {
       try {
         const idempotencyKey = parseOptionalString(request.body.idempotencyKey);
+        const challenge = store.getShopDeletionOtpDelivery({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          requestId: request.params.requestId
+        });
+        const externallyVerified =
+          otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel);
+        const otpValue = parseString(
+          externallyVerified ? request.body.firebaseIdToken : request.body.otpCode,
+          externallyVerified ? "firebaseIdToken" : "otpCode"
+        );
+
+        if (
+          externallyVerified &&
+          !(await otpProvider.verifyOtp({
+            channel: challenge.channel,
+            destination: challenge.destination,
+            code: otpValue
+          }))
+        ) {
+          throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
+        }
+
         const result = store.finalizeShopDeletion({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           requestId: request.params.requestId,
           pin: parseString(request.body.pin, "pin"),
-          otpCode: parseString(request.body.otpCode, "otpCode"),
+          otpCode: externallyVerified ? "" : otpValue,
+          otpExternallyVerified: externallyVerified,
           acknowledgement: parseBoolean(request.body.acknowledgement, "acknowledgement"),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey })
         });

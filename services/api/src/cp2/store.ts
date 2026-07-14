@@ -4199,12 +4199,45 @@ export class Cp2Store {
     };
   }
 
+  getShopDeletionOtpDelivery(input: {
+    sessionId: string | null;
+    businessId: string;
+    requestId: string;
+    now?: Date;
+  }): OtpChallengeDelivery {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const request = this.accountDeletionRequests.get(input.requestId);
+
+    if (request === undefined || request.businessId !== input.businessId) {
+      throw new Cp2Error(404, "shop_deletion_not_found", "Shop deletion request was not found.");
+    }
+
+    if (request.actorId !== session.user.id || request.accountId !== session.account.id) {
+      throw new Cp2Error(403, "permission_denied", "Only the verified shop owner can delete it.");
+    }
+
+    this.requireOwnerMembership(input.businessId, session.user.id);
+    const challengeId = parseDeletionOtpChallengeId(request.auditReference);
+
+    if (challengeId === null) {
+      throw new Cp2Error(
+        409,
+        "shop_deletion_otp_missing",
+        "Deletion verification code is missing."
+      );
+    }
+
+    return this.getOtpChallengeDelivery(challengeId, now);
+  }
+
   finalizeShopDeletion(input: {
     sessionId: string | null;
     businessId: string;
     requestId: string;
     pin: string;
     otpCode: string;
+    otpExternallyVerified?: boolean;
     acknowledgement: boolean;
     idempotencyKey?: string | null;
     now?: Date;
@@ -4259,11 +4292,15 @@ export class Cp2Store {
       );
     }
 
-    this.verifyOtpCodeOnly({
-      challengeId: otpChallengeId,
-      code: input.otpCode,
-      now
-    });
+    if (input.otpExternallyVerified === true) {
+      this.markOtpCodeExternallyVerified({ challengeId: otpChallengeId, now });
+    } else {
+      this.verifyOtpCodeOnly({
+        challengeId: otpChallengeId,
+        code: input.otpCode,
+        now
+      });
+    }
 
     const verified: AccountDeletionRequestSummary = {
       ...request,
@@ -7311,6 +7348,12 @@ export class Cp2Store {
       throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
     }
 
+    challenge.verifiedAt = input.now.toISOString();
+  }
+
+  private markOtpCodeExternallyVerified(input: { challengeId: string; now: Date }): void {
+    const challenge = this.otpChallenges.get(input.challengeId);
+    this.validateOtpChallenge(challenge, input.now);
     challenge.verifiedAt = input.now.toISOString();
   }
 

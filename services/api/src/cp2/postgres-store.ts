@@ -115,6 +115,7 @@ const mutatingMethodNames = new Set([
   "replaySyncQueue",
   "replaySyncQueueItem",
   "requestAccountDeletion",
+  "requestShopDeletion",
   "requestOtp",
   "revokeMcpAccessToken",
   "setAccountPin",
@@ -140,7 +141,8 @@ const mutatingMethodNames = new Set([
   "updateVerificationTier",
   "verifyAccountPin",
   "verifyExternallyApprovedOtp",
-  "verifyOtp"
+  "verifyOtp",
+  "finalizeShopDeletion"
 ]);
 
 export interface PostgresCp2StoreOptions extends Cp2StoreOptions {

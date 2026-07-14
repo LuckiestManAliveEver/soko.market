@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
-import type { OtpProvider } from "../services/api/src/cp2/otp-provider";
+import {
+  createOtpProviderFromEnvironment,
+  type OtpProvider
+} from "../services/api/src/cp2/otp-provider";
 
 interface OtpRequestResponse {
   challengeId: string;
@@ -61,6 +64,24 @@ interface PublicStorefrontResponse {
 }
 
 describe("CP2 auth and business creation", () => {
+  it("fails closed for production phone OTP when Firebase is not configured", async () => {
+    const provider = createOtpProviderFromEnvironment({ NODE_ENV: "production" });
+
+    expect(provider.exposesDevOtp).toBe(false);
+    expect(provider.verifiesExternally).toBe(true);
+    expect(provider.canHandle("phone")).toBe(true);
+    await expect(
+      provider.requestOtp({
+        channel: "phone",
+        deliveryChannel: "sms",
+        destination: "+254700000700"
+      })
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: "firebase_phone_auth_unconfigured"
+    });
+  });
+
   it("creates an owner account, session, business, language preference, role, and audit events", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

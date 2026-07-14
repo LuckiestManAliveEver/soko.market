@@ -72,6 +72,33 @@ class LocalOtpProvider implements OtpProvider {
   }
 }
 
+class UnconfiguredPhoneOtpProvider implements OtpProvider {
+  readonly name = "firebase_phone_unconfigured";
+  readonly exposesDevOtp = false;
+  readonly verifiesExternally = true;
+
+  canHandle(channel: AuthChannel): boolean {
+    return channel === "phone";
+  }
+
+  async requestOtp(input: {
+    channel: AuthChannel;
+    deliveryChannel: OtpDeliveryChannel;
+    destination: string;
+  }): Promise<void> {
+    void input;
+    throw new Cp2Error(
+      503,
+      "firebase_phone_auth_unconfigured",
+      "Firebase phone authentication is not configured on the server."
+    );
+  }
+
+  async verifyOtp(): Promise<boolean> {
+    return false;
+  }
+}
+
 class FirebasePhoneOtpProvider implements OtpProvider {
   readonly name = "firebase_phone";
   readonly exposesDevOtp = false;
@@ -235,6 +262,10 @@ export function createOtpProviderFromEnvironment(env = process.env): OtpProvider
     return new FirebasePhoneOtpProvider({
       projectId
     });
+  }
+
+  if (env.NODE_ENV?.trim() === "production") {
+    return new UnconfiguredPhoneOtpProvider();
   }
 
   return new LocalOtpProvider();
