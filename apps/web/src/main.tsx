@@ -1,4 +1,5 @@
 import {
+  Fragment,
   StrictMode,
   useEffect,
   useRef,
@@ -71,6 +72,23 @@ interface OtpRequestResponse {
   destination: string;
   expiresAt: string;
   devOtp?: string;
+}
+
+interface MarketplaceIntroStateSummary {
+  completedAt: string | null;
+}
+
+interface AiModelSummary {
+  id: AgentModel;
+  label: string;
+  provider: "local" | "openai";
+  description: string;
+  capabilities: string[];
+  available: boolean;
+}
+
+interface ActiveAiModelSummary {
+  modelId: AgentModel;
 }
 
 interface SessionResponse {
@@ -993,6 +1011,9 @@ interface AccountDeletionRequestSummary {
     | "VERIFIED"
     | "QUEUED"
     | "RUNNING"
+    | "QUARANTINED"
+    | "RESTORED"
+    | "PURGED"
     | "COMPLETED"
     | "PARTIALLY_FAILED"
     | "FAILED"
@@ -1046,13 +1067,6 @@ interface ShopDeletionPreviewSummary {
 interface ShopDeletionRequestResult {
   request: AccountDeletionRequestSummary;
   preview: ShopDeletionPreviewSummary;
-  otp: {
-    challengeId: string;
-    channel: AuthChannel;
-    destination: string;
-    expiresAt: string;
-    devOtp?: string;
-  };
 }
 
 interface VerificationTierSummary {
@@ -1819,6 +1833,11 @@ function OwnerApp() {
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
+    () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
+  );
+  const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
@@ -1880,9 +1899,9 @@ function OwnerApp() {
   const phoneRecaptchaRef = useRef<HTMLDivElement | null>(null);
   const firebasePhoneAuthConfigured = isFirebasePhoneAuthConfigured();
 
-  const shouldShowLogin = ownerAuth !== null && !isWorkspaceUnlocked;
+  const shouldShowLogin = isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked);
   const setupComplete = business !== null && !shouldShowLogin;
-  const shouldShowSignup = business === null && ownerAuth === null;
+  const shouldShowSignup = isBusinessSetupOpen && session === null;
   const isAuthScreen = shouldShowSignup || shouldShowLogin;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
@@ -2215,6 +2234,7 @@ function OwnerApp() {
         const nextSession = (await response.json()) as SessionResponse;
         setSession(nextSession);
         setStatusMessage("Session active");
+        await loadMarketplaceIntroState();
         await validateStoredBusiness();
         return;
       }
@@ -2231,6 +2251,35 @@ function OwnerApp() {
       setStatusMessage(
         readStoredBusiness() === null ? "API unavailable" : "Saved workspace loaded"
       );
+    }
+  }
+
+  async function loadMarketplaceIntroState() {
+    try {
+      const state = await getJson<MarketplaceIntroStateSummary>("/v1/marketplace-intro");
+      if (state.completedAt !== null) {
+        localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
+        setIsMarketplaceIntroComplete(true);
+      }
+    } catch {
+      // Anonymous and offline visitors use the local completion marker.
+    }
+  }
+
+  async function completeMarketplaceIntro() {
+    localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
+    setIsMarketplaceIntroComplete(true);
+    setIsMarketplaceShortcutOpen(false);
+    setStatusMessage("Marketplace ready. Use the Marketplace button to return anytime.");
+
+    if (session !== null) {
+      try {
+        await postJson<MarketplaceIntroStateSummary>("/v1/marketplace-intro/complete", {
+          businessId: null
+        });
+      } catch (error) {
+        setStatusMessage(`Marketplace ready locally. ${getErrorMessage(error)}`);
+      }
     }
   }
 
@@ -2582,14 +2631,9 @@ function OwnerApp() {
   }
 
   async function loginWithPin() {
-    if (ownerAuth === null) {
-      setStatusMessage("No saved owner PIN found");
-      return;
-    }
-
     const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (contactValue !== ownerAuth.contact) {
+    if (ownerAuth !== null && contactValue !== ownerAuth.contact) {
       setStatusMessage("Contact does not match this account");
       return;
     }
@@ -2606,8 +2650,16 @@ function OwnerApp() {
         pin: loginPin
       });
       setSession(response);
-      updateOwnerPinSet(true);
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: contactValue,
+        countryCode,
+        pinSet: true
+      };
+      setOwnerAuth(nextOwnerAuth);
+      setHasLoginPin(true);
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       setIsWorkspaceUnlocked(true);
+      setIsLoginOpen(false);
       setIsOtpVerified(false);
       setLoginPin("");
       setView("chat");
@@ -2717,7 +2769,7 @@ function OwnerApp() {
       setView("chat");
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Signup complete. Browse the marketplace or tap Sell to set up a business.");
+      setStatusMessage("Phone verified. Complete your first shop registration.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4020,8 +4072,13 @@ function OwnerApp() {
 
   function switchMode(nextMode: SokoMode) {
     if (nextMode === "seller" && business === null) {
+      setChannel("phone");
       setIsBusinessSetupOpen(true);
-      setStatusMessage("Set up your business to start selling.");
+      setStatusMessage(
+        session === null
+          ? "Verify your phone to register your first shop."
+          : "Set up your business to start selling."
+      );
       return;
     }
 
@@ -4030,6 +4087,7 @@ function OwnerApp() {
     }
 
     setMode(nextMode);
+    setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
     setView("chat");
     setIsWorkspacePanelOpen(false);
     setChatMessages((messages) => [
@@ -4351,21 +4409,9 @@ function OwnerApp() {
     setView("chat");
     setMode("marketplace");
     setIsBusinessSetupOpen(false);
+    setIsLoginOpen(false);
     setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
     setIsWorkspaceUnlocked(ownerAuth === null);
-  }
-
-  async function finishShopDeletion() {
-    await logout();
-    setBusiness(null);
-    setOwnerAuth(null);
-    setIsWorkspaceUnlocked(false);
-    localStorage.removeItem(activeBusinessStorageKey);
-    localStorage.removeItem(legacyActiveBusinessStorageKey);
-    localStorage.removeItem(activeAgentStorageKey);
-    localStorage.removeItem(ownerAuthStorageKey);
-    localStorage.removeItem(setupDraftStorageKey);
-    setStatusMessage("Shop deleted. Sign up or log in to continue.");
   }
 
   async function sendChatDraft() {
@@ -4978,6 +5024,23 @@ function OwnerApp() {
           )}
           {!isAuthScreen ? (
             <div className="header-actions">
+              {isMarketplaceIntroComplete ? (
+                <button
+                  className={
+                    mode === "marketplace"
+                      ? "header-action-button mode-active"
+                      : "header-action-button"
+                  }
+                  type="button"
+                  onClick={() => {
+                    setMode("marketplace");
+                    setView("chat");
+                    setIsMarketplaceShortcutOpen(true);
+                  }}
+                >
+                  Marketplace
+                </button>
+              ) : null}
               <button
                 className={
                   mode === "seller"
@@ -4993,8 +5056,15 @@ function OwnerApp() {
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => (business === null ? void logout() : setView("agent"))}
-                aria-label={business === null ? "Sign out" : "Account and agent settings"}
+                onClick={() => {
+                  if (business === null) {
+                    setIsLoginOpen(true);
+                    setStatusMessage("Enter your phone number and PIN.");
+                  } else {
+                    setView("agent");
+                  }
+                }}
+                aria-label={business === null ? "Owner login" : "Account and agent settings"}
               >
                 <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
               </button>
@@ -5053,6 +5123,11 @@ function OwnerApp() {
             onRecoverPin={() => void recoverLoginPin()}
             onSetMissingPin={() => void setMissingLoginPin()}
             onLogin={() => void loginWithPin()}
+            onCancel={() => {
+              setIsLoginOpen(false);
+              setIsWorkspaceUnlocked(true);
+              setStatusMessage("Marketplace ready. Tap Sell when you want to register a shop.");
+            }}
             phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : isBusinessSetupOpen && business === null ? (
@@ -5078,7 +5153,6 @@ function OwnerApp() {
             onAgentChange={setAgentSettings}
             onBack={() => setView("chat")}
             onLogout={() => void logout()}
-            onShopDeleted={() => void finishShopDeletion()}
           />
         ) : (
           <main className="chat-workspace-shell">
@@ -5137,6 +5211,10 @@ function OwnerApp() {
               onNetworkRefresh={() => void loadNetworkGraph()}
               onRemoveAttachment={removePendingAttachment}
               onStatusChange={updateShopPresenceStatus}
+              onOpenAgentProfile={() => business !== null && setView("agent")}
+              onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
+              marketplaceIntroComplete={isMarketplaceIntroComplete}
+              marketplaceShortcutOpen={isMarketplaceShortcutOpen}
               onSend={() => void sendChatDraft()}
             >
               {renderActiveWorkspace()}
@@ -5178,7 +5256,6 @@ interface SetupPanelProps {
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
   onSelectPhone: () => void;
-  onSelectEmail: () => void;
 }
 
 function SocialLoginOptions(props: SocialLoginOptionsProps) {
@@ -5189,17 +5266,6 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
         <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
           <span aria-hidden="true">☎</span>
           Continue with phone
-        </button>
-      </div>
-
-      <div className="signup-divider auth-divider">
-        <span>Or</span>
-      </div>
-
-      <div className="auth-provider-stack" aria-label="Direct login options">
-        <button className="social-signup-button email" type="button" onClick={props.onSelectEmail}>
-          <span aria-hidden="true">@</span>
-          Continue with email
         </button>
       </div>
 
@@ -5243,38 +5309,15 @@ function SetupPanel(props: SetupPanelProps) {
               props.onChannelChange("phone");
               setAuthView("phone");
             }}
-            onSelectEmail={() => {
-              props.onChannelChange("email");
-              setAuthView("email");
-            }}
           />
         ) : (
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
-                <p className="eyebrow">Continue with {props.channel}</p>
-                <h2>Signup or login</h2>
+                <p className="eyebrow">First shop registration</p>
+                <h2>Verify your phone</h2>
+                <p>Firebase verification is required once, when you create your first shop.</p>
               </div>
-            </div>
-            <div className="segmented" aria-label="Auth channel">
-              <button
-                className={props.channel === "phone" ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  props.onChannelChange("phone");
-                }}
-              >
-                Phone
-              </button>
-              <button
-                className={props.channel === "email" ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  props.onChannelChange("email");
-                }}
-              >
-                Email
-              </button>
             </div>
             {props.channel === "phone" ? (
               <div className="phone-contact-row">
@@ -5310,20 +5353,13 @@ function SetupPanel(props: SetupPanelProps) {
                   />
                 </label>
               </div>
-            ) : (
-              <label>
-                Email address
-                <input
-                  value={props.destination}
-                  onChange={(event) => props.onDestinationChange(event.target.value)}
-                  inputMode="email"
-                  type="email"
-                  placeholder="owner@example.com"
-                />
-              </label>
-            )}
+            ) : null}
             {props.channel === "phone" ? (
-              <div ref={props.phoneRecaptchaRef} className="firebase-recaptcha" aria-hidden="true" />
+              <div
+                ref={props.phoneRecaptchaRef}
+                className="firebase-recaptcha"
+                aria-hidden="true"
+              />
             ) : null}
             <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
               {props.channel === "phone" ? "Send SMS code" : "Continue"}
@@ -5355,8 +5391,8 @@ function SetupPanel(props: SetupPanelProps) {
       {props.isOtpVerified ? (
         <section className="panel">
           <div className="section-heading">
-            <p className="eyebrow">Step 2</p>
-            <h2>Create login PIN</h2>
+            <p className="eyebrow">First shop registration</p>
+            <h2>Create your owner PIN</h2>
           </div>
           <label>
             PIN
@@ -5392,7 +5428,7 @@ function SetupPanel(props: SetupPanelProps) {
               props.signupPin !== props.signupPinConfirm
             }
           >
-            Finish signup
+            Continue to shop details
           </button>
         </section>
       ) : null}
@@ -5485,6 +5521,7 @@ interface LoginPanelProps {
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
   onLogin: () => void;
+  onCancel: () => void;
   phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
@@ -5494,7 +5531,7 @@ function LoginPanel(props: LoginPanelProps) {
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isSettingPin = !props.hasLoginPin;
-  const needsOtp = props.channel === "phone" || props.isRecoveringPin || isSettingPin;
+  const needsOtp = props.isRecoveringPin || isSettingPin;
   const showAuthForm =
     authView !== "options" ||
     props.challenge !== null ||
@@ -5511,38 +5548,14 @@ function LoginPanel(props: LoginPanelProps) {
               props.onChannelChange("phone");
               setAuthView("phone");
             }}
-            onSelectEmail={() => {
-              props.onChannelChange("email");
-              setAuthView("email");
-            }}
           />
         ) : (
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
                 <p className="eyebrow">Continue with {props.channel}</p>
-                <h2>Signup or login</h2>
+                <h2>Owner login</h2>
               </div>
-            </div>
-            <div className="segmented" aria-label="Login channel">
-              <button
-                className={props.channel === "phone" ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  props.onChannelChange("phone");
-                }}
-              >
-                Phone
-              </button>
-              <button
-                className={props.channel === "email" ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  props.onChannelChange("email");
-                }}
-              >
-                Email
-              </button>
             </div>
             {props.channel === "phone" ? (
               <div className="phone-contact-row">
@@ -5578,18 +5591,7 @@ function LoginPanel(props: LoginPanelProps) {
                   />
                 </label>
               </div>
-            ) : (
-              <label>
-                Email address
-                <input
-                  value={props.destination}
-                  onChange={(event) => props.onDestinationChange(event.target.value)}
-                  inputMode="email"
-                  type="email"
-                  placeholder="owner@example.com"
-                />
-              </label>
-            )}
+            ) : null}
             {needsOtp ? (
               <>
                 {props.channel === "phone" ? (
@@ -5615,13 +5617,13 @@ function LoginPanel(props: LoginPanelProps) {
                   type="button"
                   onClick={props.onVerifyOtp}
                   disabled={props.challenge === null}
-                  >
-                    Verify OTP
-                  </button>
+                >
+                  Verify OTP
+                </button>
               </>
             ) : (
               <p className="shell-note">
-                Use your saved phone number and PIN to unlock this device.
+                OTP is not required for normal login. Use your phone number and PIN.
               </p>
             )}
           </>
@@ -5719,6 +5721,9 @@ function LoginPanel(props: LoginPanelProps) {
           <p className="setup-status" role="status" aria-live="polite">
             {props.statusMessage}
           </p>
+          <button className="secondary" type="button" onClick={props.onCancel}>
+            Back to marketplace
+          </button>
         </section>
       ) : (
         <p className="setup-status auth-status" role="status" aria-live="polite">
@@ -9762,7 +9767,6 @@ interface AgentProfileSurfaceProps {
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
   onLogout: () => void;
-  onShopDeleted: () => void;
 }
 
 function AgentProfileSurface({
@@ -9773,8 +9777,7 @@ function AgentProfileSurface({
   storefrontUrl,
   onAgentChange,
   onBack,
-  onLogout,
-  onShopDeleted
+  onLogout
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
@@ -9785,6 +9788,7 @@ function AgentProfileSurface({
     ConnectedSocialAccountSummary[]
   >([]);
   const [profileMessage, setProfileMessage] = useState("");
+  const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [deletionStep, setDeletionStep] = useState<"idle" | "confirm" | "verify" | "status">(
     "idle"
   );
@@ -9794,13 +9798,7 @@ function AgentProfileSurface({
   );
   const [deletionShopId, setDeletionShopId] = useState("");
   const [deletionPin, setDeletionPin] = useState("");
-  const [deletionOtp, setDeletionOtp] = useState("");
   const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
-  const [deletionOtpChannel, setDeletionOtpChannel] = useState<AuthChannel | null>(null);
-  const [deletionOtpDestination, setDeletionOtpDestination] = useState("");
-  const [deletionPhoneConfirmation, setDeletionPhoneConfirmation] =
-    useState<FirebaseConfirmationResult | null>(null);
-  const deletionRecaptchaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isEditing) {
@@ -9811,7 +9809,23 @@ function AgentProfileSurface({
   useEffect(() => {
     void loadConnectedSocialAccounts();
     void loadShopDeletionPreview();
+    void loadAiModels();
   }, [business.id]);
+
+  async function loadAiModels() {
+    try {
+      const [registry, active] = await Promise.all([
+        getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
+        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`)
+      ]);
+      setAiModels(registry.models);
+      if (isAgentModel(active.modelId)) {
+        setDraftAgent((current) => ({ ...current, model: active.modelId }));
+      }
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
 
   async function loadConnectedSocialAccounts() {
     try {
@@ -9848,9 +9862,6 @@ function AgentProfileSurface({
   }
 
   async function startShopDeletion() {
-    setDeletionPhoneConfirmation(null);
-    setDeletionOtp("");
-
     try {
       const response = await postJson<ShopDeletionRequestResult>(
         `/businesses/${business.id}/shop-deletion/request`,
@@ -9859,28 +9870,10 @@ function AgentProfileSurface({
         }
       );
 
-      if (response.otp.channel === "phone") {
-        if (!isFirebasePhoneAuthConfigured()) {
-          throw new Error("Firebase phone authentication is not configured for this website.");
-        }
-
-        if (deletionRecaptchaRef.current === null) {
-          throw new Error("Phone verification is unavailable right now.");
-        }
-
-        const confirmation = await sendFirebasePhoneOtp(
-          response.otp.destination,
-          deletionRecaptchaRef.current
-        );
-        setDeletionPhoneConfirmation(confirmation);
-      }
-
       setDeletionRequest(response.request);
       setDeletionPreview(response.preview);
-      setDeletionOtpChannel(response.otp.channel);
-      setDeletionOtpDestination(response.otp.destination);
       setDeletionStep("verify");
-      setProfileMessage("Verification code sent.");
+      setProfileMessage("Confirm with your owner PIN. No OTP is required.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -9892,24 +9885,10 @@ function AgentProfileSurface({
     }
 
     try {
-      const verification =
-        deletionOtpChannel === "phone"
-          ? await (async () => {
-              if (deletionPhoneConfirmation === null) {
-                throw new Error("Request a new Firebase verification code first.");
-              }
-
-              const userCredential = await deletionPhoneConfirmation.confirm(deletionOtp);
-              return {
-                firebaseIdToken: await userCredential.user.getIdToken(true)
-              };
-            })()
-          : { otpCode: deletionOtp };
       const result = await postJson<AccountDeletionRequestSummary>(
         `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/finalize`,
         {
           pin: deletionPin,
-          ...verification,
           acknowledgement: deletionAcknowledged,
           idempotencyKey: `web-${business.id}-${deletionRequest.id}`
         }
@@ -9917,15 +9896,25 @@ function AgentProfileSurface({
       setDeletionRequest(result);
       setDeletionStep("status");
       setProfileMessage(
-        result.status === "COMPLETED"
-          ? "This shop and its removable data have been deleted."
+        result.status === "QUARANTINED"
+          ? "Shop hidden and quarantined. You can restore it for 30 days."
           : "Shop deletion is being processed."
       );
-      setDeletionPhoneConfirmation(null);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
 
-      if (result.status === "COMPLETED") {
-        onShopDeleted();
-      }
+  async function restoreShop() {
+    if (deletionRequest === null) return;
+    try {
+      const result = await postJson<AccountDeletionRequestSummary>(
+        `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/restore`,
+        {}
+      );
+      setDeletionRequest(result);
+      setProfileMessage("Shop restored to active service.");
+      await loadShopDeletionPreview();
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -9948,18 +9937,26 @@ function AgentProfileSurface({
     setContextUnlockError("");
   }
 
-  function saveAgent() {
+  async function saveAgent() {
     const publicAgentId = createPublicStorefrontAgentId(business);
-    onAgentChange({
-      ...draftAgent,
-      contextScripts: sanitizeContextScripts(draftAgent.contextScripts),
-      globalAgentId: publicAgentId,
-      storefrontUrl: createStorefrontUrl(publicAgentId)
-    });
-    setIsEditing(false);
-    setContextUnlocked(false);
-    setContextPassword("");
-    setContextUnlockError("");
+    try {
+      await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
+        modelId: draftAgent.model
+      });
+      onAgentChange({
+        ...draftAgent,
+        contextScripts: sanitizeContextScripts(draftAgent.contextScripts),
+        globalAgentId: publicAgentId,
+        storefrontUrl: createStorefrontUrl(publicAgentId)
+      });
+      setIsEditing(false);
+      setContextUnlocked(false);
+      setContextPassword("");
+      setContextUnlockError("");
+      setProfileMessage("Agent settings and active AI model saved.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
   }
 
   function copyStorefrontValue(value: string, label: string) {
@@ -10032,7 +10029,7 @@ function AgentProfileSurface({
         <div className="agent-profile-actions">
           {isEditing ? (
             <>
-              <button type="button" onClick={saveAgent}>
+              <button type="button" onClick={() => void saveAgent()}>
                 Save
               </button>
               <button className="secondary" type="button" onClick={cancelEditing}>
@@ -10082,10 +10079,12 @@ function AgentProfileSurface({
               disabled={!isEditing}
               onChange={(event) => updateAgent({ model: event.target.value as AgentModel })}
             >
-              <option value="qwen2.5-0.5b-android">Qwen2.5 0.5B local Android</option>
-              <option value="sokoclaw-local">Sokoclaw local legacy</option>
-              <option value="openai-fast">OpenAI fast</option>
-              <option value="openai-reasoning">OpenAI reasoning</option>
+              {aiModels.map((model) => (
+                <option key={model.id} value={model.id} disabled={!model.available}>
+                  {model.label}
+                  {model.available ? "" : " (unavailable)"}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -10229,13 +10228,12 @@ function AgentProfileSurface({
         </div>
 
         <div className="record-form danger-zone-card">
-          <div className="firebase-recaptcha" ref={deletionRecaptchaRef} />
           <div className="section-heading">
             <p className="eyebrow">Danger zone</p>
             <h3>Delete shop account</h3>
           </div>
           <p className="security-warning">
-            Deleting this shop permanently removes its business data and disconnects its services.
+            Deleting hides the shop immediately. It can be restored for 30 days before final purge.
           </p>
           {deletionStep === "idle" ? (
             <button
@@ -10308,9 +10306,8 @@ function AgentProfileSurface({
                 </button>
               </div>
               <p>
-                A verification code was sent to{" "}
-                {deletionOtpDestination.length > 0 ? deletionOtpDestination : "your verified login"}
-                .
+                Confirm this request with your owner PIN. OTP is used only during first-shop
+                registration and PIN recovery.
               </p>
               <label>
                 Login PIN
@@ -10321,22 +10318,13 @@ function AgentProfileSurface({
                   onChange={(event) => setDeletionPin(event.target.value)}
                 />
               </label>
-              <label>
-                Verification code
-                <input
-                  value={deletionOtp}
-                  inputMode="numeric"
-                  maxLength={6}
-                  onChange={(event) => setDeletionOtp(event.target.value)}
-                />
-              </label>
               <label className="checkbox-row">
                 <input
                   checked={deletionAcknowledged}
                   type="checkbox"
                   onChange={(event) => setDeletionAcknowledged(event.target.checked)}
                 />
-                I understand that this action is permanent.
+                I understand the shop will be hidden now and permanently purged after 30 days.
               </label>
               <div className="row-actions">
                 <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
@@ -10345,12 +10333,10 @@ function AgentProfileSurface({
                 <button
                   className="destructive-button"
                   type="button"
-                  disabled={
-                    deletionPin.length === 0 || deletionOtp.length !== 6 || !deletionAcknowledged
-                  }
+                  disabled={deletionPin.length === 0 || !deletionAcknowledged}
                   onClick={() => void finalizeShopDeletion()}
                 >
-                  Delete everything
+                  Quarantine shop
                 </button>
               </div>
             </div>
@@ -10359,10 +10345,19 @@ function AgentProfileSurface({
             <div className="shop-deletion-card" role="status">
               <strong>{deletionRequest?.status ?? "Processing"}</strong>
               <p>
-                {deletionRequest?.status === "COMPLETED"
-                  ? "This shop and its removable data have been deleted."
-                  : "Your shop deletion is being processed. You can close this screen."}
+                {deletionRequest?.status === "QUARANTINED"
+                  ? `This shop is hidden. Restore it before ${new Date(
+                      deletionRequest.anonymizeAfter
+                    ).toLocaleDateString()}.`
+                  : deletionRequest?.status === "RESTORED"
+                    ? "This shop has been restored."
+                    : "Your shop deletion is being processed. You can close this screen."}
               </p>
+              {deletionRequest?.status === "QUARANTINED" ? (
+                <button type="button" onClick={() => void restoreShop()}>
+                  Restore shop
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -10537,7 +10532,7 @@ function AgentProfileSurface({
                   >
                     Test phrase
                   </button>
-                  <button type="button" disabled={!isEditing} onClick={saveAgent}>
+                  <button type="button" disabled={!isEditing} onClick={() => void saveAgent()}>
                     Save changes
                   </button>
                 </div>
@@ -10590,6 +10585,8 @@ interface ChatSurfaceProps {
   invoiceCount: number;
   messages: ChatMessage[];
   mode: SokoMode;
+  marketplaceIntroComplete: boolean;
+  marketplaceShortcutOpen: boolean;
   networkGraph: NetworkGraphSummary | null;
   notificationCount: number;
   oauthProviders: OAuthProviderSummary[];
@@ -10610,6 +10607,8 @@ interface ChatSurfaceProps {
   onDraftChange: (draft: string) => void;
   onNavigate: (view: ShellView) => void;
   onModeChange: (mode: SokoMode) => void;
+  onOpenAgentProfile: () => void;
+  onCompleteMarketplaceIntro: () => void;
   onProductEdit: (product: ProductSummary) => void;
   onProductFieldsSave: (fields: ProductFieldDraft[]) => void;
   onProductFormChange: (form: ProductFormState) => void;
@@ -10639,6 +10638,8 @@ function ChatSurface({
   invoiceCount,
   messages,
   mode,
+  marketplaceIntroComplete,
+  marketplaceShortcutOpen,
   networkGraph,
   notificationCount,
   oauthProviders,
@@ -10659,6 +10660,8 @@ function ChatSurface({
   onDraftChange,
   onNavigate,
   onModeChange,
+  onOpenAgentProfile,
+  onCompleteMarketplaceIntro,
   onProductEdit,
   onProductFieldsSave,
   onProductFormChange,
@@ -10711,41 +10714,78 @@ function ChatSurface({
   return (
     <div className="chat-surface">
       <div className="message-list" aria-live="polite" ref={messageListRef}>
-        {messages.map((message) => (
-          <article className={`message ${message.author}`} key={message.id}>
-            <span className="message-author">
-              {message.author === "merchant" ? (
-                "You"
+        {messages.map((message, index) => (
+          <Fragment key={message.id}>
+            <article className={`message ${message.author}`}>
+              <span className="message-author">
+                {message.author === "merchant" ? (
+                  "You"
+                ) : (
+                  <>
+                    <button
+                      className="message-author-link"
+                      type="button"
+                      onClick={onOpenAgentProfile}
+                      disabled={!hasBusiness}
+                      aria-label={hasBusiness ? `Open ${agent.name} profile` : undefined}
+                    >
+                      {agent.name}
+                    </button>
+                    <ShopPresenceButtons
+                      activeStatus={shopPresenceStatus}
+                      onStatusChange={onStatusChange}
+                    />
+                  </>
+                )}
+              </span>
+              <p>{message.body}</p>
+              {message.attachments !== undefined && message.attachments.length > 0 ? (
+                <div className="message-attachments" aria-label="Message attachments">
+                  {message.attachments.map((attachment) => (
+                    <span className="message-attachment" key={attachment.id}>
+                      {attachment.name}
+                      <small>
+                        {formatAttachmentCategory(attachment.category)} ·{" "}
+                        {formatFileSize(attachment.size)}
+                      </small>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {message.confirmationToken !== undefined ? (
+                <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
+                  Confirm
+                </button>
+              ) : null}
+            </article>
+            {index === 0 &&
+            activeView === "chat" &&
+            mode === "marketplace" &&
+            (!marketplaceIntroComplete || marketplaceShortcutOpen) ? (
+              workspaceCardView === "storefrontPreview" ? (
+                <StorefrontPreviewCard
+                  businessName={businessName}
+                  products={products}
+                  sokoId={sokoId}
+                  onBack={() => setWorkspaceCardView("cards")}
+                  onSell={() => onModeChange("seller")}
+                  onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+                />
               ) : (
-                <>
-                  {agent.name}
-                  <ShopPresenceButtons
-                    activeStatus={shopPresenceStatus}
-                    onStatusChange={onStatusChange}
-                  />
-                </>
-              )}
-            </span>
-            <p>{message.body}</p>
-            {message.attachments !== undefined && message.attachments.length > 0 ? (
-              <div className="message-attachments" aria-label="Message attachments">
-                {message.attachments.map((attachment) => (
-                  <span className="message-attachment" key={attachment.id}>
-                    {attachment.name}
-                    <small>
-                      {formatAttachmentCategory(attachment.category)} ·{" "}
-                      {formatFileSize(attachment.size)}
-                    </small>
-                  </span>
-                ))}
-              </div>
+                <MarketplaceModeCard
+                  businessName={businessName}
+                  hasBusiness={hasBusiness}
+                  isIntro={!marketplaceIntroComplete}
+                  productCount={productCount}
+                  sokoId={sokoId}
+                  onCompleteIntro={onCompleteMarketplaceIntro}
+                  onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
+                  onPrompt={onDraftChange}
+                  onSell={() => onModeChange("seller")}
+                />
+              )
             ) : null}
-            {message.confirmationToken !== undefined ? (
-              <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
-                Confirm
-              </button>
-            ) : null}
-          </article>
+          </Fragment>
         ))}
         {activeView !== "chat" && activeView !== "home" ? (
           <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
@@ -10756,28 +10796,6 @@ function ChatSurface({
             </div>
             {children}
           </section>
-        ) : null}
-        {activeView === "chat" && mode === "marketplace" ? (
-          workspaceCardView === "storefrontPreview" ? (
-            <StorefrontPreviewCard
-              businessName={businessName}
-              products={products}
-              sokoId={sokoId}
-              onBack={() => setWorkspaceCardView("cards")}
-              onSell={() => onModeChange("seller")}
-              onMessage={() => onDraftChange(`Hello ${businessName}, `)}
-            />
-          ) : (
-            <MarketplaceModeCard
-              businessName={businessName}
-              hasBusiness={hasBusiness}
-              productCount={productCount}
-              sokoId={sokoId}
-              onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
-              onPrompt={onDraftChange}
-              onSell={() => onModeChange("seller")}
-            />
-          )
         ) : null}
         {activeView === "chat" && mode === "seller" ? (
           workspaceCardView === "cards" ? (
@@ -11011,9 +11029,11 @@ function ChatSurface({
 interface MarketplaceModeCardProps {
   businessName: string;
   hasBusiness: boolean;
+  isIntro: boolean;
   productCount: number;
   sokoId: string;
   onOpenStore: () => void;
+  onCompleteIntro: () => void;
   onPrompt: (prompt: string) => void;
   onSell: () => void;
 }
@@ -11021,9 +11041,11 @@ interface MarketplaceModeCardProps {
 function MarketplaceModeCard({
   businessName,
   hasBusiness,
+  isIntro,
   productCount,
   sokoId,
   onOpenStore,
+  onCompleteIntro,
   onPrompt,
   onSell
 }: MarketplaceModeCardProps) {
@@ -11031,9 +11053,18 @@ function MarketplaceModeCard({
     <section className="generated-card-message mode-card" aria-label="Explore the marketplace">
       <div className="mode-card-heading">
         <span className="mode-badge">Marketplace</span>
-        <h2>What are you looking for?</h2>
-        <p>Ask naturally, or start with one of these suggestions.</p>
+        <h2>{isIntro ? "Welcome to Marketplace" : "What are you looking for?"}</h2>
+        <p>
+          {isIntro
+            ? "Find nearby shops, compare offers, and message sellers from this conversation."
+            : "Ask naturally, or start with one of these suggestions."}
+        </p>
       </div>
+      {isIntro ? (
+        <button type="button" onClick={onCompleteIntro}>
+          Start exploring
+        </button>
+      ) : null}
       <div className="marketplace-prompts" aria-label="Marketplace suggestions">
         <button type="button" onClick={() => onPrompt("Show me shops near me")}>
           Shops near me
@@ -12210,6 +12241,24 @@ async function patchJson<TResponse>(
 ): Promise<TResponse> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "PATCH",
+    credentials: "include",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = (await response.json()) as { message?: string };
+    throw new Error(error.message ?? `Request failed with ${response.status}`);
+  }
+
+  return (await response.json()) as TResponse;
+}
+
+async function putJson<TResponse>(path: string, body: Record<string, unknown>): Promise<TResponse> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: "PUT",
     credentials: "include",
     headers: {
       "content-type": "application/json"

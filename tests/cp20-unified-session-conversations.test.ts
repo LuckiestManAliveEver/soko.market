@@ -22,6 +22,57 @@ interface BusinessResponse {
 }
 
 describe("CP20 unified account, conversation, and session foundation", () => {
+  it("persists marketplace completion and validates backend AI model activation", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const sessionCookie = await createAccountSession(app, "254700000019");
+
+    const initial = await getJson<{ completedAt: string | null }>(
+      app,
+      "/v1/marketplace-intro",
+      sessionCookie
+    );
+    expect(initial.completedAt).toBeNull();
+    const completed = await postJson<{ completedAt: string | null }>(
+      app,
+      "/v1/marketplace-intro/complete",
+      { businessId: null },
+      sessionCookie
+    );
+    expect(completed.completedAt).toEqual(expect.any(String));
+
+    const shop = await createBusiness(app, sessionCookie, "Model Shop");
+    const registry = await getJson<{
+      models: Array<{ id: string; available: boolean }>;
+    }>(app, "/v1/ai-models", sessionCookie);
+    expect(registry.models.map((model) => model.id)).toContain("qwen2.5-0.5b-android");
+
+    const activated = await app.inject({
+      method: "PUT",
+      url: `/businesses/${shop.business.id}/ai-model`,
+      headers: { "content-type": "application/json", cookie: sessionCookie },
+      payload: JSON.stringify({ modelId: "sokoclaw-local" })
+    });
+    expect(activated.statusCode).toBe(200);
+    expect(activated.json()).toMatchObject({ modelId: "sokoclaw-local" });
+
+    const invalid = await app.inject({
+      method: "PUT",
+      url: `/businesses/${shop.business.id}/ai-model`,
+      headers: { "content-type": "application/json", cookie: sessionCookie },
+      payload: JSON.stringify({ modelId: "invented-client-model" })
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().code).toBe("ai_model_unavailable");
+
+    const snapshot = store.snapshot();
+    expect(snapshot.marketplaceIntroStates).toHaveLength(1);
+    expect(snapshot.activeAiModels).toContainEqual(
+      expect.objectContaining({ businessId: shop.business.id, modelId: "sokoclaw-local" })
+    );
+    await app.close();
+  });
+
   it("supports an account without a shop and resolves seller permissions from memberships", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

@@ -2,6 +2,8 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto"
 import type { BusinessEvent } from "@soko/event-core";
 import type {
   AccountSummary,
+  ActiveAiModelSummary,
+  AiModelSummary,
   AccountDeletionRequestSummary,
   AuthChannel,
   AuthSessionView,
@@ -49,6 +51,7 @@ import type {
   LaunchSettingsSummary,
   LogisticsReportSummary,
   LogisticsSummary,
+  MarketplaceIntroStateSummary,
   McpAccessScope,
   McpAccessTokenCreated,
   McpAccessTokenSummary,
@@ -448,7 +451,6 @@ export interface ShopDeletionPreviewSummary {
 export interface ShopDeletionRequestResult {
   request: AccountDeletionRequestSummary;
   preview: ShopDeletionPreviewSummary;
-  otp: OtpRequestResult;
 }
 
 export interface CreateBusinessResult {
@@ -471,6 +473,8 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  marketplaceIntroStates?: MarketplaceIntroStateSummary[];
+  activeAiModels?: ActiveAiModelSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   products: ProductSummary[];
@@ -546,6 +550,9 @@ export class Cp2Store {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
+  private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
+  private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
@@ -1326,7 +1333,11 @@ export class Cp2Store {
     const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
 
     return [...this.memberships.values()]
-      .filter((membership) => membership.userId === session.user.id)
+      .filter(
+        (membership) =>
+          membership.userId === session.user.id &&
+          !this.quarantinedBusinessIds.has(membership.businessId)
+      )
       .map((membership) => {
         const business = this.businesses.get(membership.businessId);
 
@@ -1656,6 +1667,119 @@ export class Cp2Store {
       }
     });
     return this.conversationView(conversation);
+  }
+
+  getMarketplaceIntroState(input: {
+    sessionId: string | null;
+    businessId?: string | null;
+    now?: Date;
+  }): MarketplaceIntroStateSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const businessId = input.businessId ?? null;
+
+    if (businessId !== null) {
+      this.requireMembership(businessId, session.user.id);
+    }
+
+    const key = marketplaceIntroStateKey(session.account.id, businessId);
+    return (
+      this.marketplaceIntroStates.get(key) ?? {
+        accountId: session.account.id,
+        userId: session.user.id,
+        businessId,
+        completedAt: null,
+        updatedAt: now.toISOString()
+      }
+    );
+  }
+
+  completeMarketplaceIntro(input: {
+    sessionId: string | null;
+    businessId?: string | null;
+    now?: Date;
+  }): MarketplaceIntroStateSummary {
+    const now = input.now ?? new Date();
+    const current = this.getMarketplaceIntroState(input);
+    const completed: MarketplaceIntroStateSummary = {
+      ...current,
+      completedAt: current.completedAt ?? now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.marketplaceIntroStates.set(
+      marketplaceIntroStateKey(completed.accountId, completed.businessId),
+      completed
+    );
+    this.recordAuditEvent({
+      type: "marketplace.intro_completed",
+      aggregateType: "marketplace_intro",
+      aggregateId: marketplaceIntroStateKey(completed.accountId, completed.businessId),
+      actorId: completed.userId,
+      occurredAt: now.toISOString(),
+      payload: { businessId: completed.businessId }
+    });
+    return completed;
+  }
+
+  listAiModels(): AiModelSummary[] {
+    return aiModelRegistry.map((model) => ({ ...model, capabilities: [...model.capabilities] }));
+  }
+
+  getActiveAiModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ActiveAiModelSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    return (
+      this.activeAiModels.get(input.businessId) ?? {
+        businessId: input.businessId,
+        modelId: defaultAiModelId,
+        activatedAt: now.toISOString(),
+        activatedBy: session.user.id
+      }
+    );
+  }
+
+  activateAiModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    modelId: string;
+    now?: Date;
+  }): ActiveAiModelSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
+    if (model === undefined || !model.available) {
+      throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
+    }
+    const selection: ActiveAiModelSummary = {
+      businessId: input.businessId,
+      modelId: model.id,
+      activatedAt: now.toISOString(),
+      activatedBy: session.user.id
+    };
+    this.activeAiModels.set(input.businessId, selection);
+    this.recordAuditEvent({
+      type: "ai_model.activated",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { modelId: model.id }
+    });
+    return selection;
   }
 
   listConversations(input: { sessionId: string | null; now?: Date }): ConversationSummary[] {
@@ -4126,27 +4250,12 @@ export class Cp2Store {
       .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))[0];
 
     if (existing !== undefined) {
-      const existingChallengeId = parseDeletionOtpChallengeId(existing.auditReference);
-      const otp =
-        existingChallengeId === null
-          ? this.requestOtp({
-              channel: session.account.primaryAuthChannel,
-              destination: session.account.primaryAuthDestination,
-              now
-            })
-          : this.getDeletionOtpDelivery(existingChallengeId, now);
       return {
         request: existing,
-        preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now),
-        otp
+        preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now)
       };
     }
 
-    const otp = this.requestOtp({
-      channel: session.account.primaryAuthChannel,
-      destination: session.account.primaryAuthDestination,
-      now
-    });
     const deletionRequest: AccountDeletionRequestSummary = {
       id: randomUUID(),
       accountId: session.account.id,
@@ -4162,7 +4271,7 @@ export class Cp2Store {
       startedAt: null,
       completedAt: null,
       failureReason: null,
-      auditReference: `otp:${otp.challengeId}`,
+      auditReference: null,
       idempotencyKey: null,
       deactivatedAt: now.toISOString(),
       anonymizeAfter: now.toISOString(),
@@ -4188,14 +4297,13 @@ export class Cp2Store {
         businessId: input.businessId,
         shopId: business.sokoId,
         status: deletionRequest.status,
-        otpDestination: maskDestination(session.account.primaryAuthDestination)
+        reauthentication: "owner_pin"
       }
     });
 
     return {
       request: deletionRequest,
-      preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now),
-      otp
+      preview: this.buildShopDeletionPreview(input.businessId, session.account.id, now)
     };
   }
 
@@ -4236,8 +4344,6 @@ export class Cp2Store {
     businessId: string;
     requestId: string;
     pin: string;
-    otpCode: string;
-    otpExternallyVerified?: boolean;
     acknowledgement: boolean;
     idempotencyKey?: string | null;
     now?: Date;
@@ -4250,7 +4356,12 @@ export class Cp2Store {
       throw new Cp2Error(404, "shop_deletion_not_found", "Shop deletion request was not found.");
     }
 
-    if (request.status === "COMPLETED") {
+    if (
+      request.status === "COMPLETED" ||
+      request.status === "QUARANTINED" ||
+      request.status === "RESTORED" ||
+      request.status === "PURGED"
+    ) {
       return request;
     }
 
@@ -4259,7 +4370,7 @@ export class Cp2Store {
         (candidate) =>
           candidate.businessId === input.businessId &&
           candidate.idempotencyKey === input.idempotencyKey &&
-          candidate.status === "COMPLETED"
+          (candidate.status === "COMPLETED" || candidate.status === "QUARANTINED")
       );
 
       if (existing !== undefined) {
@@ -4282,36 +4393,16 @@ export class Cp2Store {
     }
 
     this.verifyAccountPinForSession(session, input.pin, now);
-    const otpChallengeId = parseDeletionOtpChallengeId(request.auditReference);
-
-    if (otpChallengeId === null) {
-      throw new Cp2Error(
-        409,
-        "shop_deletion_otp_missing",
-        "Deletion verification code is missing."
-      );
-    }
-
-    if (input.otpExternallyVerified === true) {
-      this.markOtpCodeExternallyVerified({ challengeId: otpChallengeId, now });
-    } else {
-      this.verifyOtpCodeOnly({
-        challengeId: otpChallengeId,
-        code: input.otpCode,
-        now
-      });
-    }
-
     const verified: AccountDeletionRequestSummary = {
       ...request,
       status: "VERIFIED",
       reauthenticatedAt: now.toISOString(),
-      otpVerifiedAt: now.toISOString(),
+      otpVerifiedAt: null,
       idempotencyKey: input.idempotencyKey ?? request.idempotencyKey ?? null
     };
     this.accountDeletionRequests.set(verified.id, verified);
     this.recordAuditEvent({
-      type: "shop_deletion.otp_verified",
+      type: "shop_deletion.reauthenticated",
       aggregateType: "account_deletion",
       aggregateId: verified.id,
       actorId: session.user.id,
@@ -4348,49 +4439,87 @@ export class Cp2Store {
       }
     });
 
-    try {
-      this.deleteShopOwnedData(input.businessId, session.account.id, now);
-      const completed: AccountDeletionRequestSummary = {
-        ...running,
-        status: "COMPLETED",
-        completedAt: now.toISOString(),
-        failureReason: null
-      };
-      this.accountDeletionRequests.set(completed.id, completed);
-      this.recordAuditEvent({
-        type: "shop_deletion.completed",
-        aggregateType: "account_deletion",
-        aggregateId: completed.id,
-        actorId: session.user.id,
-        occurredAt: now.toISOString(),
-        payload: {
-          businessId: input.businessId,
-          status: completed.status,
-          retainedAuditEventCount: completed.retention.retainedAuditEventCount
-        }
-      });
-      return completed;
-    } catch (error) {
-      const failed: AccountDeletionRequestSummary = {
-        ...running,
-        status: "PARTIALLY_FAILED",
-        completedAt: now.toISOString(),
-        failureReason: error instanceof Error ? error.message : "Shop deletion failed."
-      };
-      this.accountDeletionRequests.set(failed.id, failed);
-      this.recordAuditEvent({
-        type: "shop_deletion.failed",
-        aggregateType: "account_deletion",
-        aggregateId: failed.id,
-        actorId: session.user.id,
-        occurredAt: now.toISOString(),
-        payload: {
-          businessId: input.businessId,
-          status: failed.status
-        }
-      });
-      return failed;
+    const restoreUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const quarantined: AccountDeletionRequestSummary = {
+      ...running,
+      status: "QUARANTINED",
+      deactivatedAt: now.toISOString(),
+      anonymizeAfter: restoreUntil,
+      completedAt: now.toISOString(),
+      failureReason: null
+    };
+    this.quarantinedBusinessIds.add(input.businessId);
+    this.accountDeletionRequests.set(quarantined.id, quarantined);
+    this.recordAuditEvent({
+      type: "shop_deletion.quarantined",
+      aggregateType: "account_deletion",
+      aggregateId: quarantined.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { businessId: input.businessId, restoreUntil }
+    });
+    return quarantined;
+  }
+
+  restoreShopDeletion(input: {
+    sessionId: string | null;
+    businessId: string;
+    requestId: string;
+    now?: Date;
+  }): AccountDeletionRequestSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const request = this.accountDeletionRequests.get(input.requestId);
+    if (
+      request === undefined ||
+      request.businessId !== input.businessId ||
+      request.actorId !== session.user.id
+    ) {
+      throw new Cp2Error(404, "shop_deletion_not_found", "Shop deletion request was not found.");
     }
+    if (request.status !== "QUARANTINED") {
+      throw new Cp2Error(409, "shop_not_quarantined", "This shop is not available to restore.");
+    }
+    if (new Date(request.anonymizeAfter).getTime() <= now.getTime()) {
+      throw new Cp2Error(410, "restore_window_expired", "The 30-day restore window has expired.");
+    }
+    const restored: AccountDeletionRequestSummary = {
+      ...request,
+      status: "RESTORED",
+      completedAt: now.toISOString()
+    };
+    this.quarantinedBusinessIds.delete(input.businessId);
+    this.accountDeletionRequests.set(restored.id, restored);
+    this.recordAuditEvent({
+      type: "shop_deletion.restored",
+      aggregateType: "account_deletion",
+      aggregateId: restored.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { businessId: input.businessId }
+    });
+    return restored;
+  }
+
+  purgeExpiredShopDeletions(now = new Date()): number {
+    let purged = 0;
+    for (const request of this.accountDeletionRequests.values()) {
+      if (
+        request.status !== "QUARANTINED" ||
+        new Date(request.anonymizeAfter).getTime() > now.getTime()
+      ) {
+        continue;
+      }
+      this.deleteShopOwnedData(request.businessId, request.accountId, now);
+      this.quarantinedBusinessIds.delete(request.businessId);
+      this.accountDeletionRequests.set(request.id, {
+        ...request,
+        status: "PURGED",
+        completedAt: now.toISOString()
+      });
+      purged += 1;
+    }
+    return purged;
   }
 
   getVerificationTier(input: {
@@ -5752,6 +5881,11 @@ export class Cp2Store {
       "business:read",
       now
     );
+    const activeModelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const agentProfile =
+      input.agentProfile === undefined
+        ? undefined
+        : { ...input.agentProfile, model: activeModelId };
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -5861,12 +5995,12 @@ export class Cp2Store {
     const receiptContextScriptMatch = parseReceiptContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
-      contextScripts: input.agentProfile?.contextScripts ?? []
+      contextScripts: agentProfile?.contextScripts ?? []
     });
     const contextScriptMatch = parseProductContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
-      contextScripts: input.agentProfile?.contextScripts ?? []
+      contextScripts: agentProfile?.contextScripts ?? []
     });
     const effectiveContextScriptMatch = receiptContextScriptMatch ?? contextScriptMatch;
     const parserResult =
@@ -5878,7 +6012,7 @@ export class Cp2Store {
     const modelRoute =
       effectiveContextScriptMatch === null
         ? await this.createRuntimeModelRoute(
-            input.agentProfile === undefined
+            agentProfile === undefined
               ? {
                   message: input.message,
                   context,
@@ -5890,7 +6024,7 @@ export class Cp2Store {
                   context,
                   now,
                   appendTelemetry,
-                  agentProfile: input.agentProfile
+                  agentProfile
                 }
           )
         : {
@@ -6363,6 +6497,8 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
+      activeAiModels: [...this.activeAiModels.values()],
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       products: [...this.products.values()],
@@ -6430,6 +6566,9 @@ export class Cp2Store {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.marketplaceIntroStates.clear();
+    this.activeAiModels.clear();
+    this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
@@ -6527,6 +6666,23 @@ export class Cp2Store {
         `${message.conversationId}:${message.clientMessageId}`,
         message.id
       );
+    }
+
+    for (const state of snapshot.marketplaceIntroStates ?? []) {
+      this.marketplaceIntroStates.set(
+        marketplaceIntroStateKey(state.accountId, state.businessId),
+        state
+      );
+    }
+
+    for (const selection of snapshot.activeAiModels ?? []) {
+      this.activeAiModels.set(selection.businessId, selection);
+    }
+
+    for (const request of snapshot.accountDeletionRequests ?? []) {
+      if (request.status === "QUARANTINED") {
+        this.quarantinedBusinessIds.add(request.businessId);
+      }
     }
 
     for (const product of snapshot.products) {
@@ -7293,6 +7449,10 @@ export class Cp2Store {
       throw new Cp2Error(404, "business_not_found", "Business was not found.");
     }
 
+    if (this.quarantinedBusinessIds.has(businessId)) {
+      throw new Cp2Error(410, "business_quarantined", "Business is in its 30-day restore window.");
+    }
+
     const membership = this.requireMembership(businessId, session.user.id);
 
     if (!roleCan(membership.role, permission)) {
@@ -7374,6 +7534,10 @@ export class Cp2Store {
 
     if (business === undefined) {
       throw new Cp2Error(404, "business_not_found", "Business was not found.");
+    }
+
+    if (this.quarantinedBusinessIds.has(businessId)) {
+      throw new Cp2Error(410, "business_quarantined", "Business is in its 30-day restore window.");
     }
 
     return business;
@@ -11335,6 +11499,46 @@ function hashOtp(challengeId: string, code: string): string {
   return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
 }
 
+function marketplaceIntroStateKey(accountId: string, businessId: string | null): string {
+  return `${accountId}:${businessId ?? "marketplace"}`;
+}
+
+const defaultAiModelId = "qwen2.5-0.5b-android";
+const aiModelRegistry: AiModelSummary[] = [
+  {
+    id: defaultAiModelId,
+    label: "Qwen2.5 0.5B local Android",
+    provider: "local",
+    description: "Small on-device model optimized for low-memory Android hardware.",
+    capabilities: ["chat", "tool-routing", "offline"],
+    available: true
+  },
+  {
+    id: "sokoclaw-local",
+    label: "Sokoclaw local legacy",
+    provider: "local",
+    description: "Compatibility profile for existing local deployments.",
+    capabilities: ["chat", "tool-routing", "offline"],
+    available: true
+  },
+  {
+    id: "openai-fast",
+    label: "OpenAI fast",
+    provider: "openai",
+    description: "Fast hosted reasoning for connected shops.",
+    capabilities: ["chat", "tool-routing"],
+    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0
+  },
+  {
+    id: "openai-reasoning",
+    label: "OpenAI reasoning",
+    provider: "openai",
+    description: "Higher-reasoning hosted profile for complex business tasks.",
+    capabilities: ["chat", "reasoning", "tool-routing"],
+    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0
+  }
+];
+
 function validateConversationMessageContent(content: ConversationMessageContent): void {
   switch (content.type) {
     case "text":
@@ -11422,15 +11626,6 @@ function providerDisplayName(provider: OAuthProvider): string {
     case "x":
       return "X";
   }
-}
-
-function maskDestination(destination: string): string {
-  if (destination.includes("@")) {
-    const [local, domain] = destination.split("@");
-    return `${local?.slice(0, 2) ?? ""}•••@${domain ?? "email"}`;
-  }
-
-  return `${destination.slice(0, 4)}••••${destination.slice(-2)}`;
 }
 
 function hashMatches(actual: string, expected: string): boolean {

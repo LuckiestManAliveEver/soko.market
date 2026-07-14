@@ -6,7 +6,11 @@ import { Pool } from "pg";
 
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
-const migrationFilenames = ["018_cp21_account_sync_changes.sql", "019_cp23_mcp_access_tokens.sql"];
+const migrationFilenames = [
+  "018_cp21_account_sync_changes.sql",
+  "019_cp23_mcp_access_tokens.sql",
+  "020_marketplace_deletion_models.sql"
+];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to verify the database schema.");

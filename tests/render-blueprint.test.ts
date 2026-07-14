@@ -9,6 +9,6 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("CP2_STORE\n        value: postgres");
     expect(blueprint).toContain("corepack pnpm db:migrate &&");
     expect(blueprint).not.toMatch(/key: (?:DIRECT_)?DATABASE_URL\n\s+sync: false/);
-    expect(blueprint.match(/name: soko-market-db\n\s+property: connectionString/g)).toHaveLength(6);
+    expect(blueprint.match(/name: soko-market-db\n\s+property: connectionString/g)).toHaveLength(8);
   });
 });

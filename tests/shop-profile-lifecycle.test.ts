@@ -33,9 +33,6 @@ interface ShopDeletionRequestResponse {
     id: string;
     status: string;
   };
-  otp: {
-    devOtp: string;
-  };
   preview: {
     counts: {
       products: number;
@@ -44,7 +41,7 @@ interface ShopDeletionRequestResponse {
 }
 
 describe("Shop profile lifecycle", () => {
-  it("uses external phone verification and never exposes a deletion development OTP", async () => {
+  it("uses Firebase for first-shop verification but not for shop deletion", async () => {
     const store = createCp2Store();
     const providerRequests: string[] = [];
     const providerVerifications: string[] = [];
@@ -63,11 +60,11 @@ describe("Shop profile lifecycle", () => {
     };
     const app = buildApi({ cp2: { store, otpProvider } });
     const phone = "+254700000709";
-    const otpRequest = await postJson<{ challengeId: string }>(
-      app,
-      "/auth/otp/request",
-      { method: "phone", contact: phone, deliveryChannel: "sms" }
-    );
+    const otpRequest = await postJson<{ challengeId: string }>(app, "/auth/otp/request", {
+      method: "phone",
+      contact: phone,
+      deliveryChannel: "sms"
+    });
     const owner = await app.inject({
       method: "POST",
       url: "/auth/otp/verify",
@@ -89,37 +86,37 @@ describe("Shop profile lifecycle", () => {
       ownerCookie
     );
 
-    const deletion = await postJson<
-      ShopDeletionRequestResponse & { otp: { channel: string; devOtp?: string } }
-    >(
+    const deletion = await postJson<ShopDeletionRequestResponse>(
       app,
       `/businesses/${shop.business.id}/shop-deletion/request`,
       { shopId: shop.business.sokoId },
       ownerCookie
     );
-    expect(deletion.otp).toMatchObject({ channel: "phone" });
-    expect(deletion.otp.devOtp).toBeUndefined();
-
-    const completed = await postJson<{ status: string }>(
+    const quarantined = await postJson<{ status: string }>(
       app,
       `/businesses/${shop.business.id}/shop-deletion/${deletion.request.id}/finalize`,
       {
         pin: "1234",
-        firebaseIdToken: "firebase-id-token",
         acknowledgement: true,
         idempotencyKey: "firebase-delete-shop"
       },
       ownerCookie
     );
-    expect(completed.status).toBe("COMPLETED");
+    expect(quarantined.status).toBe("QUARANTINED");
+    expect(store.snapshot().businesses).toHaveLength(1);
+    expect(providerRequests).toEqual([phone]);
+    expect(providerVerifications).toEqual([phone]);
+
+    expect(store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(
+      1
+    );
     expect(store.snapshot().businesses).toHaveLength(0);
-    expect(providerRequests).toEqual([phone, phone]);
-    expect(providerVerifications).toEqual([phone, phone]);
+    expect(store.snapshot().accountDeletionRequests[0]?.status).toBe("PURGED");
 
     await app.close();
   });
 
-  it("requires owner, exact shop ID, PIN and OTP before tenant-scoped shop deletion", async () => {
+  it("requires owner, exact shop ID and PIN, then supports restore", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const owner = await verifyOtp(app, "phone", "254700000701");
@@ -184,7 +181,7 @@ describe("Shop profile lifecycle", () => {
     expect(deletion.request.status).toBe("PENDING_VERIFICATION");
     expect(deletion.preview.counts.products).toBe(1);
 
-    const badOtp = await app.inject({
+    const badPin = await app.inject({
       method: "POST",
       url: `/businesses/${firstShop.business.id}/shop-deletion/${deletion.request.id}/finalize`,
       headers: {
@@ -192,52 +189,56 @@ describe("Shop profile lifecycle", () => {
         cookie: ownerCookie
       },
       payload: JSON.stringify({
-        pin: "1234",
-        otpCode: "000000",
+        pin: "9999",
         acknowledgement: true,
         idempotencyKey: "delete-first-shop"
       })
     });
-    expect(badOtp.statusCode).toBe(401);
+    expect(badPin.statusCode).toBe(401);
 
-    const completed = await postJson<{ status: string }>(
+    const quarantined = await postJson<{ status: string; anonymizeAfter: string }>(
       app,
       `/businesses/${firstShop.business.id}/shop-deletion/${deletion.request.id}/finalize`,
       {
         pin: "1234",
-        otpCode: deletion.otp.devOtp,
         acknowledgement: true,
         idempotencyKey: "delete-first-shop"
       },
       ownerCookie
     );
-    expect(completed.status).toBe("COMPLETED");
+    expect(quarantined.status).toBe("QUARANTINED");
+    expect(new Date(quarantined.anonymizeAfter).getTime()).toBeGreaterThan(Date.now());
 
     const snapshot = store.snapshot();
-    expect(snapshot.businesses.map((business) => business.id)).not.toContain(firstShop.business.id);
+    expect(snapshot.businesses.map((business) => business.id)).toContain(firstShop.business.id);
     expect(snapshot.businesses.map((business) => business.id)).toContain(secondShop.business.id);
-    expect(snapshot.products.map((product) => product.name)).toEqual(["Rice"]);
-    expect(snapshot.auditEvents.some((event) => event.type === "shop_deletion.completed")).toBe(
+    expect(snapshot.products.map((product) => product.name).sort()).toEqual(["Rice", "Sugar"]);
+    expect(snapshot.auditEvents.some((event) => event.type === "shop_deletion.quarantined")).toBe(
       true
     );
-    const ownerRelogin = await verifyOtp(app, "phone", "254700000701");
-    const syncPage = await getJson<{
-      changes: Array<{
-        collection: string;
-        entityId: string;
-        operation: string;
-        entity: unknown | null;
-        tombstoneExpiresAt: string | null;
-      }>;
-    }>(app, "/v1/sync/changes?limit=100", extractSessionCookie(ownerRelogin.setCookie));
-    expect(syncPage.changes).toContainEqual(
-      expect.objectContaining({
-        collection: "shops",
-        entityId: firstShop.business.id,
-        operation: "delete",
-        entity: null,
-        tombstoneExpiresAt: expect.any(String)
-      })
+    const shopsWhileQuarantined = await getJson<{ shops: Array<{ business: { id: string } }> }>(
+      app,
+      "/v1/shops",
+      ownerCookie
+    );
+    expect(shopsWhileQuarantined.shops.map((shop) => shop.business.id)).toEqual([
+      secondShop.business.id
+    ]);
+
+    const restored = await postJson<{ status: string }>(
+      app,
+      `/businesses/${firstShop.business.id}/shop-deletion/${deletion.request.id}/restore`,
+      {},
+      ownerCookie
+    );
+    expect(restored.status).toBe("RESTORED");
+    const shopsAfterRestore = await getJson<{ shops: Array<{ business: { id: string } }> }>(
+      app,
+      "/v1/shops",
+      ownerCookie
+    );
+    expect(shopsAfterRestore.shops.map((shop) => shop.business.id)).toEqual(
+      expect.arrayContaining([firstShop.business.id, secondShop.business.id])
     );
 
     await app.close();

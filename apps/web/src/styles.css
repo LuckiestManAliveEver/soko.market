@@ -1758,6 +1758,22 @@ button:disabled {
   min-width: 0;
 }
 
+.message-author-link {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  min-height: 28px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.message-author-link:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
 .shop-presence-buttons {
   align-items: center;
   display: inline-flex;

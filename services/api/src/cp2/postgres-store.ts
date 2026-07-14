@@ -18,6 +18,8 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
+  { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
@@ -71,6 +73,7 @@ const mutatingMethodNames = new Set([
   "authenticateSocialProfile",
   "beginOAuthSession",
   "completeOAuthCallback",
+  "completeMarketplaceIntro",
   "confirmProductImport",
   "confirmReceiptOCRJob",
   "confirmSupplierImport",
@@ -142,7 +145,10 @@ const mutatingMethodNames = new Set([
   "verifyAccountPin",
   "verifyExternallyApprovedOtp",
   "verifyOtp",
-  "finalizeShopDeletion"
+  "finalizeShopDeletion",
+  "activateAiModel",
+  "restoreShopDeletion",
+  "purgeExpiredShopDeletions"
 ]);
 
 export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
@@ -176,7 +182,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "019_cp23_mcp_access_tokens.sql";
+const requiredMigrationFilename = "020_marketplace_deletion_models.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -1281,6 +1287,8 @@ async function saveCollectionRecords(
 async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
   const now = new Date().toISOString();
 
+  await saveShopDeletionArchives(client, snapshotRecords(snapshot.accountDeletionRequests));
+
   await deleteMissingRows(client, "mcp_access_tokens", snapshotRecords(snapshot.mcpAccessTokens));
   await deleteMissingRows(client, "receipt_line_items", snapshotRecords(snapshot.receiptLineItems));
   await deleteMissingRows(client, "payments", snapshotRecords(snapshot.payments));
@@ -1762,6 +1770,43 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   }
 }
 
+async function saveShopDeletionArchives(
+  client: PoolClient,
+  records: SnapshotRecord[]
+): Promise<void> {
+  const archived = records.filter((record) =>
+    ["QUARANTINED", "RESTORED", "PURGED", "FAILED", "PARTIALLY_FAILED"].includes(
+      requiredText(record, "status")
+    )
+  );
+
+  for (const record of archived) {
+    const status = requiredText(record, "status");
+    await client.query(
+      `
+        insert into shop_deletion_archives (
+          request_id, business_id, account_id, status, restore_until,
+          archive_key, checksum, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, null, null, $6, $7)
+        on conflict (request_id) do update set
+          status = excluded.status,
+          restore_until = excluded.restore_until,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "businessId"),
+        requiredText(record, "accountId"),
+        status === "PARTIALLY_FAILED" ? "FAILED" : status,
+        requiredText(record, "anonymizeAfter"),
+        requiredText(record, "requestedAt"),
+        firstText(record, ["completedAt"]) ?? requiredText(record, "requestedAt")
+      ]
+    );
+  }
+}
+
 async function savePhase1AuthSecurityRecords(
   client: PoolClient,
   snapshot: Cp2Snapshot
@@ -2201,6 +2246,8 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    marketplaceIntroStates: [],
+    activeAiModels: [],
     syncChanges: [],
     mcpAccessTokens: [],
     products: [],
@@ -2280,6 +2327,17 @@ function snapshotRecords(value: unknown): SnapshotRecord[] {
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {
   if (key === "accountPinHashes") {
     return requiredText(record, "accountId");
+  }
+
+  if (key === "marketplaceIntroStates") {
+    return [
+      requiredText(record, "accountId"),
+      firstText(record, ["businessId"]) ?? "marketplace"
+    ].join(":");
+  }
+
+  if (key === "activeAiModels") {
+    return requiredText(record, "businessId");
   }
 
   if (key === "verificationTiers" || key === "taxConfigs" || key === "betaAccess") {

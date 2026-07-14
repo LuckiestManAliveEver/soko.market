@@ -172,6 +172,14 @@ interface CreateConversationBody {
   activeShopId?: string | null;
 }
 
+interface MarketplaceIntroBody {
+  businessId?: string | null;
+}
+
+interface AiModelActivationBody {
+  modelId?: string;
+}
+
 interface ConversationParams {
   conversationId: string;
 }
@@ -445,9 +453,7 @@ interface ShopDeletionRequestBody {
 
 interface ShopDeletionFinalizeBody {
   acknowledgement?: boolean;
-  firebaseIdToken?: string;
   idempotencyKey?: string | null;
-  otpCode?: string;
   pin?: string;
 }
 
@@ -1445,6 +1451,68 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get(
+    "/v1/marketplace-intro",
+    async (request: FastifyRequest<{ Querystring: MarketplaceIntroBody }>, reply) => {
+      try {
+        return store.getMarketplaceIntroState({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseNullableString(request.query.businessId)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/marketplace-intro/complete",
+    async (request: FastifyRequest<{ Body: MarketplaceIntroBody }>, reply) => {
+      try {
+        return store.completeMarketplaceIntro({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseNullableString(request.body.businessId)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/ai-models", async () => ({ models: store.listAiModels() }));
+
+  app.get(
+    "/businesses/:businessId/ai-model",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getActiveAiModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/ai-model",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: AiModelActivationBody }>,
+      reply
+    ) => {
+      try {
+        return store.activateAiModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          modelId: parseString(request.body.modelId, "modelId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post(
     "/v1/conversations",
@@ -2513,42 +2581,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        const result = store.requestShopDeletion({
+        return store.requestShopDeletion({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           shopId: parseString(request.body.shopId, "shopId")
         });
-        const challenge = store.getShopDeletionOtpDelivery({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          requestId: result.request.id
-        });
-
-        if (otpProvider.canHandle(challenge.channel)) {
-          await otpProvider.requestOtp({
-            channel: challenge.channel,
-            deliveryChannel: "sms",
-            destination: challenge.destination
-          });
-        }
-
-        const otp =
-          otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
-            ? {
-                challengeId: challenge.challengeId,
-                channel: challenge.channel,
-                destination: challenge.destination,
-                expiresAt: challenge.expiresAt
-              }
-            : {
-                ...result.otp,
-                channel: challenge.channel
-              };
-
-        return {
-          ...result,
-          otp
-        };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -2563,41 +2600,29 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     ) => {
       try {
         const idempotencyKey = parseOptionalString(request.body.idempotencyKey);
-        const challenge = store.getShopDeletionOtpDelivery({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          requestId: request.params.requestId
-        });
-        const externallyVerified =
-          otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel);
-        const otpValue = parseString(
-          externallyVerified ? request.body.firebaseIdToken : request.body.otpCode,
-          externallyVerified ? "firebaseIdToken" : "otpCode"
-        );
-
-        if (
-          externallyVerified &&
-          !(await otpProvider.verifyOtp({
-            channel: challenge.channel,
-            destination: challenge.destination,
-            code: otpValue
-          }))
-        ) {
-          throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
-        }
-
-        const result = store.finalizeShopDeletion({
+        return store.finalizeShopDeletion({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           requestId: request.params.requestId,
           pin: parseString(request.body.pin, "pin"),
-          otpCode: externallyVerified ? "" : otpValue,
-          otpExternallyVerified: externallyVerified,
           acknowledgement: parseBoolean(request.body.acknowledgement, "acknowledgement"),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey })
         });
-        reply.header("set-cookie", clearSessionCookie());
-        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/shop-deletion/:requestId/restore",
+    async (request: FastifyRequest<{ Params: ShopDeletionParams }>, reply) => {
+      try {
+        return store.restoreShopDeletion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          requestId: request.params.requestId
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -3435,19 +3460,19 @@ function parseAuthChannel(value: string | undefined): AuthChannel {
   throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
 }
 
-  function parseOtpDeliveryChannel(
-    value: string | undefined,
-    authChannel: AuthChannel
-  ): OtpDeliveryChannel {
-    void authChannel;
-    const deliveryChannel = value ?? "sms";
+function parseOtpDeliveryChannel(
+  value: string | undefined,
+  authChannel: AuthChannel
+): OtpDeliveryChannel {
+  void authChannel;
+  const deliveryChannel = value ?? "sms";
 
-    if (deliveryChannel !== "sms") {
-      throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be sms.");
-    }
-
-    return deliveryChannel;
+  if (deliveryChannel !== "sms") {
+    throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be sms.");
   }
+
+  return deliveryChannel;
+}
 
 function parseLanguage(value: string | undefined) {
   if (value === undefined || !isSupportedLanguage(value)) {

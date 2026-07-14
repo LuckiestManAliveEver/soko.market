@@ -131,6 +131,30 @@ export interface ConversationView {
   messages: ConversationMessageSummary[];
 }
 
+export interface MarketplaceIntroStateSummary {
+  accountId: string;
+  userId: string;
+  businessId: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+export interface AiModelSummary {
+  id: string;
+  label: string;
+  provider: "local" | "openai";
+  description: string;
+  capabilities: string[];
+  available: boolean;
+}
+
+export interface ActiveAiModelSummary {
+  businessId: string;
+  modelId: string;
+  activatedAt: string;
+  activatedBy: string;
+}
+
 export interface SokoSessionContext {
   accountId: string;
   userId: string;
@@ -798,6 +822,9 @@ export type AccountDeletionStatus =
   | "VERIFIED"
   | "QUEUED"
   | "RUNNING"
+  | "QUARANTINED"
+  | "RESTORED"
+  | "PURGED"
   | "COMPLETED"
   | "PARTIALLY_FAILED"
   | "FAILED"
