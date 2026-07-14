@@ -396,21 +396,28 @@ export async function createPostgresCp2Store(
 }
 
 function poolConfig(databaseUrl: string): PoolConfig {
+  const connectionString = normalizeDatabaseSslMode(databaseUrl);
   const sslRequired =
-    databaseUrl.includes("sslmode=require") ||
-    databaseUrl.includes(".neon.tech") ||
-    databaseUrl.includes(".neon.database");
+    !/[?&]sslmode=/i.test(connectionString) &&
+    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
 
   return {
     application_name: process.env.DB_APPLICATION_NAME ?? "soko-market-api",
-    connectionString: databaseUrl,
+    connectionString,
     connectionTimeoutMillis: positiveIntegerFromEnv("DB_CONNECTION_TIMEOUT_MS", 5000),
     idleTimeoutMillis: positiveIntegerFromEnv("DB_IDLE_TIMEOUT_MS", 30000),
     max: positiveIntegerFromEnv("DB_POOL_MAX", 5),
     query_timeout: positiveIntegerFromEnv("DB_QUERY_TIMEOUT_MS", 15000),
     statement_timeout: positiveIntegerFromEnv("DB_STATEMENT_TIMEOUT_MS", 15000),
-    ...(sslRequired ? { ssl: { rejectUnauthorized: false } } : {})
+    ...(sslRequired ? { ssl: true } : {})
   };
+}
+
+function normalizeDatabaseSslMode(connectionString: string): string {
+  return connectionString.replace(
+    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
+    "$1sslmode=verify-full"
+  );
 }
 
 async function assertDatabaseMigrated(pool: Pool): Promise<void> {

@@ -104,14 +104,21 @@ async function withAdvisoryLock(callback) {
 }
 
 function poolConfig(connectionString) {
+  connectionString = normalizeDatabaseSslMode(connectionString);
   const sslRequired =
-    connectionString.includes("sslmode=require") ||
-    connectionString.includes(".neon.tech") ||
-    connectionString.includes(".neon.database");
+    !/[?&]sslmode=/i.test(connectionString) &&
+    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
 
   return {
     connectionString,
     max: 2,
-    ...(sslRequired ? { ssl: { rejectUnauthorized: false } } : {})
+    ...(sslRequired ? { ssl: true } : {})
   };
+}
+
+function normalizeDatabaseSslMode(connectionString) {
+  return connectionString.replace(
+    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
+    "$1sslmode=verify-full"
+  );
 }
