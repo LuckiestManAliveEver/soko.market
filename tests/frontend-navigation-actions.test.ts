@@ -1,0 +1,54 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { pathForOwnerView, readOwnerRoute, routes } from "../apps/web/src/routes";
+
+describe("frontend navigation and action contracts", () => {
+  it("centralizes static and encoded dynamic routes", () => {
+    expect(routes.marketplace).toBe("/marketplace");
+    expect(routes.sell).toBe("/sell");
+    expect(routes.beta).toBe("/beta");
+    expect(routes.launch).toBe("/launch");
+    expect(routes.product("sugar / 1")).toBe("/products/sugar%20%2F%201");
+    expect(routes.shop("254A00000001")).toBe("/shops/254A00000001");
+    expect(routes.agent("agent@example.com")).toBe("/agents/agent%40example.com");
+    expect(() => routes.product("  ")).toThrow("route identifier");
+  });
+
+  it("maps refresh-safe owner destinations to the correct mode and view", () => {
+    expect(readOwnerRoute("/marketplace")).toEqual({ mode: "marketplace", view: "chat" });
+    expect(readOwnerRoute("/sell/")).toEqual({ mode: "seller", view: "chat" });
+    expect(readOwnerRoute("/catalogue")).toEqual({ mode: "seller", view: "products" });
+    expect(readOwnerRoute("/products/product-1")).toEqual({ mode: "seller", view: "products" });
+    expect(readOwnerRoute("/agents/agent-1")).toEqual({ mode: "seller", view: "agent" });
+    expect(readOwnerRoute("/beta")).toEqual({ mode: "seller", view: "beta" });
+    expect(readOwnerRoute("/launch")).toEqual({ mode: "seller", view: "launch" });
+    expect(readOwnerRoute("/missing")).toBeNull();
+    expect(pathForOwnerView("chat", "marketplace")).toBe(routes.marketplace);
+    expect(pathForOwnerView("chat", "seller")).toBe(routes.sell);
+    expect(pathForOwnerView("customers", "seller")).toBe(routes.customers);
+  });
+
+  it("has no enabled non-submit button without an action handler", () => {
+    const source = readFileSync("apps/web/src/main.tsx", "utf8");
+    const openingButtons = source.match(/<button\b[\s\S]*?>/g) ?? [];
+    const actionless = openingButtons.filter(
+      (button) => !/onClick\s*=/.test(button) && !/type\s*=\s*["{]submit/.test(button)
+    );
+    expect(actionless).toEqual([]);
+  });
+
+  it("does not ship temporary logs, blocking alerts, placeholder links, or silent stubs", () => {
+    const source = readFileSync("apps/web/src/main.tsx", "utf8");
+    expect(source).not.toMatch(/console\.log|window\.alert|window\.prompt/);
+    expect(source).not.toMatch(/href=["']#(?:["'])|javascript:void/);
+    expect(source).not.toContain("coming soon");
+    expect(source).not.toContain("not implemented yet");
+  });
+
+  it("keeps the completed audit and frontend-to-backend map in source control", () => {
+    const audit = readFileSync("docs/frontend-interaction-audit.md", "utf8");
+    expect(audit).toContain("| A140 |");
+    expect(audit).toContain("## Frontend-to-backend action map");
+    expect(audit).toContain("Account restoration");
+  });
+});

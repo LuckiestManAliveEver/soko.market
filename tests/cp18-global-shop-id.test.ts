@@ -44,8 +44,8 @@ describe("CP18 Global Shop ID", () => {
     const first = await createOwnerBusiness(app, "254700000018", "BigFish soko");
     const second = await createOwnerBusiness(app, "255700000018", "Dar Fish soko");
 
-    expect(first.business.sokoId).toMatch(/^\+254-A\d{8}$/);
-    expect(second.business.sokoId).toMatch(/^\+255-A\d{8}$/);
+    expect(first.business.sokoId).toMatch(/^254A\d{8}$/);
+    expect(second.business.sokoId).toMatch(/^255A\d{8}$/);
     expect(first.business.sokoId).not.toBe(second.business.sokoId);
 
     const stockedProduct = await postJson<ProductResponse>(

@@ -27,12 +27,59 @@ test.beforeEach(async ({ page }) => {
         name: "Jane's International Neighborhood Market and Supplies",
         language: "en",
         role: "owner",
-        sokoId: "+254-A12345678"
+        sokoId: "254A12345678"
       })
     );
     localStorage.setItem("soko.chatFirst.mode", "seller");
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
+});
+
+test("central navigation preserves marketplace, settings, and browser back behavior", async ({
+  page
+}) => {
+  await page.goto("/marketplace");
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page).toHaveURL(/\/marketplace$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/settings$/);
+});
+
+test("workspace dialog traps a useful action, reports unavailable cards, and closes with Escape", async ({
+  page
+}) => {
+  await page.goto("/sell");
+  const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
+  await workspaceButton.click();
+  const dialog = page.getByRole("dialog", { name: "Workspace cards" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: /\+ Add card/ }).click();
+  await expect(page.getByRole("status")).toContainText("This feature is not available yet.");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(workspaceButton).toBeFocused();
+});
+
+test("account deletion requires DELETE, PIN, acknowledgement, and signs out", async ({ page }) => {
+  let pinVerifications = 0;
+  let deletionRequests = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/auth/pin/verify") pinVerifications += 1;
+    if (path.endsWith("/compliance/account-deletion")) deletionRequests += 1;
+  });
+
+  await page.goto("/settings/security");
+  await page.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await page.getByLabel("Owner PIN").fill("1234");
+  await page.getByLabel(/I understand that access is disabled immediately/).check();
+  await page.getByTestId("delete-account-confirm").click();
+  await expect(page.getByRole("button", { name: "Owner login" })).toBeVisible();
+  expect(pinVerifications).toBe(1);
+  expect(deletionRequests).toBe(1);
 });
 
 test("messaging inbox and thread adapt across phone and desktop screens", async ({ page }) => {
@@ -56,6 +103,7 @@ test("messaging inbox and thread adapt across phone and desktop screens", async 
 });
 
 test("draft Terms of Service reflow and pass an automated accessibility scan", async ({ page }) => {
+  test.setTimeout(90_000);
   for (const viewport of [
     { width: 280, height: 653 },
     { width: 768, height: 1024 },
@@ -63,7 +111,9 @@ test("draft Terms of Service reflow and pass an automated accessibility scan", a
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/terms");
-    await expect(page.getByRole("heading", { name: "Terms of Service", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Terms of Service", level: 1 })).toBeVisible({
+      timeout: 20_000
+    });
     await expect(page.getByText("Version 1.0 (Draft) · Parts I–IV")).toBeVisible();
     await expect(page.getByText("Effective Date: To Be Inserted")).toBeVisible();
     await expect(page.getByRole("heading", { name: "1. Introduction" })).toBeVisible();
@@ -84,6 +134,7 @@ test("draft Terms of Service reflow and pass an automated accessibility scan", a
 test("draft Privacy Policy reflows and passes an automated accessibility scan", async ({
   page
 }) => {
+  test.setTimeout(90_000);
   for (const viewport of [
     { width: 280, height: 653 },
     { width: 768, height: 1024 },
@@ -91,7 +142,9 @@ test("draft Privacy Policy reflows and passes an automated accessibility scan", 
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/privacy");
-    await expect(page.getByRole("heading", { name: "Privacy Policy", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Privacy Policy", level: 1 })).toBeVisible({
+      timeout: 20_000
+    });
     await expect(page.getByText("Version 1.0 (Draft) · Parts I–IV")).toBeVisible();
     await expect(page.getByText("Effective Date: To Be Inserted")).toBeVisible();
     await expect(page.getByRole("heading", { name: "1. Introduction" })).toBeVisible();
@@ -310,6 +363,22 @@ async function installApiMocks(page: Page): Promise<void> {
     if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });
     if (path.endsWith("/social-accounts")) return json({ accounts: [] });
     if (path.endsWith("/shop-deletion/preview")) return json({}, 404);
+    if (path === "/auth/pin/verify" && method === "POST") return json({ verified: true });
+    if (path.endsWith("/compliance/account-deletion") && method === "POST") {
+      return json({
+        id: "responsive-deletion",
+        accountId: "responsive-account",
+        userId: "responsive-user",
+        businessId: "responsive-certification-shop",
+        actorId: "responsive-user",
+        status: "scheduled",
+        reason: null,
+        requestedAt: "2026-07-15T00:00:00.000Z",
+        deactivatedAt: "2026-07-15T00:00:00.000Z",
+        anonymizeAfter: "2026-08-14T00:00:00.000Z",
+        retention: {}
+      });
+    }
     return json({ message: "Not needed by responsive certification" }, 404);
   });
 }

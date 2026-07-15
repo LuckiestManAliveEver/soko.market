@@ -39,9 +39,10 @@ interface PlayLegalReadiness {
 
 describe("CP27 Google Play legal readiness", () => {
   it("provides a public account-deletion resource and secure authenticated web path", async () => {
-    const [readiness, main, deletionPage, renderBlueprint] = await Promise.all([
+    const [readiness, main, routes, deletionPage, renderBlueprint] = await Promise.all([
       readJson<PlayLegalReadiness>("../config/play-legal-readiness.json"),
       readFile(new URL("../apps/web/src/main.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/routes.ts", import.meta.url), "utf8"),
       readFile(new URL("../apps/web/src/legal/AccountDeletionPage.tsx", import.meta.url), "utf8"),
       readFile(new URL("../render.yaml", import.meta.url), "utf8")
     ]);
@@ -57,7 +58,8 @@ describe("CP27 Google Play legal readiness", () => {
       associatedDataIncluded: true,
       lawfulRetentionDisclosed: true
     });
-    expect(main).toContain('window.location.pathname === "/account-deletion"');
+    expect(routes).toContain('accountDeletion: "/account-deletion"');
+    expect(main).toContain("window.location.pathname === routes.accountDeletion");
     expect(main).toContain('get("intent") === "account-deletion"');
     expect(main).toContain("Delete account and associated data");
     expect(deletionPage).toContain("Continue to secure deletion request");

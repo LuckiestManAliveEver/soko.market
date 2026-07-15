@@ -1,7 +1,8 @@
 # Frontend interaction audit
 
-Audit date: 2026-07-15  
-Scope: `apps/web/src`, its public/legal routes, and the Fastify contracts used by the web app.  
+Audit date: 2026-07-15
+
+Scope: `apps/web/src`, its public/legal routes, and the Fastify contracts used by the web app.
 Counting rule: one row is one visible interaction class. Repeated list-row controls (for example, one Edit button per product) count once because they execute the same component handler and contract. Form fields are included with their submit action when they have no independent side effect.
 
 ## Architecture and baseline
