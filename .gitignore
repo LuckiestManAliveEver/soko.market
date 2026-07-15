@@ -1,6 +1,8 @@
 .repo.git/
 MORE/
 node_modules/
+playwright-report/
+test-results/
 dist/
 **/dist/
 coverage/

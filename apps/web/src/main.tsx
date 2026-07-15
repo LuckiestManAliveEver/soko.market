@@ -10309,7 +10309,7 @@ function AgentProfileSurface({
             </label>
             <input
               ref={customModelInput}
-              className="visually-hidden"
+              className="model-file-input"
               type="file"
               accept=".gguf,application/octet-stream"
               onChange={(event) => void importCustomModel(event)}

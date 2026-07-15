@@ -29,3 +29,6 @@ jobs:
 
       - name: Check
         run: pnpm run ci
+
+      - name: Responsive and accessibility certification
+        run: pnpm test:ui-cert

@@ -35,10 +35,13 @@
     "restart:dev": "pnpm clean:dev && pnpm dev",
     "start": "pnpm --filter @soko/api start",
     "test": "vitest run",
+    "test:ui-cert": "playwright test e2e/responsive-accessibility.spec.ts",
     "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/js": "^9.18.0",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.5",
     "@vitejs/plugin-react": "^4.3.4",
     "drizzle-kit": "^0.30.2",
