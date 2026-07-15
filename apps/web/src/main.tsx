@@ -18,6 +18,15 @@ import {
   type ParseResult
 } from "@soko/tool-core";
 import { Surface } from "@soko/ui";
+import type {
+  ConversationInboxItem,
+  ConversationAttachment,
+  ConversationMessageContent,
+  ConversationMessageSummary,
+  ConversationParticipantSummary,
+  ConversationView,
+  E2eeDeviceSummary
+} from "@soko/shared-types";
 import {
   createInitialChatMessages,
   quickActions,
@@ -45,6 +54,13 @@ import {
   type LocalAiModel,
   type ModelTransferProgress
 } from "./ai-model-manager";
+import {
+  decryptDirectMessage,
+  encryptDirectMessage,
+  ensureE2eeIdentity,
+  type DecryptedMessage,
+  type E2eeIdentity
+} from "./e2ee";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
@@ -1866,6 +1882,12 @@ function OwnerApp() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
     createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
   );
+  const [conversationInbox, setConversationInbox] = useState<ConversationInboxItem[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversation, setActiveConversation] = useState<ConversationView | null>(null);
+  const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
+  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
+  const [isContactTyping, setIsContactTyping] = useState(false);
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
@@ -2013,6 +2035,64 @@ function OwnerApp() {
       closeRepository?.();
     };
   }, [session?.account.id]);
+
+  useEffect(() => {
+    if (session === null) return;
+    let cancelled = false;
+    void ensureE2eeIdentity(session.account.id)
+      .then(async (identity) => {
+        await postJson<E2eeDeviceSummary>("/v1/e2ee/devices", {
+          deviceId: identity.deviceId,
+          label:
+            (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+              ?.platform ||
+            navigator.platform ||
+            "This browser",
+          publicKey: identity.publicKey
+        });
+        if (!cancelled) setE2eeIdentity(identity);
+      })
+      .catch((error) => {
+        if (!cancelled) setStatusMessage(`Secure messaging unavailable: ${getErrorMessage(error)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.account.id]);
+
+  useEffect(() => {
+    if (session === null || e2eeIdentity === null) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const notificationConversationId = new URLSearchParams(window.location.search).get(
+        "conversation"
+      );
+      if (!cancelled) await loadMessagingInbox(notificationConversationId ?? activeConversationId);
+      if (notificationConversationId) {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 4_000);
+    const onOnline = () => {
+      void retryQueuedMessages();
+      void refresh();
+    };
+    const onServiceWorkerMessage = (event: MessageEvent<unknown>) => {
+      const data = event.data as { type?: string; conversationId?: string };
+      if (data.type === "message.notification.open" && data.conversationId) {
+        void selectConversation(data.conversationId);
+      }
+    };
+    window.addEventListener("online", onOnline);
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("online", onOnline);
+      navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
+    };
+  }, [session?.account.id, activeConversationId, e2eeIdentity?.deviceId]);
 
   useEffect(() => {
     if (business !== null) {
@@ -4372,6 +4452,239 @@ function OwnerApp() {
     window.setTimeout(() => window.print(), 0);
   }
 
+  async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
+    if (session === null) return;
+    try {
+      let response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+      if (response.conversations.length === 0) {
+        const created = await postJson<ConversationView>("/v1/conversations", {
+          kind: "personal",
+          activeShopId: business?.id ?? null,
+          title: "Soko agent"
+        });
+        response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+        preferredConversationId = created.conversation.id;
+      }
+      setConversationInbox(response.conversations);
+      const selectedId =
+        preferredConversationId !== null &&
+        response.conversations.some((conversation) => conversation.id === preferredConversationId)
+          ? preferredConversationId
+          : (response.conversations[0]?.id ?? null);
+      if (selectedId !== null) {
+        setActiveConversationId(selectedId);
+        await loadConversationThread(selectedId);
+      }
+    } catch (error) {
+      if (navigator.onLine) setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadConversationThread(conversationId: string) {
+    if (session === null) return;
+    const view = await getJson<ConversationView>(`/v1/conversations/${conversationId}`);
+    setActiveConversation(view);
+    setIsContactTyping((view.typing ?? []).some((typing) => typing.actorId !== session.user.id));
+    const mapped = await Promise.all(
+      view.messages.map(async (message) => {
+        if (message.content.type !== "encrypted") {
+          return mapConversationMessage(message, view.participants, session);
+        }
+        if (e2eeIdentity === null) {
+          return mapConversationMessage(message, view.participants, session, null);
+        }
+        try {
+          const decrypted = await decryptDirectMessage({
+            conversationId,
+            content: message.content,
+            identity: e2eeIdentity
+          });
+          return mapConversationMessage(message, view.participants, session, decrypted);
+        } catch {
+          return mapConversationMessage(message, view.participants, session, null);
+        }
+      })
+    );
+    setChatMessages(
+      mapped.length > 0
+        ? mapped
+        : createInitialChatMessages(conversationTitle(view, session.account.id))
+    );
+    if (document.visibilityState === "visible") {
+      await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, { read: true });
+    } else {
+      const newest = view.messages.at(-1);
+      if (
+        newest !== undefined &&
+        newest.authorId !== session.user.id &&
+        Notification.permission === "granted"
+      ) {
+        void showMessageNotification({
+          title: conversationTitle(view, session.account.id),
+          body: conversationMessageText(newest),
+          tag: `soko-message-${newest.id}`,
+          conversationId
+        });
+      }
+    }
+  }
+
+  async function selectConversation(conversationId: string) {
+    setActiveConversationId(conversationId);
+    setReplyToMessageId(null);
+    await loadConversationThread(conversationId);
+  }
+
+  async function createDirectConversation(recipient: string, title: string) {
+    const created = await postJson<ConversationView>("/v1/conversations", {
+      kind: "personal",
+      activeShopId: null,
+      recipient,
+      title
+    });
+    await loadMessagingInbox(created.conversation.id);
+    setStatusMessage("Conversation created");
+  }
+
+  async function updateConversationPreference(
+    conversationId: string,
+    preference: "archive" | "mute" | "pin"
+  ) {
+    const item = conversationInbox.find((conversation) => conversation.id === conversationId);
+    if (!item) return;
+    const body =
+      preference === "archive"
+        ? { archived: true }
+        : preference === "pin"
+          ? { pinned: !item.participant.pinnedAt }
+          : {
+              mutedUntil: item.participant.mutedUntil
+                ? null
+                : new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString()
+            };
+    await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, body);
+    await loadMessagingInbox(preference === "archive" ? null : conversationId);
+  }
+
+  async function updateMessageAction(
+    messageId: string,
+    action: { text?: string; deleted?: boolean; reaction?: string | null }
+  ) {
+    if (activeConversationId === null) return;
+    let request: typeof action | { content: ConversationMessageContent } = action;
+    if (action.text !== undefined && isHumanDirectConversation(activeConversation, session)) {
+      const current = chatMessages.find((message) => message.id === messageId);
+      const devices = await getConversationEncryptionDevices(activeConversationId);
+      request = {
+        content: await encryptDirectMessage({
+          conversationId: activeConversationId,
+          devices,
+          message: {
+            text: action.text,
+            attachments: chatAttachmentsToConversationAttachments(current?.attachments ?? [])
+          }
+        })
+      };
+    }
+    await patchJson<ConversationMessageSummary>(
+      `/v1/conversations/${activeConversationId}/messages/${messageId}`,
+      request
+    );
+    await loadConversationThread(activeConversationId);
+  }
+
+  async function forwardMessage(messageId: string, targetConversationId: string) {
+    if (activeConversation === null || session === null) return;
+    const source = activeConversation.messages.find((message) => message.id === messageId);
+    const rendered = chatMessages.find((message) => message.id === messageId);
+    if (!source || !rendered) return;
+    const target = await getJson<ConversationView>(`/v1/conversations/${targetConversationId}`);
+    let content: ConversationMessageContent = {
+      type: "text",
+      text: rendered.body,
+      attachments: chatAttachmentsToConversationAttachments(rendered.attachments ?? [])
+    };
+    if (isHumanDirectConversation(target, session)) {
+      const devices = await getConversationEncryptionDevices(targetConversationId);
+      content = await encryptDirectMessage({
+        conversationId: targetConversationId,
+        devices,
+        message: {
+          text: rendered.body,
+          attachments: chatAttachmentsToConversationAttachments(rendered.attachments ?? [])
+        }
+      });
+    }
+    await postJson<ConversationMessageSummary>("/v1/messages", {
+      conversationId: targetConversationId,
+      clientMessageId: createClientMessageId("forward"),
+      content,
+      forwardedFromMessageId: source.id,
+      clientTimestamp: new Date().toISOString()
+    });
+    setStatusMessage("Message forwarded");
+  }
+
+  async function requestMessagingNotifications() {
+    if (!("Notification" in window)) {
+      setStatusMessage("This browser does not support message notifications");
+      return;
+    }
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setStatusMessage("This browser does not support background push notifications");
+      return;
+    }
+    const config = await getJson<{ enabled: boolean; publicKey: string | null }>("/v1/push/config");
+    if (!config.enabled || !config.publicKey) {
+      setStatusMessage("Background notifications are not configured on this deployment");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setStatusMessage("Notifications were not enabled");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const subscription =
+      (await registration.pushManager.getSubscription()) ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToBytes(config.publicKey)
+      }));
+    await postJson("/v1/push/subscriptions", subscription.toJSON());
+    setStatusMessage("Background message notifications enabled");
+  }
+
+  async function signalTyping(draft: string) {
+    setChatDraft(draft);
+    if (activeConversationId === null || session === null) return;
+    await postJson<{ typing: unknown[] }>(`/v1/conversations/${activeConversationId}/typing`, {
+      typing: draft.trim().length > 0
+    }).catch(() => undefined);
+  }
+
+  async function retryQueuedMessages() {
+    if (!navigator.onLine) return;
+    const queued = readMessagingOutbox();
+    for (const entry of queued) {
+      try {
+        const sent = await postJson<ConversationMessageSummary>("/v1/messages", entry.payload);
+        setChatMessages((messages) =>
+          messages.map((message) =>
+            message.id === entry.clientMessageId && session !== null && activeConversation !== null
+              ? sent.content.type === "encrypted"
+                ? mergePersistedEncryptedMessage(message, sent)
+                : mapConversationMessage(sent, activeConversation.participants, session)
+              : message
+          )
+        );
+        removeMessagingOutboxEntry(entry.clientMessageId);
+      } catch {
+        break;
+      }
+    }
+  }
+
   async function logout() {
     try {
       await postJson<{ revoked: boolean }>("/auth/logout", {});
@@ -4417,6 +4730,11 @@ function OwnerApp() {
     setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
     setPendingAttachments([]);
+    setConversationInbox([]);
+    setActiveConversationId(null);
+    setActiveConversation(null);
+    setE2eeIdentity(null);
+    setReplyToMessageId(null);
     setChallenge(null);
     setOtp("");
     setPhoneConfirmationResult(null);
@@ -4445,45 +4763,133 @@ function OwnerApp() {
       return;
     }
 
-    if (business === null) {
-      sendLocalParserChat(message, attachments);
+    const clientMessageId = createClientMessageId("message");
+    const merchantMessage: ChatMessage = {
+      id: clientMessageId,
+      author: "merchant",
+      body: message,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      createdAt: new Date().toISOString(),
+      status: navigator.onLine ? "pending" : "failed",
+      replyToMessageId
+    };
+    setChatMessages((messages) => [...messages, merchantMessage]);
+    setChatDraft("");
+    setPendingAttachments([]);
+    setReplyToMessageId(null);
+
+    const hasHumanRecipient = isHumanDirectConversation(activeConversation, session);
+    let messageContent: ConversationMessageContent = {
+      type: "text",
+      text: message,
+      ...(attachments.length > 0
+        ? { attachments: chatAttachmentsToConversationAttachments(attachments) }
+        : {})
+    };
+    if (hasHumanRecipient && activeConversationId !== null) {
+      try {
+        const devices = await getConversationEncryptionDevices(activeConversationId);
+        messageContent = await encryptDirectMessage({
+          conversationId: activeConversationId,
+          devices,
+          message: {
+            text: message,
+            attachments: chatAttachmentsToConversationAttachments(attachments)
+          }
+        });
+      } catch (error) {
+        setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
+        setChatDraft(message);
+        setPendingAttachments(attachments);
+        setStatusMessage(`Could not encrypt message: ${getErrorMessage(error)}`);
+        return;
+      }
+    }
+    const payload: Record<string, unknown> | null =
+      session !== null && activeConversationId !== null
+        ? {
+            conversationId: activeConversationId,
+            clientMessageId,
+            content: messageContent,
+            replyToMessageId,
+            clientTimestamp: new Date().toISOString()
+          }
+        : null;
+
+    if (payload !== null) {
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", payload);
+        if (activeConversation !== null && session !== null) {
+          setChatMessages((messages) =>
+            messages.map((item) =>
+              item.id === clientMessageId
+                ? persisted.content.type === "encrypted"
+                  ? mergePersistedEncryptedMessage(item, persisted)
+                  : mapConversationMessage(persisted, activeConversation.participants, session)
+                : item
+            )
+          );
+        }
+      } catch {
+        queueMessagingOutbox({ clientMessageId, payload });
+        setChatMessages((messages) =>
+          messages.map((item) =>
+            item.id === clientMessageId ? { ...item, status: "failed" } : item
+          )
+        );
+        setStatusMessage("Message queued. It will retry when the connection returns.");
+        return;
+      }
+    }
+
+    if (hasHumanRecipient) {
+      await loadMessagingInbox(activeConversationId);
       return;
     }
 
-    const supplierReply = createSupplierChatReply(message, suppliers);
-
-    if (supplierReply !== null) {
-      const merchantMessage: ChatMessage = {
-        id: `merchant-${Date.now()}`,
-        author: "merchant",
-        body: message,
-        ...(attachments.length > 0 ? { attachments } : {})
+    async function appendAgentMessage(body: string, confirmationToken?: string) {
+      let next: ChatMessage = {
+        id: createClientMessageId("agent"),
+        author: "sokoclaw",
+        body,
+        ...(confirmationToken !== undefined ? { confirmationToken } : {}),
+        createdAt: new Date().toISOString(),
+        status: "delivered"
       };
-      setChatMessages((messages) => [
-        ...messages,
-        merchantMessage,
-        {
-          id: `sokoclaw-${Date.now()}`,
-          author: "sokoclaw",
-          body: supplierReply.body
+      if (session !== null && activeConversationId !== null) {
+        try {
+          const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+            conversationId: activeConversationId,
+            clientMessageId: next.id,
+            author: "agent",
+            content:
+              confirmationToken === undefined
+                ? { type: "text", text: body }
+                : { type: "confirmation", confirmationToken, prompt: body },
+            clientTimestamp: new Date().toISOString()
+          });
+          if (activeConversation !== null) {
+            next = mapConversationMessage(persisted, activeConversation.participants, session);
+          }
+        } catch {
+          // The reply remains visible locally and the next refresh can reconcile the thread.
         }
-      ]);
-      setChatDraft("");
-      setPendingAttachments([]);
+      }
+      setChatMessages((messages) => [...messages, next]);
+    }
+
+    const supplierReply = createSupplierChatReply(message, suppliers);
+    if (supplierReply !== null) {
+      await appendAgentMessage(supplierReply.body);
       setView(supplierReply.view);
       return;
     }
 
-    const merchantMessage: ChatMessage = {
-      id: `merchant-${Date.now()}`,
-      author: "merchant",
-      body: message,
-      ...(attachments.length > 0 ? { attachments } : {})
-    };
-
-    setChatMessages((messages) => [...messages, merchantMessage]);
-    setChatDraft("");
-    setPendingAttachments([]);
+    if (business === null) {
+      const parserReply = createLocalParserReply(message);
+      await appendAgentMessage(parserReply.body);
+      return;
+    }
 
     try {
       const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
@@ -4494,21 +4900,10 @@ function OwnerApp() {
       setRuntimeSessionId(result.session.id);
       setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
       const confirmationToken = result.turn.plan.confirmationToken;
-      setChatMessages((messages) => [
-        ...messages,
-        confirmationToken === null
-          ? {
-              id: `sokoclaw-${Date.now()}`,
-              author: "sokoclaw",
-              body: result.turn.response
-            }
-          : {
-              id: `sokoclaw-${Date.now()}`,
-              author: "sokoclaw",
-              body: result.turn.response,
-              confirmationToken
-            }
-      ]);
+      await appendAgentMessage(
+        result.turn.response,
+        confirmationToken === null ? undefined : confirmationToken
+      );
 
       if (result.turn.plan.toolName === "products.list") {
         await loadProducts(business.id);
@@ -4530,7 +4925,7 @@ function OwnerApp() {
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
       const parserReply = createLocalParserReply(message);
-      setChatMessages((messages) => [...messages, parserReply]);
+      await appendAgentMessage(parserReply.body);
       if (isNetworkDiscoveryRequest(message)) {
         await loadNetworkGraph();
         setView("network");
@@ -4585,17 +4980,19 @@ function OwnerApp() {
     }
   }
 
-  function handleChatAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+  async function handleChatAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
 
     if (files.length === 0) {
       return;
     }
 
-    setPendingAttachments((attachments) => [
-      ...attachments,
-      ...files.map((file) => createChatAttachment(file))
-    ]);
+    const accepted = files.filter((file) => file.size <= 10_000_000);
+    if (accepted.length !== files.length) {
+      setStatusMessage("Each attachment must be 10 MB or smaller");
+    }
+    const nextAttachments = await Promise.all(accepted.map(createChatAttachment));
+    setPendingAttachments((attachments) => [...attachments, ...nextAttachments].slice(0, 10));
     event.target.value = "";
   }
 
@@ -4710,20 +5107,6 @@ function OwnerApp() {
 
     setClarificationCount(decision.kind === "act" ? 0 : clarificationCount + 1);
     return reply;
-  }
-
-  function sendLocalParserChat(message: string, attachments: ChatAttachment[] = []) {
-    const merchantMessage: ChatMessage = {
-      id: `merchant-${Date.now()}`,
-      author: "merchant",
-      body: message,
-      ...(attachments.length > 0 ? { attachments } : {})
-    };
-    const reply = createLocalParserReply(message);
-
-    setChatMessages((messages) => [...messages, merchantMessage, reply]);
-    setChatDraft("");
-    setPendingAttachments([]);
   }
 
   function renderActiveWorkspace() {
@@ -5186,6 +5569,15 @@ function OwnerApp() {
               customerCount={customers.length}
               invoiceCount={invoices.length}
               messages={chatMessages}
+              conversations={conversationInbox}
+              activeConversationId={activeConversationId}
+              isContactTyping={isContactTyping}
+              securityLabel={
+                isHumanDirectConversation(activeConversation, session)
+                  ? "End-to-end encrypted"
+                  : "Messages are processed by the Soko agent"
+              }
+              replyToMessageId={replyToMessageId}
               mode={mode}
               networkGraph={networkGraph}
               notificationCount={notificationInbox.summary.unread}
@@ -5204,7 +5596,28 @@ function OwnerApp() {
               onAddWorkspaceCard={() => setStatusMessage("Custom workspace cards are coming soon")}
               onBackToChat={() => setView("chat")}
               onConfirm={(token) => void confirmRuntimeAction(token)}
-              onDraftChange={setChatDraft}
+              onDraftChange={(draft) => void signalTyping(draft)}
+              onSelectConversation={(conversationId) => void selectConversation(conversationId)}
+              onCreateConversation={(recipient, title) =>
+                void createDirectConversation(recipient, title)
+              }
+              onConversationPreference={(conversationId, preference) =>
+                void updateConversationPreference(conversationId, preference)
+              }
+              onEnableNotifications={() => void requestMessagingNotifications()}
+              onReply={setReplyToMessageId}
+              onCancelReply={() => setReplyToMessageId(null)}
+              onEditMessage={(messageId, text) => void updateMessageAction(messageId, { text })}
+              onDeleteMessage={(messageId) =>
+                void updateMessageAction(messageId, { deleted: true })
+              }
+              onReactMessage={(messageId, reaction) =>
+                void updateMessageAction(messageId, { reaction })
+              }
+              onForwardMessage={(messageId, conversationId) =>
+                void forwardMessage(messageId, conversationId)
+              }
+              onRetryMessages={() => void retryQueuedMessages()}
               onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
               onNavigate={setView}
               onModeChange={switchMode}
@@ -10828,15 +11241,20 @@ function AgentProfileSurface({
 }
 
 interface ChatSurfaceProps {
+  activeConversationId: string | null;
   activeView: ShellView;
   agent: AgentSettings;
   businessName: string;
   hasBusiness: boolean;
   chatDraft: string;
   children: ReactNode;
+  conversations: ConversationInboxItem[];
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  isContactTyping: boolean;
+  securityLabel: string;
+  replyToMessageId: string | null;
   mode: SokoMode;
   marketplaceIntroComplete: boolean;
   marketplaceShortcutOpen: boolean;
@@ -10858,6 +11276,20 @@ interface ChatSurfaceProps {
   onBackToChat: () => void;
   onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
+  onSelectConversation: (conversationId: string) => void;
+  onCreateConversation: (recipient: string, title: string) => void;
+  onConversationPreference: (
+    conversationId: string,
+    preference: "archive" | "mute" | "pin"
+  ) => void;
+  onEnableNotifications: () => void;
+  onReply: (messageId: string) => void;
+  onCancelReply: () => void;
+  onEditMessage: (messageId: string, text: string) => void;
+  onDeleteMessage: (messageId: string) => void;
+  onReactMessage: (messageId: string, reaction: string | null) => void;
+  onForwardMessage: (messageId: string, conversationId: string) => void;
+  onRetryMessages: () => void;
   onNavigate: (view: ShellView) => void;
   onModeChange: (mode: SokoMode) => void;
   onOpenAgentProfile: () => void;
@@ -10881,15 +11313,20 @@ interface ChatSurfaceProps {
 }
 
 function ChatSurface({
+  activeConversationId,
   activeView,
   agent,
   businessName,
   hasBusiness,
   chatDraft,
   children,
+  conversations,
   customerCount,
   invoiceCount,
   messages,
+  isContactTyping,
+  securityLabel,
+  replyToMessageId,
   mode,
   marketplaceIntroComplete,
   marketplaceShortcutOpen,
@@ -10911,6 +11348,17 @@ function ChatSurface({
   onBackToChat,
   onCloseWorkspace,
   onDraftChange,
+  onSelectConversation,
+  onCreateConversation,
+  onConversationPreference,
+  onEnableNotifications,
+  onReply,
+  onCancelReply,
+  onEditMessage,
+  onDeleteMessage,
+  onReactMessage,
+  onForwardMessage,
+  onRetryMessages,
   onNavigate,
   onModeChange,
   onOpenAgentProfile,
@@ -10932,6 +11380,13 @@ function ChatSurface({
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const [inboxSearch, setInboxSearch] = useState("");
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
+  const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
+  const [newRecipient, setNewRecipient] = useState("");
+  const [newConversationTitle, setNewConversationTitle] = useState("");
+  const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
+  const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
     | "cards"
     | "catalogue"
@@ -10942,6 +11397,19 @@ function ChatSurface({
     | "networkSync"
     | "storefrontPreview"
   >("cards");
+  const selectedConversation = conversations.find(
+    (conversation) => conversation.id === activeConversationId
+  );
+  const visibleConversations = conversations.filter((conversation) => {
+    const query = inboxSearch.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      (conversation.title ?? "Soko agent").toLowerCase().includes(query) ||
+      (conversation.lastMessage === null
+        ? false
+        : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
+    );
+  });
 
   useEffect(() => {
     if (!workspaceOpen) {
@@ -10966,174 +11434,318 @@ function ChatSurface({
 
   return (
     <div className="chat-surface">
-      <div className="message-list" aria-live="polite" ref={messageListRef}>
-        {messages.map((message, index) => (
-          <Fragment key={message.id}>
-            <article className={`message ${message.author}`}>
-              <span className="message-author">
-                {message.author === "merchant" ? (
-                  "You"
-                ) : (
-                  <>
-                    <button
-                      className="message-author-link"
-                      type="button"
-                      onClick={onOpenAgentProfile}
-                      disabled={!hasBusiness}
-                      aria-label={hasBusiness ? `Open ${agent.name} profile` : undefined}
-                    >
-                      {agent.name}
-                    </button>
-                    <ShopPresenceButtons
-                      activeStatus={shopPresenceStatus}
-                      onStatusChange={onStatusChange}
-                    />
-                  </>
-                )}
-              </span>
-              <p>{message.body}</p>
-              {message.attachments !== undefined && message.attachments.length > 0 ? (
-                <div className="message-attachments" aria-label="Message attachments">
-                  {message.attachments.map((attachment) => (
-                    <span className="message-attachment" key={attachment.id}>
-                      {attachment.name}
-                      <small>
-                        {formatAttachmentCategory(attachment.category)} ·{" "}
-                        {formatFileSize(attachment.size)}
-                      </small>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {message.confirmationToken !== undefined ? (
-                <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
-                  Confirm
-                </button>
-              ) : null}
-            </article>
-            {index === 0 &&
-            activeView === "chat" &&
-            mode === "marketplace" &&
-            (!marketplaceIntroComplete || marketplaceShortcutOpen) ? (
-              workspaceCardView === "storefrontPreview" ? (
-                <StorefrontPreviewCard
-                  businessName={businessName}
-                  products={products}
-                  sokoId={sokoId}
-                  onBack={() => setWorkspaceCardView("cards")}
-                  onSell={() => onModeChange("seller")}
-                  onMessage={() => onDraftChange(`Hello ${businessName}, `)}
-                />
-              ) : (
-                <MarketplaceModeCard
-                  businessName={businessName}
-                  hasBusiness={hasBusiness}
-                  isIntro={!marketplaceIntroComplete}
-                  productCount={productCount}
-                  sokoId={sokoId}
-                  onCompleteIntro={onCompleteMarketplaceIntro}
-                  onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
-                  onPrompt={onDraftChange}
-                  onSell={() => onModeChange("seller")}
-                />
-              )
-            ) : null}
-          </Fragment>
-        ))}
-        {activeView !== "chat" && activeView !== "home" ? (
-          <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
-            <div className="generated-card-header">
-              <button className="secondary" type="button" onClick={onBackToChat}>
-                Close
-              </button>
-            </div>
-            {children}
-          </section>
-        ) : null}
-        {activeView === "chat" && mode === "seller" ? (
-          workspaceCardView === "cards" ? (
-            <ContextualBusinessCards
-              productCount={productCount}
-              customerCount={customerCount}
-              invoiceCount={invoiceCount}
-              notificationCount={notificationCount}
-              report={report}
-              syncSummary={syncSummary}
-              onAddCard={onAddWorkspaceCard}
-              onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
-              onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
-              onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
-              onNavigate={onNavigate}
+      <button
+        className="messenger-inbox-toggle secondary"
+        type="button"
+        aria-expanded={isInboxOpen}
+        onClick={() => setIsInboxOpen((open) => !open)}
+      >
+        Conversations
+      </button>
+      <aside className={`messenger-inbox ${isInboxOpen ? "open" : ""}`} aria-label="Conversations">
+        <div className="messenger-inbox-heading">
+          <h2>Messages</h2>
+          <button type="button" onClick={() => setIsNewConversationOpen((open) => !open)}>
+            New
+          </button>
+        </div>
+        <div className="messenger-inbox-tools">
+          <label>
+            <span className="visually-hidden">Search conversations</span>
+            <input
+              type="search"
+              value={inboxSearch}
+              onChange={(event) => setInboxSearch(event.target.value)}
+              placeholder="Search messages"
             />
-          ) : workspaceCardView === "networkSync" ? (
-            <NetworkSyncNestedCard
-              graph={networkGraph}
-              oauthProviders={oauthProviders}
-              oauthProvidersLoaded={oauthProvidersLoaded}
-              onBack={() => setWorkspaceCardView("cards")}
-              onDisconnectSource={onNetworkDisconnectSource}
-              onOAuthProvider={onNetworkProviderOAuth}
-              onPhoneContactsSync={onNetworkPhoneContactsSync}
-              onRefresh={onNetworkRefresh}
-            />
-          ) : workspaceCardView === "storefrontPreview" ? (
-            <StorefrontPreviewCard
-              businessName={businessName}
-              products={products}
-              sokoId={sokoId}
-              onBack={() => setWorkspaceCardView("cards")}
-              onSell={() => onModeChange("marketplace")}
-              onMessage={() => onDraftChange(`Hello ${businessName}, `)}
-            />
-          ) : (
-            <CatalogueNestedCard
-              form={productForm}
-              products={products}
-              view={workspaceCardView}
-              onBack={() =>
-                setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
-              }
-              onChangeForm={onProductFormChange}
-              onDeleteProduct={onProductRemove}
-              onEditProduct={onProductEdit}
-              onOpenAdd={() => {
-                onProductReset();
-                setWorkspaceCardView("addProduct");
-              }}
-              onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
-              onOpenEdit={() => {
-                if (products[0] !== undefined) onProductEdit(products[0]);
-                setWorkspaceCardView("editProduct");
-              }}
-              onOpenFields={() => setWorkspaceCardView("manageFields")}
-              onOpenProduct={(product) => {
-                onProductEdit(product);
-                setWorkspaceCardView("editProduct");
-              }}
-              onSaveFields={onProductFieldsSave}
-              onSaveProduct={async () => {
-                await onProductSave();
-                setWorkspaceCardView("catalogue");
-              }}
-            />
-          )
-        ) : null}
-      </div>
-      {workspaceOpen ? (
-        <div className="workspace-panel-backdrop" role="presentation">
-          <section
-            className="workspace-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Workspace cards"
+          </label>
+          <button className="secondary" type="button" onClick={onEnableNotifications}>
+            Notifications
+          </button>
+        </div>
+        {isNewConversationOpen ? (
+          <form
+            className="new-conversation-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onCreateConversation(newRecipient, newConversationTitle);
+              setNewRecipient("");
+              setNewConversationTitle("");
+              setIsNewConversationOpen(false);
+            }}
           >
-            <div className="workspace-panel-heading">
-              <h2>{workspacePanelTitle(workspaceCardView)}</h2>
-              <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
-                x
+            <label>
+              Contact
+              <input
+                required
+                value={newRecipient}
+                onChange={(event) => setNewRecipient(event.target.value)}
+                placeholder="Phone or email"
+              />
+            </label>
+            <label>
+              Name
+              <input
+                value={newConversationTitle}
+                onChange={(event) => setNewConversationTitle(event.target.value)}
+                placeholder="Conversation name"
+              />
+            </label>
+            <button type="submit">Start chat</button>
+          </form>
+        ) : null}
+        <div className="conversation-list">
+          {visibleConversations.map((conversation) => (
+            <article
+              className={`conversation-item ${conversation.id === activeConversationId ? "active" : ""}`}
+              key={conversation.id}
+            >
+              <button
+                className="conversation-select"
+                type="button"
+                onClick={() => {
+                  onSelectConversation(conversation.id);
+                  setIsInboxOpen(false);
+                }}
+              >
+                <span>
+                  <strong>{conversation.title ?? "Soko agent"}</strong>
+                  <small>
+                    {conversation.lastMessage === null
+                      ? "No messages yet"
+                      : conversationMessageText(conversation.lastMessage)}
+                  </small>
+                </span>
+                {conversation.unreadCount > 0 ? (
+                  <b aria-label={`${conversation.unreadCount} unread`}>
+                    {conversation.unreadCount}
+                  </b>
+                ) : null}
               </button>
-            </div>
-            {workspaceCardView === "cards" ? (
+              <div className="conversation-actions" aria-label="Conversation actions">
+                <button
+                  type="button"
+                  onClick={() => onConversationPreference(conversation.id, "pin")}
+                >
+                  {conversation.participant.pinnedAt ? "Unpin" : "Pin"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onConversationPreference(conversation.id, "mute")}
+                >
+                  {conversation.participant.mutedUntil ? "Unmute" : "Mute"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onConversationPreference(conversation.id, "archive")}
+                >
+                  Archive
+                </button>
+              </div>
+            </article>
+          ))}
+          {visibleConversations.length === 0 ? <p>No matching conversations.</p> : null}
+        </div>
+      </aside>
+      <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
+        <header className="messenger-thread-header">
+          <div>
+            <strong>{selectedConversation?.title ?? agent.name}</strong>
+            <small>{isContactTyping ? "typing…" : securityLabel}</small>
+          </div>
+          <button className="secondary" type="button" onClick={onRetryMessages}>
+            Retry failed
+          </button>
+        </header>
+        <div className="message-list" aria-live="polite" ref={messageListRef}>
+          {messages.map((message, index) => (
+            <Fragment key={message.id}>
+              <article className={`message ${message.author}`}>
+                <span className="message-author">
+                  {message.author === "merchant" ? (
+                    "You"
+                  ) : message.author === "contact" ? (
+                    (message.authorLabel ?? "Contact")
+                  ) : (
+                    <>
+                      <button
+                        className="message-author-link"
+                        type="button"
+                        onClick={onOpenAgentProfile}
+                        disabled={!hasBusiness}
+                        aria-label={hasBusiness ? `Open ${agent.name} profile` : undefined}
+                      >
+                        {agent.name}
+                      </button>
+                      <ShopPresenceButtons
+                        activeStatus={shopPresenceStatus}
+                        onStatusChange={onStatusChange}
+                      />
+                    </>
+                  )}
+                </span>
+                {message.replyToMessageId ? <small className="message-context">Reply</small> : null}
+                {message.forwardedFromMessageId ? (
+                  <small className="message-context">Forwarded</small>
+                ) : null}
+                <p className={message.deletedAt ? "deleted-message" : undefined}>{message.body}</p>
+                {message.attachments !== undefined && message.attachments.length > 0 ? (
+                  <div className="message-attachments" aria-label="Message attachments">
+                    {message.attachments.map((attachment) => (
+                      <a
+                        className="message-attachment"
+                        href={attachment.dataUrl}
+                        download={attachment.name}
+                        key={attachment.id}
+                      >
+                        {attachment.category === "image" && attachment.dataUrl ? (
+                          <img src={attachment.dataUrl} alt={attachment.name} />
+                        ) : null}
+                        <span>{attachment.name}</span>
+                        <small>
+                          {formatAttachmentCategory(attachment.category)} ·{" "}
+                          {formatFileSize(attachment.size)}
+                        </small>
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="message-meta">
+                  {message.createdAt ? (
+                    <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
+                  ) : null}
+                  {message.editedAt ? <span>edited</span> : null}
+                  {message.author === "merchant" && message.status ? (
+                    <span>{message.status}</span>
+                  ) : null}
+                </div>
+                {message.reactions?.length ? (
+                  <div className="message-reactions" aria-label="Reactions">
+                    {message.reactions.map((reaction) => (
+                      <span key={`${reaction.actorId}-${reaction.emoji}`}>{reaction.emoji}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {!message.deletedAt && !message.id.startsWith("welcome") ? (
+                  <div className="message-actions">
+                    <button type="button" onClick={() => onReply(message.id)}>
+                      Reply
+                    </button>
+                    <button
+                      type="button"
+                      aria-expanded={activeMessageMenuId === message.id}
+                      onClick={() =>
+                        setActiveMessageMenuId(
+                          activeMessageMenuId === message.id ? null : message.id
+                        )
+                      }
+                    >
+                      More
+                    </button>
+                    {activeMessageMenuId === message.id ? (
+                      <div className="message-action-menu">
+                        {["👍", "❤️", "😂", "😮", "🙏"].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            aria-label={`React ${emoji}`}
+                            onClick={() => onReactMessage(message.id, emoji)}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                        {message.author === "merchant" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const text = window.prompt("Edit message", message.body);
+                              if (text?.trim()) onEditMessage(message.id, text.trim());
+                            }}
+                          >
+                            Edit
+                          </button>
+                        ) : null}
+                        {message.author === "merchant" ? (
+                          <button type="button" onClick={() => onDeleteMessage(message.id)}>
+                            Delete
+                          </button>
+                        ) : null}
+                        <button type="button" onClick={() => setForwardingMessageId(message.id)}>
+                          Forward
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {forwardingMessageId === message.id ? (
+                  <div className="forward-picker">
+                    <span>Forward to:</span>
+                    {conversations
+                      .filter((conversation) => conversation.id !== activeConversationId)
+                      .map((conversation) => (
+                        <button
+                          type="button"
+                          key={conversation.id}
+                          onClick={() => {
+                            onForwardMessage(message.id, conversation.id);
+                            setForwardingMessageId(null);
+                          }}
+                        >
+                          {conversation.title ?? "Soko agent"}
+                        </button>
+                      ))}
+                    <button type="button" onClick={() => setForwardingMessageId(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : null}
+                {message.confirmationToken !== undefined ? (
+                  <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
+                    Confirm
+                  </button>
+                ) : null}
+              </article>
+              {index === 0 &&
+              activeView === "chat" &&
+              mode === "marketplace" &&
+              (!marketplaceIntroComplete || marketplaceShortcutOpen) ? (
+                workspaceCardView === "storefrontPreview" ? (
+                  <StorefrontPreviewCard
+                    businessName={businessName}
+                    products={products}
+                    sokoId={sokoId}
+                    onBack={() => setWorkspaceCardView("cards")}
+                    onSell={() => onModeChange("seller")}
+                    onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+                  />
+                ) : (
+                  <MarketplaceModeCard
+                    businessName={businessName}
+                    hasBusiness={hasBusiness}
+                    isIntro={!marketplaceIntroComplete}
+                    productCount={productCount}
+                    sokoId={sokoId}
+                    onCompleteIntro={onCompleteMarketplaceIntro}
+                    onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
+                    onPrompt={onDraftChange}
+                    onSell={() => onModeChange("seller")}
+                  />
+                )
+              ) : null}
+            </Fragment>
+          ))}
+          {activeView !== "chat" && activeView !== "home" ? (
+            <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
+              <div className="generated-card-header">
+                <button className="secondary" type="button" onClick={onBackToChat}>
+                  Close
+                </button>
+              </div>
+              {children}
+            </section>
+          ) : null}
+          {activeView === "chat" && mode === "seller" ? (
+            workspaceCardView === "cards" ? (
               <ContextualBusinessCards
                 productCount={productCount}
                 customerCount={customerCount}
@@ -11145,10 +11757,7 @@ function ChatSurface({
                 onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
                 onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
                 onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
-                onNavigate={(nextView) => {
-                  onNavigate(nextView);
-                  onCloseWorkspace();
-                }}
+                onNavigate={onNavigate}
               />
             ) : workspaceCardView === "networkSync" ? (
               <NetworkSyncNestedCard
@@ -11187,9 +11796,7 @@ function ChatSurface({
                 }}
                 onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
                 onOpenEdit={() => {
-                  if (products[0] !== undefined) {
-                    onProductEdit(products[0]);
-                  }
+                  if (products[0] !== undefined) onProductEdit(products[0]);
                   setWorkspaceCardView("editProduct");
                 }}
                 onOpenFields={() => setWorkspaceCardView("manageFields")}
@@ -11203,78 +11810,178 @@ function ChatSurface({
                   setWorkspaceCardView("catalogue");
                 }}
               />
-            )}
-          </section>
+            )
+          ) : null}
         </div>
-      ) : null}
-      <div className="composer">
-        <button
-          className="icon-button composer-icon-button"
-          type="button"
-          aria-label="Voice input"
-          title="Voice input"
-        >
-          <span className="mic-icon" aria-hidden="true" />
-        </button>
-        <button
-          className="icon-button composer-icon-button"
-          type="button"
-          aria-label="Attach file"
-          title="Attach file"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <span className="attach-icon" aria-hidden="true" />
-        </button>
-        <input
-          ref={fileInputRef}
-          className="chat-file-input"
-          type="file"
-          multiple
-          accept={chatAttachmentAccept}
-          onChange={onAttachmentChange}
-        />
-        {pendingAttachments.length > 0 ? (
-          <div className="attachment-tray" aria-label="Selected attachments">
-            {pendingAttachments.map((attachment) => (
-              <span className="attachment-chip" key={attachment.id}>
-                <span>
-                  <strong>{attachment.name}</strong>
-                  <small>
-                    {formatAttachmentCategory(attachment.category)} ·{" "}
-                    {formatFileSize(attachment.size)}
-                  </small>
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${attachment.name}`}
-                  onClick={() => onRemoveAttachment(attachment.id)}
-                >
+        {workspaceOpen ? (
+          <div className="workspace-panel-backdrop" role="presentation">
+            <section
+              className="workspace-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Workspace cards"
+            >
+              <div className="workspace-panel-heading">
+                <h2>{workspacePanelTitle(workspaceCardView)}</h2>
+                <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
                   x
                 </button>
-              </span>
-            ))}
+              </div>
+              {workspaceCardView === "cards" ? (
+                <ContextualBusinessCards
+                  productCount={productCount}
+                  customerCount={customerCount}
+                  invoiceCount={invoiceCount}
+                  notificationCount={notificationCount}
+                  report={report}
+                  syncSummary={syncSummary}
+                  onAddCard={onAddWorkspaceCard}
+                  onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
+                  onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
+                  onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
+                  onNavigate={(nextView) => {
+                    onNavigate(nextView);
+                    onCloseWorkspace();
+                  }}
+                />
+              ) : workspaceCardView === "networkSync" ? (
+                <NetworkSyncNestedCard
+                  graph={networkGraph}
+                  oauthProviders={oauthProviders}
+                  oauthProvidersLoaded={oauthProvidersLoaded}
+                  onBack={() => setWorkspaceCardView("cards")}
+                  onDisconnectSource={onNetworkDisconnectSource}
+                  onOAuthProvider={onNetworkProviderOAuth}
+                  onPhoneContactsSync={onNetworkPhoneContactsSync}
+                  onRefresh={onNetworkRefresh}
+                />
+              ) : workspaceCardView === "storefrontPreview" ? (
+                <StorefrontPreviewCard
+                  businessName={businessName}
+                  products={products}
+                  sokoId={sokoId}
+                  onBack={() => setWorkspaceCardView("cards")}
+                  onSell={() => onModeChange("marketplace")}
+                  onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+                />
+              ) : (
+                <CatalogueNestedCard
+                  form={productForm}
+                  products={products}
+                  view={workspaceCardView}
+                  onBack={() =>
+                    setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
+                  }
+                  onChangeForm={onProductFormChange}
+                  onDeleteProduct={onProductRemove}
+                  onEditProduct={onProductEdit}
+                  onOpenAdd={() => {
+                    onProductReset();
+                    setWorkspaceCardView("addProduct");
+                  }}
+                  onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
+                  onOpenEdit={() => {
+                    if (products[0] !== undefined) {
+                      onProductEdit(products[0]);
+                    }
+                    setWorkspaceCardView("editProduct");
+                  }}
+                  onOpenFields={() => setWorkspaceCardView("manageFields")}
+                  onOpenProduct={(product) => {
+                    onProductEdit(product);
+                    setWorkspaceCardView("editProduct");
+                  }}
+                  onSaveFields={onProductFieldsSave}
+                  onSaveProduct={async () => {
+                    await onProductSave();
+                    setWorkspaceCardView("catalogue");
+                  }}
+                />
+              )}
+            </section>
           </div>
         ) : null}
-        <label className="composer-input">
-          <span>Message</span>
+        <div className="composer">
+          {replyToMessageId ? (
+            <div className="composer-reply">
+              <span>Replying to a message</span>
+              <button type="button" onClick={onCancelReply}>
+                Cancel
+              </button>
+            </div>
+          ) : null}
+          <button
+            className="icon-button composer-icon-button"
+            type="button"
+            aria-label="Voice input"
+            title="Voice input"
+            onClick={() => startVoiceInput(onDraftChange)}
+          >
+            <span className="mic-icon" aria-hidden="true" />
+          </button>
+          <button
+            className="icon-button composer-icon-button"
+            type="button"
+            aria-label="Attach file"
+            title="Attach file"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <span className="attach-icon" aria-hidden="true" />
+          </button>
           <input
-            value={chatDraft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                onSend();
-              }
-            }}
-            placeholder={
-              mode === "seller" ? "Ask your agent to manage the shop" : "What are you looking for?"
-            }
+            ref={fileInputRef}
+            className="chat-file-input"
+            type="file"
+            multiple
+            accept={chatAttachmentAccept}
+            onChange={onAttachmentChange}
           />
-        </label>
-        <button className="send-button" type="button" onClick={onSend}>
-          <span className="send-icon" aria-hidden="true" />
-          <span className="visually-hidden">Send</span>
-        </button>
-      </div>
+          {pendingAttachments.length > 0 ? (
+            <div className="attachment-tray" aria-label="Selected attachments">
+              {pendingAttachments.map((attachment) => (
+                <span className="attachment-chip" key={attachment.id}>
+                  <span>
+                    <strong>{attachment.name}</strong>
+                    <small>
+                      {formatAttachmentCategory(attachment.category)} ·{" "}
+                      {formatFileSize(attachment.size)}
+                    </small>
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                  >
+                    x
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <label className="composer-input">
+            <span>Message</span>
+            <input
+              aria-label="Message"
+              value={chatDraft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  onSend();
+                }
+              }}
+              placeholder={
+                mode === "seller"
+                  ? "Ask your agent to manage the shop"
+                  : "What are you looking for?"
+              }
+            />
+          </label>
+          <button className="send-button" type="button" onClick={onSend}>
+            <span className="send-icon" aria-hidden="true" />
+            <span className="visually-hidden">Send</span>
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -13054,14 +13761,263 @@ function isValidContact(channel: AuthChannel, contact: string): boolean {
   return /^\+?[0-9\s-]{7,18}$/.test(value);
 }
 
-function createChatAttachment(file: File): ChatAttachment {
+const messagingOutboxStorageKey = "soko.market.messaging-outbox.v1";
+
+interface MessagingOutboxEntry {
+  clientMessageId: string;
+  payload: Record<string, unknown>;
+}
+
+function createClientMessageId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${crypto.randomUUID()}`;
+}
+
+function formatMessageTime(timestamp: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(new Date(timestamp).toDateString() === new Date().toDateString()
+      ? {}
+      : { month: "short", day: "numeric" })
+  }).format(new Date(timestamp));
+}
+
+async function showMessageNotification(input: {
+  title: string;
+  body: string;
+  tag: string;
+  conversationId: string;
+}): Promise<void> {
+  const registration = await navigator.serviceWorker?.ready.catch(() => null);
+  if (registration?.active) {
+    registration.active.postMessage({ type: "message.notification", ...input });
+    return;
+  }
+  new Notification(input.title, { body: input.body, tag: input.tag });
+}
+
+interface BrowserSpeechRecognition {
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+  onerror: (() => void) | null;
+  start(): void;
+}
+
+function startVoiceInput(onTranscript: (transcript: string) => void): void {
+  const SpeechRecognitionConstructor =
+    (
+      window as Window & {
+        SpeechRecognition?: new () => BrowserSpeechRecognition;
+        webkitSpeechRecognition?: new () => BrowserSpeechRecognition;
+      }
+    ).SpeechRecognition ??
+    (window as Window & { webkitSpeechRecognition?: new () => BrowserSpeechRecognition })
+      .webkitSpeechRecognition;
+  if (!SpeechRecognitionConstructor) return;
+  const recognition = new SpeechRecognitionConstructor();
+  recognition.lang = navigator.language || "en";
+  recognition.interimResults = false;
+  recognition.onresult = (event) => onTranscript(event.results[0]?.[0].transcript ?? "");
+  recognition.onerror = () => undefined;
+  recognition.start();
+}
+
+function conversationTitle(view: ConversationView, accountId: string): string {
+  if (view.conversation.title?.trim()) return view.conversation.title;
+  return (
+    view.participants.find(
+      (participant) => participant.role === "account" && participant.accountId !== accountId
+    )?.displayName ?? "Soko agent"
+  );
+}
+
+function conversationMessageText(message: ConversationMessageSummary): string {
+  if (message.deletedAt) return "Message deleted";
+  if (message.content.type === "text") return message.content.text || "Attachment";
+  if (message.content.type === "encrypted") return "Encrypted message";
+  if (message.content.type === "confirmation") return message.content.prompt;
+  if (message.content.type === "storefront") return "Shared a storefront";
+  return "Shared owner controls";
+}
+
+function mapConversationMessage(
+  message: ConversationMessageSummary,
+  participants: ConversationParticipantSummary[],
+  session: SessionResponse,
+  decrypted?: DecryptedMessage | null
+): ChatMessage {
+  const otherParticipant = participants.find(
+    (participant) => participant.role === "account" && participant.accountId !== session.account.id
+  );
+  return {
+    id: message.id,
+    author:
+      message.authorId === session.user.id
+        ? "merchant"
+        : message.author === "agent"
+          ? "sokoclaw"
+          : "contact",
+    authorLabel:
+      message.authorId === session.user.id
+        ? "You"
+        : message.author === "agent"
+          ? "Soko agent"
+          : (otherParticipant?.displayName ?? "Contact"),
+    body:
+      message.deletedAt !== null && message.deletedAt !== undefined
+        ? "Message deleted"
+        : message.content.type === "encrypted"
+          ? (decrypted?.text ?? "Encrypted message unavailable on this device")
+          : conversationMessageText(message),
+    ...((message.content.type === "text" && message.content.attachments?.length) ||
+    (message.content.type === "encrypted" && decrypted?.attachments.length)
+      ? {
+          attachments: (message.content.type === "text"
+            ? (message.content.attachments ?? [])
+            : (decrypted?.attachments ?? [])
+          ).map((attachment) => ({
+            id: attachment.id,
+            name: attachment.name,
+            type: attachment.mimeType,
+            size: attachment.size,
+            category: attachment.category,
+            dataUrl: attachment.url
+          }))
+        }
+      : {}),
+    ...(message.content.type === "confirmation"
+      ? { confirmationToken: message.content.confirmationToken }
+      : {}),
+    createdAt: message.createdAt,
+    status: message.status ?? "delivered",
+    editedAt: message.editedAt ?? null,
+    deletedAt: message.deletedAt ?? null,
+    replyToMessageId: message.replyToMessageId ?? null,
+    forwardedFromMessageId: message.forwardedFromMessageId ?? null,
+    reactions: (message.reactions ?? []).map(({ emoji, actorId }) => ({ emoji, actorId }))
+  };
+}
+
+function mergePersistedEncryptedMessage(
+  rendered: ChatMessage,
+  persisted: ConversationMessageSummary
+): ChatMessage {
+  return {
+    ...rendered,
+    id: persisted.id,
+    createdAt: persisted.createdAt,
+    status: persisted.status ?? "delivered",
+    editedAt: persisted.editedAt ?? null,
+    deletedAt: persisted.deletedAt ?? null,
+    replyToMessageId: persisted.replyToMessageId ?? null,
+    forwardedFromMessageId: persisted.forwardedFromMessageId ?? null,
+    reactions: (persisted.reactions ?? []).map(({ emoji, actorId }) => ({ emoji, actorId }))
+  };
+}
+
+function isHumanDirectConversation(
+  conversation: ConversationView | null,
+  session: SessionResponse | null
+): boolean {
+  return Boolean(
+    conversation &&
+    session &&
+    conversation.participants.some(
+      (participant) =>
+        participant.role === "account" && participant.accountId !== session.account.id
+    )
+  );
+}
+
+function chatAttachmentsToConversationAttachments(
+  attachments: ChatAttachment[]
+): ConversationAttachment[] {
+  return attachments.map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name,
+    mimeType: attachment.type,
+    size: attachment.size,
+    category: attachment.category,
+    url: attachment.dataUrl ?? ""
+  }));
+}
+
+async function getConversationEncryptionDevices(
+  conversationId: string
+): Promise<E2eeDeviceSummary[]> {
+  const storageKey = `soko.market.e2ee-devices.v1:${conversationId}`;
+  try {
+    const response = await getJson<{ devices: E2eeDeviceSummary[] }>(
+      `/v1/conversations/${conversationId}/encryption-devices`
+    );
+    localStorage.setItem(storageKey, JSON.stringify(response.devices));
+    return response.devices;
+  } catch (error) {
+    const cached = localStorage.getItem(storageKey);
+    if (cached === null) throw error;
+    const devices = JSON.parse(cached) as unknown;
+    if (!Array.isArray(devices) || devices.length === 0) throw error;
+    return devices as E2eeDeviceSummary[];
+  }
+}
+
+function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
+  const base64 = value
+    .replaceAll("-", "+")
+    .replaceAll("_", "/")
+    .padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function readMessagingOutbox(): MessagingOutboxEntry[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(messagingOutboxStorageKey) ?? "[]") as unknown;
+    return Array.isArray(stored) ? (stored as MessagingOutboxEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function queueMessagingOutbox(entry: MessagingOutboxEntry): void {
+  const entries = readMessagingOutbox().filter(
+    (candidate) => candidate.clientMessageId !== entry.clientMessageId
+  );
+  localStorage.setItem(messagingOutboxStorageKey, JSON.stringify([...entries, entry]));
+}
+
+function removeMessagingOutboxEntry(clientMessageId: string): void {
+  localStorage.setItem(
+    messagingOutboxStorageKey,
+    JSON.stringify(
+      readMessagingOutbox().filter((entry) => entry.clientMessageId !== clientMessageId)
+    )
+  );
+}
+
+async function createChatAttachment(file: File): Promise<ChatAttachment> {
   return {
     id: `${file.name}-${file.size}-${file.lastModified}-${Date.now()}`,
     name: file.name,
     type: file.type || "application/octet-stream",
     size: file.size,
-    category: getAttachmentCategory(file)
+    category: getAttachmentCategory(file),
+    dataUrl: await readFileAsDataUrl(file)
   };
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")), { once: true });
+    reader.addEventListener(
+      "error",
+      () => reject(reader.error ?? new Error("File could not be read")),
+      { once: true }
+    );
+    reader.readAsDataURL(file);
+  });
 }
 
 function getAttachmentCategory(file: File): ChatAttachment["category"] {
@@ -13071,6 +14027,10 @@ function getAttachmentCategory(file: File): ChatAttachment["category"] {
 
   if (file.type.startsWith("video/")) {
     return "video";
+  }
+
+  if (file.type.startsWith("audio/")) {
+    return "audio";
   }
 
   if (
@@ -13117,6 +14077,10 @@ function formatAttachmentCategory(category: ChatAttachment["category"]): string 
 
   if (category === "document") {
     return "Document";
+  }
+
+  if (category === "audio") {
+    return "Audio";
   }
 
   return "File";

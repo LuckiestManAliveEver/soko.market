@@ -35,10 +35,18 @@ export interface EmptyState {
 
 export interface ChatMessage {
   id: string;
-  author: "merchant" | "sokoclaw";
+  author: "merchant" | "sokoclaw" | "contact";
+  authorLabel?: string;
   body: string;
   attachments?: ChatAttachment[];
   confirmationToken?: string;
+  createdAt?: string;
+  status?: "pending" | "sent" | "delivered" | "read" | "failed";
+  editedAt?: string | null;
+  deletedAt?: string | null;
+  replyToMessageId?: string | null;
+  forwardedFromMessageId?: string | null;
+  reactions?: Array<{ emoji: string; actorId: string }>;
 }
 
 export interface ChatAttachment {
@@ -46,7 +54,8 @@ export interface ChatAttachment {
   name: string;
   type: string;
   size: number;
-  category: "document" | "image" | "video" | "other";
+  category: "document" | "image" | "video" | "audio" | "other";
+  dataUrl?: string;
 }
 
 export const quickActions: QuickAction[] = [

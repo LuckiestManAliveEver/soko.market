@@ -18,6 +18,8 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  { key: "e2eeDevices", tableName: "cp2_e2ee_devices" },
+  { key: "pushSubscriptions", tableName: "cp2_push_subscriptions" },
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "products", tableName: "cp2_products" },
@@ -124,6 +126,7 @@ const mutatingMethodNames = new Set([
   "setAccountPin",
   "syncPhoneContacts",
   "syncSocialNetwork",
+  "setConversationTyping",
   "updateBetaAccess",
   "updateSokoSessionContext",
   "updateBetaFeatureFlag",
@@ -140,6 +143,8 @@ const mutatingMethodNames = new Set([
   "updateSalesAgent",
   "updateSupplier",
   "updateSupplierImportRow",
+  "updateConversationMessage",
+  "updateConversationSettings",
   "updateTaxConfig",
   "updateVerificationTier",
   "verifyAccountPin",
@@ -148,7 +153,11 @@ const mutatingMethodNames = new Set([
   "finalizeShopDeletion",
   "activateAiModel",
   "restoreShopDeletion",
-  "purgeExpiredShopDeletions"
+  "purgeExpiredShopDeletions",
+  "registerE2eeDevice",
+  "revokeE2eeDevice",
+  "registerPushSubscription",
+  "removePushSubscription"
 ]);
 
 export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
@@ -182,7 +191,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "020_marketplace_deletion_models.sql";
+const requiredMigrationFilename = "021_messaging_push_e2ee.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -190,13 +199,14 @@ export async function createPostgresCp2Store(
   const pool = new Pool(poolConfig(options.databaseUrl));
   await assertDatabaseMigrated(pool);
 
-  const store = createCp2Store(
-    options.runtimeModelProvider === undefined
+  const store = createCp2Store({
+    ...(options.runtimeModelProvider === undefined
       ? {}
-      : {
-          runtimeModelProvider: options.runtimeModelProvider
-        }
-  );
+      : { runtimeModelProvider: options.runtimeModelProvider }),
+    ...(options.pushNotificationSender === undefined
+      ? {}
+      : { pushNotificationSender: options.pushNotificationSender })
+  });
   const savedSnapshot = await loadNormalizedSnapshot(pool);
 
   if (snapshotHasData(savedSnapshot)) {
@@ -2246,6 +2256,8 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    e2eeDevices: [],
+    pushSubscriptions: [],
     marketplaceIntroStates: [],
     activeAiModels: [],
     syncChanges: [],

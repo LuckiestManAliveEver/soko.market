@@ -9,7 +9,8 @@ const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
 const migrationFilenames = [
   "018_cp21_account_sync_changes.sql",
   "019_cp23_mcp_access_tokens.sql",
-  "020_marketplace_deletion_models.sql"
+  "020_marketplace_deletion_models.sql",
+  "021_messaging_push_e2ee.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

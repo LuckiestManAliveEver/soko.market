@@ -65,6 +65,12 @@ services:
         value: "500"
       - key: FIREBASE_PROJECT_ID
         sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:operations@soko.market
 
   - type: web
     name: soko-market-web

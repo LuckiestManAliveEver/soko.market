@@ -27,6 +27,7 @@ import type {
   SyncMutationType,
   ConversationKind,
   ConversationMessageContent,
+  E2eePublicKey,
   SokoChatSurface,
   SokoMode,
   SyncRealtimeReadyEvent,
@@ -68,6 +69,7 @@ export interface Cp2RouteOptions {
   otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
   store?: Cp2Store;
+  vapidPublicKey?: string;
 }
 
 interface OtpRequestBody {
@@ -170,6 +172,8 @@ interface SessionContextBody {
 interface CreateConversationBody {
   kind?: string;
   activeShopId?: string | null;
+  recipient?: string | null;
+  title?: string | null;
 }
 
 interface MarketplaceIntroBody {
@@ -189,6 +193,40 @@ interface CreateMessageBody {
   clientMessageId?: string;
   content?: unknown;
   clientTimestamp?: string | null;
+  author?: string;
+  replyToMessageId?: string | null;
+  forwardedFromMessageId?: string | null;
+}
+
+interface UpdateConversationBody {
+  archived?: boolean;
+  mutedUntil?: string | null;
+  pinned?: boolean;
+  read?: boolean;
+  title?: string | null;
+}
+
+interface UpdateMessageBody {
+  text?: string;
+  content?: unknown;
+  deleted?: boolean;
+  reaction?: string | null;
+}
+
+interface E2eeDeviceBody {
+  deviceId?: string;
+  label?: string;
+  publicKey?: unknown;
+}
+
+interface PushSubscriptionBody {
+  endpoint?: string;
+  expirationTime?: number | null;
+  keys?: unknown;
+}
+
+interface MessageParams extends ConversationParams {
+  messageId: string;
 }
 
 interface BusinessParams {
@@ -1440,17 +1478,21 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.get("/v1/conversations", async (request, reply) => {
-    try {
-      return {
-        conversations: store.listConversations({
-          sessionId: readSessionCookie(request.headers.cookie)
-        })
-      };
-    } catch (error) {
-      return sendCp2Error(reply, error);
+  app.get(
+    "/v1/conversations",
+    async (request: FastifyRequest<{ Querystring: { includeArchived?: string } }>, reply) => {
+      try {
+        return {
+          conversations: store.listConversations({
+            sessionId: readSessionCookie(request.headers.cookie),
+            includeArchived: request.query.includeArchived === "true"
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
     }
-  });
+  );
 
   app.get(
     "/v1/marketplace-intro",
@@ -1521,7 +1563,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         return store.createConversation({
           sessionId: readSessionCookie(request.headers.cookie),
           kind: parseConversationKind(request.body.kind),
-          activeShopId: parseNullableString(request.body.activeShopId)
+          activeShopId: parseNullableString(request.body.activeShopId),
+          recipient: parseNullableString(request.body.recipient),
+          title: parseNullableString(request.body.title)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1543,6 +1587,101 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post("/v1/e2ee/devices", async (request: FastifyRequest<{ Body: E2eeDeviceBody }>, reply) => {
+    try {
+      return store.registerE2eeDevice({
+        sessionId: readSessionCookie(request.headers.cookie),
+        deviceId: parseString(request.body.deviceId, "deviceId"),
+        label: parseString(request.body.label, "label"),
+        publicKey: parseE2eePublicKey(request.body.publicKey, "publicKey")
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/v1/e2ee/devices", async (request, reply) => {
+    try {
+      return {
+        devices: store.listE2eeDevices({ sessionId: readSessionCookie(request.headers.cookie) })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.delete(
+    "/v1/e2ee/devices/:deviceId",
+    async (request: FastifyRequest<{ Params: { deviceId: string } }>, reply) => {
+      try {
+        return store.revokeE2eeDevice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          deviceId: parseString(request.params.deviceId, "deviceId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/:conversationId/encryption-devices",
+    async (request: FastifyRequest<{ Params: ConversationParams }>, reply) => {
+      try {
+        return {
+          devices: store.listConversationE2eeDevices({
+            sessionId: readSessionCookie(request.headers.cookie),
+            conversationId: parseString(request.params.conversationId, "conversationId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/push/config", async () => ({
+    enabled: Boolean(options.vapidPublicKey),
+    publicKey: options.vapidPublicKey ?? null
+  }));
+
+  app.post(
+    "/v1/push/subscriptions",
+    async (request: FastifyRequest<{ Body: PushSubscriptionBody }>, reply) => {
+      try {
+        const keys = parseRequestBody(request.body.keys);
+        return store.registerPushSubscription({
+          sessionId: readSessionCookie(request.headers.cookie),
+          endpoint: parseString(request.body.endpoint, "endpoint"),
+          expirationTime:
+            request.body.expirationTime === undefined || request.body.expirationTime === null
+              ? null
+              : parseNonNegativeInteger(request.body.expirationTime, "expirationTime"),
+          keys: {
+            auth: parseString(keys.auth, "keys.auth"),
+            p256dh: parseString(keys.p256dh, "keys.p256dh")
+          }
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/v1/push/subscriptions",
+    async (request: FastifyRequest<{ Body: { endpoint?: string } }>, reply) => {
+      try {
+        return store.removePushSubscription({
+          sessionId: readSessionCookie(request.headers.cookie),
+          endpoint: parseString(request.body.endpoint, "endpoint")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post("/v1/messages", async (request: FastifyRequest<{ Body: CreateMessageBody }>, reply) => {
     try {
       const clientTimestamp =
@@ -1554,12 +1693,84 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         conversationId: parseString(request.body.conversationId, "conversationId"),
         clientMessageId: parseString(request.body.clientMessageId, "clientMessageId"),
         content: parseConversationMessageContent(request.body.content),
+        author: request.body.author === "agent" ? "agent" : "user",
+        replyToMessageId: parseNullableString(request.body.replyToMessageId),
+        forwardedFromMessageId: parseNullableString(request.body.forwardedFromMessageId),
         clientTimestamp
       });
     } catch (error) {
       return sendCp2Error(reply, error);
     }
   });
+
+  app.patch(
+    "/v1/conversations/:conversationId",
+    async (
+      request: FastifyRequest<{ Params: ConversationParams; Body: UpdateConversationBody }>,
+      reply
+    ) => {
+      try {
+        const mutedUntil =
+          request.body.mutedUntil === undefined
+            ? undefined
+            : request.body.mutedUntil === null
+              ? null
+              : parseIsoTimestamp(request.body.mutedUntil, "mutedUntil");
+        return store.updateConversationSettings({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId"),
+          ...(request.body.archived !== undefined ? { archived: request.body.archived } : {}),
+          ...(mutedUntil !== undefined ? { mutedUntil } : {}),
+          ...(request.body.pinned !== undefined ? { pinned: request.body.pinned } : {}),
+          ...(request.body.read !== undefined ? { read: request.body.read } : {}),
+          ...(request.body.title !== undefined ? { title: request.body.title } : {})
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/v1/conversations/:conversationId/messages/:messageId",
+    async (request: FastifyRequest<{ Params: MessageParams; Body: UpdateMessageBody }>, reply) => {
+      try {
+        return store.updateConversationMessage({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId"),
+          messageId: parseString(request.params.messageId, "messageId"),
+          ...(request.body.text !== undefined ? { text: request.body.text } : {}),
+          ...(request.body.content !== undefined
+            ? { content: parseConversationMessageContent(request.body.content) }
+            : {}),
+          ...(request.body.deleted !== undefined ? { deleted: request.body.deleted } : {}),
+          ...(request.body.reaction !== undefined ? { reaction: request.body.reaction } : {})
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/conversations/:conversationId/typing",
+    async (
+      request: FastifyRequest<{ Params: ConversationParams; Body: { typing?: boolean } }>,
+      reply
+    ) => {
+      try {
+        return {
+          typing: store.setConversationTyping({
+            sessionId: readSessionCookie(request.headers.cookie),
+            conversationId: parseString(request.params.conversationId, "conversationId"),
+            typing: parseBoolean(request.body.typing, "typing")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post("/auth/logout", async (request, reply) => {
     const revoked = store.logout(readSessionCookie(request.headers.cookie));
@@ -4397,7 +4608,82 @@ function parseConversationMessageContent(value: unknown): ConversationMessageCon
   const type = parseString(content.type, "content.type");
 
   if (type === "text") {
-    return { type, text: parseString(content.text, "content.text") };
+    const attachments = content.attachments;
+    if (attachments !== undefined && !Array.isArray(attachments)) {
+      throw new Cp2Error(400, "message_content_invalid", "content.attachments must be an array.");
+    }
+    return {
+      type,
+      text: parseString(content.text, "content.text"),
+      ...(Array.isArray(attachments)
+        ? {
+            attachments: attachments.map((value, index) => {
+              const attachment = parseRequestBody(value);
+              const category = parseString(
+                attachment.category,
+                `content.attachments[${index}].category`
+              );
+              if (!["document", "image", "video", "audio", "other"].includes(category)) {
+                throw new Cp2Error(
+                  400,
+                  "message_content_invalid",
+                  "Attachment category is not supported."
+                );
+              }
+              return {
+                id: parseString(attachment.id, `content.attachments[${index}].id`),
+                name: parseString(attachment.name, `content.attachments[${index}].name`),
+                mimeType: parseString(
+                  attachment.mimeType,
+                  `content.attachments[${index}].mimeType`
+                ),
+                size: parseNonNegativeInteger(
+                  attachment.size,
+                  `content.attachments[${index}].size`
+                ),
+                category: category as "document" | "image" | "video" | "audio" | "other",
+                url: parseString(attachment.url, `content.attachments[${index}].url`)
+              };
+            })
+          }
+        : {})
+    };
+  }
+
+  if (type === "encrypted") {
+    if (!Array.isArray(content.envelopes)) {
+      throw new Cp2Error(400, "message_content_invalid", "content.envelopes must be an array.");
+    }
+    return {
+      type,
+      attachmentCount: parseNonNegativeInteger(content.attachmentCount, "content.attachmentCount"),
+      iv: parseString(content.iv, "content.iv"),
+      ciphertext: parseString(content.ciphertext, "content.ciphertext"),
+      envelopes: content.envelopes.map((value, index) => {
+        const envelope = parseRequestBody(value);
+        return {
+          version: parsePositiveInteger(
+            envelope.version,
+            `content.envelopes[${index}].version`
+          ) as 1,
+          algorithm: parseString(
+            envelope.algorithm,
+            `content.envelopes[${index}].algorithm`
+          ) as "ECDH-P256-HKDF-SHA256-AES-256-GCM",
+          recipientDeviceId: parseString(
+            envelope.recipientDeviceId,
+            `content.envelopes[${index}].recipientDeviceId`
+          ),
+          ephemeralPublicKey: parseE2eePublicKey(
+            envelope.ephemeralPublicKey,
+            `content.envelopes[${index}].ephemeralPublicKey`
+          ),
+          salt: parseString(envelope.salt, `content.envelopes[${index}].salt`),
+          iv: parseString(envelope.iv, `content.envelopes[${index}].iv`),
+          ciphertext: parseString(envelope.ciphertext, `content.envelopes[${index}].ciphertext`)
+        };
+      })
+    };
   }
 
   if (type === "storefront" || type === "owner-controls") {
@@ -4413,6 +4699,22 @@ function parseConversationMessageContent(value: unknown): ConversationMessageCon
   }
 
   throw new Cp2Error(400, "message_content_invalid", "Message content type is not supported.");
+}
+
+function parseE2eePublicKey(value: unknown, field: string): E2eePublicKey {
+  const key = parseRequestBody(value);
+  return {
+    kty: parseString(key.kty, `${field}.kty`) as "EC",
+    crv: parseString(key.crv, `${field}.crv`) as "P-256",
+    x: parseString(key.x, `${field}.x`),
+    y: parseString(key.y, `${field}.y`),
+    ...(typeof key.ext === "boolean" ? { ext: key.ext } : {}),
+    ...(Array.isArray(key.key_ops)
+      ? {
+          key_ops: key.key_ops.map((item, index) => parseString(item, `${field}.key_ops[${index}]`))
+        }
+      : {})
+  };
 }
 
 function parseNullableString(value: unknown): string | null {

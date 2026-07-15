@@ -21,6 +21,7 @@
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:purge-shops": "node scripts/purge-shop-deletions.mjs",
     "db:verify-schema": "node scripts/verify-db-schema.mjs",
+    "vapid:generate": "node scripts/generate-vapid-env.mjs",
     "db:rollback": "node scripts/rollback-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",
     "build": "tsc -p tsconfig.build.json",
@@ -38,10 +39,12 @@
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
     "fastify": "^5.2.1",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1"
   }
 }

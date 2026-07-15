@@ -14,7 +14,8 @@ export interface BuildApiOptions {
 
 export function buildApi(options: BuildApiOptions = {}) {
   const app = Fastify({
-    logger: true
+    logger: true,
+    bodyLimit: 15_000_000
   });
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
   const oauthAllowedRedirectOrigins = readOAuthAllowedRedirectOrigins([...allowedCorsOrigins]);

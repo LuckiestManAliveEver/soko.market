@@ -3727,3 +3727,254 @@ details.nested-form-section summary {
     padding: 0;
   }
 }
+
+/* Full messaging workspace */
+.chat-surface {
+  gap: 0;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.messenger-inbox-toggle {
+  display: none;
+}
+
+.messenger-inbox {
+  background: #f7f9f7;
+  border-right: 1px solid #dce5dd;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.messenger-inbox-heading,
+.messenger-thread-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.messenger-inbox-heading h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.messenger-inbox-tools,
+.new-conversation-form {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.messenger-inbox-tools input,
+.new-conversation-form input {
+  min-width: 0;
+  width: 100%;
+}
+
+.new-conversation-form {
+  border-bottom: 1px solid #dce5dd;
+}
+
+.new-conversation-form label {
+  display: grid;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 4px;
+}
+
+.conversation-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+}
+
+.conversation-item {
+  border-bottom: 1px solid #e4eae5;
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+}
+
+.conversation-item.active {
+  background: #e5f2ea;
+  border-radius: 8px;
+}
+
+.conversation-select {
+  align-items: center;
+  background: transparent;
+  color: #17211b;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+
+.conversation-select > span {
+  display: grid;
+  min-width: 0;
+}
+
+.conversation-select small {
+  font-weight: 500;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-select b {
+  background: #117a4f;
+  border-radius: 999px;
+  color: #fff;
+  min-width: 22px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.conversation-actions,
+.message-actions,
+.message-action-menu,
+.forward-picker,
+.message-meta,
+.message-reactions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.conversation-actions button,
+.message-actions button,
+.message-action-menu button,
+.forward-picker button,
+.composer-reply button {
+  background: transparent;
+  border: 0;
+  color: #315a45;
+  font-size: 11px;
+  min-height: 28px;
+  padding: 3px 6px;
+}
+
+.messenger-thread {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.messenger-thread-header {
+  background: #fff;
+  border-bottom: 1px solid #dce5dd;
+}
+
+.messenger-thread-header > div {
+  display: grid;
+}
+
+.messenger-thread-header small,
+.message-meta,
+.message-context {
+  color: #64736a;
+  font-size: 11px;
+}
+
+.message.contact {
+  background: #edf4ee;
+  border: 1px solid #cfdfd2;
+}
+
+.message-attachment {
+  text-decoration: none;
+}
+
+.message-attachment img {
+  border-radius: 6px;
+  max-height: 180px;
+  max-width: 100%;
+  object-fit: cover;
+}
+
+.deleted-message {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.message-actions {
+  opacity: 0.72;
+}
+
+.message-action-menu,
+.forward-picker {
+  background: #fff;
+  border: 1px solid #cad6cc;
+  border-radius: 8px;
+  padding: 5px;
+}
+
+.message-reactions span {
+  background: #fff;
+  border: 1px solid #cad6cc;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.composer-reply {
+  align-items: center;
+  background: #eef7f1;
+  border-left: 3px solid #117a4f;
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  padding: 6px 10px;
+}
+
+@media (max-width: 759px) {
+  .chat-surface {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    position: relative;
+  }
+
+  .messenger-inbox-toggle {
+    display: block;
+    justify-self: start;
+    margin: 6px 10px;
+  }
+
+  .messenger-inbox {
+    bottom: 0;
+    box-shadow: 8px 0 28px rgba(17, 63, 45, 0.22);
+    display: none;
+    left: 0;
+    max-width: min(88vw, 340px);
+    position: absolute;
+    top: 0;
+    width: 100%;
+    z-index: 20;
+  }
+
+  .messenger-inbox.open {
+    display: grid;
+  }
+
+  .messenger-thread {
+    grid-row: 2;
+  }
+
+  .messenger-thread-header {
+    padding: 8px 10px;
+  }
+
+  .conversation-actions button,
+  .message-actions button {
+    min-height: 34px;
+  }
+}

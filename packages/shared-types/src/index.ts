@@ -84,8 +84,63 @@ export type ConversationParticipantRole = "account" | "shop" | "agent";
 
 export type ConversationMessageAuthor = "user" | "agent" | "system";
 
+export type ConversationMessageDeliveryStatus =
+  "pending" | "sent" | "delivered" | "read" | "failed";
+
+export interface ConversationAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  category: "document" | "image" | "video" | "audio" | "other";
+  /** A data URL for small offline-first attachments or an HTTPS object-storage URL. */
+  url: string;
+}
+
+export interface ConversationReaction {
+  emoji: string;
+  actorId: string;
+  createdAt: string;
+}
+
+export interface E2eePublicKey {
+  kty: "EC";
+  crv: "P-256";
+  x: string;
+  y: string;
+  ext?: boolean;
+  key_ops?: string[];
+}
+
+export interface E2eeDeviceSummary {
+  id: string;
+  accountId: string;
+  label: string;
+  publicKey: E2eePublicKey;
+  createdAt: string;
+  lastSeenAt: string;
+  revokedAt: string | null;
+}
+
+export interface EncryptedMessageEnvelope {
+  version: 1;
+  algorithm: "ECDH-P256-HKDF-SHA256-AES-256-GCM";
+  recipientDeviceId: string;
+  ephemeralPublicKey: E2eePublicKey;
+  salt: string;
+  iv: string;
+  ciphertext: string;
+}
+
 export type ConversationMessageContent =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; attachments?: ConversationAttachment[] }
+  | {
+      type: "encrypted";
+      envelopes: EncryptedMessageEnvelope[];
+      attachmentCount: number;
+      iv: string;
+      ciphertext: string;
+    }
   | { type: "storefront"; shopId: string }
   | { type: "owner-controls"; shopId: string }
   | { type: "confirmation"; confirmationToken: string; prompt: string };
@@ -102,6 +157,11 @@ export interface ConversationParticipantSummary {
   accountId: string | null;
   businessId: string | null;
   agentId: string | null;
+  displayName?: string | null;
+  lastReadAt?: string | null;
+  archivedAt?: string | null;
+  mutedUntil?: string | null;
+  pinnedAt?: string | null;
   createdAt: string;
 }
 
@@ -110,6 +170,7 @@ export interface ConversationSummary {
   accountId: string;
   kind: ConversationKind;
   activeShopId: string | null;
+  title?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -121,14 +182,45 @@ export interface ConversationMessageSummary {
   author: ConversationMessageAuthor;
   authorId: string;
   content: ConversationMessageContent;
+  status?: ConversationMessageDeliveryStatus;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+  editedAt?: string | null;
+  deletedAt?: string | null;
+  replyToMessageId?: string | null;
+  forwardedFromMessageId?: string | null;
+  reactions?: ConversationReaction[];
   clientTimestamp: string | null;
   createdAt: string;
+}
+
+export interface ConversationInboxItem extends ConversationSummary {
+  lastMessage: ConversationMessageSummary | null;
+  unreadCount: number;
+  participant: ConversationParticipantSummary;
+}
+
+export interface ConversationTypingSummary {
+  actorId: string;
+  displayName: string;
+  expiresAt: string;
 }
 
 export interface ConversationView {
   conversation: ConversationSummary;
   participants: ConversationParticipantSummary[];
   messages: ConversationMessageSummary[];
+  typing?: ConversationTypingSummary[];
+}
+
+export interface PushSubscriptionSummary {
+  id: string;
+  accountId: string;
+  endpoint: string;
+  expirationTime: number | null;
+  keys: { auth: string; p256dh: string };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface MarketplaceIntroStateSummary {
@@ -1291,7 +1383,12 @@ export interface OfflineCacheSnapshot {
 }
 
 export type SyncCollection =
-  "session_context" | "shops" | "conversations" | "conversation_messages";
+  | "session_context"
+  | "shops"
+  | "conversations"
+  | "conversation_messages"
+  | "conversation_participants"
+  | "conversation_typing";
 
 export type SyncChangeOperation = "upsert" | "delete";
 

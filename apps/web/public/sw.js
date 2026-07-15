@@ -64,3 +64,55 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "message.notification") return;
+  event.waitUntil(
+    self.registration.showNotification(event.data.title || "New Soko message", {
+      body: event.data.body || "Open Soko to read your message.",
+      icon: "/icons/soko-icon.svg",
+      badge: "/icons/soko-icon.svg",
+      tag: event.data.tag,
+      data: { conversationId: event.data.conversationId, url: "/" }
+    })
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data?.json() || {};
+  } catch {
+    payload = {};
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title || "New Soko message", {
+      body: "Open Soko to read your message.",
+      icon: "/icons/soko-icon.svg",
+      badge: "/icons/soko-icon.svg",
+      tag: payload.messageId ? `soko-message-${payload.messageId}` : "soko-message",
+      data: { conversationId: payload.conversationId, url: "/" }
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const existing = clients[0];
+      if (existing) {
+        existing.postMessage({
+          type: "message.notification.open",
+          conversationId: event.notification.data?.conversationId
+        });
+        return existing.focus();
+      }
+      const conversationId = event.notification.data?.conversationId;
+      const url = conversationId
+        ? `/?conversation=${encodeURIComponent(conversationId)}`
+        : event.notification.data?.url || "/";
+      return self.clients.openWindow(url);
+    })
+  );
+});

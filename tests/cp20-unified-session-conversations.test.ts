@@ -269,7 +269,195 @@ describe("CP20 unified account, conversation, and session foundation", () => {
 
     await hydratedApp.close();
   });
+
+  it("supports full direct-message lifecycle across two accounts", async () => {
+    const deliveries: Array<{ endpoint: string; body: string }> = [];
+    const store = createCp2Store({
+      pushNotificationSender: async (subscription, payload) => {
+        deliveries.push({ endpoint: subscription.endpoint, body: JSON.stringify(payload) });
+        return "sent";
+      }
+    });
+    const app = buildApi({ cp2: { store, vapidPublicKey: "test-vapid-public-key" } });
+    const senderCookie = await createAccountSession(app, "254700000031");
+    const recipientCookie = await createAccountSession(app, "254700000032");
+    const senderDeviceId = "device-sender-00000001";
+    const recipientDeviceId = "device-recipient-0001";
+    await registerEncryptionDevice(app, senderCookie, senderDeviceId);
+    await registerEncryptionDevice(app, recipientCookie, recipientDeviceId);
+    const pushConfig = await getJson<{ enabled: boolean; publicKey: string }>(
+      app,
+      "/v1/push/config",
+      recipientCookie
+    );
+    expect(pushConfig).toEqual({ enabled: true, publicKey: "test-vapid-public-key" });
+    await postJson(
+      app,
+      "/v1/push/subscriptions",
+      {
+        endpoint: "https://push.example.test/recipient",
+        expirationTime: null,
+        keys: {
+          auth: "AAAAAAAAAAAAAAAAAAAAAA",
+          p256dh: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        }
+      },
+      recipientCookie
+    );
+
+    const conversation = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      {
+        kind: "personal",
+        activeShopId: null,
+        recipient: "+254700000032",
+        title: "Delivery coordination"
+      },
+      senderCookie
+    );
+    expect(
+      conversation.participants.filter((participant) => participant.role === "account")
+    ).toHaveLength(2);
+
+    const plaintextRejected = await postResponse(
+      app,
+      "/v1/messages",
+      {
+        conversationId: conversation.conversation.id,
+        clientMessageId: "direct-plaintext-0001",
+        content: { type: "text", text: "This must never reach storage." }
+      },
+      senderCookie
+    );
+    expect(plaintextRejected.statusCode).toBe(400);
+    expect(plaintextRejected.json()).toMatchObject({ code: "e2ee_required" });
+
+    const sent = await postJson<ConversationMessageSummary>(
+      app,
+      "/v1/messages",
+      {
+        conversationId: conversation.conversation.id,
+        clientMessageId: "direct-message-0001",
+        content: encryptedFixture([senderDeviceId, recipientDeviceId], "ciphertext-one"),
+        clientTimestamp: "2026-07-15T12:00:00.000Z"
+      },
+      senderCookie
+    );
+    expect(sent).toMatchObject({ status: "delivered", deliveredAt: expect.any(String) });
+    expect(sent.content).toMatchObject({ type: "encrypted", attachmentCount: 1 });
+    await Promise.resolve();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({ endpoint: "https://push.example.test/recipient" });
+    expect(deliveries[0]?.body).not.toContain("The order is ready");
+    expect(JSON.stringify(store.snapshot().conversationMessages)).not.toContain(
+      "The order is ready"
+    );
+
+    const recipientInbox = await getJson<{
+      conversations: Array<{ id: string; unreadCount: number }>;
+    }>(app, "/v1/conversations", recipientCookie);
+    expect(recipientInbox.conversations).toContainEqual(
+      expect.objectContaining({ id: conversation.conversation.id, unreadCount: 1 })
+    );
+
+    const typing = await postJson<{ typing: Array<{ displayName: string }> }>(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/typing`,
+      { typing: true },
+      recipientCookie
+    );
+    expect(typing.typing).toEqual(expect.any(Array));
+
+    const markedRead = await patchJson(
+      app,
+      `/v1/conversations/${conversation.conversation.id}`,
+      { read: true, pinned: true },
+      recipientCookie
+    );
+    expect(markedRead.statusCode).toBe(200);
+    expect(markedRead.json<ConversationView>().messages[0]).toMatchObject({
+      status: "read",
+      readAt: expect.any(String)
+    });
+
+    const edited = await patchJson(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/messages/${sent.id}`,
+      { content: encryptedFixture([senderDeviceId, recipientDeviceId], "ciphertext-two") },
+      senderCookie
+    );
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json<ConversationMessageSummary>()).toMatchObject({
+      editedAt: expect.any(String),
+      content: { type: "encrypted" }
+    });
+
+    const reacted = await patchJson(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/messages/${sent.id}`,
+      { reaction: "👍" },
+      recipientCookie
+    );
+    expect(reacted.json<ConversationMessageSummary>().reactions).toHaveLength(1);
+
+    const deleted = await patchJson(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/messages/${sent.id}`,
+      { deleted: true },
+      senderCookie
+    );
+    expect(deleted.json<ConversationMessageSummary>()).toMatchObject({
+      deletedAt: expect.any(String),
+      content: { type: "encrypted" }
+    });
+
+    await app.close();
+  });
 });
+
+const fixturePublicKey = {
+  kty: "EC" as const,
+  crv: "P-256" as const,
+  x: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  y: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  ext: true
+};
+
+async function registerEncryptionDevice(
+  app: FastifyInstance,
+  cookie: string,
+  deviceId: string
+): Promise<void> {
+  await postJson(
+    app,
+    "/v1/e2ee/devices",
+    {
+      deviceId,
+      label: "Test browser",
+      publicKey: fixturePublicKey
+    },
+    cookie
+  );
+}
+
+function encryptedFixture(deviceIds: string[], ciphertextSeed: string) {
+  return {
+    type: "encrypted",
+    attachmentCount: 1,
+    iv: "AAAAAAAAAAAAAAAA",
+    ciphertext: btoa(ciphertextSeed).replaceAll("=", ""),
+    envelopes: deviceIds.map((recipientDeviceId) => ({
+      version: 1,
+      algorithm: "ECDH-P256-HKDF-SHA256-AES-256-GCM",
+      recipientDeviceId,
+      ephemeralPublicKey: fixturePublicKey,
+      salt: "AAAAAAAAAAAAAAAAAAAAAA",
+      iv: "AAAAAAAAAAAAAAAA",
+      ciphertext: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+    }))
+  };
+}
 
 async function createAccountSession(app: FastifyInstance, destination: string): Promise<string> {
   const otp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {

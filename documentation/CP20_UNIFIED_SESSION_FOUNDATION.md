@@ -115,6 +115,11 @@ The following later phases are not implemented by CP20:
 - media and object storage
 - Android and iOS applications
 
+The direct-messaging items originally deferred here are implemented by
+`CP25_FULL_MESSAGING_PLATFORM.md`. CP20 remains the historical foundation checkpoint; use CP25 for
+the current participant access, message lifecycle, media, realtime presence, and notification
+contracts.
+
 ## Exit Criteria
 
 CP20 passes when:

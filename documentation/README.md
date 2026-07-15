@@ -52,15 +52,22 @@ When documents disagree, follow this order:
 - Active cross-platform foundation checkpoint.
 - Defines account/shop lifecycle, typed conversations, and server-authoritative session context.
 
-11. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
+11. `CP25_FULL_MESSAGING_PLATFORM.md`
+
+- Active direct-messaging implementation checkpoint.
+- Defines inbox behavior, cross-account participation, message lifecycle, offline outbox, media,
+  realtime typing/read state, closed-browser VAPID Web Push, human direct-message E2EE, API
+  contracts, security boundaries, and verification.
+
+12. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
     - Production persistence runbook.
     - Defines the Neon Postgres and Render deployment plan, persistence scope, migration workflow, rollback notes, and production safeguards.
 
-12. `1000157660.png`, `1000157661.png`, `1000157662.png`
+13. `1000157660.png`, `1000157661.png`, `1000157662.png`
     - Mobile UI references.
     - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
 
-13. `Soko doc 4 June .pdf`
+14. `Soko doc 4 June .pdf`
     - Broken placeholder.
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.

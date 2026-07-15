@@ -35,6 +35,26 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("messaging inbox and thread adapt across phone and desktop screens", async ({ page }) => {
+  for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 1440, height: 900 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    if (viewport.width < 760) {
+      await page.getByRole("button", { name: "Conversations" }).click();
+    }
+    await expect(page.getByRole("heading", { name: "Messages" })).toBeVisible();
+    await page.getByRole("button", { name: /Delivery coordination/ }).click();
+    await expect(
+      page.locator(".messenger-thread").getByText("The order is ready.", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+    await expectNoViewportOverflow(page);
+  }
+});
+
 for (const viewport of viewportMatrix) {
   test(`${viewport.name}: model library reflows without clipped controls`, async ({ page }) => {
     await openModelLibrary(page, viewport);
@@ -177,6 +197,7 @@ async function expectInteractiveControlsInsideViewport(page: Page): Promise<void
 async function installApiMocks(page: Page): Promise<void> {
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
@@ -191,6 +212,20 @@ async function installApiMocks(page: Page): Promise<void> {
     if (path === "/v1/marketplace-intro") {
       return json({ completedAt: "2026-07-15T00:00:00.000Z" });
     }
+    if (path === "/v1/e2ee/devices" && method === "POST") {
+      return json({ id: "responsive-device", accountId: "responsive-account" });
+    }
+    if (path === "/v1/conversations" && method === "GET") {
+      return json({ conversations: [mockConversationInbox] });
+    }
+    if (path === "/v1/conversations/responsive-conversation" && method === "GET") {
+      return json(mockConversationView);
+    }
+    if (path === "/v1/conversations/responsive-conversation" && method === "PATCH") {
+      return json(mockConversationView);
+    }
+    if (path.endsWith("/typing")) return json({ typing: [] });
+    if (path === "/v1/messages") return json(mockMessage);
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
     if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });
@@ -199,6 +234,60 @@ async function installApiMocks(page: Page): Promise<void> {
     return json({ message: "Not needed by responsive certification" }, 404);
   });
 }
+
+const mockMessage = {
+  id: "responsive-message",
+  conversationId: "responsive-conversation",
+  clientMessageId: "responsive-client-message",
+  author: "agent",
+  authorId: "account-responsive-account-agent",
+  content: { type: "text", text: "The order is ready." },
+  status: "delivered",
+  deliveredAt: "2026-07-15T12:00:00.000Z",
+  readAt: null,
+  editedAt: null,
+  deletedAt: null,
+  replyToMessageId: null,
+  forwardedFromMessageId: null,
+  reactions: [],
+  clientTimestamp: "2026-07-15T12:00:00.000Z",
+  createdAt: "2026-07-15T12:00:00.000Z"
+};
+
+const mockParticipant = {
+  id: "responsive-participant",
+  conversationId: "responsive-conversation",
+  role: "account",
+  accountId: "responsive-account",
+  businessId: null,
+  agentId: null,
+  displayName: "Jane Owner",
+  lastReadAt: "2026-07-15T12:00:00.000Z",
+  archivedAt: null,
+  mutedUntil: null,
+  pinnedAt: null,
+  createdAt: "2026-07-15T11:00:00.000Z"
+};
+
+const mockConversationInbox = {
+  id: "responsive-conversation",
+  accountId: "responsive-account",
+  kind: "personal",
+  activeShopId: null,
+  title: "Delivery coordination",
+  createdAt: "2026-07-15T11:00:00.000Z",
+  updatedAt: "2026-07-15T12:00:00.000Z",
+  lastMessage: mockMessage,
+  unreadCount: 0,
+  participant: mockParticipant
+};
+
+const mockConversationView = {
+  conversation: mockConversationInbox,
+  participants: [mockParticipant],
+  messages: [mockMessage],
+  typing: []
+};
 
 const modelCatalog = [
   mockModel("smollm2-360m-android", "SmolLM2 360M (Android saver)", 386_000_000, 2),

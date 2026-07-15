@@ -25,10 +25,13 @@ import type {
   CountryTaxConfigSummary,
   ContactHashSummary,
   ConversationKind,
+  ConversationInboxItem,
   ConversationMessageContent,
+  ConversationMessageAuthor,
   ConversationMessageSummary,
   ConversationParticipantSummary,
   ConversationSummary,
+  ConversationTypingSummary,
   ConversationView,
   CustomerDebtSummary,
   CustomerSummary,
@@ -39,6 +42,8 @@ import type {
   DocumentImportJobSummary,
   DocumentImportPreviewRow,
   DocumentImportSourceSummary,
+  E2eeDeviceSummary,
+  E2eePublicKey,
   InvoicePaymentSummary,
   InventoryMovementSummary,
   InvoiceItemSummary,
@@ -73,6 +78,7 @@ import type {
   ProductImportDraft,
   ProductSummary,
   PurchaseReceiptSummary,
+  PushSubscriptionSummary,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
   RuntimeModelPrompt,
@@ -473,6 +479,8 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  e2eeDevices?: E2eeDeviceSummary[];
+  pushSubscriptions?: PushSubscriptionSummary[];
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
   activeAiModels?: ActiveAiModelSummary[];
   syncChanges: SyncChange[];
@@ -535,7 +543,21 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
+  pushNotificationSender?: PushNotificationSender;
 }
+
+export interface PushNotificationPayload {
+  type: "message.new";
+  conversationId: string;
+  messageId: string;
+  title: string;
+  body: string;
+}
+
+export type PushNotificationSender = (
+  subscription: PushSubscriptionSummary,
+  payload: PushNotificationPayload
+) => Promise<"sent" | "expired" | "failed">;
 
 export class Cp2Store {
   constructor(private readonly options: Cp2StoreOptions = {}) {}
@@ -550,6 +572,13 @@ export class Cp2Store {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly e2eeDevices = new Map<string, E2eeDeviceSummary>();
+  private readonly pushSubscriptions = new Map<string, PushSubscriptionSummary>();
+  private readonly pushSubscriptionIdByEndpoint = new Map<string, string>();
+  private readonly conversationTyping = new Map<
+    string,
+    ConversationTypingSummary & { conversationId: string }
+  >();
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly quarantinedBusinessIds = new Set<string>();
@@ -1633,6 +1662,8 @@ export class Cp2Store {
     sessionId: string | null;
     kind: ConversationKind;
     activeShopId: string | null;
+    recipient?: string | null;
+    title?: string | null;
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
@@ -1647,11 +1678,27 @@ export class Cp2Store {
       }
     }
 
+    let recipientAccountId: string | null = null;
+    if (input.recipient?.trim()) {
+      const channel: AuthChannel = input.recipient.includes("@") ? "email" : "phone";
+      const destination = normalizeDestination(channel, input.recipient);
+      recipientAccountId =
+        this.accountByDestination.get(destinationAccountKey(channel, destination)) ?? null;
+      if (recipientAccountId === null) {
+        throw new Cp2Error(404, "recipient_not_found", "No Soko account matches that contact.");
+      }
+      if (recipientAccountId === session.account.id) {
+        throw new Cp2Error(400, "recipient_invalid", "Choose another Soko account.");
+      }
+    }
+
     const conversation = this.createAccountConversation({
       accountId: session.account.id,
       userId: session.user.id,
       kind: input.kind,
       activeShopId: input.activeShopId,
+      recipientAccountId,
+      title: input.title?.trim() || null,
       now
     });
     this.recordAuditEvent({
@@ -1783,11 +1830,44 @@ export class Cp2Store {
     return selection;
   }
 
-  listConversations(input: { sessionId: string | null; now?: Date }): ConversationSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
-    return [...this.conversations.values()].filter(
-      (conversation) => conversation.accountId === session.account.id
-    );
+  listConversations(input: {
+    sessionId: string | null;
+    includeArchived?: boolean;
+    now?: Date;
+  }): ConversationInboxItem[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    return [...this.conversations.values()]
+      .map((conversation) => {
+        const participant = this.accountConversationParticipant(
+          conversation.id,
+          session.account.id
+        );
+        if (participant === null || (!input.includeArchived && participant.archivedAt)) return null;
+        const messages = this.messagesForConversation(conversation.id);
+        const lastMessage = messages.at(-1) ?? null;
+        const lastRead =
+          participant.lastReadAt === null || participant.lastReadAt === undefined
+            ? 0
+            : Date.parse(participant.lastReadAt);
+        return {
+          ...conversation,
+          lastMessage,
+          unreadCount: messages.filter(
+            (message) =>
+              message.authorId !== session.user.id &&
+              message.deletedAt == null &&
+              Date.parse(message.createdAt) > lastRead
+          ).length,
+          participant: this.participantView(participant)
+        } satisfies ConversationInboxItem;
+      })
+      .filter((conversation): conversation is ConversationInboxItem => conversation !== null)
+      .sort((left, right) => {
+        const pinned =
+          Number(Boolean(right.participant.pinnedAt)) - Number(Boolean(left.participant.pinnedAt));
+        return pinned || Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+      });
   }
 
   getConversation(input: {
@@ -1801,11 +1881,129 @@ export class Cp2Store {
     );
   }
 
+  registerE2eeDevice(input: {
+    sessionId: string | null;
+    deviceId: string;
+    label: string;
+    publicKey: E2eePublicKey;
+    now?: Date;
+  }): E2eeDeviceSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const deviceId = input.deviceId.trim();
+    const label = input.label.trim();
+    if (deviceId.length < 8 || deviceId.length > 120 || label.length < 1 || label.length > 120) {
+      throw new Cp2Error(400, "e2ee_device_invalid", "Device id or label is invalid.");
+    }
+    validateE2eePublicKey(input.publicKey);
+    const current = this.e2eeDevices.get(deviceId);
+    if (current && current.accountId !== session.account.id) {
+      throw new Cp2Error(409, "e2ee_device_conflict", "Device id is already registered.");
+    }
+    const device: E2eeDeviceSummary = {
+      id: deviceId,
+      accountId: session.account.id,
+      label,
+      publicKey: input.publicKey,
+      createdAt: current?.createdAt ?? now.toISOString(),
+      lastSeenAt: now.toISOString(),
+      revokedAt: null
+    };
+    this.e2eeDevices.set(device.id, device);
+    return device;
+  }
+
+  listE2eeDevices(input: { sessionId: string | null; now?: Date }): E2eeDeviceSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return [...this.e2eeDevices.values()].filter(
+      (device) => device.accountId === session.account.id && device.revokedAt === null
+    );
+  }
+
+  revokeE2eeDevice(input: {
+    sessionId: string | null;
+    deviceId: string;
+    now?: Date;
+  }): E2eeDeviceSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const current = this.e2eeDevices.get(input.deviceId);
+    if (!current || current.accountId !== session.account.id) {
+      throw new Cp2Error(404, "e2ee_device_not_found", "Encryption device was not found.");
+    }
+    const device = { ...current, revokedAt: now.toISOString() };
+    this.e2eeDevices.set(device.id, device);
+    return device;
+  }
+
+  listConversationE2eeDevices(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): E2eeDeviceSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const accountIds = new Set(this.humanConversationAccountIds(input.conversationId));
+    return [...this.e2eeDevices.values()].filter(
+      (device) => accountIds.has(device.accountId) && device.revokedAt === null
+    );
+  }
+
+  registerPushSubscription(input: {
+    sessionId: string | null;
+    endpoint: string;
+    expirationTime: number | null;
+    keys: { auth: string; p256dh: string };
+    now?: Date;
+  }): PushSubscriptionSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const endpoint = input.endpoint.trim();
+    if (!endpoint.startsWith("https://") || endpoint.length > 2_048) {
+      throw new Cp2Error(400, "push_subscription_invalid", "Push endpoint is invalid.");
+    }
+    if (!isBase64Url(input.keys.auth, 16, 256) || !isBase64Url(input.keys.p256dh, 32, 512)) {
+      throw new Cp2Error(400, "push_subscription_invalid", "Push keys are invalid.");
+    }
+    const currentId = this.pushSubscriptionIdByEndpoint.get(endpoint);
+    const current = currentId ? this.pushSubscriptions.get(currentId) : undefined;
+    if (current && current.accountId !== session.account.id) {
+      throw new Cp2Error(409, "push_subscription_conflict", "Push endpoint is already registered.");
+    }
+    const subscription: PushSubscriptionSummary = {
+      id: current?.id ?? randomUUID(),
+      accountId: session.account.id,
+      endpoint,
+      expirationTime: input.expirationTime,
+      keys: input.keys,
+      createdAt: current?.createdAt ?? now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.pushSubscriptions.set(subscription.id, subscription);
+    this.pushSubscriptionIdByEndpoint.set(endpoint, subscription.id);
+    return subscription;
+  }
+
+  removePushSubscription(input: { sessionId: string | null; endpoint: string; now?: Date }): {
+    removed: boolean;
+  } {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const id = this.pushSubscriptionIdByEndpoint.get(input.endpoint);
+    const subscription = id ? this.pushSubscriptions.get(id) : undefined;
+    if (!subscription || subscription.accountId !== session.account.id) return { removed: false };
+    this.pushSubscriptions.delete(subscription.id);
+    this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+    return { removed: true };
+  }
+
   createConversationMessage(input: {
     sessionId: string | null;
     conversationId: string;
     clientMessageId: string;
     content: ConversationMessageContent;
+    author?: ConversationMessageAuthor;
+    replyToMessageId?: string | null;
+    forwardedFromMessageId?: string | null;
     clientTimestamp?: string | null;
     now?: Date;
   }): ConversationMessageSummary {
@@ -1830,6 +2028,15 @@ export class Cp2Store {
     }
 
     validateConversationMessageContent(input.content);
+    this.validateConversationEncryption(conversation.id, input.content);
+    for (const referencedId of [input.replyToMessageId, input.forwardedFromMessageId]) {
+      if (
+        referencedId &&
+        this.requireConversationMessage(referencedId, conversation.id).deletedAt
+      ) {
+        throw new Cp2Error(400, "message_reference_invalid", "Referenced message was deleted.");
+      }
+    }
     if (input.content.type === "owner-controls") {
       this.requireMembership(input.content.shopId, session.user.id);
       const context = this.ensureSokoSessionContext(session, now);
@@ -1845,13 +2052,37 @@ export class Cp2Store {
     if (input.content.type === "storefront" && !this.businesses.has(input.content.shopId)) {
       throw new Cp2Error(404, "business_not_found", "Storefront shop was not found.");
     }
+    const author = input.author ?? "user";
+    if (
+      author === "agent" &&
+      [...this.conversationParticipants.values()].some(
+        (participant) =>
+          participant.conversationId === conversation.id &&
+          participant.role === "account" &&
+          participant.accountId !== session.account.id
+      )
+    ) {
+      throw new Cp2Error(
+        403,
+        "agent_message_forbidden",
+        "Agent messages cannot impersonate a direct-message participant."
+      );
+    }
     const message: ConversationMessageSummary = {
       id: randomUUID(),
       conversationId: conversation.id,
       clientMessageId,
-      author: "user",
-      authorId: session.user.id,
+      author,
+      authorId: author === "agent" ? `account-${session.account.id}-agent` : session.user.id,
       content: input.content,
+      status: "delivered",
+      deliveredAt: now.toISOString(),
+      readAt: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: input.replyToMessageId ?? null,
+      forwardedFromMessageId: input.forwardedFromMessageId ?? null,
+      reactions: [],
       clientTimestamp: input.clientTimestamp ?? null,
       createdAt: now.toISOString()
     };
@@ -1861,24 +2092,20 @@ export class Cp2Store {
       ...conversation,
       updatedAt: now.toISOString()
     });
-    this.recordSyncChange({
-      accountId: session.account.id,
-      collection: "conversations",
-      entityId: conversation.id,
-      operation: "upsert",
-      shopId: conversation.activeShopId,
-      entity: this.conversations.get(conversation.id) as ConversationSummary,
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      this.conversations.get(conversation.id) as ConversationSummary,
       now
-    });
-    this.recordSyncChange({
-      accountId: session.account.id,
-      collection: "conversation_messages",
-      entityId: message.id,
-      operation: "upsert",
-      shopId: conversation.activeShopId,
-      entity: message,
+    );
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
       now
-    });
+    );
     this.recordAuditEvent({
       type: "message.created",
       aggregateType: "conversation_message",
@@ -1891,7 +2118,170 @@ export class Cp2Store {
         conversationId: conversation.id
       }
     });
+    this.deliverConversationPush(conversation, message, session.account.id, now);
     return message;
+  }
+
+  updateConversationSettings(input: {
+    sessionId: string | null;
+    conversationId: string;
+    archived?: boolean;
+    mutedUntil?: string | null;
+    pinned?: boolean;
+    read?: boolean;
+    title?: string | null;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const participant = this.accountConversationParticipant(conversation.id, session.account.id);
+    if (participant === null)
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    const nextParticipant: ConversationParticipantSummary = {
+      ...participant,
+      ...(input.archived !== undefined
+        ? { archivedAt: input.archived ? now.toISOString() : null }
+        : {}),
+      ...(input.mutedUntil !== undefined ? { mutedUntil: input.mutedUntil } : {}),
+      ...(input.pinned !== undefined ? { pinnedAt: input.pinned ? now.toISOString() : null } : {}),
+      ...(input.read ? { lastReadAt: now.toISOString() } : {})
+    };
+    this.conversationParticipants.set(participant.id, nextParticipant);
+    if (input.title !== undefined) {
+      this.conversations.set(conversation.id, {
+        ...conversation,
+        title: input.title?.trim() || null,
+        updatedAt: now.toISOString()
+      });
+    }
+    if (input.read) {
+      for (const message of this.messagesForConversation(conversation.id)) {
+        if (message.authorId !== session.user.id && !message.readAt) {
+          this.conversationMessages.set(message.id, {
+            ...message,
+            status: "read",
+            readAt: now.toISOString()
+          });
+        }
+      }
+    }
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_participants",
+      nextParticipant.id,
+      nextParticipant,
+      now
+    );
+    return this.conversationView(this.conversations.get(conversation.id) ?? conversation);
+  }
+
+  updateConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    messageId: string;
+    text?: string;
+    content?: ConversationMessageContent;
+    deleted?: boolean;
+    reaction?: string | null;
+    now?: Date;
+  }): ConversationMessageSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const current = this.requireConversationMessage(input.messageId, input.conversationId);
+    let next = current;
+    if (input.content !== undefined) {
+      if (current.authorId !== session.user.id || current.deletedAt) {
+        throw new Cp2Error(
+          403,
+          "message_edit_forbidden",
+          "Only your active messages can be edited."
+        );
+      }
+      validateConversationMessageContent(input.content);
+      this.validateConversationEncryption(input.conversationId, input.content);
+      next = { ...next, content: input.content, editedAt: now.toISOString() };
+    }
+    if (input.text !== undefined) {
+      if (current.authorId !== session.user.id || current.deletedAt)
+        throw new Cp2Error(
+          403,
+          "message_edit_forbidden",
+          "Only your active messages can be edited."
+        );
+      if (current.content.type !== "text")
+        throw new Cp2Error(400, "message_edit_invalid", "Only text messages can be edited.");
+      const content = { ...current.content, text: input.text };
+      validateConversationMessageContent(content);
+      next = { ...next, content, editedAt: now.toISOString() };
+    }
+    if (input.deleted) {
+      if (current.authorId !== session.user.id)
+        throw new Cp2Error(403, "message_delete_forbidden", "Only your messages can be deleted.");
+      next = {
+        ...next,
+        deletedAt: now.toISOString()
+      };
+    }
+    if (input.reaction !== undefined) {
+      const emoji = input.reaction?.trim() ?? "";
+      if (emoji.length > 16) throw new Cp2Error(400, "reaction_invalid", "Reaction is too long.");
+      const reactions = (next.reactions ?? []).filter(
+        (reaction) => reaction.actorId !== session.user.id
+      );
+      if (emoji) reactions.push({ emoji, actorId: session.user.id, createdAt: now.toISOString() });
+      next = { ...next, reactions };
+    }
+    this.conversationMessages.set(next.id, next);
+    this.recordConversationSyncForParticipants(
+      input.conversationId,
+      "conversation_messages",
+      next.id,
+      next,
+      now
+    );
+    this.recordAuditEvent({
+      type: input.deleted
+        ? "message.deleted"
+        : input.text !== undefined
+          ? "message.edited"
+          : "message.reacted",
+      aggregateType: "conversation_message",
+      aggregateId: next.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { conversationId: input.conversationId }
+    });
+    return next;
+  }
+
+  setConversationTyping(input: {
+    sessionId: string | null;
+    conversationId: string;
+    typing: boolean;
+    now?: Date;
+  }): ConversationTypingSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const key = `${input.conversationId}:${session.user.id}`;
+    if (input.typing) {
+      this.conversationTyping.set(key, {
+        conversationId: input.conversationId,
+        actorId: session.user.id,
+        displayName: session.user.displayName,
+        expiresAt: new Date(now.getTime() + 8_000).toISOString()
+      });
+    } else this.conversationTyping.delete(key);
+    this.recordConversationSyncForParticipants(
+      input.conversationId,
+      "conversation_typing",
+      session.user.id,
+      { typing: input.typing },
+      now
+    );
+    return this.typingForConversation(input.conversationId, now, session.user.id);
   }
 
   checkRole(input: {
@@ -6498,6 +6888,8 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      e2eeDevices: [...this.e2eeDevices.values()],
+      pushSubscriptions: [...this.pushSubscriptions.values()],
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
       activeAiModels: [...this.activeAiModels.values()],
       syncChanges: [...this.syncChanges],
@@ -6567,6 +6959,9 @@ export class Cp2Store {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.e2eeDevices.clear();
+    this.pushSubscriptions.clear();
+    this.pushSubscriptionIdByEndpoint.clear();
     this.marketplaceIntroStates.clear();
     this.activeAiModels.clear();
     this.quarantinedBusinessIds.clear();
@@ -6667,6 +7062,15 @@ export class Cp2Store {
         `${message.conversationId}:${message.clientMessageId}`,
         message.id
       );
+    }
+
+    for (const device of snapshot.e2eeDevices ?? []) {
+      this.e2eeDevices.set(device.id, device);
+    }
+
+    for (const subscription of snapshot.pushSubscriptions ?? []) {
+      this.pushSubscriptions.set(subscription.id, subscription);
+      this.pushSubscriptionIdByEndpoint.set(subscription.endpoint, subscription.id);
     }
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {
@@ -7296,6 +7700,8 @@ export class Cp2Store {
     userId: string;
     kind: ConversationKind;
     activeShopId: string | null;
+    recipientAccountId?: string | null;
+    title?: string | null;
     now: Date;
   }): ConversationSummary {
     const conversation: ConversationSummary = {
@@ -7303,6 +7709,7 @@ export class Cp2Store {
       accountId: input.accountId,
       kind: input.kind,
       activeShopId: input.activeShopId,
+      title: input.title ?? null,
       createdAt: input.now.toISOString(),
       updatedAt: input.now.toISOString()
     };
@@ -7315,6 +7722,11 @@ export class Cp2Store {
         accountId: input.accountId,
         businessId: null,
         agentId: null,
+        displayName: this.users.get(input.userId)?.displayName ?? null,
+        lastReadAt: input.now.toISOString(),
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
         createdAt: input.now.toISOString()
       },
       {
@@ -7324,9 +7736,30 @@ export class Cp2Store {
         accountId: null,
         businessId: null,
         agentId: `account-${input.accountId}-agent`,
+        displayName: "Soko agent",
         createdAt: input.now.toISOString()
       }
     ];
+
+    if (input.recipientAccountId) {
+      const recipientUserId = this.userByAccount.get(input.recipientAccountId);
+      participants.push({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "account",
+        accountId: input.recipientAccountId,
+        businessId: null,
+        agentId: null,
+        displayName: recipientUserId
+          ? (this.users.get(recipientUserId)?.displayName ?? null)
+          : null,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: input.now.toISOString()
+      });
+    }
 
     if (input.activeShopId !== null) {
       participants.push({
@@ -7344,15 +7777,13 @@ export class Cp2Store {
       this.conversationParticipants.set(participant.id, participant);
     }
 
-    this.recordSyncChange({
-      accountId: input.accountId,
-      collection: "conversations",
-      entityId: conversation.id,
-      operation: "upsert",
-      shopId: conversation.activeShopId,
-      entity: conversation,
-      now: input.now
-    });
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      conversation,
+      input.now
+    );
 
     return conversation;
   }
@@ -7363,7 +7794,10 @@ export class Cp2Store {
   ): ConversationSummary {
     const conversation = this.conversations.get(conversationId);
 
-    if (conversation === undefined || conversation.accountId !== accountId) {
+    if (
+      conversation === undefined ||
+      this.accountConversationParticipant(conversationId, accountId) === null
+    ) {
       throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
     }
 
@@ -7371,15 +7805,198 @@ export class Cp2Store {
   }
 
   private conversationView(conversation: ConversationSummary): ConversationView {
+    const now = new Date();
     return {
       conversation,
-      participants: [...this.conversationParticipants.values()].filter(
-        (participant) => participant.conversationId === conversation.id
-      ),
-      messages: [...this.conversationMessages.values()].filter(
-        (message) => message.conversationId === conversation.id
-      )
+      participants: [...this.conversationParticipants.values()]
+        .filter((participant) => participant.conversationId === conversation.id)
+        .map((participant) => this.participantView(participant)),
+      messages: this.messagesForConversation(conversation.id),
+      typing: this.typingForConversation(conversation.id, now)
     };
+  }
+
+  private participantView(
+    participant: ConversationParticipantSummary
+  ): ConversationParticipantSummary {
+    if (participant.role !== "account" || participant.accountId === null) return participant;
+    const userId = this.userByAccount.get(participant.accountId);
+    return {
+      ...participant,
+      displayName: userId
+        ? (this.users.get(userId)?.displayName ?? participant.displayName ?? null)
+        : (participant.displayName ?? null)
+    };
+  }
+
+  private accountConversationParticipant(
+    conversationId: string,
+    accountId: string
+  ): ConversationParticipantSummary | null {
+    return (
+      [...this.conversationParticipants.values()].find(
+        (participant) =>
+          participant.conversationId === conversationId &&
+          participant.role === "account" &&
+          participant.accountId === accountId
+      ) ?? null
+    );
+  }
+
+  private humanConversationAccountIds(conversationId: string): string[] {
+    return [...this.conversationParticipants.values()]
+      .filter(
+        (participant) =>
+          participant.conversationId === conversationId &&
+          participant.role === "account" &&
+          participant.accountId !== null
+      )
+      .map((participant) => participant.accountId as string);
+  }
+
+  private validateConversationEncryption(
+    conversationId: string,
+    content: ConversationMessageContent
+  ): void {
+    const accountIds = this.humanConversationAccountIds(conversationId);
+    if (accountIds.length < 2) return;
+    if (content.type !== "encrypted") {
+      throw new Cp2Error(
+        400,
+        "e2ee_required",
+        "Direct messages between people must be end-to-end encrypted."
+      );
+    }
+    const devices = [...this.e2eeDevices.values()].filter(
+      (device) => accountIds.includes(device.accountId) && device.revokedAt === null
+    );
+    for (const accountId of accountIds) {
+      if (!devices.some((device) => device.accountId === accountId)) {
+        throw new Cp2Error(
+          409,
+          "e2ee_recipient_unavailable",
+          "Every participant must register an encryption device before messaging."
+        );
+      }
+    }
+    const expected = new Set(devices.map((device) => device.id));
+    const actual = new Set(content.envelopes.map((envelope) => envelope.recipientDeviceId));
+    if (
+      actual.size !== content.envelopes.length ||
+      expected.size !== actual.size ||
+      [...expected].some((deviceId) => !actual.has(deviceId))
+    ) {
+      throw new Cp2Error(
+        409,
+        "e2ee_device_set_changed",
+        "Encryption recipients changed. Refresh device keys and retry."
+      );
+    }
+  }
+
+  private deliverConversationPush(
+    conversation: ConversationSummary,
+    message: ConversationMessageSummary,
+    senderAccountId: string,
+    now: Date
+  ): void {
+    const sender = this.options.pushNotificationSender;
+    if (!sender) return;
+    const recipientIds = new Set(
+      this.humanConversationAccountIds(conversation.id).filter(
+        (accountId) => accountId !== senderAccountId
+      )
+    );
+    for (const participant of this.conversationParticipants.values()) {
+      if (
+        participant.conversationId === conversation.id &&
+        participant.accountId !== null &&
+        participant.mutedUntil !== null &&
+        participant.mutedUntil !== undefined &&
+        Date.parse(participant.mutedUntil) > now.getTime()
+      ) {
+        recipientIds.delete(participant.accountId);
+      }
+    }
+    for (const subscription of this.pushSubscriptions.values()) {
+      if (!recipientIds.has(subscription.accountId)) continue;
+      void sender(subscription, {
+        type: "message.new",
+        conversationId: conversation.id,
+        messageId: message.id,
+        title: conversation.title?.trim() || "New Soko message",
+        body: "Open Soko to read your message."
+      }).then((result) => {
+        if (result !== "expired") return;
+        this.pushSubscriptions.delete(subscription.id);
+        this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+      });
+    }
+  }
+
+  private messagesForConversation(conversationId: string): ConversationMessageSummary[] {
+    return [...this.conversationMessages.values()]
+      .filter((message) => message.conversationId === conversationId)
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  }
+
+  private requireConversationMessage(
+    messageId: string,
+    conversationId: string
+  ): ConversationMessageSummary {
+    const message = this.conversationMessages.get(messageId);
+    if (!message || message.conversationId !== conversationId)
+      throw new Cp2Error(404, "message_not_found", "Message was not found.");
+    return message;
+  }
+
+  private typingForConversation(
+    conversationId: string,
+    now: Date,
+    excludeActorId?: string
+  ): ConversationTypingSummary[] {
+    const result: ConversationTypingSummary[] = [];
+    for (const [key, typing] of this.conversationTyping) {
+      if (Date.parse(typing.expiresAt) <= now.getTime()) {
+        this.conversationTyping.delete(key);
+      } else if (typing.conversationId === conversationId && typing.actorId !== excludeActorId) {
+        result.push({
+          actorId: typing.actorId,
+          displayName: typing.displayName,
+          expiresAt: typing.expiresAt
+        });
+      }
+    }
+    return result;
+  }
+
+  private recordConversationSyncForParticipants(
+    conversationId: string,
+    collection: SyncCollection,
+    entityId: string,
+    entity: unknown,
+    now: Date
+  ): void {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    const accountIds = new Set(
+      [...this.conversationParticipants.values()]
+        .filter(
+          (participant) => participant.conversationId === conversationId && participant.accountId
+        )
+        .map((participant) => participant.accountId as string)
+    );
+    for (const accountId of accountIds) {
+      this.recordSyncChange({
+        accountId,
+        collection,
+        entityId,
+        operation: "upsert",
+        shopId: conversation.activeShopId,
+        entity,
+        now
+      });
+    }
   }
 
   private requireAnySession(sessionId: string | null, now: Date): AuthSessionView {
@@ -11623,12 +12240,76 @@ const aiModelRegistry: AiModelSummary[] = [
 function validateConversationMessageContent(content: ConversationMessageContent): void {
   switch (content.type) {
     case "text":
-      if (content.text.trim().length === 0 || content.text.length > 4_000) {
+      if (
+        (content.text.trim().length === 0 && !content.attachments?.length) ||
+        content.text.length > 4_000
+      ) {
         throw new Cp2Error(
           400,
           "message_content_invalid",
           "Text messages must contain between 1 and 4000 characters."
         );
+      }
+      if ((content.attachments?.length ?? 0) > 10) {
+        throw new Cp2Error(
+          400,
+          "message_content_invalid",
+          "A message can contain at most 10 attachments."
+        );
+      }
+      if (
+        (content.attachments ?? []).reduce((total, attachment) => total + attachment.size, 0) >
+        10_000_000
+      ) {
+        throw new Cp2Error(
+          413,
+          "message_attachment_too_large",
+          "Attachments can total at most 10 MB per message."
+        );
+      }
+      for (const attachment of content.attachments ?? []) {
+        if (
+          !attachment.id.trim() ||
+          !attachment.name.trim() ||
+          attachment.size < 0 ||
+          (!attachment.url.startsWith("data:") && !attachment.url.startsWith("https://"))
+        ) {
+          throw new Cp2Error(
+            400,
+            "message_content_invalid",
+            "Attachment metadata or URL is invalid."
+          );
+        }
+      }
+      return;
+    case "encrypted":
+      if (
+        content.attachmentCount < 0 ||
+        content.attachmentCount > 10 ||
+        content.envelopes.length < 1 ||
+        content.envelopes.length > 64 ||
+        !isBase64Url(content.iv, 12, 64) ||
+        !isBase64Url(content.ciphertext, 16, 16_000_000)
+      ) {
+        throw new Cp2Error(
+          400,
+          "message_content_invalid",
+          "Encrypted message metadata is invalid."
+        );
+      }
+      for (const envelope of content.envelopes) {
+        validateE2eePublicKey(envelope.ephemeralPublicKey);
+        if (
+          envelope.version !== 1 ||
+          envelope.algorithm !== "ECDH-P256-HKDF-SHA256-AES-256-GCM" ||
+          envelope.recipientDeviceId.length < 8 ||
+          envelope.recipientDeviceId.length > 120 ||
+          !isBase64Url(envelope.salt, 16, 128) ||
+          !isBase64Url(envelope.iv, 12, 64) ||
+          !isBase64Url(envelope.ciphertext, 48, 256)
+        ) {
+          throw new Cp2Error(400, "message_content_invalid", "Encrypted envelope is invalid.");
+        }
       }
       return;
     case "storefront":
@@ -11646,6 +12327,24 @@ function validateConversationMessageContent(content: ConversationMessageContent)
         );
       }
   }
+}
+
+function validateE2eePublicKey(key: E2eePublicKey): void {
+  if (
+    key.kty !== "EC" ||
+    key.crv !== "P-256" ||
+    !isBase64Url(key.x, 32, 128) ||
+    !isBase64Url(key.y, 32, 128) ||
+    "d" in key
+  ) {
+    throw new Cp2Error(400, "e2ee_public_key_invalid", "Encryption public key is invalid.");
+  }
+}
+
+function isBase64Url(value: string, minimumLength: number, maximumLength: number): boolean {
+  return (
+    value.length >= minimumLength && value.length <= maximumLength && /^[A-Za-z0-9_-]+$/.test(value)
+  );
 }
 
 function secureCookieSuffix(): string {

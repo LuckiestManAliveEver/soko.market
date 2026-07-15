@@ -3,6 +3,7 @@ import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { createCp2Store } from "./cp2/store.js";
+import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 
 const config = readEnvironment();
 const runtimeModelProvider = config.localModelEnabled
@@ -16,6 +17,9 @@ const runtimeModelProvider = config.localModelEnabled
   : undefined;
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
+const webPushConfiguration = readWebPushConfiguration();
+const pushNotificationSender =
+  webPushConfiguration === null ? undefined : createWebPushSender(webPushConfiguration);
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
   throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
@@ -23,12 +27,10 @@ if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databa
 
 const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
-const cp2StoreOptions =
-  runtimeModelProvider === undefined
-    ? {}
-    : {
-        runtimeModelProvider
-      };
+const cp2StoreOptions = {
+  ...(runtimeModelProvider === undefined ? {} : { runtimeModelProvider }),
+  ...(pushNotificationSender === undefined ? {} : { pushNotificationSender })
+};
 const cp2Store = shouldUsePostgresStore
   ? await createPostgresCp2Store({
       databaseUrl: config.databaseUrl,
@@ -38,7 +40,8 @@ const cp2Store = shouldUsePostgresStore
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   cp2: {
-    store: cp2Store
+    store: cp2Store,
+    ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
 };
 const app = buildApi(
