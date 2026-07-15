@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soko.market/schemas/android-release-identity.schema.json",
+  "title": "Soko.market Android release identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "checkpoint",
+    "lastReviewedOn",
+    "identityStatus",
+    "brand",
+    "android",
+    "web",
+    "developer",
+    "ownership",
+    "signing",
+    "policyBaseline",
+    "approval"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "checkpoint": { "const": "CP26" },
+    "lastReviewedOn": { "type": "string", "format": "date" },
+    "identityStatus": { "enum": ["proposed", "approved"] },
+    "brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appName", "launcherName", "serviceName"],
+      "properties": {
+        "appName": { "type": "string", "minLength": 1 },
+        "launcherName": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "serviceName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applicationId",
+        "applicationIdStatus",
+        "wrapper",
+        "distribution",
+        "firstTrack",
+        "versionName",
+        "versionCode",
+        "minSdk",
+        "targetSdk",
+        "compileSdk"
+      ],
+      "properties": {
+        "applicationId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){2,}$"
+        },
+        "applicationIdStatus": { "enum": ["proposed", "approved"] },
+        "wrapper": { "const": "trusted-web-activity" },
+        "distribution": { "const": "google-play" },
+        "firstTrack": { "const": "internal" },
+        "versionName": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "versionCode": { "type": "integer", "minimum": 1 },
+        "minSdk": { "type": "integer", "minimum": 23 },
+        "targetSdk": { "type": "integer", "minimum": 35 },
+        "compileSdk": { "type": "integer", "minimum": 35 }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "startUrl",
+        "scope",
+        "manifestUrl",
+        "digitalAssetLinksUrl",
+        "apiOrigin"
+      ],
+      "properties": {
+        "origin": { "const": "https://soko.market" },
+        "startUrl": { "type": "string", "format": "uri" },
+        "scope": { "type": "string", "format": "uri" },
+        "manifestUrl": { "type": "string", "format": "uri" },
+        "digitalAssetLinksUrl": { "type": "string", "format": "uri" },
+        "apiOrigin": { "const": "https://api.soko.market" }
+      }
+    },
+    "developer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountType",
+        "accountTypeStatus",
+        "playDeveloperName",
+        "legalEntityName",
+        "playDeveloperAccountId",
+        "identityVerificationStatus"
+      ],
+      "properties": {
+        "accountType": { "enum": ["organization", "personal"] },
+        "accountTypeStatus": { "enum": ["proposed", "approved"] },
+        "playDeveloperName": { "type": ["string", "null"] },
+        "legalEntityName": { "type": ["string", "null"] },
+        "playDeveloperAccountId": { "type": ["string", "null"] },
+        "identityVerificationStatus": { "enum": ["pending", "verified"] }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseOwner",
+        "playConsolePrimaryOwner",
+        "uploadKeyCustodian",
+        "incidentRecoveryOwner"
+      ],
+      "properties": {
+        "releaseOwner": { "type": ["string", "null"] },
+        "playConsolePrimaryOwner": { "type": ["string", "null"] },
+        "uploadKeyCustodian": { "type": ["string", "null"] },
+        "incidentRecoveryOwner": { "type": ["string", "null"] }
+      }
+    },
+    "signing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "playAppSigning",
+        "privateKeysCommitted",
+        "uploadCertificateSha256",
+        "appSigningCertificateSha256",
+        "rotationAndRecoveryDocumented"
+      ],
+      "properties": {
+        "playAppSigning": { "const": true },
+        "privateKeysCommitted": { "const": false },
+        "uploadCertificateSha256": { "type": ["string", "null"] },
+        "appSigningCertificateSha256": { "type": ["string", "null"] },
+        "rotationAndRecoveryDocumented": { "type": "boolean" }
+      }
+    },
+    "policyBaseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetApiVerifiedOn", "targetApiSource", "revalidateBeforeFirstUpload"],
+      "properties": {
+        "targetApiVerifiedOn": { "type": "string", "format": "date" },
+        "targetApiSource": { "type": "string", "format": "uri" },
+        "revalidateBeforeFirstUpload": { "const": true }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvedBy", "approvedOn", "changeRecord"],
+      "properties": {
+        "approvedBy": { "type": ["string", "null"] },
+        "approvedOn": { "type": ["string", "null"], "format": "date" },
+        "changeRecord": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

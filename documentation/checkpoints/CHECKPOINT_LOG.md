@@ -39,6 +39,7 @@ This log tracks formal planning and implementation checkpoints. Each checkpoint 
 | CP21       | Offline Client Data and Catch-up Foundation           |   active |  2026-07-12 |     pending | `checkpoint/cp21-offline-client-sync`        | Phase 2 implementation and CI passed; migration 018 and read-only schema verification await Neon pooled/direct connection secrets.                     |
 | CP22       | Realtime Sync Foundation                              |   active |  2026-07-12 |     pending | `checkpoint/cp22-realtime-sync`              | Phase 3 started with authenticated account-scoped WebSocket change hints and durable catch-up recovery.                                                |
 | CP23       | MCP Tool Gateway Foundation                           |   active |  2026-07-12 |     pending | `checkpoint/cp23-mcp-tool-gateway`           | Phase 4 implementation and CI passed; migration 019 and read-only Neon schema verification await connection secrets.                                   |
+| CP26       | Android Release Identity Foundation                   |   active |  2026-07-15 |     pending | `checkpoint/cp26-android-release-identity`   | Production origins and proposed Android identity are machine-verified; permanent package, developer account, ownership, and signing approvals remain.  |
 
 ## Git Directory Note
 

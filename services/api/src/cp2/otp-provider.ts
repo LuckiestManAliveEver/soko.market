@@ -43,12 +43,10 @@ const FIREBASE_CERT_URL =
   "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
 const FIREBASE_CERT_TTL_MS = 60 * 60 * 1000;
 
-let cachedFirebaseCertificates:
-  | {
-      fetchedAt: number;
-      certs: Record<string, string>;
-    }
-  | null = null;
+let cachedFirebaseCertificates: {
+  fetchedAt: number;
+  certs: Record<string, string>;
+} | null = null;
 
 class LocalOtpProvider implements OtpProvider {
   readonly name = "local";

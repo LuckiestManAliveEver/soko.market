@@ -59,26 +59,33 @@ When documents disagree, follow this order:
   realtime typing/read state, closed-browser VAPID Web Push, human direct-message E2EE, API
   contracts, security boundaries, and verification.
 
-12. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
+12. `CP26_ANDROID_RELEASE_IDENTITY.md`
+
+- Active Google Play readiness checkpoint.
+- Defines the proposed permanent Android namespace, Play account identity, production origins,
+  version floor, signing boundary, accountable owners, approval gate, and subsequent CP27–CP34
+  release sequence.
+
+13. `POSTGRES_PRODUCTION_READINESS_PLAN.md`
     - Production persistence runbook.
     - Defines the Neon Postgres and Render deployment plan, persistence scope, migration workflow, rollback notes, and production safeguards.
 
-13. `TERMS_OF_SERVICE.md`
+14. `TERMS_OF_SERVICE.md`
 
 - Publication and production-readiness record for the Terms of Service.
 - Identifies the supplied Version 1.0 Draft Parts I–IV sources, public route, and legal completion gate.
 
-14. `PRIVACY_POLICY.md`
+15. `PRIVACY_POLICY.md`
 
 - Publication and production-readiness record for the Privacy Policy.
 - Identifies the supplied Version 1.0 Draft Parts I–IV and Annexes A–D, public route, placeholders,
   and privacy/legal completion gate.
 
-15. `1000157660.png`, `1000157661.png`, `1000157662.png`
+16. `1000157660.png`, `1000157661.png`, `1000157662.png`
     - Mobile UI references.
     - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
 
-16. `Soko doc 4 June .pdf`
+17. `Soko doc 4 June .pdf`
     - Broken placeholder.
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.
