@@ -108,6 +108,32 @@ test("draft Privacy Policy reflows and passes an automated accessibility scan", 
   }
 });
 
+test("public account deletion resource reflows and passes accessibility", async ({ page }) => {
+  for (const viewport of [
+    { width: 280, height: 653 },
+    { width: 768, height: 1024 },
+    { width: 1440, height: 900 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/account-deletion");
+    await expect(
+      page.getByRole("heading", { name: "Delete your Soko.market account", level: 1 })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Continue to secure deletion request" })
+    ).toHaveAttribute("href", "/?intent=account-deletion");
+    await expect(
+      page.getByText("You do not need to reinstall or open the Android app.")
+    ).toBeVisible();
+    await expectNoViewportOverflow(page);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations, formatViolations(results.violations)).toEqual([]);
+  }
+});
+
 for (const viewport of viewportMatrix) {
   test(`${viewport.name}: model library reflows without clipped controls`, async ({ page }) => {
     await openModelLibrary(page, viewport);

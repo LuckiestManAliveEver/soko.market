@@ -11,10 +11,12 @@
   "scripts": {
     "android:identity:gate": "node scripts/verify-android-release-identity.mjs --require-approved",
     "android:identity:verify": "node scripts/verify-android-release-identity.mjs",
+    "android:legal:gate": "node scripts/verify-play-legal-readiness.mjs --require-approved",
+    "android:legal:verify": "node scripts/verify-play-legal-readiness.mjs",
     "build": "pnpm -r --if-present build",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:production-imports": "node scripts/check-production-imports.mjs",
-    "ci": "pnpm format && pnpm lint && pnpm typecheck && pnpm test && pnpm android:identity:verify && pnpm check:boundaries",
+    "ci": "pnpm format && pnpm lint && pnpm typecheck && pnpm test && pnpm android:identity:verify && pnpm android:legal:verify && pnpm check:boundaries",
     "clean:dev": "pnpm --filter @soko/web clean:dev",
     "dev": "pnpm -r --parallel --stream --filter @soko/api --filter @soko/web run dev",
     "dev:api": "pnpm --filter @soko/api dev",

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soko.market/schemas/play-legal-readiness.schema.json",
+  "title": "Soko.market Google Play legal readiness",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "checkpoint",
+    "lastReviewedOn",
+    "readinessStatus",
+    "product",
+    "contacts",
+    "legalDocuments",
+    "accountDeletion",
+    "policyBaseline",
+    "approval"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "checkpoint": { "const": "CP27" },
+    "lastReviewedOn": { "type": "string", "format": "date" },
+    "readinessStatus": { "enum": ["proposed", "approved"] },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appName",
+        "playDeveloperName",
+        "legalEntityName",
+        "registeredAddress",
+        "countryOfRegistration",
+        "registrationNumber"
+      ],
+      "properties": {
+        "appName": { "const": "Soko.market" },
+        "playDeveloperName": { "type": ["string", "null"] },
+        "legalEntityName": { "type": ["string", "null"] },
+        "registeredAddress": { "type": ["string", "null"] },
+        "countryOfRegistration": { "type": ["string", "null"] },
+        "registrationNumber": { "type": ["string", "null"] }
+      }
+    },
+    "contacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supportEmail", "privacyEmail", "legalEmail", "contactVerificationStatus"],
+      "properties": {
+        "supportEmail": { "type": ["string", "null"], "format": "email" },
+        "privacyEmail": { "type": ["string", "null"], "format": "email" },
+        "legalEmail": { "type": ["string", "null"], "format": "email" },
+        "contactVerificationStatus": { "enum": ["pending", "verified"] }
+      }
+    },
+    "legalDocuments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacyPolicyUrl",
+        "privacyPolicyStatus",
+        "privacyPolicyEffectiveOn",
+        "termsUrl",
+        "termsStatus",
+        "termsEffectiveOn",
+        "legalApprovalReference"
+      ],
+      "properties": {
+        "privacyPolicyUrl": { "const": "https://soko.market/privacy" },
+        "privacyPolicyStatus": { "enum": ["draft", "approved"] },
+        "privacyPolicyEffectiveOn": { "type": ["string", "null"], "format": "date" },
+        "termsUrl": { "const": "https://soko.market/terms" },
+        "termsStatus": { "enum": ["draft", "approved"] },
+        "termsEffectiveOn": { "type": ["string", "null"], "format": "date" },
+        "legalApprovalReference": { "type": ["string", "null"] }
+      }
+    },
+    "accountDeletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "externalRequestUrl",
+        "inAppPath",
+        "authenticationRequired",
+        "androidAppRequired",
+        "requestPathImplemented",
+        "recoveryPeriodDays",
+        "associatedDataIncluded",
+        "lawfulRetentionDisclosed",
+        "fulfillmentRunbookStatus",
+        "serviceProviderDeletionStatus",
+        "operationsOwner",
+        "privacyOwner"
+      ],
+      "properties": {
+        "externalRequestUrl": { "const": "https://soko.market/account-deletion" },
+        "inAppPath": { "type": "string", "minLength": 1 },
+        "authenticationRequired": { "const": true },
+        "androidAppRequired": { "const": false },
+        "requestPathImplemented": { "const": true },
+        "recoveryPeriodDays": { "type": "integer", "minimum": 0 },
+        "associatedDataIncluded": { "const": true },
+        "lawfulRetentionDisclosed": { "const": true },
+        "fulfillmentRunbookStatus": { "enum": ["pending", "verified"] },
+        "serviceProviderDeletionStatus": { "enum": ["pending", "verified"] },
+        "operationsOwner": { "type": ["string", "null"] },
+        "privacyOwner": { "type": ["string", "null"] }
+      }
+    },
+    "policyBaseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifiedOn",
+        "accountDeletionSource",
+        "userDataSource",
+        "revalidateBeforeSubmission"
+      ],
+      "properties": {
+        "verifiedOn": { "type": "string", "format": "date" },
+        "accountDeletionSource": { "type": "string", "format": "uri" },
+        "userDataSource": { "type": "string", "format": "uri" },
+        "revalidateBeforeSubmission": { "const": true }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvedBy", "approvedOn", "changeRecord"],
+      "properties": {
+        "approvedBy": { "type": ["string", "null"] },
+        "approvedOn": { "type": ["string", "null"], "format": "date" },
+        "changeRecord": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

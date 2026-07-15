@@ -67,6 +67,7 @@ import "./styles.css";
 
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
 const PrivacyPolicyPage = lazy(() => import("./legal/PrivacyPolicyPage"));
+const AccountDeletionPage = lazy(() => import("./legal/AccountDeletionPage"));
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
@@ -1777,6 +1778,20 @@ function App() {
     );
   }
 
+  if (window.location.pathname === "/account-deletion") {
+    return (
+      <Suspense
+        fallback={
+          <main className="legal-placeholder" aria-busy="true">
+            <p>Loading account deletion…</p>
+          </main>
+        }
+      >
+        <AccountDeletionPage />
+      </Suspense>
+    );
+  }
+
   return <OwnerApp />;
 }
 
@@ -1813,6 +1828,8 @@ function formatShortCommit(commitSha: string): string {
 }
 
 function OwnerApp() {
+  const accountDeletionIntent =
+    new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
@@ -1862,13 +1879,13 @@ function OwnerApp() {
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
   const [statusMessage, setStatusMessage] = useState("Checking session");
-  const [view, setView] = useState<ShellView>("chat");
+  const [view, setView] = useState<ShellView>(accountDeletionIntent ? "compliance" : "chat");
   const [mode, setMode] = useState<SokoMode>(readStoredSokoMode);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
-  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isLoginOpen, setIsLoginOpen] = useState(accountDeletionIntent);
   const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
     () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
   );
@@ -9350,8 +9367,18 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
         <button type="button" onClick={props.onSaveDeviceTrust}>
           Save device trust
         </button>
+        <div className="section-heading account-deletion-heading">
+          <p className="eyebrow">Account and associated data</p>
+          <h3>Delete account</h3>
+        </div>
+        <p className="shell-note">
+          This schedules deletion of your Soko.market account and associated shop data. Access is
+          disabled immediately. Recoverable data is held for up to 30 days and then deleted or
+          irreversibly anonymized, except records retained for legal, security, fraud-prevention, or
+          regulatory reasons.
+        </p>
         <label>
-          Delete confirmation
+          Type DELETE to confirm
           <input
             value={props.form.deletionConfirmation}
             onChange={(event) =>
@@ -9374,8 +9401,9 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
           onClick={props.onScheduleDeletion}
           disabled={props.form.deletionConfirmation !== "DELETE"}
         >
-          Deactivate account
+          Delete account and associated data
         </button>
+        <a href="/account-deletion">Read the account-deletion process</a>
       </section>
 
       <section className="record-list" aria-label="Compliance status">
@@ -9401,7 +9429,7 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
           <ReportRow
             title="Deletion scheduled"
             eyebrow={props.accountDeletion.status}
-            body={`Anonymization after ${formatDate(props.accountDeletion.anonymizeAfter)}.`}
+            body={`Reference ${props.accountDeletion.id}. Anonymization after ${formatDate(props.accountDeletion.anonymizeAfter)}.`}
             value={`${props.accountDeletion.retention.directIdentifierFieldsRemoved} fields`}
           />
         )}
