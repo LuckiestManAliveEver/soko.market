@@ -964,6 +964,76 @@ export interface AccountDeletionRequestSummary {
   retention: ComplianceRetentionSummary;
 }
 
+export type ShopPresenceStatus = "online" | "private" | "offline";
+
+export interface ShopPresenceSummary {
+  businessId: string;
+  status: ShopPresenceStatus;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export type PublicShopPresenceSummary = Pick<ShopPresenceSummary, "status" | "updatedAt">;
+
+export type NetworkInviteChannel = "phone" | "email";
+export type NetworkInviteStatus = "queued" | "sent" | "failed";
+
+export interface NetworkInviteSummary {
+  id: string;
+  businessId: string;
+  invitedByUserId: string;
+  contactName: string;
+  channel: NetworkInviteChannel;
+  destination: string;
+  status: NetworkInviteStatus;
+  createdAt: string;
+  deliveredAt: string | null;
+  failureReason: string | null;
+}
+
+export type PublicCustomerCareRequestType = "callback" | "quote" | "support" | "registration";
+
+export interface PublicCustomerCareRequestSummary {
+  id: string;
+  businessId: string;
+  type: PublicCustomerCareRequestType;
+  customerName: string | null;
+  phone: string | null;
+  message: string | null;
+  status: "new" | "acknowledged" | "closed";
+  createdAt: string;
+}
+
+export interface PublicStorefrontMessageSummary {
+  id: string;
+  businessId: string;
+  visitorId: string;
+  author: "customer" | "agent";
+  body: string;
+  attachmentNames: string[];
+  createdAt: string;
+}
+
+export interface PublicOrderItemSummary {
+  productId: string;
+  productName: string;
+  unit: string;
+  quantity: number;
+}
+
+export interface PublicOrderSummary {
+  id: string;
+  businessId: string;
+  visitorId: string;
+  customerName: string;
+  phone: string;
+  note: string | null;
+  items: PublicOrderItemSummary[];
+  status: "requested" | "accepted" | "rejected" | "completed" | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type VerificationTier = "unverified" | "owner_verified" | "business_verified";
 
 export interface VerificationTierSummary {

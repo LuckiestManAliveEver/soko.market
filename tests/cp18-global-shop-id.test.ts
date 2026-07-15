@@ -28,6 +28,10 @@ interface PublicStorefrontResponse {
   agentId: string;
   sokoId: string;
   businessName: string;
+  presence: {
+    status: string;
+    updatedAt: string;
+  };
   products: Array<{
     id: string;
     name: string;
@@ -88,6 +92,10 @@ describe("CP18 Global Shop ID", () => {
       agentId: first.business.sokoId,
       sokoId: first.business.sokoId,
       businessName: "BigFish soko",
+      presence: {
+        status: "online",
+        updatedAt: new Date(0).toISOString()
+      },
       products: [
         {
           id: stockedProduct.id,

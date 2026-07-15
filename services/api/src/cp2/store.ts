@@ -71,12 +71,18 @@ import type {
   NetworkSyncSourceSummary,
   NetworkVisibilityStatus,
   NotificationInbox,
+  NetworkInviteSummary,
   OfflineCacheSnapshot,
   OAuthProvider,
   OAuthSessionSummary,
   PaymentSummary,
   ProductImportDraft,
   ProductSummary,
+  PublicCustomerCareRequestSummary,
+  PublicCustomerCareRequestType,
+  PublicOrderSummary,
+  PublicStorefrontMessageSummary,
+  PublicShopPresenceSummary,
   PurchaseReceiptSummary,
   PushSubscriptionSummary,
   RuntimeContextSummary,
@@ -114,6 +120,8 @@ import type {
   SokoChatSurface,
   SokoMode,
   SokoSessionContext,
+  ShopPresenceStatus,
+  ShopPresenceSummary,
   StoredSokoSessionContext,
   SyncChange,
   SyncRealtimeChangesAvailableEvent,
@@ -301,6 +309,7 @@ export interface PublicStorefrontSummary {
   agentId: string;
   sokoId: string;
   businessName: string;
+  presence: PublicShopPresenceSummary;
   products: PublicStorefrontProductSummary[];
 }
 
@@ -499,6 +508,11 @@ export interface Cp2Snapshot {
   dataExports: DataExportBundleSummary[];
   accountDeletionRequests: AccountDeletionRequestSummary[];
   accountDeletionProofs?: AccountDeletionProof[];
+  shopPresences?: ShopPresenceSummary[];
+  networkInvites?: NetworkInviteSummary[];
+  publicCustomerCareRequests?: PublicCustomerCareRequestSummary[];
+  publicStorefrontMessages?: PublicStorefrontMessageSummary[];
+  publicOrders?: PublicOrderSummary[];
   verificationTiers: VerificationTierSummary[];
   taxConfigs: CountryTaxConfigSummary[];
   deviceTrust: DeviceTrustSummary[];
@@ -653,6 +667,11 @@ export class Cp2Store {
   private readonly dataExports = new Map<string, DataExportBundle>();
   private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
   private readonly accountDeletionProofs = new Map<string, AccountDeletionProof>();
+  private readonly shopPresences = new Map<string, ShopPresenceSummary>();
+  private readonly networkInvites = new Map<string, NetworkInviteSummary>();
+  private readonly publicCustomerCareRequests = new Map<string, PublicCustomerCareRequestSummary>();
+  private readonly publicStorefrontMessages = new Map<string, PublicStorefrontMessageSummary>();
+  private readonly publicOrders = new Map<string, PublicOrderSummary>();
   private readonly verificationTiers = new Map<string, VerificationTierSummary>();
   private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
   private readonly deviceTrust = new Map<string, DeviceTrustSummary>();
@@ -1638,6 +1657,7 @@ export class Cp2Store {
   }): SokoSessionContext {
     const now = input.now ?? new Date();
     const session = this.requirePinVerifiedSession(input.sessionId, now);
+    this.requireAccountNotPendingDeletion(session.account.id, now);
     const current = this.ensureSokoSessionContext(session, now);
 
     if (
@@ -2341,6 +2361,7 @@ export class Cp2Store {
   }): RoleCheckResult {
     const now = input.now ?? new Date();
     const session = this.requirePinVerifiedSession(input.sessionId, now);
+    this.requireAccountNotPendingDeletion(session.account.id, now);
 
     if (!isBusinessRole(input.role)) {
       throw new Cp2Error(400, "role_invalid", "Role is not supported.");
@@ -2372,21 +2393,16 @@ export class Cp2Store {
   }
 
   getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
-    const storefrontId = normalizeStorefrontLookupId(input.agentId);
-    const business = [...this.businesses.values()].find((candidate) => {
-      const sokoId = normalizeStorefrontLookupId(candidate.sokoId);
-      const legacyAgentId = normalizeStorefrontLookupId(createPublicAgentId(candidate));
-      return sokoId === storefrontId || legacyAgentId === storefrontId;
-    });
-
-    if (business === undefined) {
-      throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
-    }
+    const business = this.requirePublicStorefrontBusiness(input.agentId);
 
     return {
       agentId: business.sokoId,
       sokoId: business.sokoId,
       businessName: business.name,
+      presence: (() => {
+        const presence = this.shopPresenceForBusiness(business.id);
+        return { status: presence.status, updatedAt: presence.updatedAt };
+      })(),
       products: this.productsForBusiness(business.id)
         .filter((product) => product.quantity > 0)
         .map((product) => ({
@@ -2396,6 +2412,279 @@ export class Cp2Store {
           available: true
         }))
     };
+  }
+
+  getShopPresence(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ShopPresenceSummary {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", input.now);
+    return this.shopPresenceForBusiness(input.businessId);
+  }
+
+  setShopPresence(input: {
+    sessionId: string | null;
+    businessId: string;
+    status: ShopPresenceStatus;
+    now?: Date;
+  }): ShopPresenceSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    this.requireOwnerMembership(input.businessId, session.user.id);
+    const presence: ShopPresenceSummary = {
+      businessId: input.businessId,
+      status: input.status,
+      updatedBy: session.user.id,
+      updatedAt: now.toISOString()
+    };
+    this.shopPresences.set(input.businessId, presence);
+    this.recordAuditEvent({
+      type: "shop.presence_updated",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { status: input.status }
+    });
+    return presence;
+  }
+
+  createNetworkInvites(input: {
+    sessionId: string | null;
+    businessId: string;
+    contacts: Array<{ name: string; phone: string | null; email: string | null }>;
+    now?: Date;
+  }): NetworkInviteSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    if (input.contacts.length === 0 || input.contacts.length > 100) {
+      throw new Cp2Error(400, "invite_contacts_invalid", "Select between 1 and 100 contacts.");
+    }
+
+    const created: NetworkInviteSummary[] = [];
+    const destinations = new Set<string>();
+    for (const contact of input.contacts) {
+      const phone = normalizeOptionalBoundedText(contact.phone, 40);
+      const email = normalizeOptionalBoundedText(contact.email, 254)?.toLowerCase() ?? null;
+      const destination = phone ?? email;
+      if (destination === null) {
+        throw new Cp2Error(
+          400,
+          "invite_destination_required",
+          "Each invite needs a phone or email."
+        );
+      }
+      const destinationKey = destination.toLowerCase();
+      if (destinations.has(destinationKey)) continue;
+      destinations.add(destinationKey);
+
+      const existing = [...this.networkInvites.values()].find(
+        (invite) =>
+          invite.businessId === input.businessId &&
+          invite.destination.toLowerCase() === destinationKey &&
+          (invite.status === "queued" || invite.status === "sent")
+      );
+      if (existing !== undefined) {
+        created.push(existing);
+        continue;
+      }
+
+      const invite: NetworkInviteSummary = {
+        id: randomUUID(),
+        businessId: input.businessId,
+        invitedByUserId: session.user.id,
+        contactName: normalizeRequiredBoundedText(contact.name, "contact name", 120),
+        channel: phone === null ? "email" : "phone",
+        destination,
+        status: "queued",
+        createdAt: now.toISOString(),
+        deliveredAt: null,
+        failureReason: null
+      };
+      this.networkInvites.set(invite.id, invite);
+      created.push(invite);
+      this.recordAuditEvent({
+        type: "network.invite_queued",
+        aggregateType: "network_invite",
+        aggregateId: invite.id,
+        actorId: session.user.id,
+        occurredAt: now.toISOString(),
+        payload: { businessId: input.businessId, channel: invite.channel }
+      });
+    }
+    return created;
+  }
+
+  listNetworkInvites(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): NetworkInviteSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    return [...this.networkInvites.values()]
+      .filter((invite) => invite.businessId === input.businessId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  createPublicCustomerCareRequest(input: {
+    agentId: string;
+    type: PublicCustomerCareRequestType;
+    customerName: string | null;
+    phone: string | null;
+    message: string | null;
+    now?: Date;
+  }): PublicCustomerCareRequestSummary {
+    const now = input.now ?? new Date();
+    const business = this.requirePublicStorefrontBusiness(input.agentId);
+    const request: PublicCustomerCareRequestSummary = {
+      id: randomUUID(),
+      businessId: business.id,
+      type: input.type,
+      customerName: normalizeOptionalBoundedText(input.customerName, 120),
+      phone: normalizeOptionalBoundedText(input.phone, 40),
+      message: normalizeOptionalBoundedText(input.message, 2000),
+      status: "new",
+      createdAt: now.toISOString()
+    };
+    if (request.type === "callback" && request.phone === null) {
+      throw new Cp2Error(400, "callback_phone_required", "A callback phone number is required.");
+    }
+    this.publicCustomerCareRequests.set(request.id, request);
+    this.recordAuditEvent({
+      type: "storefront.customer_care_requested",
+      aggregateType: "customer_care_request",
+      aggregateId: request.id,
+      actorId: "public-storefront",
+      occurredAt: now.toISOString(),
+      payload: { businessId: business.id, type: request.type }
+    });
+    return request;
+  }
+
+  createPublicStorefrontMessage(input: {
+    agentId: string;
+    visitorId: string;
+    body: string;
+    attachmentNames: string[];
+    now?: Date;
+  }): PublicStorefrontMessageSummary {
+    const now = input.now ?? new Date();
+    const business = this.requirePublicStorefrontBusiness(input.agentId);
+    if (input.attachmentNames.length > 10) {
+      throw new Cp2Error(400, "attachments_limit", "A message can include up to 10 attachments.");
+    }
+    const message: PublicStorefrontMessageSummary = {
+      id: randomUUID(),
+      businessId: business.id,
+      visitorId: normalizeRequiredBoundedText(input.visitorId, "visitorId", 100),
+      author: "customer",
+      body: normalizeRequiredBoundedText(input.body, "message", 4000),
+      attachmentNames: input.attachmentNames.map((name) =>
+        normalizeRequiredBoundedText(name, "attachment name", 255)
+      ),
+      createdAt: now.toISOString()
+    };
+    this.publicStorefrontMessages.set(message.id, message);
+    return message;
+  }
+
+  createPublicOrder(input: {
+    agentId: string;
+    visitorId: string;
+    customerName: string;
+    phone: string;
+    note: string | null;
+    items: Array<{ productId: string; quantity: number }>;
+    now?: Date;
+  }): PublicOrderSummary {
+    const now = input.now ?? new Date();
+    const business = this.requirePublicStorefrontBusiness(input.agentId);
+    if (input.items.length === 0 || input.items.length > 100) {
+      throw new Cp2Error(400, "order_items_invalid", "An order needs between 1 and 100 items.");
+    }
+    const items = input.items.map((item) => {
+      const product = this.products.get(item.productId);
+      if (product === undefined || product.businessId !== business.id || product.quantity <= 0) {
+        throw new Cp2Error(404, "order_product_unavailable", "An order product is unavailable.");
+      }
+      if (
+        !Number.isInteger(item.quantity) ||
+        item.quantity < 1 ||
+        item.quantity > product.quantity
+      ) {
+        throw new Cp2Error(400, "order_quantity_invalid", `Invalid quantity for ${product.name}.`);
+      }
+      return {
+        productId: product.id,
+        productName: product.name,
+        unit: product.unit,
+        quantity: item.quantity
+      };
+    });
+    const order: PublicOrderSummary = {
+      id: randomUUID(),
+      businessId: business.id,
+      visitorId: normalizeRequiredBoundedText(input.visitorId, "visitorId", 100),
+      customerName: normalizeRequiredBoundedText(input.customerName, "customer name", 120),
+      phone: normalizeRequiredBoundedText(input.phone, "phone", 40),
+      note: normalizeOptionalBoundedText(input.note, 2000),
+      items,
+      status: "requested",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.publicOrders.set(order.id, order);
+    this.recordAuditEvent({
+      type: "storefront.order_requested",
+      aggregateType: "public_order",
+      aggregateId: order.id,
+      actorId: "public-storefront",
+      occurredAt: now.toISOString(),
+      payload: { businessId: business.id, itemCount: order.items.length }
+    });
+    return order;
+  }
+
+  listPublicCustomerCareRequests(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): PublicCustomerCareRequestSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    return [...this.publicCustomerCareRequests.values()].filter(
+      (request) => request.businessId === input.businessId
+    );
+  }
+
+  listPublicStorefrontMessages(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): PublicStorefrontMessageSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    return [...this.publicStorefrontMessages.values()].filter(
+      (message) => message.businessId === input.businessId
+    );
+  }
+
+  listPublicOrders(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): PublicOrderSummary[] {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
+    return [...this.publicOrders.values()].filter((order) => order.businessId === input.businessId);
   }
 
   createProduct(input: {
@@ -4473,6 +4762,82 @@ export class Cp2Store {
     );
 
     return deletionRequest;
+  }
+
+  listRestorableAccountDeletions(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): AccountDeletionRequestSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    return [...this.accountDeletionRequests.values()]
+      .filter(
+        (request) =>
+          request.accountId === session.account.id &&
+          request.status === "scheduled" &&
+          new Date(request.anonymizeAfter).getTime() > now.getTime()
+      )
+      .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
+  }
+
+  restoreAccountDeletion(input: {
+    sessionId: string | null;
+    requestId: string;
+    pin: string;
+    now?: Date;
+  }): {
+    request: AccountDeletionRequestSummary;
+    business: BusinessSummary;
+    membership: MembershipSummary;
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const request = this.accountDeletionRequests.get(input.requestId);
+    if (request === undefined || request.accountId !== session.account.id) {
+      throw new Cp2Error(
+        404,
+        "account_deletion_not_found",
+        "Account deletion request was not found."
+      );
+    }
+    if (request.status === "RESTORED") {
+      return {
+        request,
+        business: this.requireBusiness(request.businessId),
+        membership: this.requireOwnerMembership(request.businessId, session.user.id)
+      };
+    }
+    if (request.status !== "scheduled") {
+      throw new Cp2Error(
+        409,
+        "account_deletion_not_restorable",
+        "This deletion request cannot be restored."
+      );
+    }
+    if (new Date(request.anonymizeAfter).getTime() <= now.getTime()) {
+      throw new Cp2Error(410, "restore_window_expired", "The account recovery window has expired.");
+    }
+    this.verifyAccountPinForSession(session, input.pin, now);
+    const restored: AccountDeletionRequestSummary = {
+      ...request,
+      status: "RESTORED",
+      completedAt: now.toISOString(),
+      failureReason: null
+    };
+    this.accountDeletionRequests.set(restored.id, restored);
+    this.recordAuditEvent({
+      type: "account_deletion.restored",
+      aggregateType: "account_deletion",
+      aggregateId: restored.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { businessId: restored.businessId, accountId: restored.accountId }
+    });
+    return {
+      request: restored,
+      business: this.requireBusiness(restored.businessId),
+      membership: this.requireOwnerMembership(restored.businessId, session.user.id)
+    };
   }
 
   listLoginAccounts(input: {
@@ -7070,6 +7435,11 @@ export class Cp2Store {
       dataExports: [...this.dataExports.values()].map(dataExportSummary),
       accountDeletionRequests: [...this.accountDeletionRequests.values()],
       accountDeletionProofs: [...this.accountDeletionProofs.values()],
+      shopPresences: [...this.shopPresences.values()],
+      networkInvites: [...this.networkInvites.values()],
+      publicCustomerCareRequests: [...this.publicCustomerCareRequests.values()],
+      publicStorefrontMessages: [...this.publicStorefrontMessages.values()],
+      publicOrders: [...this.publicOrders.values()],
       verificationTiers: [...this.verificationTiers.values()],
       taxConfigs: [...this.taxConfigs.values()],
       deviceTrust: [...this.deviceTrust.values()],
@@ -7143,6 +7513,11 @@ export class Cp2Store {
     this.dataExports.clear();
     this.accountDeletionRequests.clear();
     this.accountDeletionProofs.clear();
+    this.shopPresences.clear();
+    this.networkInvites.clear();
+    this.publicCustomerCareRequests.clear();
+    this.publicStorefrontMessages.clear();
+    this.publicOrders.clear();
     this.verificationTiers.clear();
     this.taxConfigs.clear();
     this.deviceTrust.clear();
@@ -7322,6 +7697,26 @@ export class Cp2Store {
 
     for (const proof of snapshot.accountDeletionProofs ?? []) {
       this.accountDeletionProofs.set(proof.requestId, proof);
+    }
+
+    for (const presence of snapshot.shopPresences ?? []) {
+      this.shopPresences.set(presence.businessId, presence);
+    }
+
+    for (const invite of snapshot.networkInvites ?? []) {
+      this.networkInvites.set(invite.id, invite);
+    }
+
+    for (const request of snapshot.publicCustomerCareRequests ?? []) {
+      this.publicCustomerCareRequests.set(request.id, request);
+    }
+
+    for (const message of snapshot.publicStorefrontMessages ?? []) {
+      this.publicStorefrontMessages.set(message.id, message);
+    }
+
+    for (const order of snapshot.publicOrders ?? []) {
+      this.publicOrders.set(order.id, order);
     }
 
     for (const item of snapshot.verificationTiers) {
@@ -8228,6 +8623,8 @@ export class Cp2Store {
   ): AuthSessionView {
     const session = this.requirePinVerifiedSession(sessionId, now);
 
+    this.requireAccountNotPendingDeletion(session.account.id, now);
+
     if (!this.businesses.has(businessId)) {
       throw new Cp2Error(404, "business_not_found", "Business was not found.");
     }
@@ -8243,6 +8640,22 @@ export class Cp2Store {
     }
 
     return session;
+  }
+
+  private requireAccountNotPendingDeletion(accountId: string, now: Date): void {
+    const pendingDeletion = [...this.accountDeletionRequests.values()].some(
+      (request) =>
+        request.accountId === accountId &&
+        request.status === "scheduled" &&
+        new Date(request.anonymizeAfter).getTime() > now.getTime()
+    );
+    if (pendingDeletion) {
+      throw new Cp2Error(
+        410,
+        "account_pending_deletion",
+        "Account access is disabled during the recovery window. Restore the account to continue."
+      );
+    }
   }
 
   private requireMembership(businessId: string, userId: string): MembershipSummary {
@@ -8310,6 +8723,30 @@ export class Cp2Store {
       expiresAt: challenge.expiresAt,
       devOtp: ""
     };
+  }
+
+  private requirePublicStorefrontBusiness(agentId: string): BusinessSummary {
+    const storefrontId = normalizeStorefrontLookupId(agentId);
+    const business = [...this.businesses.values()].find((candidate) => {
+      const sokoId = normalizeStorefrontLookupId(candidate.sokoId);
+      const legacyAgentId = normalizeStorefrontLookupId(createPublicAgentId(candidate));
+      return sokoId === storefrontId || legacyAgentId === storefrontId;
+    });
+    if (business === undefined || this.quarantinedBusinessIds.has(business.id)) {
+      throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
+    }
+    return business;
+  }
+
+  private shopPresenceForBusiness(businessId: string): ShopPresenceSummary {
+    return (
+      this.shopPresences.get(businessId) ?? {
+        businessId,
+        status: "online",
+        updatedBy: "system",
+        updatedAt: new Date(0).toISOString()
+      }
+    );
   }
 
   private requireBusiness(businessId: string): BusinessSummary {
@@ -10473,6 +10910,20 @@ export class Cp2Store {
       }
     }
 
+    this.shopPresences.delete(businessId);
+    for (const [id, invite] of this.networkInvites.entries()) {
+      if (invite.businessId === businessId) this.networkInvites.delete(id);
+    }
+    for (const [id, request] of this.publicCustomerCareRequests.entries()) {
+      if (request.businessId === businessId) this.publicCustomerCareRequests.delete(id);
+    }
+    for (const [id, message] of this.publicStorefrontMessages.entries()) {
+      if (message.businessId === businessId) this.publicStorefrontMessages.delete(id);
+    }
+    for (const [id, order] of this.publicOrders.entries()) {
+      if (order.businessId === businessId) this.publicOrders.delete(id);
+    }
+
     for (const [id, membership] of this.memberships.entries()) {
       if (membership.businessId === businessId) {
         this.memberships.delete(id);
@@ -10545,6 +10996,11 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.logistics, scope);
       deletedRecordCount += deleteScopedMapRecords(this.dataExports, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkInvites, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.publicCustomerCareRequests, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.publicStorefrontMessages, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.publicOrders, scope);
       deletedRecordCount += deleteScopedMapRecords(this.verificationTiers, scope);
       deletedRecordCount += deleteScopedMapRecords(this.taxConfigs, scope);
       deletedRecordCount += deleteScopedMapRecords(this.deviceTrust, scope);
@@ -12882,6 +13338,35 @@ function syncOriginCursor(accountId: string): string {
 function syncRecordDate(value: string): Date {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function normalizeRequiredBoundedText(value: string, label: string, maximumLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new Cp2Error(400, `${label.replaceAll(" ", "_")}_required`, `${label} is required.`);
+  }
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_too_long`,
+      `${label} must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
+}
+
+function normalizeOptionalBoundedText(value: string | null, maximumLength: number): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized.length === 0) return null;
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      "value_too_long",
+      `Value must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
 }
 
 function assertValid(result: { ok: boolean; errors: string[] }): void {

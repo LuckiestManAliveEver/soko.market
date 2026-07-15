@@ -39,13 +39,15 @@ interface PlayLegalReadiness {
 
 describe("CP27 Google Play legal readiness", () => {
   it("provides a public account-deletion resource and secure authenticated web path", async () => {
-    const [readiness, main, routes, deletionPage, renderBlueprint] = await Promise.all([
-      readJson<PlayLegalReadiness>("../config/play-legal-readiness.json"),
-      readFile(new URL("../apps/web/src/main.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../apps/web/src/routes.ts", import.meta.url), "utf8"),
-      readFile(new URL("../apps/web/src/legal/AccountDeletionPage.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../render.yaml", import.meta.url), "utf8")
-    ]);
+    const [readiness, application, router, routes, deletionPage, renderBlueprint] =
+      await Promise.all([
+        readJson<PlayLegalReadiness>("../config/play-legal-readiness.json"),
+        readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
+        readFile(new URL("../apps/web/src/AppRouter.tsx", import.meta.url), "utf8"),
+        readFile(new URL("../apps/web/src/routes.ts", import.meta.url), "utf8"),
+        readFile(new URL("../apps/web/src/legal/AccountDeletionPage.tsx", import.meta.url), "utf8"),
+        readFile(new URL("../render.yaml", import.meta.url), "utf8")
+      ]);
 
     expect(readiness.checkpoint).toBe("CP27");
     expect(readiness.accountDeletion).toMatchObject({
@@ -59,9 +61,9 @@ describe("CP27 Google Play legal readiness", () => {
       lawfulRetentionDisclosed: true
     });
     expect(routes).toContain('accountDeletion: "/account-deletion"');
-    expect(main).toContain("window.location.pathname === routes.accountDeletion");
-    expect(main).toContain('get("intent") === "account-deletion"');
-    expect(main).toContain("Delete account and associated data");
+    expect(router).toContain("window.location.pathname === routes.accountDeletion");
+    expect(application).toContain('get("intent") === "account-deletion"');
+    expect(application).toContain("Delete account and associated data");
     expect(deletionPage).toContain("Continue to secure deletion request");
     expect(deletionPage).toContain("You do not need to reinstall or open the Android app.");
     expect(renderBlueprint).toContain("source: /*\n        destination: /index.html");

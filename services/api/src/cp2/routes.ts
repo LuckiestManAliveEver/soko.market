@@ -20,6 +20,8 @@ import type {
   LaunchIncidentSeverity,
   LaunchIncidentStatus,
   ProductImportDraft,
+  PublicCustomerCareRequestType,
+  ShopPresenceStatus,
   SocialNetworkProvider,
   SupplierImportDraft,
   TaxCountryCode,
@@ -235,6 +237,41 @@ interface BusinessParams {
 
 interface StorefrontParams {
   agentId: string;
+}
+
+interface ShopPresenceBody {
+  status?: string;
+}
+
+interface NetworkInviteContactBody {
+  name?: string;
+  phone?: string | null;
+  email?: string | null;
+}
+
+interface NetworkInvitesBody {
+  contacts?: NetworkInviteContactBody[];
+}
+
+interface PublicCustomerCareBody {
+  type?: string;
+  customerName?: string | null;
+  phone?: string | null;
+  message?: string | null;
+}
+
+interface PublicStorefrontMessageBody {
+  visitorId?: string;
+  body?: string;
+  attachmentNames?: string[];
+}
+
+interface PublicOrderBody {
+  visitorId?: string;
+  customerName?: string;
+  phone?: string;
+  note?: string | null;
+  items?: Array<{ productId?: string; quantity?: number }>;
 }
 
 interface ProductParams extends BusinessParams {
@@ -496,6 +533,10 @@ interface ShopDeletionFinalizeBody {
 }
 
 interface ShopDeletionParams extends BusinessParams {
+  requestId: string;
+}
+
+interface AccountRestorationParams {
   requestId: string;
 }
 
@@ -2002,6 +2043,168 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/public/storefronts/:agentId/customer-care",
+    async (
+      request: FastifyRequest<{ Params: StorefrontParams; Body: PublicCustomerCareBody }>,
+      reply
+    ) => {
+      try {
+        return store.createPublicCustomerCareRequest({
+          agentId: parseString(request.params.agentId, "agentId"),
+          type: parsePublicCustomerCareType(request.body.type),
+          customerName: parseNullableString(request.body.customerName),
+          phone: parseNullableString(request.body.phone),
+          message: parseNullableString(request.body.message)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/public/storefronts/:agentId/messages",
+    async (
+      request: FastifyRequest<{ Params: StorefrontParams; Body: PublicStorefrontMessageBody }>,
+      reply
+    ) => {
+      try {
+        return store.createPublicStorefrontMessage({
+          agentId: parseString(request.params.agentId, "agentId"),
+          visitorId: parseString(request.body.visitorId, "visitorId"),
+          body: parseString(request.body.body, "body"),
+          attachmentNames: parseStringArray(request.body.attachmentNames, "attachmentNames", 10)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/public/storefronts/:agentId/orders",
+    async (request: FastifyRequest<{ Params: StorefrontParams; Body: PublicOrderBody }>, reply) => {
+      try {
+        return store.createPublicOrder({
+          agentId: parseString(request.params.agentId, "agentId"),
+          visitorId: parseString(request.body.visitorId, "visitorId"),
+          customerName: parseString(request.body.customerName, "customerName"),
+          phone: parseString(request.body.phone, "phone"),
+          note: parseNullableString(request.body.note),
+          items: parsePublicOrderItems(request.body.items)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/presence",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getShopPresence({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/presence",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: ShopPresenceBody }>, reply) => {
+      try {
+        return store.setShopPresence({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          status: parseShopPresenceStatus(request.body.status)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/network/invites",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listNetworkInvites({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/network/invites",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: NetworkInvitesBody }>,
+      reply
+    ) => {
+      try {
+        return {
+          invites: store.createNetworkInvites({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId,
+            contacts: parseNetworkInviteContacts(request.body.contacts)
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/storefront/customer-care",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listPublicCustomerCareRequests({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/storefront/messages",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listPublicStorefrontMessages({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/storefront/orders",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listPublicOrders({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/businesses/:businessId/products",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -2734,6 +2937,33 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         });
         reply.header("set-cookie", clearSessionCookie());
         return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/account-restoration/requests", async (request, reply) => {
+    try {
+      return {
+        requests: store.listRestorableAccountDeletions({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/account-restoration/:requestId",
+    async (request: FastifyRequest<{ Params: AccountRestorationParams; Body: PinBody }>, reply) => {
+      try {
+        return store.restoreAccountDeletion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          requestId: parseString(request.params.requestId, "requestId"),
+          pin: parseString(request.body.pin, "pin")
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -4715,6 +4945,62 @@ function parseE2eePublicKey(value: unknown, field: string): E2eePublicKey {
         }
       : {})
   };
+}
+
+function parseShopPresenceStatus(value: unknown): ShopPresenceStatus {
+  if (value === "online" || value === "private" || value === "offline") return value;
+  throw new Cp2Error(400, "presence_status_invalid", "Presence status is invalid.");
+}
+
+function parsePublicCustomerCareType(value: unknown): PublicCustomerCareRequestType {
+  if (
+    value === "callback" ||
+    value === "quote" ||
+    value === "support" ||
+    value === "registration"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "customer_care_type_invalid", "Customer-care request type is invalid.");
+}
+
+function parseStringArray(value: unknown, name: string, maximumItems: number): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new Cp2Error(400, `${name}_invalid`, `${name} is invalid.`);
+  }
+  return value.map((item, index) => parseString(item, `${name}[${index}]`));
+}
+
+function parseNetworkInviteContacts(value: unknown): Array<{
+  name: string;
+  phone: string | null;
+  email: string | null;
+}> {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "contacts_required", "contacts is required.");
+  }
+  return value.map((item, index) => {
+    const record = parseRequestBody(item);
+    return {
+      name: parseString(record.name, `contacts[${index}].name`),
+      phone: parseNullableString(record.phone),
+      email: parseNullableString(record.email)
+    };
+  });
+}
+
+function parsePublicOrderItems(value: unknown): Array<{ productId: string; quantity: number }> {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "order_items_required", "Order items are required.");
+  }
+  return value.map((item, index) => {
+    const record = parseRequestBody(item);
+    return {
+      productId: parseString(record.productId, `items[${index}].productId`),
+      quantity: parsePositiveInteger(record.quantity, `items[${index}].quantity`)
+    };
+  });
 }
 
 function parseNullableString(value: unknown): string | null {

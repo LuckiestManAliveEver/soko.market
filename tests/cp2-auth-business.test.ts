@@ -55,6 +55,7 @@ interface PublicStorefrontResponse {
   agentId: string;
   sokoId: string;
   businessName: string;
+  presence: { status: "online" | "private" | "offline"; updatedAt: string };
   products: Array<{
     id: string;
     name: string;
@@ -614,6 +615,7 @@ describe("CP2 auth and business creation", () => {
       agentId: business.business.sokoId,
       sokoId: business.business.sokoId,
       businessName,
+      presence: { status: "online", updatedAt: "1970-01-01T00:00:00.000Z" },
       products: [
         {
           id: stockedProduct.id,

@@ -36,6 +36,11 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "dataExports", tableName: "cp2_data_exports" },
   { key: "accountDeletionRequests", tableName: "cp2_account_deletion_requests" },
   { key: "accountDeletionProofs", tableName: "cp2_account_deletion_proofs" },
+  { key: "shopPresences", tableName: "cp2_shop_presences" },
+  { key: "networkInvites", tableName: "cp2_network_invites" },
+  { key: "publicCustomerCareRequests", tableName: "cp2_public_customer_care_requests" },
+  { key: "publicStorefrontMessages", tableName: "cp2_public_storefront_messages" },
+  { key: "publicOrders", tableName: "cp2_public_orders" },
   { key: "verificationTiers", tableName: "cp2_verification_tiers" },
   { key: "taxConfigs", tableName: "cp2_tax_configs" },
   { key: "deviceTrust", tableName: "cp2_device_trust" },
@@ -91,6 +96,10 @@ const mutatingMethodNames = new Set([
   "createLogistics",
   "createMcpAccessToken",
   "createProduct",
+  "createNetworkInvites",
+  "createPublicCustomerCareRequest",
+  "createPublicOrder",
+  "createPublicStorefrontMessage",
   "createProductCatalogueImport",
   "createReceiptOCRJob",
   "createRuntimeSession",
@@ -154,6 +163,8 @@ const mutatingMethodNames = new Set([
   "finalizeShopDeletion",
   "activateAiModel",
   "restoreShopDeletion",
+  "restoreAccountDeletion",
+  "setShopPresence",
   "purgeExpiredShopDeletions",
   "purgeExpiredAccountDeletions",
   "registerE2eeDevice",
@@ -193,7 +204,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "022_account_deletion_purge.sql";
+const requiredMigrationFilename = "023_storefront_interaction_contracts.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -2417,6 +2428,11 @@ function emptySnapshot(): Cp2Snapshot {
     dataExports: [],
     accountDeletionRequests: [],
     accountDeletionProofs: [],
+    shopPresences: [],
+    networkInvites: [],
+    publicCustomerCareRequests: [],
+    publicStorefrontMessages: [],
+    publicOrders: [],
     verificationTiers: [],
     taxConfigs: [],
     deviceTrust: [],

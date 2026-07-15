@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { pathForOwnerView, readOwnerRoute, routes } from "../apps/web/src/routes";
 
@@ -29,7 +30,7 @@ describe("frontend navigation and action contracts", () => {
   });
 
   it("has no enabled non-submit button without an action handler", () => {
-    const source = readFileSync("apps/web/src/main.tsx", "utf8");
+    const source = readFrontendSource();
     const openingButtons = source.match(/<button\b[\s\S]*?>/g) ?? [];
     const actionless = openingButtons.filter(
       (button) => !/onClick\s*=/.test(button) && !/type\s*=\s*["{]submit/.test(button)
@@ -38,7 +39,7 @@ describe("frontend navigation and action contracts", () => {
   });
 
   it("does not ship temporary logs, blocking alerts, placeholder links, or silent stubs", () => {
-    const source = readFileSync("apps/web/src/main.tsx", "utf8");
+    const source = readFrontendSource();
     expect(source).not.toMatch(/console\.log|window\.alert|window\.prompt/);
     expect(source).not.toMatch(/href=["']#(?:["'])|javascript:void/);
     expect(source).not.toContain("coming soon");
@@ -52,3 +53,13 @@ describe("frontend navigation and action contracts", () => {
     expect(audit).toContain("Account restoration");
   });
 });
+
+function readFrontendSource(directory = "apps/web/src"): string {
+  return readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return [readFrontendSource(path)];
+      return /\.(?:ts|tsx)$/.test(entry.name) ? [readFileSync(path, "utf8")] : [];
+    })
+    .join("\n");
+}

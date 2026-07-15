@@ -38,6 +38,17 @@ export default function AccountDeletionPage() {
           </p>
         </section>
 
+        <section className="account-deletion-action-card" aria-labelledby="restore-account-title">
+          <h2 id="restore-account-title">Restore a recently deleted account</h2>
+          <p>
+            During the 30-day recovery window, sign in and re-enter your owner PIN to cancel the
+            pending deletion and reactivate shop access.
+          </p>
+          <a className="account-deletion-primary-action" href="/?intent=account-restoration">
+            Continue to secure account restoration
+          </a>
+        </section>
+
         <div className="account-deletion-content-grid">
           <section className="legal-section" aria-labelledby="deletion-steps-title">
             <h2 id="deletion-steps-title">What you will do</h2>
