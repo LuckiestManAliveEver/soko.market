@@ -94,6 +94,23 @@ button:disabled {
   margin-top: 2px;
 }
 
+.app-action-notice {
+  background: #173f2b;
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  left: 50%;
+  max-width: min(92vw, 680px);
+  padding: 9px 13px;
+  pointer-events: none;
+  position: fixed;
+  top: 72px;
+  transform: translateX(-50%);
+  width: max-content;
+  z-index: 60;
+}
+
 .top-bar {
   align-items: center;
   background: rgba(255, 255, 255, 0.96);
@@ -2367,12 +2384,28 @@ button:disabled {
   padding: 14px;
 }
 
-.shop-discovery-card > div:first-child {
+.shop-discovery-identity {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: grid;
+  font: inherit;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.shop-discovery-card > div:first-child,
+.shop-discovery-identity {
   display: grid;
   gap: 4px;
 }
 
-.shop-discovery-card > div:first-child > span {
+.shop-discovery-card > div:first-child > span,
+.shop-discovery-identity > span {
   color: #117a4f;
   font-size: 11px;
   font-weight: 900;
@@ -2380,8 +2413,28 @@ button:disabled {
 }
 
 .storefront-preview-heading {
+  appearance: none;
   align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
   grid-template-columns: auto minmax(0, 1fr);
+  min-height: 52px;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.message-inline-action,
+.account-deletion-verification {
+  background: #f7faf7;
+  border: 1px solid #cfddd2;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
 }
 
 .storefront-preview-logo {
@@ -3129,7 +3182,7 @@ details.nested-form-section summary {
   font-weight: 800;
 }
 
-.composer-input input {
+.composer-input textarea {
   appearance: none;
   background: #ffffff;
   border: 1px solid #b8c5bc;
@@ -3138,6 +3191,7 @@ details.nested-form-section summary {
   font-size: 16px;
   min-height: 42px;
   min-width: 0;
+  resize: vertical;
   padding: 9px 12px;
   width: 100%;
 }

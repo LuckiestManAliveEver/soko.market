@@ -4675,7 +4675,9 @@ export class Cp2Store {
     this.requireOwnerMembership(input.businessId, session.user.id);
     const business = this.requireBusiness(input.businessId);
 
-    if (input.shopId.trim() !== business.sokoId) {
+    if (
+      normalizeStorefrontLookupId(input.shopId) !== normalizeStorefrontLookupId(business.sokoId)
+    ) {
       throw new Cp2Error(400, "shop_id_mismatch", "Type the exact shop ID to continue.");
     }
 
@@ -11197,7 +11199,7 @@ export class Cp2Store {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const digest = createHash("sha256").update(`${seed}:${attempt}`).digest("hex").slice(0, 12);
       const numericId = (Number.parseInt(digest, 16) % 100_000_000).toString().padStart(8, "0");
-      const candidate = `${namespace}-A${numericId}`;
+      const candidate = `${namespace}A${numericId}`;
 
       if (!this.hasGlobalShopId(candidate)) {
         return candidate;
@@ -12131,17 +12133,17 @@ function buildReceiptOCRWarnings(parsed: ParsedReceiptText, hasContent: boolean)
 }
 
 function inferCountryNamespace(destination: string): string {
-  const match = destination.match(/^\+(\d{1,3})/);
-  return match === null ? "+254" : `+${match[1]}`;
+  const match = destination.match(/^\+?(\d{1,3})/);
+  return match?.[1] ?? "254";
 }
 
 function extractSokoIdNamespace(sokoId: string): string {
-  const match = sokoId.match(/^(\+\d{1,3})-A\d{8}$/);
-  return match?.[1] ?? "+254";
+  const match = sokoId.match(/^\+?(\d{1,3})-?[A-Za-z]\d{8}$/);
+  return match?.[1] ?? "254";
 }
 
 function normalizeStorefrontLookupId(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim().toLowerCase().replace(/^\+/, "").replace("-", "");
 }
 
 function formatRuntimeModelMessage(

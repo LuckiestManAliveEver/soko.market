@@ -819,18 +819,18 @@ Source:
 Core concept:
 
 ```text
-The BigFish soko: +254-A12567835
+The BigFish soko: 254A12567835
 ```
 
 Where:
 
-- `+254` is the country namespace.
+- `254` is the country namespace.
 - `A` is the Business Agent identifier prefix.
 - `12567835` is the unique global shop identifier.
 
 Deliverables:
 
-- Stable global shop ID generation using the `+country-A########` format.
+- Stable global shop ID generation using the compact `countryA########` format.
 - Business Agent identity display in owner storefront/profile surfaces.
 - Public storefront display of the shop ID.
 - Customer conversation entry by Soko ID.

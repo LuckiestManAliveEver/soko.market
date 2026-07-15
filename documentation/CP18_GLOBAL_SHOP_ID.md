@@ -13,12 +13,12 @@ The concept defines every Soko shop by a globally unique Business Agent ID inste
 Example:
 
 ```text
-The BigFish soko: +254-A12567835
+The BigFish soko: 254A12567835
 ```
 
 Where:
 
-- `+254` is the country namespace.
+- `254` is the country namespace.
 - `A` is the Business Agent identifier prefix.
 - `12567835` is the unique global shop identifier.
 
@@ -47,17 +47,18 @@ Required first-pass surfaces:
 - show the Soko ID prominently in the public storefront
 - let customers use the ID to start or resume a storefront conversation
 - keep phone numbers as contact details, not primary shop identity
-- use the `+country-Aidentifier` pattern so the value is not confused with a telephone number
+- use the compact `countryAidentifier` pattern without telephone punctuation
 - support copy/share affordances for packaging, receipts, and QR-code workflows
 
 ## Implemented Surfaces
 
-- Every new business receives a stable `sokoId` in the `+country-A########` format.
+- Every new business receives a stable `sokoId` in the `countryA########` format (for example, `254A12567835`).
 - Phone signups infer the country namespace from the owner contact number.
 - Email/social signups default to the Kenya namespace until a business-country field exists.
 - Business creation emits `business.global_shop_id_created` audit events.
 - Public storefront responses include both `agentId` and `sokoId`.
 - Public storefront lookup accepts the Soko ID and the legacy generated storefront slug.
+- Legacy `+country-A########` identifiers are normalized to the compact canonical format when read.
 - Owner profile shows the Soko Global Shop ID with copy actions for the ID and storefront URL.
 - Public storefront chat shows the Soko ID in the header and greeting.
 - Storefront URLs are now generated from the Soko ID.

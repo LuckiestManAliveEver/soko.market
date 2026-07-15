@@ -63,6 +63,7 @@ import {
   type DecryptedMessage,
   type E2eeIdentity
 } from "./e2ee";
+import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import "./styles.css";
 
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
@@ -1750,7 +1751,7 @@ function App() {
     return <PublicStorefrontChat agentId={storefrontAgentId} />;
   }
 
-  if (window.location.pathname === "/terms") {
+  if (window.location.pathname === routes.terms) {
     return (
       <Suspense
         fallback={
@@ -1764,7 +1765,7 @@ function App() {
     );
   }
 
-  if (window.location.pathname === "/privacy") {
+  if (window.location.pathname === routes.privacy) {
     return (
       <Suspense
         fallback={
@@ -1778,7 +1779,7 @@ function App() {
     );
   }
 
-  if (window.location.pathname === "/account-deletion") {
+  if (window.location.pathname === routes.accountDeletion) {
     return (
       <Suspense
         fallback={
@@ -1789,6 +1790,19 @@ function App() {
       >
         <AccountDeletionPage />
       </Suspense>
+    );
+  }
+
+  if (
+    readOwnerRoute(window.location.pathname) === null &&
+    window.location.pathname !== routes.oauthCallback
+  ) {
+    return (
+      <main className="legal-placeholder">
+        <h1>Destination unavailable</h1>
+        <p>This address does not match a Soko.market page.</p>
+        <a href={routes.marketplace}>Return to the marketplace</a>
+      </main>
     );
   }
 
@@ -1827,12 +1841,36 @@ function formatShortCommit(commitSha: string): string {
   return commitSha === "local" ? "local" : commitSha.slice(0, 7);
 }
 
+function useAsyncActions() {
+  const activeActions = useRef(new Set<string>());
+  const [pendingActions, setPendingActions] = useState<string[]>([]);
+
+  async function runAction<T>(key: string, action: () => Promise<T>): Promise<T | undefined> {
+    if (activeActions.current.has(key)) return undefined;
+    activeActions.current.add(key);
+    setPendingActions((current) => [...current, key]);
+    try {
+      return await action();
+    } finally {
+      activeActions.current.delete(key);
+      setPendingActions((current) => current.filter((item) => item !== key));
+    }
+  }
+
+  return {
+    hasPending: pendingActions.length > 0,
+    isPending: (key: string) => pendingActions.includes(key),
+    runAction
+  };
+}
+
 function OwnerApp() {
   const accountDeletionIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
+  const initialOwnerRoute = readOwnerRoute(window.location.pathname);
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null
       ? (initialSetupDraft?.channel ?? "phone")
@@ -1879,8 +1917,11 @@ function OwnerApp() {
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
   const [statusMessage, setStatusMessage] = useState("Checking session");
-  const [view, setView] = useState<ShellView>(accountDeletionIntent ? "compliance" : "chat");
-  const [mode, setMode] = useState<SokoMode>(readStoredSokoMode);
+  const [view, setView] = useState<ShellView>(
+    accountDeletionIntent ? "compliance" : (initialOwnerRoute?.view ?? "chat")
+  );
+  const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
+  const { hasPending, isPending, runAction } = useAsyncActions();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
@@ -1966,6 +2007,23 @@ function OwnerApp() {
   const activeImportJob =
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
+  function navigateToView(nextView: ShellView, options?: { replace?: boolean }) {
+    setView(nextView);
+    const nextPath = pathForOwnerView(nextView, mode);
+    if (window.location.pathname === nextPath) return;
+    const method = options?.replace ? "replaceState" : "pushState";
+    window.history[method]({ mode, view: nextView }, "", nextPath);
+  }
+
+  function returnToChat() {
+    const currentState = window.history.state as { view?: ShellView } | null;
+    if (currentState?.view !== undefined && currentState.view !== "chat") {
+      window.history.back();
+      return;
+    }
+    navigateToView("chat");
+  }
+
   useEffect(() => {
     void loadOAuthProviders();
     void handleOAuthCallback().then((handled) => {
@@ -1973,6 +2031,19 @@ function OwnerApp() {
         void refreshSession();
       }
     });
+  }, []);
+
+  useEffect(() => {
+    function restoreRoute() {
+      const route = readOwnerRoute(window.location.pathname);
+      if (route === null) return;
+      setMode(route.mode);
+      setView(route.view);
+      setIsWorkspacePanelOpen(false);
+    }
+
+    window.addEventListener("popstate", restoreRoute);
+    return () => window.removeEventListener("popstate", restoreRoute);
   }, []);
 
   useEffect(() => {
@@ -2244,7 +2315,7 @@ function OwnerApp() {
   }, [business, setupComplete, view]);
 
   async function handleOAuthCallback(): Promise<boolean> {
-    if (window.location.pathname !== "/auth/oauth/callback") {
+    if (window.location.pathname !== routes.oauthCallback) {
       return false;
     }
 
@@ -2572,7 +2643,7 @@ function OwnerApp() {
     try {
       const response = await postJson<OAuthStartResponse>("/auth/oauth/start", {
         provider,
-        redirectUri: `${window.location.origin}/auth/oauth/callback`
+        redirectUri: `${window.location.origin}${routes.oauthCallback}`
       });
       const pendingOAuth: PendingOAuthLogin = {
         csrfToken: response.csrfToken,
@@ -2778,7 +2849,15 @@ function OwnerApp() {
       setIsLoginOpen(false);
       setIsOtpVerified(false);
       setLoginPin("");
-      setView("chat");
+      const destinationView = accountDeletionIntent
+        ? "compliance"
+        : (initialOwnerRoute?.view ?? "chat");
+      setView(destinationView);
+      window.history.replaceState(
+        { mode, view: destinationView },
+        "",
+        pathForOwnerView(destinationView, mode)
+      );
       setStatusMessage("Login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -2917,6 +2996,7 @@ function OwnerApp() {
       setIsWorkspaceUnlocked(true);
       setIsBusinessSetupOpen(false);
       setMode("seller");
+      window.history.replaceState({ mode: "seller", view: "chat" }, "", routes.sell);
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
       localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
@@ -2942,9 +3022,9 @@ function OwnerApp() {
     }
   }
 
-  async function saveProduct() {
+  async function saveProduct(): Promise<boolean> {
     if (business === null) {
-      return;
+      return false;
     }
 
     try {
@@ -2971,8 +3051,10 @@ function OwnerApp() {
       setStockQuantityAfter(String(product.quantity));
       await loadProducts(business.id);
       setStatusMessage(productForm.id === null ? "Product created" : "Product updated");
+      return true;
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
+      return false;
     }
   }
 
@@ -2980,6 +3062,9 @@ function OwnerApp() {
     if (business === null) {
       return;
     }
+    const productName =
+      products.find((product) => product.id === productId)?.name ?? "this product";
+    if (!window.confirm(`Delete ${productName}? This cannot be undone.`)) return;
 
     try {
       const product = await deleteJson<ProductSummary>(
@@ -3094,6 +3179,9 @@ function OwnerApp() {
     if (business === null) {
       return;
     }
+    const supplierName =
+      suppliers.find((supplier) => supplier.id === supplierId)?.name ?? "this supplier";
+    if (!window.confirm(`Delete ${supplierName}? This cannot be undone.`)) return;
 
     try {
       await deleteJson<{ deleted: true; supplierId: string }>(
@@ -3143,6 +3231,7 @@ function OwnerApp() {
     if (business === null) {
       return;
     }
+    if (!window.confirm("Delete this sales agent? This cannot be undone.")) return;
 
     try {
       await deleteJson<{ deleted: true; salesAgentId: string }>(
@@ -3712,12 +3801,13 @@ function OwnerApp() {
     }
   }
 
-  async function scheduleAccountDeletion() {
+  async function scheduleAccountDeletion(pin: string): Promise<boolean> {
     if (business === null) {
-      return;
+      return false;
     }
 
     try {
+      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin });
       const deletion = await postJson<AccountDeletionRequestSummary>(
         `/businesses/${business.id}/compliance/account-deletion`,
         {
@@ -3734,9 +3824,14 @@ function OwnerApp() {
       localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.removeItem(activeAgentStorageKey);
       localStorage.removeItem(ownerAuthStorageKey);
+      window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
+      setMode("marketplace");
+      setView("chat");
       setStatusMessage("Account deactivated and anonymization scheduled");
+      return true;
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
+      return false;
     }
   }
 
@@ -4203,6 +4298,11 @@ function OwnerApp() {
     }
 
     setMode(nextMode);
+    window.history.pushState(
+      { mode: nextMode, view: "chat" },
+      "",
+      pathForOwnerView("chat", nextMode)
+    );
     setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
     setView("chat");
     setIsWorkspacePanelOpen(false);
@@ -4767,6 +4867,7 @@ function OwnerApp() {
     setRecoveryPinConfirm("");
     setView("chat");
     setMode("marketplace");
+    window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
     setIsBusinessSetupOpen(false);
     setIsLoginOpen(false);
     setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
@@ -5144,7 +5245,7 @@ function OwnerApp() {
             stockQuantityAfter={stockQuantityAfter}
             stockReason={stockReason}
             onFormChange={setProductForm}
-            onSave={() => void saveProduct()}
+            onSave={() => void runAction("product-save", saveProduct)}
             onReset={() => setProductForm(emptyProductForm)}
             onAdd={() => setProductForm(emptyProductForm)}
             onEdit={(product) => {
@@ -5167,8 +5268,10 @@ function OwnerApp() {
             }}
             onStockQuantityAfterChange={setStockQuantityAfter}
             onStockReasonChange={setStockReason}
-            onAdjustStock={() => void adjustStock()}
-            onRemove={(productId) => void deleteProduct(productId)}
+            onAdjustStock={() => void runAction("stock-adjust", adjustStock)}
+            onRemove={(productId) =>
+              void runAction("product-delete", () => deleteProduct(productId))
+            }
           />
         );
       case "suppliers":
@@ -5177,7 +5280,7 @@ function OwnerApp() {
             suppliers={suppliers}
             form={supplierForm}
             onFormChange={setSupplierForm}
-            onSave={() => void saveSupplier()}
+            onSave={() => void runAction("supplier-save", saveSupplier)}
             onReset={() => setSupplierForm(emptySupplierForm)}
             onEdit={(supplier) =>
               setSupplierForm({
@@ -5188,10 +5291,16 @@ function OwnerApp() {
                 notes: supplier.notes ?? ""
               })
             }
-            onDelete={(supplierId) => void deleteSupplierCard(supplierId)}
-            onSaveSalesAgent={(supplierId, agent) => void saveSalesAgent(supplierId, agent)}
+            onDelete={(supplierId) =>
+              void runAction("supplier-delete", () => deleteSupplierCard(supplierId))
+            }
+            onSaveSalesAgent={(supplierId, agent) =>
+              void runAction("sales-agent-save", () => saveSalesAgent(supplierId, agent))
+            }
             onDeleteSalesAgent={(supplierId, salesAgentId) =>
-              void deleteSalesAgentCard(supplierId, salesAgentId)
+              void runAction("sales-agent-delete", () =>
+                deleteSalesAgentCard(supplierId, salesAgentId)
+              )
             }
             onSearchContacts={searchSupplierContacts}
             onLinkSupplierContact={(supplierId, networkNodeId) =>
@@ -5207,7 +5316,9 @@ function OwnerApp() {
               void createSalesAgentFromPhoneContact(supplierId, networkNodeId)
             }
             onUploadReceipt={uploadSupplierReceipt}
-            onConfirmReceipt={(job) => void confirmSupplierReceipt(job)}
+            onConfirmReceipt={(job) =>
+              void runAction("receipt-confirm", () => confirmSupplierReceipt(job))
+            }
             onImport={() => setView("imports")}
           />
         );
@@ -5217,7 +5328,7 @@ function OwnerApp() {
             customers={customers}
             form={customerForm}
             onFormChange={setCustomerForm}
-            onSave={() => void saveCustomer()}
+            onSave={() => void runAction("customer-save", saveCustomer)}
             onReset={() => setCustomerForm(emptyCustomerForm)}
             onEdit={(customer) =>
               setCustomerForm({
@@ -5239,8 +5350,8 @@ function OwnerApp() {
             form={invoiceForm}
             preview={invoicePreview}
             onFormChange={setInvoiceForm}
-            onPreview={() => void previewInvoice()}
-            onSave={() => void saveInvoice()}
+            onPreview={() => void runAction("invoice-preview", previewInvoice)}
+            onSave={() => void runAction("invoice-save", saveInvoice)}
             onReset={() => {
               setInvoiceForm(emptyInvoiceForm);
               setInvoicePreview(null);
@@ -5258,7 +5369,9 @@ function OwnerApp() {
               });
               setInvoicePreview(invoice);
             }}
-            onConfirm={(invoiceId) => void confirmInvoice(invoiceId)}
+            onConfirm={(invoiceId) =>
+              void runAction("invoice-confirm", () => confirmInvoice(invoiceId))
+            }
             onPrint={printInvoice}
           />
         );
@@ -5267,12 +5380,22 @@ function OwnerApp() {
           <NetworkSurface
             graph={networkGraph}
             onRefresh={() => void loadNetworkGraph()}
-            onSyncContacts={() => void syncPhoneNetwork()}
-            onSyncSocial={(provider) => void syncSocialNetwork(provider)}
-            onRoute={(targetNodeId) => void requestNetworkRoute(targetNodeId)}
-            onApproveRoute={(routeId) => void approveNetworkRoute(routeId)}
-            onRejectRoute={(routeId) => void rejectNetworkRoute(routeId)}
-            onDisconnectSource={(sourceId) => void disconnectNetworkSource(sourceId)}
+            onSyncContacts={() => void runAction("network-sync", syncPhoneNetwork)}
+            onSyncSocial={(provider) =>
+              void runAction("network-social", () => syncSocialNetwork(provider))
+            }
+            onRoute={(targetNodeId) =>
+              void runAction("network-route", () => requestNetworkRoute(targetNodeId))
+            }
+            onApproveRoute={(routeId) =>
+              void runAction("network-route-approve", () => approveNetworkRoute(routeId))
+            }
+            onRejectRoute={(routeId) =>
+              void runAction("network-route-reject", () => rejectNetworkRoute(routeId))
+            }
+            onDisconnectSource={(sourceId) =>
+              void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
+            }
           />
         );
       case "sync":
@@ -5290,8 +5413,10 @@ function OwnerApp() {
               void loadSyncQueue(business.id);
               void loadOfflineCache(business.id);
             }}
-            onReplay={() => void replaySyncQueue()}
-            onReplayItem={(syncItemId) => void replaySyncQueueItem(syncItemId)}
+            onReplay={() => void runAction("sync-replay", replaySyncQueue)}
+            onReplayItem={(syncItemId) =>
+              void runAction("sync-replay-item", () => replaySyncQueueItem(syncItemId))
+            }
           />
         );
       case "runtime":
@@ -5300,7 +5425,9 @@ function OwnerApp() {
             sessions={runtimeSessions}
             selectedSessionId={selectedRuntimeHistorySessionId}
             turns={runtimeTurns}
-            onCreateSession={() => void createRuntimeHistorySession()}
+            onCreateSession={() =>
+              void runAction("runtime-session-create", createRuntimeHistorySession)
+            }
             onRefresh={() => void loadRuntimeSessions(business.id)}
             onSelectSession={(sessionId) => {
               setSelectedRuntimeHistorySessionId(sessionId);
@@ -5317,7 +5444,7 @@ function OwnerApp() {
             customerDebts={customerDebts}
             form={paymentForm}
             onFormChange={setPaymentForm}
-            onRecord={() => void recordPayment()}
+            onRecord={() => void runAction("payment-record", recordPayment)}
             onRefresh={() => void loadPaymentData(business.id)}
           />
         );
@@ -5329,11 +5456,13 @@ function OwnerApp() {
             activeImportJob={activeImportJob}
             selectedImportJobId={selectedImportJobId}
             onFormChange={setImportForm}
-            onCreate={() => void createDocumentImport()}
+            onCreate={() => void runAction("import-create", createDocumentImport)}
             onSelectJob={setSelectedImportJobId}
             onRowChange={updateImportRowLocal}
-            onSaveRow={(job, row) => void saveImportRow(job, row)}
-            onConfirm={(job) => void confirmImport(job)}
+            onSaveRow={(job, row) =>
+              void runAction("import-row-save", () => saveImportRow(job, row))
+            }
+            onConfirm={(job) => void runAction("import-confirm", () => confirmImport(job))}
             onRefresh={() => void loadDocumentImports(business.id)}
           />
         );
@@ -5344,9 +5473,9 @@ function OwnerApp() {
             logistics={logistics}
             form={logisticsForm}
             onFormChange={setLogisticsForm}
-            onCreate={() => void createLogistics()}
+            onCreate={() => void runAction("logistics-create", createLogistics)}
             onStatusChange={(logisticsId, status) =>
-              void updateLogisticsStatus(logisticsId, status)
+              void runAction("logistics-status", () => updateLogisticsStatus(logisticsId, status))
             }
             onRefresh={() => void loadLogistics(business.id)}
           />
@@ -5362,11 +5491,16 @@ function OwnerApp() {
             taxConfig={taxConfig}
             deviceTrust={deviceTrust}
             onFormChange={setComplianceForm}
-            onExport={() => void createDataExport()}
-            onSaveVerification={() => void saveVerificationTier()}
-            onSaveTax={() => void saveTaxConfig()}
-            onSaveDeviceTrust={() => void saveDeviceTrust()}
-            onScheduleDeletion={() => void scheduleAccountDeletion()}
+            onExport={() => void runAction("compliance-export", createDataExport)}
+            onSaveVerification={() =>
+              void runAction("compliance-verification", saveVerificationTier)
+            }
+            onSaveTax={() => void runAction("compliance-tax", saveTaxConfig)}
+            onSaveDeviceTrust={() => void runAction("compliance-device", saveDeviceTrust)}
+            isDeletionPending={isPending("account-deletion")}
+            onScheduleDeletion={async (pin) =>
+              (await runAction("account-deletion", () => scheduleAccountDeletion(pin))) ?? false
+            }
             onRefresh={() => void loadCompliance(business.id)}
           />
         );
@@ -5377,14 +5511,18 @@ function OwnerApp() {
             readiness={betaReadiness}
             supportTickets={betaSupportTickets}
             onFormChange={setBetaForm}
-            onUpdateAccess={() => void updateBetaAccess()}
-            onEnableFlags={() => void enableBetaFlags()}
-            onRecordDeviceTest={() => void recordBetaDeviceTest()}
-            onCreateSupportTicket={() => void createBetaSupportTicket()}
-            onUpdateSupportTicket={(supportTicketId, status) =>
-              void updateBetaSupportTicketStatus(supportTicketId, status)
+            onUpdateAccess={() => void runAction("beta-access", updateBetaAccess)}
+            onEnableFlags={() => void runAction("beta-flags", enableBetaFlags)}
+            onRecordDeviceTest={() => void runAction("beta-device", recordBetaDeviceTest)}
+            onCreateSupportTicket={() =>
+              void runAction("beta-ticket-create", createBetaSupportTicket)
             }
-            onRecordTelemetry={() => void recordBetaTelemetry()}
+            onUpdateSupportTicket={(supportTicketId, status) =>
+              void runAction("beta-ticket-update", () =>
+                updateBetaSupportTicketStatus(supportTicketId, status)
+              )
+            }
+            onRecordTelemetry={() => void runAction("beta-telemetry", recordBetaTelemetry)}
             onRefresh={() => void loadBetaReadiness(business.id)}
           />
         );
@@ -5395,11 +5533,13 @@ function OwnerApp() {
             readiness={launchReadiness}
             incidents={launchIncidents}
             onFormChange={setLaunchForm}
-            onUpdateSettings={() => void updateLaunchSettings()}
-            onUpdateChecklist={() => void updateLaunchChecklist()}
-            onCreateIncident={() => void createLaunchIncident()}
+            onUpdateSettings={() => void runAction("launch-settings", updateLaunchSettings)}
+            onUpdateChecklist={() => void runAction("launch-checklist", updateLaunchChecklist)}
+            onCreateIncident={() => void runAction("launch-incident-create", createLaunchIncident)}
             onUpdateIncident={(incidentId, status) =>
-              void updateLaunchIncidentStatus(incidentId, status)
+              void runAction("launch-incident-update", () =>
+                updateLaunchIncidentStatus(incidentId, status)
+              )
             }
             onRefresh={() => void loadLaunchReadiness(business.id)}
           />
@@ -5417,7 +5557,11 @@ function OwnerApp() {
           <NotificationsSurface
             inbox={notificationInbox}
             onRefresh={() => void loadNotifications(business.id)}
-            onUpdate={(notificationId, status) => void updateNotification(notificationId, status)}
+            onUpdate={(notificationId, status) =>
+              void runAction("notification-update", () =>
+                updateNotification(notificationId, status)
+              )
+            }
           />
         );
       default:
@@ -5435,7 +5579,7 @@ function OwnerApp() {
             <button
               className="brand-lockup"
               type="button"
-              onClick={() => setupComplete && setView("agent")}
+              onClick={() => setupComplete && navigateToView("agent")}
             >
               <span className="logo-mark">S</span>
               <span>
@@ -5456,8 +5600,14 @@ function OwnerApp() {
                       : "header-action-button"
                   }
                   type="button"
+                  data-testid="marketplace-button"
                   onClick={() => {
                     setMode("marketplace");
+                    window.history.pushState(
+                      { mode: "marketplace", view: "chat" },
+                      "",
+                      routes.marketplace
+                    );
                     setView("chat");
                     setIsMarketplaceShortcutOpen(true);
                   }}
@@ -5472,11 +5622,22 @@ function OwnerApp() {
                     : "header-action-button sell"
                 }
                 type="button"
+                data-testid="sell-button"
                 onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
                 aria-pressed={mode === "seller"}
               >
                 {mode === "seller" ? "Shop" : "Sell"}
               </button>
+              {business !== null && mode === "seller" ? (
+                <button
+                  className="header-action-button"
+                  type="button"
+                  onClick={() => setIsWorkspacePanelOpen(true)}
+                  aria-haspopup="dialog"
+                >
+                  Workspace
+                </button>
+              ) : null}
               <button
                 className="icon-button"
                 type="button"
@@ -5485,16 +5646,23 @@ function OwnerApp() {
                     setIsLoginOpen(true);
                     setStatusMessage("Enter your phone number and PIN.");
                   } else {
-                    setView("agent");
+                    navigateToView("agent");
                   }
                 }}
                 aria-label={business === null ? "Owner login" : "Account and agent settings"}
+                data-testid={business === null ? undefined : "agent-profile-link"}
               >
                 <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
               </button>
             </div>
           ) : null}
         </header>
+
+        {!isAuthScreen && statusMessage.length > 0 ? (
+          <div className="app-action-notice" role="status" aria-live="polite">
+            {hasPending ? "Working…" : statusMessage}
+          </div>
+        ) : null}
 
         {shouldShowSignup ? (
           <SetupPanel
@@ -5508,13 +5676,16 @@ function OwnerApp() {
             signupPinConfirm={signupPinConfirm}
             session={session}
             statusMessage={statusMessage}
+            isRequestPending={isPending("signup-otp-request")}
+            isVerifyPending={isPending("signup-otp-verify")}
+            isCompletePending={isPending("signup-complete")}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
-            onRequestOtp={() => void requestOtp()}
-            onVerifyOtp={() => void verifyOtp()}
-            onCompleteSignup={() => void completeSignup()}
+            onRequestOtp={() => void runAction("signup-otp-request", requestOtp)}
+            onVerifyOtp={() => void runAction("signup-otp-verify", verifyOtp)}
+            onCompleteSignup={() => void runAction("signup-complete", completeSignup)}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             phoneRecaptchaRef={phoneRecaptchaRef}
@@ -5533,20 +5704,30 @@ function OwnerApp() {
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
             statusMessage={statusMessage}
+            oauthProviders={oauthProviders}
+            oauthProvidersLoaded={oauthProvidersLoaded}
+            isRequestPending={isPending("login-otp-request")}
+            isVerifyPending={isPending("login-otp-verify")}
+            isLoginPending={isPending("login-pin")}
+            isPinPending={isPending("login-pin-update")}
+            isSocialPending={isPending("social-login")}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
-            onRequestOtp={() => void requestLoginOtp()}
-            onVerifyOtp={() => void verifyLoginOtp()}
+            onRequestOtp={() => void runAction("login-otp-request", requestLoginOtp)}
+            onVerifyOtp={() => void runAction("login-otp-verify", verifyLoginOtp)}
             onLoginPinChange={setLoginPin}
             onRecoveryPinChange={setRecoveryPin}
             onRecoveryPinConfirmChange={setRecoveryPinConfirm}
             onStartPinRecovery={startPinRecovery}
             onCancelPinRecovery={cancelPinRecovery}
-            onRecoverPin={() => void recoverLoginPin()}
-            onSetMissingPin={() => void setMissingLoginPin()}
-            onLogin={() => void loginWithPin()}
+            onRecoverPin={() => void runAction("login-pin-update", recoverLoginPin)}
+            onSetMissingPin={() => void runAction("login-pin-update", setMissingLoginPin)}
+            onLogin={() => void runAction("login-pin", loginWithPin)}
+            onSocialLogin={(provider) =>
+              void runAction("social-login", () => authenticateSocialProfile(provider))
+            }
             onCancel={() => {
               setIsLoginOpen(false);
               setIsWorkspaceUnlocked(true);
@@ -5559,13 +5740,14 @@ function OwnerApp() {
             businessName={businessName}
             language={language}
             statusMessage={statusMessage}
+            isPending={isPending("business-create")}
             onBusinessNameChange={setBusinessName}
             onLanguageChange={setLanguage}
             onCancel={() => {
               setIsBusinessSetupOpen(false);
               setStatusMessage("Business setup cancelled. You can keep browsing the marketplace.");
             }}
-            onCreateBusiness={() => void createBusiness()}
+            onCreateBusiness={() => void runAction("business-create", createBusiness)}
           />
         ) : view === "agent" && business !== null ? (
           <AgentProfileSurface
@@ -5575,8 +5757,9 @@ function OwnerApp() {
             ownerLabel={userLabel}
             storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
-            onBack={() => setView("chat")}
-            onLogout={() => void logout()}
+            onBack={returnToChat}
+            onLogout={() => void runAction("logout", logout)}
+            isLoggingOut={isPending("logout")}
           />
         ) : (
           <main className="chat-workspace-shell">
@@ -5592,6 +5775,8 @@ function OwnerApp() {
               conversations={conversationInbox}
               activeConversationId={activeConversationId}
               isContactTyping={isContactTyping}
+              isConfirming={isPending("runtime-confirm")}
+              isSending={isPending("chat-send")}
               securityLabel={
                 isHumanDirectConversation(activeConversation, session)
                   ? "End-to-end encrypted"
@@ -5613,33 +5798,47 @@ function OwnerApp() {
               workspaceOpen={isWorkspacePanelOpen}
               syncSummary={syncSummary}
               onAttachmentChange={handleChatAttachmentChange}
-              onAddWorkspaceCard={() => setStatusMessage("Custom workspace cards are coming soon")}
-              onBackToChat={() => setView("chat")}
-              onConfirm={(token) => void confirmRuntimeAction(token)}
+              onAddWorkspaceCard={() => setStatusMessage("This feature is not available yet.")}
+              onBackToChat={returnToChat}
+              onConfirm={(token) =>
+                void runAction("runtime-confirm", () => confirmRuntimeAction(token))
+              }
               onDraftChange={(draft) => void signalTyping(draft)}
               onSelectConversation={(conversationId) => void selectConversation(conversationId)}
               onCreateConversation={(recipient, title) =>
-                void createDirectConversation(recipient, title)
+                void runAction("conversation-create", () =>
+                  createDirectConversation(recipient, title)
+                )
               }
               onConversationPreference={(conversationId, preference) =>
-                void updateConversationPreference(conversationId, preference)
+                void runAction("conversation-preference", () =>
+                  updateConversationPreference(conversationId, preference)
+                )
               }
-              onEnableNotifications={() => void requestMessagingNotifications()}
+              onEnableNotifications={() =>
+                void runAction("push-notifications", requestMessagingNotifications)
+              }
               onReply={setReplyToMessageId}
               onCancelReply={() => setReplyToMessageId(null)}
-              onEditMessage={(messageId, text) => void updateMessageAction(messageId, { text })}
+              onEditMessage={(messageId, text) =>
+                void runAction("message-edit", () => updateMessageAction(messageId, { text }))
+              }
               onDeleteMessage={(messageId) =>
-                void updateMessageAction(messageId, { deleted: true })
+                void runAction("message-delete", () =>
+                  updateMessageAction(messageId, { deleted: true })
+                )
               }
               onReactMessage={(messageId, reaction) =>
-                void updateMessageAction(messageId, { reaction })
+                void runAction("message-reaction", () =>
+                  updateMessageAction(messageId, { reaction })
+                )
               }
               onForwardMessage={(messageId, conversationId) =>
-                void forwardMessage(messageId, conversationId)
+                void runAction("message-forward", () => forwardMessage(messageId, conversationId))
               }
-              onRetryMessages={() => void retryQueuedMessages()}
+              onRetryMessages={() => void runAction("message-retry", retryQueuedMessages)}
               onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
-              onNavigate={setView}
+              onNavigate={navigateToView}
               onModeChange={switchMode}
               onProductEdit={(product) => {
                 setProductForm({
@@ -5654,22 +5853,28 @@ function OwnerApp() {
                 setStockProductId(product.id);
                 setStockQuantityAfter(String(product.quantity));
               }}
-              onProductFieldsSave={(fields) => void saveProductFieldStructure(fields)}
+              onProductFieldsSave={(fields) =>
+                void runAction("product-fields-save", () => saveProductFieldStructure(fields))
+              }
               onProductFormChange={setProductForm}
-              onProductRemove={(productId) => void deleteProduct(productId)}
+              onProductRemove={(productId) =>
+                void runAction("product-delete", () => deleteProduct(productId))
+              }
               onProductReset={() => setProductForm(emptyProductForm)}
-              onProductSave={() => saveProduct()}
-              onNetworkDisconnectSource={(sourceId) => void disconnectNetworkSource(sourceId)}
+              onProductSave={async () => (await runAction("product-save", saveProduct)) ?? false}
+              onNetworkDisconnectSource={(sourceId) =>
+                void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
+              }
               onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
               onNetworkProviderOAuth={authenticateSocialProfile}
               onNetworkRefresh={() => void loadNetworkGraph()}
               onRemoveAttachment={removePendingAttachment}
               onStatusChange={updateShopPresenceStatus}
-              onOpenAgentProfile={() => business !== null && setView("agent")}
+              onOpenAgentProfile={() => business !== null && navigateToView("agent")}
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen}
-              onSend={() => void sendChatDraft()}
+              onSend={() => void runAction("chat-send", sendChatDraft)}
             >
               {renderActiveWorkspace()}
             </ChatSurface>
@@ -5695,6 +5900,9 @@ interface SetupPanelProps {
   signupPinConfirm: string;
   session: SessionResponse | null;
   statusMessage: string;
+  isRequestPending: boolean;
+  isVerifyPending: boolean;
+  isCompletePending: boolean;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -5710,6 +5918,11 @@ interface SetupPanelProps {
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
   onSelectPhone: () => void;
+  onSelectEmail?: () => void;
+  onSelectSocial?: (provider: SocialSignupProvider) => void;
+  providers?: OAuthProviderSummary[];
+  providersLoaded?: boolean;
+  socialPending?: boolean;
 }
 
 function SocialLoginOptions(props: SocialLoginOptionsProps) {
@@ -5721,6 +5934,42 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
           <span aria-hidden="true">☎</span>
           Continue with phone
         </button>
+        {props.onSelectEmail === undefined ? null : (
+          <button
+            className="social-signup-button email"
+            type="button"
+            onClick={props.onSelectEmail}
+          >
+            <span aria-hidden="true">@</span>
+            Continue with email
+          </button>
+        )}
+        {props.providersLoaded === false ? (
+          <p className="shell-note" role="status">
+            Loading social sign-in options…
+          </p>
+        ) : null}
+        {props.onSelectSocial === undefined
+          ? null
+          : (props.providers ?? [])
+              .filter((provider) => provider.enabled !== false && provider.implemented !== false)
+              .map((provider) => (
+                <button
+                  className="social-signup-button"
+                  type="button"
+                  key={provider.id}
+                  onClick={() => props.onSelectSocial?.(provider.id)}
+                  disabled={!provider.configured || props.socialPending}
+                  title={
+                    provider.configured
+                      ? `Continue with ${provider.displayName}`
+                      : `${provider.displayName} sign-in is not configured yet.`
+                  }
+                >
+                  <span aria-hidden="true">{provider.icon ?? "●"}</span>
+                  Continue with {provider.displayName}
+                </button>
+              ))}
       </div>
 
       <AuthLegalFooter />
@@ -5740,8 +5989,8 @@ function AuthBrand() {
 function AuthLegalFooter() {
   return (
     <p className="auth-legal">
-      By continuing, you agree to the <a href="/terms">Terms of Service</a> and{" "}
-      <a href="/privacy">Privacy Policy</a>.
+      By continuing, you agree to the <a href={routes.terms}>Terms of Service</a> and{" "}
+      <a href={routes.privacy}>Privacy Policy</a>.
     </p>
   );
 }
@@ -5807,7 +6056,18 @@ function SetupPanel(props: SetupPanelProps) {
                   />
                 </label>
               </div>
-            ) : null}
+            ) : (
+              <label>
+                Email address
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={props.destination}
+                  onChange={(event) => props.onDestinationChange(event.target.value)}
+                  placeholder="you@example.com"
+                />
+              </label>
+            )}
             {props.channel === "phone" ? (
               <div
                 ref={props.phoneRecaptchaRef}
@@ -5815,8 +6075,17 @@ function SetupPanel(props: SetupPanelProps) {
                 aria-hidden="true"
               />
             ) : null}
-            <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-              {props.channel === "phone" ? "Send SMS code" : "Continue"}
+            <button
+              type="button"
+              onClick={props.onRequestOtp}
+              disabled={!contactIsValid || props.isRequestPending}
+              aria-busy={props.isRequestPending}
+            >
+              {props.isRequestPending
+                ? "Sending…"
+                : props.channel === "phone"
+                  ? "Send SMS code"
+                  : "Continue"}
             </button>
             <label>
               OTP
@@ -5827,8 +6096,13 @@ function SetupPanel(props: SetupPanelProps) {
                 autoComplete="one-time-code"
               />
             </label>
-            <button type="button" onClick={props.onVerifyOtp} disabled={props.challenge === null}>
-              Verify OTP
+            <button
+              type="button"
+              onClick={props.onVerifyOtp}
+              disabled={props.challenge === null || props.isVerifyPending}
+              aria-busy={props.isVerifyPending}
+            >
+              {props.isVerifyPending ? "Verifying…" : "Verify OTP"}
             </button>
             {!props.isOtpVerified ? (
               <button className="secondary" type="button" onClick={() => setAuthView("options")}>
@@ -5879,10 +6153,12 @@ function SetupPanel(props: SetupPanelProps) {
               props.session === null ||
               !props.isOtpVerified ||
               !isValidPin(props.signupPin) ||
-              props.signupPin !== props.signupPinConfirm
+              props.signupPin !== props.signupPinConfirm ||
+              props.isCompletePending
             }
+            aria-busy={props.isCompletePending}
           >
-            Continue to shop details
+            {props.isCompletePending ? "Saving…" : "Continue to shop details"}
           </button>
         </section>
       ) : null}
@@ -5894,6 +6170,7 @@ interface BusinessSetupPanelProps {
   businessName: string;
   language: SupportedLanguage;
   statusMessage: string;
+  isPending: boolean;
   onBusinessNameChange: (businessName: string) => void;
   onLanguageChange: (language: SupportedLanguage) => void;
   onCancel: () => void;
@@ -5932,9 +6209,10 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
           <button
             type="button"
             onClick={props.onCreateBusiness}
-            disabled={!props.businessName.trim()}
+            disabled={!props.businessName.trim() || props.isPending}
+            aria-busy={props.isPending}
           >
-            Create business
+            {props.isPending ? "Creating…" : "Create business"}
           </button>
           <button className="secondary" type="button" onClick={props.onCancel}>
             Not now
@@ -5961,6 +6239,13 @@ interface LoginPanelProps {
   recoveryPin: string;
   recoveryPinConfirm: string;
   statusMessage: string;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
+  isRequestPending: boolean;
+  isVerifyPending: boolean;
+  isLoginPending: boolean;
+  isPinPending: boolean;
+  isSocialPending: boolean;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -5976,6 +6261,7 @@ interface LoginPanelProps {
   onSetMissingPin: () => void;
   onLogin: () => void;
   onCancel: () => void;
+  onSocialLogin: (provider: SocialSignupProvider) => void;
   phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
@@ -6002,6 +6288,14 @@ function LoginPanel(props: LoginPanelProps) {
               props.onChannelChange("phone");
               setAuthView("phone");
             }}
+            onSelectEmail={() => {
+              props.onChannelChange("email");
+              setAuthView("email");
+            }}
+            onSelectSocial={props.onSocialLogin}
+            providers={props.oauthProviders}
+            providersLoaded={props.oauthProvidersLoaded}
+            socialPending={props.isSocialPending}
           />
         ) : (
           <>
@@ -6045,7 +6339,18 @@ function LoginPanel(props: LoginPanelProps) {
                   />
                 </label>
               </div>
-            ) : null}
+            ) : (
+              <label>
+                Email address
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={props.destination}
+                  onChange={(event) => props.onDestinationChange(event.target.value)}
+                  placeholder="you@example.com"
+                />
+              </label>
+            )}
             {needsOtp ? (
               <>
                 {props.channel === "phone" ? (
@@ -6055,8 +6360,17 @@ function LoginPanel(props: LoginPanelProps) {
                     aria-hidden="true"
                   />
                 ) : null}
-                <button type="button" onClick={props.onRequestOtp} disabled={!contactIsValid}>
-                  {props.channel === "phone" ? "Send SMS code" : "Continue"}
+                <button
+                  type="button"
+                  onClick={props.onRequestOtp}
+                  disabled={!contactIsValid || props.isRequestPending}
+                  aria-busy={props.isRequestPending}
+                >
+                  {props.isRequestPending
+                    ? "Sending…"
+                    : props.channel === "phone"
+                      ? "Send SMS code"
+                      : "Continue"}
                 </button>
                 <label>
                   OTP
@@ -6070,9 +6384,10 @@ function LoginPanel(props: LoginPanelProps) {
                 <button
                   type="button"
                   onClick={props.onVerifyOtp}
-                  disabled={props.challenge === null}
+                  disabled={props.challenge === null || props.isVerifyPending}
+                  aria-busy={props.isVerifyPending}
                 >
-                  Verify OTP
+                  {props.isVerifyPending ? "Verifying…" : "Verify OTP"}
                 </button>
               </>
             ) : (
@@ -6126,10 +6441,12 @@ function LoginPanel(props: LoginPanelProps) {
                 disabled={
                   !props.isOtpVerified ||
                   !isValidPin(props.recoveryPin) ||
-                  props.recoveryPin !== props.recoveryPinConfirm
+                  props.recoveryPin !== props.recoveryPinConfirm ||
+                  props.isPinPending
                 }
+                aria-busy={props.isPinPending}
               >
-                {isSettingPin ? "Set PIN" : "Reset PIN"}
+                {props.isPinPending ? "Saving…" : isSettingPin ? "Set PIN" : "Reset PIN"}
               </button>
               {!isSettingPin ? (
                 <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
@@ -6157,10 +6474,12 @@ function LoginPanel(props: LoginPanelProps) {
                 disabled={
                   !contactIsValid ||
                   !isValidPin(props.loginPin) ||
-                  (needsOtp && !props.isOtpVerified)
+                  (needsOtp && !props.isOtpVerified) ||
+                  props.isLoginPending
                 }
+                aria-busy={props.isLoginPending}
               >
-                Login
+                {props.isLoginPending ? "Signing in…" : "Login"}
               </button>
               {props.hasLoginPin ? (
                 <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
@@ -7632,21 +7951,15 @@ function PublicStorefrontChat(props: { agentId: string }) {
   }
 
   function requestCallback() {
-    setCheckoutOpen(true);
-    addCrmNote("Callback requested", "Customer asked the storefront agent for follow-up.");
     appendMessage("customer", "I would like a callback.");
     appendMessage(
       "agent",
-      "I can help with that. Add your name, phone number, and a note below so the store can follow up."
+      "This feature is not available yet. Callback requests are not sent to the store until a public customer-care endpoint is connected."
     );
   }
 
   function requestVoiceInput() {
-    appendMessage("customer", "Voice message");
-    appendMessage(
-      "agent",
-      "Voice input can be connected on supported mobile browsers. Type the message or attach a file here and the store can follow up."
-    );
+    startVoiceInput(setDraft);
   }
 
   function handleStorefrontAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
@@ -7658,9 +7971,11 @@ function PublicStorefrontChat(props: { agentId: string }) {
     }
 
     const names = files.map((file) => file.name).join(", ");
-    addCrmNote("Customer attachment", names);
-    appendMessage("customer", `Attached ${names}`);
-    appendMessage("agent", "Attachment received. The store can review it with your request.");
+    appendMessage("customer", `Selected ${names}`);
+    appendMessage(
+      "agent",
+      "This feature is not available yet. The file was selected on this device but was not uploaded or sent to the store."
+    );
   }
 
   function requestQuote() {
@@ -7673,18 +7988,18 @@ function PublicStorefrontChat(props: { agentId: string }) {
     }
 
     setCheckoutOpen(true);
-    addCrmNote("Quote requested", `${cartCount} item${cartCount === 1 ? "" : "s"} selected.`);
     appendMessage("customer", "Please prepare a quote.");
-    appendMessage("agent", "I can prepare a quote request. Add your contact details below.");
+    appendMessage(
+      "agent",
+      "I can prepare a quote request for you to copy. It is not sent to the store automatically. Add your contact details below."
+    );
   }
 
   function requestSupport() {
-    setCheckoutOpen(true);
-    addCrmNote("Support requested", "Customer requested help from the storefront chat.");
     appendMessage("customer", "I need customer support.");
     appendMessage(
       "agent",
-      "Tell me what you need help with. Add your contact details below if you want the store to follow up."
+      "This feature is not available yet. Support requests are not sent until a public customer-care endpoint is connected."
     );
   }
 
@@ -7693,15 +8008,10 @@ function PublicStorefrontChat(props: { agentId: string }) {
       return;
     }
 
-    setCheckoutOpen(true);
-    addCrmNote(
-      "Assisted registration",
-      "Customer asked the storefront agent to help register someone."
-    );
     appendMessage("customer", "Help me register someone new.");
     appendMessage(
       "agent",
-      `Share ${storefront.sokoId} or the invite link with them. If they are unfamiliar with Soko.market, add their name and phone below and the store can follow up.`
+      `Share ${storefront.sokoId} or the storefront link with them. Assisted registration is not available yet.`
     );
   }
 
@@ -7872,16 +8182,26 @@ function PublicStorefrontChat(props: { agentId: string }) {
     }
 
     setCheckoutOpen(false);
-    addCrmNote(
-      "Contact captured",
-      `${checkoutDetails.name.trim()} - ${checkoutDetails.phone.trim()} - ${
-        checkoutDetails.note.trim() || "No note"
-      }`
-    );
-    appendMessage(
-      "agent",
-      `Your checkout request is prepared for ${cartCount} item${cartCount === 1 ? "" : "s"}. The store can use these details to follow up without requiring an account.`
-    );
+    const requestSummary = [
+      `Soko.market request for ${storefront?.businessName ?? props.agentId}`,
+      `Customer: ${checkoutDetails.name.trim()}`,
+      `Phone: ${checkoutDetails.phone.trim()}`,
+      ...cartProducts.map((product) => `${product.quantity} × ${product.name}`),
+      `Note: ${checkoutDetails.note.trim() || "None"}`
+    ].join("\n");
+    void copyTextToClipboard(requestSummary)
+      .then(() =>
+        appendMessage(
+          "agent",
+          `Your request for ${cartCount} item${cartCount === 1 ? " is" : "s are"} copied to the clipboard. It has not been sent to the store.`
+        )
+      )
+      .catch(() =>
+        appendMessage(
+          "agent",
+          "Your request is prepared locally but could not be copied. It has not been sent to the store."
+        )
+      );
   }
 
   if (status === "loading") {
@@ -9206,11 +9526,22 @@ interface ComplianceSurfaceProps {
   onSaveVerification: () => void;
   onSaveTax: () => void;
   onSaveDeviceTrust: () => void;
-  onScheduleDeletion: () => void;
+  isDeletionPending: boolean;
+  onScheduleDeletion: (pin: string) => Promise<boolean>;
   onRefresh: () => void;
 }
 
 function ComplianceSurface(props: ComplianceSurfaceProps) {
+  const [deletionStep, setDeletionStep] = useState<"explain" | "verify">("explain");
+  const [deletionPin, setDeletionPin] = useState("");
+  const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
+
+  function cancelDeletion() {
+    setDeletionStep("explain");
+    setDeletionPin("");
+    setDeletionAcknowledged(false);
+  }
+
   return (
     <div className="records-surface">
       <section className="record-form" aria-label="Compliance controls">
@@ -9398,12 +9729,73 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
         <button
           className="danger"
           type="button"
-          onClick={props.onScheduleDeletion}
-          disabled={props.form.deletionConfirmation !== "DELETE"}
+          onClick={() => setDeletionStep("verify")}
+          disabled={props.form.deletionConfirmation !== "DELETE" || props.isDeletionPending}
         >
-          Delete account and associated data
+          Continue to verification
         </button>
-        <a href="/account-deletion">Read the account-deletion process</a>
+        {deletionStep === "verify" ? (
+          <div
+            className="account-deletion-verification"
+            role="group"
+            aria-label="Verify account deletion"
+          >
+            <p>
+              Final step: enter your owner PIN. If accepted, every active session is revoked and
+              account data is recoverable only through support for up to 30 days.
+            </p>
+            <label>
+              Owner PIN
+              <input
+                autoFocus
+                type="password"
+                inputMode="numeric"
+                autoComplete="current-password"
+                maxLength={4}
+                value={deletionPin}
+                onChange={(event) => setDeletionPin(sanitizePin(event.target.value))}
+              />
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={deletionAcknowledged}
+                onChange={(event) => setDeletionAcknowledged(event.target.checked)}
+              />
+              I understand that access is disabled immediately and permanent purge is scheduled
+              after the recovery window.
+            </label>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={cancelDeletion}
+                disabled={props.isDeletionPending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={
+                  !isValidPin(deletionPin) || !deletionAcknowledged || props.isDeletionPending
+                }
+                aria-busy={props.isDeletionPending}
+                data-testid="delete-account-confirm"
+                onClick={() => {
+                  void props.onScheduleDeletion(deletionPin).then((deleted) => {
+                    if (deleted) cancelDeletion();
+                  });
+                }}
+              >
+                {props.isDeletionPending
+                  ? "Deleting account…"
+                  : "Delete account and associated data"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        <a href={routes.accountDeletion}>Read the account-deletion process</a>
       </section>
 
       <section className="record-list" aria-label="Compliance status">
@@ -10232,6 +10624,7 @@ interface AgentProfileSurfaceProps {
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
   onLogout: () => void;
+  isLoggingOut: boolean;
 }
 
 function AgentProfileSurface({
@@ -10242,17 +10635,21 @@ function AgentProfileSurface({
   storefrontUrl,
   onAgentChange,
   onBack,
-  onLogout
+  onLogout,
+  isLoggingOut
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [contextPassword, setContextPassword] = useState("");
   const [contextUnlocked, setContextUnlocked] = useState(false);
   const [contextUnlockError, setContextUnlockError] = useState("");
+  const [contextTestPhrase, setContextTestPhrase] = useState("Show products");
   const [connectedSocialAccounts, setConnectedSocialAccounts] = useState<
     ConnectedSocialAccountSummary[]
   >([]);
   const [profileMessage, setProfileMessage] = useState("");
+  const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
@@ -10282,6 +10679,16 @@ function AgentProfileSurface({
     void loadAiModels();
     void inspectDeviceModelCapability().then(setDeviceCapability);
   }, [business.id]);
+
+  async function runProfileAction(key: string, action: () => Promise<void>) {
+    if (pendingProfileAction !== null) return;
+    setPendingProfileAction(key);
+    try {
+      await action();
+    } finally {
+      setPendingProfileAction(null);
+    }
+  }
 
   async function loadAiModels() {
     try {
@@ -10360,9 +10767,7 @@ function AgentProfileSurface({
 
   async function loadConnectedSocialAccounts() {
     try {
-      const response = await getJson<ConnectedSocialAccountsResponse>(
-        `/businesses/${business.id}/social-accounts`
-      );
+      const response = await getJson<ConnectedSocialAccountsResponse>("/auth/accounts");
       setConnectedSocialAccounts(response.accounts);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -10383,10 +10788,36 @@ function AgentProfileSurface({
   async function disconnectSocialAccount(identityId: string) {
     try {
       await deleteJson<{ disconnected: true; identityId: string }>(
-        `/businesses/${business.id}/social-accounts/${identityId}`
+        `/auth/accounts/${encodeURIComponent(identityId)}/disconnect`
       );
       await loadConnectedSocialAccounts();
       setProfileMessage("Social account disconnected.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function reconnectLoginAccount(provider: SocialSignupProvider) {
+    const configured = oauthProviders.find((item) => item.id === provider)?.configured === true;
+    if (!configured) {
+      setProfileMessage("This login provider is not configured yet.");
+      return;
+    }
+    try {
+      const response = await postJson<OAuthStartResponse>(
+        `/auth/accounts/${encodeURIComponent(provider)}/link/start`,
+        { redirectUri: `${window.location.origin}${routes.oauthCallback}` }
+      );
+      sessionStorage.setItem(
+        pendingOAuthStorageKey,
+        JSON.stringify({
+          csrfToken: response.csrfToken,
+          provider: response.provider,
+          state: response.state
+        })
+      );
+      setProfileMessage(`Redirecting to ${response.provider} to verify the login account.`);
+      window.location.assign(response.authorizationUrl);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -10469,7 +10900,9 @@ function AgentProfileSurface({
   }
 
   async function saveAgent() {
+    if (isSaving) return;
     const publicAgentId = createPublicStorefrontAgentId(business);
+    setIsSaving(true);
     try {
       await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
         modelId: draftAgent.model
@@ -10487,12 +10920,18 @@ function AgentProfileSurface({
       setProfileMessage("Agent settings and active AI model saved.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
+    } finally {
+      setIsSaving(false);
     }
   }
 
-  function copyStorefrontValue(value: string, label: string) {
-    void copyTextToClipboard(value);
-    window.alert(`${label} copied`);
+  async function copyStorefrontValue(value: string, label: string) {
+    try {
+      await copyTextToClipboard(value);
+      setProfileMessage(`${label} copied.`);
+    } catch (error) {
+      setProfileMessage(`Could not copy ${label.toLowerCase()}: ${getErrorMessage(error)}`);
+    }
   }
 
   function unlockContextScripts() {
@@ -10537,6 +10976,41 @@ function AgentProfileSurface({
     });
   }
 
+  function addContextLanguage() {
+    updateAgent({
+      contextScripts: [
+        ...draftAgent.contextScripts,
+        "script: local_vocabulary_sw\nlanguage: sw\npriority: required\nallow: read, add, edit, remove\n"
+      ]
+    });
+    setContextUnlockError("Swahili context script added. Review it before saving.");
+  }
+
+  function editFirstContextPhrase() {
+    const editor = document.getElementById("agent-context-script-0");
+    if (editor instanceof HTMLTextAreaElement) {
+      editor.focus();
+      editor.setSelectionRange(0, editor.value.length);
+      setContextUnlockError("Edit the selected script, then save changes.");
+      return;
+    }
+    setContextUnlockError("Add a phrase before editing.");
+  }
+
+  function testContextPhrase() {
+    const phrase = contextTestPhrase.trim();
+    if (phrase.length === 0) {
+      setContextUnlockError("Enter a phrase to test.");
+      return;
+    }
+    const result = resolveContextScriptCommand(draftAgent.contextScripts, phrase);
+    setContextUnlockError(
+      result === null
+        ? "No product context-script match was found."
+        : `Matched ${result.intent} with ${Math.round(result.confidence * 100)}% confidence.`
+    );
+  }
+
   function removeContextScript(index: number) {
     updateAgent({
       contextScripts: draftAgent.contextScripts.filter((_, scriptIndex) => scriptIndex !== index)
@@ -10560,8 +11034,13 @@ function AgentProfileSurface({
         <div className="agent-profile-actions">
           {isEditing ? (
             <>
-              <button type="button" onClick={() => void saveAgent()}>
-                Save
+              <button
+                type="button"
+                onClick={() => void saveAgent()}
+                disabled={isSaving}
+                aria-busy={isSaving}
+              >
+                {isSaving ? "Saving…" : "Save"}
               </button>
               <button className="secondary" type="button" onClick={cancelEditing}>
                 Cancel
@@ -10572,8 +11051,14 @@ function AgentProfileSurface({
               <button type="button" onClick={startEditing}>
                 Edit
               </button>
-              <button className="secondary" type="button" onClick={onLogout}>
-                Sign out
+              <button
+                className="secondary"
+                type="button"
+                onClick={onLogout}
+                disabled={isLoggingOut}
+                aria-busy={isLoggingOut}
+              >
+                {isLoggingOut ? "Signing out…" : "Sign out"}
               </button>
             </>
           )}
@@ -10804,13 +11289,16 @@ function AgentProfileSurface({
             <strong>{business.sokoId}</strong>
             <p>Print this on packaging, receipts, QR codes, and storefront material.</p>
             <div className="storefront-share-actions">
-              <button type="button" onClick={() => copyStorefrontValue(business.sokoId, "Soko ID")}>
+              <button
+                type="button"
+                onClick={() => void copyStorefrontValue(business.sokoId, "Soko ID")}
+              >
                 Copy ID
               </button>
               <button
                 className="secondary"
                 type="button"
-                onClick={() => copyStorefrontValue(storefrontUrl, "Storefront URL")}
+                onClick={() => void copyStorefrontValue(storefrontUrl, "Storefront URL")}
               >
                 Copy URL
               </button>
@@ -10884,11 +11372,15 @@ function AgentProfileSurface({
                         className="secondary"
                         type="button"
                         onClick={() =>
-                          setProfileMessage(
-                            provider.configured
-                              ? "Use signup/login to reconnect this login account."
-                              : "This login provider is not configured yet."
+                          void runProfileAction("account-reconnect", () =>
+                            reconnectLoginAccount(provider.id)
                           )
+                        }
+                        disabled={!provider.configured || pendingProfileAction !== null}
+                        title={
+                          provider.configured
+                            ? undefined
+                            : "This login provider is not configured yet."
                         }
                       >
                         Reconnect
@@ -10896,11 +11388,13 @@ function AgentProfileSurface({
                       <button
                         className="secondary"
                         type="button"
-                        disabled={connected === undefined}
+                        disabled={connected === undefined || pendingProfileAction !== null}
                         onClick={() =>
                           connected === undefined
                             ? undefined
-                            : void disconnectSocialAccount(connected.id)
+                            : void runProfileAction("account-disconnect", () =>
+                                disconnectSocialAccount(connected.id)
+                              )
                         }
                       >
                         Disconnect
@@ -10983,8 +11477,9 @@ function AgentProfileSurface({
                 </button>
                 <button
                   type="button"
-                  disabled={deletionShopId !== business.sokoId}
-                  onClick={() => void startShopDeletion()}
+                  disabled={deletionShopId !== business.sokoId || pendingProfileAction !== null}
+                  onClick={() => void runProfileAction("shop-deletion-start", startShopDeletion)}
+                  aria-busy={pendingProfileAction === "shop-deletion-start"}
                 >
                   Continue
                 </button>
@@ -11030,8 +11525,15 @@ function AgentProfileSurface({
                 <button
                   className="destructive-button"
                   type="button"
-                  disabled={deletionPin.length === 0 || !deletionAcknowledged}
-                  onClick={() => void finalizeShopDeletion()}
+                  disabled={
+                    deletionPin.length === 0 ||
+                    !deletionAcknowledged ||
+                    pendingProfileAction !== null
+                  }
+                  onClick={() =>
+                    void runProfileAction("shop-deletion-finalize", finalizeShopDeletion)
+                  }
+                  aria-busy={pendingProfileAction === "shop-deletion-finalize"}
                 >
                   Quarantine shop
                 </button>
@@ -11051,8 +11553,13 @@ function AgentProfileSurface({
                     : "Your shop deletion is being processed. You can close this screen."}
               </p>
               {deletionRequest?.status === "QUARANTINED" ? (
-                <button type="button" onClick={() => void restoreShop()}>
-                  Restore shop
+                <button
+                  type="button"
+                  onClick={() => void runProfileAction("shop-restore", restoreShop)}
+                  disabled={pendingProfileAction !== null}
+                  aria-busy={pendingProfileAction === "shop-restore"}
+                >
+                  {pendingProfileAction === "shop-restore" ? "Restoring…" : "Restore shop"}
                 </button>
               ) : null}
             </div>
@@ -11200,6 +11707,7 @@ function AgentProfileSurface({
                   <button
                     type="button"
                     disabled={!isEditing || draftAgent.contextScripts.length === 0}
+                    onClick={editFirstContextPhrase}
                   >
                     Edit phrase
                   </button>
@@ -11210,7 +11718,7 @@ function AgentProfileSurface({
                   >
                     Remove phrase
                   </button>
-                  <button type="button" disabled={!isEditing} onClick={addContextScript}>
+                  <button type="button" disabled={!isEditing} onClick={addContextLanguage}>
                     Add language
                   </button>
                   <button
@@ -11220,17 +11728,24 @@ function AgentProfileSurface({
                   >
                     Restore defaults
                   </button>
-                  <button
-                    type="button"
-                    disabled={!isEditing}
-                    onClick={() =>
-                      setContextUnlockError("Test phrase matched by Product Vocabulary.")
-                    }
-                  >
+                  <label>
+                    Phrase to test
+                    <input
+                      value={contextTestPhrase}
+                      disabled={!isEditing}
+                      onChange={(event) => setContextTestPhrase(event.target.value)}
+                    />
+                  </label>
+                  <button type="button" disabled={!isEditing} onClick={testContextPhrase}>
                     Test phrase
                   </button>
-                  <button type="button" disabled={!isEditing} onClick={() => void saveAgent()}>
-                    Save changes
+                  <button
+                    type="button"
+                    disabled={!isEditing || isSaving}
+                    onClick={() => void saveAgent()}
+                    aria-busy={isSaving}
+                  >
+                    {isSaving ? "Saving…" : "Save changes"}
                   </button>
                 </div>
               </article>
@@ -11238,6 +11753,7 @@ function AgentProfileSurface({
                 <label key={`${index}-${script.slice(0, 12)}`}>
                   Script {index + 1}
                   <textarea
+                    id={`agent-context-script-${index}`}
                     value={script}
                     disabled={!isEditing}
                     onChange={(event) => updateContextScript(index, event.target.value)}
@@ -11284,6 +11800,8 @@ interface ChatSurfaceProps {
   invoiceCount: number;
   messages: ChatMessage[];
   isContactTyping: boolean;
+  isConfirming: boolean;
+  isSending: boolean;
   securityLabel: string;
   replyToMessageId: string | null;
   mode: SokoMode;
@@ -11330,7 +11848,7 @@ interface ChatSurfaceProps {
   onProductFormChange: (form: ProductFormState) => void;
   onProductRemove: (productId: string) => void;
   onProductReset: () => void;
-  onProductSave: () => Promise<void>;
+  onProductSave: () => Promise<boolean>;
   onNetworkDisconnectSource: (sourceId: string) => void;
   onNetworkPhoneContactsSync: (
     selectedContacts: ContactPickerContact[]
@@ -11356,6 +11874,8 @@ function ChatSurface({
   invoiceCount,
   messages,
   isContactTyping,
+  isConfirming,
+  isSending,
   securityLabel,
   replyToMessageId,
   mode,
@@ -11418,6 +11938,11 @@ function ChatSurface({
   const [newConversationTitle, setNewConversationTitle] = useState("");
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
   const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const workspaceDialogRef = useRef<HTMLElement | null>(null);
+  const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
     | "cards"
     | "catalogue"
@@ -11451,6 +11976,61 @@ function ChatSurface({
   useEffect(() => {
     setWorkspaceCardView("cards");
   }, [mode]);
+
+  useEffect(() => {
+    if (!workspaceOpen) return;
+    workspaceReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = workspaceDialogRef.current;
+    dialog?.focus();
+
+    function handleDialogKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseWorkspace();
+        return;
+      }
+      if (event.key !== "Tab" || dialog === null) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleDialogKeyDown);
+      workspaceReturnFocusRef.current?.focus();
+    };
+  }, [workspaceOpen, onCloseWorkspace]);
+
+  useEffect(() => {
+    function closeMessageMenu(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setActiveMessageMenuId(null);
+        setForwardingMessageId(null);
+        setEditingMessageId(null);
+        setDeletingMessageId(null);
+      }
+    }
+    document.addEventListener("keydown", closeMessageMenu);
+    return () => document.removeEventListener("keydown", closeMessageMenu);
+  }, []);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -11665,6 +12245,7 @@ function ChatSurface({
                     <button
                       type="button"
                       aria-expanded={activeMessageMenuId === message.id}
+                      aria-haspopup="menu"
                       onClick={() =>
                         setActiveMessageMenuId(
                           activeMessageMenuId === message.id ? null : message.id
@@ -11674,7 +12255,7 @@ function ChatSurface({
                       More
                     </button>
                     {activeMessageMenuId === message.id ? (
-                      <div className="message-action-menu">
+                      <div className="message-action-menu" role="menu">
                         {["👍", "❤️", "😂", "😮", "🙏"].map((emoji) => (
                           <button
                             key={emoji}
@@ -11689,15 +12270,22 @@ function ChatSurface({
                           <button
                             type="button"
                             onClick={() => {
-                              const text = window.prompt("Edit message", message.body);
-                              if (text?.trim()) onEditMessage(message.id, text.trim());
+                              setEditingMessageId(message.id);
+                              setEditingMessageText(message.body);
+                              setActiveMessageMenuId(null);
                             }}
                           >
                             Edit
                           </button>
                         ) : null}
                         {message.author === "merchant" ? (
-                          <button type="button" onClick={() => onDeleteMessage(message.id)}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeletingMessageId(message.id);
+                              setActiveMessageMenuId(null);
+                            }}
+                          >
                             Delete
                           </button>
                         ) : null}
@@ -11706,6 +12294,55 @@ function ChatSurface({
                         </button>
                       </div>
                     ) : null}
+                  </div>
+                ) : null}
+                {editingMessageId === message.id ? (
+                  <form
+                    className="message-inline-action"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const text = editingMessageText.trim();
+                      if (text.length === 0) return;
+                      onEditMessage(message.id, text);
+                      setEditingMessageId(null);
+                    }}
+                  >
+                    <label>
+                      Edit message
+                      <input
+                        autoFocus
+                        value={editingMessageText}
+                        onChange={(event) => setEditingMessageText(event.target.value)}
+                      />
+                    </label>
+                    <button type="submit" disabled={editingMessageText.trim().length === 0}>
+                      Save edit
+                    </button>
+                    <button type="button" onClick={() => setEditingMessageId(null)}>
+                      Cancel
+                    </button>
+                  </form>
+                ) : null}
+                {deletingMessageId === message.id ? (
+                  <div
+                    className="message-inline-action"
+                    role="alertdialog"
+                    aria-label="Delete message?"
+                  >
+                    <span>Delete this message?</span>
+                    <button
+                      className="danger"
+                      type="button"
+                      onClick={() => {
+                        onDeleteMessage(message.id);
+                        setDeletingMessageId(null);
+                      }}
+                    >
+                      Delete message
+                    </button>
+                    <button type="button" onClick={() => setDeletingMessageId(null)}>
+                      Cancel
+                    </button>
                   </div>
                 ) : null}
                 {forwardingMessageId === message.id ? (
@@ -11731,8 +12368,13 @@ function ChatSurface({
                   </div>
                 ) : null}
                 {message.confirmationToken !== undefined ? (
-                  <button type="button" onClick={() => onConfirm(message.confirmationToken ?? "")}>
-                    Confirm
+                  <button
+                    type="button"
+                    onClick={() => onConfirm(message.confirmationToken ?? "")}
+                    disabled={isConfirming}
+                    aria-busy={isConfirming}
+                  >
+                    {isConfirming ? "Confirming…" : "Confirm"}
                   </button>
                 ) : null}
               </article>
@@ -11746,6 +12388,10 @@ function ChatSurface({
                     products={products}
                     sokoId={sokoId}
                     onBack={() => setWorkspaceCardView("cards")}
+                    onOpenProfile={onOpenAgentProfile}
+                    onAddToOrder={(product) =>
+                      onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+                    }
                     onSell={() => onModeChange("seller")}
                     onMessage={() => onDraftChange(`Hello ${businessName}, `)}
                   />
@@ -11807,6 +12453,10 @@ function ChatSurface({
                 products={products}
                 sokoId={sokoId}
                 onBack={() => setWorkspaceCardView("cards")}
+                onOpenProfile={onOpenAgentProfile}
+                onAddToOrder={(product) =>
+                  onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+                }
                 onSell={() => onModeChange("marketplace")}
                 onMessage={() => onDraftChange(`Hello ${businessName}, `)}
               />
@@ -11837,8 +12487,7 @@ function ChatSurface({
                 }}
                 onSaveFields={onProductFieldsSave}
                 onSaveProduct={async () => {
-                  await onProductSave();
-                  setWorkspaceCardView("catalogue");
+                  if (await onProductSave()) setWorkspaceCardView("catalogue");
                 }}
               />
             )
@@ -11851,6 +12500,8 @@ function ChatSurface({
               role="dialog"
               aria-modal="true"
               aria-label="Workspace cards"
+              tabIndex={-1}
+              ref={workspaceDialogRef}
             >
               <div className="workspace-panel-heading">
                 <h2>{workspacePanelTitle(workspaceCardView)}</h2>
@@ -11892,6 +12543,10 @@ function ChatSurface({
                   products={products}
                   sokoId={sokoId}
                   onBack={() => setWorkspaceCardView("cards")}
+                  onOpenProfile={onOpenAgentProfile}
+                  onAddToOrder={(product) =>
+                    onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+                  }
                   onSell={() => onModeChange("marketplace")}
                   onMessage={() => onDraftChange(`Hello ${businessName}, `)}
                 />
@@ -11924,8 +12579,7 @@ function ChatSurface({
                   }}
                   onSaveFields={onProductFieldsSave}
                   onSaveProduct={async () => {
-                    await onProductSave();
-                    setWorkspaceCardView("catalogue");
+                    if (await onProductSave()) setWorkspaceCardView("catalogue");
                   }}
                 />
               )}
@@ -11991,12 +12645,14 @@ function ChatSurface({
           ) : null}
           <label className="composer-input">
             <span>Message</span>
-            <input
+            <textarea
               aria-label="Message"
+              rows={1}
               value={chatDraft}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") {
+                if (event.key === "Enter" && !event.shiftKey && !isSending) {
+                  event.preventDefault();
                   onSend();
                 }
               }}
@@ -12007,7 +12663,15 @@ function ChatSurface({
               }
             />
           </label>
-          <button className="send-button" type="button" onClick={onSend}>
+          <button
+            className="send-button"
+            type="button"
+            onClick={onSend}
+            disabled={
+              isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
+            }
+            aria-busy={isSending}
+          >
             <span className="send-icon" aria-hidden="true" />
             <span className="visually-hidden">Send</span>
           </button>
@@ -12069,13 +12733,13 @@ function MarketplaceModeCard({
       </div>
       {hasBusiness ? (
         <article className="shop-discovery-card">
-          <div>
+          <button className="shop-discovery-identity" type="button" onClick={onOpenStore}>
             <span>Your shop</span>
             <h3>{businessName}</h3>
             <p>
               {sokoId} · {productCount} catalogue {productCount === 1 ? "item" : "items"}
             </p>
-          </div>
+          </button>
           <div className="compact-actions">
             <button type="button" onClick={onOpenStore}>
               Open store
@@ -12108,6 +12772,8 @@ interface StorefrontPreviewCardProps {
   products: ProductSummary[];
   sokoId: string;
   onBack: () => void;
+  onOpenProfile: () => void;
+  onAddToOrder: (product: ProductSummary) => void;
   onSell: () => void;
   onMessage: () => void;
 }
@@ -12117,6 +12783,8 @@ function StorefrontPreviewCard({
   products,
   sokoId,
   onBack,
+  onOpenProfile,
+  onAddToOrder,
   onSell,
   onMessage
 }: StorefrontPreviewCardProps) {
@@ -12131,13 +12799,13 @@ function StorefrontPreviewCard({
         </button>
         <span className="mode-badge">Customer view</span>
       </div>
-      <div className="storefront-preview-heading">
+      <button className="storefront-preview-heading" type="button" onClick={onOpenProfile}>
         <span className="storefront-preview-logo">{businessName.slice(0, 1).toUpperCase()}</span>
         <div>
           <h2>{businessName}</h2>
           <p>{sokoId}</p>
         </div>
-      </div>
+      </button>
       {products.length === 0 ? (
         <div className="inline-empty-state">
           <strong>No public products yet</strong>
@@ -12154,8 +12822,13 @@ function StorefrontPreviewCard({
                   ? `Sold per ${product.unit}`
                   : `${formatMoney(product.sellingPrice)} / ${product.unit}`}
               </p>
-              <button type="button" disabled={product.quantity <= 0}>
-                Add to order
+              <button
+                type="button"
+                disabled={product.quantity <= 0}
+                onClick={() => onAddToOrder(product)}
+                title={product.quantity <= 0 ? "This product is out of stock." : undefined}
+              >
+                Add to request
               </button>
             </article>
           ))}
@@ -12444,7 +13117,7 @@ function NetworkSyncNestedCard({
       return;
     }
 
-    setMessage("Invite delivery endpoints are not implemented yet.");
+    setMessage("This feature is not available yet. Invite delivery needs a backend endpoint.");
   }
 
   function disconnectPhoneSource() {
@@ -13169,11 +13842,11 @@ function ShopPresenceButtons({
     <span className="shop-presence-buttons" aria-label="Shop status">
       {statuses.map((status) => (
         <button
-          aria-label={status.label}
+          aria-label={`${status.label} (this device only)`}
           className={`presence-dot ${status.id} ${activeStatus === status.id ? "active" : ""}`}
           key={status.id}
           type="button"
-          title={status.label}
+          title={`${status.label} (this device only)`}
           onClick={() => onStatusChange(status.id)}
         />
       ))}
@@ -13296,23 +13969,32 @@ function readStorefrontAgentId(): string | null {
   const pathname = window.location.pathname;
   const match =
     pathname.match(/^\/agent\/([^/]+)\/?$/) ??
-    pathname.match(/^\/(?:shop|soko)\/([^/]+)\/?$/) ??
-    pathname.match(/^(\/\+\d{1,3}-A\d{8})\/?$/);
+    pathname.match(/^\/(?:shop|shops|soko)\/([^/]+)\/?$/) ??
+    pathname.match(/^(\/(?:\+?\d{1,3}-?[A-Za-z]\d{8}))\/?$/);
 
   if (match === null) {
     return null;
   }
 
   const rawAgentId = (match[1] ?? "").replace(/^\//, "");
-  const agentId = decodeURIComponent(rawAgentId).trim();
+  let agentId: string;
+  try {
+    agentId = decodeURIComponent(rawAgentId).trim();
+  } catch {
+    return null;
+  }
 
   if (agentId.length === 0) {
     return null;
   }
 
   if (!pathname.startsWith("/agent/")) {
-    const canonicalAgentId = isSokoId(agentId) ? agentId : encodeURIComponent(agentId);
-    window.history.replaceState(null, "", `/agent/${canonicalAgentId}${window.location.search}`);
+    const canonicalAgentId = isSokoId(agentId) ? normalizeSokoId(agentId) : agentId;
+    window.history.replaceState(
+      null,
+      "",
+      `${routes.publicAgent(canonicalAgentId)}${window.location.search}`
+    );
   }
 
   return agentId;
@@ -13421,7 +14103,7 @@ function readStoredBusiness(): ActiveBusiness | null {
         ...parsed,
         sokoId:
           typeof parsed.sokoId === "string" && isSokoId(parsed.sokoId)
-            ? parsed.sokoId
+            ? normalizeSokoId(parsed.sokoId)
             : createFallbackSokoId(parsed.id, parsed.name)
       };
     }
@@ -13599,15 +14281,15 @@ function createPublicStorefrontUrl(business: ActiveBusiness): string {
 function createStorefrontUrl(agentId: string): string {
   const trimmedAgentId = agentId.trim();
   const normalizedAgentId = isSokoId(trimmedAgentId)
-    ? trimmedAgentId
-    : encodeURIComponent(trimmedAgentId);
+    ? normalizeSokoId(trimmedAgentId)
+    : trimmedAgentId;
   const localOrigins = ["localhost", "127.0.0.1", "0.0.0.0"];
 
   if (localOrigins.includes(window.location.hostname)) {
-    return `${window.location.origin}/agent/${normalizedAgentId}`;
+    return `${window.location.origin}${routes.publicAgent(normalizedAgentId)}`;
   }
 
-  return `https://soko.market/agent/${normalizedAgentId}`;
+  return `https://soko.market${routes.publicAgent(normalizedAgentId)}`;
 }
 
 function createFallbackSokoId(businessId: string, businessName: string): string {
@@ -13618,11 +14300,15 @@ function createFallbackSokoId(businessId: string, businessName: string): string 
     hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   }
 
-  return `+254-A${(hash % 100_000_000).toString().padStart(8, "0")}`;
+  return `254A${(hash % 100_000_000).toString().padStart(8, "0")}`;
 }
 
 function isSokoId(value: unknown): value is string {
-  return typeof value === "string" && /^\+\d{1,3}-A\d{8}$/.test(value);
+  return typeof value === "string" && /^\+?\d{1,3}-?[A-Za-z]\d{8}$/.test(value);
+}
+
+function normalizeSokoId(value: string): string {
+  return value.trim().replace(/^\+/, "").replace("-", "");
 }
 
 async function copyTextToClipboard(value: string): Promise<void> {
