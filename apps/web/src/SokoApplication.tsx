@@ -5588,29 +5588,27 @@ export function OwnerApp() {
           )}
           {!isAuthScreen ? (
             <div className="header-actions">
-              {isMarketplaceIntroComplete ? (
-                <button
-                  className={
-                    mode === "marketplace"
-                      ? "header-action-button mode-active"
-                      : "header-action-button"
-                  }
-                  type="button"
-                  data-testid="marketplace-button"
-                  onClick={() => {
-                    setMode("marketplace");
-                    window.history.pushState(
-                      { mode: "marketplace", view: "chat" },
-                      "",
-                      routes.marketplace
-                    );
-                    setView("chat");
-                    setIsMarketplaceShortcutOpen(true);
-                  }}
-                >
-                  Marketplace
-                </button>
-              ) : null}
+              <button
+                className={`header-action-button marketplace ${
+                  mode === "marketplace" ? "mode-active" : ""
+                }`}
+                type="button"
+                data-testid="marketplace-button"
+                aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
+                onClick={() => {
+                  const alreadyInMarketplace = mode === "marketplace";
+                  setMode("marketplace");
+                  window.history.pushState(
+                    { mode: "marketplace", view: "chat" },
+                    "",
+                    routes.marketplace
+                  );
+                  setView("chat");
+                  setIsMarketplaceShortcutOpen((open) => (alreadyInMarketplace ? !open : true));
+                }}
+              >
+                Marketplace
+              </button>
               <button
                 className={
                   mode === "seller"
@@ -12512,7 +12510,7 @@ function ChatSurface({
               {index === 0 &&
               activeView === "chat" &&
               mode === "marketplace" &&
-              (!marketplaceIntroComplete || marketplaceShortcutOpen) ? (
+              marketplaceShortcutOpen ? (
                 workspaceCardView === "storefrontPreview" ? (
                   <StorefrontPreviewCard
                     businessName={businessName}

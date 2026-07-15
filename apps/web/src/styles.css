@@ -237,6 +237,7 @@ button:disabled {
   color: #ffffff;
 }
 
+.header-action-button.marketplace,
 .header-action-button.sell,
 .header-action-button.mode-active {
   border-radius: 999px;
