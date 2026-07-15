@@ -29,6 +29,7 @@
     "db:health": "pnpm --filter @soko/api db:health",
     "db:migrate": "pnpm --filter @soko/api db:migrate",
     "db:purge-shops": "pnpm --filter @soko/api db:purge-shops",
+    "db:purge-accounts": "pnpm --filter @soko/api db:purge-accounts",
     "db:verify-schema": "pnpm --filter @soko/api db:verify-schema",
     "db:rollback": "pnpm --filter @soko/api db:rollback",
     "db:restore": "pnpm --filter @soko/api db:restore",

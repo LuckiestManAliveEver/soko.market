@@ -57,3 +57,17 @@ Production phone OTP requires:
 
 The web Firebase config is public but still environment-specific. The API only needs the Firebase
 project ID to verify the signed ID token.
+
+## Account-deletion processors
+
+The production account-purge cron requires:
+
+- `ACCOUNT_DELETION_PROCESSORS_JSON`: non-empty JSON array of processor IDs and HTTPS deletion
+  webhook URLs.
+- `ACCOUNT_DELETION_WEBHOOK_SECRET`: randomly generated shared signing secret with at least 32
+  characters.
+
+Do not put credentials in processor URLs or commit the secret. Each processor must validate the
+HMAC signature and timestamp, handle the request ID idempotently, delete every supplied subject it
+owns, and return an opaque `externalReference`. The purge worker keeps local account data when any
+processor fails, then retries incomplete processors on its next run.

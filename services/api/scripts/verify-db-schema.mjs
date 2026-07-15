@@ -10,7 +10,8 @@ const migrationFilenames = [
   "018_cp21_account_sync_changes.sql",
   "019_cp23_mcp_access_tokens.sql",
   "020_marketplace_deletion_models.sql",
-  "021_messaging_push_e2ee.sql"
+  "021_messaging_push_e2ee.sql",
+  "022_account_deletion_purge.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

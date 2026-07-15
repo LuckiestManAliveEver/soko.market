@@ -22,6 +22,16 @@ developer-account, ownership, or signing decisions.
   Compliance deletion controls without requiring the Android app.
 - The in-app action is explicitly labelled **Delete account and associated data**.
 - `tests/cp27-play-legal-readiness.test.ts` protects the contract and route wiring.
+- `Cp2Store.purgeExpiredAccountDeletions` propagates processor deletion first, blocks local purge
+  on propagation failure, retries failed processors idempotently, and removes account-linked local
+  records after all configured processors acknowledge completion.
+- `services/api/src/cp2/account-deletion-processors.ts` provides signed HTTPS deletion webhooks.
+- Migration 022 persists non-identifying completion proofs and processor receipts without an
+  account foreign key.
+- The `soko-market-account-purge` Render cron runs expired deletion work daily and fails visibly if
+  processors are unconfigured or any propagation attempt fails.
+- `tests/cp27-account-purge.test.ts` proves complete local removal, processor ordering, signed
+  propagation, failure safety, and retry completion.
 - The responsive/accessibility suite covers the public resource at compact phone, tablet, and
   desktop widths.
 
@@ -87,9 +97,30 @@ app a prerequisite because the complete request path is available on the product
 - Signing out, uninstalling, temporary deactivation, or hiding a shop does not satisfy account
   deletion.
 
-The repository has request scheduling and a shop-purge job. CP27 does **not** claim end-to-end
-account deletion fulfillment yet. The operations runbook and processor propagation must be tested
-and approved before the checkpoint gate can pass.
+The repository now implements request scheduling, processor propagation, retry-safe account purge,
+and non-identifying completion evidence. Automated tests prove the behavior using deterministic
+processor adapters. CP27 does **not** claim that production processor endpoints have acknowledged a
+real controlled deletion; deployment evidence is still required before the checkpoint gate passes.
+
+## Processor propagation contract
+
+Configure the Render account-purge cron with:
+
+- `ACCOUNT_DELETION_PROCESSORS_JSON`: a non-empty JSON array such as
+  `[{"id":"identity-gateway","url":"https://processor.example/delete-account"}]`.
+- `ACCOUNT_DELETION_WEBHOOK_SECRET`: a randomly generated secret of at least 32 characters shared
+  only with the deletion processors.
+
+Each processor receives an HTTPS POST containing a stable request ID and the primary-auth/OAuth
+subjects it must delete. Requests include an idempotency key, timestamp, processor ID, and an
+HMAC-SHA256 signature over the timestamp and exact body. A processor must return HTTP 2xx and a
+non-empty `externalReference`. Soko stores only that reference, retry count, timestamps, status, and
+a one-way subject digest in the completion proof.
+
+If any processor times out, rejects the signature, returns a non-2xx response, or omits its external
+reference, local data remains intact, the request becomes `PARTIALLY_FAILED`, the cron exits
+unsuccessfully, and the next run retries only incomplete processors. Local purge begins only after
+all configured processors have acknowledged deletion.
 
 ## Legal identity gate
 
@@ -134,7 +165,7 @@ Structural verification is expected to pass while the contract remains proposed:
 
 ```bash
 pnpm android:legal:verify
-pnpm vitest run tests/cp27-play-legal-readiness.test.ts
+pnpm vitest run tests/cp27-play-legal-readiness.test.ts tests/cp27-account-purge.test.ts tests/cp27-account-purge-migration.test.ts
 pnpm playwright test e2e/responsive-accessibility.spec.ts --grep "public account deletion"
 ```
 
@@ -182,7 +213,7 @@ CP27 passes only when:
 - Production legal entity and registered particulars are unknown.
 - Publication contact channels are not verified.
 - Terms and Privacy Policy remain drafts without effective dates or legal approval.
-- End-to-end account purge/anonymization and processor propagation lack operational evidence.
+- Production account purge and processor propagation lack controlled-account deployment evidence.
 - Operations and privacy owners are unassigned.
 
 ## Rollback

@@ -20,6 +20,7 @@
     "db:health": "node scripts/check-db-health.mjs",
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:purge-shops": "node scripts/purge-shop-deletions.mjs",
+    "db:purge-accounts": "node scripts/purge-account-deletions.mjs",
     "db:verify-schema": "node scripts/verify-db-schema.mjs",
     "vapid:generate": "node scripts/generate-vapid-env.mjs",
     "db:rollback": "node scripts/rollback-db.mjs",

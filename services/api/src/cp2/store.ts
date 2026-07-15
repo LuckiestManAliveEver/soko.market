@@ -498,6 +498,7 @@ export interface Cp2Snapshot {
   logistics: LogisticsSummary[];
   dataExports: DataExportBundleSummary[];
   accountDeletionRequests: AccountDeletionRequestSummary[];
+  accountDeletionProofs?: AccountDeletionProof[];
   verificationTiers: VerificationTierSummary[];
   taxConfigs: CountryTaxConfigSummary[];
   deviceTrust: DeviceTrustSummary[];
@@ -544,6 +545,52 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
   pushNotificationSender?: PushNotificationSender;
+  accountDeletionProcessors?: AccountDeletionProcessor[];
+}
+
+export interface AccountDeletionSubject {
+  provider: string;
+  subject: string;
+}
+
+export interface AccountDeletionProcessorInput {
+  requestId: string;
+  subjects: AccountDeletionSubject[];
+}
+
+export interface AccountDeletionProcessorResult {
+  externalReference: string;
+}
+
+export interface AccountDeletionProcessor {
+  id: string;
+  deleteAccount: (input: AccountDeletionProcessorInput) => Promise<AccountDeletionProcessorResult>;
+}
+
+export interface AccountDeletionProcessorReceipt {
+  processorId: string;
+  status: "completed" | "failed";
+  attempts: number;
+  lastAttemptedAt: string;
+  completedAt: string | null;
+  externalReference: string | null;
+  errorCode: string | null;
+}
+
+export interface AccountDeletionProof {
+  requestId: string;
+  subjectDigest: string;
+  status: "PARTIALLY_FAILED" | "COMPLETED";
+  completedAt: string | null;
+  deletedRecordCount: number;
+  processorReceipts: AccountDeletionProcessorReceipt[];
+}
+
+export interface AccountDeletionPurgeRunSummary {
+  checked: number;
+  completed: number;
+  partiallyFailed: number;
+  skipped: number;
 }
 
 export interface PushNotificationPayload {
@@ -605,6 +652,7 @@ export class Cp2Store {
   private readonly logisticsByInvoice = new Map<string, string>();
   private readonly dataExports = new Map<string, DataExportBundle>();
   private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
+  private readonly accountDeletionProofs = new Map<string, AccountDeletionProof>();
   private readonly verificationTiers = new Map<string, VerificationTierSummary>();
   private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
   private readonly deviceTrust = new Map<string, DeviceTrustSummary>();
@@ -4913,6 +4961,115 @@ export class Cp2Store {
     return purged;
   }
 
+  async purgeExpiredAccountDeletions(now = new Date()): Promise<AccountDeletionPurgeRunSummary> {
+    const summary: AccountDeletionPurgeRunSummary = {
+      checked: 0,
+      completed: 0,
+      partiallyFailed: 0,
+      skipped: 0
+    };
+
+    for (const request of [...this.accountDeletionRequests.values()]) {
+      if (request.status !== "scheduled" && request.status !== "PARTIALLY_FAILED") {
+        summary.skipped += 1;
+        continue;
+      }
+      if (new Date(request.anonymizeAfter).getTime() > now.getTime()) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      summary.checked += 1;
+      const account = this.accounts.get(request.accountId);
+      const identities = [...this.userIdentities.values()].filter(
+        (identity) => identity.accountId === request.accountId
+      );
+      const subjects = deduplicateDeletionSubjects([
+        ...(account === undefined
+          ? []
+          : [
+              {
+                provider: `primary_${account.primaryAuthChannel}`,
+                subject: account.primaryAuthDestination
+              }
+            ]),
+        ...identities.map((identity) => ({
+          provider: identity.provider,
+          subject: identity.providerSubject
+        }))
+      ]);
+      const existingProof = this.accountDeletionProofs.get(request.id);
+      const receipts = new Map(
+        (existingProof?.processorReceipts ?? []).map((receipt) => [receipt.processorId, receipt])
+      );
+
+      for (const processor of this.options.accountDeletionProcessors ?? []) {
+        const previous = receipts.get(processor.id);
+        if (previous?.status === "completed") continue;
+
+        try {
+          const result = await processor.deleteAccount({ requestId: request.id, subjects });
+          receipts.set(processor.id, {
+            processorId: processor.id,
+            status: "completed",
+            attempts: (previous?.attempts ?? 0) + 1,
+            lastAttemptedAt: now.toISOString(),
+            completedAt: now.toISOString(),
+            externalReference: result.externalReference,
+            errorCode: null
+          });
+        } catch {
+          receipts.set(processor.id, {
+            processorId: processor.id,
+            status: "failed",
+            attempts: (previous?.attempts ?? 0) + 1,
+            lastAttemptedAt: now.toISOString(),
+            completedAt: null,
+            externalReference: null,
+            errorCode: "processor_deletion_failed"
+          });
+        }
+      }
+
+      const processorReceipts = [...receipts.values()].sort((left, right) =>
+        left.processorId.localeCompare(right.processorId)
+      );
+      const processorFailure = processorReceipts.some((receipt) => receipt.status === "failed");
+      const subjectDigest = deletionSubjectDigest(request.accountId, request.id);
+
+      if (processorFailure) {
+        this.accountDeletionRequests.set(request.id, {
+          ...request,
+          status: "PARTIALLY_FAILED",
+          failureReason: "One or more processor deletion requests failed and will be retried."
+        });
+        this.accountDeletionProofs.set(request.id, {
+          requestId: request.id,
+          subjectDigest,
+          status: "PARTIALLY_FAILED",
+          completedAt: null,
+          deletedRecordCount: 0,
+          processorReceipts
+        });
+        summary.partiallyFailed += 1;
+        continue;
+      }
+
+      const deletedRecordCount = this.deleteAccountOwnedData(request, subjects);
+      this.accountDeletionProofs.set(request.id, {
+        requestId: request.id,
+        subjectDigest,
+        status: "COMPLETED",
+        completedAt: now.toISOString(),
+        deletedRecordCount,
+        processorReceipts
+      });
+      summary.completed += 1;
+    }
+
+    return summary;
+  }
+
   getVerificationTier(input: {
     sessionId: string | null;
     businessId: string;
@@ -6910,6 +7067,7 @@ export class Cp2Store {
       logistics: [...this.logistics.values()],
       dataExports: [...this.dataExports.values()].map(dataExportSummary),
       accountDeletionRequests: [...this.accountDeletionRequests.values()],
+      accountDeletionProofs: [...this.accountDeletionProofs.values()],
       verificationTiers: [...this.verificationTiers.values()],
       taxConfigs: [...this.taxConfigs.values()],
       deviceTrust: [...this.deviceTrust.values()],
@@ -6982,6 +7140,7 @@ export class Cp2Store {
     this.logisticsByInvoice.clear();
     this.dataExports.clear();
     this.accountDeletionRequests.clear();
+    this.accountDeletionProofs.clear();
     this.verificationTiers.clear();
     this.taxConfigs.clear();
     this.deviceTrust.clear();
@@ -7157,6 +7316,10 @@ export class Cp2Store {
 
     for (const item of snapshot.accountDeletionRequests) {
       this.accountDeletionRequests.set(item.id, item);
+    }
+
+    for (const proof of snapshot.accountDeletionProofs ?? []) {
+      this.accountDeletionProofs.set(proof.requestId, proof);
     }
 
     for (const item of snapshot.verificationTiers) {
@@ -10321,6 +10484,198 @@ export class Cp2Store {
     this.businesses.delete(businessId);
   }
 
+  private deleteAccountOwnedData(
+    request: AccountDeletionRequestSummary,
+    subjects: AccountDeletionSubject[]
+  ): number {
+    const userIds = new Set(
+      [...this.users.values()]
+        .filter((user) => user.accountId === request.accountId)
+        .map((user) => user.id)
+    );
+    const exclusivelyOwnedBusinessIds = new Set(
+      [...this.businesses.values()]
+        .filter((business) => {
+          const memberships = this.membershipsForBusiness(business.id);
+          return (
+            memberships.some(
+              (membership) => userIds.has(membership.userId) && membership.role === "owner"
+            ) && memberships.every((membership) => userIds.has(membership.userId))
+          );
+        })
+        .map((business) => business.id)
+    );
+    const scope = new Set<string>([
+      request.accountId,
+      ...userIds,
+      ...exclusivelyOwnedBusinessIds,
+      ...subjects.map((subject) => subject.subject)
+    ]);
+    let deletedRecordCount = 0;
+    let previousScopeSize = -1;
+
+    while (previousScopeSize !== scope.size) {
+      previousScopeSize = scope.size;
+      deletedRecordCount += deleteScopedMapRecords(this.accounts, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.users, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.businesses, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.memberships, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.sessionContexts, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.conversations, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.conversationParticipants, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.conversationMessages, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.e2eeDevices, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.pushSubscriptions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.conversationTyping, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.products, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.customers, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.suppliers, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesAgents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.supplierContactLinks, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.purchaseReceipts, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.receiptLineItems, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.receiptOCRJobs, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.invoices, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.payments, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.logistics, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.dataExports, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.verificationTiers, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.taxConfigs, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.deviceTrust, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.betaAccess, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.betaFeatureFlags, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.betaDeviceTests, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.betaSupportTickets, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.betaTelemetryEvents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.launchSettings, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.launchChecklist, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.launchIncidents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.documentImports, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.documentImportSources, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.notifications, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.runtimeSessions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.runtimeTurns, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.pendingRuntimeActions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.inventoryMovements, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.otpChallenges, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.sessions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkNodes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkEdges, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkSources, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkPermissions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkRoutes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.contactHashes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.externalIdentities, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.sokoIdentityLinks, scope);
+    }
+
+    deletedRecordCount += deleteScopedArrayRecords(this.syncChanges, scope);
+    deletedRecordCount += deleteScopedArrayRecords(this.auditEvents, scope);
+    for (const businessId of exclusivelyOwnedBusinessIds) {
+      this.quarantinedBusinessIds.delete(businessId);
+    }
+    this.rebuildDerivedIndexesAfterAccountPurge();
+    return deletedRecordCount;
+  }
+
+  private rebuildDerivedIndexesAfterAccountPurge(): void {
+    this.accountByDestination.clear();
+    for (const account of this.accounts.values()) {
+      this.accountByDestination.set(
+        destinationAccountKey(account.primaryAuthChannel, account.primaryAuthDestination),
+        account.id
+      );
+    }
+
+    this.userByAccount.clear();
+    for (const user of this.users.values()) this.userByAccount.set(user.accountId, user.id);
+
+    this.messageByClientId.clear();
+    for (const message of this.conversationMessages.values()) {
+      this.messageByClientId.set(
+        `${message.conversationId}:${message.clientMessageId}`,
+        message.id
+      );
+    }
+
+    this.pushSubscriptionIdByEndpoint.clear();
+    for (const subscription of this.pushSubscriptions.values()) {
+      this.pushSubscriptionIdByEndpoint.set(subscription.endpoint, subscription.id);
+    }
+
+    this.logisticsByInvoice.clear();
+    for (const item of this.logistics.values())
+      this.logisticsByInvoice.set(item.invoiceId, item.id);
+
+    this.notificationByRuleKey.clear();
+    for (const notification of this.notifications.values()) {
+      this.notificationByRuleKey.set(
+        `${notification.businessId}:${notification.type}`,
+        notification.id
+      );
+    }
+
+    this.syncQueueIdByIdempotency.clear();
+    for (const item of this.syncQueue.values()) {
+      this.syncQueueIdByIdempotency.set(
+        syncQueueIdempotencyKey(item.businessId, item.idempotencyKey),
+        item.id
+      );
+    }
+
+    this.identityByProviderSubject.clear();
+    this.identityByEmail.clear();
+    for (const identity of this.userIdentities.values()) {
+      this.identityByProviderSubject.set(
+        oauthProviderSubjectKey(identity.provider, identity.providerSubject),
+        identity.id
+      );
+      if (identity.email !== null) {
+        this.identityByEmail.set(
+          oauthIdentityEmailKey(identity.provider, identity.email),
+          identity.id
+        );
+      }
+    }
+
+    this.mcpTokenIdByHash.clear();
+    for (const token of this.mcpAccessTokens.values()) {
+      this.mcpTokenIdByHash.set(token.tokenHash, token.id);
+    }
+
+    this.contactHashIdByValue.clear();
+    for (const item of this.contactHashes.values()) {
+      this.contactHashIdByValue.set(
+        `${item.ownerUserId}:${item.hashType}:${item.hashValue}`,
+        item.id
+      );
+    }
+
+    this.externalIdentityIdBySubject.clear();
+    for (const item of this.externalIdentities.values()) {
+      this.externalIdentityIdBySubject.set(
+        `${item.ownerUserId}:${item.provider}:${item.providerSubjectHash}`,
+        item.id
+      );
+    }
+
+    this.nextSyncSequenceByAccount.clear();
+    for (const change of this.syncChanges) {
+      this.nextSyncSequenceByAccount.set(
+        change.accountId,
+        Math.max(this.nextSyncSequenceByAccount.get(change.accountId) ?? 1, change.sequence + 1)
+      );
+    }
+  }
+
   private buildComplianceRetention(businessId: string): ComplianceRetentionSummary {
     const directIdentifierFieldsRemoved =
       this.customersForBusiness(businessId).length * 3 +
@@ -10866,6 +11221,66 @@ export class Cp2Store {
 
 export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
   return new Cp2Store(options);
+}
+
+function deduplicateDeletionSubjects(subjects: AccountDeletionSubject[]): AccountDeletionSubject[] {
+  return [...new Map(subjects.map((item) => [`${item.provider}:${item.subject}`, item])).values()];
+}
+
+function deletionSubjectDigest(accountId: string, requestId: string): string {
+  return createHash("sha256")
+    .update(`soko-account-deletion-proof:v1:${accountId}:${requestId}`)
+    .digest("hex");
+}
+
+function deleteScopedMapRecords<T>(map: Map<string, T>, scope: Set<string>): number {
+  let deleted = 0;
+  for (const [key, value] of [...map.entries()]) {
+    if (!scope.has(key) && !valueReferencesDeletionScope(value, scope)) continue;
+    const recordId = readRecordId(value);
+    if (recordId !== null) scope.add(recordId);
+    map.delete(key);
+    deleted += 1;
+  }
+  return deleted;
+}
+
+function deleteScopedArrayRecords<T>(records: T[], scope: Set<string>): number {
+  let writeIndex = 0;
+  let deleted = 0;
+  for (const record of records) {
+    if (valueReferencesDeletionScope(record, scope)) {
+      const recordId = readRecordId(record);
+      if (recordId !== null) scope.add(recordId);
+      deleted += 1;
+      continue;
+    }
+    records[writeIndex] = record;
+    writeIndex += 1;
+  }
+  records.splice(writeIndex);
+  return deleted;
+}
+
+function readRecordId(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === "string" ? id : null;
+}
+
+function valueReferencesDeletionScope(
+  value: unknown,
+  scope: Set<string>,
+  seen = new Set<object>()
+): boolean {
+  if (typeof value === "string") return scope.has(value);
+  if (value === null || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => valueReferencesDeletionScope(item, scope, seen));
+  }
+  return Object.values(value).some((item) => valueReferencesDeletionScope(item, scope, seen));
 }
 
 interface NormalizedNetworkConnection extends NetworkImportConnectionInput {

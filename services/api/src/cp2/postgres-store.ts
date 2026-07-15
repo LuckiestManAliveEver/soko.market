@@ -35,6 +35,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "logistics", tableName: "cp2_logistics" },
   { key: "dataExports", tableName: "cp2_data_exports" },
   { key: "accountDeletionRequests", tableName: "cp2_account_deletion_requests" },
+  { key: "accountDeletionProofs", tableName: "cp2_account_deletion_proofs" },
   { key: "verificationTiers", tableName: "cp2_verification_tiers" },
   { key: "taxConfigs", tableName: "cp2_tax_configs" },
   { key: "deviceTrust", tableName: "cp2_device_trust" },
@@ -154,6 +155,7 @@ const mutatingMethodNames = new Set([
   "activateAiModel",
   "restoreShopDeletion",
   "purgeExpiredShopDeletions",
+  "purgeExpiredAccountDeletions",
   "registerE2eeDevice",
   "revokeE2eeDevice",
   "registerPushSubscription",
@@ -191,7 +193,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "021_messaging_push_e2ee.sql";
+const requiredMigrationFilename = "022_account_deletion_purge.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -205,7 +207,10 @@ export async function createPostgresCp2Store(
       : { runtimeModelProvider: options.runtimeModelProvider }),
     ...(options.pushNotificationSender === undefined
       ? {}
-      : { pushNotificationSender: options.pushNotificationSender })
+      : { pushNotificationSender: options.pushNotificationSender }),
+    ...(options.accountDeletionProcessors === undefined
+      ? {}
+      : { accountDeletionProcessors: options.accountDeletionProcessors })
   });
   const savedSnapshot = await loadNormalizedSnapshot(pool);
 
@@ -1325,6 +1330,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   await deleteMissingRows(client, "suppliers", snapshotRecords(snapshot.suppliers));
   await deleteMissingRows(client, "sessions", snapshotRecords(snapshot.sessions));
   await deleteMissingRows(client, "business_memberships", snapshotRecords(snapshot.memberships));
+  await deleteRemovedAccountRelationalGraph(client, snapshot);
 
   for (const record of snapshotRecords(snapshot.accounts)) {
     await client.query(
@@ -1778,6 +1784,141 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
       ]
     );
   }
+}
+
+async function deleteRemovedAccountRelationalGraph(
+  client: PoolClient,
+  snapshot: Cp2Snapshot
+): Promise<void> {
+  const desiredAccountIds = snapshot.accounts.map((item) => item.id);
+  const desiredUserIds = snapshot.users.map((item) => item.id);
+  const desiredBusinessIds = snapshot.businesses.map((item) => item.id);
+  const removedAccounts = await client.query<{ id: string }>(
+    "select id from accounts where not (id = any($1::uuid[]))",
+    [desiredAccountIds]
+  );
+  const removedUsers = await client.query<{ id: string }>(
+    "select id from users where not (id = any($1::uuid[]))",
+    [desiredUserIds]
+  );
+  const removedBusinesses = await client.query<{ id: string }>(
+    "select id from businesses where not (id = any($1::uuid[]))",
+    [desiredBusinessIds]
+  );
+  const accountIds = removedAccounts.rows.map((row) => row.id);
+  const userIds = removedUsers.rows.map((row) => row.id);
+  const businessIds = removedBusinesses.rows.map((row) => row.id);
+
+  if (accountIds.length === 0 && userIds.length === 0 && businessIds.length === 0) return;
+
+  await client.query(
+    `
+      delete from soko_session_contexts
+      where conversation_id in (
+        select id from conversations
+        where account_id = any($1::uuid[]) or active_shop_id = any($2::uuid[])
+      )
+    `,
+    [accountIds, businessIds]
+  );
+  await client.query(
+    "delete from conversations where account_id = any($1::uuid[]) or active_shop_id = any($2::uuid[])",
+    [accountIds, businessIds]
+  );
+  await client.query(
+    "delete from conversation_participants where account_id = any($1::uuid[]) or business_id = any($2::uuid[])",
+    [accountIds, businessIds]
+  );
+  await client.query(
+    "delete from connected_channels where account_id = any($1::uuid[]) or business_id = any($2::uuid[])",
+    [accountIds, businessIds]
+  );
+  await client.query(
+    "delete from auth_audit_events where account_id = any($1::uuid[]) or user_id = any($2::uuid[])",
+    [accountIds, userIds]
+  );
+  await client.query("delete from shop_deletion_archives where account_id = any($1::uuid[])", [
+    accountIds
+  ]);
+
+  await client.query(
+    `
+      delete from document_import_rows
+      where import_job_id in (select id from document_import_jobs where business_id = any($1::uuid[]))
+    `,
+    [businessIds]
+  );
+  for (const tableName of [
+    "document_import_jobs",
+    "document_import_sources",
+    "offline_sync_queue",
+    "offline_cache_snapshots",
+    "invoice_number_counters"
+  ]) {
+    await client.query(`delete from ${tableName} where business_id = any($1::uuid[])`, [
+      businessIds
+    ]);
+  }
+  await client.query("delete from offline_sync_queue where actor_id = any($1::uuid[])", [userIds]);
+
+  await client.query(
+    `
+      delete from sync_queue
+      where event_id in (
+        select id from business_events
+        where actor_id = any($1::text[])
+          or aggregate_id = any($2::text[])
+          or payload->>'businessId' = any($3::text[])
+          or payload->>'accountId' = any($4::text[])
+          or payload->>'userId' = any($1::text[])
+      )
+    `,
+    [userIds, [...userIds, ...businessIds, ...accountIds], businessIds, accountIds]
+  );
+  await client.query(
+    `
+      delete from business_events
+      where actor_id = any($1::text[])
+        or aggregate_id = any($2::text[])
+        or payload->>'businessId' = any($3::text[])
+        or payload->>'accountId' = any($4::text[])
+        or payload->>'userId' = any($1::text[])
+    `,
+    [userIds, [...userIds, ...businessIds, ...accountIds], businessIds, accountIds]
+  );
+
+  await client.query("delete from payments where business_id = any($1::uuid[])", [businessIds]);
+  await client.query(
+    "delete from invoice_items where invoice_id in (select id from invoices where business_id = any($1::uuid[]))",
+    [businessIds]
+  );
+  await client.query("delete from invoices where business_id = any($1::uuid[])", [businessIds]);
+  await client.query(
+    "delete from receipt_line_items where receipt_id in (select id from purchase_receipts where business_id = any($1::uuid[]))",
+    [businessIds]
+  );
+  for (const tableName of [
+    "purchase_receipts",
+    "receipt_ocr_jobs",
+    "supplier_contact_links",
+    "sales_agents",
+    "suppliers",
+    "inventory_movements",
+    "products",
+    "customers",
+    "device_trust",
+    "business_memberships"
+  ]) {
+    await client.query(`delete from ${tableName} where business_id = any($1::uuid[])`, [
+      businessIds
+    ]);
+  }
+  await client.query("delete from inventory_movements where actor_id = any($1::uuid[])", [userIds]);
+
+  await client.query("delete from users where id = any($1::uuid[])", [userIds]);
+  await client.query("delete from businesses where id = any($1::uuid[])", [businessIds]);
+  await client.query("delete from accounts where id = any($1::uuid[])", [accountIds]);
+  await client.query("delete from cp2_store_snapshots");
 }
 
 async function saveShopDeletionArchives(
@@ -2275,6 +2416,7 @@ function emptySnapshot(): Cp2Snapshot {
     logistics: [],
     dataExports: [],
     accountDeletionRequests: [],
+    accountDeletionProofs: [],
     verificationTiers: [],
     taxConfigs: [],
     deviceTrust: [],
@@ -2339,6 +2481,10 @@ function snapshotRecords(value: unknown): SnapshotRecord[] {
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {
   if (key === "accountPinHashes") {
     return requiredText(record, "accountId");
+  }
+
+  if (key === "accountDeletionProofs") {
+    return requiredText(record, "requestId");
   }
 
   if (key === "marketplaceIntroStates") {

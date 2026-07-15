@@ -9,6 +9,12 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("CP2_STORE\n        value: postgres");
     expect(blueprint).toContain("corepack pnpm db:migrate &&");
     expect(blueprint).not.toMatch(/key: (?:DIRECT_)?DATABASE_URL\n\s+sync: false/);
-    expect(blueprint.match(/name: soko-market-db\n\s+property: connectionString/g)).toHaveLength(8);
+    expect(blueprint.match(/name: soko-market-db\n\s+property: connectionString/g)).toHaveLength(
+      10
+    );
+    expect(blueprint).toContain("name: soko-market-account-purge");
+    expect(blueprint).toContain("corepack pnpm db:purge-accounts");
+    expect(blueprint).toContain("key: ACCOUNT_DELETION_PROCESSORS_JSON\n        sync: false");
+    expect(blueprint).toContain("key: ACCOUNT_DELETION_WEBHOOK_SECRET\n        sync: false");
   });
 });

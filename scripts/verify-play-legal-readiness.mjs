@@ -10,6 +10,8 @@ const deletionPage = readText("apps/web/src/legal/AccountDeletionPage.tsx");
 const privacyPage = readText("apps/web/src/legal/PrivacyPolicyPage.tsx");
 const termsPage = readText("apps/web/src/legal/TermsOfServicePage.tsx");
 const renderBlueprint = readText("render.yaml");
+const purgeMigration = readText("infra/db/migrations/022_account_deletion_purge.sql");
+const purgeScript = readText("services/api/scripts/purge-account-deletions.mjs");
 const errors = [];
 const pending = [];
 
@@ -62,6 +64,19 @@ check(termsPage.includes("Terms of Service"), "Terms of Service page is missing"
 check(
   renderBlueprint.includes("source: /*\n        destination: /index.html"),
   "SPA route rewrite is missing"
+);
+check(renderBlueprint.includes("name: soko-market-account-purge"), "account purge cron is missing");
+check(
+  renderBlueprint.includes("ACCOUNT_DELETION_PROCESSORS_JSON"),
+  "processor configuration secret is missing"
+);
+check(
+  purgeMigration.includes("cp2_account_deletion_proofs"),
+  "account deletion proof migration is missing"
+);
+check(
+  purgeScript.includes("purgeExpiredAccountDeletions"),
+  "expired account purge runner is missing"
 );
 check(
   readiness.policyBaseline?.accountDeletionSource ===
