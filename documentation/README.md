@@ -63,11 +63,22 @@ When documents disagree, follow this order:
     - Production persistence runbook.
     - Defines the Neon Postgres and Render deployment plan, persistence scope, migration workflow, rollback notes, and production safeguards.
 
-13. `1000157660.png`, `1000157661.png`, `1000157662.png`
+13. `TERMS_OF_SERVICE.md`
+
+- Publication and production-readiness record for the Terms of Service.
+- Identifies the supplied Version 1.0 Draft Parts I–IV sources, public route, and legal completion gate.
+
+14. `PRIVACY_POLICY.md`
+
+- Publication and production-readiness record for the Privacy Policy.
+- Identifies the supplied Version 1.0 Draft Parts I–IV and Annexes A–D, public route, placeholders,
+  and privacy/legal completion gate.
+
+15. `1000157660.png`, `1000157661.png`, `1000157662.png`
     - Mobile UI references.
     - Show the desired operational style: clean cards, large tap targets, green primary actions, M-Pesa familiarity, quick actions, and payment confirmation screens.
 
-14. `Soko doc 4 June .pdf`
+16. `Soko doc 4 June .pdf`
     - Broken placeholder.
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.

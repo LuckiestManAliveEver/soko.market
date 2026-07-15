@@ -1,5 +1,7 @@
 import {
   Fragment,
+  lazy,
+  Suspense,
   StrictMode,
   useEffect,
   useRef,
@@ -62,6 +64,9 @@ import {
   type E2eeIdentity
 } from "./e2ee";
 import "./styles.css";
+
+const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
+const PrivacyPolicyPage = lazy(() => import("./legal/PrivacyPolicyPage"));
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
@@ -1746,19 +1751,29 @@ function App() {
 
   if (window.location.pathname === "/terms") {
     return (
-      <LegalPlaceholder
-        title="Terms of Service"
-        body="Soko.market terms are being prepared. Continue only if you agree to use the service responsibly and follow applicable commerce laws."
-      />
+      <Suspense
+        fallback={
+          <main className="legal-placeholder" aria-busy="true">
+            <p>Loading Terms of Service…</p>
+          </main>
+        }
+      >
+        <TermsOfServicePage />
+      </Suspense>
     );
   }
 
   if (window.location.pathname === "/privacy") {
     return (
-      <LegalPlaceholder
-        title="Privacy Policy"
-        body="Soko.market privacy details are being prepared. Account, shop, contact, and transaction data are used to operate your retail workspace."
-      />
+      <Suspense
+        fallback={
+          <main className="legal-placeholder" aria-busy="true">
+            <p>Loading Privacy Policy…</p>
+          </main>
+        }
+      >
+        <PrivacyPolicyPage />
+      </Suspense>
     );
   }
 
@@ -1795,23 +1810,6 @@ function readApiBaseUrl(): string {
 
 function formatShortCommit(commitSha: string): string {
   return commitSha === "local" ? "local" : commitSha.slice(0, 7);
-}
-
-function LegalPlaceholder(props: { title: string; body: string }) {
-  return (
-    <Surface title={`Soko.market ${props.title}`}>
-      <main className="legal-placeholder">
-        <a href="/" aria-label="Back to soko.market">
-          soko.market
-        </a>
-        <section className="panel">
-          <p className="eyebrow">soko.market</p>
-          <h1>{props.title}</h1>
-          <p>{props.body}</p>
-        </section>
-      </main>
-    </Surface>
-  );
 }
 
 function OwnerApp() {
@@ -4651,7 +4649,12 @@ function OwnerApp() {
         userVisibleOnly: true,
         applicationServerKey: base64UrlToBytes(config.publicKey)
       }));
-    await postJson("/v1/push/subscriptions", subscription.toJSON());
+    const subscriptionJson = subscription.toJSON();
+    await postJson("/v1/push/subscriptions", {
+      endpoint: subscriptionJson.endpoint,
+      expirationTime: subscriptionJson.expirationTime,
+      keys: subscriptionJson.keys
+    });
     setStatusMessage("Background message notifications enabled");
   }
 

@@ -55,6 +55,59 @@ test("messaging inbox and thread adapt across phone and desktop screens", async 
   }
 });
 
+test("draft Terms of Service reflow and pass an automated accessibility scan", async ({ page }) => {
+  for (const viewport of [
+    { width: 280, height: 653 },
+    { width: 768, height: 1024 },
+    { width: 1440, height: 900 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/terms");
+    await expect(page.getByRole("heading", { name: "Terms of Service", level: 1 })).toBeVisible();
+    await expect(page.getByText("Version 1.0 (Draft) · Parts I–IV")).toBeVisible();
+    await expect(page.getByText("Effective Date: To Be Inserted")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "1. Introduction" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "15. The Soko.market Services" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "33. Subscription Plans" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "77. Effective Date and Version History" })
+    ).toBeVisible();
+    await expectNoViewportOverflow(page);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations, formatViolations(results.violations)).toEqual([]);
+  }
+});
+
+test("draft Privacy Policy reflows and passes an automated accessibility scan", async ({
+  page
+}) => {
+  for (const viewport of [
+    { width: 280, height: 653 },
+    { width: 768, height: 1024 },
+    { width: 1440, height: 900 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/privacy");
+    await expect(page.getByRole("heading", { name: "Privacy Policy", level: 1 })).toBeVisible();
+    await expect(page.getByText("Version 1.0 (Draft) · Parts I–IV")).toBeVisible();
+    await expect(page.getByText("Effective Date: To Be Inserted")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "1. Introduction" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "40. Version History" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Annex D – Data Subject Rights Summary" })
+    ).toBeVisible();
+    await expectNoViewportOverflow(page);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations, formatViolations(results.violations)).toEqual([]);
+  }
+});
+
 for (const viewport of viewportMatrix) {
   test(`${viewport.name}: model library reflows without clipped controls`, async ({ page }) => {
     await openModelLibrary(page, viewport);
