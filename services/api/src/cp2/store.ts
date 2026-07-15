@@ -1761,12 +1761,13 @@ export class Cp2Store {
       now
     );
     const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
-    if (model === undefined || !model.available) {
+    const customModel = customAiModelIdPattern.test(input.modelId);
+    if ((!customModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
     }
     const selection: ActiveAiModelSummary = {
       businessId: input.businessId,
-      modelId: model.id,
+      modelId: model?.id ?? input.modelId,
       activatedAt: now.toISOString(),
       activatedBy: session.user.id
     };
@@ -1777,7 +1778,7 @@ export class Cp2Store {
       aggregateId: input.businessId,
       actorId: session.user.id,
       occurredAt: now.toISOString(),
-      payload: { modelId: model.id }
+      payload: { modelId: selection.modelId }
     });
     return selection;
   }
@@ -11504,14 +11505,64 @@ function marketplaceIntroStateKey(accountId: string, businessId: string | null):
 }
 
 const defaultAiModelId = "qwen2.5-0.5b-android";
+const customAiModelIdPattern = /^custom:[a-z0-9][a-z0-9._-]{0,79}$/;
 const aiModelRegistry: AiModelSummary[] = [
   {
-    id: defaultAiModelId,
-    label: "Qwen2.5 0.5B local Android",
+    id: "smollm2-360m-android",
+    label: "SmolLM2 360M (Android saver)",
     provider: "local",
-    description: "Small on-device model optimized for low-memory Android hardware.",
-    capabilities: ["chat", "tool-routing", "offline"],
-    available: true
+    description: "Smallest offline option for entry-level Android phones and short agent tasks.",
+    capabilities: ["chat", "offline", "english"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
+    downloadUrl:
+      "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf?download=true",
+    fileName: "smollm2-360m-instruct-q8_0.gguf",
+    fileSizeBytes: 386_000_000,
+    minimumMemoryGb: 2,
+    recommended: false
+  },
+  {
+    id: defaultAiModelId,
+    label: "Qwen2.5 0.5B (Android recommended)",
+    provider: "local",
+    description: "Balanced multilingual on-device agent model for mainstream Android phones.",
+    capabilities: ["chat", "tool-routing", "offline", "multilingual"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    downloadUrl:
+      "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true",
+    fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    fileSizeBytes: 491_000_000,
+    minimumMemoryGb: 3,
+    recommended: true
+  },
+  {
+    id: "qwen2.5-1.5b-android",
+    label: "Qwen2.5 1.5B (high-end Android)",
+    provider: "local",
+    description: "More capable multilingual local model for phones with at least 6 GB RAM.",
+    capabilities: ["chat", "reasoning", "tool-routing", "offline", "multilingual"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    downloadUrl:
+      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf?download=true",
+    fileName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    fileSizeBytes: 1_120_000_000,
+    minimumMemoryGb: 6,
+    recommended: false
   },
   {
     id: "sokoclaw-local",
@@ -11519,7 +11570,17 @@ const aiModelRegistry: AiModelSummary[] = [
     provider: "local",
     description: "Compatibility profile for existing local deployments.",
     capabilities: ["chat", "tool-routing", "offline"],
-    available: true
+    available: true,
+    source: "builtin",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false
   },
   {
     id: "openai-fast",
@@ -11527,7 +11588,17 @@ const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Fast hosted reasoning for connected shops.",
     capabilities: ["chat", "tool-routing"],
-    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0
+    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0,
+    source: "hosted",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false
   },
   {
     id: "openai-reasoning",
@@ -11535,7 +11606,17 @@ const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Higher-reasoning hosted profile for complex business tasks.",
     capabilities: ["chat", "reasoning", "tool-routing"],
-    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0
+    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0,
+    source: "hosted",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false
   }
 ];
 

@@ -43,9 +43,27 @@ describe("CP20 unified account, conversation, and session foundation", () => {
 
     const shop = await createBusiness(app, sessionCookie, "Model Shop");
     const registry = await getJson<{
-      models: Array<{ id: string; available: boolean }>;
+      models: Array<{
+        id: string;
+        available: boolean;
+        source: string;
+        format: string;
+        license: string | null;
+        downloadUrl: string | null;
+      }>;
     }>(app, "/v1/ai-models", sessionCookie);
     expect(registry.models.map((model) => model.id)).toContain("qwen2.5-0.5b-android");
+    expect(registry.models.filter((model) => model.source === "huggingface")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "smollm2-360m-android",
+          format: "GGUF",
+          license: "Apache-2.0",
+          downloadUrl: expect.stringContaining("huggingface.co")
+        }),
+        expect.objectContaining({ id: "qwen2.5-1.5b-android", license: "Apache-2.0" })
+      ])
+    );
 
     const activated = await app.inject({
       method: "PUT",
@@ -65,10 +83,22 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().code).toBe("ai_model_unavailable");
 
+    const custom = await app.inject({
+      method: "PUT",
+      url: `/businesses/${shop.business.id}/ai-model`,
+      headers: { "content-type": "application/json", cookie: sessionCookie },
+      payload: JSON.stringify({ modelId: "custom:merchant-model-abc123" })
+    });
+    expect(custom.statusCode).toBe(200);
+    expect(custom.json()).toMatchObject({ modelId: "custom:merchant-model-abc123" });
+
     const snapshot = store.snapshot();
     expect(snapshot.marketplaceIntroStates).toHaveLength(1);
     expect(snapshot.activeAiModels).toContainEqual(
-      expect.objectContaining({ businessId: shop.business.id, modelId: "sokoclaw-local" })
+      expect.objectContaining({
+        businessId: shop.business.id,
+        modelId: "custom:merchant-model-abc123"
+      })
     );
     await app.close();
   });

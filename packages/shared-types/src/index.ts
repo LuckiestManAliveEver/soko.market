@@ -146,6 +146,16 @@ export interface AiModelSummary {
   description: string;
   capabilities: string[];
   available: boolean;
+  source: "huggingface" | "builtin" | "hosted";
+  format: "GGUF" | "remote";
+  license: string | null;
+  licenseUrl: string | null;
+  modelCardUrl: string | null;
+  downloadUrl: string | null;
+  fileName: string | null;
+  fileSizeBytes: number | null;
+  minimumMemoryGb: number | null;
+  recommended: boolean;
 }
 
 export interface ActiveAiModelSummary {

@@ -34,6 +34,17 @@ import {
 import { openIndexedDbSyncRepository } from "./sync/indexeddb-repository";
 import { catchUpAccountSync } from "./sync/sync-client";
 import { subscribeToAccountRealtime } from "./sync/realtime-client";
+import {
+  canRunCatalogModel,
+  downloadCatalogModel,
+  importCustomGgufModel,
+  inspectDeviceModelCapability,
+  listLocalAiModels,
+  removeLocalAiModel,
+  type DeviceModelCapability,
+  type LocalAiModel,
+  type ModelTransferProgress
+} from "./ai-model-manager";
 import "./styles.css";
 
 type AuthChannel = "phone" | "email";
@@ -79,12 +90,22 @@ interface MarketplaceIntroStateSummary {
 }
 
 interface AiModelSummary {
-  id: AgentModel;
+  id: string;
   label: string;
   provider: "local" | "openai";
   description: string;
   capabilities: string[];
   available: boolean;
+  source: "huggingface" | "builtin" | "hosted";
+  format: "GGUF" | "remote";
+  license: string | null;
+  licenseUrl: string | null;
+  modelCardUrl: string | null;
+  downloadUrl: string | null;
+  fileName: string | null;
+  fileSizeBytes: number | null;
+  minimumMemoryGb: number | null;
+  recommended: boolean;
 }
 
 interface ActiveAiModelSummary {
@@ -168,7 +189,7 @@ type ActiveBusiness = BusinessResponse["business"] & {
   role: string;
 };
 
-type AgentModel = "qwen2.5-0.5b-android" | "sokoclaw-local" | "openai-fast" | "openai-reasoning";
+type AgentModel = string;
 
 interface AgentSettings {
   id: string;
@@ -9789,6 +9810,11 @@ function AgentProfileSurface({
   >([]);
   const [profileMessage, setProfileMessage] = useState("");
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
+  const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
+  const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
+  const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
+  const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
+  const customModelInput = useRef<HTMLInputElement>(null);
   const [deletionStep, setDeletionStep] = useState<"idle" | "confirm" | "verify" | "status">(
     "idle"
   );
@@ -9810,6 +9836,7 @@ function AgentProfileSurface({
     void loadConnectedSocialAccounts();
     void loadShopDeletionPreview();
     void loadAiModels();
+    void inspectDeviceModelCapability().then(setDeviceCapability);
   }, [business.id]);
 
   async function loadAiModels() {
@@ -9822,6 +9849,66 @@ function AgentProfileSurface({
       if (isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function predownloadAiModel(model: AiModelSummary) {
+    try {
+      setProfileMessage(`Downloading ${model.label} to this device…`);
+      await downloadCatalogModel(model, (progress) => {
+        setModelTransfers((current) => ({ ...current, [model.id]: progress }));
+      });
+      setLocalAiModels(listLocalAiModels());
+      setProfileMessage(`${model.label} is ready in private model storage on this device.`);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setModelTransfers((current) => {
+        const next = { ...current };
+        delete next[model.id];
+        return next;
+      });
+    }
+  }
+
+  async function importCustomModel(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file === undefined) return;
+    if (deviceCapability?.customModelsAllowed !== true || !customLicenseConfirmed) {
+      setProfileMessage("Custom model import requires a capable device and license confirmation.");
+      return;
+    }
+    const transferId = "custom-import";
+    try {
+      setProfileMessage(`Importing ${file.name} into private device storage…`);
+      const model = await importCustomGgufModel(file, (progress) => {
+        setModelTransfers((current) => ({ ...current, [transferId]: progress }));
+      });
+      setLocalAiModels(listLocalAiModels());
+      updateAgent({ model: model.id });
+      setProfileMessage(`${model.label} was imported and selected. Save the agent to activate it.`);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setModelTransfers((current) => {
+        const next = { ...current };
+        delete next[transferId];
+        return next;
+      });
+    }
+  }
+
+  async function deleteDeviceModel(model: LocalAiModel) {
+    try {
+      await removeLocalAiModel(model);
+      setLocalAiModels(listLocalAiModels());
+      if (draftAgent.model === model.id) {
+        updateAgent({ model: "qwen2.5-0.5b-android" });
+      }
+      setProfileMessage(`${model.label} was removed from this device.`);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -10085,6 +10172,13 @@ function AgentProfileSurface({
                   {model.available ? "" : " (unavailable)"}
                 </option>
               ))}
+              {localAiModels
+                .filter((model) => model.source === "custom")
+                .map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label} (custom on this device)
+                  </option>
+                ))}
             </select>
           </label>
           <label>
@@ -10095,6 +10189,165 @@ function AgentProfileSurface({
               onChange={(event) => updateAgent({ role: event.target.value })}
             />
           </label>
+        </div>
+
+        <div className="record-form ai-model-library">
+          <div className="section-heading">
+            <p className="eyebrow">Private on-device AI</p>
+            <h3>Android model library</h3>
+            <p>
+              Predownload a verified GGUF model from Hugging Face. Model weights remain in this
+              browser's private storage, ready for the compatible on-device Soko runtime without
+              downloading them again.
+            </p>
+          </div>
+
+          {deviceCapability === null ? (
+            <p className="model-device-status">Checking this device…</p>
+          ) : (
+            <div className={`model-device-status ${deviceCapability.level}`}>
+              <strong>{deviceCapability.level} device profile</strong>
+              <span>{deviceCapability.reason}</span>
+              <small>
+                {deviceCapability.deviceMemoryGb === null
+                  ? "RAM not reported"
+                  : `${deviceCapability.deviceMemoryGb} GB RAM reported`}
+                {` · ${deviceCapability.hardwareConcurrency} CPU threads`}
+                {deviceCapability.freeStorageBytes === null
+                  ? " · storage not reported"
+                  : ` · ${formatModelBytes(deviceCapability.freeStorageBytes)} free`}
+              </small>
+            </div>
+          )}
+
+          <div className="ai-model-catalog">
+            {aiModels
+              .filter((model) => model.source === "huggingface")
+              .map((model) => {
+                const localModel = localAiModels.find((candidate) => candidate.id === model.id);
+                const transfer = modelTransfers[model.id];
+                const compatible =
+                  deviceCapability === null ||
+                  canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes);
+                return (
+                  <article className="ai-model-card" key={model.id}>
+                    <div>
+                      <p className="eyebrow">
+                        {model.recommended ? "Recommended · " : ""}
+                        {model.license} · {model.format}
+                      </p>
+                      <h4>{model.label}</h4>
+                      <p>{model.description}</p>
+                      <small>
+                        {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB minimum
+                        RAM · {model.capabilities.join(" · ")}
+                      </small>
+                    </div>
+                    <div className="ai-model-card-actions">
+                      {model.modelCardUrl !== null ? (
+                        <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
+                          Model card
+                        </a>
+                      ) : null}
+                      {localModel === undefined ? (
+                        <button
+                          type="button"
+                          disabled={!compatible || transfer !== undefined}
+                          onClick={() => void predownloadAiModel(model)}
+                        >
+                          {transfer === undefined ? "Predownload" : `${transfer.percent}%`}
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateAgent({ model: model.id });
+                              setProfileMessage(
+                                `${model.label} selected. Save the agent to activate it.`
+                              );
+                            }}
+                          >
+                            Use model
+                          </button>
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={() => void deleteDeviceModel(localModel)}
+                          >
+                            Remove
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {!compatible ? (
+                      <p className="model-compatibility-warning">
+                        This model exceeds the reported memory or storage available on this device.
+                      </p>
+                    ) : null}
+                  </article>
+                );
+              })}
+          </div>
+
+          <div className="custom-model-import">
+            <div>
+              <h4>Add a custom AI model</h4>
+              <p>
+                High-capability devices can import a local GGUF file. Soko does not upload or verify
+                custom model licenses.
+              </p>
+            </div>
+            <label className="license-confirmation">
+              <input
+                type="checkbox"
+                checked={customLicenseConfirmed}
+                disabled={deviceCapability?.customModelsAllowed !== true}
+                onChange={(event) => setCustomLicenseConfirmed(event.target.checked)}
+              />
+              I confirm this model's license permits my commercial use.
+            </label>
+            <input
+              ref={customModelInput}
+              className="visually-hidden"
+              type="file"
+              accept=".gguf,application/octet-stream"
+              onChange={(event) => void importCustomModel(event)}
+            />
+            <button
+              type="button"
+              disabled={
+                deviceCapability?.customModelsAllowed !== true ||
+                !customLicenseConfirmed ||
+                modelTransfers["custom-import"] !== undefined
+              }
+              onClick={() => customModelInput.current?.click()}
+            >
+              {modelTransfers["custom-import"] === undefined
+                ? "Choose custom GGUF"
+                : `Importing ${modelTransfers["custom-import"].percent}%`}
+            </button>
+            {localAiModels
+              .filter((model) => model.source === "custom")
+              .map((model) => (
+                <div className="custom-model-row" key={model.id}>
+                  <span>
+                    <strong>{model.label}</strong>
+                    <small>{formatModelBytes(model.fileSizeBytes)} · stored on this device</small>
+                  </span>
+                  <button type="button" onClick={() => updateAgent({ model: model.id })}>
+                    Use
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => void deleteDeviceModel(model)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+          </div>
         </div>
 
         <div className="record-form">
@@ -12684,10 +12937,19 @@ function sanitizeContextScript(script: string): string {
 function isAgentModel(value: unknown): value is AgentModel {
   return (
     value === "qwen2.5-0.5b-android" ||
+    value === "qwen2.5-1.5b-android" ||
+    value === "smollm2-360m-android" ||
     value === "sokoclaw-local" ||
     value === "openai-fast" ||
-    value === "openai-reasoning"
+    value === "openai-reasoning" ||
+    (typeof value === "string" && /^custom:[a-z0-9][a-z0-9._-]{0,79}$/.test(value))
   );
+}
+
+function formatModelBytes(bytes: number | null): string {
+  if (bytes === null || !Number.isFinite(bytes)) return "Size unavailable";
+  if (bytes >= 1000 ** 3) return `${(bytes / 1000 ** 3).toFixed(2)} GB`;
+  return `${Math.round(bytes / 1000 ** 2)} MB`;
 }
 
 function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {

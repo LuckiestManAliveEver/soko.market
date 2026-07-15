@@ -13,3 +13,15 @@ The receipt OCR worker is self-hosted and uses the following third-party compone
 - redis-py 5.0.8 — MIT — queue/client support.
 
 No required paid OCR API is used by the default production receipt OCR flow.
+
+## Optional on-device AI models
+
+Soko can download these optional GGUF weights directly from Hugging Face into private device
+storage. The weights are not distributed in this repository or uploaded to Soko:
+
+- HuggingFaceTB SmolLM2 360M Instruct GGUF — Apache License 2.0.
+- Qwen Qwen2.5 0.5B Instruct GGUF — Apache License 2.0.
+- Qwen Qwen2.5 1.5B Instruct GGUF — Apache License 2.0.
+
+The in-app catalog links to each upstream model card and license. Custom models are user-supplied;
+their licenses and commercial-use terms remain the user's responsibility.
