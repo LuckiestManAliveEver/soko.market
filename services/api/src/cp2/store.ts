@@ -1,4 +1,15 @@
 import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+  type AuthenticationResponseJSON,
+  type AuthenticatorTransportFuture,
+  type PublicKeyCredentialCreationOptionsJSON,
+  type PublicKeyCredentialRequestOptionsJSON,
+  type RegistrationResponseJSON
+} from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
 import type {
   AccountSummary,
@@ -76,6 +87,7 @@ import type {
   OAuthProvider,
   OAuthSessionSummary,
   PaymentSummary,
+  PasskeySummary,
   ProductImportDraft,
   ProductSummary,
   PublicCustomerCareRequestSummary,
@@ -269,6 +281,8 @@ import {
 export const sessionCookieName = "soko_session";
 
 const otpTtlMs = 5 * 60 * 1000;
+const passkeyCeremonyTtlMs = 5 * 60 * 1000;
+const maxPendingPasskeyCeremonies = 1_000;
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
@@ -396,6 +410,24 @@ interface SessionRecord extends SessionSummary {
   userId: string;
   pinVerifiedAt: string | null;
   revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface PasskeyCredentialRecord extends PasskeySummary {
+  accountId: string;
+  userId: string;
+  webauthnUserId: string;
+  publicKey: string;
+  counter: number;
+}
+
+export interface PasskeyCeremonyRecord {
+  id: string;
+  kind: "registration" | "authentication";
+  accountId: string | null;
+  challenge: string;
+  webauthnUserId: string | null;
+  expiresAt: string;
   createdAt: string;
 }
 
@@ -555,6 +587,8 @@ export interface Cp2Snapshot {
   syncQueue: SyncQueueItem[];
   otpChallenges: OtpChallenge[];
   sessions: SessionRecord[];
+  passkeys?: PasskeyCredentialRecord[];
+  passkeyCeremonies?: PasskeyCeremonyRecord[];
   userIdentities: UserIdentitySummary[];
   oauthSessions: OAuthSessionSummary[];
   accountPinHashes: Array<{
@@ -719,6 +753,8 @@ export class Cp2Store {
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
+  private readonly passkeyCeremonies = new Map<string, PasskeyCeremonyRecord>();
   private readonly userIdentities = new Map<string, UserIdentityRecord>();
   private readonly identityByProviderSubject = new Map<string, string>();
   private readonly identityByEmail = new Map<string, string>();
@@ -1345,6 +1381,257 @@ export class Cp2Store {
     });
 
     return this.requireAnySession(session.id, now);
+  }
+
+  async beginPasskeyRegistration(input: {
+    sessionId: string | null;
+    rpId: string;
+    now?: Date;
+  }): Promise<{
+    ceremonyId: string;
+    options: PublicKeyCredentialCreationOptionsJSON;
+  }> {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    this.prunePasskeyCeremonies(now);
+    const accountPasskeys = [...this.passkeys.values()].filter(
+      (passkey) => passkey.accountId === session.account.id
+    );
+    const userName = session.account.primaryAuthDestination;
+    const displayName = session.user.displayName.trim() || userName;
+    const options = await generateRegistrationOptions({
+      rpName: "Soko.market",
+      rpID: input.rpId,
+      userID: new TextEncoder().encode(session.account.id),
+      userName,
+      userDisplayName: displayName,
+      attestationType: "none",
+      excludeCredentials: accountPasskeys.map((passkey) => ({
+        id: passkey.id,
+        transports: passkey.transports as AuthenticatorTransportFuture[]
+      })),
+      authenticatorSelection: {
+        residentKey: "required",
+        userVerification: "required"
+      },
+      supportedAlgorithmIDs: [-7, -257]
+    });
+    const ceremony: PasskeyCeremonyRecord = {
+      id: randomUUID(),
+      kind: "registration",
+      accountId: session.account.id,
+      challenge: options.challenge,
+      webauthnUserId: options.user.id,
+      expiresAt: new Date(now.getTime() + passkeyCeremonyTtlMs).toISOString(),
+      createdAt: now.toISOString()
+    };
+    this.passkeyCeremonies.set(ceremony.id, ceremony);
+
+    return {
+      ceremonyId: ceremony.id,
+      options
+    };
+  }
+
+  async completePasskeyRegistration(input: {
+    sessionId: string | null;
+    ceremonyId: string;
+    label?: string;
+    origin: string;
+    rpId: string;
+    response: RegistrationResponseJSON;
+    now?: Date;
+  }): Promise<PasskeySummary> {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const ceremony = this.takePasskeyCeremony(input.ceremonyId, "registration", now);
+
+    if (ceremony.accountId !== session.account.id || ceremony.webauthnUserId === null) {
+      throw new Cp2Error(403, "passkey_ceremony_invalid", "Passkey registration is invalid.");
+    }
+
+    let verification;
+    try {
+      verification = await verifyRegistrationResponse({
+        response: input.response,
+        expectedChallenge: ceremony.challenge,
+        expectedOrigin: input.origin,
+        expectedRPID: input.rpId,
+        requireUserPresence: true,
+        requireUserVerification: true,
+        supportedAlgorithmIDs: [-7, -257]
+      });
+    } catch {
+      throw new Cp2Error(401, "passkey_registration_invalid", "Passkey registration failed.");
+    }
+
+    if (!verification.verified) {
+      throw new Cp2Error(401, "passkey_registration_invalid", "Passkey registration failed.");
+    }
+
+    const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
+    if (this.passkeys.has(credential.id)) {
+      throw new Cp2Error(409, "passkey_exists", "This passkey is already registered.");
+    }
+
+    const passkey: PasskeyCredentialRecord = {
+      id: credential.id,
+      accountId: session.account.id,
+      userId: session.user.id,
+      webauthnUserId: ceremony.webauthnUserId,
+      publicKey: Buffer.from(credential.publicKey).toString("base64url"),
+      counter: credential.counter,
+      label: normalizePasskeyLabel(input.label),
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+      transports: [...(credential.transports ?? [])],
+      createdAt: now.toISOString(),
+      lastUsedAt: null
+    };
+    this.passkeys.set(passkey.id, passkey);
+    this.recordAuditEvent({
+      type: "auth.passkey_registered",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        credentialId: passkey.id,
+        deviceType: passkey.deviceType,
+        backedUp: passkey.backedUp
+      }
+    });
+
+    return passkeyView(passkey);
+  }
+
+  async beginPasskeyAuthentication(input: { rpId: string; now?: Date }): Promise<{
+    ceremonyId: string;
+    options: PublicKeyCredentialRequestOptionsJSON;
+  }> {
+    const now = input.now ?? new Date();
+    this.prunePasskeyCeremonies(now);
+    const options = await generateAuthenticationOptions({
+      rpID: input.rpId,
+      userVerification: "required"
+    });
+    const ceremony: PasskeyCeremonyRecord = {
+      id: randomUUID(),
+      kind: "authentication",
+      accountId: null,
+      challenge: options.challenge,
+      webauthnUserId: null,
+      expiresAt: new Date(now.getTime() + passkeyCeremonyTtlMs).toISOString(),
+      createdAt: now.toISOString()
+    };
+    this.passkeyCeremonies.set(ceremony.id, ceremony);
+
+    return {
+      ceremonyId: ceremony.id,
+      options
+    };
+  }
+
+  async completePasskeyAuthentication(input: {
+    ceremonyId: string;
+    origin: string;
+    rpId: string;
+    response: AuthenticationResponseJSON;
+    now?: Date;
+  }): Promise<AuthSessionView> {
+    const now = input.now ?? new Date();
+    const ceremony = this.takePasskeyCeremony(input.ceremonyId, "authentication", now);
+    const passkey = this.passkeys.get(input.response.id);
+
+    if (passkey === undefined) {
+      throw new Cp2Error(401, "passkey_unknown", "Passkey sign-in failed.");
+    }
+
+    if (
+      input.response.response.userHandle !== undefined &&
+      input.response.response.userHandle !== passkey.webauthnUserId
+    ) {
+      throw new Cp2Error(401, "passkey_user_mismatch", "Passkey sign-in failed.");
+    }
+
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: input.response,
+        expectedChallenge: ceremony.challenge,
+        expectedOrigin: input.origin,
+        expectedRPID: input.rpId,
+        credential: {
+          id: passkey.id,
+          publicKey: Buffer.from(passkey.publicKey, "base64url"),
+          counter: passkey.counter,
+          transports: passkey.transports as AuthenticatorTransportFuture[]
+        },
+        requireUserVerification: true
+      });
+    } catch {
+      throw new Cp2Error(401, "passkey_authentication_invalid", "Passkey sign-in failed.");
+    }
+
+    if (!verification.verified) {
+      throw new Cp2Error(401, "passkey_authentication_invalid", "Passkey sign-in failed.");
+    }
+
+    passkey.counter = verification.authenticationInfo.newCounter;
+    passkey.backedUp = verification.authenticationInfo.credentialBackedUp;
+    passkey.deviceType = verification.authenticationInfo.credentialDeviceType;
+    passkey.lastUsedAt = now.toISOString();
+    const account = this.requireAccount(passkey.accountId);
+    const user = this.requireUser(passkey.userId);
+    const createdSession = this.createSession(account, user, now);
+    this.markSessionPinVerified(createdSession.id, now);
+    this.recordAuditEvent({
+      type: "auth.passkey_login",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        credentialId: passkey.id
+      }
+    });
+
+    return this.requireAnySession(createdSession.id, now);
+  }
+
+  listPasskeys(input: { sessionId: string | null; now?: Date }): PasskeySummary[] {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    return [...this.passkeys.values()]
+      .filter((passkey) => passkey.accountId === session.account.id)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(passkeyView);
+  }
+
+  revokePasskey(input: { sessionId: string | null; credentialId: string; now?: Date }): {
+    revoked: true;
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const passkey = this.passkeys.get(input.credentialId);
+
+    if (passkey === undefined || passkey.accountId !== session.account.id) {
+      throw new Cp2Error(404, "passkey_not_found", "Passkey was not found.");
+    }
+
+    this.passkeys.delete(passkey.id);
+    this.recordAuditEvent({
+      type: "auth.passkey_revoked",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        credentialId: passkey.id
+      }
+    });
+
+    return { revoked: true };
   }
 
   createBusiness(input: {
@@ -7597,6 +7884,8 @@ export class Cp2Store {
       syncQueue: [...this.syncQueue.values()],
       otpChallenges: [...this.otpChallenges.values()],
       sessions: [...this.sessions.values()],
+      passkeys: [...this.passkeys.values()],
+      passkeyCeremonies: [...this.passkeyCeremonies.values()],
       userIdentities: [...this.userIdentities.values()].map(userIdentityView),
       oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
       accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
@@ -7680,6 +7969,8 @@ export class Cp2Store {
     this.syncQueueIdByIdempotency.clear();
     this.otpChallenges.clear();
     this.sessions.clear();
+    this.passkeys.clear();
+    this.passkeyCeremonies.clear();
     this.userIdentities.clear();
     this.identityByProviderSubject.clear();
     this.identityByEmail.clear();
@@ -7950,6 +8241,14 @@ export class Cp2Store {
 
     for (const session of snapshot.sessions) {
       this.sessions.set(session.id, session);
+    }
+
+    for (const passkey of snapshot.passkeys ?? []) {
+      this.passkeys.set(passkey.id, passkey);
+    }
+
+    for (const ceremony of snapshot.passkeyCeremonies ?? []) {
+      this.passkeyCeremonies.set(ceremony.id, ceremony);
     }
 
     for (const identity of snapshot.userIdentities) {
@@ -8699,6 +8998,41 @@ export class Cp2Store {
         now
       });
     }
+  }
+
+  private prunePasskeyCeremonies(now: Date): void {
+    for (const [ceremonyId, ceremony] of this.passkeyCeremonies) {
+      if (Date.parse(ceremony.expiresAt) <= now.getTime()) {
+        this.passkeyCeremonies.delete(ceremonyId);
+      }
+    }
+
+    if (this.passkeyCeremonies.size < maxPendingPasskeyCeremonies) {
+      return;
+    }
+
+    const overflow = [...this.passkeyCeremonies.values()]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(0, this.passkeyCeremonies.size - maxPendingPasskeyCeremonies + 1);
+    for (const ceremony of overflow) {
+      this.passkeyCeremonies.delete(ceremony.id);
+    }
+  }
+
+  private takePasskeyCeremony(
+    ceremonyId: string,
+    kind: PasskeyCeremonyRecord["kind"],
+    now: Date
+  ): PasskeyCeremonyRecord {
+    this.prunePasskeyCeremonies(now);
+    const ceremony = this.passkeyCeremonies.get(ceremonyId);
+    this.passkeyCeremonies.delete(ceremonyId);
+
+    if (ceremony === undefined || ceremony.kind !== kind) {
+      throw new Cp2Error(400, "passkey_ceremony_invalid", "Passkey request expired or is invalid.");
+    }
+
+    return ceremony;
   }
 
   private requireAnySession(sessionId: string | null, now: Date): AuthSessionView {
@@ -11165,6 +11499,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
       deletedRecordCount += deleteScopedMapRecords(this.otpChallenges, scope);
       deletedRecordCount += deleteScopedMapRecords(this.sessions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.passkeys, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.passkeyCeremonies, scope);
       deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
@@ -13493,6 +13829,23 @@ function sessionView(session: SessionRecord): SessionSummary {
     id: session.id,
     expiresAt: session.expiresAt
   };
+}
+
+function passkeyView(passkey: PasskeyCredentialRecord): PasskeySummary {
+  return {
+    id: passkey.id,
+    label: passkey.label,
+    deviceType: passkey.deviceType,
+    backedUp: passkey.backedUp,
+    transports: [...passkey.transports],
+    createdAt: passkey.createdAt,
+    lastUsedAt: passkey.lastUsedAt
+  };
+}
+
+function normalizePasskeyLabel(label: string | undefined): string {
+  const normalized = label?.trim();
+  return normalized === undefined || normalized.length === 0 ? "Passkey" : normalized.slice(0, 80);
 }
 
 function userIdentityView(identity: UserIdentityRecord): UserIdentitySummary {

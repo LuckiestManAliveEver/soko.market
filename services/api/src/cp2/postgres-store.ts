@@ -62,6 +62,8 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "syncQueue", tableName: "cp2_sync_queue_items" },
   { key: "otpChallenges", tableName: "cp2_otp_challenges" },
   { key: "sessions", tableName: "cp2_sessions" },
+  { key: "passkeys", tableName: "cp2_passkeys" },
+  { key: "passkeyCeremonies", tableName: "cp2_passkey_ceremonies" },
   { key: "userIdentities", tableName: "cp2_user_identities" },
   { key: "oauthSessions", tableName: "cp2_oauth_sessions" },
   { key: "accountPinHashes", tableName: "cp2_account_pin_hashes" },
@@ -81,7 +83,11 @@ const mutatingMethodNames = new Set([
   "approveAgentRoute",
   "authenticateSocialProfile",
   "beginOAuthSession",
+  "beginPasskeyAuthentication",
+  "beginPasskeyRegistration",
   "completeOAuthCallback",
+  "completePasskeyAuthentication",
+  "completePasskeyRegistration",
   "completeMarketplaceIntro",
   "confirmProductImport",
   "confirmReceiptOCRJob",
@@ -133,6 +139,7 @@ const mutatingMethodNames = new Set([
   "requestAccountDeletion",
   "requestShopDeletion",
   "requestOtp",
+  "revokePasskey",
   "revokeMcpAccessToken",
   "setAccountPin",
   "syncPhoneContacts",
@@ -206,7 +213,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "024_agent_profiles.sql";
+const requiredMigrationFilename = "025_passkeys.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -416,10 +423,16 @@ export async function createPostgresCp2Store(
         }
 
         if (isPromiseLike(result)) {
-          return result.then((resolved: unknown) => {
-            enqueueSave();
-            return resolved;
-          });
+          return result.then(
+            (resolved: unknown) => {
+              enqueueSave();
+              return resolved;
+            },
+            (error: unknown) => {
+              enqueueSave();
+              throw error;
+            }
+          );
         }
 
         enqueueSave();
@@ -2456,6 +2469,8 @@ function emptySnapshot(): Cp2Snapshot {
     syncQueue: [],
     otpChallenges: [],
     sessions: [],
+    passkeys: [],
+    passkeyCeremonies: [],
     userIdentities: [],
     oauthSessions: [],
     accountPinHashes: [],

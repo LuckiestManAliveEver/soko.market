@@ -43,6 +43,8 @@ services:
         value: https://soko.market
       - key: AUTH_ALLOWED_REDIRECT_ORIGINS
         value: https://soko.market,https://www.soko.market
+      - key: WEBAUTHN_RP_ID
+        value: soko.market
       - key: CP2_STORE
         value: postgres
       - key: DATABASE_URL

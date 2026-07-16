@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@fastify/websocket": "^11.3.0",
+    "@simplewebauthn/server": "^13.0.0",
     "@soko/ai-runtime": "workspace:*",
     "@soko/business-core": "workspace:*",
     "@soko/event-core": "workspace:*",

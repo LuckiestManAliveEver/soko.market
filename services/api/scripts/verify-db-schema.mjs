@@ -13,7 +13,8 @@ const migrationFilenames = [
   "021_messaging_push_e2ee.sql",
   "022_account_deletion_purge.sql",
   "023_storefront_interaction_contracts.sql",
-  "024_agent_profiles.sql"
+  "024_agent_profiles.sql",
+  "025_passkeys.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

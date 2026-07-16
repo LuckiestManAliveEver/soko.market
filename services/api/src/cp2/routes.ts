@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
   AuthChannel,
@@ -160,6 +161,17 @@ interface PinLoginBody extends PinBody {
   contact?: string;
   destination?: string;
   method?: string;
+}
+
+interface PasskeyRegistrationVerifyBody {
+  ceremonyId?: string;
+  label?: string;
+  response?: RegistrationResponseJSON;
+}
+
+interface PasskeyAuthenticationVerifyBody {
+  ceremonyId?: string;
+  response?: AuthenticationResponseJSON;
 }
 
 interface CreateBusinessBody {
@@ -673,6 +685,29 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
 
+  function passkeyRelyingParty(request: FastifyRequest): { origin: string; rpId: string } {
+    const origin = request.headers.origin;
+
+    if (origin === undefined || !realtimeAllowedOrigins.has(origin)) {
+      throw new Cp2Error(
+        403,
+        "passkey_origin_not_allowed",
+        "Passkeys are not available from this origin."
+      );
+    }
+
+    const url = new URL(origin);
+    const configuredRpId = process.env.WEBAUTHN_RP_ID?.trim();
+    const rpId =
+      configuredRpId && configuredRpId.length > 0
+        ? configuredRpId
+        : url.hostname.startsWith("www.")
+          ? url.hostname.slice(4)
+          : url.hostname;
+
+    return { origin: url.origin, rpId };
+  }
+
   function oauthRedirectUriForRequest(
     request: FastifyRequest,
     providerConfig: ReturnType<typeof getOAuthProviderConfig>,
@@ -1047,6 +1082,94 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         const result = await verifyOtpForBody({ ...request.body, method: "phone" });
         reply.header("set-cookie", serializeSessionCookie(result.session.id));
         return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/auth/passkeys/register/options", async (request, reply) => {
+    try {
+      const relyingParty = passkeyRelyingParty(request);
+      return await store.beginPasskeyRegistration({
+        sessionId: readSessionCookie(request.headers.cookie),
+        rpId: relyingParty.rpId
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/passkeys/register/verify",
+    async (request: FastifyRequest<{ Body: PasskeyRegistrationVerifyBody }>, reply) => {
+      try {
+        const relyingParty = passkeyRelyingParty(request);
+        const label = parseOptionalString(request.body.label);
+        return await store.completePasskeyRegistration({
+          sessionId: readSessionCookie(request.headers.cookie),
+          ceremonyId: parseString(request.body.ceremonyId, "ceremonyId"),
+          ...(label === undefined ? {} : { label }),
+          origin: relyingParty.origin,
+          rpId: relyingParty.rpId,
+          response: parsePasskeyResponse<RegistrationResponseJSON>(request.body.response)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/auth/passkeys/login/options", async (request, reply) => {
+    try {
+      const relyingParty = passkeyRelyingParty(request);
+      return await store.beginPasskeyAuthentication({
+        rpId: relyingParty.rpId
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/passkeys/login/verify",
+    async (request: FastifyRequest<{ Body: PasskeyAuthenticationVerifyBody }>, reply) => {
+      try {
+        const relyingParty = passkeyRelyingParty(request);
+        const result = await store.completePasskeyAuthentication({
+          ceremonyId: parseString(request.body.ceremonyId, "ceremonyId"),
+          origin: relyingParty.origin,
+          rpId: relyingParty.rpId,
+          response: parsePasskeyResponse<AuthenticationResponseJSON>(request.body.response)
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/auth/passkeys", async (request, reply) => {
+    try {
+      return {
+        passkeys: store.listPasskeys({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.delete(
+    "/auth/passkeys/:credentialId",
+    async (request: FastifyRequest<{ Params: { credentialId: string } }>, reply) => {
+      try {
+        return store.revokePasskey({
+          sessionId: readSessionCookie(request.headers.cookie),
+          credentialId: parseString(request.params.credentialId, "credentialId")
+        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -3925,6 +4048,14 @@ function parseOptionalString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function parsePasskeyResponse<T>(value: unknown): T {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Cp2Error(400, "passkey_response_required", "Passkey response is required.");
+  }
+
+  return value as T;
 }
 
 function parseOAuthProfileBody(value: OAuthCallbackBody["profile"]): OAuthProfile {

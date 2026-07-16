@@ -9,6 +9,13 @@ import {
   type RefObject
 } from "react";
 import {
+  browserSupportsWebAuthn,
+  startAuthentication,
+  startRegistration,
+  type PublicKeyCredentialCreationOptionsJSON,
+  type PublicKeyCredentialRequestOptionsJSON
+} from "@simplewebauthn/browser";
+import {
   defaultProductVocabularyContextScript,
   parseMerchantCommand,
   parseProductContextScriptCommand,
@@ -23,7 +30,8 @@ import type {
   ConversationMessageSummary,
   ConversationParticipantSummary,
   ConversationView,
-  E2eeDeviceSummary
+  E2eeDeviceSummary,
+  PasskeySummary
 } from "@soko/shared-types";
 import {
   createInitialChatMessages,
@@ -160,6 +168,8 @@ interface BusinessAgentProfileSummary {
 interface SessionResponse {
   account: {
     id: string;
+    primaryAuthChannel: AuthChannel;
+    primaryAuthDestination: string;
   };
   user: {
     id: string;
@@ -169,6 +179,20 @@ interface SessionResponse {
   session: {
     expiresAt: string;
   };
+}
+
+interface PasskeyRegistrationOptionsResponse {
+  ceremonyId: string;
+  options: PublicKeyCredentialCreationOptionsJSON;
+}
+
+interface PasskeyAuthenticationOptionsResponse {
+  ceremonyId: string;
+  options: PublicKeyCredentialRequestOptionsJSON;
+}
+
+interface PasskeyListResponse {
+  passkeys: PasskeySummary[];
 }
 
 interface OAuthStartResponse {
@@ -2422,6 +2446,10 @@ export function OwnerApp() {
       if (response.ok) {
         const nextSession = (await response.json()) as SessionResponse;
         setSession(nextSession);
+        setIsWorkspaceUnlocked(true);
+        if (!accountDeletionIntent && !accountRestorationIntent) {
+          setIsLoginOpen(false);
+        }
         setStatusMessage("Session active");
         await loadMarketplaceIntroState();
         await validateStoredBusiness();
@@ -2872,6 +2900,85 @@ export function OwnerApp() {
         pathForOwnerView(destinationView, mode)
       );
       setStatusMessage("Login complete");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loginWithPasskey() {
+    if (!browserSupportsWebAuthn()) {
+      setStatusMessage("Passkeys are not supported in this browser.");
+      return;
+    }
+
+    try {
+      const challenge = await postJson<PasskeyAuthenticationOptionsResponse>(
+        "/auth/passkeys/login/options",
+        {}
+      );
+      const credential = await startAuthentication({
+        optionsJSON: challenge.options
+      });
+      const response = await postJson<SessionResponse>("/auth/passkeys/login/verify", {
+        ceremonyId: challenge.ceremonyId,
+        response: credential
+      });
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: response.account.primaryAuthDestination,
+        countryCode:
+          response.account.primaryAuthChannel === "phone"
+            ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
+            : countryCode,
+        pinSet: true
+      };
+      setSession(response);
+      setOwnerAuth(nextOwnerAuth);
+      setHasLoginPin(true);
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+      setIsWorkspaceUnlocked(true);
+      setIsLoginOpen(false);
+      setIsOtpVerified(false);
+      setLoginPin("");
+      if (accountRestorationIntent) {
+        setIsAccountRestorationOpen(true);
+        setStatusMessage("Passkey login complete. Confirm restoration to continue.");
+        return;
+      }
+      const destinationView = accountDeletionIntent
+        ? "compliance"
+        : (initialOwnerRoute?.view ?? "chat");
+      setView(destinationView);
+      window.history.replaceState(
+        { mode, view: destinationView },
+        "",
+        pathForOwnerView(destinationView, mode)
+      );
+      setStatusMessage("Passkey login complete");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function registerCurrentDevicePasskey() {
+    if (!browserSupportsWebAuthn()) {
+      setStatusMessage("Passkeys are not supported in this browser.");
+      return;
+    }
+
+    try {
+      const challenge = await postJson<PasskeyRegistrationOptionsResponse>(
+        "/auth/passkeys/register/options",
+        {}
+      );
+      const credential = await startRegistration({
+        optionsJSON: challenge.options
+      });
+      await postJson<PasskeySummary>("/auth/passkeys/register/verify", {
+        ceremonyId: challenge.ceremonyId,
+        label: passkeyDeviceLabel(),
+        response: credential
+      });
+      setStatusMessage("Passkey added. This device can now sign in without an OTP.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -5775,6 +5882,8 @@ export function OwnerApp() {
             isRequestPending={isPending("signup-otp-request")}
             isVerifyPending={isPending("signup-otp-verify")}
             isCompletePending={isPending("signup-complete")}
+            isPasskeyPending={isPending("signup-passkey")}
+            passkeySupported={browserSupportsWebAuthn()}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -5782,6 +5891,7 @@ export function OwnerApp() {
             onRequestOtp={() => void runAction("signup-otp-request", requestOtp)}
             onVerifyOtp={() => void runAction("signup-otp-verify", verifyOtp)}
             onCompleteSignup={() => void runAction("signup-complete", completeSignup)}
+            onRegisterPasskey={() => void runAction("signup-passkey", registerCurrentDevicePasskey)}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             phoneRecaptchaRef={phoneRecaptchaRef}
@@ -5807,6 +5917,8 @@ export function OwnerApp() {
             isLoginPending={isPending("login-pin")}
             isPinPending={isPending("login-pin-update")}
             isSocialPending={isPending("social-login")}
+            isPasskeyPending={isPending("passkey-login")}
+            passkeySupported={browserSupportsWebAuthn()}
             onChannelChange={setChannel}
             onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
@@ -5821,6 +5933,7 @@ export function OwnerApp() {
             onRecoverPin={() => void runAction("login-pin-update", recoverLoginPin)}
             onSetMissingPin={() => void runAction("login-pin-update", setMissingLoginPin)}
             onLogin={() => void runAction("login-pin", loginWithPin)}
+            onPasskeyLogin={() => void runAction("passkey-login", loginWithPasskey)}
             onSocialLogin={(provider) =>
               void runAction("social-login", () => authenticateSocialProfile(provider))
             }
@@ -6020,6 +6133,8 @@ interface SetupPanelProps {
   isRequestPending: boolean;
   isVerifyPending: boolean;
   isCompletePending: boolean;
+  isPasskeyPending: boolean;
+  passkeySupported: boolean;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -6027,6 +6142,7 @@ interface SetupPanelProps {
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCompleteSignup: () => void;
+  onRegisterPasskey: () => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
@@ -6034,11 +6150,14 @@ interface SetupPanelProps {
 
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
+  onSelectPasskey?: () => void;
   onSelectPhone: () => void;
   onSelectEmail?: () => void;
   onSelectSocial?: (provider: SocialSignupProvider) => void;
   providers?: OAuthProviderSummary[];
   providersLoaded?: boolean;
+  passkeyPending?: boolean;
+  passkeySupported?: boolean;
   socialPending?: boolean;
 }
 
@@ -6047,6 +6166,17 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
     <>
       <AuthBrand />
       <div className="auth-provider-stack" aria-label={`${props.mode} options`}>
+        {props.onSelectPasskey !== undefined && props.passkeySupported ? (
+          <button
+            className="social-signup-button passkey"
+            type="button"
+            onClick={props.onSelectPasskey}
+            disabled={props.passkeyPending}
+          >
+            <span aria-hidden="true">🔐</span>
+            {props.passkeyPending ? "Checking passkey…" : "Continue with passkey"}
+          </button>
+        ) : null}
         <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
           <span aria-hidden="true">☎</span>
           Continue with phone
@@ -6277,6 +6407,19 @@ function SetupPanel(props: SetupPanelProps) {
           >
             {props.isCompletePending ? "Saving…" : "Continue to shop details"}
           </button>
+          <button
+            className="secondary"
+            type="button"
+            onClick={props.onRegisterPasskey}
+            disabled={!props.passkeySupported || props.isPasskeyPending}
+            aria-busy={props.isPasskeyPending}
+          >
+            {props.passkeySupported
+              ? props.isPasskeyPending
+                ? "Securing device…"
+                : "Secure this device with a passkey"
+              : "Passkeys unavailable in this browser"}
+          </button>
         </section>
       ) : null}
     </main>
@@ -6362,7 +6505,9 @@ interface LoginPanelProps {
   isVerifyPending: boolean;
   isLoginPending: boolean;
   isPinPending: boolean;
+  isPasskeyPending: boolean;
   isSocialPending: boolean;
+  passkeySupported: boolean;
   onChannelChange: (channel: AuthChannel) => void;
   onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
@@ -6377,6 +6522,7 @@ interface LoginPanelProps {
   onRecoverPin: () => void;
   onSetMissingPin: () => void;
   onLogin: () => void;
+  onPasskeyLogin: () => void;
   onCancel: () => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
   phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
@@ -6401,6 +6547,7 @@ function LoginPanel(props: LoginPanelProps) {
         {!showAuthForm ? (
           <SocialLoginOptions
             mode="login"
+            onSelectPasskey={props.onPasskeyLogin}
             onSelectPhone={() => {
               props.onChannelChange("phone");
               setAuthView("phone");
@@ -6412,6 +6559,8 @@ function LoginPanel(props: LoginPanelProps) {
             onSelectSocial={props.onSocialLogin}
             providers={props.oauthProviders}
             providersLoaded={props.oauthProvidersLoaded}
+            passkeyPending={props.isPasskeyPending}
+            passkeySupported={props.passkeySupported}
             socialPending={props.isSocialPending}
           />
         ) : (
@@ -10895,6 +11044,7 @@ function AgentProfileSurface({
   const [connectedSocialAccounts, setConnectedSocialAccounts] = useState<
     ConnectedSocialAccountSummary[]
   >([]);
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [profileMessage, setProfileMessage] = useState("");
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
@@ -10927,6 +11077,7 @@ function AgentProfileSurface({
 
   useEffect(() => {
     void loadConnectedSocialAccounts();
+    void loadPasskeys();
     void loadShopDeletionPreview();
     void loadAgentProfile();
     // initialize model search from URL so browser back/forward works
@@ -11103,6 +11254,56 @@ function AgentProfileSurface({
     try {
       const response = await getJson<ConnectedSocialAccountsResponse>("/auth/accounts");
       setConnectedSocialAccounts(response.accounts);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadPasskeys() {
+    if (!browserSupportsWebAuthn()) {
+      setPasskeys([]);
+      return;
+    }
+
+    try {
+      const response = await getJson<PasskeyListResponse>("/auth/passkeys");
+      setPasskeys(response.passkeys);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function registerPasskey() {
+    if (!browserSupportsWebAuthn()) {
+      setProfileMessage("Passkeys are not supported in this browser.");
+      return;
+    }
+
+    try {
+      const challenge = await postJson<PasskeyRegistrationOptionsResponse>(
+        "/auth/passkeys/register/options",
+        {}
+      );
+      const credential = await startRegistration({
+        optionsJSON: challenge.options
+      });
+      await postJson<PasskeySummary>("/auth/passkeys/register/verify", {
+        ceremonyId: challenge.ceremonyId,
+        label: passkeyDeviceLabel(),
+        response: credential
+      });
+      await loadPasskeys();
+      setProfileMessage("Passkey added. You can now sign in with this device or synced passkey.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function revokePasskey(credentialId: string) {
+    try {
+      await deleteJson<{ revoked: true }>(`/auth/passkeys/${encodeURIComponent(credentialId)}`);
+      await loadPasskeys();
+      setProfileMessage("Passkey revoked.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -11899,8 +12100,50 @@ function AgentProfileSurface({
         <div className="record-form shop-profile-card">
           <div className="section-heading">
             <p className="eyebrow">Account</p>
-            <h3>Login accounts</h3>
+            <h3>Passkeys and login accounts</h3>
+            <p>
+              Passkeys use your device unlock and keep biometric data on the device. Email, social
+              login, and phone verification remain available for recovery.
+            </p>
           </div>
+          <div className="connected-social-list" aria-label="Passkeys">
+            {passkeys.map((passkey) => (
+              <article className="connected-social-card" key={passkey.id}>
+                <div>
+                  <span>Passkey</span>
+                  <strong>{passkey.label}</strong>
+                  <p>{passkey.backedUp ? "Synced or backed up" : "Stored on one device"}</p>
+                </div>
+                <div className="connected-social-meta">
+                  <span>Added: {formatDate(passkey.createdAt)}</span>
+                  <span>
+                    Last used: {passkey.lastUsedAt === null ? "—" : formatDate(passkey.lastUsedAt)}
+                  </span>
+                </div>
+                <div className="row-actions">
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction("passkey-revoke", () => revokePasskey(passkey.id))
+                    }
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <button
+            type="button"
+            disabled={!browserSupportsWebAuthn() || pendingProfileAction !== null}
+            onClick={() => void runProfileAction("passkey-register", registerPasskey)}
+          >
+            {browserSupportsWebAuthn()
+              ? "Secure this device with a passkey"
+              : "Passkeys unavailable"}
+          </button>
           <div className="connected-social-list">
             {oauthProviders
               .filter((provider) =>
@@ -14645,6 +14888,14 @@ function isStandaloneWebApp(): boolean {
     window.matchMedia("(display-mode: standalone)").matches ||
     navigatorWithStandalone.standalone === true
   );
+}
+
+function passkeyDeviceLabel(): string {
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ||
+    navigator.platform ||
+    "This device";
+  return `${platform} passkey`;
 }
 
 function readStoredBusiness(): ActiveBusiness | null {

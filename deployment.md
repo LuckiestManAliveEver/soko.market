@@ -84,6 +84,7 @@ API_HOST=0.0.0.0
 WEB_ORIGINS=https://soko.market,https://www.soko.market
 APP_URL=https://soko.market
 AUTH_ALLOWED_REDIRECT_ORIGINS=https://soko.market,https://www.soko.market
+WEBAUTHN_RP_ID=soko.market
 CP2_STORE=postgres
 DATABASE_URL=<linked from soko-market-db>
 DIRECT_DATABASE_URL=<linked from soko-market-db>
@@ -154,6 +155,10 @@ Runtime behavior:
 - The frontend no longer exposes WhatsApp OTP.
 
 Phone numbers must be in E.164 format, for example `+254700000000`.
+
+Passkeys use `WEBAUTHN_RP_ID` as their stable relying-party identity. Keep it set to
+`soko.market` for both `https://soko.market` and `https://www.soko.market`; changing it later makes
+previously registered passkeys unavailable.
 
 ## 6. Deploy Both Render Services
 

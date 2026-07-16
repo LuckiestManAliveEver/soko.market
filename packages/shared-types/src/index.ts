@@ -73,6 +73,16 @@ export interface AuthSessionView {
   session: SessionSummary;
 }
 
+export interface PasskeySummary {
+  id: string;
+  label: string;
+  deviceType: "singleDevice" | "multiDevice";
+  backedUp: boolean;
+  transports: string[];
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export type SokoMode = "marketplace" | "seller";
 
 export type SokoChatSurface =
