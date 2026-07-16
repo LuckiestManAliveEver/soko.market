@@ -3673,10 +3673,84 @@ details.nested-form-section summary {
   color: #516258;
 }
 
+.model-select-hint {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
 .ai-model-catalog {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+}
+
+.ai-model-search {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ai-model-search label {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-model-search input {
+  border: 1px solid #c7d0c8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.ai-model-search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-model-best-fit {
+  background: #f8fbf7;
+  border: 1px solid #dbe4dc;
+  border-radius: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+}
+
+.ai-model-best-fit .section-subheading {
+  margin-bottom: 12px;
+}
+
+.ai-model-best-fit .section-subheading h4 {
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+
+.ai-model-best-fit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-model-best-fit-card {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 10px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.ai-model-best-fit-card strong {
+  display: block;
+  font-size: 14px;
+}
+
+.ai-model-best-fit-card span {
+  color: #4d5c52;
+  font-size: 13px;
 }
 
 .ai-model-card {

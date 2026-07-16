@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 const workspaceRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const requireApproved = process.argv.includes("--require-approved");
 const readiness = readJson("config/play-legal-readiness.json");
-const mainSource = readText("apps/web/src/main.tsx");
+const applicationSource = readText("apps/web/src/SokoApplication.tsx");
+const routerSource = readText("apps/web/src/AppRouter.tsx");
+const routesSource = readText("apps/web/src/routes.ts");
 const deletionPage = readText("apps/web/src/legal/AccountDeletionPage.tsx");
 const privacyPage = readText("apps/web/src/legal/PrivacyPolicyPage.tsx");
 const termsPage = readText("apps/web/src/legal/TermsOfServicePage.tsx");
@@ -49,11 +51,12 @@ check(
   "recovery period must be a non-negative integer"
 );
 check(
-  mainSource.includes('window.location.pathname === "/account-deletion"'),
+  routesSource.includes('accountDeletion: "/account-deletion"') &&
+    routerSource.includes("window.location.pathname === routes.accountDeletion"),
   "public route is missing"
 );
 check(
-  mainSource.includes('get("intent") === "account-deletion"'),
+  applicationSource.includes('get("intent") === "account-deletion"'),
   "secure deletion intent is missing"
 );
 check(deletionPage.includes("Soko.market account"), "deletion resource must name the app");

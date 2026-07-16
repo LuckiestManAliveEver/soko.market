@@ -16,9 +16,31 @@ export interface FirebaseConfirmationResult {
   confirm(code: string): Promise<FirebaseUserCredential>;
 }
 
+interface FirebaseAppVerifier {
+  clear(): void;
+}
+
+interface FirebaseAuthInstance {
+  settings: {
+    appVerificationDisabledForTesting: boolean;
+  };
+  signInWithPhoneNumber(
+    phoneNumber: string,
+    appVerifier: FirebaseAppVerifier
+  ): Promise<FirebaseConfirmationResult>;
+}
+
+interface FirebaseAuthNamespace {
+  (): FirebaseAuthInstance;
+  RecaptchaVerifier: new (
+    container: HTMLElement,
+    parameters: { size: "invisible" | "normal" }
+  ) => FirebaseAppVerifier;
+}
+
 interface FirebaseGlobal {
   apps: Array<unknown>;
-  auth: unknown;
+  auth: FirebaseAuthNamespace;
   initializeApp(config: FirebaseWebConfig): unknown;
 }
 
@@ -134,6 +156,23 @@ export function isFirebasePhoneAuthConfigured(): boolean {
   return readFirebaseWebConfig() !== null;
 }
 
+export function resolveFirebaseAppVerificationDisabledForTesting(input: {
+  configuredValue?: string;
+  legacySkipValue?: string;
+  development: boolean;
+}): boolean {
+  const configured =
+    (input.configuredValue ?? input.legacySkipValue ?? "").trim().toLowerCase() === "true";
+
+  if (configured && !input.development) {
+    throw new Error(
+      "Firebase app verification can only be disabled in a development build with fictional test phone numbers."
+    );
+  }
+
+  return configured;
+}
+
 export async function sendFirebasePhoneOtp(
   phoneNumber: string,
   recaptchaContainer: HTMLElement
@@ -144,34 +183,20 @@ export async function sendFirebasePhoneOtp(
     throw new Error("Firebase phone auth is not configured.");
   }
 
-  const authNamespace = firebase.auth as unknown as {
-    RecaptchaVerifier: new (
-      container: HTMLElement,
-      parameters: { size: "invisible" | "normal" }
-    ) => {
-      clear(): void;
-    };
-    (): {
-      signInWithPhoneNumber(
-        phoneNumber: string,
-        appVerifier: { clear(): void }
-      ): Promise<FirebaseConfirmationResult>;
-    };
-  };
-  const authInstance = authNamespace();
-  const authObject = authInstance as {
-    signInWithPhoneNumber(
-      phoneNumber: string,
-      appVerifier: { clear(): void }
-    ): Promise<FirebaseConfirmationResult>;
-  };
+  const auth = firebase.auth();
+  const appVerificationDisabledForTesting = resolveFirebaseAppVerificationDisabledForTesting({
+    configuredValue: import.meta.env.VITE_FIREBASE_APP_VERIFICATION_DISABLED_FOR_TESTING,
+    legacySkipValue: import.meta.env.VITE_FIREBASE_SKIP_RECAPTCHA,
+    development: import.meta.env.DEV
+  });
+  auth.settings.appVerificationDisabledForTesting = appVerificationDisabledForTesting;
 
-  const verifier = new authNamespace.RecaptchaVerifier(recaptchaContainer, {
+  const verifier = new firebase.auth.RecaptchaVerifier(recaptchaContainer, {
     size: "invisible"
   });
 
   try {
-    return await authObject.signInWithPhoneNumber(phoneNumber, verifier);
+    return await auth.signInWithPhoneNumber(phoneNumber, verifier);
   } catch (error) {
     verifier.clear();
     throw error;

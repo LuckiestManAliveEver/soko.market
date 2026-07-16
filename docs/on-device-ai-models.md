@@ -14,6 +14,20 @@ Model files are streamed to the browser's origin-private file system. The downlo
 for working storage, requests persistent storage, reports progress, and removes partial files after
 a failed transfer. No model weights pass through the Soko API.
 
+The agent AI model dropdown separates models that are installed on the current phone from catalog
+models that still require a download. A catalog model cannot be activated until its GGUF weights
+are present in private device storage. Completing a download installs and selects that model; the
+merchant then saves the agent settings to activate it.
+
+The web/PWA build does not silently bundle these large weight files or download them without the
+merchant's action. In the interface, “installed on this phone” means the merchant has completed the
+one-time predownload into origin-private storage on that Android device.
+
+The Android model library also supports searching the on-device catalog from the frontend. The
+frontend queries the backend `/v1/ai-models?search=...` API so merchants can find the best-fit
+model by name, capability, or description and then download it directly into private browser
+storage.
+
 Custom model import is enabled only when the browser reports at least 6 GB RAM, 6 logical CPU
 threads, and 2 GB free origin storage. If Android does not report RAM, 8 logical CPU threads plus
 the storage threshold are required. Imports must use GGUF files with a valid `GGUF` header, and the

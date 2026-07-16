@@ -141,6 +141,10 @@ interface SyncPullQuery {
   limit?: string;
 }
 
+interface AiModelSearchQuery {
+  search?: string;
+}
+
 interface PinBody {
   pin?: string;
 }
@@ -1563,7 +1567,16 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.get("/v1/ai-models", async () => ({ models: store.listAiModels() }));
+  app.get(
+    "/v1/ai-models",
+    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
+      try {
+        return { models: store.listAiModels(request.query.search) };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get(
     "/businesses/:businessId/ai-model",

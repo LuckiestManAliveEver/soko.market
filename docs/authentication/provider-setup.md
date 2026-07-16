@@ -35,6 +35,16 @@ In Firebase:
 
 Phone numbers must be normalized to E.164, for example `+254700000000`.
 
+For local or automated testing, add fictional phone numbers and verification codes in the Firebase
+console, then set:
+
+```text
+VITE_FIREBASE_APP_VERIFICATION_DISABLED_FOR_TESTING=true
+```
+
+This uses Firebase's mock reCAPTCHA verifier. It is restricted to development builds and does not
+work with real phone numbers. Never set it in production.
+
 ## Runtime behavior
 
 - `Continue with phone` opens Firebase phone authentication in the browser.

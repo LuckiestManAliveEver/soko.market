@@ -1836,8 +1836,21 @@ export class Cp2Store {
     return completed;
   }
 
-  listAiModels(): AiModelSummary[] {
-    return aiModelRegistry.map((model) => ({ ...model, capabilities: [...model.capabilities] }));
+  listAiModels(search?: string): AiModelSummary[] {
+    const normalizedSearch = search?.trim().toLowerCase();
+    return aiModelRegistry
+      .filter((model) => {
+        if (!normalizedSearch) return true;
+        return (
+          model.label.toLowerCase().includes(normalizedSearch) ||
+          model.description.toLowerCase().includes(normalizedSearch) ||
+          model.capabilities.some((capability) =>
+            capability.toLowerCase().includes(normalizedSearch)
+          ) ||
+          model.id.toLowerCase().includes(normalizedSearch)
+        );
+      })
+      .map((model) => ({ ...model, capabilities: [...model.capabilities] }));
   }
 
   getActiveAiModel(input: {

@@ -65,6 +65,15 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       ])
     );
 
+    const searchResults = await getJson<{ models: Array<{ id: string }> }>(
+      app,
+      "/v1/ai-models?search=qwen",
+      sessionCookie
+    );
+    expect(searchResults.models.map((model) => model.id)).toEqual(
+      expect.arrayContaining(["qwen2.5-0.5b-android", "qwen2.5-1.5b-android"])
+    );
+
     const activated = await app.inject({
       method: "PUT",
       url: `/businesses/${shop.business.id}/ai-model`,

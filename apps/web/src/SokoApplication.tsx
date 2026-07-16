@@ -10823,6 +10823,8 @@ function AgentProfileSurface({
   const [profileMessage, setProfileMessage] = useState("");
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
+  const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
+  const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
@@ -10848,8 +10850,26 @@ function AgentProfileSurface({
   useEffect(() => {
     void loadConnectedSocialAccounts();
     void loadShopDeletionPreview();
-    void loadAiModels();
+    // initialize model search from URL so browser back/forward works
+    const params = new URLSearchParams(location.search);
+    const initialSearch = params.get("ai_search") ?? "";
+    setModelSearch(initialSearch);
+    void loadAiModels(initialSearch);
     void inspectDeviceModelCapability().then(setDeviceCapability);
+
+    const onPopState = () => {
+      const p = new URLSearchParams(location.search);
+      const searchParam = p.get("ai_search") ?? "";
+      setModelSearch(searchParam);
+      void loadAiModels(searchParam);
+      const selectedModel = p.get("ai_model");
+      if (selectedModel) {
+        setDraftAgent((current) => ({ ...current, model: selectedModel }));
+      }
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, [business.id]);
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
@@ -10862,19 +10882,39 @@ function AgentProfileSurface({
     }
   }
 
-  async function loadAiModels() {
+  async function loadAiModels(search?: string) {
     try {
-      const [registry, active] = await Promise.all([
+      const normalizedSearch = search?.trim() ?? "";
+      const [registry, active, searchResults] = await Promise.all([
         getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
-        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`)
+        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
+        normalizedSearch.length > 0
+          ? getJson<{ models: AiModelSummary[] }>(
+              `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
+            )
+          : Promise.resolve(null)
       ]);
       setAiModels(registry.models);
-      if (isAgentModel(active.modelId)) {
+      setVisibleAiModels(searchResults?.models ?? registry.models);
+      if (!isEditing && isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
+  }
+
+  async function searchAiModels() {
+    const s = modelSearch.trim();
+    try {
+      const u = new URL(location.href);
+      if (s) u.searchParams.set("ai_search", s);
+      else u.searchParams.delete("ai_search");
+      window.history.pushState({}, "", `${u.pathname}${u.search}`);
+    } catch {
+      /* ignore history update errors in unusual environments */
+    }
+    await loadAiModels(s);
   }
 
   async function predownloadAiModel(model: AiModelSummary) {
@@ -10884,7 +10924,11 @@ function AgentProfileSurface({
         setModelTransfers((current) => ({ ...current, [model.id]: progress }));
       });
       setLocalAiModels(listLocalAiModels());
-      setProfileMessage(`${model.label} is ready in private model storage on this device.`);
+      setIsEditing(true);
+      updateAgent({ model: model.id });
+      setProfileMessage(
+        `${model.label} is installed on this phone and selected. Save the agent to activate it.`
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -10911,6 +10955,7 @@ function AgentProfileSurface({
         setModelTransfers((current) => ({ ...current, [transferId]: progress }));
       });
       setLocalAiModels(listLocalAiModels());
+      setIsEditing(true);
       updateAgent({ model: model.id });
       setProfileMessage(`${model.label} was imported and selected. Save the agent to activate it.`);
     } catch (error) {
@@ -10929,7 +10974,8 @@ function AgentProfileSurface({
       await removeLocalAiModel(model);
       setLocalAiModels(listLocalAiModels());
       if (draftAgent.model === model.id) {
-        updateAgent({ model: "qwen2.5-0.5b-android" });
+        setIsEditing(true);
+        updateAgent({ model: "sokoclaw-local" });
       }
       setProfileMessage(`${model.label} was removed from this device.`);
     } catch (error) {
@@ -11058,6 +11104,19 @@ function AgentProfileSurface({
     setDraftAgent((currentAgent) => ({ ...currentAgent, ...patch }));
   }
 
+  function selectAgentModel(modelId: string) {
+    const catalogModel = aiModels.find((model) => model.id === modelId);
+    const installedOnDevice = localAiModels.some((model) => model.id === modelId);
+    if (catalogModel?.source === "huggingface" && !installedOnDevice) {
+      setProfileMessage(
+        `${catalogModel.label} must be installed on this phone before it can be selected.`
+      );
+      return;
+    }
+    setIsEditing(true);
+    updateAgent({ model: modelId });
+  }
+
   function startEditing() {
     setDraftAgent(agent);
     setIsEditing(true);
@@ -11073,6 +11132,17 @@ function AgentProfileSurface({
 
   async function saveAgent() {
     if (isSaving) return;
+    const selectedCatalogModel = aiModels.find((model) => model.id === draftAgent.model);
+    if (
+      selectedCatalogModel?.source === "huggingface" &&
+      draftAgent.model !== agent.model &&
+      !localAiModels.some((model) => model.id === draftAgent.model)
+    ) {
+      setProfileMessage(
+        `Install ${selectedCatalogModel.label} on this phone before activating it.`
+      );
+      return;
+    }
     const publicAgentId = createPublicStorefrontAgentId(business);
     setIsSaving(true);
     try {
@@ -11293,22 +11363,58 @@ function AgentProfileSurface({
             <select
               value={draftAgent.model}
               disabled={!isEditing}
-              onChange={(event) => updateAgent({ model: event.target.value as AgentModel })}
+              onChange={(event) => selectAgentModel(event.target.value)}
             >
-              {aiModels.map((model) => (
-                <option key={model.id} value={model.id} disabled={!model.available}>
-                  {model.label}
-                  {model.available ? "" : " (unavailable)"}
-                </option>
-              ))}
-              {localAiModels
-                .filter((model) => model.source === "custom")
-                .map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label} (custom on this device)
-                  </option>
-                ))}
+              <optgroup label="Installed on this phone">
+                {aiModels
+                  .filter(
+                    (model) =>
+                      model.source === "huggingface" &&
+                      model.license === "Apache-2.0" &&
+                      localAiModels.some((localModel) => localModel.id === model.id)
+                  )
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label} — offline ready
+                    </option>
+                  ))}
+                {localAiModels
+                  .filter((model) => model.source === "custom")
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label} — custom, offline ready
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="Commercial-use catalog — install first">
+                {aiModels
+                  .filter(
+                    (model) =>
+                      model.source === "huggingface" &&
+                      model.license === "Apache-2.0" &&
+                      !localAiModels.some((localModel) => localModel.id === model.id)
+                  )
+                  .map((model) => (
+                    <option key={model.id} value={model.id} disabled>
+                      {model.label} — {formatModelBytes(model.fileSizeBytes)} download required
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="Built-in and hosted">
+                {aiModels
+                  .filter((model) => model.source !== "huggingface")
+                  .map((model) => (
+                    <option key={model.id} value={model.id} disabled={!model.available}>
+                      {model.label}
+                      {model.available ? "" : " (unavailable)"}
+                    </option>
+                  ))}
+              </optgroup>
             </select>
+            <small className="model-select-hint">
+              Offline models appear as ready only after their Apache-2.0 GGUF file is installed in
+              this phone's private storage.
+            </small>
           </label>
           <label>
             Agent role
@@ -11325,10 +11431,43 @@ function AgentProfileSurface({
             <p className="eyebrow">Private on-device AI</p>
             <h3>Android model library</h3>
             <p>
-              Predownload a verified GGUF model from Hugging Face. Model weights remain in this
-              browser's private storage, ready for the compatible on-device Soko runtime without
-              downloading them again.
+              Install a commercially permissible small OSS model into browser-private storage. Once
+              downloaded, it appears under “Installed on this phone” in the AI model dropdown and
+              can run offline through the compatible on-device runtime.
             </p>
+          </div>
+
+          <div className="ai-model-search">
+            <label>
+              Search models
+              <input
+                value={modelSearch}
+                onChange={(event) => setModelSearch(event.target.value)}
+                placeholder="Search by name, capability, or description"
+              />
+            </label>
+            <div className="ai-model-search-actions">
+              <button type="button" onClick={() => void searchAiModels()}>
+                Search
+              </button>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => {
+                  setModelSearch("");
+                  try {
+                    const u = new URL(location.href);
+                    u.searchParams.delete("ai_search");
+                    window.history.pushState({}, "", `${u.pathname}${u.search}`);
+                  } catch {
+                    /* ignore history update errors in unusual environments */
+                  }
+                  void loadAiModels();
+                }}
+              >
+                Clear
+              </button>
+            </div>
           </div>
 
           {deviceCapability === null ? (
@@ -11349,9 +11488,47 @@ function AgentProfileSurface({
             </div>
           )}
 
+          <div className="ai-model-best-fit">
+            <div className="section-subheading">
+              <h4>Best fit models</h4>
+              <p>
+                These models are the most compatible with your reported device capability, making
+                them the best candidates for private on-device use.
+              </p>
+            </div>
+            {deviceCapability === null ? (
+              <p className="model-device-status">Checking compatibility…</p>
+            ) : (
+              <div className="ai-model-best-fit-list">
+                {visibleAiModels
+                  .filter((model) => model.source === "huggingface")
+                  .filter((model) => model.license === "Apache-2.0")
+                  .filter((model) =>
+                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
+                  )
+                  .sort((a, b) => Number(b.recommended) - Number(a.recommended))
+                  .slice(0, 3)
+                  .map((model) => (
+                    <div className="ai-model-best-fit-card" key={model.id}>
+                      <strong>{model.label}</strong>
+                      <span>{model.description}</span>
+                    </div>
+                  ))}
+                {visibleAiModels.filter(
+                  (model) =>
+                    model.source === "huggingface" &&
+                    model.license === "Apache-2.0" &&
+                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
+                ).length === 0 ? (
+                  <p>No compatible catalog models were found for this device.</p>
+                ) : null}
+              </div>
+            )}
+          </div>
+
           <div className="ai-model-catalog">
-            {aiModels
-              .filter((model) => model.source === "huggingface")
+            {visibleAiModels
+              .filter((model) => model.source === "huggingface" && model.license === "Apache-2.0")
               .map((model) => {
                 const localModel = localAiModels.find((candidate) => candidate.id === model.id);
                 const transfer = modelTransfers[model.id];
@@ -11362,6 +11539,7 @@ function AgentProfileSurface({
                   <article className="ai-model-card" key={model.id}>
                     <div>
                       <p className="eyebrow">
+                        {localModel === undefined ? "Available to install · " : "Installed · "}
                         {model.recommended ? "Recommended · " : ""}
                         {model.license} · {model.format}
                       </p>
@@ -11384,14 +11562,23 @@ function AgentProfileSurface({
                           disabled={!compatible || transfer !== undefined}
                           onClick={() => void predownloadAiModel(model)}
                         >
-                          {transfer === undefined ? "Predownload" : `${transfer.percent}%`}
+                          {transfer === undefined
+                            ? "Predownload & install"
+                            : `Installing ${transfer.percent}%`}
                         </button>
                       ) : (
                         <>
                           <button
                             type="button"
                             onClick={() => {
-                              updateAgent({ model: model.id });
+                              selectAgentModel(model.id);
+                              try {
+                                const u = new URL(location.href);
+                                u.searchParams.set("ai_model", model.id);
+                                window.history.pushState({}, "", `${u.pathname}${u.search}`);
+                              } catch {
+                                /* ignore */
+                              }
                               setProfileMessage(
                                 `${model.label} selected. Save the agent to activate it.`
                               );
@@ -11464,7 +11651,19 @@ function AgentProfileSurface({
                     <strong>{model.label}</strong>
                     <small>{formatModelBytes(model.fileSizeBytes)} · stored on this device</small>
                   </span>
-                  <button type="button" onClick={() => updateAgent({ model: model.id })}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      selectAgentModel(model.id);
+                      try {
+                        const u = new URL(location.href);
+                        u.searchParams.set("ai_model", model.id);
+                        window.history.pushState({}, "", `${u.pathname}${u.search}`);
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                  >
                     Use
                   </button>
                   <button

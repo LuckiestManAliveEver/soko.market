@@ -58,6 +58,10 @@ Production phone OTP requires:
 The web Firebase config is public but still environment-specific. The API only needs the Firebase
 project ID to verify the signed ID token.
 
+Local testing may set `VITE_FIREBASE_APP_VERIFICATION_DISABLED_FOR_TESTING=true`, but only with
+fictional phone numbers configured in Firebase Authentication. The production build rejects this
+setting and always uses Firebase app verification.
+
 ## Account-deletion processors
 
 The production account-purge cron requires:

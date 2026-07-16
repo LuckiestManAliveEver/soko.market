@@ -275,7 +275,7 @@ test("reduced-motion and forced-color preferences keep the page operable", async
   await openModelLibrary(page, { width: 390, height: 844 });
   await expectNoViewportOverflow(page);
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Predownload" }).first()).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Predownload & install" }).first()).toBeVisible();
 });
 
 async function openModelLibrary(

@@ -32,4 +32,12 @@ describe("frontend user guidance", () => {
     expect(application).toContain('accept=".md,.markdown,text/markdown"');
     expect(application).toContain("Markdown context files");
   });
+
+  it("separates installed Android models from the commercially permitted download catalog", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    expect(application).toContain('label="Installed on this phone"');
+    expect(application).toContain('label="Commercial-use catalog — install first"');
+    expect(application).toContain("Predownload & install");
+    expect(application).toContain("must be installed on this phone before it can be selected");
+  });
 });
