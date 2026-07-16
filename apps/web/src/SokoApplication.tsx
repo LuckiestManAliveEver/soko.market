@@ -61,6 +61,7 @@ import {
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -1604,26 +1605,30 @@ const networkSyncProviders: Array<{
 
 const defaultAgentContextScripts = [
   [
-    "script: product_catalogue_commands",
-    "scope: products",
-    "allow: read, add, edit, remove",
-    "en: show products => list existing catalogue before suggesting changes",
-    "en: add product <name> => open product card and request missing stock or price fields",
-    "en: edit product <name> => find closest product, open edit card, confirm changes",
-    "en: remove product <name> => find closest product, require confirmation before delete",
-    "sw: bidhaa => products",
-    "sw: ongeza bidhaa => add product",
-    "sw: hariri bidhaa => edit product",
-    "sw: toa bidhaa => remove product"
+    "# Product catalogue commands",
+    "",
+    "- script: product_catalogue_commands",
+    "- scope: products",
+    "- allow: read, add, edit, remove",
+    "- en: show products => list existing catalogue before suggesting changes",
+    "- en: add product <name> => open product card and request missing stock or price fields",
+    "- en: edit product <name> => find closest product, open edit card, confirm changes",
+    "- en: remove product <name> => find closest product, require confirmation before delete",
+    "- sw: bidhaa => products",
+    "- sw: ongeza bidhaa => add product",
+    "- sw: hariri bidhaa => edit product",
+    "- sw: toa bidhaa => remove product"
   ].join("\n"),
   [
-    "script: local_language_negotiation",
-    "scope: storefront_conversation",
-    "allow: explain, negotiate, request_confirmation",
-    "en: negotiate politely, protect the owner's margin, and offer alternatives",
-    "sw: salimia mteja, eleza bei kwa heshima, toa punguzo tu ikiwa mmiliki ameruhusu",
-    "sheng: keep tone friendly but do not invent discounts",
-    "rule: never finalize a discount, delivery promise, refund, or payment without owner confirmation"
+    "# Local-language negotiation",
+    "",
+    "- script: local_language_negotiation",
+    "- scope: storefront_conversation",
+    "- allow: explain, negotiate, request_confirmation",
+    "- en: negotiate politely, protect the owner's margin, and offer alternatives",
+    "- sw: salimia mteja, eleza bei kwa heshima, toa punguzo tu ikiwa mmiliki ameruhusu",
+    "- sheng: keep tone friendly but do not invent discounts",
+    "- rule: never finalize a discount, delivery promise, refund, or payment without owner confirmation"
   ].join("\n")
 ];
 
@@ -1868,6 +1873,9 @@ export function OwnerApp() {
     () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
   );
   const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(false);
+  const [isMessagingInboxOpen, setIsMessagingInboxOpen] = useState(
+    () => window.matchMedia("(min-width: 760px)").matches
+  );
   const [chatDraft, setChatDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
@@ -2076,7 +2084,7 @@ export function OwnerApp() {
         if (!cancelled) setE2eeIdentity(identity);
       })
       .catch((error) => {
-        if (!cancelled) setStatusMessage(`Secure messaging unavailable: ${getErrorMessage(error)}`);
+        if (!cancelled) setStatusMessage(getErrorMessage(error));
       });
     return () => {
       cancelled = true;
@@ -2402,7 +2410,7 @@ export function OwnerApp() {
           businessId: null
         });
       } catch (error) {
-        setStatusMessage(`Marketplace ready locally. ${getErrorMessage(error)}`);
+        setStatusMessage(getErrorMessage(error));
       }
     }
   }
@@ -3468,7 +3476,7 @@ export function OwnerApp() {
     const contacts = createPhoneNetworkSeed(customers);
 
     if (contacts.length === 0) {
-      setStatusMessage("Use Network Sync to grant phone contact access before importing contacts.");
+      setStatusMessage("Use My Network to grant phone contact access before importing contacts.");
       return;
     }
 
@@ -3509,7 +3517,7 @@ export function OwnerApp() {
       });
       setNetworkGraph(graph);
       setStatusMessage(
-        `Imported ${contacts.length} contact${contacts.length === 1 ? "" : "s"} into Network Sync.`
+        `Imported ${contacts.length} contact${contacts.length === 1 ? "" : "s"} into My Network.`
       );
       return graph;
     } catch (error) {
@@ -4108,7 +4116,9 @@ export function OwnerApp() {
       );
       setImportJobs((jobs) => [job, ...jobs.filter((item) => item.id !== job.id)]);
       setSelectedImportJobId(job.id);
-      setStatusMessage(job.status === "failed" ? "Import failed" : "Import preview ready");
+      setStatusMessage(
+        job.status === "failed" ? getUserFacingErrorMessage() : "Import preview ready"
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4411,7 +4421,7 @@ export function OwnerApp() {
       if (caught instanceof DOMException && caught.name === "AbortError") {
         return;
       }
-      setStatusMessage("I could not access contacts on this device");
+      setStatusMessage(getUserFacingErrorMessage());
     }
   }
 
@@ -4874,7 +4884,9 @@ export function OwnerApp() {
     const attachments = pendingAttachments;
     const message =
       chatDraft.trim().length > 0 ? chatDraft.trim() : createAttachmentOnlyMessage(attachments);
-    const runtimeMessage = appendAttachmentSummary(message, attachments);
+    const helpCommand = extractAgentHelpCommand(message);
+    const agentRequest = helpCommand === undefined || helpCommand === null ? message : helpCommand;
+    const runtimeMessage = appendAttachmentSummary(agentRequest, attachments);
 
     if (message.length === 0 && attachments.length === 0) {
       return;
@@ -4918,7 +4930,7 @@ export function OwnerApp() {
         setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
         setChatDraft(message);
         setPendingAttachments(attachments);
-        setStatusMessage(`Could not encrypt message: ${getErrorMessage(error)}`);
+        setStatusMessage(getErrorMessage(error));
         return;
       }
     }
@@ -4995,7 +5007,23 @@ export function OwnerApp() {
       setChatMessages((messages) => [...messages, next]);
     }
 
-    const supplierReply = createSupplierChatReply(message, suppliers);
+    if (helpCommand === null) {
+      await appendAgentMessage(createAgentHelpReply());
+      return;
+    }
+
+    if (helpCommand !== undefined) {
+      const helpDestination = resolveAgentHelpDestination(helpCommand);
+      if (helpDestination !== null) {
+        navigateToView(helpDestination);
+        await appendAgentMessage(
+          `${formatAgentDisplayName(agentSettings)} opened ${viewLabel(helpDestination)}. You can give me the next command here.`
+        );
+        return;
+      }
+    }
+
+    const supplierReply = createSupplierChatReply(agentRequest, suppliers);
     if (supplierReply !== null) {
       await appendAgentMessage(supplierReply.body);
       setView(supplierReply.view);
@@ -5003,7 +5031,7 @@ export function OwnerApp() {
     }
 
     if (business === null) {
-      const parserReply = createLocalParserReply(message);
+      const parserReply = createLocalParserReply(agentRequest);
       await appendAgentMessage(parserReply.body);
       return;
     }
@@ -5032,7 +5060,7 @@ export function OwnerApp() {
         setView("invoices");
       }
 
-      if (isNetworkDiscoveryRequest(message)) {
+      if (isNetworkDiscoveryRequest(agentRequest)) {
         await loadNetworkGraph();
         await requestNetworkRoute();
         setView("network");
@@ -5041,9 +5069,9 @@ export function OwnerApp() {
       await loadRuntimeSessions(business.id);
       setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
     } catch (error) {
-      const parserReply = createLocalParserReply(message);
+      const parserReply = createLocalParserReply(agentRequest);
       await appendAgentMessage(parserReply.body);
-      if (isNetworkDiscoveryRequest(message)) {
+      if (isNetworkDiscoveryRequest(agentRequest)) {
         await loadNetworkGraph();
         setView("network");
       }
@@ -5610,6 +5638,18 @@ export function OwnerApp() {
                 Marketplace
               </button>
               <button
+                className="header-action-button messages"
+                type="button"
+                data-testid="messages-button"
+                aria-expanded={isMessagingInboxOpen}
+                onClick={() => {
+                  navigateToView("chat");
+                  setIsMessagingInboxOpen((open) => !open);
+                }}
+              >
+                Messages
+              </button>
+              <button
                 className={
                   mode === "seller"
                     ? "header-action-button mode-active"
@@ -5782,6 +5822,7 @@ export function OwnerApp() {
               messages={chatMessages}
               conversations={conversationInbox}
               activeConversationId={activeConversationId}
+              isInboxOpen={isMessagingInboxOpen}
               isContactTyping={isContactTyping}
               isConfirming={isPending("runtime-confirm")}
               isSending={isPending("chat-send")}
@@ -5826,6 +5867,7 @@ export function OwnerApp() {
               onEnableNotifications={() =>
                 void runAction("push-notifications", requestMessagingNotifications)
               }
+              onInboxOpenChange={setIsMessagingInboxOpen}
               onReply={setReplyToMessageId}
               onCancelReply={() => setReplyToMessageId(null)}
               onEditMessage={(messageId, text) =>
@@ -6725,7 +6767,7 @@ function SyncSurface(props: SyncSurfaceProps) {
         </div>
         <div className="sync-share-panel">
           <div>
-            <span>Network Sync</span>
+            <span>My Network</span>
             <strong>Contacts and invites</strong>
             <p>{props.storefrontUrl}</p>
           </div>
@@ -7888,7 +7930,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
           return;
         }
 
-        setError(caught instanceof Error ? caught.message : "Storefront could not be loaded.");
+        setError(getErrorMessage(caught));
         setStatus("error");
       });
 
@@ -7999,7 +8041,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
           "The store received the attachment names with your message. File contents are not uploaded in this version."
         );
       } catch (caught) {
-        appendMessage("agent", `The attachment message was not sent. ${getErrorMessage(caught)}`);
+        appendMessage("agent", getErrorMessage(caught));
       }
     });
   }
@@ -8096,7 +8138,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
           { visitorId, body: message, attachmentNames: [] }
         );
       } catch (caught) {
-        appendMessage("agent", `Your message was not sent. ${getErrorMessage(caught)}`);
+        appendMessage("agent", getErrorMessage(caught));
         return null;
       }
     });
@@ -8235,7 +8277,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
         );
         addCrmNote("Order request", `Order ${order.id} was sent to the store.`);
       } catch (caught) {
-        appendMessage("agent", `The order was not sent. ${getErrorMessage(caught)}`);
+        appendMessage("agent", getErrorMessage(caught));
       }
     });
   }
@@ -8269,7 +8311,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
         addCrmNote("Customer care", `${formatCareRequestType(request.type)} request sent.`);
         setCareRequestType(null);
       } catch (caught) {
-        appendMessage("agent", `The request was not sent. ${getErrorMessage(caught)}`);
+        appendMessage("agent", getErrorMessage(caught));
       }
     });
   }
@@ -11057,7 +11099,7 @@ function AgentProfileSurface({
       await copyTextToClipboard(value);
       setProfileMessage(`${label} copied.`);
     } catch (error) {
-      setProfileMessage(`Could not copy ${label.toLowerCase()}: ${getErrorMessage(error)}`);
+      setProfileMessage(getErrorMessage(error));
     }
   }
 
@@ -11098,7 +11140,7 @@ function AgentProfileSurface({
     updateAgent({
       contextScripts: [
         ...draftAgent.contextScripts,
-        "script: local_vocabulary\npriority: required\nallow: read, add, edit, remove\n"
+        "# Local vocabulary\n\n- script: local_vocabulary\n- priority: required\n- allow: read, add, edit, remove\n"
       ]
     });
   }
@@ -11107,10 +11149,38 @@ function AgentProfileSurface({
     updateAgent({
       contextScripts: [
         ...draftAgent.contextScripts,
-        "script: local_vocabulary_sw\nlanguage: sw\npriority: required\nallow: read, add, edit, remove\n"
+        "# Swahili local vocabulary\n\n- script: local_vocabulary_sw\n- language: sw\n- priority: required\n- allow: read, add, edit, remove\n"
       ]
     });
-    setContextUnlockError("Swahili context script added. Review it before saving.");
+    setContextUnlockError("Swahili Markdown context file added. Review it before saving.");
+  }
+
+  async function importContextFiles(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    const markdownFiles = files.filter(
+      (file) => /\.(?:md|markdown)$/i.test(file.name) && file.size <= 1_000_000
+    );
+    if (markdownFiles.length !== files.length) {
+      setContextUnlockError("Context files must be Markdown (.md) files no larger than 1 MB.");
+      return;
+    }
+
+    try {
+      const contents = sanitizeContextScripts(
+        await Promise.all(markdownFiles.map((file) => file.text()))
+      );
+      updateAgent({
+        contextScripts: [...draftAgent.contextScripts, ...contents].slice(0, 12)
+      });
+      setContextUnlockError(
+        `Imported ${contents.length} Markdown context ${contents.length === 1 ? "file" : "files"}.`
+      );
+    } catch (error) {
+      setContextUnlockError(getErrorMessage(error));
+    }
   }
 
   function editFirstContextPhrase() {
@@ -11754,11 +11824,12 @@ function AgentProfileSurface({
         <div className="record-form agent-context-window advanced-context-window">
           <div className="section-heading">
             <p className="eyebrow">Advanced features</p>
-            <h3>Protected context scripts</h3>
+            <h3>Protected context files</h3>
           </div>
           <p className="security-warning">
-            Changes made here affect the response of the agent. Edit, write, or delete context
-            scripts only with absolute necessity and skill.
+            Changes made here affect the response of the agent. Edit, write, or delete context files
+            only with absolute necessity and skill. Context files are always Markdown so the agent
+            can parse and follow them.
           </p>
           {!contextUnlocked ? (
             <div className="context-unlock-panel">
@@ -11773,7 +11844,7 @@ function AgentProfileSurface({
                 />
               </label>
               <button type="button" onClick={unlockContextScripts} disabled={!isEditing}>
-                Unlock context scripts
+                Unlock context files
               </button>
               {contextUnlockError.length > 0 ? <p>{contextUnlockError}</p> : null}
             </div>
@@ -11782,7 +11853,7 @@ function AgentProfileSurface({
               <article className="product-vocabulary-card" aria-label="Product Vocabulary">
                 <div className="storefront-card-header">
                   <div>
-                    <span>Context Scripts</span>
+                    <span>Markdown context files</span>
                     <strong>Product Vocabulary</strong>
                   </div>
                   <button
@@ -11855,6 +11926,16 @@ function AgentProfileSurface({
                   >
                     Restore defaults
                   </button>
+                  <label className="secondary file-action">
+                    Import .md files
+                    <input
+                      type="file"
+                      multiple
+                      accept=".md,.markdown,text/markdown"
+                      disabled={!isEditing}
+                      onChange={(event) => void importContextFiles(event)}
+                    />
+                  </label>
                   <label>
                     Phrase to test
                     <input
@@ -11878,7 +11959,7 @@ function AgentProfileSurface({
               </article>
               {draftAgent.contextScripts.map((script, index) => (
                 <label key={`${index}-${script.slice(0, 12)}`}>
-                  Script {index + 1}
+                  context-{index + 1}.md
                   <textarea
                     id={`agent-context-script-${index}`}
                     value={script}
@@ -11892,21 +11973,22 @@ function AgentProfileSurface({
                     onClick={() => removeContextScript(index)}
                     disabled={!isEditing}
                   >
-                    Delete script
+                    Delete file
                   </button>
                 </label>
               ))}
               <button type="button" onClick={addContextScript} disabled={!isEditing}>
-                Write new script
+                Write new .md file
               </button>
             </div>
           )}
           <div className="context-script-examples">
-            <span>Allowed shape</span>
-            <code>script: product_catalogue_commands</code>
-            <code>priority: required</code>
-            <code>allow: read, add, edit, remove</code>
-            <code>sw: ongeza bidhaa =&gt; add product</code>
+            <span>Markdown shape</span>
+            <code># Product catalogue commands</code>
+            <code>- script: product_catalogue_commands</code>
+            <code>- priority: required</code>
+            <code>- allow: read, add, edit, remove</code>
+            <code>- sw: ongeza bidhaa =&gt; add product</code>
           </div>
         </div>
       </section>
@@ -11926,6 +12008,7 @@ interface ChatSurfaceProps {
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  isInboxOpen: boolean;
   isContactTyping: boolean;
   isConfirming: boolean;
   isSending: boolean;
@@ -11959,6 +12042,7 @@ interface ChatSurfaceProps {
     preference: "archive" | "mute" | "pin"
   ) => void;
   onEnableNotifications: () => void;
+  onInboxOpenChange: (open: boolean) => void;
   onReply: (messageId: string) => void;
   onCancelReply: () => void;
   onEditMessage: (messageId: string, text: string) => void;
@@ -12001,6 +12085,7 @@ function ChatSurface({
   customerCount,
   invoiceCount,
   messages,
+  isInboxOpen,
   isContactTyping,
   isConfirming,
   isSending,
@@ -12031,6 +12116,7 @@ function ChatSurface({
   onCreateConversation,
   onConversationPreference,
   onEnableNotifications,
+  onInboxOpenChange,
   onReply,
   onCancelReply,
   onEditMessage,
@@ -12061,7 +12147,6 @@ function ChatSurface({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const [inboxSearch, setInboxSearch] = useState("");
-  const [isInboxOpen, setIsInboxOpen] = useState(false);
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
@@ -12173,15 +12258,7 @@ function ChatSurface({
   }, [activeView, messages.length, mode, workspaceCardView]);
 
   return (
-    <div className="chat-surface">
-      <button
-        className="messenger-inbox-toggle secondary"
-        type="button"
-        aria-expanded={isInboxOpen}
-        onClick={() => setIsInboxOpen((open) => !open)}
-      >
-        Conversations
-      </button>
+    <div className={`chat-surface ${isInboxOpen ? "inbox-open" : ""}`}>
       <aside className={`messenger-inbox ${isInboxOpen ? "open" : ""}`} aria-label="Conversations">
         <div className="messenger-inbox-heading">
           <h2>Messages</h2>
@@ -12245,7 +12322,7 @@ function ChatSurface({
                 type="button"
                 onClick={() => {
                   onSelectConversation(conversation.id);
-                  setIsInboxOpen(false);
+                  onInboxOpenChange(false);
                 }}
               >
                 <span>
@@ -13056,7 +13133,7 @@ function ContextualBusinessCards({
       value: String(notificationCount)
     },
     {
-      title: "Network Sync",
+      title: "My Network",
       body: "Contacts, social graphs and invites",
       onClick: onOpenNetworkSync,
       value: String(activeQueueCount)
@@ -13112,7 +13189,7 @@ function workspacePanelTitle(
   }
 
   if (view === "networkSync") {
-    return "Network Sync";
+    return "My Network";
   }
 
   if (view === "storefrontPreview") {
@@ -13291,7 +13368,7 @@ function NetworkSyncNestedCard({
     return (
       <section className="nested-card network-sync-card" aria-label="Phone Contacts">
         <button className="nested-breadcrumb" type="button" onClick={() => setView("providers")}>
-          &lt; Network Sync
+          &lt; My Network
         </button>
         <div className="nested-card-title-row">
           <div>
@@ -13361,13 +13438,13 @@ function NetworkSyncNestedCard({
   }
 
   return (
-    <section className="nested-card network-sync-card" aria-label="Network Sync providers">
+    <section className="nested-card network-sync-card" aria-label="My Network providers">
       <button className="nested-breadcrumb" type="button" onClick={onBack}>
         &lt; Workspace
       </button>
       <div className="nested-card-title-row">
         <div>
-          <h3>Network Sync</h3>
+          <h3>My Network</h3>
           <p>Connect relationship sources for your shop agent.</p>
         </div>
         <button className="small-outline-button" type="button" onClick={onRefresh}>
@@ -14438,7 +14515,7 @@ function sanitizeContextScripts(scripts: unknown[]): string[] {
 }
 
 function sanitizeContextScript(script: string): string {
-  return script
+  const sanitized = script
     .replace(/<\s*\/?\s*script[^>]*>/gi, "")
     .replace(
       /\b(eval|Function|import|require|fetch|XMLHttpRequest|localStorage|document|window)\b/gi,
@@ -14451,6 +14528,12 @@ function sanitizeContextScript(script: string): string {
     .slice(0, 40)
     .join("\n")
     .slice(0, 2400);
+
+  if (sanitized.length === 0 || /^#{1,6}\s+/m.test(sanitized)) {
+    return sanitized;
+  }
+
+  return `# Agent context\n\n${sanitized}`.slice(0, 2400);
 }
 
 function isAgentModel(value: unknown): value is AgentModel {
@@ -14911,7 +14994,7 @@ function formatFileSize(size: number): string {
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
+  return getUserFacingErrorMessage(error);
 }
 
 function asSupplierImportDraft(mapped: DocumentImportDraft): SupplierImportDraft {
@@ -15243,6 +15326,47 @@ function escapeCsvCell(value: string): string {
 function viewLabel(view: ShellView): string {
   const action = quickActions.find((item) => item.id === view);
   return action?.label ?? "Business home";
+}
+
+function extractAgentHelpCommand(message: string): string | null | undefined {
+  const match = message
+    .trim()
+    .match(
+      /^(?:please\s+)?(?:ask\s+the\s+agent\s+for\s+help|help(?:\s+me)?|can\s+you\s+help(?:\s+me)?|i\s+need\s+help)(?:\s+(?:to|with))?\s*[,:-]?\s*(.*)$/i
+    );
+
+  if (match === null) {
+    return undefined;
+  }
+
+  const command = match[1]?.trim() ?? "";
+  return command.length === 0 ? null : command;
+}
+
+function resolveAgentHelpDestination(command: string): ShellView | null {
+  if (!/\b(?:open|go\s+to|navigate\s+to|take\s+me\s+to|show(?:\s+me)?|view)\b/i.test(command)) {
+    return null;
+  }
+
+  const destinations: Array<{ aliases: RegExp; view: ShellView }> = [
+    { aliases: /\bproducts?|catalogue|inventory\b/i, view: "products" },
+    { aliases: /\bsuppliers?\b/i, view: "suppliers" },
+    { aliases: /\bcustomers?\b/i, view: "customers" },
+    { aliases: /\binvoices?|sales?\b/i, view: "invoices" },
+    { aliases: /\bpayments?|debts?|balances?\b/i, view: "payments" },
+    { aliases: /\bmy\s+network|network\b/i, view: "network" },
+    { aliases: /\bpurchase\s+receipts?|receipts?|imports?\b/i, view: "imports" },
+    { aliases: /\bdeliver(?:y|ies)|logistics\b/i, view: "logistics" },
+    { aliases: /\breports?|business\s+summary\b/i, view: "reports" },
+    { aliases: /\balerts?|notifications?\b/i, view: "notifications" },
+    { aliases: /\bhome|workspace\b/i, view: "home" }
+  ];
+
+  return destinations.find((destination) => destination.aliases.test(command))?.view ?? null;
+}
+
+function createAgentHelpReply(): string {
+  return "Tell me where you want to go or give me a command. I can open Products, Suppliers, Customers, Invoices, Payments, My Network, Purchase receipts, Reports, or Alerts. Try “help me open products” or “help me add product Sugar.” I’ll navigate or prepare the command for your review.";
 }
 
 type AgentRuntimeDecision =

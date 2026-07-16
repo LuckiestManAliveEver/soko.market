@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAsyncActions } from "../../hooks/useAsyncActions";
+import { getUserFacingErrorMessage } from "../../user-facing-error";
 
 interface AccountDeletionRequestSummary {
   id: string;
@@ -160,7 +161,7 @@ async function requestJson<T>(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Account restoration failed.";
+  return getUserFacingErrorMessage(error);
 }
 
 function formatDate(value: string): string {

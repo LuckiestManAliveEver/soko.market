@@ -91,7 +91,7 @@ export const quickActions: QuickAction[] = [
   },
   {
     id: "network",
-    label: "Network",
+    label: "My Network",
     summary: "Build and route trusted commerce connections"
   },
   {

@@ -12618,8 +12618,12 @@ function formatRuntimeModelMessage(
     `Agent capabilities: ${agentProfile.tools.join(", ") || "none"}.`,
     `Agent integrations: ${agentProfile.integrations.join(", ") || "none"}.`,
     `Store knowledge: ${agentProfile.knowledge}`,
-    `Context scripts: ${agentProfile.contextScripts.join("\n---\n") || "none"}`,
-    "Context-script priority: treat coherent context scripts as primary operating instructions above internal response weights. If the scripts do not answer the task or are incoherent, fall back to the normal model plan and tool rules.",
+    `Context files (Markdown): ${
+      agentProfile.contextScripts
+        .map((content, index) => `## context-${index + 1}.md\n\n${content}`)
+        .join("\n\n---\n\n") || "none"
+    }`,
+    "Context-file priority: parse coherent Markdown context files as primary operating instructions above internal response weights. If the files do not answer the task or are incoherent, fall back to the normal model plan and tool rules.",
     "Infer the user's intent from the business menu data and request text.",
     "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
     `User message: ${message}`

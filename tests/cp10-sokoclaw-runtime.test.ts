@@ -143,7 +143,7 @@ describe("CP10 Sokoclaw runtime", () => {
       parseProductContextScriptCommand({
         message: "show dishes",
         tenantId: "restaurant",
-        contextScripts: ["show dishes => show products"]
+        contextScripts: ["# Restaurant catalogue\n\n- show dishes => show products"]
       })
     ).toMatchObject({
       intent: "PRODUCT_LIST",

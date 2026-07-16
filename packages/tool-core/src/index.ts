@@ -1750,7 +1750,14 @@ function parseLegacyVocabularyLine(
   scriptIndex: number,
   lineIndex: number
 ): ProductVocabularyEntry | null {
-  const parts = line.split("=>").map((part) => part.trim());
+  const markdownLine = line
+    .trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*+]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/^`{1,3}|`{1,3}$/g, "")
+    .trim();
+  const parts = markdownLine.split("=>").map((part) => part.trim());
   const phrasePart = parts[0] ?? "";
   const commandPart = parts[1] ?? "";
 

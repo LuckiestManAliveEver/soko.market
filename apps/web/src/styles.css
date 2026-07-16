@@ -238,6 +238,7 @@ button:disabled {
 }
 
 .header-action-button.marketplace,
+.header-action-button.messages,
 .header-action-button.sell,
 .header-action-button.mode-active {
   border-radius: 999px;
@@ -4176,21 +4177,25 @@ details.nested-form-section summary {
 /* Full messaging workspace */
 .chat-surface {
   gap: 0;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
 
-.messenger-inbox-toggle {
-  display: none;
+.chat-surface.inbox-open {
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
 }
 
 .messenger-inbox {
   background: #f7f9f7;
   border-right: 1px solid #dce5dd;
-  display: grid;
+  display: none;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
+}
+
+.messenger-inbox.open {
+  display: grid;
 }
 
 .messenger-inbox-heading,
@@ -4382,16 +4387,11 @@ details.nested-form-section summary {
 }
 
 @media (max-width: 759px) {
-  .chat-surface {
+  .chat-surface,
+  .chat-surface.inbox-open {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     position: relative;
-  }
-
-  .messenger-inbox-toggle {
-    display: block;
-    justify-self: start;
-    margin: 6px 10px;
   }
 
   .messenger-inbox {
