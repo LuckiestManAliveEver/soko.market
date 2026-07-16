@@ -22,6 +22,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "pushSubscriptions", tableName: "cp2_push_subscriptions" },
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
+  { key: "agentProfiles", tableName: "cp2_agent_profiles" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
@@ -162,6 +163,7 @@ const mutatingMethodNames = new Set([
   "verifyOtp",
   "finalizeShopDeletion",
   "activateAiModel",
+  "updateAgentProfile",
   "restoreShopDeletion",
   "restoreAccountDeletion",
   "setShopPresence",
@@ -204,7 +206,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "023_storefront_interaction_contracts.sql";
+const requiredMigrationFilename = "024_agent_profiles.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -2412,6 +2414,7 @@ function emptySnapshot(): Cp2Snapshot {
     pushSubscriptions: [],
     marketplaceIntroStates: [],
     activeAiModels: [],
+    agentProfiles: [],
     syncChanges: [],
     mcpAccessTokens: [],
     products: [],
@@ -2510,7 +2513,7 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     ].join(":");
   }
 
-  if (key === "activeAiModels") {
+  if (key === "activeAiModels" || key === "agentProfiles") {
     return requiredText(record, "businessId");
   }
 

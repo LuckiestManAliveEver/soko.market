@@ -43,6 +43,7 @@ import {
   isSupportedLanguage,
   readSessionCookie,
   serializeSessionCookie,
+  type BusinessAgentProfileInput,
   type Cp2Store,
   type OtpChallengeDelivery,
   type PhoneContactNetworkInput,
@@ -188,6 +189,21 @@ interface MarketplaceIntroBody {
 
 interface AiModelActivationBody {
   modelId?: string;
+}
+
+interface AgentProfileBody {
+  name?: string;
+  description?: string;
+  modelId?: string;
+  role?: string;
+  language?: string;
+  personality?: string;
+  instructions?: string;
+  knowledge?: string;
+  tools?: unknown;
+  integrations?: unknown;
+  contextScripts?: unknown;
+  status?: string;
 }
 
 interface ConversationParams {
@@ -1603,6 +1619,35 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           modelId: parseString(request.body.modelId, "modelId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-profile",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getAgentProfile({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/agent-profile",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: AgentProfileBody }>, reply) => {
+      try {
+        return store.updateAgentProfile({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          profile: parseAgentProfileBody(request.body)
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -3823,6 +3868,32 @@ function parseString(value: unknown, name: string): string {
   }
 
   return value.trim();
+}
+
+function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInput {
+  const language = parseString(body.language, "language");
+  if (!isSupportedLanguage(language)) {
+    throw new Cp2Error(400, "language_invalid", "language is not supported.");
+  }
+  const status = parseString(body.status, "status");
+  if (status !== "active" && status !== "draft") {
+    throw new Cp2Error(400, "agent_status_invalid", "Agent status is invalid.");
+  }
+
+  return {
+    name: parseString(body.name, "name"),
+    description: parseString(body.description, "description"),
+    modelId: parseString(body.modelId, "modelId"),
+    role: parseString(body.role, "role"),
+    language,
+    personality: parseString(body.personality, "personality"),
+    instructions: parseString(body.instructions, "instructions"),
+    knowledge: parseString(body.knowledge, "knowledge"),
+    tools: parseStringArray(body.tools, "tools", 24),
+    integrations: parseStringArray(body.integrations, "integrations", 24),
+    contextScripts: parseStringArray(body.contextScripts, "contextScripts", 12),
+    status
+  };
 }
 
 function parseOptionalString(value: unknown): string | undefined {

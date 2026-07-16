@@ -132,6 +132,24 @@ interface ActiveAiModelSummary {
   modelId: AgentModel;
 }
 
+interface BusinessAgentProfileSummary {
+  businessId: string;
+  name: string;
+  description: string;
+  modelId: string;
+  role: string;
+  language: SupportedLanguage;
+  personality: string;
+  instructions: string;
+  knowledge: string;
+  tools: string[];
+  integrations: string[];
+  contextScripts: string[];
+  status: "active" | "draft";
+  updatedAt: string;
+  updatedBy: string;
+}
+
 interface SessionResponse {
   account: {
     id: string;
@@ -2430,10 +2448,12 @@ export function OwnerApp() {
 
       if (roleCheck.allowed) {
         setBusiness(storedBusiness);
-        const presence = await getJson<ShopPresenceSummary>(
-          `/businesses/${storedBusiness.id}/presence`
-        );
+        const [presence, agentProfile] = await Promise.all([
+          getJson<ShopPresenceSummary>(`/businesses/${storedBusiness.id}/presence`),
+          getJson<BusinessAgentProfileSummary>(`/businesses/${storedBusiness.id}/agent-profile`)
+        ]);
         setShopPresenceStatus(presence.status);
+        setAgentSettings(agentSettingsFromBusinessProfile(agentProfile, storedBusiness));
         setStatusMessage("Owner shell active");
         return;
       }
@@ -10850,6 +10870,7 @@ function AgentProfileSurface({
   useEffect(() => {
     void loadConnectedSocialAccounts();
     void loadShopDeletionPreview();
+    void loadAgentProfile();
     // initialize model search from URL so browser back/forward works
     const params = new URLSearchParams(location.search);
     const initialSearch = params.get("ai_search") ?? "";
@@ -10899,6 +10920,19 @@ function AgentProfileSurface({
       if (!isEditing && isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadAgentProfile() {
+    try {
+      const profile = await getJson<BusinessAgentProfileSummary>(
+        `/businesses/${business.id}/agent-profile`
+      );
+      const nextAgent = agentSettingsFromBusinessProfile(profile, business);
+      setDraftAgent(nextAgent);
+      onAgentChange(nextAgent);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -11146,12 +11180,25 @@ function AgentProfileSurface({
     const publicAgentId = createPublicStorefrontAgentId(business);
     setIsSaving(true);
     try {
-      await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
-        modelId: draftAgent.model
-      });
+      const saved = await putJson<BusinessAgentProfileSummary>(
+        `/businesses/${business.id}/agent-profile`,
+        {
+          name: draftAgent.name,
+          description: draftAgent.description,
+          modelId: draftAgent.model,
+          role: draftAgent.role,
+          language: draftAgent.language,
+          personality: draftAgent.personality,
+          instructions: draftAgent.instructions,
+          knowledge: draftAgent.knowledge,
+          tools: draftAgent.tools,
+          integrations: draftAgent.integrations,
+          contextScripts: sanitizeContextScripts(draftAgent.contextScripts),
+          status: draftAgent.status
+        }
+      );
       onAgentChange({
-        ...draftAgent,
-        contextScripts: sanitizeContextScripts(draftAgent.contextScripts),
+        ...agentSettingsFromBusinessProfile(saved, business),
         globalAgentId: publicAgentId,
         storefrontUrl: createStorefrontUrl(publicAgentId)
       });
@@ -11278,6 +11325,26 @@ function AgentProfileSurface({
       result === null
         ? "No product context-script match was found."
         : `Matched ${result.intent} with ${Math.round(result.confidence * 100)}% confidence.`
+    );
+  }
+
+  function testProductVocabularyScript() {
+    const enabledEntries = defaultProductVocabularyContextScript.entries.filter(
+      (entry) => entry.enabled
+    );
+    const failedEntries = enabledEntries.filter((entry) => {
+      const match = parseProductContextScriptCommand({
+        message: entry.phrase,
+        contextScripts: draftAgent.contextScripts,
+        tenantId: "settings-validation"
+      });
+      return match === null || match.intent !== entry.intent;
+    });
+
+    setContextUnlockError(
+      failedEntries.length === 0
+        ? `Product vocabulary validation passed ${enabledEntries.length}/${enabledEntries.length} configured phrases.`
+        : `Product vocabulary validation matched ${enabledEntries.length - failedEntries.length}/${enabledEntries.length} phrases. Review the context files before saving.`
     );
   }
 
@@ -12063,9 +12130,7 @@ function AgentProfileSurface({
                     className="secondary"
                     type="button"
                     disabled={!isEditing}
-                    onClick={() =>
-                      setContextUnlockError("Product vocabulary test script is active.")
-                    }
+                    onClick={testProductVocabularyScript}
                   >
                     Test script
                   </button>
@@ -14638,6 +14703,30 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
     integrations: ["Soko.market storefront"],
     contextScripts: defaultAgentContextScripts,
     status: "active"
+  };
+}
+
+function agentSettingsFromBusinessProfile(
+  profile: BusinessAgentProfileSummary,
+  business: ActiveBusiness
+): AgentSettings {
+  const globalAgentId = createPublicStorefrontAgentId(business);
+  return {
+    id: `agent-${globalAgentId}`,
+    name: profile.name,
+    description: profile.description,
+    model: profile.modelId,
+    role: profile.role,
+    globalAgentId,
+    storefrontUrl: createStorefrontUrl(globalAgentId),
+    language: profile.language,
+    personality: profile.personality,
+    instructions: profile.instructions,
+    knowledge: profile.knowledge,
+    tools: [...profile.tools],
+    integrations: [...profile.integrations],
+    contextScripts: sanitizeContextScripts(profile.contextScripts),
+    status: profile.status
   };
 }
 

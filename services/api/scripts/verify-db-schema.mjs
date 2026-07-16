@@ -11,7 +11,9 @@ const migrationFilenames = [
   "019_cp23_mcp_access_tokens.sql",
   "020_marketplace_deletion_models.sql",
   "021_messaging_push_e2ee.sql",
-  "022_account_deletion_purge.sql"
+  "022_account_deletion_purge.sql",
+  "023_storefront_interaction_contracts.sql",
+  "024_agent_profiles.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

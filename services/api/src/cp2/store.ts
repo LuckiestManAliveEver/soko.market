@@ -353,6 +353,27 @@ export interface RuntimeAgentProfile {
   tools: string[];
 }
 
+export interface BusinessAgentProfileInput {
+  name: string;
+  description: string;
+  modelId: string;
+  role: string;
+  language: SupportedLanguage;
+  personality: string;
+  instructions: string;
+  knowledge: string;
+  tools: string[];
+  integrations: string[];
+  contextScripts: string[];
+  status: "active" | "draft";
+}
+
+export interface BusinessAgentProfileSummary extends BusinessAgentProfileInput {
+  businessId: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
 export interface NetworkImportConnectionInput {
   name: string;
   phone?: string | null | undefined;
@@ -492,6 +513,7 @@ export interface Cp2Snapshot {
   pushSubscriptions?: PushSubscriptionSummary[];
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
   activeAiModels?: ActiveAiModelSummary[];
+  agentProfiles?: BusinessAgentProfileSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   products: ProductSummary[];
@@ -642,6 +664,7 @@ export class Cp2Store {
   >();
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
+  private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
   private readonly syncChanges: SyncChange[] = [];
@@ -1900,6 +1923,15 @@ export class Cp2Store {
       activatedBy: session.user.id
     };
     this.activeAiModels.set(input.businessId, selection);
+    const agentProfile = this.agentProfiles.get(input.businessId);
+    if (agentProfile !== undefined) {
+      this.agentProfiles.set(input.businessId, {
+        ...agentProfile,
+        modelId: selection.modelId,
+        updatedAt: selection.activatedAt,
+        updatedBy: session.user.id
+      });
+    }
     this.recordAuditEvent({
       type: "ai_model.activated",
       aggregateType: "business",
@@ -1909,6 +1941,84 @@ export class Cp2Store {
       payload: { modelId: selection.modelId }
     });
     return selection;
+  }
+
+  getAgentProfile(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): BusinessAgentProfileSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const stored = this.agentProfiles.get(input.businessId);
+    if (stored !== undefined) {
+      return cloneBusinessAgentProfile(stored);
+    }
+
+    const business = this.requireBusiness(input.businessId);
+    return createDefaultBusinessAgentProfile({
+      business,
+      modelId: this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    });
+  }
+
+  updateAgentProfile(input: {
+    sessionId: string | null;
+    businessId: string;
+    profile: BusinessAgentProfileInput;
+    now?: Date;
+  }): BusinessAgentProfileSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const profile = normalizeBusinessAgentProfile(input.profile);
+    const model = aiModelRegistry.find((candidate) => candidate.id === profile.modelId);
+    const customModel = customAiModelIdPattern.test(profile.modelId);
+    if ((!customModel && model === undefined) || model?.available === false) {
+      throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
+    }
+
+    const updated: BusinessAgentProfileSummary = {
+      businessId: input.businessId,
+      ...profile,
+      modelId: model?.id ?? profile.modelId,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    const selection: ActiveAiModelSummary = {
+      businessId: input.businessId,
+      modelId: updated.modelId,
+      activatedAt: updated.updatedAt,
+      activatedBy: session.user.id
+    };
+
+    this.agentProfiles.set(input.businessId, updated);
+    this.activeAiModels.set(input.businessId, selection);
+    this.recordAuditEvent({
+      type: "agent_profile.updated",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: updated.updatedAt,
+      payload: {
+        language: updated.language,
+        modelId: updated.modelId,
+        status: updated.status
+      }
+    });
+
+    return cloneBusinessAgentProfile(updated);
   }
 
   listConversations(input: {
@@ -6810,10 +6920,13 @@ export class Cp2Store {
       now
     );
     const activeModelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const storedAgentProfile = this.agentProfiles.get(input.businessId);
     const agentProfile =
-      input.agentProfile === undefined
-        ? undefined
-        : { ...input.agentProfile, model: activeModelId };
+      input.agentProfile !== undefined
+        ? { ...input.agentProfile, model: activeModelId }
+        : storedAgentProfile === undefined
+          ? undefined
+          : runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -7429,6 +7542,7 @@ export class Cp2Store {
       pushSubscriptions: [...this.pushSubscriptions.values()],
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
       activeAiModels: [...this.activeAiModels.values()],
+      agentProfiles: [...this.agentProfiles.values()].map(cloneBusinessAgentProfile),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       products: [...this.products.values()],
@@ -7507,6 +7621,7 @@ export class Cp2Store {
     this.pushSubscriptionIdByEndpoint.clear();
     this.marketplaceIntroStates.clear();
     this.activeAiModels.clear();
+    this.agentProfiles.clear();
     this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
@@ -7631,6 +7746,10 @@ export class Cp2Store {
 
     for (const selection of snapshot.activeAiModels ?? []) {
       this.activeAiModels.set(selection.businessId, selection);
+    }
+
+    for (const profile of snapshot.agentProfiles ?? []) {
+      this.agentProfiles.set(profile.businessId, cloneBusinessAgentProfile(profile));
     }
 
     for (const request of snapshot.accountDeletionRequests ?? []) {
@@ -10995,6 +11114,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.conversationTyping, scope);
       deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
       deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentProfiles, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
       deletedRecordCount += deleteScopedMapRecords(this.products, scope);
       deletedRecordCount += deleteScopedMapRecords(this.customers, scope);
@@ -13013,6 +13133,32 @@ function marketplaceIntroStateKey(accountId: string, businessId: string | null):
 
 const defaultAiModelId = "qwen2.5-0.5b-android";
 const customAiModelIdPattern = /^custom:[a-z0-9][a-z0-9._-]{0,79}$/;
+const defaultBusinessAgentContextScripts = [
+  [
+    "# Product catalogue commands",
+    "- script: product_catalogue_commands",
+    "- scope: products",
+    "- allow: read, add, edit, remove",
+    "- en: show products => list existing catalogue before suggesting changes",
+    "- en: add product <name> => open product card and request missing stock or price fields",
+    "- en: edit product <name> => find closest product, open edit card, confirm changes",
+    "- en: remove product <name> => find closest product, require confirmation before delete",
+    "- sw: bidhaa => products",
+    "- sw: ongeza bidhaa => add product",
+    "- sw: hariri bidhaa => edit product",
+    "- sw: toa bidhaa => remove product"
+  ].join("\n"),
+  [
+    "# Local-language negotiation",
+    "- script: local_language_negotiation",
+    "- scope: storefront_conversation",
+    "- allow: explain, negotiate, request_confirmation",
+    "- en: negotiate politely, protect the owner's margin, and offer alternatives",
+    "- sw: salimia mteja, eleza bei kwa heshima, toa punguzo tu ikiwa mmiliki ameruhusu",
+    "- sheng: keep tone friendly but do not invent discounts",
+    "- rule: never finalize a discount, delivery promise, refund, or payment without owner confirmation"
+  ].join("\n")
+];
 const aiModelRegistry: AiModelSummary[] = [
   {
     id: "smollm2-360m-android",
@@ -13355,6 +13501,110 @@ function syncOriginCursor(accountId: string): string {
 function syncRecordDate(value: string): Date {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function createDefaultBusinessAgentProfile(input: {
+  business: BusinessSummary;
+  modelId: string;
+  updatedAt: string;
+  updatedBy: string;
+}): BusinessAgentProfileSummary {
+  return {
+    businessId: input.business.id,
+    name: input.business.name.trim() || "Soko.market",
+    description: "AI business attendant linked to a predownloaded small local model.",
+    modelId: input.modelId,
+    role: "Business assistant and storefront attendant",
+    language: input.business.language,
+    personality: "Warm, concise, accurate and commercially practical",
+    instructions:
+      "Help the owner run daily business work and help customers browse the storefront.",
+    knowledge:
+      "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
+    tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    integrations: ["Soko.market storefront"],
+    contextScripts: [...defaultBusinessAgentContextScripts],
+    status: "active",
+    updatedAt: input.updatedAt,
+    updatedBy: input.updatedBy
+  };
+}
+
+function normalizeBusinessAgentProfile(
+  profile: BusinessAgentProfileInput
+): BusinessAgentProfileInput {
+  if (!isSupportedLanguage(profile.language)) {
+    throw new Cp2Error(400, "agent_language_invalid", "Agent language is not supported.");
+  }
+  if (profile.status !== "active" && profile.status !== "draft") {
+    throw new Cp2Error(400, "agent_status_invalid", "Agent status is invalid.");
+  }
+
+  return {
+    name: normalizeRequiredBoundedText(profile.name, "agent name", 80),
+    description: normalizeRequiredBoundedText(profile.description, "agent description", 500),
+    modelId: normalizeRequiredBoundedText(profile.modelId, "model id", 160),
+    role: normalizeRequiredBoundedText(profile.role, "agent role", 200),
+    language: profile.language,
+    personality: normalizeRequiredBoundedText(profile.personality, "agent personality", 500),
+    instructions: normalizeRequiredBoundedText(profile.instructions, "agent instructions", 4000),
+    knowledge: normalizeRequiredBoundedText(profile.knowledge, "agent knowledge", 4000),
+    tools: normalizeBoundedTextList(profile.tools, "agent tools", 24, 100),
+    integrations: normalizeBoundedTextList(profile.integrations, "agent integrations", 24, 100),
+    contextScripts: normalizeBoundedTextList(
+      profile.contextScripts,
+      "agent context scripts",
+      12,
+      2400
+    ),
+    status: profile.status
+  };
+}
+
+function normalizeBoundedTextList(
+  values: string[],
+  label: string,
+  maximumItems: number,
+  maximumItemLength: number
+): string[] {
+  if (!Array.isArray(values) || values.length > maximumItems) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_invalid`,
+      `${label} must contain ${maximumItems} items or fewer.`
+    );
+  }
+
+  return values.map((value, index) =>
+    normalizeRequiredBoundedText(value, `${label} item ${index + 1}`, maximumItemLength)
+  );
+}
+
+function cloneBusinessAgentProfile(
+  profile: BusinessAgentProfileSummary
+): BusinessAgentProfileSummary {
+  return {
+    ...profile,
+    tools: [...profile.tools],
+    integrations: [...profile.integrations],
+    contextScripts: [...profile.contextScripts]
+  };
+}
+
+function runtimeAgentProfileFromStored(
+  profile: BusinessAgentProfileSummary,
+  activeModelId: string
+): RuntimeAgentProfile {
+  return {
+    behavior: profile.personality,
+    contextScripts: [...profile.contextScripts],
+    integrations: [...profile.integrations],
+    knowledge: profile.knowledge,
+    model: activeModelId,
+    role: profile.role,
+    instructions: profile.instructions,
+    tools: [...profile.tools]
+  };
 }
 
 function normalizeRequiredBoundedText(value: string, label: string, maximumLength: number): string {
