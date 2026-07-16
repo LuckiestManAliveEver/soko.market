@@ -47,6 +47,7 @@ import {
   importCustomGgufModel,
   inspectDeviceModelCapability,
   listLocalAiModels,
+  rankCatalogModelsForDevice,
   removeLocalAiModel,
   type DeviceModelCapability,
   type LocalAiModel,
@@ -116,7 +117,7 @@ interface AiModelSummary {
   description: string;
   capabilities: string[];
   available: boolean;
-  source: "huggingface" | "builtin" | "hosted";
+  source: "huggingface" | "github" | "builtin" | "hosted";
   format: "GGUF" | "remote";
   license: string | null;
   licenseUrl: string | null;
@@ -130,6 +131,12 @@ interface AiModelSummary {
 
 interface ActiveAiModelSummary {
   modelId: AgentModel;
+}
+
+interface GitHubAiModelSearchResponse {
+  models: AiModelSummary[];
+  status: "available" | "unavailable";
+  message: string;
 }
 
 interface BusinessAgentProfileSummary {
@@ -9090,6 +9097,7 @@ function SupplierSurface(props: SupplierSurfaceProps) {
   const [openSupplierId, setOpenSupplierId] = useState<string | null>(
     props.suppliers[0]?.id ?? null
   );
+  const [hiddenSupplierIds, setHiddenSupplierIds] = useState<Record<string, boolean>>({});
   const [agentFormBySupplier, setAgentFormBySupplier] = useState<Record<string, SupplierFormState>>(
     {}
   );
@@ -9242,268 +9250,283 @@ function SupplierSurface(props: SupplierSurfaceProps) {
             <p>Add a supplier manually, create one from a phone contact, or upload a receipt.</p>
           </div>
         ) : (
-          props.suppliers.map((supplier) => (
-            <article className="supplier-business-card" key={supplier.id}>
-              <div className="supplier-card-header">
-                <div>
-                  <p className="eyebrow">Supplier</p>
-                  <h3>{supplier.name}</h3>
-                  <span>{supplier.phone ?? "No phone saved"}</span>
-                  <small>
-                    {supplier.linkedPhonebookContactName === null
-                      ? "Phone contact not linked"
-                      : `Linked contact: ${supplier.linkedPhonebookContactName}`}
-                  </small>
-                  {supplier.email !== null ? <small>{supplier.email}</small> : null}
-                  {supplier.notes !== null && supplier.notes.length > 0 ? (
-                    <small>{supplier.notes}</small>
-                  ) : null}
+          props.suppliers.map((supplier) =>
+            hiddenSupplierIds[supplier.id] ? null : (
+              <article className="supplier-business-card" key={supplier.id}>
+                <div className="supplier-card-header">
+                  <div>
+                    <p className="eyebrow">Supplier</p>
+                    <h3>{supplier.name}</h3>
+                    <span>{supplier.phone ?? "No phone saved"}</span>
+                    <small>
+                      {supplier.linkedPhonebookContactName === null
+                        ? "Phone contact not linked"
+                        : `Linked contact: ${supplier.linkedPhonebookContactName}`}
+                    </small>
+                    {supplier.email !== null ? <small>{supplier.email}</small> : null}
+                    {supplier.notes !== null && supplier.notes.length > 0 ? (
+                      <small>{supplier.notes}</small>
+                    ) : null}
+                  </div>
+                  <div className="supplier-card-metrics">
+                    <span>Sales agents: {supplier.salesAgentCount}</span>
+                    <span>Receipts matched: {supplier.purchaseReceiptCount}</span>
+                    <span>
+                      Last purchase:{" "}
+                      {supplier.lastPurchaseDate === null
+                        ? "None"
+                        : new Date(supplier.lastPurchaseDate).toLocaleDateString()}
+                    </span>
+                  </div>
                 </div>
-                <div className="supplier-card-metrics">
-                  <span>Sales agents: {supplier.salesAgentCount}</span>
-                  <span>Receipts matched: {supplier.purchaseReceiptCount}</span>
-                  <span>
-                    Last purchase:{" "}
-                    {supplier.lastPurchaseDate === null
-                      ? "None"
-                      : new Date(supplier.lastPurchaseDate).toLocaleDateString()}
-                  </span>
+                <div className="actions">
+                  <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
+                    Open
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setHiddenSupplierIds((cur) => ({ ...cur, [supplier.id]: true }))}
+                  >
+                    Close
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => props.onEdit(supplier)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => props.onDelete(supplier.id)}
+                  >
+                    Delete
+                  </button>
+                  <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
+                    Add sales agent
+                  </button>
+                  <label className="button-like">
+                    Upload receipt
+                    <input
+                      accept="image/*,.heic,.heif,.pdf,.txt,.csv,text/*,application/pdf"
+                      type="file"
+                      onChange={(event) => void handleReceiptFile(event)}
+                    />
+                  </label>
                 </div>
-              </div>
-              <div className="actions">
-                <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
-                  Open
-                </button>
-                <button className="secondary" type="button" onClick={() => props.onEdit(supplier)}>
-                  Edit
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => props.onDelete(supplier.id)}
-                >
-                  Delete
-                </button>
-                <button type="button" onClick={() => setOpenSupplierId(supplier.id)}>
-                  Add sales agent
-                </button>
-                <label className="button-like">
-                  Upload receipt
-                  <input
-                    accept="image/*,.heic,.heif,.pdf,.txt,.csv,text/*,application/pdf"
-                    type="file"
-                    onChange={(event) => void handleReceiptFile(event)}
-                  />
-                </label>
-              </div>
-              {openSupplierId === supplier.id ? (
-                <div className="supplier-nested-cards">
-                  <section aria-label="Sales agents">
-                    <div className="section-heading">
-                      <p className="eyebrow">Sales agents</p>
-                      <h4>{supplier.name}</h4>
-                    </div>
-                    <div className="nested-agent-form">
-                      <input
-                        value={agentForm(supplier.id).name}
-                        onChange={(event) =>
-                          updateAgentForm(supplier.id, {
-                            ...agentForm(supplier.id),
-                            name: event.target.value
-                          })
-                        }
-                        placeholder="Sales agent name"
-                      />
-                      <input
-                        value={agentForm(supplier.id).phone}
-                        onChange={(event) =>
-                          updateAgentForm(supplier.id, {
-                            ...agentForm(supplier.id),
-                            phone: event.target.value
-                          })
-                        }
-                        placeholder="Phone number"
-                      />
-                      <input
-                        value={agentForm(supplier.id).notes}
-                        onChange={(event) =>
-                          updateAgentForm(supplier.id, {
-                            ...agentForm(supplier.id),
-                            notes: event.target.value
-                          })
-                        }
-                        placeholder="Notes"
-                      />
-                      <button
-                        type="button"
-                        disabled={agentForm(supplier.id).name.trim() === ""}
-                        onClick={() => {
-                          props.onSaveSalesAgent(supplier.id, agentForm(supplier.id));
-                          updateAgentForm(supplier.id, emptySupplierForm);
-                        }}
-                      >
-                        Save agent
-                      </button>
-                    </div>
-                    {supplier.salesAgents.length === 0 ? (
-                      <p className="form-hint">No sales agents yet.</p>
-                    ) : (
-                      supplier.salesAgents.map((agent) => (
-                        <article className="sales-agent-card" key={agent.id}>
-                          <strong>{agent.name}</strong>
-                          <span>{agent.phone ?? "No phone saved"}</span>
-                          <small>
-                            {agent.linkedPhonebookContactName === null
-                              ? "Phone contact not linked"
-                              : `Phone contact linked: ${agent.linkedPhonebookContactName}`}
-                          </small>
-                          <small>Supplier: {agent.supplierName}</small>
-                          {agent.notes !== null ? <small>{agent.notes}</small> : null}
-                          <small>Receipts: {agent.receiptsHandled}</small>
-                          <small>
-                            Last transaction:{" "}
-                            {agent.lastTransactionDate === null
-                              ? "None"
-                              : new Date(agent.lastTransactionDate).toLocaleDateString()}
-                          </small>
-                          <div className="actions">
-                            <button
-                              className="secondary"
-                              type="button"
-                              onClick={() =>
-                                updateAgentForm(supplier.id, {
-                                  id: agent.id,
-                                  name: agent.name,
-                                  phone: agent.phone ?? "",
-                                  email: "",
-                                  notes: agent.notes ?? ""
-                                })
-                              }
-                            >
-                              Edit
-                            </button>
-                            <button
-                              className="secondary"
-                              type="button"
-                              onClick={() => props.onDeleteSalesAgent(supplier.id, agent.id)}
-                            >
-                              Delete
-                            </button>
-                            {contactResults[0] !== undefined ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  props.onLinkSalesAgentContact(
-                                    agent.id,
-                                    contactResults[0]?.id ?? ""
-                                  )
-                                }
-                              >
-                                Link to phone contact
-                              </button>
-                            ) : null}
-                          </div>
-                        </article>
-                      ))
-                    )}
-                  </section>
-                  <section aria-label="Purchase receipts">
-                    <div className="section-heading">
-                      <p className="eyebrow">Purchase receipts</p>
-                      <h4>Structured records</h4>
-                    </div>
-                    {receiptJob !== null ? (
-                      <article className="receipt-ocr-card">
-                        <strong>OCR status: {receiptJob.status.replace("_", " ")}</strong>
-                        {receiptJob.errorMessage !== null ? (
-                          <span>{receiptJob.errorMessage}</span>
-                        ) : null}
-                        <span>
-                          Engine: {receiptJob.engine} ({receiptJob.profile})
-                        </span>
-                        <span>Confidence: {Math.round(receiptJob.averageConfidence * 100)}%</span>
-                        <span>Supplier: {receiptJob.supplierName ?? "No match"}</span>
-                        <span>Sales agent: {receiptJob.salesAgentName ?? "No match"}</span>
-                        <div className="mini-card">
-                          <strong>Receipt contact matching</strong>
-                          <span>
-                            Supplier confidence:{" "}
-                            {Math.round(receiptJob.contactMatchingResult.supplier.confidence * 100)}
-                            %
-                          </span>
-                          <small>
-                            Matched from:{" "}
-                            {receiptJob.contactMatchingResult.supplier.sources.join(", ") ||
-                              "No contact match"}
-                          </small>
-                          <small>
-                            Why:{" "}
-                            {receiptJob.contactMatchingResult.supplier.matchedBy.join(", ") ||
-                              "Needs review"}
-                          </small>
-                          <span>
-                            Sales-agent confidence:{" "}
-                            {Math.round(
-                              receiptJob.contactMatchingResult.salesAgent.confidence * 100
-                            )}
-                            %
-                          </span>
-                          <small>
-                            Matched from:{" "}
-                            {receiptJob.contactMatchingResult.salesAgent.sources.join(", ") ||
-                              "No contact match"}
-                          </small>
-                          <small>
-                            Why:{" "}
-                            {receiptJob.contactMatchingResult.salesAgent.matchedBy.join(", ") ||
-                              "Needs review"}
-                          </small>
-                        </div>
-                        <span>Items: {receiptJob.items.length}</span>
-                        <span>
-                          Uploaded image retained temporarily:{" "}
-                          {receiptJob.imageRetained ? "Yes" : "No"}
-                        </span>
-                        {receiptJob.imageDeletedAt !== null ? (
-                          <span>Uploaded image deleted after processing.</span>
-                        ) : receiptJob.cleanupPending ? (
-                          <span>Image cleanup pending after confirmation.</span>
-                        ) : null}
-                        {receiptJob.warnings.length > 0 ? (
-                          <ul>
-                            {receiptJob.warnings.map((warning) => (
-                              <li key={warning}>{warning}</li>
-                            ))}
-                          </ul>
-                        ) : null}
+                {openSupplierId === supplier.id ? (
+                  <div className="supplier-nested-cards">
+                    <section aria-label="Sales agents">
+                      <div className="section-heading">
+                        <p className="eyebrow">Sales agents</p>
+                        <h4>{supplier.name}</h4>
+                      </div>
+                      <div className="nested-agent-form">
+                        <input
+                          value={agentForm(supplier.id).name}
+                          onChange={(event) =>
+                            updateAgentForm(supplier.id, {
+                              ...agentForm(supplier.id),
+                              name: event.target.value
+                            })
+                          }
+                          placeholder="Sales agent name"
+                        />
+                        <input
+                          value={agentForm(supplier.id).phone}
+                          onChange={(event) =>
+                            updateAgentForm(supplier.id, {
+                              ...agentForm(supplier.id),
+                              phone: event.target.value
+                            })
+                          }
+                          placeholder="Phone number"
+                        />
+                        <input
+                          value={agentForm(supplier.id).notes}
+                          onChange={(event) =>
+                            updateAgentForm(supplier.id, {
+                              ...agentForm(supplier.id),
+                              notes: event.target.value
+                            })
+                          }
+                          placeholder="Notes"
+                        />
                         <button
                           type="button"
-                          disabled={
-                            receiptJob.status === "failed" || receiptJob.status === "FAILED"
-                          }
-                          onClick={() => props.onConfirmReceipt(receiptJob)}
+                          disabled={agentForm(supplier.id).name.trim() === ""}
+                          onClick={() => {
+                            props.onSaveSalesAgent(supplier.id, agentForm(supplier.id));
+                            updateAgentForm(supplier.id, emptySupplierForm);
+                          }}
                         >
-                          Confirm and save
+                          Save agent
                         </button>
-                      </article>
-                    ) : null}
-                    {supplier.purchaseReceipts.length === 0 ? (
-                      <p className="form-hint">No purchase receipts saved yet.</p>
-                    ) : (
-                      supplier.purchaseReceipts.map((receipt) => (
-                        <article className="mini-card" key={receipt.id}>
-                          <strong>{new Date(receipt.receiptDate).toLocaleDateString()}</strong>
-                          <span>{formatMoney(receipt.total)}</span>
-                          <small>{receipt.salesAgentName ?? "No sales agent"}</small>
-                          <small>Image stored: {receipt.imageStored ? "Yes" : "No"}</small>
+                      </div>
+                      {supplier.salesAgents.length === 0 ? (
+                        <p className="form-hint">No sales agents yet.</p>
+                      ) : (
+                        supplier.salesAgents.map((agent) => (
+                          <article className="sales-agent-card" key={agent.id}>
+                            <strong>{agent.name}</strong>
+                            <span>{agent.phone ?? "No phone saved"}</span>
+                            <small>
+                              {agent.linkedPhonebookContactName === null
+                                ? "Phone contact not linked"
+                                : `Phone contact linked: ${agent.linkedPhonebookContactName}`}
+                            </small>
+                            <small>Supplier: {agent.supplierName}</small>
+                            {agent.notes !== null ? <small>{agent.notes}</small> : null}
+                            <small>Receipts: {agent.receiptsHandled}</small>
+                            <small>
+                              Last transaction:{" "}
+                              {agent.lastTransactionDate === null
+                                ? "None"
+                                : new Date(agent.lastTransactionDate).toLocaleDateString()}
+                            </small>
+                            <div className="actions">
+                              <button
+                                className="secondary"
+                                type="button"
+                                onClick={() =>
+                                  updateAgentForm(supplier.id, {
+                                    id: agent.id,
+                                    name: agent.name,
+                                    phone: agent.phone ?? "",
+                                    email: "",
+                                    notes: agent.notes ?? ""
+                                  })
+                                }
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="secondary"
+                                type="button"
+                                onClick={() => props.onDeleteSalesAgent(supplier.id, agent.id)}
+                              >
+                                Delete
+                              </button>
+                              {contactResults[0] !== undefined ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    props.onLinkSalesAgentContact(
+                                      agent.id,
+                                      contactResults[0]?.id ?? ""
+                                    )
+                                  }
+                                >
+                                  Link to phone contact
+                                </button>
+                              ) : null}
+                            </div>
+                          </article>
+                        ))
+                      )}
+                    </section>
+                    <section aria-label="Purchase receipts">
+                      <div className="section-heading">
+                        <p className="eyebrow">Purchase receipts</p>
+                        <h4>Structured records</h4>
+                      </div>
+                      {receiptJob !== null ? (
+                        <article className="receipt-ocr-card">
+                          <strong>OCR status: {receiptJob.status.replace("_", " ")}</strong>
+                          {receiptJob.errorMessage !== null ? (
+                            <span>{receiptJob.errorMessage}</span>
+                          ) : null}
+                          <span>
+                            Engine: {receiptJob.engine} ({receiptJob.profile})
+                          </span>
+                          <span>Confidence: {Math.round(receiptJob.averageConfidence * 100)}%</span>
+                          <span>Supplier: {receiptJob.supplierName ?? "No match"}</span>
+                          <span>Sales agent: {receiptJob.salesAgentName ?? "No match"}</span>
+                          <div className="mini-card">
+                            <strong>Receipt contact matching</strong>
+                            <span>
+                              Supplier confidence:{" "}
+                              {Math.round(
+                                receiptJob.contactMatchingResult.supplier.confidence * 100
+                              )}
+                              %
+                            </span>
+                            <small>
+                              Matched from:{" "}
+                              {receiptJob.contactMatchingResult.supplier.sources.join(", ") ||
+                                "No contact match"}
+                            </small>
+                            <small>
+                              Why:{" "}
+                              {receiptJob.contactMatchingResult.supplier.matchedBy.join(", ") ||
+                                "Needs review"}
+                            </small>
+                            <span>
+                              Sales-agent confidence:{" "}
+                              {Math.round(
+                                receiptJob.contactMatchingResult.salesAgent.confidence * 100
+                              )}
+                              %
+                            </span>
+                            <small>
+                              Matched from:{" "}
+                              {receiptJob.contactMatchingResult.salesAgent.sources.join(", ") ||
+                                "No contact match"}
+                            </small>
+                            <small>
+                              Why:{" "}
+                              {receiptJob.contactMatchingResult.salesAgent.matchedBy.join(", ") ||
+                                "Needs review"}
+                            </small>
+                          </div>
+                          <span>Items: {receiptJob.items.length}</span>
+                          <span>
+                            Uploaded image retained temporarily:{" "}
+                            {receiptJob.imageRetained ? "Yes" : "No"}
+                          </span>
+                          {receiptJob.imageDeletedAt !== null ? (
+                            <span>Uploaded image deleted after processing.</span>
+                          ) : receiptJob.cleanupPending ? (
+                            <span>Image cleanup pending after confirmation.</span>
+                          ) : null}
+                          {receiptJob.warnings.length > 0 ? (
+                            <ul>
+                              {receiptJob.warnings.map((warning) => (
+                                <li key={warning}>{warning}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          <button
+                            type="button"
+                            disabled={
+                              receiptJob.status === "failed" || receiptJob.status === "FAILED"
+                            }
+                            onClick={() => props.onConfirmReceipt(receiptJob)}
+                          >
+                            Confirm and save
+                          </button>
                         </article>
-                      ))
-                    )}
-                  </section>
-                </div>
-              ) : null}
-            </article>
-          ))
+                      ) : null}
+                      {supplier.purchaseReceipts.length === 0 ? (
+                        <p className="form-hint">No purchase receipts saved yet.</p>
+                      ) : (
+                        supplier.purchaseReceipts.map((receipt) => (
+                          <article className="mini-card" key={receipt.id}>
+                            <strong>{new Date(receipt.receiptDate).toLocaleDateString()}</strong>
+                            <span>{formatMoney(receipt.total)}</span>
+                            <small>{receipt.salesAgentName ?? "No sales agent"}</small>
+                            <small>Image stored: {receipt.imageStored ? "Yes" : "No"}</small>
+                          </article>
+                        ))
+                      )}
+                    </section>
+                  </div>
+                ) : null}
+              </article>
+            )
+          )
         )}
       </section>
     </div>
@@ -10879,6 +10902,9 @@ function AgentProfileSurface({
   const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
+  const [githubModelStatus, setGitHubModelStatus] = useState(
+    "GitHub model discovery has not run yet."
+  );
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
@@ -10938,22 +10964,46 @@ function AgentProfileSurface({
   async function loadAiModels(search?: string) {
     try {
       const normalizedSearch = search?.trim() ?? "";
-      const [registry, active, searchResults] = await Promise.all([
-        getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
-        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
-        normalizedSearch.length > 0
-          ? getJson<{ models: AiModelSummary[] }>(
-              `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
-            )
-          : Promise.resolve(null)
-      ]);
-      setAiModels(registry.models);
-      setVisibleAiModels(searchResults?.models ?? registry.models);
+      const [registry, active, searchResults, githubRegistry, githubSearchResults] =
+        await Promise.all([
+          getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
+          getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
+          normalizedSearch.length > 0
+            ? getJson<{ models: AiModelSummary[] }>(
+                `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
+              )
+            : Promise.resolve(null),
+          loadGitHubModels(),
+          normalizedSearch.length > 0 ? loadGitHubModels(normalizedSearch) : Promise.resolve(null)
+        ]);
+      const allModels = mergeAiModelCatalogs(registry.models, githubRegistry.models);
+      const visibleModels = mergeAiModelCatalogs(
+        searchResults?.models ?? registry.models,
+        githubSearchResults?.models ?? githubRegistry.models
+      );
+      setAiModels(allModels);
+      setVisibleAiModels(visibleModels);
+      setGitHubModelStatus((githubSearchResults ?? githubRegistry).message);
       if (!isEditing && isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadGitHubModels(search?: string): Promise<GitHubAiModelSearchResponse> {
+    try {
+      const query = search?.trim();
+      return await getJson<GitHubAiModelSearchResponse>(
+        query ? `/v1/ai-models/github?search=${encodeURIComponent(query)}` : "/v1/ai-models/github"
+      );
+    } catch {
+      return {
+        models: [],
+        status: "unavailable",
+        message: "GitHub model discovery is temporarily unavailable."
+      };
     }
   }
 
@@ -11173,7 +11223,11 @@ function AgentProfileSurface({
   function selectAgentModel(modelId: string) {
     const catalogModel = aiModels.find((model) => model.id === modelId);
     const installedOnDevice = localAiModels.some((model) => model.id === modelId);
-    if (catalogModel?.source === "huggingface" && !installedOnDevice) {
+    if (
+      catalogModel !== undefined &&
+      isDownloadableCatalogModel(catalogModel) &&
+      !installedOnDevice
+    ) {
       setProfileMessage(
         `${catalogModel.label} must be installed on this phone before it can be selected.`
       );
@@ -11200,7 +11254,8 @@ function AgentProfileSurface({
     if (isSaving) return;
     const selectedCatalogModel = aiModels.find((model) => model.id === draftAgent.model);
     if (
-      selectedCatalogModel?.source === "huggingface" &&
+      selectedCatalogModel !== undefined &&
+      isDownloadableCatalogModel(selectedCatalogModel) &&
       draftAgent.model !== agent.model &&
       !localAiModels.some((model) => model.id === draftAgent.model)
     ) {
@@ -11388,6 +11443,11 @@ function AgentProfileSurface({
     });
   }
 
+  const bestFitModels =
+    deviceCapability === null
+      ? []
+      : rankCatalogModelsForDevice(visibleAiModels, deviceCapability).slice(0, 3);
+
   return (
     <main className="agent-profile-surface">
       <section className="agent-profile-header">
@@ -11470,7 +11530,7 @@ function AgentProfileSurface({
                 {aiModels
                   .filter(
                     (model) =>
-                      model.source === "huggingface" &&
+                      isDownloadableCatalogModel(model) &&
                       model.license === "Apache-2.0" &&
                       localAiModels.some((localModel) => localModel.id === model.id)
                   )
@@ -11486,12 +11546,23 @@ function AgentProfileSurface({
                       {model.label} — custom, offline ready
                     </option>
                   ))}
+                {localAiModels
+                  .filter(
+                    (model) =>
+                      model.source === "catalog" &&
+                      !aiModels.some((catalogModel) => catalogModel.id === model.id)
+                  )
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label} — offline ready
+                    </option>
+                  ))}
               </optgroup>
               <optgroup label="Commercial-use catalog — install first">
                 {aiModels
                   .filter(
                     (model) =>
-                      model.source === "huggingface" &&
+                      isDownloadableCatalogModel(model) &&
                       model.license === "Apache-2.0" &&
                       !localAiModels.some((localModel) => localModel.id === model.id)
                   )
@@ -11503,7 +11574,7 @@ function AgentProfileSurface({
               </optgroup>
               <optgroup label="Built-in and hosted">
                 {aiModels
-                  .filter((model) => model.source !== "huggingface")
+                  .filter((model) => !isDownloadableCatalogModel(model))
                   .map((model) => (
                     <option key={model.id} value={model.id} disabled={!model.available}>
                       {model.label}
@@ -11513,8 +11584,8 @@ function AgentProfileSurface({
               </optgroup>
             </select>
             <small className="model-select-hint">
-              Offline models appear as ready only after their Apache-2.0 GGUF file is installed in
-              this phone's private storage.
+              Hugging Face and GitHub models appear as ready only after their Apache-2.0 GGUF file
+              is installed in this phone's private storage.
             </small>
           </label>
           <label>
@@ -11532,9 +11603,8 @@ function AgentProfileSurface({
             <p className="eyebrow">Private on-device AI</p>
             <h3>Android model library</h3>
             <p>
-              Install a commercially permissible small OSS model into browser-private storage. Once
-              downloaded, it appears under “Installed on this phone” in the AI model dropdown and
-              can run offline through the compatible on-device runtime.
+              Find commercially permissible small OSS models in the curated catalog and verified
+              GitHub release assets, then install the best fit into browser-private storage.
             </p>
           </div>
 
@@ -11544,12 +11614,12 @@ function AgentProfileSurface({
               <input
                 value={modelSearch}
                 onChange={(event) => setModelSearch(event.target.value)}
-                placeholder="Search by name, capability, or description"
+                placeholder="Search Soko and GitHub by model or capability"
               />
             </label>
             <div className="ai-model-search-actions">
               <button type="button" onClick={() => void searchAiModels()}>
-                Search
+                Search Soko + GitHub
               </button>
               <button
                 className="secondary"
@@ -11570,6 +11640,11 @@ function AgentProfileSurface({
               </button>
             </div>
           </div>
+          <p
+            className={`github-model-status ${githubModelStatus.includes("connected") ? "ok" : ""}`}
+          >
+            {githubModelStatus}
+          </p>
 
           {deviceCapability === null ? (
             <p className="model-device-status">Checking this device…</p>
@@ -11593,34 +11668,24 @@ function AgentProfileSurface({
             <div className="section-subheading">
               <h4>Best fit models</h4>
               <p>
-                These models are the most compatible with your reported device capability, making
-                them the best candidates for private on-device use.
+                Ranked across the Soko and GitHub catalogs using reported RAM, CPU, storage, model
+                size, and useful agent capabilities.
               </p>
             </div>
             {deviceCapability === null ? (
               <p className="model-device-status">Checking compatibility…</p>
             ) : (
               <div className="ai-model-best-fit-list">
-                {visibleAiModels
-                  .filter((model) => model.source === "huggingface")
-                  .filter((model) => model.license === "Apache-2.0")
-                  .filter((model) =>
-                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
-                  )
-                  .sort((a, b) => Number(b.recommended) - Number(a.recommended))
-                  .slice(0, 3)
-                  .map((model) => (
-                    <div className="ai-model-best-fit-card" key={model.id}>
-                      <strong>{model.label}</strong>
-                      <span>{model.description}</span>
-                    </div>
-                  ))}
-                {visibleAiModels.filter(
-                  (model) =>
-                    model.source === "huggingface" &&
-                    model.license === "Apache-2.0" &&
-                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
-                ).length === 0 ? (
+                {bestFitModels.map(({ model, reasons }) => (
+                  <div className="ai-model-best-fit-card" key={model.id}>
+                    <strong>
+                      {model.label} · {model.source === "github" ? "GitHub" : "Hugging Face"}
+                    </strong>
+                    <span>{model.description}</span>
+                    <small>{reasons.slice(0, 2).join(" · ")}</small>
+                  </div>
+                ))}
+                {bestFitModels.length === 0 ? (
                   <p>No compatible catalog models were found for this device.</p>
                 ) : null}
               </div>
@@ -11629,7 +11694,9 @@ function AgentProfileSurface({
 
           <div className="ai-model-catalog">
             {visibleAiModels
-              .filter((model) => model.source === "huggingface" && model.license === "Apache-2.0")
+              .filter(
+                (model) => isDownloadableCatalogModel(model) && model.license === "Apache-2.0"
+              )
               .map((model) => {
                 const localModel = localAiModels.find((candidate) => candidate.id === model.id);
                 const transfer = modelTransfers[model.id];
@@ -11642,6 +11709,7 @@ function AgentProfileSurface({
                       <p className="eyebrow">
                         {localModel === undefined ? "Available to install · " : "Installed · "}
                         {model.recommended ? "Recommended · " : ""}
+                        {model.source === "github" ? "GitHub release · " : "Hugging Face · "}
                         {model.license} · {model.format}
                       </p>
                       <h4>{model.label}</h4>
@@ -11654,7 +11722,7 @@ function AgentProfileSurface({
                     <div className="ai-model-card-actions">
                       {model.modelCardUrl !== null ? (
                         <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
-                          Model card
+                          {model.source === "github" ? "GitHub release" : "Model card"}
                         </a>
                       ) : null}
                       {localModel === undefined ? (
@@ -13460,16 +13528,40 @@ function ContextualBusinessCards({
     }
   ];
 
+  const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(workspaceCards.map((c) => [c.title, true]))
+  );
+
   return (
     <section className="generated-card-message" aria-label="Workspace cards">
       <div className="generated-card-grid">
-        {workspaceCards.map((card) => (
-          <button key={card.title} type="button" onClick={card.onClick}>
-            <span>{card.title}</span>
-            <strong>{card.value}</strong>
-            <small>{card.body}</small>
-          </button>
-        ))}
+        {workspaceCards.map((card) =>
+          visibleCards[card.title] ? (
+            <div className="generated-card" key={card.title}>
+              <button
+                className="generated-card-button"
+                type="button"
+                onClick={card.onClick}
+                aria-label={card.title}
+              >
+                <span>{card.title}</span>
+                <strong>{card.value}</strong>
+                <small>{card.body}</small>
+              </button>
+              <button
+                className="generated-card-close"
+                type="button"
+                aria-label={`Close ${card.title} card`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setVisibleCards((cur) => ({ ...cur, [card.title]: false }));
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ) : null
+        )}
       </div>
     </section>
   );
@@ -14878,8 +14970,28 @@ function isAgentModel(value: unknown): value is AgentModel {
     value === "sokoclaw-local" ||
     value === "openai-fast" ||
     value === "openai-reasoning" ||
-    (typeof value === "string" && /^custom:[a-z0-9][a-z0-9._-]{0,79}$/.test(value))
+    (typeof value === "string" &&
+      (/^custom:[a-z0-9][a-z0-9._-]{0,79}$/.test(value) ||
+        /^github:[a-z0-9][a-z0-9._-]{0,149}$/.test(value)))
   );
+}
+
+function isDownloadableCatalogModel(model: AiModelSummary): boolean {
+  return model.source === "huggingface" || model.source === "github";
+}
+
+function mergeAiModelCatalogs(
+  primary: AiModelSummary[],
+  additional: AiModelSummary[]
+): AiModelSummary[] {
+  return [
+    ...new Map(
+      [...primary, ...additional].map((model) => [
+        model.id,
+        { ...model, capabilities: [...model.capabilities] }
+      ])
+    ).values()
+  ];
 }
 
 function formatModelBytes(bytes: number | null): string {

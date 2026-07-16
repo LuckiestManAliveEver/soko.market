@@ -1912,8 +1912,9 @@ export class Cp2Store {
       now
     );
     const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
-    const customModel = customAiModelIdPattern.test(input.modelId);
-    if ((!customModel && model === undefined) || model?.available === false) {
+    const deviceModel =
+      customAiModelIdPattern.test(input.modelId) || githubAiModelIdPattern.test(input.modelId);
+    if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
     }
     const selection: ActiveAiModelSummary = {
@@ -1987,8 +1988,9 @@ export class Cp2Store {
     );
     const profile = normalizeBusinessAgentProfile(input.profile);
     const model = aiModelRegistry.find((candidate) => candidate.id === profile.modelId);
-    const customModel = customAiModelIdPattern.test(profile.modelId);
-    if ((!customModel && model === undefined) || model?.available === false) {
+    const deviceModel =
+      customAiModelIdPattern.test(profile.modelId) || githubAiModelIdPattern.test(profile.modelId);
+    if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
     }
 
@@ -13141,6 +13143,7 @@ function marketplaceIntroStateKey(accountId: string, businessId: string | null):
 
 const defaultAiModelId = "qwen2.5-0.5b-android";
 const customAiModelIdPattern = /^custom:[a-z0-9][a-z0-9._-]{0,79}$/;
+const githubAiModelIdPattern = /^github:[a-z0-9][a-z0-9._-]{0,149}$/;
 const documentUploadContextScript = [
   "# Document upload handling",
   "",

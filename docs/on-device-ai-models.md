@@ -23,10 +23,22 @@ The web/PWA build does not silently bundle these large weight files or download 
 merchant's action. In the interface, “installed on this phone” means the merchant has completed the
 one-time predownload into origin-private storage on that Android device.
 
-The Android model library also supports searching the on-device catalog from the frontend. The
-frontend queries the backend `/v1/ai-models?search=...` API so merchants can find the best-fit
-model by name, capability, or description and then download it directly into private browser
-storage.
+The Android model library searches both the curated Soko registry and public GitHub releases:
+
+- `/v1/ai-models?search=...` searches the curated registry.
+- `/v1/ai-models/github?search=...` searches GitHub repositories and published release assets.
+
+GitHub discovery accepts only repositories that GitHub identifies as Apache-2.0 and release assets
+that are uploaded `.gguf` files between 50 MB and 2 GB. Download URLs must be HTTPS links under the
+same repository's GitHub Releases path. Draft releases, prereleases, oversized files, non-GGUF
+assets, and repositories without an allowlisted license are excluded. Results are cached for 15
+minutes. Set `GITHUB_TOKEN` on the API to increase GitHub API rate limits; public discovery still
+works without a token subject to GitHub's anonymous limits.
+
+The phone ranks compatible Hugging Face and GitHub candidates using reported RAM, free private
+storage, model size, useful capabilities, and catalog recommendations. An install remains a
+merchant-initiated action. Before a downloaded file is retained, the browser checks the GGUF magic
+header and rejects a transfer that grows materially beyond the size reported by the catalog.
 
 Custom model import is enabled only when the browser reports at least 6 GB RAM, 6 logical CPU
 threads, and 2 GB free origin storage. If Android does not report RAM, 8 logical CPU threads plus

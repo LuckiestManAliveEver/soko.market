@@ -101,12 +101,23 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     expect(custom.statusCode).toBe(200);
     expect(custom.json()).toMatchObject({ modelId: "custom:merchant-model-abc123" });
 
+    const github = await app.inject({
+      method: "PUT",
+      url: `/businesses/${shop.business.id}/ai-model`,
+      headers: { "content-type": "application/json", cookie: sessionCookie },
+      payload: JSON.stringify({ modelId: "github:example.android-gguf.qwen-mini-q4-k-m" })
+    });
+    expect(github.statusCode).toBe(200);
+    expect(github.json()).toMatchObject({
+      modelId: "github:example.android-gguf.qwen-mini-q4-k-m"
+    });
+
     const snapshot = store.snapshot();
     expect(snapshot.marketplaceIntroStates).toHaveLength(1);
     expect(snapshot.activeAiModels).toContainEqual(
       expect.objectContaining({
         businessId: shop.business.id,
-        modelId: "custom:merchant-model-abc123"
+        modelId: "github:example.android-gguf.qwen-mini-q4-k-m"
       })
     );
     await app.close();

@@ -56,6 +56,10 @@ import {
   type OtpProvider
 } from "./otp-provider.js";
 import {
+  createGitHubModelCatalogFromEnvironment,
+  type GitHubModelCatalog
+} from "./github-model-catalog.js";
+import {
   createOAuthStartPayload,
   exchangeOAuthCode,
   fetchOAuthProfile,
@@ -68,6 +72,7 @@ import {
 } from "./oauth.js";
 
 export interface Cp2RouteOptions {
+  githubModelCatalog?: GitHubModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
   otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
@@ -662,6 +667,8 @@ interface LaunchIncidentStatusBody {
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
+  const githubModelCatalog =
+    options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
@@ -1588,6 +1595,17 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
       try {
         return { models: store.listAiModels(request.query.search) };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/ai-models/github",
+    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
+      try {
+        return await githubModelCatalog.searchModels(request.query.search);
       } catch (error) {
         return sendCp2Error(reply, error);
       }

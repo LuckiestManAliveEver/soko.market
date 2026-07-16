@@ -56,4 +56,15 @@ describe("frontend user guidance", () => {
     expect(application).toContain("Predownload & install");
     expect(application).toContain("must be installed on this phone before it can be selected");
   });
+
+  it("connects the Android model library to GitHub discovery and device-fit ranking", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
+
+    expect(application).toContain("/v1/ai-models/github");
+    expect(application).toContain("Search Soko + GitHub");
+    expect(application).toContain("rankCatalogModelsForDevice");
+    expect(manager).toContain("verified GitHub release asset");
+    expect(manager).toContain("The downloaded file is not a valid GGUF model.");
+  });
 });

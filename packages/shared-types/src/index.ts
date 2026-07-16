@@ -238,7 +238,7 @@ export interface AiModelSummary {
   description: string;
   capabilities: string[];
   available: boolean;
-  source: "huggingface" | "builtin" | "hosted";
+  source: "huggingface" | "github" | "builtin" | "hosted";
   format: "GGUF" | "remote";
   license: string | null;
   licenseUrl: string | null;

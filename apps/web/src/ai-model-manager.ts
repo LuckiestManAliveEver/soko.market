@@ -19,10 +19,23 @@ export interface DeviceCapabilitySignals {
 export interface DownloadableAiModel {
   id: string;
   label: string;
+  source: "huggingface" | "github" | "builtin" | "hosted";
   downloadUrl: string | null;
   fileName: string | null;
   fileSizeBytes: number | null;
   license: string | null;
+}
+
+export interface CatalogModelFitInput extends DownloadableAiModel {
+  capabilities: string[];
+  minimumMemoryGb: number | null;
+  recommended: boolean;
+}
+
+export interface RankedCatalogModel<T extends CatalogModelFitInput> {
+  model: T;
+  score: number;
+  reasons: string[];
 }
 
 export interface LocalAiModel {
@@ -130,6 +143,29 @@ export function canRunCatalogModel(
   );
 }
 
+export function rankCatalogModelsForDevice<T extends CatalogModelFitInput>(
+  models: T[],
+  capability: DeviceModelCapability
+): Array<RankedCatalogModel<T>> {
+  return models
+    .filter(
+      (model) =>
+        (model.source === "huggingface" || model.source === "github") &&
+        model.license === "Apache-2.0" &&
+        model.downloadUrl !== null &&
+        model.fileName !== null &&
+        model.fileSizeBytes !== null &&
+        canRunCatalogModel(capability, model.minimumMemoryGb, model.fileSizeBytes)
+    )
+    .map((model) => scoreCatalogModel(model, capability))
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        (left.model.fileSizeBytes ?? 0) - (right.model.fileSizeBytes ?? 0) ||
+        left.model.label.localeCompare(right.model.label)
+    );
+}
+
 export function listLocalAiModels(): LocalAiModel[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(localModelMetadataKey) ?? "[]");
@@ -149,6 +185,7 @@ export async function downloadCatalogModel(
   if (model.license !== "Apache-2.0") {
     throw new Error("Only catalog models with a verified Apache-2.0 license can be downloaded.");
   }
+  assertCatalogDownloadUrl(model);
 
   await ensureStorageAvailable(model.fileSizeBytes);
   await navigator.storage.persist?.();
@@ -163,7 +200,8 @@ export async function downloadCatalogModel(
     model.fileName,
     response.body,
     model.fileSizeBytes,
-    onProgress
+    onProgress,
+    true
   );
   const localModel: LocalAiModel = {
     id: model.id,
@@ -239,18 +277,30 @@ async function streamToDeviceFile(
   fileName: string,
   stream: ReadableStream<Uint8Array>,
   totalBytes: number,
-  onProgress: (progress: ModelTransferProgress) => void
+  onProgress: (progress: ModelTransferProgress) => void,
+  requireGgufHeader = false
 ): Promise<void> {
   const fileHandle = await directory.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
   const reader = stream.getReader();
   let receivedBytes = 0;
+  let signature = new Uint8Array();
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = new Uint8Array(value.byteLength);
       chunk.set(value);
+      if (signature.byteLength < 4) {
+        const needed = 4 - signature.byteLength;
+        const nextSignature = new Uint8Array(signature.byteLength + Math.min(needed, chunk.length));
+        nextSignature.set(signature);
+        nextSignature.set(chunk.slice(0, needed), signature.byteLength);
+        signature = nextSignature;
+      }
+      if (receivedBytes + chunk.byteLength > totalBytes + Math.max(1024 ** 2, totalBytes * 0.01)) {
+        throw new Error("The downloaded model is larger than the catalog metadata.");
+      }
       await writable.write(chunk);
       receivedBytes += value.byteLength;
       onProgress({
@@ -259,6 +309,9 @@ async function streamToDeviceFile(
         percent: Math.min(100, Math.round((receivedBytes / totalBytes) * 100))
       });
     }
+    if (requireGgufHeader && String.fromCharCode(...signature) !== "GGUF") {
+      throw new Error("The downloaded file is not a valid GGUF model.");
+    }
     await writable.close();
   } catch (error) {
     await writable.abort().catch(() => undefined);
@@ -266,6 +319,71 @@ async function streamToDeviceFile(
     throw error;
   } finally {
     reader.releaseLock();
+  }
+}
+
+function scoreCatalogModel<T extends CatalogModelFitInput>(
+  model: T,
+  capability: DeviceModelCapability
+): RankedCatalogModel<T> {
+  const reasons: string[] = [];
+  let score = 50;
+  const minimumMemoryGb = model.minimumMemoryGb ?? 2;
+  const fileSizeBytes = model.fileSizeBytes ?? 0;
+
+  if (model.recommended) {
+    score += 18;
+    reasons.push("catalog recommended");
+  }
+  if (model.capabilities.includes("tool-routing")) score += 12;
+  if (model.capabilities.includes("instruction-following")) score += 10;
+  if (model.capabilities.includes("multilingual")) score += 9;
+  if (model.capabilities.includes("reasoning")) score += capability.level === "high" ? 12 : 4;
+
+  if (capability.deviceMemoryGb !== null) {
+    const usageRatio = minimumMemoryGb / capability.deviceMemoryGb;
+    score += Math.max(0, 20 - Math.abs(0.58 - usageRatio) * 28);
+    reasons.push(`${minimumMemoryGb} GB minimum fits reported RAM`);
+  } else {
+    score += Math.max(0, 10 - minimumMemoryGb);
+    reasons.push("fits conservative unknown-RAM profile");
+  }
+
+  if (capability.freeStorageBytes !== null && fileSizeBytes > 0) {
+    const storageRatio = fileSizeBytes / capability.freeStorageBytes;
+    score += Math.max(0, 15 - storageRatio * 30);
+    reasons.push("download fits available private storage");
+  } else {
+    score += Math.max(0, 8 - fileSizeBytes / 250_000_000);
+  }
+
+  if (model.source === "github") {
+    reasons.push("verified GitHub release asset");
+  } else {
+    reasons.push("verified Hugging Face catalog");
+  }
+
+  return {
+    model,
+    score: Math.round(score * 10) / 10,
+    reasons
+  };
+}
+
+function assertCatalogDownloadUrl(model: DownloadableAiModel): void {
+  const url = new URL(model.downloadUrl!);
+  const validHost =
+    (model.source === "huggingface" && url.hostname === "huggingface.co") ||
+    (model.source === "github" && url.hostname === "github.com");
+
+  if (
+    url.protocol !== "https:" ||
+    !validHost ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    !model.fileName?.toLowerCase().endsWith(".gguf")
+  ) {
+    throw new Error("This catalog model does not have a trusted GGUF download URL.");
   }
 }
 

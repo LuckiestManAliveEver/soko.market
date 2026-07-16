@@ -36,7 +36,10 @@ a native button and routes to the existing `AgentProfileSurface`.
 
 ## AI models
 
-The curated server registry is exposed by `GET /v1/ai-models`. Business selection uses:
+The curated server registry is exposed by `GET /v1/ai-models`. Public GitHub release discovery is
+exposed separately by `GET /v1/ai-models/github`; it filters for Apache-2.0 repositories and
+Android-sized GGUF release assets before the frontend applies device-fit ranking. Business
+selection uses:
 
 - `GET /businesses/:businessId/ai-model`
 - `PUT /businesses/:businessId/ai-model`

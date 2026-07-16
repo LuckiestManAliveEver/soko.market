@@ -3712,6 +3712,23 @@ details.nested-form-section summary {
   gap: 8px;
 }
 
+.github-model-status {
+  background: #fff8e5;
+  border: 1px solid #e4cf91;
+  border-radius: 8px;
+  color: #594816;
+  font-size: 12px;
+  font-weight: 700;
+  margin: -6px 0 16px;
+  padding: 8px 10px;
+}
+
+.github-model-status.ok {
+  background: #edf8f0;
+  border-color: #91c4a1;
+  color: #215c38;
+}
+
 .ai-model-best-fit {
   background: #f8fbf7;
   border: 1px solid #dbe4dc;
@@ -3751,6 +3768,12 @@ details.nested-form-section summary {
 .ai-model-best-fit-card span {
   color: #4d5c52;
   font-size: 13px;
+}
+
+.ai-model-best-fit-card small {
+  color: #65756a;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .ai-model-card {

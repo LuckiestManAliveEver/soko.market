@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { assessDeviceModelCapability, canRunCatalogModel } from "../apps/web/src/ai-model-manager";
+import {
+  assessDeviceModelCapability,
+  canRunCatalogModel,
+  rankCatalogModelsForDevice
+} from "../apps/web/src/ai-model-manager";
 
 describe("Android AI model capability checks", () => {
   it("allows custom GGUF models only on high-capability devices with free storage", () => {
@@ -46,5 +50,64 @@ describe("Android AI model capability checks", () => {
       usageBytes: 1 * 1024 ** 3
     });
     expect(canRunCatalogModel(unknownMemory, 3, 491_000_000)).toBe(true);
+  });
+
+  it("ranks compatible Hugging Face and GitHub models by device fit", () => {
+    const capability = assessDeviceModelCapability({
+      deviceMemoryGb: 4,
+      hardwareConcurrency: 6,
+      quotaBytes: 4 * 1024 ** 3,
+      usageBytes: 1 * 1024 ** 3
+    });
+    const ranked = rankCatalogModelsForDevice(
+      [
+        {
+          id: "smol",
+          label: "Smol",
+          source: "huggingface" as const,
+          downloadUrl: "https://huggingface.co/example/model.gguf",
+          fileName: "model.gguf",
+          fileSizeBytes: 380_000_000,
+          license: "Apache-2.0",
+          capabilities: ["chat", "offline"],
+          minimumMemoryGb: 2,
+          recommended: false
+        },
+        {
+          id: "github:qwen",
+          label: "GitHub Qwen",
+          source: "github" as const,
+          downloadUrl: "https://github.com/example/model/releases/download/v1/model.gguf",
+          fileName: "model.gguf",
+          fileSizeBytes: 490_000_000,
+          license: "Apache-2.0",
+          capabilities: ["chat", "offline", "multilingual", "instruction-following"],
+          minimumMemoryGb: 3,
+          recommended: true
+        },
+        {
+          id: "large",
+          label: "Large",
+          source: "github" as const,
+          downloadUrl: "https://github.com/example/model/releases/download/v1/large.gguf",
+          fileName: "large.gguf",
+          fileSizeBytes: 1_200_000_000,
+          license: "Apache-2.0",
+          capabilities: ["chat", "reasoning"],
+          minimumMemoryGb: 6,
+          recommended: false
+        }
+      ],
+      capability
+    );
+
+    expect(ranked.map((entry) => entry.model.id)).toEqual(["github:qwen", "smol"]);
+    expect(ranked[0]?.reasons).toEqual(
+      expect.arrayContaining([
+        "catalog recommended",
+        "3 GB minimum fits reported RAM",
+        "verified GitHub release asset"
+      ])
+    );
   });
 });
