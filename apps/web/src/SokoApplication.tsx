@@ -11701,6 +11701,7 @@ function AgentProfileSurface({
               <label>
                 Login PIN
                 <input
+                  autoFocus
                   value={deletionPin}
                   type="password"
                   inputMode="numeric"
