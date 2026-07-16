@@ -1084,23 +1084,10 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
   const fileName = normalizeRequiredText(input.fileName);
   const contentType = normalizeOptionalText(input.contentType);
   const extension = fileName.toLowerCase().split(".").pop() ?? "";
-  const supportedExtensions = new Set([
-    "csv",
-    "tsv",
-    "txt",
-    "json",
-    "sql",
-    "pdf",
-    "doc",
-    "docx",
-    "odt",
-    "ods",
-    "xls",
-    "xlsx"
-  ]);
+  const supportedExtensions = new Set(["csv", "tsv", "txt", "json", "sql"]);
 
   if (fileName.length < 5 || !supportedExtensions.has(extension)) {
-    errors.push("Import file must be CSV, sheet, PDF, Word, text, JSON, SQL, or database export.");
+    errors.push("Import file must be CSV, TSV, text, JSON, SQL, or another text database export.");
   }
 
   if (
@@ -1111,14 +1098,7 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
       "text/plain",
       "application/csv",
       "application/json",
-      "application/pdf",
-      "application/sql",
-      "application/msword",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.oasis.opendocument.spreadsheet",
-      "application/vnd.oasis.opendocument.text"
+      "application/sql"
     ].includes(contentType)
   ) {
     errors.push("Import content type is not supported.");

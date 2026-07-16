@@ -23,8 +23,8 @@
 6. For CSV, TSV, JSON, SQL, or plain-text product catalogues, guide the user to Imports and require
    preview plus confirmation.
 7. For PDF, DOC, DOCX, XLS, XLSX, ODT, or ODS attachments with metadata only, explain that the chat
-   runtime cannot read the binary body. Ask the user to export or paste text/CSV, or use a connected
-   extractor when available.
+   runtime and catalogue importer cannot decode the binary body. Ask the user to export Excel or
+   Sheets as CSV/TSV, copy extracted PDF/Word text, or use a connected extractor when available.
 8. For receipt images or PDFs, do not invent supplier, item, date, or total fields. If OCR output is
    absent, say OCR has not produced readable text. If OCR output is present, summarize evidence and
    require supplier and receipt confirmation.
@@ -32,6 +32,26 @@
    was attached. Prepare a review step first.
 10. Minimize personal-data repetition. Do not expose unrelated contacts, hidden identifiers, or
     secrets found in extracted text.
+
+## Product catalogue workflow
+
+1. Continue only when catalogue content is available as extracted text or a structured import
+   preview. Metadata alone is not catalogue evidence.
+2. Map common headings without changing their meaning:
+   - product, product name, item, item name => name
+   - sku, code, barcode => sku
+   - unit, measure, uom, pack => unit
+   - quantity, qty, stock, on hand => quantity
+   - buying price, buy price, cost, purchase price => buyingPrice
+   - selling price, sell price, price, retail price => sellingPrice
+3. A product name is required. Do not invent a SKU or either price. When unit or quantity is absent,
+   call it out in the preview instead of presenting a guess as extracted fact.
+4. Preserve one source row per preview row. Report rows with missing names, invalid numbers, or
+   uncertain column mappings so the owner can correct or deselect them.
+5. Never write products directly from model prose. Use the product catalogue import preview, then
+   create only the rows the owner explicitly confirms.
+6. After confirmation, report the number imported and any skipped or invalid rows. Do not claim
+   unconfirmed rows were added.
 
 ## Response shape
 
