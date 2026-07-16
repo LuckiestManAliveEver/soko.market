@@ -1,6 +1,7 @@
 # Authentication provider setup
 
-Soko Market supports phone OTP over Firebase SMS and the existing email OTP path.
+Soko Market uses email verification or a configured social identity for signup. Firebase phone OTP
+is reserved for lost-account recovery.
 
 Google, Facebook, TikTok, Apple, GitHub, Microsoft, LinkedIn, and X login are disabled in the
 frontend and backend. Their OAuth client IDs and secrets are not required.
@@ -47,9 +48,10 @@ work with real phone numbers. Never set it in production.
 
 ## Runtime behavior
 
-- `Continue with phone` opens Firebase phone authentication in the browser.
+- `Continue with email` creates a new account through email verification.
+- `Use phone and PIN` performs normal login without Firebase.
+- `Forgot PIN?` exposes the recovery flow; phone recovery opens Firebase authentication.
 - The browser confirms the SMS code with Firebase and then sends the Firebase ID token to the API.
-- The API verifies the token with Firebase public certificates and converts that into the normal
-  CP2 session.
-- Email OTP continues to use the existing email/local provider path.
+- The API verifies the token with Firebase public certificates and resumes only an existing CP2
+  account. Recovery OTP cannot create an account.
 - OAuth starts, callbacks, and the legacy social-login route return `403`.

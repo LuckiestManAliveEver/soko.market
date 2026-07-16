@@ -1893,11 +1893,7 @@ export function OwnerApp() {
   const initialOwnerAuth = readStoredOwnerAuth();
   const initialOwnerRoute = readOwnerRoute(window.location.pathname);
   const [channel, setChannel] = useState<AuthChannel>(
-    initialOwnerAuth === null
-      ? (initialSetupDraft?.channel ?? "phone")
-      : initialOwnerAuth.contact.includes("@")
-        ? "email"
-        : "phone"
+    initialOwnerAuth === null ? "email" : initialOwnerAuth.contact.includes("@") ? "email" : "phone"
   );
   const [countryCode, setCountryCode] = useState<CountryDialCode>(
     initialOwnerAuth?.countryCode ??
@@ -2026,7 +2022,7 @@ export function OwnerApp() {
 
   const shouldShowLogin = isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked);
   const setupComplete = business !== null && !shouldShowLogin;
-  const shouldShowSignup = isBusinessSetupOpen && session === null;
+  const shouldShowSignup = isBusinessSetupOpen && (session === null || !hasLoginPin);
   const isAuthScreen = shouldShowSignup || shouldShowLogin || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
@@ -2393,7 +2389,7 @@ export function OwnerApp() {
     setChallenge(null);
     setOtp("");
     setPhoneConfirmationResult(null);
-    setIsOtpVerified(true);
+    setIsOtpVerified(false);
 
     if (business !== null) {
       const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
@@ -2533,12 +2529,10 @@ export function OwnerApp() {
   }
 
   async function requestOtp() {
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    const contactValue = destination.trim().toLowerCase();
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    if (!isSignupContactValid("email", countryCode, destination)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
@@ -2547,42 +2541,16 @@ export function OwnerApp() {
     setOtp("");
 
     try {
-      if (channel === "phone") {
-        if (!firebasePhoneAuthConfigured) {
-          throw new Error("Firebase phone authentication is not configured for this website.");
-        }
-
-        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-          method: "phone",
-          contact: contactValue,
-          deliveryChannel: "sms"
-        });
-
-        if (phoneRecaptchaRef.current === null) {
-          throw new Error("Phone verification is unavailable right now.");
-        }
-
-        const confirmationResult = await sendFirebasePhoneOtp(
-          contactValue,
-          phoneRecaptchaRef.current
-        );
-        setChallenge(response);
-        setPhoneConfirmationResult(confirmationResult);
-        setOtp("");
-        setIsOtpVerified(false);
-        setStatusMessage(`OTP sent to ${response.destination}`);
-        return;
-      }
-
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        method: channel,
+        method: "email",
         contact: contactValue,
-        deliveryChannel: "sms"
+        deliveryChannel: "sms",
+        purpose: "signup"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
       setIsOtpVerified(false);
-      setStatusMessage(`OTP sent to ${response.destination}`);
+      setStatusMessage(`Verification code sent to ${response.destination}`);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2590,48 +2558,24 @@ export function OwnerApp() {
 
   async function verifyOtp() {
     if (challenge === null) {
-      setStatusMessage("Request an OTP first");
+      setStatusMessage("Request an email verification code first");
       return;
     }
 
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    const contactValue = destination.trim().toLowerCase();
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    if (!isSignupContactValid("email", countryCode, destination)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
     try {
-      const response =
-        channel === "phone"
-          ? await (async () => {
-              if (!firebasePhoneAuthConfigured) {
-                throw new Error(
-                  "Firebase phone authentication is not configured for this website."
-                );
-              }
-
-              if (phoneConfirmationResult === null) {
-                throw new Error("Request an OTP first");
-              }
-
-              const userCredential = await phoneConfirmationResult.confirm(otp);
-              const firebaseIdToken = await userCredential.user.getIdToken(true);
-
-              return postJson<SessionResponse>("/auth/otp/verify", {
-                method: "phone",
-                contact: contactValue,
-                challengeId: challenge.challengeId,
-                firebaseIdToken
-              });
-            })()
-          : await postJson<SessionResponse>("/auth/otp/verify", {
-              method: channel,
-              contact: contactValue,
-              otp
-            });
+      const response = await postJson<SessionResponse>("/auth/otp/verify", {
+        method: "email",
+        contact: contactValue,
+        challengeId: challenge.challengeId,
+        otp
+      });
       setSession(response);
       setIsOtpVerified(true);
       setPhoneConfirmationResult(null);
@@ -2656,7 +2600,7 @@ export function OwnerApp() {
         return;
       }
 
-      setStatusMessage("OTP verified. Create your login PIN to finish signup.");
+      setStatusMessage("Email verified. Add a passkey and create your login PIN.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2735,7 +2679,8 @@ export function OwnerApp() {
         const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
           method: "phone",
           contact: contactValue,
-          deliveryChannel: "sms"
+          deliveryChannel: "sms",
+          purpose: "recovery"
         });
 
         if (phoneRecaptchaRef.current === null) {
@@ -2757,7 +2702,8 @@ export function OwnerApp() {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
         contact: contactValue,
-        deliveryChannel: "sms"
+        deliveryChannel: "sms",
+        purpose: "recovery"
       });
       setChallenge(response);
       setOtp(response.devOtp ?? "");
@@ -2840,7 +2786,7 @@ export function OwnerApp() {
     setLoginPin("");
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setStatusMessage("Verify your account with OTP, then set a new PIN.");
+    setStatusMessage("Use your recovery contact to verify the account, then set a new PIN.");
   }
 
   function cancelPinRecovery() {
@@ -2978,7 +2924,7 @@ export function OwnerApp() {
         label: passkeyDeviceLabel(),
         response: credential
       });
-      setStatusMessage("Passkey added. This device can now sign in without an OTP.");
+      setStatusMessage("Passkey added. This device can now sign in without a recovery code.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2998,7 +2944,7 @@ export function OwnerApp() {
     }
 
     if (!isOtpVerified) {
-      setStatusMessage("Verify OTP before resetting your PIN");
+      setStatusMessage("Complete recovery verification before resetting your PIN");
       return;
     }
 
@@ -3043,7 +2989,7 @@ export function OwnerApp() {
 
   async function setMissingLoginPin() {
     if (!isOtpVerified) {
-      setStatusMessage("Verify OTP before setting your PIN");
+      setStatusMessage("Complete recovery verification before setting your PIN");
       return;
     }
 
@@ -3102,7 +3048,7 @@ export function OwnerApp() {
       setView("chat");
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Phone verified. Complete your first shop registration.");
+      setStatusMessage("Account secured. Complete your first shop registration.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4446,11 +4392,11 @@ export function OwnerApp() {
 
   function switchMode(nextMode: SokoMode) {
     if (nextMode === "seller" && business === null) {
-      setChannel("phone");
+      setChannel("email");
       setIsBusinessSetupOpen(true);
       setStatusMessage(
         session === null
-          ? "Verify your phone to register your first shop."
+          ? "Sign up with email or a social account to register your first shop."
           : "Set up your business to start selling."
       );
       return;
@@ -5869,7 +5815,6 @@ export function OwnerApp() {
 
         {shouldShowSignup ? (
           <SetupPanel
-            channel={channel}
             countryCode={countryCode}
             destination={destination}
             challenge={challenge}
@@ -5883,9 +5828,10 @@ export function OwnerApp() {
             isVerifyPending={isPending("signup-otp-verify")}
             isCompletePending={isPending("signup-complete")}
             isPasskeyPending={isPending("signup-passkey")}
+            isSocialPending={isPending("social-signup")}
             passkeySupported={browserSupportsWebAuthn()}
-            onChannelChange={setChannel}
-            onCountryCodeChange={setCountryCode}
+            oauthProviders={oauthProviders}
+            oauthProvidersLoaded={oauthProvidersLoaded}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
             onRequestOtp={() => void runAction("signup-otp-request", requestOtp)}
@@ -5894,7 +5840,9 @@ export function OwnerApp() {
             onRegisterPasskey={() => void runAction("signup-passkey", registerCurrentDevicePasskey)}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
-            phoneRecaptchaRef={phoneRecaptchaRef}
+            onSocialSignup={(provider) =>
+              void runAction("social-signup", () => authenticateSocialProfile(provider))
+            }
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -6120,7 +6068,6 @@ export function OwnerApp() {
 }
 
 interface SetupPanelProps {
-  channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -6134,24 +6081,25 @@ interface SetupPanelProps {
   isVerifyPending: boolean;
   isCompletePending: boolean;
   isPasskeyPending: boolean;
+  isSocialPending: boolean;
   passkeySupported: boolean;
-  onChannelChange: (channel: AuthChannel) => void;
-  onCountryCodeChange: (countryCode: CountryDialCode) => void;
+  oauthProviders: OAuthProviderSummary[];
+  oauthProvidersLoaded: boolean;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
   onRequestOtp: () => void;
   onVerifyOtp: () => void;
   onCompleteSignup: () => void;
   onRegisterPasskey: () => void;
+  onSocialSignup: (provider: SocialSignupProvider) => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
-  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
 interface SocialLoginOptionsProps {
   mode: "signup" | "login";
   onSelectPasskey?: () => void;
-  onSelectPhone: () => void;
+  onSelectPhone?: () => void;
   onSelectEmail?: () => void;
   onSelectSocial?: (provider: SocialSignupProvider) => void;
   providers?: OAuthProviderSummary[];
@@ -6177,10 +6125,16 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
             {props.passkeyPending ? "Checking passkey…" : "Continue with passkey"}
           </button>
         ) : null}
-        <button className="social-signup-button phone" type="button" onClick={props.onSelectPhone}>
-          <span aria-hidden="true">☎</span>
-          Continue with phone
-        </button>
+        {props.onSelectPhone === undefined ? null : (
+          <button
+            className="social-signup-button phone"
+            type="button"
+            onClick={props.onSelectPhone}
+          >
+            <span aria-hidden="true">☎</span>
+            Use phone and PIN
+          </button>
+        )}
         {props.onSelectEmail === undefined ? null : (
           <button
             className="social-signup-button email"
@@ -6243,10 +6197,8 @@ function AuthLegalFooter() {
 }
 
 function SetupPanel(props: SetupPanelProps) {
-  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
-  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
-  const selectedCountryCode = getCountryDialCode(props.countryCode);
-  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
+  const [authView, setAuthView] = useState<"options" | "email">("options");
+  const contactIsValid = isSignupContactValid("email", props.countryCode, props.destination);
   const showAuthForm = authView !== "options" || props.challenge !== null || props.isOtpVerified;
 
   return (
@@ -6255,87 +6207,44 @@ function SetupPanel(props: SetupPanelProps) {
         {!showAuthForm ? (
           <SocialLoginOptions
             mode="signup"
-            onSelectPhone={() => {
-              props.onChannelChange("phone");
-              setAuthView("phone");
-            }}
+            onSelectEmail={() => setAuthView("email")}
+            onSelectSocial={props.onSocialSignup}
+            providers={props.oauthProviders}
+            providersLoaded={props.oauthProvidersLoaded}
+            socialPending={props.isSocialPending}
           />
         ) : (
           <>
             <div className="auth-heading-row">
               <div className="section-heading">
                 <p className="eyebrow">First shop registration</p>
-                <h2>Verify your phone</h2>
-                <p>Firebase verification is required once, when you create your first shop.</p>
+                <h2>Verify your email</h2>
+                <p>
+                  Create the account with email or a social identity. Phone verification is reserved
+                  for lost-account recovery.
+                </p>
               </div>
             </div>
-            {props.channel === "phone" ? (
-              <div className="phone-contact-row">
-                <label>
-                  Country code
-                  <select
-                    value={props.countryCode}
-                    onChange={(event) =>
-                      props.onCountryCodeChange(event.target.value as CountryDialCode)
-                    }
-                  >
-                    {countryDialCodes.map((item) => (
-                      <option key={item.code} value={item.code}>
-                        {item.flag} {item.code} {item.country}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Phone number
-                  <input
-                    value={phoneSuffix}
-                    onChange={(event) =>
-                      props.onDestinationChange(
-                        sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                      )
-                    }
-                    inputMode="numeric"
-                    maxLength={selectedCountryCode.suffixLength}
-                    pattern="[0-9]*"
-                    type="tel"
-                    placeholder={"0".repeat(selectedCountryCode.suffixLength)}
-                  />
-                </label>
-              </div>
-            ) : (
-              <label>
-                Email address
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={props.destination}
-                  onChange={(event) => props.onDestinationChange(event.target.value)}
-                  placeholder="you@example.com"
-                />
-              </label>
-            )}
-            {props.channel === "phone" ? (
-              <div
-                ref={props.phoneRecaptchaRef}
-                className="firebase-recaptcha"
-                aria-hidden="true"
+            <label>
+              Email address
+              <input
+                type="email"
+                autoComplete="email"
+                value={props.destination}
+                onChange={(event) => props.onDestinationChange(event.target.value)}
+                placeholder="you@example.com"
               />
-            ) : null}
+            </label>
             <button
               type="button"
               onClick={props.onRequestOtp}
               disabled={!contactIsValid || props.isRequestPending}
               aria-busy={props.isRequestPending}
             >
-              {props.isRequestPending
-                ? "Sending…"
-                : props.channel === "phone"
-                  ? "Send SMS code"
-                  : "Continue"}
+              {props.isRequestPending ? "Sending…" : "Send email code"}
             </button>
             <label>
-              OTP
+              Email verification code
               <input
                 value={props.otp}
                 onChange={(event) => props.onOtpChange(event.target.value)}
@@ -6349,11 +6258,11 @@ function SetupPanel(props: SetupPanelProps) {
               disabled={props.challenge === null || props.isVerifyPending}
               aria-busy={props.isVerifyPending}
             >
-              {props.isVerifyPending ? "Verifying…" : "Verify OTP"}
+              {props.isVerifyPending ? "Verifying…" : "Verify email"}
             </button>
             {!props.isOtpVerified ? (
               <button className="secondary" type="button" onClick={() => setAuthView("options")}>
-                Back to login options
+                Back to signup options
               </button>
             ) : null}
           </>
@@ -6619,6 +6528,10 @@ function LoginPanel(props: LoginPanelProps) {
             )}
             {needsOtp ? (
               <>
+                <p className="shell-note">
+                  This verification is only for reclaiming access when your passkey or PIN is
+                  unavailable.
+                </p>
                 {props.channel === "phone" ? (
                   <div
                     ref={props.phoneRecaptchaRef}
@@ -6658,7 +6571,8 @@ function LoginPanel(props: LoginPanelProps) {
               </>
             ) : (
               <p className="shell-note">
-                OTP is not required for normal login. Use your phone number and PIN.
+                Recovery verification is not required for normal login. Use your saved contact and
+                PIN.
               </p>
             )}
           </>
@@ -12103,7 +12017,7 @@ function AgentProfileSurface({
             <h3>Passkeys and login accounts</h3>
             <p>
               Passkeys use your device unlock and keep biometric data on the device. Email, social
-              login, and phone verification remain available for recovery.
+              login, and a verified recovery contact remain available if your passkey is lost.
             </p>
           </div>
           <div className="connected-social-list" aria-label="Passkeys">
@@ -12309,8 +12223,7 @@ function AgentProfileSurface({
                 </button>
               </div>
               <p>
-                Confirm this request with your owner PIN. OTP is used only during first-shop
-                registration and PIN recovery.
+                Confirm this request with your owner PIN. OTP is reserved for lost-account recovery.
               </p>
               <label>
                 Login PIN

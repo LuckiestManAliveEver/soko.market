@@ -41,7 +41,7 @@ interface ShopDeletionRequestResponse {
 }
 
 describe("Shop profile lifecycle", () => {
-  it("uses Firebase for first-shop verification but not for shop deletion", async () => {
+  it("uses Firebase for lost-account recovery but not for shop deletion", async () => {
     const store = createCp2Store();
     const providerRequests: string[] = [];
     const providerVerifications: string[] = [];
@@ -60,10 +60,36 @@ describe("Shop profile lifecycle", () => {
     };
     const app = buildApi({ cp2: { store, otpProvider } });
     const phone = "+254700000709";
+
+    const rejectedSignup = await app.inject({
+      method: "POST",
+      url: "/auth/otp/request",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        deliveryChannel: "sms",
+        purpose: "signup"
+      })
+    });
+    expect(rejectedSignup.statusCode).toBe(403);
+    expect(rejectedSignup.json()).toMatchObject({ code: "phone_otp_recovery_only" });
+
+    const initialChallenge = store.requestOtp({
+      channel: "phone",
+      destination: phone,
+      purpose: "signup"
+    });
+    store.verifyOtp({
+      challengeId: initialChallenge.challengeId,
+      code: initialChallenge.devOtp
+    });
+
     const otpRequest = await postJson<{ challengeId: string }>(app, "/auth/otp/request", {
       method: "phone",
       contact: phone,
-      deliveryChannel: "sms"
+      deliveryChannel: "sms",
+      purpose: "recovery"
     });
     const owner = await app.inject({
       method: "POST",

@@ -213,7 +213,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "025_passkeys.sql";
+const requiredMigrationFilename = "026_otp_recovery_purpose.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -1025,6 +1025,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: string;
     channel: string;
     destination: string;
+    purpose: string;
     code_hash: string;
     attempts: number;
     max_attempts: number;
@@ -1035,7 +1036,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     pool,
     "load OTP challenges",
     `
-      select id, channel, destination, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+      select id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
       from otp_challenges
       order by created_at, id
     `
@@ -1044,6 +1045,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: row.id,
     channel: row.channel,
     destination: row.destination,
+    purpose: row.purpose,
     codeHash: row.code_hash,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
@@ -1994,12 +1996,13 @@ async function savePhase1AuthSecurityRecords(
     await client.query(
       `
         insert into otp_challenges (
-          id, channel, destination, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+          id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         on conflict (id) do update set
           channel = excluded.channel,
           destination = excluded.destination,
+          purpose = excluded.purpose,
           code_hash = excluded.code_hash,
           attempts = excluded.attempts,
           max_attempts = excluded.max_attempts,
@@ -2010,6 +2013,7 @@ async function savePhase1AuthSecurityRecords(
         requiredText(record, "id"),
         requiredText(record, "channel"),
         requiredText(record, "destination"),
+        firstText(record, ["purpose"]) ?? "signup",
         requiredText(record, "codeHash"),
         record.attempts ?? 0,
         record.maxAttempts ?? 5,
@@ -2026,18 +2030,19 @@ async function savePhase1AuthSecurityRecords(
           status, expires_at, verified_at, created_at, updated_at
         )
         values (
-          $1, $2, $3, 'login', $4, $5, $6,
+          $1, $2, $3, $4, $5, $6, $7,
           case
-            when $8::timestamptz is not null then 'verified'
-            when $7::timestamptz <= now() then 'expired'
-            when $5::integer >= $6::integer then 'locked'
+            when $9::timestamptz is not null then 'verified'
+            when $8::timestamptz <= now() then 'expired'
+            when $6::integer >= $7::integer then 'locked'
             else 'pending'
           end,
-          $7, $8, $9, coalesce($8::timestamptz, $9::timestamptz)
+          $8, $9, $10, coalesce($9::timestamptz, $10::timestamptz)
         )
         on conflict (id) do update set
           channel = excluded.channel,
           destination = excluded.destination,
+          purpose = excluded.purpose,
           code_hash = excluded.code_hash,
           attempts = excluded.attempts,
           max_attempts = excluded.max_attempts,
@@ -2050,6 +2055,7 @@ async function savePhase1AuthSecurityRecords(
         requiredText(record, "id"),
         requiredText(record, "channel"),
         requiredText(record, "destination"),
+        firstText(record, ["purpose"]) ?? "signup",
         requiredText(record, "codeHash"),
         record.attempts ?? 0,
         record.maxAttempts ?? 5,

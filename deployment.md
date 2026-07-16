@@ -93,7 +93,7 @@ DIRECT_DATABASE_URL=<linked from soko-market-db>
 Social OAuth login is disabled in both the frontend and API. Do not add Google, Facebook, TikTok,
 Apple, GitHub, Microsoft, LinkedIn, or X client credentials to Render.
 
-Set these when Firebase phone auth is ready:
+Set these when Firebase lost-account recovery is ready:
 
 ```text
 VITE_FIREBASE_API_KEY=<Firebase web API key>
@@ -135,8 +135,10 @@ paid Render Postgres instance before production use.
 
 ## 5. Add Firebase Phone Auth
 
-Use Firebase Phone Authentication for hosted phone OTP. The browser sends the SMS, then the API
-verifies the Firebase ID token and turns it into the normal CP2 session.
+Use Firebase Phone Authentication only for lost-account recovery. New accounts use email
+verification or a configured social identity, then enroll a passkey and owner PIN. During recovery,
+the browser sends the SMS and the API verifies the Firebase ID token before resuming the existing
+CP2 account.
 
 1. Create or open a Firebase project.
 2. Add the production web domains and any preview domains under Firebase Authentication settings.
@@ -148,10 +150,11 @@ verifies the Firebase ID token and turns it into the normal CP2 session.
 
 Runtime behavior:
 
-- Normal phone OTP requests use Firebase SMS in the browser.
+- Phone OTP requests are accepted only with the `recovery` purpose.
 - The browser confirms the SMS code, then sends a Firebase ID token to the API.
-- The API verifies the token with Firebase public certificates and creates the CP2 session.
-- Email OTP still uses the local dev OTP path until an email OTP provider is added.
+- The API verifies the token with Firebase public certificates and resumes an existing CP2 account.
+- A recovery challenge cannot create a new account.
+- First-time signup uses email verification or a configured social identity.
 - The frontend no longer exposes WhatsApp OTP.
 
 Phone numbers must be in E.164 format, for example `+254700000000`.
@@ -298,13 +301,13 @@ Then verify the frontend can reach the backend:
 5. Confirm API calls go to `https://api.soko.market`.
 6. Confirm there are no CORS errors.
 
-If Firebase is configured, test phone OTP:
+If Firebase is configured, test lost-account recovery:
 
-1. Use a phone number allowed by your Firebase Authentication phone test setup.
-2. Request an OTP from `https://soko.market`.
+1. Use an existing phone-linked account allowed by your Firebase Authentication phone test setup.
+2. Choose **Forgot PIN?** and request a recovery code from `https://soko.market`.
 3. Confirm the code arrives by SMS.
 4. Enter the received code in the browser prompt.
-5. Confirm login succeeds.
+5. Confirm the existing account is resumed and the PIN can be reset.
 
 Verify Postgres persistence:
 

@@ -67,4 +67,24 @@ describe("frontend user guidance", () => {
     expect(manager).toContain("verified GitHub release asset");
     expect(manager).toContain("The downloaded file is not a valid GGUF model.");
   });
+
+  it("keeps Firebase phone OTP out of signup and inside lost-account recovery", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
+    const signup = application.slice(
+      application.indexOf("async function requestOtp()"),
+      application.indexOf("async function authenticateSocialProfile")
+    );
+    const recovery = application.slice(
+      application.indexOf("async function requestLoginOtp()"),
+      application.indexOf("async function loginWithPin()")
+    );
+
+    expect(signup).toContain('method: "email"');
+    expect(signup).toContain('purpose: "signup"');
+    expect(signup).not.toContain("sendFirebasePhoneOtp");
+    expect(recovery).toContain('purpose: "recovery"');
+    expect(recovery).toContain("sendFirebasePhoneOtp");
+    expect(authRoutes).toContain("phone_otp_recovery_only");
+  });
 });

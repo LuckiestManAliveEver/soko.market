@@ -341,6 +341,7 @@ interface OtpChallenge {
   id: string;
   channel: AuthChannel;
   destination: string;
+  purpose: "signup" | "recovery";
   codeHash: string;
   attempts: number;
   maxAttempts: number;
@@ -353,6 +354,7 @@ export interface OtpChallengeDelivery {
   challengeId: string;
   channel: AuthChannel;
   destination: string;
+  purpose: "signup" | "recovery";
   expiresAt: string;
 }
 
@@ -772,7 +774,12 @@ export class Cp2Store {
   private readonly sokoIdentityLinks = new Map<string, SokoIdentityLinkSummary>();
   private readonly auditEvents: BusinessEvent[] = [];
 
-  requestOtp(input: { channel: AuthChannel; destination: string; now?: Date }): OtpRequestResult {
+  requestOtp(input: {
+    channel: AuthChannel;
+    destination: string;
+    purpose?: "signup" | "recovery";
+    now?: Date;
+  }): OtpRequestResult {
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -784,6 +791,7 @@ export class Cp2Store {
       id: challengeId,
       channel: input.channel,
       destination,
+      purpose: input.purpose ?? "signup",
       codeHash: hashOtp(challengeId, code),
       attempts: 0,
       maxAttempts: maxOtpAttempts,
@@ -822,6 +830,7 @@ export class Cp2Store {
       challengeId: challenge.id,
       channel: challenge.channel,
       destination: challenge.destination,
+      purpose: challenge.purpose,
       expiresAt: challenge.expiresAt
     };
   }
@@ -840,6 +849,7 @@ export class Cp2Store {
       challengeId: challenge.id,
       channel: challenge.channel,
       destination: challenge.destination,
+      purpose: challenge.purpose,
       expiresAt: challenge.expiresAt
     };
   }
@@ -1139,6 +1149,15 @@ export class Cp2Store {
         : undefined;
     const existingAccountId =
       this.accountByDestination.get(destinationKey) ?? linkedIdentity?.accountId;
+
+    if (challenge.purpose === "recovery" && existingAccountId === undefined) {
+      throw new Cp2Error(
+        404,
+        "recovery_account_not_found",
+        "No Soko account is linked to this recovery contact."
+      );
+    }
+
     const resumed = existingAccountId !== undefined;
     const account =
       existingAccountId === undefined
@@ -8236,7 +8255,10 @@ export class Cp2Store {
     }
 
     for (const challenge of snapshot.otpChallenges ?? []) {
-      this.otpChallenges.set(challenge.id, challenge);
+      this.otpChallenges.set(challenge.id, {
+        ...challenge,
+        purpose: challenge.purpose ?? "signup"
+      });
     }
 
     for (const session of snapshot.sessions) {

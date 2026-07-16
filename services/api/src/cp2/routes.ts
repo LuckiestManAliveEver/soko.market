@@ -87,6 +87,7 @@ interface OtpRequestBody {
   deliveryChannel?: string;
   destination?: string;
   method?: string;
+  purpose?: string;
 }
 
 interface OtpVerifyBody {
@@ -742,7 +743,17 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const channel = parseAuthChannel(body.method ?? body.channel);
     const destination = parseString(body.contact ?? body.destination, "contact");
     const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
-    const otp = store.requestOtp({ channel, destination });
+    const purpose = parseOtpPurpose(body.purpose);
+
+    if (channel === "phone" && otpProvider.name.startsWith("firebase") && purpose !== "recovery") {
+      throw new Cp2Error(
+        403,
+        "phone_otp_recovery_only",
+        "Firebase phone verification is available only for lost-account recovery."
+      );
+    }
+
+    const otp = store.requestOtp({ channel, destination, purpose });
 
     if (otpProvider.canHandle(channel)) {
       await otpProvider.requestOtp({
@@ -4132,6 +4143,18 @@ function parseAuthChannel(value: string | undefined): AuthChannel {
   }
 
   throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
+}
+
+function parseOtpPurpose(value: string | undefined): "signup" | "recovery" {
+  if (value === undefined || value === "signup") {
+    return "signup";
+  }
+
+  if (value === "recovery") {
+    return "recovery";
+  }
+
+  throw new Cp2Error(400, "otp_purpose_invalid", "OTP purpose must be signup or recovery.");
 }
 
 function parseOtpDeliveryChannel(

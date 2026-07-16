@@ -15,13 +15,14 @@ No parallel application or authentication service is introduced.
 The initial no-shop/no-owner state no longer sets `shouldShowSignup`. Marketplace remains visible.
 Selecting Sell opens the existing setup surface in this order:
 
-1. Phone number and Firebase SMS verification.
-2. Four-digit owner PIN creation (or recognition of an existing PIN account).
+1. Email verification or a configured social identity.
+2. Passkey enrollment and four-digit owner PIN creation.
 3. Business name and language.
 4. Existing `POST /businesses` creation and seller-mode activation.
 
 The account icon opens PIN login. Normal login calls `POST /auth/pin/login` directly. OTP controls
-only appear inside first-shop registration or PIN recovery.
+only appear inside lost-account recovery. Firebase-backed phone requests carry
+`purpose: "recovery"` and the API rejects them for first-time signup.
 
 ## Marketplace and agent profile
 
@@ -71,5 +72,5 @@ archive manifest table. PostgreSQL startup now requires migration 020.
 2. Confirm the API has `FIREBASE_PROJECT_ID` and the web service has all `VITE_FIREBASE_*` values.
 3. Deploy API and web from the same commit.
 4. Confirm the `soko-market-shop-purge` cron has both database URLs.
-5. Smoke test anonymous Marketplace, first Sell, Firebase OTP, PIN login, model activation,
-   quarantine, and restore.
+5. Smoke test anonymous Marketplace, first Sell, email signup, passkey enrollment, PIN login,
+   Firebase recovery, model activation, quarantine, and restore.
