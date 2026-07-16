@@ -54,7 +54,7 @@ export default function AccountDeletionPage() {
             <h2 id="deletion-steps-title">What you will do</h2>
             <ol>
               <li>Authenticate with the account you want deleted.</li>
-              <li>Review the deletion and retention explanation under Compliance.</li>
+              <li>Open Account Settings and select Delete account.</li>
               <li>Type DELETE and submit the request.</li>
               <li>Keep the deletion reference shown after submission.</li>
             </ol>

@@ -29,7 +29,7 @@
   },
   "accountDeletion": {
     "externalRequestUrl": "https://soko.market/account-deletion",
-    "inAppPath": "Compliance > Delete account",
+    "inAppPath": "Account Settings > Delete account",
     "authenticationRequired": true,
     "androidAppRequired": false,
     "requestPathImplemented": true,

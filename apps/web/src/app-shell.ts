@@ -122,7 +122,7 @@ export const quickActions: QuickAction[] = [
   {
     id: "compliance",
     label: "Compliance",
-    summary: "Manage export, deletion, verification, tax, and trust controls"
+    summary: "Manage export, verification, tax, and trust controls"
   },
   {
     id: "beta",
@@ -200,7 +200,7 @@ export const emptyStates: EmptyState[] = [
   {
     id: "compliance",
     title: "Compliance not reviewed yet",
-    body: "Compliance keeps export, deletion, verification, tax, and device trust workflows explicit and audited."
+    body: "Compliance keeps export, verification, tax, and device trust workflows explicit and audited."
   },
   {
     id: "beta",

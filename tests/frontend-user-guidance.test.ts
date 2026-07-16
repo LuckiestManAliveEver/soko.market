@@ -87,4 +87,23 @@ describe("frontend user guidance", () => {
     expect(recovery).toContain("sendFirebasePhoneOtp");
     expect(authRoutes).toContain("phone_otp_recovery_only");
   });
+
+  it("merges shop and full-account deletion under one Settings action", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const complianceSurface = application.slice(
+      application.indexOf("function ComplianceSurface"),
+      application.indexOf("interface BetaSurfaceProps")
+    );
+    const settingsSurface = application.slice(
+      application.indexOf("function AgentProfileSurface"),
+      application.indexOf("interface ChatSurfaceProps")
+    );
+
+    expect(settingsSurface).toContain("<h3>Delete account</h3>");
+    expect(settingsSurface).toContain("Delete this shop");
+    expect(settingsSurface).toContain("Delete entire account");
+    expect(settingsSurface).toContain("Delete account and associated data");
+    expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
+    expect(application).toContain('accountDeletionIntent ? "agent"');
+  });
 });

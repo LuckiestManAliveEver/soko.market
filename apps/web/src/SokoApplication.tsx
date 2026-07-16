@@ -1468,8 +1468,6 @@ interface ComplianceFormState {
   deviceId: string;
   deviceTrustLevel: DeviceTrustLevel;
   deviceTrustReason: string;
-  deletionConfirmation: string;
-  deletionReason: string;
 }
 
 interface BetaFormState {
@@ -1797,9 +1795,7 @@ const emptyComplianceForm: ComplianceFormState = {
   pricesIncludeTax: false,
   deviceId: "browser-session",
   deviceTrustLevel: "unknown",
-  deviceTrustReason: "",
-  deletionConfirmation: "",
-  deletionReason: ""
+  deviceTrustReason: ""
 };
 
 const emptyBetaForm: BetaFormState = {
@@ -1935,7 +1931,7 @@ export function OwnerApp() {
   );
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>(
-    accountDeletionIntent ? "compliance" : (initialOwnerRoute?.view ?? "chat")
+    accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
   );
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
   const { hasPending, isPending, runAction } = useAsyncActions();
@@ -1993,9 +1989,6 @@ export function OwnerApp() {
   });
   const [securityReview, setSecurityReview] = useState<SecurityReviewSummary | null>(null);
   const [dataExport, setDataExport] = useState<DataExportBundle | null>(null);
-  const [accountDeletion, setAccountDeletion] = useState<AccountDeletionRequestSummary | null>(
-    null
-  );
   const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
   const [taxConfig, setTaxConfig] = useState<CountryTaxConfigSummary | null>(null);
   const [deviceTrust, setDeviceTrust] = useState<DeviceTrustSummary | null>(null);
@@ -2836,9 +2829,7 @@ export function OwnerApp() {
         setStatusMessage("Login complete. Re-enter your PIN to restore the account.");
         return;
       }
-      const destinationView = accountDeletionIntent
-        ? "compliance"
-        : (initialOwnerRoute?.view ?? "chat");
+      const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
       setView(destinationView);
       window.history.replaceState(
         { mode, view: destinationView },
@@ -2890,9 +2881,7 @@ export function OwnerApp() {
         setStatusMessage("Passkey login complete. Confirm restoration to continue.");
         return;
       }
-      const destinationView = accountDeletionIntent
-        ? "compliance"
-        : (initialOwnerRoute?.view ?? "chat");
+      const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
       setView(destinationView);
       window.history.replaceState(
         { mode, view: destinationView },
@@ -3905,21 +3894,24 @@ export function OwnerApp() {
     }
   }
 
-  async function scheduleAccountDeletion(pin: string): Promise<boolean> {
+  async function scheduleAccountDeletion(input: {
+    pin: string;
+    confirmation: string;
+    reason: string;
+  }): Promise<boolean> {
     if (business === null) {
       return false;
     }
 
     try {
-      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin });
-      const deletion = await postJson<AccountDeletionRequestSummary>(
+      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin: input.pin });
+      await postJson<AccountDeletionRequestSummary>(
         `/businesses/${business.id}/compliance/account-deletion`,
         {
-          confirmation: complianceForm.deletionConfirmation,
-          reason: complianceForm.deletionReason
+          confirmation: input.confirmation,
+          reason: input.reason
         }
       );
-      setAccountDeletion(deletion);
       setSession(null);
       setBusiness(null);
       setOwnerAuth(null);
@@ -4950,7 +4942,6 @@ export function OwnerApp() {
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
     setDataExport(null);
-    setAccountDeletion(null);
     setVerificationTier(null);
     setTaxConfig(null);
     setDeviceTrust(null);
@@ -5625,7 +5616,6 @@ export function OwnerApp() {
             form={complianceForm}
             securityReview={securityReview}
             dataExport={dataExport}
-            accountDeletion={accountDeletion}
             verification={verificationTier}
             taxConfig={taxConfig}
             deviceTrust={deviceTrust}
@@ -5636,10 +5626,6 @@ export function OwnerApp() {
             }
             onSaveTax={() => void runAction("compliance-tax", saveTaxConfig)}
             onSaveDeviceTrust={() => void runAction("compliance-device", saveDeviceTrust)}
-            isDeletionPending={isPending("account-deletion")}
-            onScheduleDeletion={async (pin) =>
-              (await runAction("account-deletion", () => scheduleAccountDeletion(pin))) ?? false
-            }
             onRefresh={() => void loadCompliance(business.id)}
           />
         );
@@ -5930,6 +5916,7 @@ export function OwnerApp() {
             onAgentChange={setAgentSettings}
             onBack={returnToChat}
             onLogout={() => void runAction("logout", logout)}
+            onScheduleAccountDeletion={scheduleAccountDeletion}
             isLoggingOut={isPending("logout")}
           />
         ) : (
@@ -7982,7 +7969,7 @@ function LogisticsSurface(props: LogisticsSurfaceProps) {
                   onClick={() => props.onStatusChange(item.id, "cancelled")}
                   disabled={item.status === "completed" || item.status === "cancelled"}
                 >
-                  Cancel
+                  Back
                 </button>
               </div>
             </article>
@@ -9826,7 +9813,6 @@ interface ComplianceSurfaceProps {
   form: ComplianceFormState;
   securityReview: SecurityReviewSummary | null;
   dataExport: DataExportBundle | null;
-  accountDeletion: AccountDeletionRequestSummary | null;
   verification: VerificationTierSummary | null;
   taxConfig: CountryTaxConfigSummary | null;
   deviceTrust: DeviceTrustSummary | null;
@@ -9835,22 +9821,10 @@ interface ComplianceSurfaceProps {
   onSaveVerification: () => void;
   onSaveTax: () => void;
   onSaveDeviceTrust: () => void;
-  isDeletionPending: boolean;
-  onScheduleDeletion: (pin: string) => Promise<boolean>;
   onRefresh: () => void;
 }
 
 function ComplianceSurface(props: ComplianceSurfaceProps) {
-  const [deletionStep, setDeletionStep] = useState<"explain" | "verify">("explain");
-  const [deletionPin, setDeletionPin] = useState("");
-  const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
-
-  function cancelDeletion() {
-    setDeletionStep("explain");
-    setDeletionPin("");
-    setDeletionAcknowledged(false);
-  }
-
   return (
     <div className="records-surface">
       <section className="record-form" aria-label="Compliance controls">
@@ -9965,7 +9939,7 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
         </button>
       </section>
 
-      <section className="record-form" aria-label="Device trust and deletion controls">
+      <section className="record-form" aria-label="Device trust controls">
         <div className="section-heading">
           <p className="eyebrow">TIEL placeholder</p>
           <h3>Device trust</h3>
@@ -10007,105 +9981,6 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
         <button type="button" onClick={props.onSaveDeviceTrust}>
           Save device trust
         </button>
-        <div className="section-heading account-deletion-heading">
-          <p className="eyebrow">Account and associated data</p>
-          <h3>Delete account</h3>
-        </div>
-        <p className="shell-note">
-          This schedules deletion of your Soko.market account and associated shop data. Access is
-          disabled immediately. Recoverable data is held for up to 30 days and then deleted or
-          irreversibly anonymized, except records retained for legal, security, fraud-prevention, or
-          regulatory reasons.
-        </p>
-        <label>
-          Type DELETE to confirm
-          <input
-            value={props.form.deletionConfirmation}
-            onChange={(event) =>
-              props.onFormChange({ ...props.form, deletionConfirmation: event.target.value })
-            }
-          />
-        </label>
-        <label>
-          Deletion reason
-          <input
-            value={props.form.deletionReason}
-            onChange={(event) =>
-              props.onFormChange({ ...props.form, deletionReason: event.target.value })
-            }
-          />
-        </label>
-        <button
-          className="danger"
-          type="button"
-          onClick={() => setDeletionStep("verify")}
-          disabled={props.form.deletionConfirmation !== "DELETE" || props.isDeletionPending}
-        >
-          Continue to verification
-        </button>
-        {deletionStep === "verify" ? (
-          <div
-            className="account-deletion-verification"
-            role="group"
-            aria-label="Verify account deletion"
-          >
-            <p>
-              Final step: enter your owner PIN. If accepted, every active session is revoked and
-              account data can be restored through the authenticated recovery screen for up to 30
-              days.
-            </p>
-            <label>
-              Owner PIN
-              <input
-                autoFocus
-                type="password"
-                inputMode="numeric"
-                autoComplete="current-password"
-                maxLength={4}
-                value={deletionPin}
-                onChange={(event) => setDeletionPin(sanitizePin(event.target.value))}
-              />
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={deletionAcknowledged}
-                onChange={(event) => setDeletionAcknowledged(event.target.checked)}
-              />
-              I understand that access is disabled immediately and permanent purge is scheduled
-              after the recovery window.
-            </label>
-            <div className="row-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={cancelDeletion}
-                disabled={props.isDeletionPending}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="danger"
-                disabled={
-                  !isValidPin(deletionPin) || !deletionAcknowledged || props.isDeletionPending
-                }
-                aria-busy={props.isDeletionPending}
-                data-testid="delete-account-confirm"
-                onClick={() => {
-                  void props.onScheduleDeletion(deletionPin).then((deleted) => {
-                    if (deleted) cancelDeletion();
-                  });
-                }}
-              >
-                {props.isDeletionPending
-                  ? "Deleting account…"
-                  : "Delete account and associated data"}
-              </button>
-            </div>
-          </div>
-        ) : null}
-        <a href={routes.accountDeletion}>Read the account-deletion process</a>
       </section>
 
       <section className="record-list" aria-label="Compliance status">
@@ -10127,14 +10002,6 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
           body={props.deviceTrust?.reason ?? "Device trust is ready for review."}
           value={props.deviceTrust?.level ?? "unknown"}
         />
-        {props.accountDeletion === null ? null : (
-          <ReportRow
-            title="Deletion scheduled"
-            eyebrow={props.accountDeletion.status}
-            body={`Reference ${props.accountDeletion.id}. Anonymization after ${formatDate(props.accountDeletion.anonymizeAfter)}.`}
-            value={`${props.accountDeletion.retention.directIdentifierFieldsRemoved} fields`}
-          />
-        )}
       </section>
     </div>
   );
@@ -10934,6 +10801,11 @@ interface AgentProfileSurfaceProps {
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
   onLogout: () => void;
+  onScheduleAccountDeletion: (input: {
+    pin: string;
+    confirmation: string;
+    reason: string;
+  }) => Promise<boolean>;
   isLoggingOut: boolean;
 }
 
@@ -10946,6 +10818,7 @@ function AgentProfileSurface({
   onAgentChange,
   onBack,
   onLogout,
+  onScheduleAccountDeletion,
   isLoggingOut
 }: AgentProfileSurfaceProps) {
   const [draftAgent, setDraftAgent] = useState(agent);
@@ -10972,9 +10845,15 @@ function AgentProfileSurface({
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
-  const [deletionStep, setDeletionStep] = useState<"idle" | "confirm" | "verify" | "status">(
-    "idle"
-  );
+  const [deletionStep, setDeletionStep] = useState<
+    | "idle"
+    | "choose"
+    | "shop-confirm"
+    | "shop-verify"
+    | "shop-status"
+    | "account-confirm"
+    | "account-verify"
+  >("idle");
   const [deletionPreview, setDeletionPreview] = useState<ShopDeletionPreviewSummary | null>(null);
   const [deletionRequest, setDeletionRequest] = useState<AccountDeletionRequestSummary | null>(
     null
@@ -10982,6 +10861,10 @@ function AgentProfileSurface({
   const [deletionShopId, setDeletionShopId] = useState("");
   const [deletionPin, setDeletionPin] = useState("");
   const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
+  const [accountDeletionConfirmation, setAccountDeletionConfirmation] = useState("");
+  const [accountDeletionReason, setAccountDeletionReason] = useState("");
+  const [accountDeletionPin, setAccountDeletionPin] = useState("");
+  const [accountDeletionAcknowledged, setAccountDeletionAcknowledged] = useState(false);
 
   useEffect(() => {
     if (!isEditing) {
@@ -11283,7 +11166,7 @@ function AgentProfileSurface({
 
       setDeletionRequest(response.request);
       setDeletionPreview(response.preview);
-      setDeletionStep("verify");
+      setDeletionStep("shop-verify");
       setProfileMessage("Confirm with your owner PIN. No OTP is required.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -11305,7 +11188,7 @@ function AgentProfileSurface({
         }
       );
       setDeletionRequest(result);
-      setDeletionStep("status");
+      setDeletionStep("shop-status");
       setProfileMessage(
         result.status === "QUARANTINED"
           ? "Shop hidden and quarantined. You can restore it for 30 days."
@@ -11329,6 +11212,29 @@ function AgentProfileSurface({
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
+  }
+
+  async function finalizeAccountDeletion() {
+    const deleted = await onScheduleAccountDeletion({
+      pin: accountDeletionPin,
+      confirmation: accountDeletionConfirmation,
+      reason: accountDeletionReason
+    });
+
+    if (!deleted) {
+      setProfileMessage("The account deletion request could not be completed.");
+    }
+  }
+
+  function cancelDeletion() {
+    setDeletionStep("idle");
+    setDeletionShopId("");
+    setDeletionPin("");
+    setDeletionAcknowledged(false);
+    setAccountDeletionConfirmation("");
+    setAccountDeletionReason("");
+    setAccountDeletionPin("");
+    setAccountDeletionAcknowledged(false);
   }
 
   function updateAgent(patch: Partial<AgentSettings>) {
@@ -12146,29 +12052,79 @@ function AgentProfileSurface({
         <div className="record-form danger-zone-card">
           <div className="section-heading">
             <p className="eyebrow">Danger zone</p>
-            <h3>Delete shop account</h3>
+            <h3>Delete account</h3>
           </div>
           <p className="security-warning">
-            Deleting hides the shop immediately. It can be restored for 30 days before final purge.
+            Choose whether to delete only this shop or your entire Soko.market account.
           </p>
           {deletionStep === "idle" ? (
             <button
               className="destructive-button"
               type="button"
-              onClick={() => setDeletionStep("confirm")}
+              onClick={() => setDeletionStep("choose")}
             >
-              Delete shop account
+              Delete account
             </button>
           ) : null}
-          {deletionStep === "confirm" ? (
+          {deletionStep === "choose" ? (
             <div className="shop-deletion-card">
               <div className="storefront-card-header">
                 <div>
-                  <span>Delete shop account</span>
+                  <span>Choose deletion scope</span>
+                  <strong>Shop or entire account</strong>
+                </div>
+                <button className="secondary" type="button" onClick={cancelDeletion}>
+                  Cancel
+                </button>
+              </div>
+              <div className="connected-social-list" aria-label="Deletion options">
+                <article className="connected-social-card">
+                  <div>
+                    <span>Current shop</span>
+                    <strong>Delete this shop only</strong>
+                    <p>
+                      Hides {business.name} immediately and schedules its business data for purge.
+                      Your Soko login and other shops remain active.
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => setDeletionStep("shop-confirm")}>
+                    Delete this shop
+                  </button>
+                </article>
+                <article className="connected-social-card">
+                  <div>
+                    <span>Entire account</span>
+                    <strong>Delete your Soko.market account</strong>
+                    <p>
+                      Disables your login, revokes every session, and schedules all associated
+                      personal and shop data for deletion.
+                    </p>
+                  </div>
+                  <button
+                    className="destructive-button"
+                    type="button"
+                    onClick={() => setDeletionStep("account-confirm")}
+                  >
+                    Delete entire account
+                  </button>
+                </article>
+              </div>
+              <a href={routes.accountDeletion}>Read the account-deletion process</a>
+            </div>
+          ) : null}
+          {deletionStep === "shop-confirm" ? (
+            <div className="shop-deletion-card">
+              <div className="storefront-card-header">
+                <div>
+                  <span>Delete this shop</span>
                   <strong>Step 1 of 2</strong>
                 </div>
-                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
-                  Cancel
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setDeletionStep("choose")}
+                >
+                  Back
                 </button>
               </div>
               <p>This will remove:</p>
@@ -12197,7 +12153,7 @@ function AgentProfileSurface({
                 />
               </label>
               <div className="row-actions">
-                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                <button className="secondary" type="button" onClick={cancelDeletion}>
                   Cancel
                 </button>
                 <button
@@ -12211,15 +12167,19 @@ function AgentProfileSurface({
               </div>
             </div>
           ) : null}
-          {deletionStep === "verify" ? (
+          {deletionStep === "shop-verify" ? (
             <div className="shop-deletion-card">
               <div className="storefront-card-header">
                 <div>
                   <span>Verify deletion</span>
                   <strong>Step 2 of 2</strong>
                 </div>
-                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
-                  Cancel
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setDeletionStep("shop-confirm")}
+                >
+                  Back
                 </button>
               </div>
               <p>
@@ -12232,7 +12192,8 @@ function AgentProfileSurface({
                   value={deletionPin}
                   type="password"
                   inputMode="numeric"
-                  onChange={(event) => setDeletionPin(event.target.value)}
+                  maxLength={4}
+                  onChange={(event) => setDeletionPin(sanitizePin(event.target.value))}
                 />
               </label>
               <label className="checkbox-row">
@@ -12244,14 +12205,14 @@ function AgentProfileSurface({
                 I understand the shop will be hidden now and permanently purged after 30 days.
               </label>
               <div className="row-actions">
-                <button className="secondary" type="button" onClick={() => setDeletionStep("idle")}>
+                <button className="secondary" type="button" onClick={cancelDeletion}>
                   Cancel
                 </button>
                 <button
                   className="destructive-button"
                   type="button"
                   disabled={
-                    deletionPin.length === 0 ||
+                    !isValidPin(deletionPin) ||
                     !deletionAcknowledged ||
                     pendingProfileAction !== null
                   }
@@ -12265,7 +12226,7 @@ function AgentProfileSurface({
               </div>
             </div>
           ) : null}
-          {deletionStep === "status" ? (
+          {deletionStep === "shop-status" ? (
             <div className="shop-deletion-card" role="status">
               <strong>{deletionRequest?.status ?? "Processing"}</strong>
               <p>
@@ -12287,6 +12248,128 @@ function AgentProfileSurface({
                   {pendingProfileAction === "shop-restore" ? "Restoring…" : "Restore shop"}
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {deletionStep === "account-confirm" ? (
+            <div className="shop-deletion-card">
+              <div className="storefront-card-header">
+                <div>
+                  <span>Delete entire account</span>
+                  <strong>Step 1 of 2</strong>
+                </div>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setDeletionStep("choose")}
+                >
+                  Back
+                </button>
+              </div>
+              <p>
+                Access is disabled immediately. Recoverable data is held for up to 30 days and then
+                deleted or irreversibly anonymized, except records retained for legal, security,
+                fraud-prevention, or regulatory reasons.
+              </p>
+              <label>
+                Type DELETE to confirm
+                <input
+                  value={accountDeletionConfirmation}
+                  onChange={(event) => setAccountDeletionConfirmation(event.target.value)}
+                />
+              </label>
+              <label>
+                Deletion reason
+                <input
+                  value={accountDeletionReason}
+                  onChange={(event) => setAccountDeletionReason(event.target.value)}
+                />
+              </label>
+              <div className="row-actions">
+                <button className="secondary" type="button" onClick={cancelDeletion}>
+                  Cancel
+                </button>
+                <button
+                  className="destructive-button"
+                  type="button"
+                  disabled={accountDeletionConfirmation !== "DELETE"}
+                  onClick={() => setDeletionStep("account-verify")}
+                >
+                  Continue to verification
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {deletionStep === "account-verify" ? (
+            <div
+              className="account-deletion-verification"
+              role="group"
+              aria-label="Verify account deletion"
+            >
+              <div className="storefront-card-header">
+                <div>
+                  <span>Delete entire account</span>
+                  <strong>Step 2 of 2</strong>
+                </div>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setDeletionStep("account-confirm")}
+                  disabled={pendingProfileAction !== null}
+                >
+                  Back
+                </button>
+              </div>
+              <p>
+                Enter your owner PIN. If accepted, every active session is revoked. You can restore
+                the account through the authenticated recovery screen for up to 30 days.
+              </p>
+              <label>
+                Owner PIN
+                <input
+                  autoFocus
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="current-password"
+                  maxLength={4}
+                  value={accountDeletionPin}
+                  onChange={(event) => setAccountDeletionPin(sanitizePin(event.target.value))}
+                />
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={accountDeletionAcknowledged}
+                  onChange={(event) => setAccountDeletionAcknowledged(event.target.checked)}
+                />
+                I understand that all account access is disabled immediately and permanent purge is
+                scheduled after the recovery window.
+              </label>
+              <div className="row-actions">
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={cancelDeletion}
+                  disabled={pendingProfileAction !== null}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="destructive-button"
+                  type="button"
+                  data-testid="delete-account-confirm"
+                  disabled={
+                    !isValidPin(accountDeletionPin) ||
+                    !accountDeletionAcknowledged ||
+                    pendingProfileAction !== null
+                  }
+                  aria-busy={pendingProfileAction === "account-deletion"}
+                  onClick={() => void runProfileAction("account-deletion", finalizeAccountDeletion)}
+                >
+                  {pendingProfileAction === "account-deletion"
+                    ? "Deleting account…"
+                    : "Delete account and associated data"}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>

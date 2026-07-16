@@ -52,7 +52,7 @@ describe("CP27 Google Play legal readiness", () => {
     expect(readiness.checkpoint).toBe("CP27");
     expect(readiness.accountDeletion).toMatchObject({
       externalRequestUrl: "https://soko.market/account-deletion",
-      inAppPath: "Compliance > Delete account",
+      inAppPath: "Account Settings > Delete account",
       authenticationRequired: true,
       androidAppRequired: false,
       requestPathImplemented: true,
