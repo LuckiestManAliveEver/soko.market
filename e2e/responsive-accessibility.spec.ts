@@ -77,6 +77,7 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   await page.getByLabel("Owner PIN").fill("1234");
   await page.getByLabel(/I understand that access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
+  await expect(page.getByRole("heading", { name: "Verify your phone" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Owner login" })).toBeVisible();
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);

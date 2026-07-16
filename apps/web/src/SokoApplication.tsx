@@ -3812,6 +3812,9 @@ export function OwnerApp() {
       setBusiness(null);
       setOwnerAuth(null);
       setIsWorkspaceUnlocked(false);
+      setIsBusinessSetupOpen(true);
+      setIsLoginOpen(false);
+      setIsAccountRestorationOpen(false);
       localStorage.removeItem(activeBusinessStorageKey);
       localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.removeItem(activeAgentStorageKey);
