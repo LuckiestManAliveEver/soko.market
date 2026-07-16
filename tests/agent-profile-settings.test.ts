@@ -37,11 +37,15 @@ describe("business agent settings", () => {
       headers: { cookie }
     });
     expect(defaultProfileResponse.statusCode).toBe(200);
-    expect(defaultProfileResponse.json<BusinessAgentProfileSummary>()).toMatchObject({
+    const defaultProfile = defaultProfileResponse.json<BusinessAgentProfileSummary>();
+    expect(defaultProfile).toMatchObject({
       businessId,
       modelId: "qwen2.5-0.5b-android",
       status: "active"
     });
+    expect(defaultProfile.contextScripts).toEqual(
+      expect.arrayContaining([expect.stringContaining("script: document_upload_guardrails")])
+    );
 
     const updateResponse = await app.inject({
       method: "PUT",
@@ -64,13 +68,20 @@ describe("business agent settings", () => {
     });
 
     expect(updateResponse.statusCode).toBe(200);
-    expect(updateResponse.json<BusinessAgentProfileSummary>()).toMatchObject({
+    const updatedProfile = updateResponse.json<BusinessAgentProfileSummary>();
+    expect(updatedProfile).toMatchObject({
       businessId,
       name: "Kiboko Shop Agent",
       modelId: "smollm2-360m-android",
       language: "sw",
       personality: "Direct, calm, and careful with stock commitments"
     });
+    expect(updatedProfile.contextScripts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("confirm delivery promises"),
+        expect.stringContaining("script: document_upload_guardrails")
+      ])
+    );
     expect(store.snapshot().agentProfiles).toHaveLength(1);
     expect(store.snapshot().activeAiModels?.[0]?.modelId).toBe("smollm2-360m-android");
 
@@ -97,6 +108,60 @@ describe("business agent settings", () => {
     );
     expect(capturedPrompt?.message).toContain(
       "Agent responsibilities: Prioritize stock accuracy and ask before making risky changes."
+    );
+
+    await app.close();
+  });
+
+  it("injects document-upload guardrails into runtime profiles that omit saved context", async () => {
+    let capturedPrompt: RuntimeModelPrompt | null = null;
+    const provider: RuntimeModelProvider = {
+      name: "test",
+      async complete(prompt): Promise<RuntimeModelCompletionResult> {
+        capturedPrompt = prompt;
+        return {
+          provider: "test",
+          status: "available",
+          outputText: JSON.stringify({
+            type: "response",
+            message: "I received the document metadata."
+          }),
+          durationMs: 1,
+          errorCode: null,
+          metadata: {}
+        };
+      }
+    };
+    const store = createCp2Store({ runtimeModelProvider: provider });
+    const app = buildApi({ cp2: { store } });
+    const { businessId, cookie } = await createOwnerBusiness(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({
+        message:
+          "Review this catalogue.\n[document-upload: active]\n\nAttachments:\n- catalogue.pdf (Document, application/pdf, 1 MB)",
+        agentProfile: {
+          behavior: "Careful",
+          contextScripts: [],
+          integrations: [],
+          knowledge: "Use saved shop records.",
+          model: "qwen2.5-0.5b-android",
+          role: "Business assistant",
+          instructions: "Help the owner.",
+          tools: []
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedPrompt?.message).toContain("[document-upload: active]");
+    expect(capturedPrompt?.message).toContain("script: document_upload_guardrails");
+    expect(capturedPrompt?.message).toContain("An attachment summary contains metadata only");
+    expect(capturedPrompt?.message).toContain(
+      "Never claim that you read, opened, scanned, or extracted the file body"
     );
 
     await app.close();
