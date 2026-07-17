@@ -69,6 +69,7 @@ import {
   type E2eeIdentity
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
+import { createGuestSmsLink, maxGuestSmsMessageLength } from "./guest-sms";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
@@ -2053,6 +2054,19 @@ export function OwnerApp() {
       return;
     }
     navigateToView("chat");
+  }
+
+  function openGuestSms(recipient: string, message: string): boolean {
+    try {
+      const joinUrl = new URL(routes.join, window.location.origin).toString();
+      const smsLink = createGuestSmsLink({ recipient, message, joinUrl });
+      setStatusMessage("Opening your messaging app. Review the SMS, then tap Send.");
+      window.location.assign(smsLink);
+      return true;
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+      return false;
+    }
   }
 
   useEffect(() => {
@@ -5982,6 +5996,7 @@ export function OwnerApp() {
               customerCount={customers.length}
               invoiceCount={invoices.length}
               messages={chatMessages}
+              isAuthenticated={session !== null}
               conversations={conversationInbox}
               activeConversationId={activeConversationId}
               isInboxOpen={isMessagingInboxOpen}
@@ -6021,6 +6036,7 @@ export function OwnerApp() {
                   createDirectConversation(recipient, title)
                 )
               }
+              onGuestSmsSend={openGuestSms}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
                   updateConversationPreference(conversationId, preference)
@@ -12688,6 +12704,7 @@ interface ChatSurfaceProps {
   customerCount: number;
   invoiceCount: number;
   messages: ChatMessage[];
+  isAuthenticated: boolean;
   isInboxOpen: boolean;
   isContactTyping: boolean;
   isConfirming: boolean;
@@ -12717,6 +12734,7 @@ interface ChatSurfaceProps {
   onDraftChange: (draft: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onCreateConversation: (recipient: string, title: string) => void;
+  onGuestSmsSend: (recipient: string, message: string) => boolean;
   onConversationPreference: (
     conversationId: string,
     preference: "archive" | "mute" | "pin"
@@ -12765,6 +12783,7 @@ function ChatSurface({
   customerCount,
   invoiceCount,
   messages,
+  isAuthenticated,
   isInboxOpen,
   isContactTyping,
   isConfirming,
@@ -12794,6 +12813,7 @@ function ChatSurface({
   onDraftChange,
   onSelectConversation,
   onCreateConversation,
+  onGuestSmsSend,
   onConversationPreference,
   onEnableNotifications,
   onInboxOpenChange,
@@ -12830,6 +12850,7 @@ function ChatSurface({
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
+  const [guestSmsMessage, setGuestSmsMessage] = useState("");
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
   const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -12965,30 +12986,65 @@ function ChatSurface({
             className="new-conversation-form"
             onSubmit={(event) => {
               event.preventDefault();
-              onCreateConversation(newRecipient, newConversationTitle);
+              if (isAuthenticated) {
+                onCreateConversation(newRecipient, newConversationTitle);
+              } else {
+                const opened = onGuestSmsSend(newRecipient, guestSmsMessage);
+                if (!opened) return;
+              }
               setNewRecipient("");
               setNewConversationTitle("");
+              setGuestSmsMessage("");
               setIsNewConversationOpen(false);
             }}
           >
+            {!isAuthenticated ? (
+              <div className="guest-sms-intro">
+                <strong>Send with your phone</strong>
+                <span>No Soko account is needed.</span>
+              </div>
+            ) : null}
             <label>
-              Contact
+              {isAuthenticated ? "Contact" : "Mobile number"}
               <input
                 required
+                type={isAuthenticated ? "text" : "tel"}
+                inputMode={isAuthenticated ? undefined : "tel"}
+                autoComplete={isAuthenticated ? undefined : "tel"}
                 value={newRecipient}
                 onChange={(event) => setNewRecipient(event.target.value)}
-                placeholder="Phone or email"
+                placeholder={isAuthenticated ? "Phone or email" : "+254 700 000 000"}
               />
             </label>
-            <label>
-              Name
-              <input
-                value={newConversationTitle}
-                onChange={(event) => setNewConversationTitle(event.target.value)}
-                placeholder="Conversation name"
-              />
-            </label>
-            <button type="submit">Start chat</button>
+            {isAuthenticated ? (
+              <label>
+                Name
+                <input
+                  value={newConversationTitle}
+                  onChange={(event) => setNewConversationTitle(event.target.value)}
+                  placeholder="Conversation name"
+                />
+              </label>
+            ) : (
+              <>
+                <label>
+                  Message
+                  <textarea
+                    required
+                    rows={4}
+                    maxLength={maxGuestSmsMessageLength}
+                    value={guestSmsMessage}
+                    onChange={(event) => setGuestSmsMessage(event.target.value)}
+                    placeholder="Write a normal text message"
+                  />
+                </label>
+                <small className="guest-sms-note">
+                  “via Soko Messenger” and a short try link will be added. Your default messaging
+                  app will open for final review; carrier SMS charges may apply.
+                </small>
+              </>
+            )}
+            <button type="submit">{isAuthenticated ? "Start chat" : "Continue in Messages"}</button>
           </form>
         ) : null}
         <div className="conversation-list">

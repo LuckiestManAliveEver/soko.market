@@ -11,6 +11,7 @@ function routeId(value: string): string {
 export const routes = {
   home: "/",
   chat: "/chat",
+  join: "/join",
   marketplace: "/marketplace",
   sell: "/sell",
   catalogue: "/catalogue",
@@ -74,7 +75,12 @@ export function pathForOwnerView(view: ShellView, mode: SokoMode): string {
 
 export function readOwnerRoute(pathname: string): OwnerRoute | null {
   const path = pathname.replace(/\/+$/, "") || "/";
-  if (path === routes.home || path === routes.chat || path === routes.marketplace) {
+  if (
+    path === routes.home ||
+    path === routes.chat ||
+    path === routes.join ||
+    path === routes.marketplace
+  ) {
     return { mode: "marketplace", view: "chat" };
   }
   if (path === routes.sell) return { mode: "seller", view: "chat" };
