@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { SyncRealtimeChangesAvailableEvent } from "@soko/shared-types";
 import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
 import { createCp2Store, type Cp2Snapshot, type Cp2Store, type Cp2StoreOptions } from "./store.js";
 
@@ -18,6 +20,10 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  {
+    key: "messageNotificationDeliveries",
+    tableName: "cp2_message_notification_deliveries"
+  },
   { key: "e2eeDevices", tableName: "cp2_e2ee_devices" },
   { key: "pushSubscriptions", tableName: "cp2_push_subscriptions" },
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
@@ -124,6 +130,7 @@ const mutatingMethodNames = new Set([
   "deleteProduct",
   "deleteSupplier",
   "deliverNetworkInvites",
+  "deliverPendingMessageNotifications",
   "disconnectLoginAccount",
   "enqueueSyncMutation",
   "getSokoSessionContext",
@@ -219,6 +226,10 @@ export interface PostgresStoreHealth {
   latencyMs: number;
   latestMigration: string | null;
   persistenceError: string | null;
+  realtimeFanout: {
+    status: "ok" | "degraded";
+    error: string | null;
+  };
   syncChangeCount: number;
   phase1Parity: Array<{
     collection: string;
@@ -235,13 +246,15 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "027_product_field_schemas.sql";
+const requiredMigrationFilename = "028_data_pipeline_infrastructure.sql";
+const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
   const pool = new Pool(poolConfig(options.databaseUrl));
   await assertDatabaseMigrated(pool);
+  const realtimePool = new Pool({ ...poolConfig(options.databaseUrl), max: 1 });
 
   const store = createCp2Store({
     ...(options.runtimeModelProvider === undefined
@@ -274,10 +287,75 @@ export async function createPostgresCp2Store(
 
   let saveQueue: Promise<void> = Promise.resolve();
   let lastPersistenceError: unknown = null;
+  let lastRealtimeListenerError: unknown = null;
+  let lastRealtimePublishError: unknown = null;
+  const instanceId = randomUUID();
+  const publishedCursorByAccount = latestSyncCursorByAccount(savedSnapshot);
+  let realtimeClient: PoolClient | null = null;
+  let realtimeReconnectTimer: NodeJS.Timeout | null = null;
+  let realtimeClosed = false;
+
+  function scheduleRealtimeReconnect(): void {
+    if (realtimeClosed || realtimeReconnectTimer !== null) return;
+    realtimeReconnectTimer = setTimeout(() => {
+      realtimeReconnectTimer = null;
+      void connectRealtimeListener();
+    }, 1_000);
+    realtimeReconnectTimer.unref();
+  }
+
+  async function connectRealtimeListener(): Promise<void> {
+    if (realtimeClosed || realtimeClient !== null) return;
+    let client: PoolClient | null = null;
+    try {
+      client = await realtimePool.connect();
+      const connectedClient = client;
+      await connectedClient.query(`listen ${realtimeChannel}`);
+      if (realtimeClosed) {
+        connectedClient.release();
+        return;
+      }
+      realtimeClient = connectedClient;
+      lastRealtimeListenerError = null;
+      connectedClient.on("notification", (notification) => {
+        if (notification.channel !== realtimeChannel || notification.payload === undefined) return;
+        try {
+          const parsed = parseRealtimeNotification(notification.payload);
+          if (parsed.sourceInstanceId === instanceId) return;
+          store.publishExternalSyncChange(parsed.event);
+          lastRealtimeListenerError = null;
+        } catch (error) {
+          lastRealtimeListenerError = error;
+        }
+      });
+      connectedClient.once("error", (error) => {
+        lastRealtimeListenerError = error;
+        if (realtimeClient === connectedClient) realtimeClient = null;
+        connectedClient.release(true);
+        scheduleRealtimeReconnect();
+      });
+    } catch (error) {
+      lastRealtimeListenerError = error;
+      client?.release(true);
+      scheduleRealtimeReconnect();
+    }
+  }
+
+  await connectRealtimeListener();
 
   function enqueueSave(): void {
     saveQueue = saveQueue
-      .then(() => saveNormalizedSnapshot(pool, store.snapshot()))
+      .then(async () => {
+        const snapshot = store.snapshot();
+        await saveNormalizedSnapshot(pool, snapshot);
+        try {
+          await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
+          lastRealtimePublishError = null;
+        } catch (error) {
+          lastRealtimePublishError = error;
+          console.error("Failed to publish PostgreSQL realtime hints.", error);
+        }
+      })
       .then(
         () => {
           lastPersistenceError = null;
@@ -300,12 +378,25 @@ export async function createPostgresCp2Store(
     try {
       await flush();
     } finally {
-      await pool.end();
+      realtimeClosed = true;
+      if (realtimeReconnectTimer !== null) {
+        clearTimeout(realtimeReconnectTimer);
+        realtimeReconnectTimer = null;
+      }
+      const client = realtimeClient;
+      realtimeClient = null;
+      try {
+        if (client !== null) await client.query(`unlisten ${realtimeChannel}`);
+      } finally {
+        client?.release();
+        await Promise.all([pool.end(), realtimePool.end()]);
+      }
     }
   }
 
   async function health(): Promise<PostgresStoreHealth> {
     const startedAt = Date.now();
+    const lastRealtimeError = lastRealtimeListenerError ?? lastRealtimePublishError;
     const result = await pool.query<{
       latest_migration: string | null;
       sync_change_count: string;
@@ -380,7 +471,7 @@ export async function createPostgresCp2Store(
 
     return {
       database: "postgres",
-      status: lastPersistenceError === null ? "ok" : "degraded",
+      status: lastPersistenceError === null && lastRealtimeError === null ? "ok" : "degraded",
       latencyMs: Date.now() - startedAt,
       latestMigration: row?.latest_migration ?? null,
       persistenceError:
@@ -389,6 +480,16 @@ export async function createPostgresCp2Store(
           : lastPersistenceError === null
             ? null
             : "PostgreSQL persistence failed.",
+      realtimeFanout:
+        lastRealtimeError === null
+          ? { status: "ok", error: null }
+          : {
+              status: "degraded",
+              error:
+                lastRealtimeError instanceof Error
+                  ? lastRealtimeError.message
+                  : "PostgreSQL realtime fan-out failed."
+            },
       syncChangeCount: Number(row?.sync_change_count ?? 0),
       phase1Parity:
         row === undefined
@@ -490,6 +591,84 @@ export async function createPostgresCp2Store(
       };
     }
   }) as PostgresCp2Store;
+}
+
+function latestSyncCursorByAccount(snapshot: Cp2Snapshot): Map<string, string> {
+  const cursors = new Map<string, { cursor: string; sequence: number }>();
+  for (const change of snapshot.syncChanges) {
+    const current = cursors.get(change.accountId);
+    if (current === undefined || change.sequence > current.sequence) {
+      cursors.set(change.accountId, {
+        cursor: change.cursor,
+        sequence: change.sequence
+      });
+    }
+  }
+  return new Map([...cursors].map(([accountId, value]) => [accountId, value.cursor]));
+}
+
+async function publishRealtimeNotifications(
+  pool: Pool,
+  snapshot: Cp2Snapshot,
+  sourceInstanceId: string,
+  publishedCursorByAccount: Map<string, string>
+): Promise<void> {
+  const latestByAccount = new Map<string, Cp2Snapshot["syncChanges"][number]>();
+  for (const change of snapshot.syncChanges) {
+    const current = latestByAccount.get(change.accountId);
+    if (current === undefined || change.sequence > current.sequence) {
+      latestByAccount.set(change.accountId, change);
+    }
+  }
+
+  for (const change of latestByAccount.values()) {
+    if (publishedCursorByAccount.get(change.accountId) === change.cursor) continue;
+    const event: SyncRealtimeChangesAvailableEvent = {
+      type: "sync.changes_available",
+      protocolVersion: 1,
+      accountId: change.accountId,
+      cursor: change.cursor,
+      sequence: change.sequence,
+      collection: change.collection,
+      emittedAt: change.changedAt
+    };
+    await pool.query("select pg_notify($1, $2)", [
+      realtimeChannel,
+      JSON.stringify({ sourceInstanceId, event })
+    ]);
+    publishedCursorByAccount.set(change.accountId, change.cursor);
+  }
+}
+
+function parseRealtimeNotification(payload: string): {
+  sourceInstanceId: string;
+  event: SyncRealtimeChangesAvailableEvent;
+} {
+  const parsed = JSON.parse(payload) as unknown;
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("PostgreSQL realtime notification is malformed.");
+  }
+  const record = parsed as Record<string, unknown>;
+  const event = record.event;
+  if (typeof record.sourceInstanceId !== "string" || typeof event !== "object" || event === null) {
+    throw new Error("PostgreSQL realtime notification is malformed.");
+  }
+  const value = event as Record<string, unknown>;
+  if (
+    value.type !== "sync.changes_available" ||
+    value.protocolVersion !== 1 ||
+    typeof value.accountId !== "string" ||
+    typeof value.cursor !== "string" ||
+    !Number.isSafeInteger(value.sequence) ||
+    typeof value.collection !== "string" ||
+    typeof value.emittedAt !== "string"
+  ) {
+    throw new Error("PostgreSQL realtime notification is malformed.");
+  }
+  return {
+    sourceInstanceId: record.sourceInstanceId,
+    event: event as SyncRealtimeChangesAvailableEvent
+  };
 }
 
 function poolConfig(databaseUrl: string): PoolConfig {
@@ -2499,6 +2678,7 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    messageNotificationDeliveries: [],
     e2eeDevices: [],
     pushSubscriptions: [],
     marketplaceIntroStates: [],

@@ -81,8 +81,10 @@ import {
   type DocumentUploadInput
 } from "./document-extraction.js";
 import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
+import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 
 export interface Cp2RouteOptions {
+  binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
   githubModelCatalog?: GitHubModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
@@ -700,6 +702,7 @@ interface LaunchIncidentStatusBody {
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
   const receiptOCRProcessor = options.receiptOCRProcessor;
+  const binaryUploadPipeline = options.binaryUploadPipeline;
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
@@ -1973,7 +1976,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         request.body.clientTimestamp === undefined || request.body.clientTimestamp === null
           ? null
           : parseIsoTimestamp(request.body.clientTimestamp, "clientTimestamp");
-      return store.createConversationMessage({
+      const message = store.createConversationMessage({
         sessionId: readSessionCookie(request.headers.cookie),
         conversationId: parseString(request.body.conversationId, "conversationId"),
         clientMessageId: parseString(request.body.clientMessageId, "clientMessageId"),
@@ -1983,6 +1986,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         forwardedFromMessageId: parseNullableString(request.body.forwardedFromMessageId),
         clientTimestamp
       });
+      await store.deliverPendingMessageNotifications({ messageId: message.id });
+      return message;
     } catch (error) {
       return sendCp2Error(reply, error);
     }
@@ -2849,6 +2854,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           fileSizeBytes = binary.byteLength;
           fileSignature = binary.subarray(0, 16).toString("hex");
           sourceChecksum = createHash("sha256").update(binary).digest("hex");
+          await binaryUploadPipeline?.process(
+            {
+              businessId: request.params.businessId,
+              fileName: body.fileName,
+              contentType: body.contentType,
+              bytes: binary
+            },
+            { retain: false }
+          );
           extraction = await receiptOCRProcessor.process({
             fileName: body.fileName,
             contentType: body.contentType,
@@ -3725,7 +3739,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId,
           businessId: request.params.businessId
         });
-        const source = await extractDocumentImportSource(parseDocumentImportBody(request.body));
+        const upload = await prepareDocumentUpload(
+          parseDocumentImportBody(request.body),
+          request.params.businessId,
+          true
+        );
+        const source = await extractDocumentImportSource(upload);
         return store.createSupplierCsvImport({
           sessionId,
           businessId: request.params.businessId,
@@ -3749,7 +3768,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId,
           businessId: request.params.businessId
         });
-        const source = await extractDocumentImportSource(parseDocumentImportBody(request.body));
+        const upload = await prepareDocumentUpload(
+          parseDocumentImportBody(request.body),
+          request.params.businessId,
+          true
+        );
+        const source = await extractDocumentImportSource(upload);
         return store.createProductCatalogueImport({
           sessionId,
           businessId: request.params.businessId,
@@ -3773,12 +3797,39 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId,
           businessId: request.params.businessId
         });
-        return await extractUploadedDocument(parseDocumentImportBody(request.body));
+        const upload = await prepareDocumentUpload(
+          parseDocumentImportBody(request.body),
+          request.params.businessId,
+          false
+        );
+        return await extractUploadedDocument(upload);
       } catch (error) {
         return sendCp2Error(reply, error);
       }
     }
   );
+
+  async function prepareDocumentUpload(
+    input: DocumentUploadInput,
+    businessId: string,
+    retain: boolean
+  ): Promise<DocumentUploadInput> {
+    if (input.contentBase64 === undefined || binaryUploadPipeline === undefined) return input;
+    const bytes = decodePipelineBase64(input.contentBase64);
+    const result = await binaryUploadPipeline.process(
+      {
+        businessId,
+        fileName: input.fileName,
+        contentType: input.contentType?.trim() || "application/octet-stream",
+        bytes
+      },
+      { retain }
+    );
+    return {
+      ...input,
+      originalStorageKey: result.storageKey
+    };
+  }
 
   app.get(
     "/businesses/:businessId/imports",
@@ -4395,6 +4446,22 @@ function decodeReceiptBase64(value: string): Buffer {
   const buffer = Buffer.from(normalized, "base64");
   if (buffer.byteLength === 0) {
     throw new Cp2Error(400, "receipt_ocr_content_required", "Receipt file content is required.");
+  }
+  return buffer;
+}
+
+function decodePipelineBase64(value: string): Buffer {
+  const normalized = value.includes(",") ? (value.split(",", 2)[1] ?? "") : value;
+  if (
+    normalized.length === 0 ||
+    normalized.length % 4 === 1 ||
+    !/^[a-z0-9+/]*={0,2}$/iu.test(normalized)
+  ) {
+    throw new Cp2Error(400, "document_base64_invalid", "Document file content is invalid.");
+  }
+  const buffer = Buffer.from(normalized, "base64");
+  if (buffer.byteLength === 0) {
+    throw new Cp2Error(400, "document_content_required", "Document file content is required.");
   }
   return buffer;
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
-import type { SyncRealtimeEvent } from "@soko/shared-types";
+import type { SyncRealtimeChangesAvailableEvent, SyncRealtimeEvent } from "@soko/shared-types";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -76,10 +76,34 @@ describe("CP22 realtime sync", () => {
     ownerSocket.close();
     strangerSocket.close();
   });
+
+  it("forwards externally published durable hints to local account subscribers", async () => {
+    const store = createCp2Store();
+    const app = trackedApi(store);
+    await app.ready();
+    const owner = await createSession(app, "254700000224");
+    const connection = await connectRealtime(app, owner.cookie);
+    await connection.ready;
+    const event: SyncRealtimeChangesAvailableEvent = {
+      type: "sync.changes_available",
+      protocolVersion: 1,
+      accountId: owner.accountId,
+      cursor: crypto.randomUUID(),
+      sequence: 42,
+      collection: "conversation_messages",
+      emittedAt: new Date().toISOString()
+    };
+    const received = nextEvent(connection.socket);
+
+    store.publishExternalSyncChange(event);
+
+    await expect(received).resolves.toEqual(event);
+    connection.socket.close();
+  });
 });
 
-function trackedApi(): FastifyInstance {
-  const app = buildApi({ cp2: { store: createCp2Store() } });
+function trackedApi(store = createCp2Store()): FastifyInstance {
+  const app = buildApi({ cp2: { store } });
   apps.push(app);
   return app;
 }

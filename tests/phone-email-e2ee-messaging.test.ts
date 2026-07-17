@@ -161,6 +161,52 @@ describe("registered phone and email end-to-end messaging", () => {
       await restoredStore.close();
     }
   });
+
+  it("persists failed notification delivery and retries it after hydration", async () => {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: webcrypto });
+    const failingStore = createCp2Store({
+      messageEmailNotificationSender: async () => "failed"
+    });
+    const app = buildApi({ cp2: { store: failingStore } });
+    const suffix = `${Date.now()}`.slice(-8);
+    const phone = `+25472${suffix.slice(-7)}`;
+    const email = `retry-${suffix}@example.test`;
+    const phoneCookie = await createAccountSession(app, "phone", phone);
+    const emailCookie = await createAccountSession(app, "email", email);
+    await registerEncryptionDevice(app, phoneCookie, await createIdentity(`phone-${suffix}`));
+    await registerEncryptionDevice(app, emailCookie, await createIdentity(`email-${suffix}`));
+    const conversation = await createConversation(app, phoneCookie, email, "Retry delivery");
+    const message = await sendEncryptedMessage({
+      app,
+      cookie: phoneCookie,
+      conversation,
+      message: "encrypted retry payload"
+    });
+    const failed = failingStore.snapshot().messageNotificationDeliveries ?? [];
+    expect(failed).toEqual([
+      expect.objectContaining({
+        messageId: message.id,
+        channel: "email",
+        status: "failed",
+        attempts: 1,
+        nextAttemptAt: expect.any(String)
+      })
+    ]);
+
+    const restored = createCp2Store({
+      messageEmailNotificationSender: async () => "sent"
+    });
+    restored.hydrateSnapshot(failingStore.snapshot());
+    const result = await restored.deliverPendingMessageNotifications({
+      now: new Date(Date.now() + 5 * 60_000)
+    });
+
+    expect(result).toEqual({ checked: 1, sent: 1, failed: 0, deadLettered: 0 });
+    expect(restored.snapshot().messageNotificationDeliveries).toEqual([
+      expect.objectContaining({ status: "sent", attempts: 2, deliveredAt: expect.any(String) })
+    ]);
+    await app.close();
+  });
 });
 
 async function createAccountSession(

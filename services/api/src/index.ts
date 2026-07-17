@@ -12,6 +12,11 @@ import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
 import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
 import { createNetworkInviteSenderFromEnvironment } from "./cp2/network-invite-provider.js";
+import {
+  startNotificationDeliveryRunner,
+  type NotificationDeliveryRunner
+} from "./cp2/notification-delivery-runner.js";
+import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 
 const config = readEnvironment();
 const runtimeModelProvider = config.localModelEnabled
@@ -33,6 +38,7 @@ const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").
 const accountDeletionProcessors = readAccountDeletionProcessors();
 const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
+const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
   throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
@@ -61,6 +67,7 @@ const apiOptions = {
   cp2: {
     store: cp2Store,
     emailProvider,
+    ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
     ...(receiptOCRProcessor === undefined ? {} : { receiptOCRProcessor }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
@@ -79,12 +86,26 @@ const app = buildApi(
 );
 
 let accountDeletionRunner: AccountDeletionRunner | null = null;
+let notificationDeliveryRunner: NotificationDeliveryRunner | null = null;
 app.addHook("onClose", async () => {
+  await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
   if (isClosableStore(cp2Store)) {
     await cp2Store.close();
   }
 });
+
+if (process.env.ENABLE_NOTIFICATION_DELIVERY_RUNNER !== "false") {
+  notificationDeliveryRunner = startNotificationDeliveryRunner({
+    store: cp2Store,
+    onResult: (result) => {
+      if (result.checked > 0) {
+        app.log.info({ result }, "Message notification delivery run completed.");
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Message notification delivery run failed.")
+  });
+}
 
 try {
   await app.listen({

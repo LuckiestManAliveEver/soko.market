@@ -4,18 +4,19 @@ Audit date: 2026-07-17
 
 ## Implemented pipelines
 
-| Pipeline              | Ingestion                                          | Processing                                                                                                | Durable boundary                                              | Delivery/consumer                                                               | Result                                                |
-| --------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Document import       | Text or base64 PDF, Word, and spreadsheet uploads  | Signature validation, extraction, preview mapping, row validation                                         | Import source/job tables and business records                 | Product and supplier UI                                                         | Working                                               |
-| Receipt OCR           | Browser binary upload                              | Bounded HTTP worker, PaddleOCR with Tesseract fallback, response validation, parsing and contact matching | OCR jobs, receipts, and line items                            | Supplier receipt review UI                                                      | Working when `OCR_WORKER_URL` is configured           |
-| Offline mutations     | IndexedDB local mutation store                     | Ordered transfer with stable idempotency keys and retry-aware server replay                               | IndexedDB until acceptance; PostgreSQL server queue afterward | Product, customer, supplier, inventory, invoice, payment, and logistics actions | Working                                               |
-| Account catch-up      | Account-scoped cursor API                          | Page validation, tombstones, expired-cursor reset                                                         | PostgreSQL journal and atomic IndexedDB page commit           | Web cache                                                                       | Working                                               |
-| Realtime hints        | Authenticated WebSocket                            | Account isolation, catch-up coalescing, reconnect and error containment                                   | Cursor journal remains authoritative                          | Web catch-up client                                                             | Working per API instance                              |
-| PostgreSQL state      | Store mutations and durable defaults               | Serialized normalized snapshot transaction                                                                | Normalized and relational tables                              | API restart hydration                                                           | Working; flush and health expose persistence failures |
-| Account/shop deletion | Scheduled runner or cron                           | Quarantine, processor receipts, purge and retry                                                           | Deletion requests/proofs and relational cleanup               | Operations jobs                                                                 | Working; external processors run when configured      |
-| Data export/backup    | Authenticated export and scheduled database backup | Scoped bundle generation or `pg_dump`                                                                     | Export records and configured backup destination              | Owner/operations                                                                | Working                                               |
-| Messaging outbox      | Failed browser message send                        | Account-scoped retry with HTTP failure classification                                                     | Account-scoped browser storage until server acceptance        | Conversation message API                                                        | Working                                               |
-| Network invites       | Selected phone or email contacts                   | Signed, idempotent delivery webhook                                                                       | Invite delivery status and audit event                        | Configured invite delivery service                                              | Working when webhook is configured                    |
+| Pipeline              | Ingestion                                          | Processing                                                                                       | Durable boundary                                              | Delivery/consumer                                                               | Result                                                |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Document import       | Text or base64 PDF, Word, and spreadsheet uploads  | Signature validation, malware scan, extraction, preview mapping, and row validation              | External object storage plus import source/job records        | Product and supplier UI                                                         | Working; storage is enabled by configuration          |
+| Receipt OCR           | Browser binary upload                              | Malware scan, bounded OCR worker, response validation, parsing, and contact matching             | OCR jobs, receipts, and line items; original bytes ephemeral  | Supplier receipt review UI                                                      | Working when scanner and OCR worker are configured    |
+| Offline mutations     | IndexedDB local mutation store                     | Ordered transfer with stable idempotency keys and retry-aware server replay                      | IndexedDB until acceptance; PostgreSQL server queue afterward | Product, customer, supplier, inventory, invoice, payment, and logistics actions | Working                                               |
+| Account catch-up      | Account-scoped cursor API                          | Page validation, tombstones, expired-cursor reset                                                | PostgreSQL journal and atomic IndexedDB page commit           | Web cache                                                                       | Working                                               |
+| Realtime hints        | Authenticated WebSocket                            | Account isolation, PostgreSQL fan-out, listener reconnect, and catch-up coalescing               | Cursor journal remains authoritative                          | Web catch-up client                                                             | Working across API instances                          |
+| PostgreSQL state      | Store mutations and durable defaults               | Serialized normalized snapshot transaction                                                       | Normalized and relational tables                              | API restart hydration                                                           | Working; flush and health expose persistence failures |
+| Account/shop deletion | Scheduled runner or cron                           | Quarantine, processor receipts, purge and retry                                                  | Deletion requests/proofs and relational cleanup               | Operations jobs                                                                 | Working; external processors run when configured      |
+| Data export/backup    | Authenticated export and scheduled database backup | Scoped bundle generation or `pg_dump`                                                            | Export records and configured backup destination              | Owner/operations                                                                | Working                                               |
+| Messaging outbox      | Failed browser message send                        | Account-scoped retry with HTTP failure classification                                            | Account-scoped browser storage until server acceptance        | Conversation message API                                                        | Working                                               |
+| Message notifications | Accepted conversation message                      | Durable push/email attempts, exponential retry, expired-subscription cleanup, and dead-lettering | PostgreSQL notification delivery records                      | Push and transactional email providers                                          | Working; provider delivery is retried                 |
+| Network invites       | Selected phone or email contacts                   | Signed, idempotent delivery webhook                                                              | Invite delivery status and audit event                        | Configured invite delivery service                                              | Working when webhook is configured                    |
 
 ## Fixed in this audit
 
@@ -35,18 +36,27 @@ Audit date: 2026-07-17
 - Included quarantined shop records in the scheduled deletion purge runner.
 - Connected queued network invites to a signed delivery webhook and persisted `sent` or `failed`
   delivery state.
+- Added PostgreSQL `LISTEN`/`NOTIFY` fan-out with source-instance suppression, dedicated listener
+  connections, automatic reconnect, and health reporting.
+- Replaced fire-and-forget push/email delivery with a persisted retry queue, scheduled worker,
+  exponential backoff, and terminal dead-letter state.
+- Added signed malware-scanner and object-storage adapters, retained-source provenance, and
+  production fail-closed scanner configuration.
 
 ## Deployment dependencies
 
 - OCR requires the worker container and `OCR_WORKER_URL`; PaddleOCR model startup can be slow on the
   first request.
-- Cross-instance realtime fan-out needs a shared broker or PostgreSQL notification channel if the
-  API is horizontally scaled. Cursor catch-up remains correct without it.
+- Migration `028_data_pipeline_infrastructure.sql` must be applied before starting this API version.
+- Cross-instance realtime fan-out uses the same PostgreSQL database as the durable cursor journal;
+  no separate broker is required.
 - Network invite delivery requires `NETWORK_INVITE_WEBHOOK_URL` and
   `NETWORK_INVITE_WEBHOOK_SECRET`. Without them, invites remain queued.
-- Push and email notifications are best-effort secondary delivery hints. The conversation journal
-  remains authoritative, but a durable notification retry/dead-letter queue is still an operations
-  integration boundary.
-- Binary malware scanning and external object storage are infrastructure integrations, not embedded
-  in the repository. Receipt bytes are processed ephemerally and worker temporary files are deleted
-  after each request.
+- Push and email providers still require their normal credentials. Failed delivery records remain
+  durable and are retried while the notification runner is enabled.
+- Production binary upload routes require the signed malware scanner unless
+  `REQUIRE_BINARY_UPLOAD_SECURITY=false` is deliberately set. Retained import sources use the signed
+  object-storage adapter when configured; receipt bytes remain ephemeral.
+
+See [Data pipeline infrastructure](./data-pipeline-infrastructure.md) for deployment and adapter
+contracts.

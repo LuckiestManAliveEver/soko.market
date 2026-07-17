@@ -15,6 +15,7 @@ export interface DocumentUploadInput {
   contentBase64?: string;
   sourceType?: "upload" | "paste" | "database";
   sourceLocator?: string | null;
+  originalStorageKey?: string | null;
 }
 
 export interface ExtractedDocument {
@@ -41,6 +42,9 @@ export async function extractDocumentImportSource(
     content: extracted.text,
     ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
     ...(input.sourceLocator === undefined ? {} : { sourceLocator: input.sourceLocator }),
+    ...(input.originalStorageKey === undefined
+      ? {}
+      : { originalStorageKey: input.originalStorageKey }),
     ...(input.contentBase64 === undefined
       ? {}
       : {

@@ -433,6 +433,7 @@ export interface DocumentImportSourceInput {
   sourceLocator?: string | null;
   originalSizeBytes?: number;
   originalChecksum?: string;
+  originalStorageKey?: string | null;
 }
 
 export interface NormalizedProductInput {
@@ -1141,6 +1142,14 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
     input.sourceType !== "database"
   ) {
     errors.push("Import source type is not supported.");
+  }
+
+  if (
+    input.originalStorageKey !== undefined &&
+    input.originalStorageKey !== null &&
+    !/^[A-Za-z0-9][A-Za-z0-9/_.:-]{0,511}$/u.test(input.originalStorageKey)
+  ) {
+    errors.push("Import object storage key is invalid.");
   }
 
   if (sourceLocator.length > 500) {

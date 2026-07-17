@@ -549,6 +549,7 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  messageNotificationDeliveries?: MessageNotificationDelivery[];
   e2eeDevices?: E2eeDeviceSummary[];
   pushSubscriptions?: PushSubscriptionSummary[];
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
@@ -715,6 +716,31 @@ export type MessageEmailNotificationSender = (
   input: MessageEmailNotificationInput
 ) => Promise<"sent" | "failed">;
 
+export interface MessageNotificationDelivery {
+  id: string;
+  messageId: string;
+  conversationId: string;
+  accountId: string;
+  channel: "push" | "email";
+  targetId: string;
+  destination: string | null;
+  status: "pending" | "failed" | "sent" | "dead_letter";
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastAttemptedAt: string | null;
+  deliveredAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MessageNotificationDeliveryRunSummary {
+  checked: number;
+  sent: number;
+  failed: number;
+  deadLettered: number;
+}
+
 export class Cp2Store {
   constructor(private readonly options: Cp2StoreOptions = {}) {}
 
@@ -728,6 +754,7 @@ export class Cp2Store {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly messageNotificationDeliveries = new Map<string, MessageNotificationDelivery>();
   private readonly e2eeDevices = new Map<string, E2eeDeviceSummary>();
   private readonly pushSubscriptions = new Map<string, PushSubscriptionSummary>();
   private readonly pushSubscriptionIdByEndpoint = new Map<string, string>();
@@ -2007,6 +2034,16 @@ export class Cp2Store {
     };
   }
 
+  publishExternalSyncChange(event: SyncRealtimeChangesAvailableEvent): void {
+    for (const listener of this.syncChangeListeners.get(event.accountId) ?? []) {
+      try {
+        listener(event);
+      } catch {
+        // The durable cursor journal remains authoritative when a listener fails.
+      }
+    }
+  }
+
   getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
@@ -2660,9 +2697,43 @@ export class Cp2Store {
         conversationId: conversation.id
       }
     });
-    this.deliverConversationPush(conversation, message, session.account.id, now);
-    this.deliverConversationEmail(conversation, message, session.account.id, now);
+    this.enqueueConversationNotifications(conversation, message, session.account.id, now);
     return message;
+  }
+
+  async deliverPendingMessageNotifications(
+    input: {
+      messageId?: string;
+      limit?: number;
+      now?: Date;
+    } = {}
+  ): Promise<MessageNotificationDeliveryRunSummary> {
+    const now = input.now ?? new Date();
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const summary: MessageNotificationDeliveryRunSummary = {
+      checked: 0,
+      sent: 0,
+      failed: 0,
+      deadLettered: 0
+    };
+    const due = [...this.messageNotificationDeliveries.values()]
+      .filter(
+        (delivery) =>
+          (delivery.status === "pending" || delivery.status === "failed") &&
+          (input.messageId === undefined || delivery.messageId === input.messageId) &&
+          (delivery.nextAttemptAt === null || Date.parse(delivery.nextAttemptAt) <= now.getTime())
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(0, limit);
+
+    for (const delivery of due) {
+      summary.checked += 1;
+      const result = await this.attemptMessageNotificationDelivery(delivery, now);
+      if (result.status === "sent") summary.sent += 1;
+      else if (result.status === "dead_letter") summary.deadLettered += 1;
+      else summary.failed += 1;
+    }
+    return summary;
   }
 
   updateConversationSettings(input: {
@@ -6920,6 +6991,7 @@ export class Cp2Store {
         createHash("sha256").update(input.source.content).digest("hex"),
       sourceType: input.source.sourceType ?? "upload",
       sourceLocator: input.source.sourceLocator?.trim() || null,
+      originalStorageKey: input.source.originalStorageKey ?? null,
       content: input.source.content,
       createdAt: now.toISOString()
     };
@@ -6995,6 +7067,7 @@ export class Cp2Store {
         createHash("sha256").update(input.source.content).digest("hex"),
       sourceType: input.source.sourceType ?? "upload",
       sourceLocator: input.source.sourceLocator?.trim() || null,
+      originalStorageKey: input.source.originalStorageKey ?? null,
       content: input.source.content,
       createdAt: now.toISOString()
     };
@@ -8033,6 +8106,7 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      messageNotificationDeliveries: [...this.messageNotificationDeliveries.values()],
       e2eeDevices: [...this.e2eeDevices.values()],
       pushSubscriptions: [...this.pushSubscriptions.values()],
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
@@ -8114,6 +8188,7 @@ export class Cp2Store {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.messageNotificationDeliveries.clear();
     this.e2eeDevices.clear();
     this.pushSubscriptions.clear();
     this.pushSubscriptionIdByEndpoint.clear();
@@ -8227,6 +8302,10 @@ export class Cp2Store {
         `${message.conversationId}:${message.clientMessageId}`,
         message.id
       );
+    }
+
+    for (const delivery of snapshot.messageNotificationDeliveries ?? []) {
+      this.messageNotificationDeliveries.set(delivery.id, delivery);
     }
 
     for (const device of snapshot.e2eeDevices ?? []) {
@@ -8842,13 +8921,7 @@ export class Cp2Store {
       collection: change.collection,
       emittedAt: changedAt
     };
-    for (const listener of this.syncChangeListeners.get(input.accountId) ?? []) {
-      try {
-        listener(event);
-      } catch {
-        // Realtime delivery is best effort; durable cursor catch-up remains authoritative.
-      }
-    }
+    this.publishExternalSyncChange(event);
     return change;
   }
 
@@ -9127,14 +9200,12 @@ export class Cp2Store {
     }
   }
 
-  private deliverConversationPush(
+  private enqueueConversationNotifications(
     conversation: ConversationSummary,
     message: ConversationMessageSummary,
     senderAccountId: string,
     now: Date
   ): void {
-    const sender = this.options.pushNotificationSender;
-    if (!sender) return;
     const recipientIds = new Set(
       this.humanConversationAccountIds(conversation.id).filter(
         (accountId) => accountId !== senderAccountId
@@ -9151,60 +9222,133 @@ export class Cp2Store {
         recipientIds.delete(participant.accountId);
       }
     }
-    for (const subscription of this.pushSubscriptions.values()) {
-      if (!recipientIds.has(subscription.accountId)) continue;
-      void sender(subscription, {
-        type: "message.new",
-        conversationId: conversation.id,
-        messageId: message.id,
-        title: conversation.title?.trim() || "New Soko message",
-        body: "Open Soko to read your message."
-      }).then((result) => {
-        if (result !== "expired") return;
-        this.pushSubscriptions.delete(subscription.id);
-        this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
-      });
+    if (this.options.pushNotificationSender !== undefined) {
+      for (const subscription of this.pushSubscriptions.values()) {
+        if (!recipientIds.has(subscription.accountId)) continue;
+        this.addMessageNotificationDelivery({
+          message,
+          accountId: subscription.accountId,
+          channel: "push",
+          targetId: subscription.id,
+          destination: null,
+          now
+        });
+      }
+    }
+    if (this.options.messageEmailNotificationSender !== undefined) {
+      for (const accountId of recipientIds) {
+        const account = this.accounts.get(accountId);
+        if (account?.primaryAuthChannel !== "email") continue;
+        this.addMessageNotificationDelivery({
+          message,
+          accountId,
+          channel: "email",
+          targetId: `email:${accountId}`,
+          destination: account.primaryAuthDestination,
+          now
+        });
+      }
     }
   }
 
-  private deliverConversationEmail(
-    conversation: ConversationSummary,
-    message: ConversationMessageSummary,
-    senderAccountId: string,
+  private addMessageNotificationDelivery(input: {
+    message: ConversationMessageSummary;
+    accountId: string;
+    channel: MessageNotificationDelivery["channel"];
+    targetId: string;
+    destination: string | null;
+    now: Date;
+  }): void {
+    const id = `${input.message.id}:${input.channel}:${input.targetId}`;
+    if (this.messageNotificationDeliveries.has(id)) return;
+    const timestamp = input.now.toISOString();
+    this.messageNotificationDeliveries.set(id, {
+      id,
+      messageId: input.message.id,
+      conversationId: input.message.conversationId,
+      accountId: input.accountId,
+      channel: input.channel,
+      targetId: input.targetId,
+      destination: input.destination,
+      status: "pending",
+      attempts: 0,
+      nextAttemptAt: timestamp,
+      lastAttemptedAt: null,
+      deliveredAt: null,
+      lastError: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
+
+  private async attemptMessageNotificationDelivery(
+    delivery: MessageNotificationDelivery,
     now: Date
-  ): void {
-    const sender = this.options.messageEmailNotificationSender;
-    if (!sender) return;
-    const recipientIds = new Set(
-      this.humanConversationAccountIds(conversation.id).filter(
-        (accountId) => accountId !== senderAccountId
-      )
-    );
-    for (const participant of this.conversationParticipants.values()) {
-      if (
-        participant.conversationId === conversation.id &&
-        participant.accountId !== null &&
-        participant.mutedUntil !== null &&
-        participant.mutedUntil !== undefined &&
-        Date.parse(participant.mutedUntil) > now.getTime()
+  ): Promise<MessageNotificationDelivery> {
+    const attempts = delivery.attempts + 1;
+    let outcome: "sent" | "failed" | "expired" = "failed";
+    try {
+      if (delivery.channel === "push") {
+        const subscription = this.pushSubscriptions.get(delivery.targetId);
+        if (subscription === undefined || this.options.pushNotificationSender === undefined) {
+          outcome = "expired";
+        } else {
+          const conversation = this.conversations.get(delivery.conversationId);
+          outcome = await this.options.pushNotificationSender(subscription, {
+            type: "message.new",
+            conversationId: delivery.conversationId,
+            messageId: delivery.messageId,
+            title: conversation?.title?.trim() || "New Soko message",
+            body: "Open Soko to read your message."
+          });
+          if (outcome === "expired") {
+            this.pushSubscriptions.delete(subscription.id);
+            this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+          }
+        }
+      } else if (
+        delivery.destination !== null &&
+        this.options.messageEmailNotificationSender !== undefined
       ) {
-        recipientIds.delete(participant.accountId);
+        const webBaseUrl = (this.options.messageWebBaseUrl ?? "https://soko.market").replace(
+          /\/+$/u,
+          ""
+        );
+        outcome = await this.options.messageEmailNotificationSender({
+          conversationId: delivery.conversationId,
+          messageId: delivery.messageId,
+          openUrl: `${webBaseUrl}/?conversation=${encodeURIComponent(delivery.conversationId)}`,
+          to: delivery.destination
+        });
       }
+    } catch {
+      outcome = "failed";
     }
-    const webBaseUrl = (this.options.messageWebBaseUrl ?? "https://soko.market").replace(
-      /\/+$/u,
-      ""
-    );
-    for (const accountId of recipientIds) {
-      const account = this.accounts.get(accountId);
-      if (account?.primaryAuthChannel !== "email") continue;
-      void sender({
-        conversationId: conversation.id,
-        messageId: message.id,
-        openUrl: `${webBaseUrl}/?conversation=${encodeURIComponent(conversation.id)}`,
-        to: account.primaryAuthDestination
-      }).catch(() => "failed");
-    }
+
+    const timestamp = now.toISOString();
+    const terminal = outcome === "expired" || (outcome === "failed" && attempts >= 5);
+    const next: MessageNotificationDelivery = {
+      ...delivery,
+      status: outcome === "sent" ? "sent" : terminal ? "dead_letter" : "failed",
+      attempts,
+      nextAttemptAt:
+        outcome === "sent" || terminal
+          ? null
+          : new Date(
+              now.getTime() + Math.min(60 * 60_000, 60_000 * 2 ** (attempts - 1))
+            ).toISOString(),
+      lastAttemptedAt: timestamp,
+      deliveredAt: outcome === "sent" ? timestamp : null,
+      lastError:
+        outcome === "sent"
+          ? null
+          : outcome === "expired"
+            ? "push_subscription_expired"
+            : "notification_delivery_failed",
+      updatedAt: timestamp
+    };
+    this.messageNotificationDeliveries.set(next.id, next);
+    return next;
   }
 
   private messagesForConversation(conversationId: string): ConversationMessageSummary[] {
@@ -11866,6 +12010,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.conversations, scope);
       deletedRecordCount += deleteScopedMapRecords(this.conversationParticipants, scope);
       deletedRecordCount += deleteScopedMapRecords(this.conversationMessages, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.messageNotificationDeliveries, scope);
       deletedRecordCount += deleteScopedMapRecords(this.e2eeDevices, scope);
       deletedRecordCount += deleteScopedMapRecords(this.pushSubscriptions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.conversationTyping, scope);
@@ -14370,6 +14515,7 @@ function documentImportSourceView(source: DocumentImportSourceRecord): DocumentI
     checksum: source.checksum,
     sourceType: source.sourceType ?? "upload",
     sourceLocator: source.sourceLocator ?? null,
+    originalStorageKey: source.originalStorageKey ?? null,
     createdAt: source.createdAt
   };
 }

@@ -18,8 +18,8 @@ docker compose --profile ocr up receipt-ocr-worker
 ```
 
 The API connects through `OCR_WORKER_URL` (locally `http://127.0.0.1:8090`). Binary image and PDF
-bytes are sent only after the API authenticates the business. Worker responses are schema-validated
-before entering parsing and contact matching.
+bytes are sent only after the API authenticates the business and the signed malware scanner returns
+`clean`. Worker responses are schema-validated before entering parsing and contact matching.
 
 ## Supported inputs
 
@@ -48,13 +48,14 @@ Important limits are configured through:
 
 1. User uploads or takes a photo of a purchase receipt from Suppliers, chat, or a receipt card.
 2. The upload is validated.
-3. The API sends binary content to the bounded worker with configured timeout and retries.
-4. OCR extracts raw text blocks, full text, engine metadata, confidence, and warnings.
-5. The parser extracts supplier, sales agent, receipt, payment, and product fields.
-6. The required `receipt_contact_matching` context script normalizes fields and ranks supplier/contact candidates.
-7. User confirms or corrects the review card.
-8. Structured purchase receipt and line items are saved.
-9. Worker temporary files are deleted immediately after each scan.
+3. The signed malware scanner must classify the upload as clean.
+4. The API sends binary content to the bounded worker with configured timeout and retries.
+5. OCR extracts raw text blocks, full text, engine metadata, confidence, and warnings.
+6. The parser extracts supplier, sales agent, receipt, payment, and product fields.
+7. The required `receipt_contact_matching` context script normalizes fields and ranks supplier/contact candidates.
+8. User confirms or corrects the review card.
+9. Structured purchase receipt and line items are saved.
+10. Worker temporary files are deleted immediately after each scan.
 
 Runtime sequence:
 
@@ -141,7 +142,7 @@ Receipt OCR jobs save:
 - supplier and sales agent match candidates
 - contact matching result with confidence, sources, and matched-by explanation
 
-The original receipt image is not permanently stored by default.
+The original receipt image is not permanently stored by this pipeline.
 
 ## Privacy
 

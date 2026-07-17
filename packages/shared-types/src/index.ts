@@ -1398,6 +1398,7 @@ export interface DocumentImportSourceSummary {
   checksum: string;
   sourceType?: "upload" | "paste" | "database";
   sourceLocator?: string | null;
+  originalStorageKey?: string | null;
   createdAt: string;
 }
 
