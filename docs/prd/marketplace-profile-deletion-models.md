@@ -3,10 +3,10 @@
 ## Product outcome
 
 Soko.market opens in buyer Marketplace mode without forcing account creation. A visitor can browse
-and chat immediately. Identity verification is delayed until the first attempt to register a shop:
-the Sell button starts email or configured social verification, passkey enrollment, owner PIN
-setup, and then shop details. Returning owners authenticate with a passkey, social identity, or
-contact and PIN. Firebase phone OTP is reserved for explicit lost-account recovery.
+immediately. A visitor who chooses to create an account verifies their email or phone as part of
+account signup. First-shop registration is a separate step: once the account has an active session,
+the Sell button opens shop details without another OTP. Returning owners authenticate with a
+passkey, social identity, or contact and PIN.
 
 The first Marketplace card is an onboarding item directly after the welcome message. Completing it
 removes it from the normal conversation timeline and adds a Marketplace shortcut beside Sell. The
@@ -32,9 +32,11 @@ must leave the request retryable and visible to operations.
 ## Acceptance criteria
 
 - A fresh visitor lands in Marketplace with no OTP prompt.
-- Sell is the only normal path that starts first-shop email or social verification.
+- A signed-in account can open Sell and register its first shop without OTP.
+- A signed-out visitor who opens Sell completes account signup or login before shop registration.
 - Phone and PIN unlock an existing owner account without OTP.
-- Firebase phone OTP appears only in lost-account recovery and cannot create an account.
+- Firebase phone OTP supports account signup and explicit lost-account recovery, but it is not part
+  of shop creation.
 - The Marketplace intro renders once, is keyboard operable, and completion survives reload.
 - The Marketplace header shortcut appears only after onboarding completion.
 - Clicking an agent name opens the agent/shop profile when a shop exists.

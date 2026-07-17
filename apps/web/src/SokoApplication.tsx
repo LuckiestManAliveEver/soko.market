@@ -3074,8 +3074,8 @@ export function OwnerApp() {
   }
 
   async function completeSignup() {
-    if (session === null || !isOtpVerified) {
-      setStatusMessage("Verify your account before finishing signup");
+    if (session === null) {
+      setStatusMessage("Sign in before creating your owner PIN");
       return;
     }
 
@@ -5922,7 +5922,6 @@ export function OwnerApp() {
             destination={destination}
             challenge={challenge}
             otp={otp}
-            isOtpVerified={isOtpVerified}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
             session={session}
@@ -6184,7 +6183,6 @@ interface SetupPanelProps {
   destination: string;
   challenge: OtpRequestResponse | null;
   otp: string;
-  isOtpVerified: boolean;
   signupPin: string;
   signupPinConfirm: string;
   session: SessionResponse | null;
@@ -6316,135 +6314,139 @@ function SetupPanel(props: SetupPanelProps) {
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
-  const showAuthForm = authView !== "options" || props.challenge !== null || props.isOtpVerified;
+  const showAuthForm = authView !== "options" || props.challenge !== null;
 
   return (
     <main className="setup-grid auth-landing-grid">
-      <section className="panel auth-card">
-        {!showAuthForm ? (
-          <SocialLoginOptions
-            mode="signup"
-            onSelectPhone={() => {
-              props.onChannelChange("phone");
-              setAuthView("phone");
-            }}
-            onSelectEmail={() => {
-              props.onChannelChange("email");
-              setAuthView("email");
-            }}
-            onSelectSocial={props.onSocialSignup}
-            providers={props.oauthProviders}
-            providersLoaded={props.oauthProvidersLoaded}
-            socialPending={props.isSocialPending}
-          />
-        ) : (
-          <>
-            <div className="auth-heading-row">
-              <div className="section-heading">
-                <p className="eyebrow">First shop registration</p>
-                <h2>Verify your {props.channel}</h2>
-                <p>Create the account with a verified phone number, email, or social identity.</p>
-              </div>
-            </div>
-            {props.channel === "phone" ? (
-              <>
-                <div className="phone-contact-row">
-                  <label>
-                    Country code
-                    <select
-                      value={props.countryCode}
-                      onChange={(event) =>
-                        props.onCountryCodeChange(event.target.value as CountryDialCode)
-                      }
-                    >
-                      {countryDialCodes.map((item) => (
-                        <option key={item.code} value={item.code}>
-                          {item.flag} {item.code} {item.country}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Phone number
-                    <input
-                      value={phoneSuffix}
-                      onChange={(event) =>
-                        props.onDestinationChange(
-                          sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                        )
-                      }
-                      inputMode="numeric"
-                      maxLength={selectedCountryCode.suffixLength}
-                      pattern="[0-9]*"
-                      type="tel"
-                      placeholder={"0".repeat(selectedCountryCode.suffixLength)}
-                    />
-                  </label>
+      {props.session === null ? (
+        <section className="panel auth-card">
+          {!showAuthForm ? (
+            <SocialLoginOptions
+              mode="signup"
+              onSelectPhone={() => {
+                props.onChannelChange("phone");
+                setAuthView("phone");
+              }}
+              onSelectEmail={() => {
+                props.onChannelChange("email");
+                setAuthView("email");
+              }}
+              onSelectSocial={props.onSocialSignup}
+              providers={props.oauthProviders}
+              providersLoaded={props.oauthProvidersLoaded}
+              socialPending={props.isSocialPending}
+            />
+          ) : (
+            <>
+              <div className="auth-heading-row">
+                <div className="section-heading">
+                  <p className="eyebrow">Account signup</p>
+                  <h2>Verify your {props.channel}</h2>
+                  <p>This verifies your account identity before you register a shop.</p>
                 </div>
-                <div
-                  ref={props.phoneRecaptchaRef}
-                  className="firebase-recaptcha"
-                  aria-hidden="true"
-                />
-              </>
-            ) : (
+              </div>
+              {props.channel === "phone" ? (
+                <>
+                  <div className="phone-contact-row">
+                    <label>
+                      Country code
+                      <select
+                        value={props.countryCode}
+                        onChange={(event) =>
+                          props.onCountryCodeChange(event.target.value as CountryDialCode)
+                        }
+                      >
+                        {countryDialCodes.map((item) => (
+                          <option key={item.code} value={item.code}>
+                            {item.flag} {item.code} {item.country}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Phone number
+                      <input
+                        value={phoneSuffix}
+                        onChange={(event) =>
+                          props.onDestinationChange(
+                            sanitizePhoneSuffix(
+                              event.target.value,
+                              selectedCountryCode.suffixLength
+                            )
+                          )
+                        }
+                        inputMode="numeric"
+                        maxLength={selectedCountryCode.suffixLength}
+                        pattern="[0-9]*"
+                        type="tel"
+                        placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                      />
+                    </label>
+                  </div>
+                  <div
+                    ref={props.phoneRecaptchaRef}
+                    className="firebase-recaptcha"
+                    aria-hidden="true"
+                  />
+                </>
+              ) : (
+                <label>
+                  Email address
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={props.destination}
+                    onChange={(event) => props.onDestinationChange(event.target.value)}
+                    placeholder="you@example.com"
+                  />
+                </label>
+              )}
+              <button
+                type="button"
+                onClick={props.onRequestOtp}
+                disabled={!contactIsValid || props.isRequestPending}
+                aria-busy={props.isRequestPending}
+              >
+                {props.isRequestPending
+                  ? "Sending…"
+                  : props.channel === "phone"
+                    ? "Send SMS code"
+                    : "Send email code"}
+              </button>
               <label>
-                Email address
+                {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
                 <input
-                  type="email"
-                  autoComplete="email"
-                  value={props.destination}
-                  onChange={(event) => props.onDestinationChange(event.target.value)}
-                  placeholder="you@example.com"
+                  value={props.otp}
+                  onChange={(event) => props.onOtpChange(event.target.value)}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
                 />
               </label>
-            )}
-            <button
-              type="button"
-              onClick={props.onRequestOtp}
-              disabled={!contactIsValid || props.isRequestPending}
-              aria-busy={props.isRequestPending}
-            >
-              {props.isRequestPending
-                ? "Sending…"
-                : props.channel === "phone"
-                  ? "Send SMS code"
-                  : "Send email code"}
-            </button>
-            <label>
-              {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
-              <input
-                value={props.otp}
-                onChange={(event) => props.onOtpChange(event.target.value)}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={props.onVerifyOtp}
-              disabled={props.challenge === null || props.isVerifyPending}
-              aria-busy={props.isVerifyPending}
-            >
-              {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
-            </button>
-            {!props.isOtpVerified ? (
+              <button
+                type="button"
+                onClick={props.onVerifyOtp}
+                disabled={props.challenge === null || props.isVerifyPending}
+                aria-busy={props.isVerifyPending}
+              >
+                {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
+              </button>
               <button className="secondary" type="button" onClick={() => setAuthView("options")}>
                 Back to signup options
               </button>
-            ) : null}
-          </>
-        )}
-        <p className="setup-status" role="status" aria-live="polite">
-          {props.statusMessage}
-        </p>
-      </section>
+            </>
+          )}
+          <p className="setup-status" role="status" aria-live="polite">
+            {props.statusMessage}
+          </p>
+        </section>
+      ) : null}
 
-      {props.isOtpVerified ? (
+      {props.session !== null ? (
         <section className="panel">
           <div className="section-heading">
-            <p className="eyebrow">First shop registration</p>
+            <p className="eyebrow">Account security</p>
             <h2>Create your owner PIN</h2>
+            <p>No additional OTP is required before entering your first shop details.</p>
           </div>
           <label>
             PIN
@@ -6475,7 +6477,6 @@ function SetupPanel(props: SetupPanelProps) {
             onClick={props.onCompleteSignup}
             disabled={
               props.session === null ||
-              !props.isOtpVerified ||
               !isValidPin(props.signupPin) ||
               props.signupPin !== props.signupPinConfirm ||
               props.isCompletePending
@@ -6521,7 +6522,10 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
         <div className="section-heading">
           <p className="eyebrow">Start selling</p>
           <h2>Set up your business</h2>
-          <p>Create your shop once. You can update its details later.</p>
+          <p>
+            Create your shop once using your signed-in account. No OTP is required, and you can
+            update these details later.
+          </p>
         </div>
         <label>
           Business name

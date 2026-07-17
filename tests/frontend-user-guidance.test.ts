@@ -111,6 +111,28 @@ describe("frontend user guidance", () => {
     expect(authRoutes).toContain("emailProvider.sendOtp");
   });
 
+  it("keeps OTP in account verification and removes it from first-shop registration", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const accountSetup = application.slice(
+      application.indexOf("function SetupPanel"),
+      application.indexOf("interface BusinessSetupPanelProps")
+    );
+    const shopSetup = application.slice(
+      application.indexOf("function BusinessSetupPanel"),
+      application.indexOf("interface LoginPanelProps")
+    );
+    const completeSignup = application.slice(
+      application.indexOf("async function completeSignup"),
+      application.indexOf("async function createBusiness")
+    );
+
+    expect(accountSetup).toContain("Account signup");
+    expect(accountSetup).toContain('autoComplete="one-time-code"');
+    expect(shopSetup).toContain("No OTP is required");
+    expect(shopSetup).not.toContain('autoComplete="one-time-code"');
+    expect(completeSignup).not.toContain("!isOtpVerified");
+  });
+
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const complianceSurface = application.slice(
