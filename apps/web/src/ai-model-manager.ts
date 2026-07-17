@@ -54,6 +54,56 @@ export interface ModelTransferProgress {
   percent: number;
 }
 
+export interface DefaultOfflineAiModel extends CatalogModelFitInput {
+  provider: "local";
+  description: string;
+  available: true;
+  format: "GGUF";
+  licenseUrl: string;
+  modelCardUrl: string;
+}
+
+export const defaultOfflineAiModels: DefaultOfflineAiModel[] = [
+  {
+    id: "smollm2-360m-android",
+    label: "SmolLM2 360M offline starter",
+    provider: "local",
+    description: "The smallest default for quick instructions on entry-level Android phones.",
+    capabilities: ["chat", "offline", "english"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
+    downloadUrl:
+      "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf?download=true",
+    fileName: "smollm2-360m-instruct-q8_0.gguf",
+    fileSizeBytes: 386_000_000,
+    minimumMemoryGb: 2,
+    recommended: false
+  },
+  {
+    id: "qwen2.5-0.5b-android",
+    label: "Qwen2.5 0.5B offline default",
+    provider: "local",
+    description: "The default multilingual model for shop instructions and structured extraction.",
+    capabilities: ["chat", "tool-routing", "offline", "multilingual", "instruction-following"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/blob/main/LICENSE",
+    modelCardUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    downloadUrl:
+      "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true",
+    fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    fileSizeBytes: 491_000_000,
+    minimumMemoryGb: 3,
+    recommended: true
+  }
+];
+
 const modelDirectoryName = "soko-ai-models";
 const localModelMetadataKey = "soko.local-ai-models.v1";
 

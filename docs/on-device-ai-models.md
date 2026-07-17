@@ -21,6 +21,11 @@ models that still require a download. A catalog model cannot be activated until 
 are present in private device storage. Completing a download installs and selects that model; the
 merchant then saves the agent settings to activate it.
 
+SmolLM2 360M and Qwen2.5 0.5B are also embedded as catalog metadata in the web client, so a
+temporary API/catalog outage does not make the default choices disappear. The “Install offline
+starter” action ranks those defaults against the reported device capability and performs the
+one-time download with visible progress.
+
 The web/PWA build does not silently bundle these large weight files or download them without the
 merchant's action. In the interface, “installed on this phone” means the merchant has completed the
 one-time predownload into origin-private storage on that Android device.

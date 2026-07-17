@@ -3809,6 +3809,91 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/documents/ocr",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ProductCatalogueImportBody }>,
+      reply
+    ) => {
+      try {
+        const sessionId = readSessionCookie(request.headers.cookie);
+        store.assertDocumentImportWriteAccess({
+          sessionId,
+          businessId: request.params.businessId
+        });
+        if (receiptOCRProcessor === undefined) {
+          throw new Cp2Error(
+            503,
+            "document_ocr_worker_unconfigured",
+            "Document OCR is not configured on this deployment."
+          );
+        }
+
+        const upload = parseDocumentImportBody(request.body);
+        if (upload.contentBase64 === undefined) {
+          throw new Cp2Error(
+            400,
+            "document_ocr_content_required",
+            "Base64 image or PDF content is required for OCR."
+          );
+        }
+        const contentType = upload.contentType?.trim() || "application/octet-stream";
+        if (!documentOcrContentTypes.has(contentType)) {
+          throw new Cp2Error(
+            415,
+            "document_ocr_type_unsupported",
+            "OCR supports images and scanned PDF documents."
+          );
+        }
+
+        const binary = decodeReceiptBase64(upload.contentBase64);
+        if (binary.byteLength > 10 * 1024 * 1024) {
+          throw new Cp2Error(
+            413,
+            "document_too_large",
+            "Uploaded document must be 10 MB or smaller."
+          );
+        }
+        assertDocumentOcrSignature(contentType, binary);
+        await binaryUploadPipeline?.process(
+          {
+            businessId: request.params.businessId,
+            fileName: upload.fileName,
+            contentType,
+            bytes: binary
+          },
+          { retain: false }
+        );
+        const extraction = await receiptOCRProcessor.process({
+          fileName: upload.fileName,
+          contentType,
+          contentBase64: binary.toString("base64")
+        });
+        if (extraction.fullText.trim().length === 0) {
+          throw new Cp2Error(
+            422,
+            "document_ocr_text_missing",
+            "OCR could not find readable text in this document."
+          );
+        }
+
+        return {
+          fileName: upload.fileName,
+          contentType,
+          text: extraction.fullText.trim(),
+          format: "ocr" as const,
+          warnings: extraction.warnings,
+          sizeBytes: binary.byteLength,
+          checksum: createHash("sha256").update(binary).digest("hex"),
+          engine: extraction.engine,
+          averageConfidence: extraction.averageConfidence
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   async function prepareDocumentUpload(
     input: DocumentUploadInput,
     businessId: string,
@@ -4448,6 +4533,38 @@ function decodeReceiptBase64(value: string): Buffer {
     throw new Cp2Error(400, "receipt_ocr_content_required", "Receipt file content is required.");
   }
   return buffer;
+}
+
+const documentOcrContentTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "application/pdf"
+]);
+
+function assertDocumentOcrSignature(contentType: string, buffer: Buffer): void {
+  const hex = buffer.subarray(0, 16).toString("hex").toLowerCase();
+  const matches =
+    (contentType === "image/jpeg" && hex.startsWith("ffd8ff")) ||
+    (contentType === "image/png" && hex.startsWith("89504e47")) ||
+    (contentType === "image/webp" &&
+      hex.startsWith("52494646") &&
+      hex.slice(16, 24) === "57454250") ||
+    (contentType === "application/pdf" && hex.startsWith("25504446")) ||
+    ((contentType === "image/heic" || contentType === "image/heif") &&
+      ["6674797068656963", "6674797068656966", "667479706d696631"].some((brand) =>
+        hex.includes(brand)
+      ));
+
+  if (!matches) {
+    throw new Cp2Error(
+      400,
+      "document_ocr_signature_mismatch",
+      "Document contents do not match the declared image or PDF type."
+    );
+  }
 }
 
 function decodePipelineBase64(value: string): Buffer {

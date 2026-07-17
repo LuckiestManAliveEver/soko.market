@@ -21,27 +21,25 @@ and the gaps between accepted file types and formats that are genuinely decoded.
 
 ## 2. Executive summary
 
-| Capability                     | Current state                                 | What works                                                                                |
-| ------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Supplier import                | Operational for CSV-style text                | Header inference, row validation, preview, correction, selection, confirmation            |
-| Product import                 | Operational for multiple text representations | CSV, TSV, JSON, SQL `INSERT`, and loose text lines                                        |
-| PDF/Word/Excel generic import  | Operational for supported binary formats      | PDF text, DOCX, XLS/XLSX, and ODS extraction with signature checks                        |
-| Receipt field parser           | Operational when extracted text is supplied   | Supplier, contact, receipt, payment, total, date, and simple line-item parsing            |
-| OCR worker                     | Connected HTTP service                        | Binary upload, bounded processing, PaddleOCR primary, Tesseract fallback, validated JSON  |
-| OCR worker/API integration     | Not connected                                 | API does not enqueue binary files or consume worker output                                |
-| Receipt image upload in web UI | Incomplete                                    | Image metadata is submitted, but image text is empty, so the API returns a failed OCR job |
-| Review-before-write            | Operational                                   | No suppliers or products are created until the user confirms valid rows                   |
-| PostgreSQL persistence         | Operational for normalized job records        | Jobs, mapped rows, OCR metadata, evidence, matches, and structured records                |
-| Chat attachment extraction     | Not implemented                               | Files are represented as data URLs or HTTPS URLs only                                     |
+| Capability                     | Current state                                 | What works                                                                               |
+| ------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Supplier import                | Operational for CSV-style text                | Header inference, row validation, preview, correction, selection, confirmation           |
+| Product import                 | Operational for multiple text representations | CSV, TSV, JSON, SQL `INSERT`, and loose text lines                                       |
+| PDF/Word/Excel generic import  | Operational for supported binary formats      | PDF text, DOCX, XLS/XLSX, and ODS extraction with signature checks                       |
+| Receipt field parser           | Operational when extracted text is supplied   | Supplier, contact, receipt, payment, total, date, and simple line-item parsing           |
+| OCR worker                     | Connected HTTP service                        | Binary upload, bounded processing, PaddleOCR primary, Tesseract fallback, validated JSON |
+| OCR worker/API integration     | Operational                                   | Authenticated binary image/PDF requests use the bounded OCR worker adapter               |
+| Receipt image upload in web UI | Operational                                   | Receipt images and PDFs are submitted for OCR and returned for review                    |
+| Review-before-write            | Operational                                   | No suppliers or products are created until the user confirms valid rows                  |
+| PostgreSQL persistence         | Operational for normalized job records        | Jobs, mapped rows, OCR metadata, evidence, matches, and structured records               |
+| Chat attachment extraction     | Operational                                   | Text documents use native extraction; images and scanned PDFs use OCR                    |
 
 The production-safe interpretation is:
 
 - Use CSV for suppliers.
 - Use CSV, TSV, JSON, supported SQL `INSERT`, or clean text for products.
-- Use receipt OCR only after connecting the worker output to the API, or supply extracted receipt
-  text through a trusted service.
-- Convert PDF, Word, OpenDocument, and spreadsheet binaries to text/CSV before using the generic
-  importer.
+- Use receipt OCR for supported image/PDF inputs and review extracted evidence before confirming.
+- Upload supported PDF, DOCX, and spreadsheet binaries directly; legacy DOC remains unsupported.
 
 ## 3. System architecture
 
@@ -124,26 +122,21 @@ The receipt API accepts these normalized MIME types:
 Signature checks exist for JPEG, PNG, WebP, HEIC/HEIF, and PDF when the browser supplies an initial
 hex signature.
 
-Current integration caveat:
-
-- The API accepts `extractedText`; it does not accept the binary body itself.
-- The browser sends an empty `extractedText` for image files.
-- The standalone OCR worker can scan a local path, but no queue or API adapter sends uploaded
-  receipt binaries to it.
-- Tests simulate a completed OCR phase by sending image metadata and already-extracted text in the
-  same request.
+The authenticated API accepts bounded base64 binary bodies, verifies the declared image/PDF
+signature, runs the upload-security pipeline when configured, and sends the content to the OCR
+worker. A deployment without `OCR_WORKER_URL` returns an explicit service-unavailable error.
 
 ### 4.3 Chat attachments
 
 Chat accepts document, image, video, audio, and other files. Small files are represented as data
 URLs and may also use HTTPS object-storage URLs.
 
-Chat attachment handling does not:
-
-- run OCR;
-- extract PDF or office-document text;
-- map document fields;
-- add attachment contents to agent knowledge.
+For an agent conversation, text-bearing PDF, DOCX, spreadsheet, and text files use the generic
+extractor. Images use `/businesses/:businessId/documents/ocr`; scanned PDFs fall back to the same
+OCR route when native PDF extraction cannot find readable text. Extracted text is marked as
+untrusted reference data before it enters the runtime prompt. The composer offers simple
+“Extract text,” “Summarize,” and “Extract fields” instructions. Extraction does not persist the
+attachment as agent knowledge or write business records without the existing confirmation flow.
 
 ## 5. Generic import pipeline
 

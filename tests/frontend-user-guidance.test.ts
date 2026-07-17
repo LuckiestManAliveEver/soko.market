@@ -68,14 +68,34 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
+    expect(application).toContain("OCR ready for scans and images");
+    expect(application).toContain("/documents/ocr");
+    expect(application).toContain("Extract all readable text");
   });
 
   it("separates installed Android models from the commercially permitted download catalog", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
     expect(application).toContain('label="Installed on this phone"');
     expect(application).toContain('label="Commercial-use catalog — install first"');
     expect(application).toContain("Predownload & install");
     expect(application).toContain("must be installed on this phone before it can be selected");
+    expect(application).toContain("Install offline starter");
+    expect(manager).toContain("defaultOfflineAiModels");
+    expect(manager).toContain("Qwen2.5 0.5B offline default");
+  });
+
+  it("keeps primary seller destinations visible and uses reduced-motion-aware transitions", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const styles = readFileSync("apps/web/src/styles.css", "utf8");
+
+    expect(application).toContain('aria-label="Business navigation"');
+    expect(application).toContain('shortLabel: "Stock"');
+    expect(application).toContain('shortLabel: "Sales"');
+    expect(application).toContain('shortLabel: "Docs"');
+    expect(application).toContain("runViewTransition");
+    expect(styles).toContain(".primary-navigation");
+    expect(styles).toContain("prefers-reduced-motion: reduce");
   });
 
   it("connects the Android model library to GitHub discovery and device-fit ranking", () => {

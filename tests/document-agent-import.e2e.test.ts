@@ -61,7 +61,9 @@ interface ProductResponse {
 
 interface DocumentExtractionResponse {
   text: string;
-  format: "text" | "pdf" | "word" | "spreadsheet";
+  format: "text" | "pdf" | "word" | "spreadsheet" | "ocr";
+  engine?: "paddleocr" | "tesseract";
+  averageConfidence?: number;
 }
 
 describe("binary document upload to agent-persisted records", () => {
@@ -237,6 +239,62 @@ describe("binary document upload to agent-persisted records", () => {
       await app.close();
     }
   );
+
+  it("extracts readable text from a chat image through the OCR worker", async () => {
+    const app = buildApi({
+      cp2: {
+        store: createCp2Store(),
+        receiptOCRProcessor: {
+          async process() {
+            return {
+              engine: "tesseract",
+              engineVersion: "5.4.0",
+              modelVersion: "eng",
+              profile: "mobile",
+              fallbackUsed: false,
+              blocks: [
+                {
+                  id: "block-1",
+                  page: 1,
+                  text: "Invoice 1042 Total KES 1,250",
+                  confidence: 0.94,
+                  boundingBox: null
+                }
+              ],
+              fullText: "Invoice 1042\nTotal KES 1,250",
+              averageConfidence: 0.94,
+              warnings: []
+            };
+          }
+        }
+      }
+    });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const image = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.from("mock image bytes")
+    ]);
+
+    const extracted = await postJson<DocumentExtractionResponse>(
+      app,
+      `/businesses/${businessId}/documents/ocr`,
+      {
+        fileName: "invoice.png",
+        contentType: "image/png",
+        contentBase64: image.toString("base64")
+      },
+      sessionCookie
+    );
+
+    expect(extracted).toMatchObject({
+      format: "ocr",
+      engine: "tesseract",
+      averageConfidence: 0.94
+    });
+    expect(extracted.text).toContain("Invoice 1042");
+    expect(extracted.text).toContain("KES 1,250");
+    await app.close();
+  });
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
