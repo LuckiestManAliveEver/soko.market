@@ -80,7 +80,8 @@ import {
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
-import { getResponseErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
+import { getUserFacingErrorMessage } from "./user-facing-error";
+import { apiFetch, readApiBaseUrl } from "./lib/api";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -1882,21 +1883,6 @@ function BuildIdentity() {
       {formatShortCommit(buildIdentity.commitSha)} · built {buildIdentity.buildTimestamp}
     </span>
   );
-}
-
-function readApiBaseUrl(): string {
-  const configuredUrl = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_URL;
-
-  if (configuredUrl !== undefined && configuredUrl.trim() !== "") {
-    return configuredUrl.trim().replace(/\/+$/, "");
-  }
-
-  if (import.meta.env.PROD) {
-    console.error("Soko.market frontend is missing VITE_API_BASE_URL; backend requests will fail.");
-    return "";
-  }
-
-  return "http://127.0.0.1:4000";
 }
 
 function formatShortCommit(commitSha: string): string {
@@ -6169,7 +6155,7 @@ export function OwnerApp() {
             }}
             phoneRecaptchaRef={phoneRecaptchaRef}
           />
-          isAccountRestorationOpen && session !== null ? (
+        ) : isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
             onRestored={completeAccountRestoration}
             onCancel={() => {
@@ -15482,91 +15468,29 @@ async function postJson<TResponse>(
   path: string,
   body: Record<string, unknown>
 ): Promise<TResponse> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-
-  return (await response.json()) as TResponse;
+  return apiFetch<TResponse>(path, { method: "POST", body });
 }
 
 async function patchJson<TResponse>(
   path: string,
   body: Record<string, unknown>
 ): Promise<TResponse> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: "PATCH",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-
-  return (await response.json()) as TResponse;
+  return apiFetch<TResponse>(path, { method: "PATCH", body });
 }
 
 async function putJson<TResponse>(path: string, body: Record<string, unknown>): Promise<TResponse> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: "PUT",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-
-  return (await response.json()) as TResponse;
+  return apiFetch<TResponse>(path, { method: "PUT", body });
 }
 
 async function deleteJson<TResponse>(
   path: string,
   body?: Record<string, unknown>
 ): Promise<TResponse> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: "DELETE",
-    credentials: "include",
-    ...(body === undefined
-      ? {}
-      : {
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body)
-        })
-  });
-
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-
-  return (await response.json()) as TResponse;
+  return apiFetch<TResponse>(path, { method: "DELETE", body });
 }
 
 async function getJson<TResponse>(path: string): Promise<TResponse> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    credentials: "include"
-  });
-
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-
-  return (await response.json()) as TResponse;
+  return apiFetch<TResponse>(path);
 }
 
 function useInstallPrompt() {
