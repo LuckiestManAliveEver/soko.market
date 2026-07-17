@@ -67,6 +67,14 @@ services:
         value: "500"
       - key: FIREBASE_PROJECT_ID
         sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: LOCAL_MODEL_ENABLED
+        sync: false
+      - key: LOCAL_MODEL_ENDPOINT
+        sync: false
+      - key: LOCAL_MODEL_PROFILE
+        value: tinyllama-1.1b-chat-q4-k-m-android
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY

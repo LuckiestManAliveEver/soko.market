@@ -75,6 +75,7 @@ describe("GitHub on-device model catalog", () => {
 
     expect(first).toMatchObject({
       status: "available",
+      connection: "public",
       models: [
         {
           id: expect.stringMatching(/^github:example\.android-gguf\./),
@@ -94,12 +95,55 @@ describe("GitHub on-device model catalog", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it("uses authenticated GitHub REST requests when a token is configured", async () => {
+    const fetcher = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        expect(init?.headers).toMatchObject({ authorization: "Bearer github-test-token" });
+        return Response.json({ items: [] });
+      }
+    );
+    const catalog = createGitHubModelCatalog({
+      fetcher: fetcher as typeof fetch,
+      token: "  github-test-token  "
+    });
+
+    const result = await catalog.searchModels("tinyllama");
+
+    expect(result).toMatchObject({
+      status: "available",
+      connection: "authenticated",
+      message: expect.stringContaining("GitHub authenticated API connected")
+    });
+  });
+
+  it("treats an empty token as public GitHub API access", async () => {
+    const fetcher = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        expect(init?.headers).not.toHaveProperty("authorization");
+        return Response.json({ items: [] });
+      }
+    );
+    const catalog = createGitHubModelCatalog({
+      fetcher: fetcher as typeof fetch,
+      token: "   "
+    });
+
+    const result = await catalog.searchModels();
+
+    expect(result).toMatchObject({
+      status: "available",
+      connection: "public",
+      message: expect.stringContaining("GitHub public API connected")
+    });
+  });
+
   it("exposes GitHub discovery through the API route", async () => {
     const githubModelCatalog: GitHubModelCatalog = {
       async searchModels(search) {
         return {
           models: [],
           status: "available",
+          connection: "authenticated",
           message: `GitHub connected for ${search ?? "default"}.`
         };
       }
@@ -114,8 +158,51 @@ describe("GitHub on-device model catalog", () => {
     expect(response.json()).toEqual({
       models: [],
       status: "available",
+      connection: "authenticated",
       message: "GitHub connected for smol."
     });
+
+    await app.close();
+  });
+
+  it("publishes Android TinyLlama downloads and the configured llama.cpp option", async () => {
+    const app = buildApi();
+    const tinyLlama = await app.inject({
+      method: "GET",
+      url: "/v1/ai-models?search=tinyllama"
+    });
+    const configured = await app.inject({
+      method: "GET",
+      url: "/v1/ai-models?search=llama.cpp"
+    });
+
+    expect(tinyLlama.statusCode).toBe(200);
+    expect(tinyLlama.json().models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "tinyllama-1.1b-chat-q3-k-m-android",
+          source: "huggingface",
+          format: "GGUF",
+          license: "Apache-2.0"
+        }),
+        expect.objectContaining({
+          id: "tinyllama-1.1b-chat-q4-k-m-android",
+          recommended: true,
+          fileSizeBytes: 669_000_000
+        })
+      ])
+    );
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json().models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "llama-cpp-configured",
+          source: "builtin",
+          format: "remote",
+          available: false
+        })
+      ])
+    );
 
     await app.close();
   });

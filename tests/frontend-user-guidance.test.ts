@@ -81,12 +81,22 @@ describe("frontend user guidance", () => {
   it("connects the Android model library to GitHub discovery and device-fit ranking", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
+    const store = readFileSync("services/api/src/cp2/store.ts", "utf8");
+    const githubCatalog = readFileSync("services/api/src/cp2/github-model-catalog.ts", "utf8");
+    const render = readFileSync("render.yaml", "utf8");
 
     expect(application).toContain("/v1/ai-models/github");
     expect(application).toContain("Search Soko + GitHub");
     expect(application).toContain("rankCatalogModelsForDevice");
     expect(manager).toContain("verified GitHub release asset");
     expect(manager).toContain("The downloaded file is not a valid GGUF model.");
+    expect(store).toContain("tinyllama-1.1b-chat-q3-k-m-android");
+    expect(store).toContain("tinyllama-1.1b-chat-q4-k-m-android");
+    expect(store).toContain('id: "llama-cpp-configured"');
+    expect(githubCatalog).toContain('"public API" : "authenticated API"');
+    expect(render).toContain("- key: GITHUB_TOKEN");
+    expect(render).toContain("- key: LOCAL_MODEL_ENDPOINT");
+    expect(render).toContain("tinyllama-1.1b-chat-q4-k-m-android");
   });
 
   it("connects Firebase phone OTP to signup and lost-account recovery", () => {
@@ -174,6 +184,18 @@ describe("frontend user guidance", () => {
     expect(welcomeMessage).toContain("Sign up or log in");
   });
 
+  it("links the signed-out session notice directly to signup", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const styles = readFileSync("apps/web/src/styles.css", "utf8");
+
+    expect(application).toContain('statusMessage === "Sign in to continue"');
+    expect(application).toContain('href="#signup"');
+    expect(application).toContain("openSignup();");
+    expect(application).toContain('className="setup-grid auth-landing-grid" id="signup"');
+    expect(styles).toContain(".app-action-notice a");
+    expect(styles).toContain("pointer-events: auto");
+  });
+
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const complianceSurface = application.slice(
@@ -191,5 +213,12 @@ describe("frontend user guidance", () => {
     expect(settingsSurface).toContain("Delete account and associated data");
     expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
     expect(application).toContain('accountDeletionIntent ? "agent"');
+    expect(application).toContain("setIsSignupOpen(true)");
+    expect(application).toContain(
+      "Account deactivated and anonymization scheduled. Create a new account to continue."
+    );
+    expect(application).toContain(
+      'props.mode === "signup" ? "Continue with phone" : "Use phone and PIN"'
+    );
   });
 });

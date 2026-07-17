@@ -2,7 +2,8 @@
 
 CP11 supports a llama.cpp-compatible local model adapter behind the CP10 runtime contract.
 
-The project does not download, license, quantize, or tune model files automatically. Operators choose and place model artifacts outside this repository.
+The browser model library can predownload curated GGUF weights into Android origin-private storage.
+API operators still place the model served by their llama.cpp endpoint outside this repository.
 
 ## Android 2GB Profile
 
@@ -10,13 +11,13 @@ Use a predownloaded small open-source GGUF model outside this repository. The
 default Soko local profile is:
 
 ```text
-qwen2.5-0.5b-instruct-q4_0-android-2gb
+tinyllama-1.1b-chat-q4-k-m-android
 ```
 
 Recommended artifact shape:
 
 ```text
-Qwen2.5-0.5B-Instruct Q4_0 GGUF
+TinyLlama-1.1B-Chat-v1.0 Q4_K_M GGUF
 ```
 
 This profile is intended for constrained Android devices around 2GB RAM. Keep
@@ -27,7 +28,7 @@ Suggested llama.cpp server flags:
 
 ```bash
 llama-server \
-  --model /path/to/Qwen2.5-0.5B-Instruct-Q4_0.gguf \
+  --model /path/to/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
   --host 127.0.0.1 \
   --port 8080 \
   --ctx-size 1024 \
@@ -39,7 +40,7 @@ Then enable the adapter for the API:
 ```text
 LOCAL_MODEL_ENABLED=true
 LOCAL_MODEL_ENDPOINT=http://127.0.0.1:8080
-LOCAL_MODEL_PROFILE=qwen2.5-0.5b-instruct-q4_0-android-2gb
+LOCAL_MODEL_PROFILE=tinyllama-1.1b-chat-q4-k-m-android
 LOCAL_MODEL_TIMEOUT_MS=8000
 LOCAL_MODEL_MAX_TOKENS=128
 LOCAL_MODEL_TEMPERATURE=0
@@ -65,6 +66,10 @@ maxTokens: 128
 ```
 
 The adapter normalizes the endpoint to `/completion`.
+
+A loopback endpoint is shown as a built-in llama.cpp option. A non-loopback endpoint is shown as
+hosted. Both use the same bounded runtime contract, and the option remains disabled unless
+`LOCAL_MODEL_ENABLED=true`.
 
 ## Output Contract
 

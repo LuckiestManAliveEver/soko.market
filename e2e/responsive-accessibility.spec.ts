@@ -79,10 +79,37 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   await page.getByLabel("Owner PIN").fill("1234");
   await page.getByLabel(/I understand that all account access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
-  await expect(page.getByRole("button", { name: "Use phone and PIN" })).toBeVisible();
+  await expect(page.getByLabel("signup options")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with phone" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
+  await expect(page.getByLabel("login options")).toHaveCount(0);
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);
+});
+
+test("shop deletion Continue and Quarantine buttons call the backend", async ({ page }) => {
+  let startRequests = 0;
+  let finalizeRequests = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/shop-deletion/request")) startRequests += 1;
+    if (path.endsWith("/shop-deletion/responsive-shop-deletion/finalize")) {
+      finalizeRequests += 1;
+    }
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  await page.getByRole("button", { name: "Delete this shop", exact: true }).click();
+  await page.getByLabel("Type the shop ID to continue").fill("254A12345678");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByLabel("Login PIN").fill("1234");
+  await page.getByLabel(/I understand the shop will be hidden now and permanently purged/).check();
+  await page.getByRole("button", { name: "Quarantine shop" }).click();
+
+  await expect(page.locator('.shop-deletion-card[role="status"]')).toContainText("QUARANTINED");
+  expect(startRequests).toBe(1);
+  expect(finalizeRequests).toBe(1);
 });
 
 test("messaging inbox and thread adapt across phone and desktop screens", async ({ page }) => {
@@ -365,7 +392,36 @@ async function installApiMocks(page: Page): Promise<void> {
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
     if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });
     if (path.endsWith("/social-accounts")) return json({ accounts: [] });
-    if (path.endsWith("/shop-deletion/preview")) return json({}, 404);
+    if (path.endsWith("/shop-deletion/preview")) {
+      return json({
+        businessId: "responsive-certification-shop",
+        accountId: "responsive-account",
+        counts: { products: 1, customers: 2, suppliers: 1, salesRecords: 3, uploadedFiles: 1 },
+        generatedAt: "2026-07-15T00:00:00.000Z"
+      });
+    }
+    if (path.endsWith("/shop-deletion/request") && method === "POST") {
+      return json({
+        request: {
+          id: "responsive-shop-deletion",
+          status: "PENDING_VERIFICATION",
+          anonymizeAfter: "2026-08-14T00:00:00.000Z"
+        },
+        preview: {
+          businessId: "responsive-certification-shop",
+          accountId: "responsive-account",
+          counts: { products: 1, customers: 2, suppliers: 1, salesRecords: 3, uploadedFiles: 1 },
+          generatedAt: "2026-07-15T00:00:00.000Z"
+        }
+      });
+    }
+    if (path.endsWith("/shop-deletion/responsive-shop-deletion/finalize") && method === "POST") {
+      return json({
+        id: "responsive-shop-deletion",
+        status: "QUARANTINED",
+        anonymizeAfter: "2026-08-14T00:00:00.000Z"
+      });
+    }
     if (path === "/auth/pin/verify" && method === "POST") return json({ verified: true });
     if (path.endsWith("/compliance/account-deletion") && method === "POST") {
       return json({

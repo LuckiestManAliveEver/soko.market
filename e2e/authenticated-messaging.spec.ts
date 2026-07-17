@@ -1,8 +1,22 @@
 import { expect, test } from "@playwright/test";
 
 test("messaging is locked until the visitor signs in", async ({ page }) => {
+  await page.route("**/session", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "No active session." })
+    });
+  });
   await page.goto("/marketplace");
 
+  const signupLink = page.getByRole("link", { name: "Sign in to continue" });
+  await expect(signupLink).toBeVisible({ timeout: 15_000 });
+  await expect(signupLink).toHaveAttribute("href", "#signup");
+  await signupLink.click();
+  await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
+
+  await page.goto("/marketplace");
   const welcome = page.getByTestId("welcome-message");
   await expect(welcome.getByRole("button", { name: "Sign up" })).toBeVisible({ timeout: 15_000 });
   await expect(welcome.getByRole("button", { name: "Log in" })).toBeVisible();

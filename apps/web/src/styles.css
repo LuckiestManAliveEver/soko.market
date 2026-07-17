@@ -111,6 +111,13 @@ button:disabled {
   z-index: 60;
 }
 
+.app-action-notice a {
+  color: inherit;
+  pointer-events: auto;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .top-bar {
   align-items: center;
   background: rgba(255, 255, 255, 0.96);

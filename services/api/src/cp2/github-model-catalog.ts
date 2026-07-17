@@ -7,6 +7,7 @@ export type GitHubAiModelSummary = Omit<AiModelSummary, "source"> & {
 export interface GitHubModelSearchResult {
   models: GitHubAiModelSummary[];
   status: "available" | "unavailable";
+  connection: "authenticated" | "public";
   message: string;
 }
 
@@ -74,7 +75,7 @@ export function createGitHubModelCatalog(
   const maxAssetBytes = options.maxAssetBytes ?? defaultMaxAssetBytes;
   const maxRepositories = Math.min(8, Math.max(1, options.maxRepositories ?? 5));
   const requestTimeoutMs = Math.max(1_000, options.requestTimeoutMs ?? defaultRequestTimeoutMs);
-  const token = options.token?.trim();
+  const token = normalizeGitHubToken(options.token);
   const cache = new Map<string, CachedSearch>();
 
   return {
@@ -136,6 +137,7 @@ async function discoverGitHubModels(input: {
       return {
         models: [],
         status: "unavailable",
+        connection: input.token === undefined ? "public" : "authenticated",
         message: githubFailureMessage(response.status)
       };
     }
@@ -166,10 +168,11 @@ async function discoverGitHubModels(input: {
     return {
       models,
       status: "available",
+      connection: input.token === undefined ? "public" : "authenticated",
       message:
         models.length === 0
-          ? "GitHub connected, but no commercially permitted Android-sized GGUF release assets matched."
-          : `GitHub connected. Found ${models.length} installable GGUF release ${
+          ? `GitHub ${connectionLabel(input.token)} connected, but no commercially permitted Android-sized GGUF release assets matched.`
+          : `GitHub ${connectionLabel(input.token)} connected. Found ${models.length} installable GGUF release ${
               models.length === 1 ? "asset" : "assets"
             }.`
     };
@@ -177,6 +180,7 @@ async function discoverGitHubModels(input: {
     return {
       models: [],
       status: "unavailable",
+      connection: input.token === undefined ? "public" : "authenticated",
       message: "GitHub model discovery is temporarily unavailable."
     };
   }
@@ -316,6 +320,15 @@ function githubFailureMessage(status: number): string {
     return "GitHub model discovery is rate-limited. Try again later or configure GITHUB_TOKEN.";
   }
   return `GitHub model discovery failed (${status}).`;
+}
+
+function normalizeGitHubToken(token: string | undefined): string | undefined {
+  const normalized = token?.trim();
+  return normalized === undefined || normalized.length === 0 ? undefined : normalized;
+}
+
+function connectionLabel(token: string | undefined): string {
+  return token === undefined ? "public API" : "authenticated API";
 }
 
 function inferMinimumMemoryGb(fileSizeBytes: number): number {

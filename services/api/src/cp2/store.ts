@@ -13717,6 +13717,16 @@ const defaultBusinessAgentContextScripts = [
   ].join("\n"),
   documentUploadContextScript
 ];
+const configuredLlamaCppProfile =
+  process.env.LOCAL_MODEL_PROFILE?.trim() || "tinyllama-1.1b-chat-q4-k-m-android";
+const configuredLlamaCppEndpoint =
+  process.env.LOCAL_MODEL_ENDPOINT?.trim() || "http://127.0.0.1:8080";
+const configuredLlamaCppEnabled = ["1", "true", "yes", "on"].includes(
+  process.env.LOCAL_MODEL_ENABLED?.trim().toLowerCase() ?? ""
+);
+const configuredLlamaCppSource = isLoopbackModelEndpoint(configuredLlamaCppEndpoint)
+  ? "builtin"
+  : "hosted";
 const aiModelRegistry: AiModelSummary[] = [
   {
     id: "smollm2-360m-android",
@@ -13736,6 +13746,46 @@ const aiModelRegistry: AiModelSummary[] = [
     fileSizeBytes: 386_000_000,
     minimumMemoryGb: 2,
     recommended: false
+  },
+  {
+    id: "tinyllama-1.1b-chat-q3-k-m-android",
+    label: "TinyLlama 1.1B Q3_K_M (Android saver)",
+    provider: "local",
+    description:
+      "Compact Apache-2.0 Llama-architecture chat model for Android devices with limited storage.",
+    capabilities: ["chat", "offline", "english", "llama.cpp"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/blob/main/README.md",
+    modelCardUrl: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+    downloadUrl:
+      "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf?download=true",
+    fileName: "tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf",
+    fileSizeBytes: 551_000_000,
+    minimumMemoryGb: 3,
+    recommended: false
+  },
+  {
+    id: "tinyllama-1.1b-chat-q4-k-m-android",
+    label: "TinyLlama 1.1B Q4_K_M (Android balanced)",
+    provider: "local",
+    description:
+      "Recommended Apache-2.0 TinyLlama chat quantization for capable mainstream Android phones.",
+    capabilities: ["chat", "offline", "english", "llama.cpp", "instruction-following"],
+    available: true,
+    source: "huggingface",
+    format: "GGUF",
+    license: "Apache-2.0",
+    licenseUrl: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/blob/main/README.md",
+    modelCardUrl: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+    downloadUrl:
+      "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf?download=true",
+    fileName: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    fileSizeBytes: 669_000_000,
+    minimumMemoryGb: 4,
+    recommended: true
   },
   {
     id: defaultAiModelId,
@@ -13794,6 +13844,27 @@ const aiModelRegistry: AiModelSummary[] = [
     recommended: false
   },
   {
+    id: "llama-cpp-configured",
+    label: `${configuredLlamaCppProfile} (${configuredLlamaCppSource} llama.cpp)`,
+    provider: "local",
+    description:
+      configuredLlamaCppSource === "builtin"
+        ? "Llama-compatible model served by the configured on-device or same-host llama.cpp runtime."
+        : "Llama-compatible model served by the configured remote llama.cpp endpoint.",
+    capabilities: ["chat", "tool-routing", "llama.cpp", configuredLlamaCppSource],
+    available: configuredLlamaCppEnabled,
+    source: configuredLlamaCppSource,
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false
+  },
+  {
     id: "openai-fast",
     label: "OpenAI fast",
     provider: "openai",
@@ -13830,6 +13901,15 @@ const aiModelRegistry: AiModelSummary[] = [
     recommended: false
   }
 ];
+
+function isLoopbackModelEndpoint(endpoint: string): boolean {
+  try {
+    const hostname = new URL(endpoint).hostname.toLowerCase();
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  } catch {
+    return true;
+  }
+}
 
 function validateConversationMessageContent(content: ConversationMessageContent): void {
   switch (content.type) {

@@ -99,10 +99,7 @@ export function readEnvironment(): EnvironmentConfig {
     localModelEnabled: booleanFromEnv("LOCAL_MODEL_ENABLED", false),
     localModelEndpoint: stringFromEnv("LOCAL_MODEL_ENDPOINT", "http://127.0.0.1:8080"),
     localModelMaxTokens: numberFromEnv("LOCAL_MODEL_MAX_TOKENS", 128),
-    localModelProfile: stringFromEnv(
-      "LOCAL_MODEL_PROFILE",
-      "qwen2.5-0.5b-instruct-q4_0-android-2gb"
-    ),
+    localModelProfile: stringFromEnv("LOCAL_MODEL_PROFILE", "tinyllama-1.1b-chat-q4-k-m-android"),
     localModelTemperature: floatFromEnv("LOCAL_MODEL_TEMPERATURE", 0),
     localModelTimeoutMs: numberFromEnv("LOCAL_MODEL_TIMEOUT_MS", 8000),
     redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")

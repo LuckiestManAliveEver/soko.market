@@ -144,6 +144,7 @@ interface ActiveAiModelSummary {
 interface GitHubAiModelSearchResponse {
   models: AiModelSummary[];
   status: "available" | "unavailable";
+  connection: "authenticated" | "public";
   message: string;
 }
 
@@ -4036,8 +4037,8 @@ export function OwnerApp() {
       setOwnerAuth(null);
       setIsWorkspaceUnlocked(false);
       setIsBusinessSetupOpen(false);
-      setIsSignupOpen(false);
-      setIsLoginOpen(true);
+      setIsSignupOpen(true);
+      setIsLoginOpen(false);
       setIsAccountRestorationOpen(false);
       localStorage.removeItem(activeBusinessStorageKey);
       localStorage.removeItem(legacyActiveBusinessStorageKey);
@@ -4046,7 +4047,9 @@ export function OwnerApp() {
       window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
       setMode("marketplace");
       setView("chat");
-      setStatusMessage("Account deactivated and anonymization scheduled");
+      setStatusMessage(
+        "Account deactivated and anonymization scheduled. Create a new account to continue."
+      );
       return true;
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -5966,7 +5969,21 @@ export function OwnerApp() {
 
         {!isAuthScreen && statusMessage.length > 0 ? (
           <div className="app-action-notice" role="status" aria-live="polite">
-            {hasPending ? "Working…" : statusMessage}
+            {hasPending ? (
+              "Working…"
+            ) : statusMessage === "Sign in to continue" ? (
+              <a
+                href="#signup"
+                onClick={(event) => {
+                  event.preventDefault();
+                  openSignup();
+                }}
+              >
+                Sign in to continue
+              </a>
+            ) : (
+              statusMessage
+            )}
           </div>
         ) : null}
 
@@ -6302,7 +6319,7 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
             onClick={props.onSelectPhone}
           >
             <span aria-hidden="true">☎</span>
-            Use phone and PIN
+            {props.mode === "signup" ? "Continue with phone" : "Use phone and PIN"}
           </button>
         )}
         {props.onSelectEmail === undefined ? null : (
@@ -6374,7 +6391,7 @@ function SetupPanel(props: SetupPanelProps) {
   const showAuthForm = authView !== "options" || props.challenge !== null;
 
   return (
-    <main className="setup-grid auth-landing-grid">
+    <main className="setup-grid auth-landing-grid" id="signup">
       {props.session === null ? (
         <section className="panel auth-card">
           {!showAuthForm ? (
@@ -11213,6 +11230,7 @@ function AgentProfileSurface({
       return {
         models: [],
         status: "unavailable",
+        connection: "public",
         message: "GitHub model discovery is temporarily unavailable."
       };
     }
@@ -15514,7 +15532,10 @@ function isAgentModel(value: unknown): value is AgentModel {
     value === "qwen2.5-0.5b-android" ||
     value === "qwen2.5-1.5b-android" ||
     value === "smollm2-360m-android" ||
+    value === "tinyllama-1.1b-chat-q3-k-m-android" ||
+    value === "tinyllama-1.1b-chat-q4-k-m-android" ||
     value === "sokoclaw-local" ||
+    value === "llama-cpp-configured" ||
     value === "openai-fast" ||
     value === "openai-reasoning" ||
     (typeof value === "string" &&
