@@ -284,7 +284,65 @@ describe("CP7 offline local data and sync queue", () => {
       synced: 0
     });
 
+    const bulkReplay = await postJson<SyncReplayResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue/replay`,
+      {},
+      sessionCookie
+    );
+    expect(bulkReplay.results).toEqual([]);
+    expect(bulkReplay.summary).toMatchObject({
+      conflict: 1,
+      synced: 0
+    });
+
     await app.close();
+  });
+
+  it("recovers queue items interrupted while processing after store hydration", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const queued = await postJson<SyncQueueItemResponse>(
+      app,
+      `/businesses/${businessId}/sync-queue`,
+      {
+        idempotencyKey: "cp7-interrupted-item-1",
+        mutationType: "customer.create",
+        payload: { name: "Interrupted Customer" }
+      },
+      sessionCookie
+    );
+    const snapshot = store.snapshot();
+    snapshot.syncQueue = snapshot.syncQueue.map((item) =>
+      item.id === queued.id
+        ? {
+            ...item,
+            status: "processing",
+            attempts: 1
+          }
+        : item
+    );
+    const restoredStore = createCp2Store();
+    restoredStore.hydrateSnapshot(snapshot);
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    const restored = await getJson<SyncQueueResponse>(
+      restoredApp,
+      `/businesses/${businessId}/sync-queue`,
+      sessionCookie
+    );
+
+    expect(restored.items[0]).toMatchObject({
+      id: queued.id,
+      status: "failed",
+      conflict: {
+        code: "sync_replay_interrupted",
+        retryable: true
+      }
+    });
+
+    await app.close();
+    await restoredApp.close();
   });
 });
 

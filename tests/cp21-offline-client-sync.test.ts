@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import type { LocalSyncSnapshot, SyncPullPage } from "@soko/shared-types";
+import type { LocalSyncMutation, LocalSyncSnapshot, SyncPullPage } from "@soko/shared-types";
 import { applySyncPullPage } from "../packages/sync-core/src/index";
-import { catchUpAccountSync, type AccountSyncRepository } from "../apps/web/src/sync/sync-client";
+import {
+  catchUpAccountSync,
+  createLocalSyncMutation,
+  flushLocalSyncMutations,
+  type AccountSyncRepository
+} from "../apps/web/src/sync/sync-client";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -123,7 +128,84 @@ describe("CP21 offline client sync", () => {
       "conversation-2"
     ]);
   });
+
+  it("transfers durable local mutations in order and replays each affected business", async () => {
+    const repository = new MemoryMutationRepository([
+      createLocalSyncMutation({
+        id: "mutation-0001",
+        accountId: "account-1",
+        actorId: "user-1",
+        businessId: "business-1",
+        mutationType: "product.create",
+        payload: { name: "Offline Rice", buyingPrice: 100, sellingPrice: 140 },
+        now: new Date("2026-07-12T12:00:00.000Z")
+      }),
+      createLocalSyncMutation({
+        id: "mutation-0002",
+        accountId: "account-1",
+        actorId: "user-1",
+        businessId: "business-1",
+        mutationType: "inventory.adjust",
+        payload: { productId: "product-1", quantityAfter: 4 },
+        now: new Date("2026-07-12T12:00:01.000Z")
+      })
+    ]);
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const result = await flushLocalSyncMutations({
+      accountId: "account-1",
+      repository,
+      apiBaseUrl: "https://api.soko.market/",
+      fetcher: async (input, init) => {
+        const url = String(input);
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        requests.push({ url, body });
+        if (url.endsWith("/replay")) {
+          return Response.json({ results: [], summary: {} });
+        }
+        return Response.json({
+          id: `server-${requests.length}`,
+          businessId: "business-1",
+          idempotencyKey: body.idempotencyKey
+        });
+      }
+    });
+
+    expect(result).toEqual({
+      transferred: 2,
+      replayedBusinesses: ["business-1"],
+      remaining: 0
+    });
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api.soko.market/businesses/business-1/sync-queue",
+      "https://api.soko.market/businesses/business-1/sync-queue",
+      "https://api.soko.market/businesses/business-1/sync-queue/replay"
+    ]);
+    expect(requests.slice(0, 2).map((request) => request.body.mutationType)).toEqual([
+      "product.create",
+      "inventory.adjust"
+    ]);
+    expect(repository.removed).toEqual(["mutation-0001", "mutation-0002"]);
+  });
 });
+
+class MemoryMutationRepository {
+  readonly removed: string[] = [];
+
+  constructor(private mutations: LocalSyncMutation[]) {}
+
+  async listMutations(accountId: string): Promise<LocalSyncMutation[]> {
+    return this.mutations.filter((mutation) => mutation.accountId === accountId);
+  }
+
+  async putMutation(mutation: LocalSyncMutation): Promise<void> {
+    this.mutations.push(mutation);
+  }
+
+  async removeMutation(id: string): Promise<void> {
+    this.removed.push(id);
+    this.mutations = this.mutations.filter((mutation) => mutation.id !== id);
+  }
+}
 
 class MemorySyncRepository implements AccountSyncRepository {
   clearCount = 0;

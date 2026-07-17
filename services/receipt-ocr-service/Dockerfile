@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCR_ENGINE_PRIMARY=paddleocr \
     OCR_ENGINE_FALLBACK=tesseract \
     OCR_PROFILE=balanced \
+    OCR_WORKER_PORT=8090 \
     PADDLEOCR_HOME=/models
 
 RUN apt-get update \
@@ -16,5 +17,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY worker.py .
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python worker.py health
+EXPOSE 8090
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import json,urllib.request; json.load(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3))"
 CMD ["python", "worker.py", "worker"]

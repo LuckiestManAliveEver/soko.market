@@ -429,6 +429,8 @@ export interface DocumentImportSourceInput {
   fileName: string;
   contentType?: string | null;
   content: string;
+  sourceType?: "upload" | "paste" | "database";
+  sourceLocator?: string | null;
   originalSizeBytes?: number;
   originalChecksum?: string;
 }
@@ -1085,6 +1087,7 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
   const errors: string[] = [];
   const fileName = normalizeRequiredText(input.fileName);
   const contentType = normalizeOptionalText(input.contentType);
+  const sourceLocator = normalizeOptionalText(input.sourceLocator);
   const extension = fileName.toLowerCase().split(".").pop() ?? "";
   const supportedExtensions = new Set([
     "csv",
@@ -1129,6 +1132,19 @@ export function validateDocumentImportSource(input: DocumentImportSourceInput): 
 
   if (input.content.length > 250_000) {
     errors.push("Import content must be 250KB or smaller.");
+  }
+
+  if (
+    input.sourceType !== undefined &&
+    input.sourceType !== "upload" &&
+    input.sourceType !== "paste" &&
+    input.sourceType !== "database"
+  ) {
+    errors.push("Import source type is not supported.");
+  }
+
+  if (sourceLocator.length > 500) {
+    errors.push("Import source reference must be 500 characters or fewer.");
   }
 
   return errors.length > 0 ? invalid(...errors) : valid();

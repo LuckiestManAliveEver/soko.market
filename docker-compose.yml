@@ -38,10 +38,13 @@ services:
       OCR_FALLBACK_ENABLED: ${OCR_FALLBACK_ENABLED:-true}
       OCR_PROFILE: ${OCR_PROFILE:-balanced}
       OCR_LANGUAGE_HINTS: ${OCR_LANGUAGE_HINTS:-en,sw}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-    depends_on:
-      redis:
-        condition: service_healthy
+      OCR_MAX_UPLOAD_MB: ${OCR_MAX_UPLOAD_MB:-10}
+      OCR_MAX_IMAGE_EDGE: ${OCR_MAX_IMAGE_EDGE:-3000}
+      OCR_MAX_PDF_PAGES: ${OCR_MAX_PDF_PAGES:-5}
+      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-1}
+      OCR_WORKER_PORT: 8090
+    ports:
+      - "8090:8090"
 
 volumes:
   soko-postgres-data:

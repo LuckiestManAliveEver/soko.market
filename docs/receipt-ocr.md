@@ -10,11 +10,16 @@ Receipt OCR is implemented as a self-hosted flow for supplier purchase receipts.
 - Supported profiles: `mobile`, `balanced`, `accurate`.
 - CPU execution is the default deployment target.
 
-The worker scaffold lives in `services/receipt-ocr-service`. It can run from Docker Compose with:
+The worker service lives in `services/receipt-ocr-service`. It exposes HTTP health and scan
+endpoints and can run from Docker Compose with:
 
 ```bash
 docker compose --profile ocr up receipt-ocr-worker
 ```
+
+The API connects through `OCR_WORKER_URL` (locally `http://127.0.0.1:8090`). Binary image and PDF
+bytes are sent only after the API authenticates the business. Worker responses are schema-validated
+before entering parsing and contact matching.
 
 ## Supported inputs
 
@@ -37,17 +42,19 @@ Important limits are configured through:
 - `OCR_JOB_TIMEOUT_SECONDS`
 - `OCR_MAX_RETRIES`
 - `OCR_CONCURRENCY`
+- `OCR_WORKER_URL`
 
 ## User flow
 
 1. User uploads or takes a photo of a purchase receipt from Suppliers, chat, or a receipt card.
 2. The upload is validated.
-3. OCR extracts raw text blocks, full text, engine metadata, confidence, and warnings.
-4. The parser extracts supplier, sales agent, receipt, payment, and product fields.
-5. The required `receipt_contact_matching` context script normalizes fields and ranks supplier/contact candidates.
-6. User confirms or corrects the review card.
-7. Structured purchase receipt and line items are saved.
-8. The temporary image is deleted after successful confirmation.
+3. The API sends binary content to the bounded worker with configured timeout and retries.
+4. OCR extracts raw text blocks, full text, engine metadata, confidence, and warnings.
+5. The parser extracts supplier, sales agent, receipt, payment, and product fields.
+6. The required `receipt_contact_matching` context script normalizes fields and ranks supplier/contact candidates.
+7. User confirms or corrects the review card.
+8. Structured purchase receipt and line items are saved.
+9. Worker temporary files are deleted immediately after each scan.
 
 Runtime sequence:
 

@@ -65,15 +65,18 @@ describe("CP22 web realtime client", () => {
 class FakeRealtimeSocket implements AccountRealtimeSocket {
   private readonly messageListeners: Array<(event: { data: unknown }) => void> = [];
   private readonly closeListeners: Array<() => void> = [];
+  private readonly errorListeners: Array<() => void> = [];
 
   addEventListener(
-    type: "message" | "close",
+    type: "message" | "close" | "error",
     listener: ((event: { data: unknown }) => void) | (() => void)
   ) {
     if (type === "message") {
       this.messageListeners.push(listener as (event: { data: unknown }) => void);
-    } else {
+    } else if (type === "close") {
       this.closeListeners.push(listener as () => void);
+    } else {
+      this.errorListeners.push(listener as () => void);
     }
   }
 

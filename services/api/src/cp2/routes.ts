@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { createHash } from "node:crypto";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
@@ -79,6 +80,7 @@ import {
   extractUploadedDocument,
   type DocumentUploadInput
 } from "./document-extraction.js";
+import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 
 export interface Cp2RouteOptions {
   emailProvider?: EmailProvider;
@@ -86,6 +88,7 @@ export interface Cp2RouteOptions {
   oauthAllowedRedirectOrigins?: string[];
   otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
+  receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
   vapidPublicKey?: string;
 }
@@ -413,6 +416,7 @@ interface PhonebookLinkBody {
 interface ReceiptOCRBody {
   fileName?: string;
   contentType?: string;
+  contentBase64?: string;
   extractedText?: string;
   fileSizeBytes?: number;
   fileSignature?: string;
@@ -475,6 +479,8 @@ interface SupplierCsvImportBody {
   contentType?: string | null;
   content?: string;
   contentBase64?: string;
+  sourceType?: string;
+  sourceLocator?: string | null;
 }
 
 interface ProductCatalogueImportBody {
@@ -482,6 +488,8 @@ interface ProductCatalogueImportBody {
   contentType?: string | null;
   content?: string;
   contentBase64?: string;
+  sourceType?: string;
+  sourceLocator?: string | null;
 }
 
 interface SupplierImportRowBody {
@@ -691,6 +699,7 @@ interface LaunchIncidentStatusBody {
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
+  const receiptOCRProcessor = options.receiptOCRProcessor;
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
@@ -2813,14 +2822,44 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Params: BusinessParams; Body: ReceiptOCRBody }>, reply) => {
       try {
         const body = parseReceiptOCRBody(request.body);
+        store.assertDocumentImportWriteAccess({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+        let extraction: ReceiptOCRExtractionResult | undefined;
+        let fileSizeBytes = body.fileSizeBytes;
+        let fileSignature = body.fileSignature;
+        let sourceChecksum: string | undefined;
+
+        if (body.extractedText.trim().length === 0 && body.contentBase64 !== null) {
+          if (receiptOCRProcessor === undefined) {
+            throw new Cp2Error(
+              503,
+              "receipt_ocr_worker_unconfigured",
+              "Receipt OCR is not configured on this deployment."
+            );
+          }
+          const binary = decodeReceiptBase64(body.contentBase64);
+          fileSizeBytes = binary.byteLength;
+          fileSignature = binary.subarray(0, 16).toString("hex");
+          sourceChecksum = createHash("sha256").update(binary).digest("hex");
+          extraction = await receiptOCRProcessor.process({
+            fileName: body.fileName,
+            contentType: body.contentType,
+            contentBase64: binary.toString("base64")
+          });
+        }
+
         return store.createReceiptOCRJob({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           sourceFileName: body.fileName,
           contentType: body.contentType,
-          extractedText: body.extractedText,
-          fileSizeBytes: body.fileSizeBytes,
-          fileSignature: body.fileSignature
+          extractedText: extraction?.fullText ?? body.extractedText,
+          fileSizeBytes,
+          fileSignature,
+          ...(sourceChecksum === undefined ? {} : { sourceChecksum }),
+          ...(extraction === undefined ? {} : { extraction })
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -4320,6 +4359,10 @@ function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
   return {
     fileName: parseString(record.fileName, "fileName"),
     contentType: parseString(record.contentType, "contentType"),
+    contentBase64:
+      typeof record.contentBase64 === "string" && record.contentBase64.trim().length > 0
+        ? record.contentBase64.trim()
+        : null,
     extractedText: typeof record.extractedText === "string" ? record.extractedText : "",
     fileSizeBytes:
       record.fileSizeBytes === undefined
@@ -4330,6 +4373,24 @@ function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
         ? record.fileSignature.trim()
         : null
   };
+}
+
+function decodeReceiptBase64(value: string): Buffer {
+  const normalized = value.includes(",") ? (value.split(",", 2)[1] ?? "") : value;
+
+  if (
+    normalized.length === 0 ||
+    normalized.length % 4 === 1 ||
+    !/^[a-z0-9+/]*={0,2}$/iu.test(normalized)
+  ) {
+    throw new Cp2Error(400, "receipt_ocr_base64_invalid", "Receipt file content is invalid.");
+  }
+
+  const buffer = Buffer.from(normalized, "base64");
+  if (buffer.byteLength === 0) {
+    throw new Cp2Error(400, "receipt_ocr_content_required", "Receipt file content is required.");
+  }
+  return buffer;
 }
 
 function parseReceiptOCRConfirmBody(body: ReceiptOCRConfirmBody | null | undefined) {
@@ -4438,7 +4499,11 @@ function parseDocumentImportBody(
   const record = parseRequestBody(body);
   const parsed: DocumentUploadInput = {
     fileName: parseString(record.fileName, "fileName"),
-    contentType: parseNullableString(record.contentType)
+    contentType: parseNullableString(record.contentType),
+    ...(record.sourceType === undefined
+      ? {}
+      : { sourceType: parseDocumentImportSourceType(record.sourceType) }),
+    sourceLocator: parseNullableString(record.sourceLocator)
   };
 
   if (record.content !== undefined) {
@@ -4450,6 +4515,14 @@ function parseDocumentImportBody(
   }
 
   return parsed;
+}
+
+function parseDocumentImportSourceType(value: unknown): "upload" | "paste" | "database" {
+  const sourceType = parseString(value, "sourceType");
+  if (sourceType === "upload" || sourceType === "paste" || sourceType === "database") {
+    return sourceType;
+  }
+  throw new Cp2Error(400, "import_source_type_invalid", "Import source type is not supported.");
 }
 
 function parseSupplierImportRowBody(body: SupplierImportRowBody | null | undefined): {

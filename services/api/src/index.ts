@@ -10,6 +10,7 @@ import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
+import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
 
 const config = readEnvironment();
 const runtimeModelProvider = config.localModelEnabled
@@ -29,6 +30,7 @@ const pushNotificationSender =
 const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
+const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
   throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
@@ -56,6 +58,7 @@ const apiOptions = {
   cp2: {
     store: cp2Store,
     emailProvider,
+    ...(receiptOCRProcessor === undefined ? {} : { receiptOCRProcessor }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
 };

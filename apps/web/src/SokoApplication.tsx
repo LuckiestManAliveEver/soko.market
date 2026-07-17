@@ -41,7 +41,9 @@ import type {
   ProductFieldSchemaSummary,
   PublicCustomerCareRequestSummary,
   PublicOrderSummary,
-  PublicStorefrontMessageSummary
+  PublicStorefrontMessageSummary,
+  SyncMutationPayload,
+  SyncMutationType
 } from "@soko/shared-types";
 import {
   createInitialChatMessages,
@@ -56,8 +58,15 @@ import {
   sendFirebasePhoneOtp,
   type FirebaseConfirmationResult
 } from "./firebase-auth";
-import { openIndexedDbSyncRepository } from "./sync/indexeddb-repository";
-import { catchUpAccountSync } from "./sync/sync-client";
+import {
+  openIndexedDbSyncRepository,
+  type IndexedDbSyncRepository
+} from "./sync/indexeddb-repository";
+import {
+  catchUpAccountSync,
+  createLocalSyncMutation,
+  flushLocalSyncMutations
+} from "./sync/sync-client";
 import { subscribeToAccountRealtime } from "./sync/realtime-client";
 import {
   canRunCatalogModel,
@@ -2040,6 +2049,7 @@ export function OwnerApp() {
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
   const phoneRecaptchaRef = useRef<HTMLDivElement | null>(null);
+  const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
   const firebasePhoneAuthConfigured = isFirebasePhoneAuthConfigured();
 
   const shouldShowLogin =
@@ -2149,6 +2159,7 @@ export function OwnerApp() {
     let cancelled = false;
     let closeRepository: (() => void) | undefined;
     let closeRealtime: (() => void) | undefined;
+    let openedRepository: IndexedDbSyncRepository | null = null;
     let catchUpPromise: Promise<void> | null = null;
     void openIndexedDbSyncRepository()
       .then(async (repository) => {
@@ -2157,6 +2168,12 @@ export function OwnerApp() {
           return;
         }
         closeRepository = () => repository.close();
+        openedRepository = repository;
+        syncRepositoryRef.current = repository;
+        if (!navigator.onLine) {
+          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
+          return;
+        }
         const catchUp = () => {
           if (catchUpPromise === null) {
             catchUpPromise = catchUpAccountSync({
@@ -2171,7 +2188,19 @@ export function OwnerApp() {
           }
           return catchUpPromise;
         };
+        const transferred = await flushLocalSyncMutations({
+          accountId: session.account.id,
+          repository,
+          apiBaseUrl
+        });
         await catchUp();
+        if (transferred.transferred > 0) {
+          setStatusMessage(
+            `${transferred.transferred} offline change${
+              transferred.transferred === 1 ? "" : "s"
+            } synced`
+          );
+        }
         if (!cancelled) {
           const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
           realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
@@ -2191,9 +2220,12 @@ export function OwnerApp() {
     return () => {
       cancelled = true;
       closeRealtime?.();
+      if (syncRepositoryRef.current === openedRepository) {
+        syncRepositoryRef.current = null;
+      }
       closeRepository?.();
     };
-  }, [session?.account.id]);
+  }, [session?.account.id, isOnline]);
 
   useEffect(() => {
     if (session === null) return;
@@ -3253,6 +3285,47 @@ export function OwnerApp() {
     }
   }
 
+  async function queueMutationAfterNetworkFailure(
+    error: unknown,
+    mutationType: SyncMutationType,
+    payload: SyncMutationPayload
+  ): Promise<boolean> {
+    if (
+      business === null ||
+      session === null ||
+      globalThis.indexedDB === undefined ||
+      (navigator.onLine && !(error instanceof TypeError))
+    ) {
+      return false;
+    }
+
+    let repository = syncRepositoryRef.current;
+    let closeAfterWrite = false;
+
+    if (repository === null) {
+      repository = await openIndexedDbSyncRepository();
+      closeAfterWrite = true;
+    }
+
+    try {
+      await repository.putMutation(
+        createLocalSyncMutation({
+          accountId: session.account.id,
+          actorId: session.user.id,
+          businessId: business.id,
+          mutationType,
+          payload
+        })
+      );
+      setStatusMessage("Saved offline. This change will sync automatically after reconnect.");
+      return true;
+    } finally {
+      if (closeAfterWrite) {
+        repository.close();
+      }
+    }
+  }
+
   async function saveProduct(): Promise<boolean> {
     if (business === null) {
       return false;
@@ -3284,6 +3357,22 @@ export function OwnerApp() {
       setStatusMessage(productForm.id === null ? "Product created" : "Product updated");
       return true;
     } catch (error) {
+      if (
+        productForm.id === null &&
+        (await queueMutationAfterNetworkFailure(error, "product.create", {
+          name: productForm.name,
+          sku: productForm.sku,
+          unit: productForm.unit,
+          quantity: Number(productForm.quantity),
+          buyingPrice:
+            productForm.buyingPrice.trim().length === 0 ? null : Number(productForm.buyingPrice),
+          sellingPrice:
+            productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice)
+        }))
+      ) {
+        setProductForm(emptyProductForm);
+        return true;
+      }
       setStatusMessage(getErrorMessage(error));
       return false;
     }
@@ -3314,6 +3403,15 @@ export function OwnerApp() {
       await loadProducts(business.id);
       setStatusMessage("Product removed");
     } catch (error) {
+      if (
+        await queueMutationAfterNetworkFailure(error, "inventory.adjust", {
+          productId: stockProductId,
+          quantityAfter: Number(stockQuantityAfter),
+          reason: stockReason
+        })
+      ) {
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -3335,6 +3433,18 @@ export function OwnerApp() {
       setStockQuantityAfter(String(response.product.quantity));
       setStatusMessage("Stock adjusted");
     } catch (error) {
+      if (
+        supplierForm.id === null &&
+        (await queueMutationAfterNetworkFailure(error, "supplier.create", {
+          name: supplierForm.name,
+          phone: supplierForm.phone,
+          email: supplierForm.email,
+          notes: supplierForm.notes
+        }))
+      ) {
+        setSupplierForm(emptySupplierForm);
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -3570,13 +3680,16 @@ export function OwnerApp() {
     }
 
     try {
-      const extractedText = file.type.startsWith("image/") ? "" : await file.text();
+      const requiresOCR = file.type.startsWith("image/") || file.type === "application/pdf";
+      const extractedText = requiresOCR ? "" : await file.text();
+      const contentBase64 = requiresOCR ? dataUrlPayload(await readFileAsDataUrl(file)) : undefined;
       const job = await postJson<ReceiptOCRJobSummary>(
         `/businesses/${business.id}/receipt-ocr/jobs`,
         {
           fileName: file.name,
           contentType: file.type || "application/octet-stream",
           extractedText,
+          ...(contentBase64 === undefined ? {} : { contentBase64 }),
           fileSizeBytes: file.size,
           fileSignature: await readFileSignature(file)
         }
@@ -3642,6 +3755,18 @@ export function OwnerApp() {
       await loadCustomers(business.id);
       setStatusMessage(customerForm.id === null ? "Customer created" : "Customer updated");
     } catch (error) {
+      if (
+        customerForm.id === null &&
+        (await queueMutationAfterNetworkFailure(error, "customer.create", {
+          name: customerForm.name,
+          phone: customerForm.phone,
+          email: customerForm.email,
+          notes: customerForm.notes
+        }))
+      ) {
+        setCustomerForm(emptyCustomerForm);
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4403,6 +4528,8 @@ export function OwnerApp() {
         {
           fileName: importForm.fileName,
           contentType: importForm.contentType,
+          sourceType: importForm.sourceType,
+          sourceLocator: importForm.sourceLocator.trim() || null,
           ...(importForm.contentBase64 === null
             ? { content: importForm.content }
             : { contentBase64: importForm.contentBase64 })
@@ -4529,6 +4656,18 @@ export function OwnerApp() {
       await loadPaymentData(business.id);
       setStatusMessage("Payment recorded");
     } catch (error) {
+      if (
+        await queueMutationAfterNetworkFailure(error, "payment.record", {
+          invoiceId: paymentForm.invoiceId,
+          amount: Number(paymentForm.amount),
+          method: paymentForm.method,
+          reference: paymentForm.reference,
+          note: paymentForm.note
+        })
+      ) {
+        setPaymentForm(emptyPaymentForm);
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4550,6 +4689,17 @@ export function OwnerApp() {
       await loadReports(business.id);
       setStatusMessage("Logistics record created");
     } catch (error) {
+      if (
+        await queueMutationAfterNetworkFailure(error, "logistics.create", {
+          invoiceId: logisticsForm.invoiceId,
+          method: logisticsForm.method,
+          destination: logisticsForm.destination,
+          note: logisticsForm.note
+        })
+      ) {
+        setLogisticsForm(emptyLogisticsForm);
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4568,6 +4718,15 @@ export function OwnerApp() {
       await loadReports(business.id);
       setStatusMessage("Logistics status updated");
     } catch (error) {
+      if (
+        await queueMutationAfterNetworkFailure(error, "logistics.update_status", {
+          logisticsId,
+          status,
+          note: ""
+        })
+      ) {
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4845,6 +5004,13 @@ export function OwnerApp() {
       await loadInvoices(business.id);
       setStatusMessage(invoiceForm.id === null ? "Invoice draft saved" : "Invoice draft updated");
     } catch (error) {
+      if (
+        invoiceForm.id === null &&
+        (await queueMutationAfterNetworkFailure(error, "invoice.create", createInvoicePayload()))
+      ) {
+        setInvoiceForm(emptyInvoiceForm);
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4865,6 +5031,13 @@ export function OwnerApp() {
       await loadProducts(business.id);
       setStatusMessage("Invoice confirmed and stock moved");
     } catch (error) {
+      if (
+        await queueMutationAfterNetworkFailure(error, "invoice.confirm", {
+          invoiceId
+        })
+      ) {
+        return;
+      }
       setStatusMessage(getErrorMessage(error));
     }
   }

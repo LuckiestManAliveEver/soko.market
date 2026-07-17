@@ -214,9 +214,10 @@ export type PostgresCp2Store = Cp2Store & {
 
 export interface PostgresStoreHealth {
   database: "postgres";
-  status: "ok";
+  status: "ok" | "degraded";
   latencyMs: number;
   latestMigration: string | null;
+  persistenceError: string | null;
   syncChangeCount: number;
   phase1Parity: Array<{
     collection: string;
@@ -268,22 +269,35 @@ export async function createPostgresCp2Store(
   }
 
   let saveQueue: Promise<void> = Promise.resolve();
+  let lastPersistenceError: unknown = null;
 
   function enqueueSave(): void {
     saveQueue = saveQueue
       .then(() => saveNormalizedSnapshot(pool, store.snapshot()))
-      .catch((error: unknown) => {
-        console.error("Failed to persist CP2 store records.", error);
-      });
+      .then(
+        () => {
+          lastPersistenceError = null;
+        },
+        (error: unknown) => {
+          lastPersistenceError = error;
+          console.error("Failed to persist CP2 store records.", error);
+        }
+      );
   }
 
   async function flush(): Promise<void> {
     await saveQueue;
+    if (lastPersistenceError !== null) {
+      throw lastPersistenceError;
+    }
   }
 
   async function close(): Promise<void> {
-    await flush();
-    await pool.end();
+    try {
+      await flush();
+    } finally {
+      await pool.end();
+    }
   }
 
   async function health(): Promise<PostgresStoreHealth> {
@@ -362,9 +376,15 @@ export async function createPostgresCp2Store(
 
     return {
       database: "postgres",
-      status: "ok",
+      status: lastPersistenceError === null ? "ok" : "degraded",
       latencyMs: Date.now() - startedAt,
       latestMigration: row?.latest_migration ?? null,
+      persistenceError:
+        lastPersistenceError instanceof Error
+          ? lastPersistenceError.message
+          : lastPersistenceError === null
+            ? null
+            : "PostgreSQL persistence failed.",
       syncChangeCount: Number(row?.sync_change_count ?? 0),
       phase1Parity:
         row === undefined
@@ -1805,6 +1825,26 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
       ]
     );
   }
+
+  await client.query(
+    `
+      delete from account_sync_changes as persisted
+      where not exists (
+        select 1
+        from jsonb_to_recordset($1::jsonb) as desired(account_id uuid, sequence bigint)
+        where desired.account_id = persisted.account_id
+          and desired.sequence = persisted.sequence
+      )
+    `,
+    [
+      JSON.stringify(
+        snapshot.syncChanges.map((change) => ({
+          account_id: change.accountId,
+          sequence: change.sequence
+        }))
+      )
+    ]
+  );
 
   for (const change of snapshot.syncChanges) {
     await client.query(

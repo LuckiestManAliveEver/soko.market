@@ -1396,6 +1396,8 @@ export interface DocumentImportSourceSummary {
   contentType: string;
   sizeBytes: number;
   checksum: string;
+  sourceType?: "upload" | "paste" | "database";
+  sourceLocator?: string | null;
   createdAt: string;
 }
 
@@ -1599,6 +1601,8 @@ export interface SyncProductCreatePayload {
   sku?: string | null;
   unit?: string | null;
   quantity?: number;
+  buyingPrice?: number | null;
+  sellingPrice?: number | null;
 }
 
 export interface SyncContactCreatePayload {

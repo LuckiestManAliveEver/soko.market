@@ -1,4 +1,11 @@
-import type { LocalSyncSnapshot, SyncPullPage } from "@soko/shared-types";
+import type {
+  LocalSyncMutation,
+  LocalSyncSnapshot,
+  SyncMutationPayload,
+  SyncMutationType,
+  SyncPullPage,
+  SyncQueueItem
+} from "@soko/shared-types";
 import { readApiBaseUrl } from "../lib/api";
 
 export interface AccountSyncRepository {
@@ -14,6 +21,120 @@ export interface CatchUpAccountSyncOptions {
   endpoint?: string;
   pageSize?: number;
   maxPages?: number;
+}
+
+export interface LocalMutationSyncRepository {
+  listMutations(accountId: string): Promise<LocalSyncMutation[]>;
+  putMutation(mutation: LocalSyncMutation): Promise<void>;
+  removeMutation(id: string): Promise<void>;
+}
+
+export interface FlushLocalMutationsOptions {
+  accountId: string;
+  repository: LocalMutationSyncRepository;
+  fetcher?: typeof fetch;
+  apiBaseUrl?: string;
+}
+
+export interface FlushLocalMutationsResult {
+  transferred: number;
+  replayedBusinesses: string[];
+  remaining: number;
+}
+
+export function createLocalSyncMutation(input: {
+  accountId: string;
+  actorId: string;
+  businessId: string;
+  mutationType: SyncMutationType;
+  payload: SyncMutationPayload;
+  now?: Date;
+  id?: string;
+}): LocalSyncMutation {
+  const now = (input.now ?? new Date()).toISOString();
+  const id = input.id ?? globalThis.crypto.randomUUID();
+
+  return {
+    id,
+    accountId: input.accountId,
+    actorId: input.actorId,
+    businessId: input.businessId,
+    idempotencyKey: `web-${id}`,
+    mutationType: input.mutationType,
+    payload: input.payload,
+    status: "pending",
+    attempts: 0,
+    clientCreatedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    nextAttemptAt: null,
+    result: null,
+    conflict: null
+  };
+}
+
+export async function flushLocalSyncMutations(
+  options: FlushLocalMutationsOptions
+): Promise<FlushLocalMutationsResult> {
+  const fetcher = options.fetcher ?? globalThis.fetch;
+  const apiBaseUrl = (options.apiBaseUrl ?? readApiBaseUrl()).replace(/\/+$/u, "");
+  const mutations = await options.repository.listMutations(options.accountId);
+  const replayBusinesses = new Set<string>();
+  let transferred = 0;
+
+  for (const mutation of mutations) {
+    const response = await fetcher(
+      `${apiBaseUrl}/businesses/${encodeURIComponent(mutation.businessId)}/sync-queue`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotencyKey: mutation.idempotencyKey,
+          mutationType: mutation.mutationType,
+          payload: mutation.payload,
+          clientCreatedAt: mutation.clientCreatedAt
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Local mutation transfer failed with HTTP ${response.status}.`);
+    }
+
+    const accepted = (await response.json()) as SyncQueueItem;
+    if (
+      accepted.businessId !== mutation.businessId ||
+      accepted.idempotencyKey !== mutation.idempotencyKey
+    ) {
+      throw new Error("Local mutation transfer returned a mismatched queue item.");
+    }
+
+    await options.repository.removeMutation(mutation.id);
+    replayBusinesses.add(mutation.businessId);
+    transferred += 1;
+  }
+
+  for (const businessId of replayBusinesses) {
+    const response = await fetcher(
+      `${apiBaseUrl}/businesses/${encodeURIComponent(businessId)}/sync-queue/replay`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Server mutation replay failed with HTTP ${response.status}.`);
+    }
+  }
+
+  return {
+    transferred,
+    replayedBusinesses: [...replayBusinesses],
+    remaining: (await options.repository.listMutations(options.accountId)).length
+  };
 }
 
 export async function catchUpAccountSync<T = unknown>(

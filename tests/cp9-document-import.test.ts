@@ -75,6 +75,8 @@ describe("CP9 document import", () => {
       {
         fileName: "suppliers.csv",
         contentType: "text/csv",
+        sourceType: "database",
+        sourceLocator: "legacy suppliers export",
         content:
           "name,phone,email,notes\nWholesale Depot,+254700000010,supply@example.com,Main supplier\nx,,bad-email,Needs correction"
       },
@@ -83,7 +85,9 @@ describe("CP9 document import", () => {
 
     expect(importJob.status).toBe("previewed");
     expect(importJob.source).toMatchObject({
-      fileName: "suppliers.csv"
+      fileName: "suppliers.csv",
+      sourceType: "database",
+      sourceLocator: "legacy suppliers export"
     });
     expect(importJob.source.content).toBeUndefined();
     expect(importJob.rows).toHaveLength(2);

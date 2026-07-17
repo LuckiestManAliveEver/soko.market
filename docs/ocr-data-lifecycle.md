@@ -28,9 +28,9 @@ Legacy lowercase states remain accepted for compatibility.
 
 ## Image storage rule
 
-- Receipt images are temporary processing inputs.
+- Receipt images are in-memory/API and worker temporary-file processing inputs.
 - Images are not permanently stored by default.
-- After successful confirmation, the uploaded image is deleted and only structured data remains.
+- Worker temporary files are deleted when each scan request completes; only structured data remains.
 - Failed uploads are not silently discarded. The user sees failed status and can retry or enter the receipt manually.
 
 ## Structured data retained
@@ -54,10 +54,10 @@ Temporary image retention is controlled by:
 - `OCR_FAILED_IMAGE_TTL_HOURS`
 - `OCR_DELETE_AFTER_CONFIRM`
 
-Confirmed jobs set:
+Because the current worker bridge does not retain source files, jobs set:
 
 - `imageRetained=false`
-- `imageDeletedAt=<confirmation timestamp>`
+- `imageDeletedAt=null`
 - `cleanupPending=false`
 
 Receipt processing can continue when contact matching fails. In that case the OCR job remains

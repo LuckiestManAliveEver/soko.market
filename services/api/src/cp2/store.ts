@@ -1803,6 +1803,7 @@ export class Cp2Store {
   }): SyncPullPage {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
+    this.pruneExpiredSyncTombstones(now);
     const accountId = session.account.id;
     const limit = Math.min(100, Math.max(1, input.limit ?? 50));
     const changes = this.syncChanges
@@ -3855,6 +3856,19 @@ export class Cp2Store {
     extractedText: string;
     fileSizeBytes?: number | null;
     fileSignature?: string | null;
+    sourceChecksum?: string;
+    extraction?: Pick<
+      ReceiptOCRJobSummary,
+      | "engine"
+      | "engineVersion"
+      | "modelVersion"
+      | "profile"
+      | "fallbackUsed"
+      | "blocks"
+      | "fullText"
+      | "averageConfidence"
+      | "warnings"
+    >;
     now?: Date;
   }): ReceiptOCRJobSummary {
     const now = input.now ?? new Date();
@@ -3875,7 +3889,8 @@ export class Cp2Store {
       throw new Cp2Error(400, validation.code, validation.message);
     }
 
-    const parsed = parseReceiptText(input.extractedText);
+    const extractedText = input.extraction?.fullText ?? input.extractedText;
+    const parsed = parseReceiptText(extractedText);
     const matchedSupplier = this.matchSupplier(input.businessId, parsed.supplierName, parsed.phone);
     const matchedAgent =
       matchedSupplier === null
@@ -3886,10 +3901,14 @@ export class Cp2Store {
             parsed.salesAgentName,
             parsed.phone
           );
-    const hasContent = input.extractedText.trim().length > 0;
+    const hasContent = extractedText.trim().length > 0;
     const ocrConfig = readReceiptOCRConfig();
-    const blocks = buildReceiptOCRBlocks(input.extractedText, hasContent ? 0.9 : 0);
-    const warnings = buildReceiptOCRWarnings(parsed, hasContent);
+    const blocks =
+      input.extraction?.blocks ?? buildReceiptOCRBlocks(extractedText, hasContent ? 0.9 : 0);
+    const warnings = [
+      ...(input.extraction?.warnings ?? []),
+      ...buildReceiptOCRWarnings(parsed, hasContent)
+    ];
     const sourceFileName = input.sourceFileName.trim() || "receipt-upload";
     const jobId = randomUUID();
     const structuredExtraction = buildReceiptStructuredExtraction(parsed);
@@ -3901,13 +3920,12 @@ export class Cp2Store {
       matchedSupplier,
       matchedAgent
     });
-    const imageStorageKey =
-      contentType.startsWith("image/") || contentType === "application/pdf"
-        ? `tmp/receipt-ocr/${input.businessId}/${randomUUID()}`
-        : null;
-    const imageHash = createHash("sha256")
-      .update(`${sourceFileName}:${contentType}:${input.extractedText}`)
-      .digest("hex");
+    const imageStorageKey = null;
+    const imageHash =
+      input.sourceChecksum ??
+      createHash("sha256")
+        .update(`${sourceFileName}:${contentType}:${extractedText}`)
+        .digest("hex");
     const job: ReceiptOCRJobSummary = {
       id: jobId,
       businessId: input.businessId,
@@ -3921,17 +3939,20 @@ export class Cp2Store {
           : "MATCHING",
       sourceFileName,
       contentType,
-      engine: ocrConfig.primaryEngine,
-      engineVersion: ocrConfig.engineVersion,
-      modelVersion: ocrConfig.modelVersion,
-      profile: ocrConfig.profile,
-      fallbackUsed: ocrConfig.primaryEngine === receiptOCRDefaultFallbackEngine,
+      engine: input.extraction?.engine ?? ocrConfig.primaryEngine,
+      engineVersion: input.extraction?.engineVersion ?? ocrConfig.engineVersion,
+      modelVersion: input.extraction?.modelVersion ?? ocrConfig.modelVersion,
+      profile: input.extraction?.profile ?? ocrConfig.profile,
+      fallbackUsed:
+        input.extraction?.fallbackUsed ??
+        ocrConfig.primaryEngine === receiptOCRDefaultFallbackEngine,
       languageHints: ocrConfig.languageHints,
       blocks,
-      fullText: input.extractedText,
-      averageConfidence: averageReceiptBlockConfidence(blocks),
+      fullText: extractedText,
+      averageConfidence:
+        input.extraction?.averageConfidence ?? averageReceiptBlockConfidence(blocks),
       warnings,
-      fieldEvidence: buildReceiptFieldEvidence(parsed, input.extractedText),
+      fieldEvidence: buildReceiptFieldEvidence(parsed, extractedText),
       structuredExtraction,
       contactMatchingResult,
       supplierCandidates: contactMatchingResult.supplier.candidates,
@@ -3950,14 +3971,13 @@ export class Cp2Store {
       failureCode: hasContent ? null : "ocr_empty_text",
       imageStorageKey,
       imageHash,
-      imageRetained: imageStorageKey !== null && hasContent,
+      imageRetained: false,
       imageDeletedAt: null,
-      cleanupPending: imageStorageKey !== null && hasContent,
+      cleanupPending: false,
       retryCount: 0,
       processingStartedAt: now.toISOString(),
       completedAt: hasContent ? now.toISOString() : null,
-      temporaryImageExpiresAt:
-        imageStorageKey === null ? null : addHours(now, readReceiptTempTTLHours()).toISOString(),
+      temporaryImageExpiresAt: null,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       confirmedAt: null
@@ -4071,7 +4091,7 @@ export class Cp2Store {
       matchedSupplierId: supplier.id,
       matchedSalesAgentId: salesAgent?.id ?? null,
       imageRetained: false,
-      imageDeletedAt: now.toISOString(),
+      imageDeletedAt: job.imageRetained ? now.toISOString() : job.imageDeletedAt,
       cleanupPending: false,
       completedAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -6758,22 +6778,21 @@ export class Cp2Store {
         replayed: true
       };
     } catch (error) {
-      if (error instanceof Cp2Error) {
-        const rejected = markSyncRejected(processing, {
-          code: error.code,
-          message: error.message,
-          statusCode: error.statusCode,
-          now: now.toISOString()
-        });
-        this.syncQueue.set(rejected.id, rejected);
+      const rejected = markSyncRejected(processing, {
+        code: error instanceof Cp2Error ? error.code : "sync_replay_failed",
+        message:
+          error instanceof Cp2Error
+            ? error.message
+            : "Queued work failed unexpectedly and can be retried.",
+        statusCode: error instanceof Cp2Error ? error.statusCode : 500,
+        now: now.toISOString()
+      });
+      this.syncQueue.set(rejected.id, rejected);
 
-        return {
-          item: rejected,
-          replayed: true
-        };
-      }
-
-      throw error;
+      return {
+        item: rejected,
+        replayed: true
+      };
     }
   }
 
@@ -6787,7 +6806,9 @@ export class Cp2Store {
       .filter(
         (item) =>
           item.businessId === input.businessId &&
-          (item.status === "pending" || item.status === "failed" || item.status === "conflict")
+          (item.status === "pending" ||
+            (item.status === "failed" &&
+              (item.nextAttemptAt === null || Date.parse(item.nextAttemptAt) <= now.getTime())))
       )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     const results = items.map((item) =>
@@ -6828,6 +6849,8 @@ export class Cp2Store {
       checksum:
         input.source.originalChecksum ??
         createHash("sha256").update(input.source.content).digest("hex"),
+      sourceType: input.source.sourceType ?? "upload",
+      sourceLocator: input.source.sourceLocator?.trim() || null,
       content: input.source.content,
       createdAt: now.toISOString()
     };
@@ -6901,6 +6924,8 @@ export class Cp2Store {
       checksum:
         input.source.originalChecksum ??
         createHash("sha256").update(input.source.content).digest("hex"),
+      sourceType: input.source.sourceType ?? "upload",
+      sourceLocator: input.source.sourceLocator?.trim() || null,
       content: input.source.content,
       createdAt: now.toISOString()
     };
@@ -8341,10 +8366,19 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.syncQueue) {
-      this.syncQueue.set(item.id, item);
+      const restored =
+        item.status === "processing"
+          ? markSyncRejected(item, {
+              code: "sync_replay_interrupted",
+              message: "Queued work was interrupted and will be retried.",
+              statusCode: 503,
+              now: new Date().toISOString()
+            })
+          : item;
+      this.syncQueue.set(restored.id, restored);
       this.syncQueueIdByIdempotency.set(
-        syncQueueIdempotencyKey(item.businessId, item.idempotencyKey),
-        item.id
+        syncQueueIdempotencyKey(restored.businessId, restored.idempotencyKey),
+        restored.id
       );
     }
 
@@ -8747,6 +8781,19 @@ export class Cp2Store {
       }
     }
     return change;
+  }
+
+  private pruneExpiredSyncTombstones(now: Date): void {
+    for (let index = this.syncChanges.length - 1; index >= 0; index -= 1) {
+      const change = this.syncChanges[index];
+      if (
+        change?.operation === "delete" &&
+        change.tombstoneExpiresAt !== null &&
+        Date.parse(change.tombstoneExpiresAt) <= now.getTime()
+      ) {
+        this.syncChanges.splice(index, 1);
+      }
+    }
   }
 
   private backfillSyncChanges(): void {
@@ -13256,17 +13303,9 @@ function readReceiptOCRConfig(): {
   };
 }
 
-function readReceiptTempTTLHours(): number {
-  return readPositiveIntegerEnv("OCR_TEMP_IMAGE_TTL_HOURS", 24);
-}
-
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function addHours(value: Date, hours: number): Date {
-  return new Date(value.getTime() + hours * 60 * 60 * 1000);
 }
 
 function buildReceiptOCRBlocks(text: string, confidence: number): ReceiptOCRJobSummary["blocks"] {
@@ -14260,6 +14299,8 @@ function documentImportSourceView(source: DocumentImportSourceRecord): DocumentI
     contentType: source.contentType,
     sizeBytes: source.sizeBytes,
     checksum: source.checksum,
+    sourceType: source.sourceType ?? "upload",
+    sourceLocator: source.sourceLocator ?? null,
     createdAt: source.createdAt
   };
 }

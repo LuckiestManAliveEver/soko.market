@@ -2,7 +2,7 @@
 
 Status: repository implementation reference
 Scope: Soko.market document ingestion, text extraction, structured mapping, OCR, review, and persistence
-Last verified: 2026-07-16
+Last verified: 2026-07-17
 
 ## 1. Scope and naming
 
@@ -25,9 +25,9 @@ and the gaps between accepted file types and formats that are genuinely decoded.
 | ------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Supplier import                | Operational for CSV-style text                | Header inference, row validation, preview, correction, selection, confirmation            |
 | Product import                 | Operational for multiple text representations | CSV, TSV, JSON, SQL `INSERT`, and loose text lines                                        |
-| PDF/Word/Excel generic import  | Validation/UI only                            | Files are accepted by extension/MIME, but no binary decoder is connected                  |
+| PDF/Word/Excel generic import  | Operational for supported binary formats      | PDF text, DOCX, XLS/XLSX, and ODS extraction with signature checks                        |
 | Receipt field parser           | Operational when extracted text is supplied   | Supplier, contact, receipt, payment, total, date, and simple line-item parsing            |
-| OCR worker                     | Standalone scaffold                           | PaddleOCR primary, Tesseract fallback, JSON text-block output                             |
+| OCR worker                     | Connected HTTP service                        | Binary upload, bounded processing, PaddleOCR primary, Tesseract fallback, validated JSON  |
 | OCR worker/API integration     | Not connected                                 | API does not enqueue binary files or consume worker output                                |
 | Receipt image upload in web UI | Incomplete                                    | Image metadata is submitted, but image text is empty, so the API returns a failed OCR job |
 | Review-before-write            | Operational                                   | No suppliers or products are created until the user confirms valid rows                   |
@@ -79,12 +79,10 @@ The production-safe interpretation is:
                               Store snapshot / PostgreSQL
 ```
 
-The standalone OCR worker is adjacent to, but not currently connected to, the receipt workflow:
+The API connects binary receipt uploads to the OCR worker over its internal HTTP scan endpoint:
 
 ```text
-binary receipt → PaddleOCR → Tesseract fallback → OCR JSON
-                                                    │
-                                                    └── missing API/queue bridge
+binary receipt → authenticated API → OCR worker → validated OCR JSON → parser/matcher
 ```
 
 ## 4. Capability and format matrix
@@ -94,20 +92,20 @@ binary receipt → PaddleOCR → Tesseract fallback → OCR JSON
 “Accepted” means the file extension and MIME type pass validation. “Decoded” means the repository
 contains a parser that correctly interprets that representation.
 
-| Format          |         Accepted |             Supplier decoded |                  Product decoded | Notes                                                         |
-| --------------- | ---------------: | ---------------------------: | -------------------------------: | ------------------------------------------------------------- |
-| CSV             |              Yes |                          Yes |                              Yes | Primary supported format                                      |
-| TSV             |              Yes |    No reliable supplier path |                              Yes | Product parser detects tab delimiters                         |
-| Plain text      |              Yes |           Only if CSV-shaped |                              Yes | Product parser has a loose-line fallback                      |
-| JSON            |              Yes | No dedicated supplier parser |                              Yes | Array or `{ "products": [...] }`                              |
-| SQL             |              Yes | No dedicated supplier parser |                              Yes | Limited single `INSERT INTO ... (...) VALUES (...)` grammar   |
-| PDF             |              Yes |                           No |                               No | Binary PDF extraction is not implemented                      |
-| DOC/DOCX        |              Yes |                           No |                               No | Binary Word extraction is not implemented                     |
-| ODT             |              Yes |                           No |                               No | Binary OpenDocument text extraction is not implemented        |
-| XLS/XLSX        |              Yes |                           No |                               No | Binary spreadsheet extraction is not implemented              |
-| ODS             |              Yes |                           No |                               No | Binary OpenDocument spreadsheet extraction is not implemented |
-| Google Sheets   | Via export/paste |                   Yes if CSV |                   Yes if CSV/TSV | No live Google Sheets connector                               |
-| Database export | Via paste/upload |              CSV-shaped only | CSV, TSV, JSON, or supported SQL | “Database link” is a UI label, not a live DB connector        |
+| Format          |         Accepted |             Supplier decoded |                  Product decoded | Notes                                                       |
+| --------------- | ---------------: | ---------------------------: | -------------------------------: | ----------------------------------------------------------- |
+| CSV             |              Yes |                          Yes |                              Yes | Primary supported format                                    |
+| TSV             |              Yes |    No reliable supplier path |                              Yes | Product parser detects tab delimiters                       |
+| Plain text      |              Yes |           Only if CSV-shaped |                              Yes | Product parser has a loose-line fallback                    |
+| JSON            |              Yes | No dedicated supplier parser |                              Yes | Array or `{ "products": [...] }`                            |
+| SQL             |              Yes | No dedicated supplier parser |                              Yes | Limited single `INSERT INTO ... (...) VALUES (...)` grammar |
+| PDF             |              Yes |                          Yes |                              Yes | Text-bearing PDFs are decoded; scanned PDFs use receipt OCR |
+| DOC/DOCX        |     DOCX decoded |                          Yes |                              Yes | DOCX is decoded; legacy binary DOC remains unsupported      |
+| ODT             |              Yes |                           No |                               No | Binary OpenDocument text extraction is not implemented      |
+| XLS/XLSX        |              Yes |                          Yes |                              Yes | Workbook sheets are converted to CSV text                   |
+| ODS             |              Yes |                          Yes |                              Yes | Workbook sheets are converted to CSV text                   |
+| Google Sheets   | Via export/paste |                   Yes if CSV |                   Yes if CSV/TSV | No live Google Sheets connector                             |
+| Database export | Via paste/upload |              CSV-shaped only | CSV, TSV, JSON, or supported SQL | “Database link” is a UI label, not a live DB connector      |
 
 ### 4.2 Receipt OCR inputs
 
@@ -158,8 +156,8 @@ The web import screen supports:
 - predefined examples;
 - a source-reference text field for human-readable provenance in the form.
 
-The source-reference value and source-type selector are currently UI-only. The create-import
-request submits filename, content type, and content, but not the source reference.
+The create-import request persists the source type and human-readable source reference alongside
+the file metadata and checksum for provenance.
 
 The browser uses `File.text()` for every selected generic-import file. This is appropriate for text
 files but not for binary PDF, DOCX, XLSX, ODT, or ODS files.
@@ -445,8 +443,8 @@ Example worker output:
 }
 ```
 
-The current `worker` command is a health loop. It does not consume a Redis queue despite Redis
-being present in its dependencies and Docker Compose environment.
+The `worker` command runs a bounded HTTP service with `/health` and `/scan`. The API applies retry,
+timeout, concurrency, size, image-edge, and PDF-page controls around this service.
 
 ### 6.2 API-side receipt upload validation
 
@@ -940,14 +938,14 @@ Important caveats:
 | `OCR_ENGINE_VERSION`                      | `paddleocr-2.8.1` |                                                                   API metadata |
 | `OCR_MODEL_VERSION`                       | `<profile>-cpu`   |                                                                   API metadata |
 | `OCR_TEMP_IMAGE_TTL_HOURS`                | `24`              |                                                                            Yes |
-| `OCR_FAILED_IMAGE_TTL_HOURS`              | `24`              |                  Documented/configured, not enforced in the inspected API path |
-| `OCR_DELETE_AFTER_CONFIRM`                | `true`            |             Documented/configured; confirmation currently always marks deleted |
+| `OCR_FAILED_IMAGE_TTL_HOURS`              | `24`              | Not applicable while source bytes are processed ephemerally and never retained |
+| `OCR_DELETE_AFTER_CONFIRM`                | `true`            | Not applicable while source bytes are processed ephemerally and never retained |
 | `OCR_MAX_UPLOAD_MB`                       | `10`              |                                                                            Yes |
-| `OCR_MAX_IMAGE_EDGE`                      | `3000`            |                             Configured, not enforced in the inspected API path |
-| `OCR_MAX_PDF_PAGES`                       | `5`               |                             Configured, not enforced in the inspected API path |
-| `OCR_JOB_TIMEOUT_SECONDS`                 | `120`             |                    Configured, not enforced in the inspected worker/API bridge |
-| `OCR_MAX_RETRIES`                         | `2`               |                    Configured, not enforced in the inspected worker/API bridge |
-| `OCR_CONCURRENCY`                         | `1`               |                     Configured, not enforced by the current health-loop worker |
+| `OCR_MAX_IMAGE_EDGE`                      | `3000`            |                                                     Enforced by the OCR worker |
+| `OCR_MAX_PDF_PAGES`                       | `5`               |                                                     Enforced by the OCR worker |
+| `OCR_JOB_TIMEOUT_SECONDS`                 | `120`             |                                                     Enforced by the API bridge |
+| `OCR_MAX_RETRIES`                         | `2`               |                                                     Enforced by the API bridge |
+| `OCR_CONCURRENCY`                         | `1`               |                                          Enforced by API and worker semaphores |
 | `OCR_CONTACT_MATCH_AUTO_SELECT`           | `0.95`            |                                                                            Yes |
 | `OCR_CONTACT_MATCH_CONFIRMATION_REQUIRED` | `0.80`            | Stored in result; candidate decision mainly uses auto-select/reject thresholds |
 | `OCR_CONTACT_MATCH_REJECT_BELOW`          | `0.50`            |                                                                            Yes |
@@ -1016,36 +1014,31 @@ Relevant automated tests:
   - image-deletion state;
   - receipt command routing.
 
-Tests use already-extracted receipt text. They do not exercise an actual browser upload through the
-Python OCR worker.
+Tests cover pre-extracted text, binary API handoff through a mock processor, worker response
+validation, retry behavior, and Python worker startup/health syntax.
 
 ## 15. Known gaps
 
-### Critical integration gaps
+### Integration dependencies
 
-1. The receipt worker is not connected to the API through Redis, HTTP, or another queue.
-2. The browser does not upload image bytes to the receipt API.
-3. Image receipt uploads therefore produce empty extracted text in the current web path.
-4. Generic binary PDF, DOCX, XLSX, ODT, and ODS extraction is not implemented.
+1. Deployed image/PDF OCR requires the worker container and `OCR_WORKER_URL`.
+2. Legacy binary DOC and ODT text extraction remain unsupported.
+3. Full native-engine OCR quality requires PaddleOCR/Tesseract models in the worker image.
 
 ### Parsing gaps
 
 1. Supplier TSV, JSON, and SQL do not have dedicated parsers.
 2. Receipt line-item parsing requires a narrow comma/pipe layout.
 3. Receipt item SKU, unit, batch, and expiry extraction are not implemented.
-4. Multi-page PDF enforcement and page-level extraction are not implemented in the API path.
-5. Handwriting, tables, rotated receipts, and mixed-language quality are dependent on an
-   unconnected worker and have no end-to-end tests.
+4. PDF page limits are enforced before OCR, while field parsing still combines the returned pages.
+5. Handwriting, tables, rotated receipts, and mixed-language quality depend on native OCR model quality.
 
 ### Operational gaps
 
-1. The worker loop does not consume Redis jobs.
-2. Retry, timeout, concurrency, failed-image TTL, image-edge, and PDF-page configuration values are
-   not fully enforced.
-3. There is no binary object-storage upload contract.
-4. There is no malware scanning or document sandboxing service.
-5. There is no unified extractor registry or automatic document classification.
-6. There is no live database connector despite “database link” wording in the UI.
+1. There is no binary object-storage upload contract; receipt bytes are processed ephemerally.
+2. There is no malware scanning or document sandboxing service.
+3. There is no unified extractor registry or automatic document classification.
+4. There is no live database connector despite “database link” wording in the UI.
 
 ## 16. Recommended production completion plan
 

@@ -27,6 +27,9 @@ identity, permissions, session context, conversations, and structured messages.
 - The web client stores records, tombstones, and cursor metadata in one IndexedDB transaction.
 - Web startup hydrates the account repository and catches up until the server reports no more pages.
 - Invalid or expired cursors trigger one safe local reset and full account catch-up.
+- Supported offline mutations are persisted in IndexedDB, transferred to the server queue in client
+  creation order after reconnect, removed locally only after server acceptance, and replayed with
+  their original idempotency keys.
 - Migration `018_cp21_account_sync_changes.sql` persists the journal in relational Postgres with an
   explicit rollback and health count.
 
