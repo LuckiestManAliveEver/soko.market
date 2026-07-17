@@ -346,16 +346,16 @@ describe("business core foundation", () => {
       validateDocumentImportSource({
         fileName: "products.xlsx",
         contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        content: "binary workbook bytes"
+        content: "name,sku\nMock Product,MOCK-001"
       }).ok
-    ).toBe(false);
+    ).toBe(true);
     expect(
       validateDocumentImportSource({
         fileName: "catalogue.pdf",
         contentType: "application/pdf",
-        content: "%PDF binary bytes"
+        content: "name,sku\nMock Product,MOCK-001"
       }).ok
-    ).toBe(false);
+    ).toBe(true);
     expect(validateDocumentImportSource({ fileName: "products.exe", content: "name\nA" }).ok).toBe(
       false
     );

@@ -71,6 +71,11 @@ import {
   type OAuthProfile,
   type OAuthTokenResponse
 } from "./oauth.js";
+import {
+  extractDocumentImportSource,
+  extractUploadedDocument,
+  type DocumentUploadInput
+} from "./document-extraction.js";
 
 export interface Cp2RouteOptions {
   githubModelCatalog?: GitHubModelCatalog;
@@ -465,12 +470,14 @@ interface SupplierCsvImportBody {
   fileName?: string;
   contentType?: string | null;
   content?: string;
+  contentBase64?: string;
 }
 
 interface ProductCatalogueImportBody {
   fileName?: string;
   contentType?: string | null;
   content?: string;
+  contentBase64?: string;
 }
 
 interface SupplierImportRowBody {
@@ -3644,10 +3651,16 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
+        const sessionId = readSessionCookie(request.headers.cookie);
+        store.assertDocumentImportWriteAccess({
+          sessionId,
+          businessId: request.params.businessId
+        });
+        const source = await extractDocumentImportSource(parseDocumentImportBody(request.body));
         return store.createSupplierCsvImport({
-          sessionId: readSessionCookie(request.headers.cookie),
+          sessionId,
           businessId: request.params.businessId,
-          source: parseSupplierCsvImportBody(request.body)
+          source
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -3662,11 +3675,36 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        return store.createProductCatalogueImport({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          source: parseProductCatalogueImportBody(request.body)
+        const sessionId = readSessionCookie(request.headers.cookie);
+        store.assertDocumentImportWriteAccess({
+          sessionId,
+          businessId: request.params.businessId
         });
+        const source = await extractDocumentImportSource(parseDocumentImportBody(request.body));
+        return store.createProductCatalogueImport({
+          sessionId,
+          businessId: request.params.businessId,
+          source
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/documents/extract",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ProductCatalogueImportBody }>,
+      reply
+    ) => {
+      try {
+        const sessionId = readSessionCookie(request.headers.cookie);
+        store.assertDocumentImportWriteAccess({
+          sessionId,
+          businessId: request.params.businessId
+        });
+        return await extractUploadedDocument(parseDocumentImportBody(request.body));
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -4336,24 +4374,24 @@ function parseFulfillmentStatus(value: unknown): FulfillmentStatus {
   throw new Cp2Error(400, "fulfillment_status_invalid", "Fulfillment status is not supported.");
 }
 
-function parseSupplierCsvImportBody(body: SupplierCsvImportBody | null | undefined) {
+function parseDocumentImportBody(
+  body: SupplierCsvImportBody | ProductCatalogueImportBody | null | undefined
+): DocumentUploadInput {
   const record = parseRequestBody(body);
-
-  return {
+  const parsed: DocumentUploadInput = {
     fileName: parseString(record.fileName, "fileName"),
-    contentType: parseNullableString(record.contentType),
-    content: parseString(record.content, "content")
+    contentType: parseNullableString(record.contentType)
   };
-}
 
-function parseProductCatalogueImportBody(body: ProductCatalogueImportBody | null | undefined) {
-  const record = parseRequestBody(body);
+  if (record.content !== undefined) {
+    parsed.content = parseString(record.content, "content");
+  }
 
-  return {
-    fileName: parseString(record.fileName, "fileName"),
-    contentType: parseNullableString(record.contentType),
-    content: parseString(record.content, "content")
-  };
+  if (record.contentBase64 !== undefined) {
+    parsed.contentBase64 = parseString(record.contentBase64, "contentBase64");
+  }
+
+  return parsed;
 }
 
 function parseSupplierImportRowBody(body: SupplierImportRowBody | null | undefined): {

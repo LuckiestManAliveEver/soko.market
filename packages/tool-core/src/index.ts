@@ -83,6 +83,7 @@ export type RuntimeToolName =
   | "receipt.cancel"
   | "receipt.lookup"
   | "receipt.list"
+  | "document_import.confirm"
   | "unknown.clarify";
 
 export interface RuntimeToolDefinition {
@@ -597,6 +598,13 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     requiresConfirmation: false,
     readOnly: true,
     requiredPermission: "import:read"
+  },
+  "document_import.confirm": {
+    name: "document_import.confirm",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "import:write"
   },
   "unknown.clarify": {
     name: "unknown.clarify",
@@ -1201,6 +1209,11 @@ export function validateRuntimeToolInput(
       return typeof input.ocrJobId === "string" && input.ocrJobId.trim().length > 0
         ? valid()
         : invalid("Which receipt scan should I cancel?");
+
+    case "document_import.confirm":
+      return typeof input.importJobId === "string" && input.importJobId.trim().length > 0
+        ? valid()
+        : invalid("Which document import should I add?");
 
     case "product.create": {
       const errors: string[] = [];

@@ -45,7 +45,9 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       'const documentUploadRuntimeMarker = "[document-upload: active]"'
     );
-    expect(application).toContain("Direct Excel and PDF body extraction is not available yet");
+    expect(application).toContain(
+      "PDF, DOCX, XLS, XLSX, and ODS files are extracted on the server"
+    );
     expect(application).toContain('attachment.category === "document"');
     expect(application).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"

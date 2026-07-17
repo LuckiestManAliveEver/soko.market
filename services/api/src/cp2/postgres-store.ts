@@ -2519,6 +2519,10 @@ function snapshotRecords(value: unknown): SnapshotRecord[] {
 }
 
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {
+  if (key === "sessionContexts") {
+    return requiredText(record, "sessionId");
+  }
+
   if (key === "accountPinHashes") {
     return requiredText(record, "accountId");
   }

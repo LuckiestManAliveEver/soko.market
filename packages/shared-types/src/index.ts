@@ -1846,6 +1846,7 @@ export type RuntimeToolName =
   | "receipt.cancel"
   | "receipt.lookup"
   | "receipt.list"
+  | "document_import.confirm"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =
@@ -1856,6 +1857,7 @@ export type RuntimeParserIntent =
   | "check_debt"
   | "show_products"
   | "show_invoices"
+  | "confirm_document_import"
   | "unknown";
 
 export type RuntimeTurnStatus =
