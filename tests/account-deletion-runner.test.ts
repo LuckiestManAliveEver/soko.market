@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startAccountDeletionRunner } from "../services/api/src/cp2/account-deletion-runner";
+import {
+  startAccountDeletionRunner,
+  type DeletionPurgeRunSummary
+} from "../services/api/src/cp2/account-deletion-runner";
 import type { AccountDeletionPurgeRunSummary } from "../services/api/src/cp2/store";
 
 const completedSummary: AccountDeletionPurgeRunSummary = {
@@ -7,6 +10,10 @@ const completedSummary: AccountDeletionPurgeRunSummary = {
   completed: 1,
   partiallyFailed: 0,
   skipped: 0
+};
+const completedRun: DeletionPurgeRunSummary = {
+  shopsPurged: 2,
+  accounts: completedSummary
 };
 
 describe("account deletion runner", () => {
@@ -20,23 +27,26 @@ describe("account deletion runner", () => {
     const firstRun = new Promise<AccountDeletionPurgeRunSummary>((resolve) => {
       resolveFirstRun = resolve;
     });
+    const purgeExpiredShopDeletions = vi.fn().mockReturnValue(2);
     const purgeExpiredAccountDeletions = vi
       .fn()
       .mockImplementationOnce(() => firstRun)
       .mockResolvedValue(completedSummary);
     const runner = startAccountDeletionRunner({
-      store: { purgeExpiredAccountDeletions },
+      store: { purgeExpiredAccountDeletions, purgeExpiredShopDeletions },
       intervalMs: 1_000
     });
 
+    expect(purgeExpiredShopDeletions).toHaveBeenCalledTimes(1);
     expect(purgeExpiredAccountDeletions).toHaveBeenCalledTimes(1);
     const overlappingRun = runner.runNow();
     await vi.advanceTimersByTimeAsync(3_000);
     expect(purgeExpiredAccountDeletions).toHaveBeenCalledTimes(1);
 
     resolveFirstRun?.(completedSummary);
-    await expect(overlappingRun).resolves.toEqual(completedSummary);
+    await expect(overlappingRun).resolves.toEqual(completedRun);
     await vi.advanceTimersByTimeAsync(1_000);
+    expect(purgeExpiredShopDeletions).toHaveBeenCalledTimes(2);
     expect(purgeExpiredAccountDeletions).toHaveBeenCalledTimes(2);
 
     await runner.stop();
@@ -49,6 +59,7 @@ describe("account deletion runner", () => {
     expect(() =>
       startAccountDeletionRunner({
         store: {
+          purgeExpiredShopDeletions: vi.fn().mockReturnValue(0),
           purgeExpiredAccountDeletions: vi.fn().mockResolvedValue(completedSummary)
         },
         intervalMs: 0

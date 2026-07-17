@@ -11,6 +11,7 @@ import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
 import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
+import { createNetworkInviteSenderFromEnvironment } from "./cp2/network-invite-provider.js";
 
 const config = readEnvironment();
 const runtimeModelProvider = config.localModelEnabled
@@ -31,6 +32,7 @@ const emailProvider = createEmailProviderFromEnvironment();
 const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
 const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
+const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
   throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
@@ -43,6 +45,7 @@ const cp2StoreOptions = {
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),
+  ...(networkInviteSender === undefined ? {} : { networkInviteSender }),
   messageWebBaseUrl,
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
@@ -66,9 +69,13 @@ const app = buildApi(
   isHealthyStore(cp2Store)
     ? {
         ...apiOptions,
-        databaseHealth: () => cp2Store.health()
+        databaseHealth: () => cp2Store.health(),
+        ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
-    : apiOptions
+    : {
+        ...apiOptions,
+        ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
+      }
 );
 
 let accountDeletionRunner: AccountDeletionRunner | null = null;
@@ -89,16 +96,12 @@ try {
   process.exit(1);
 }
 
-if (accountDeletionProcessors.length > 0 && process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
+if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
   accountDeletionRunner = startAccountDeletionRunner({
     store: cp2Store,
     onResult: (result) => app.log.info({ result }, "Account deletion purge completed."),
     onError: (error) => app.log.error({ error }, "Account deletion purge failed.")
   });
-} else if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
-  app.log.warn(
-    "Account deletion runner is enabled but no deletion processors are configured; runner not started."
-  );
 }
 
 function isClosableStore(store: unknown): store is { close: () => Promise<void> } {
@@ -109,4 +112,8 @@ function isHealthyStore(
   store: unknown
 ): store is { health: () => Promise<Record<string, unknown>> } {
   return typeof (store as { health?: unknown }).health === "function";
+}
+
+function isFlushableStore(store: unknown): store is { flush: () => Promise<void> } {
+  return typeof (store as { flush?: unknown }).flush === "function";
 }

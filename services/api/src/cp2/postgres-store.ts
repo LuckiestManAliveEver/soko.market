@@ -123,6 +123,7 @@ const mutatingMethodNames = new Set([
   "deleteNetworkSource",
   "deleteProduct",
   "deleteSupplier",
+  "deliverNetworkInvites",
   "disconnectLoginAccount",
   "enqueueSyncMutation",
   "getSokoSessionContext",
@@ -252,6 +253,9 @@ export async function createPostgresCp2Store(
     ...(options.messageEmailNotificationSender === undefined
       ? {}
       : { messageEmailNotificationSender: options.messageEmailNotificationSender }),
+    ...(options.networkInviteSender === undefined
+      ? {}
+      : { networkInviteSender: options.networkInviteSender }),
     ...(options.messageWebBaseUrl === undefined
       ? {}
       : { messageWebBaseUrl: options.messageWebBaseUrl }),

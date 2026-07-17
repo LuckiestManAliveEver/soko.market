@@ -625,9 +625,26 @@ export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
+  networkInviteSender?: NetworkInviteSender;
   messageWebBaseUrl?: string;
   accountDeletionProcessors?: AccountDeletionProcessor[];
 }
+
+export interface NetworkInviteDeliveryInput {
+  inviteId: string;
+  businessId: string;
+  businessName: string;
+  channel: NetworkInviteSummary["channel"];
+  destination: string;
+  contactName: string;
+}
+
+export type NetworkInviteDeliveryResult =
+  { status: "sent" } | { status: "failed"; failureReason: string };
+
+export type NetworkInviteSender = (
+  input: NetworkInviteDeliveryInput
+) => Promise<NetworkInviteDeliveryResult>;
 
 export interface AccountDeletionSubject {
   provider: string;
@@ -3039,6 +3056,58 @@ export class Cp2Store {
     return [...this.networkInvites.values()]
       .filter((invite) => invite.businessId === input.businessId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async deliverNetworkInvites(input: {
+    sessionId: string | null;
+    businessId: string;
+    inviteIds: string[];
+    now?: Date;
+  }): Promise<NetworkInviteSummary[]> {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:write", now);
+    const invites = input.inviteIds
+      .map((inviteId) => this.networkInvites.get(inviteId))
+      .filter(
+        (invite): invite is NetworkInviteSummary =>
+          invite !== undefined && invite.businessId === input.businessId
+      );
+    const sender = this.options.networkInviteSender;
+    if (sender === undefined) return invites;
+    const business = this.requireBusiness(input.businessId);
+
+    for (const invite of invites) {
+      if (invite.status !== "queued") continue;
+      const result = await sender({
+        inviteId: invite.id,
+        businessId: invite.businessId,
+        businessName: business.name,
+        channel: invite.channel,
+        destination: invite.destination,
+        contactName: invite.contactName
+      });
+      const updated: NetworkInviteSummary = {
+        ...invite,
+        status: result.status,
+        deliveredAt: result.status === "sent" ? now.toISOString() : null,
+        failureReason: result.status === "failed" ? result.failureReason : null
+      };
+      this.networkInvites.set(updated.id, updated);
+      this.recordAuditEvent({
+        type: result.status === "sent" ? "network.invite_sent" : "network.invite_failed",
+        aggregateType: "network_invite",
+        aggregateId: updated.id,
+        actorId: updated.invitedByUserId,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: input.businessId,
+          channel: updated.channel,
+          failureReason: updated.failureReason
+        }
+      });
+    }
+
+    return invites.map((invite) => this.networkInvites.get(invite.id) as NetworkInviteSummary);
   }
 
   createPublicCustomerCareRequest(input: {

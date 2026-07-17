@@ -90,7 +90,12 @@ import {
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getUserFacingErrorMessage } from "./user-facing-error";
-import { apiFetch, readApiBaseUrl } from "./lib/api";
+import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "./lib/api";
+import {
+  queueMessagingOutbox,
+  readMessagingOutbox,
+  removeMessagingOutboxEntry
+} from "./messaging/outbox";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -5284,8 +5289,9 @@ export function OwnerApp() {
   }
 
   async function retryQueuedMessages() {
-    if (!navigator.onLine) return;
-    const queued = readMessagingOutbox();
+    if (!navigator.onLine || session === null) return;
+    const accountId = session.account.id;
+    const queued = readMessagingOutbox(accountId);
     for (const entry of queued) {
       try {
         const sent = await postJson<ConversationMessageSummary>("/v1/messages", entry.payload);
@@ -5298,9 +5304,11 @@ export function OwnerApp() {
               : message
           )
         );
-        removeMessagingOutboxEntry(entry.clientMessageId);
-      } catch {
-        break;
+        removeMessagingOutboxEntry(accountId, entry.clientMessageId);
+      } catch (error) {
+        if (isRetryableApiRequestError(error)) break;
+        removeMessagingOutboxEntry(accountId, entry.clientMessageId);
+        setStatusMessage(getErrorMessage(error));
       }
     }
   }
@@ -5468,8 +5476,19 @@ export function OwnerApp() {
             )
           );
         }
-      } catch {
-        queueMessagingOutbox({ clientMessageId, payload });
+      } catch (error) {
+        if (!isRetryableApiRequestError(error)) {
+          setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
+          setChatDraft(message);
+          setPendingAttachments(attachments);
+          setStatusMessage(getErrorMessage(error));
+          return;
+        }
+        queueMessagingOutbox({
+          accountId: session.account.id,
+          clientMessageId,
+          payload
+        });
         setChatMessages((messages) =>
           messages.map((item) =>
             item.id === clientMessageId ? { ...item, status: "failed" } : item
@@ -16236,13 +16255,6 @@ function isValidContact(channel: AuthChannel, contact: string): boolean {
   return /^\+?[0-9\s-]{7,18}$/.test(value);
 }
 
-const messagingOutboxStorageKey = "soko.market.messaging-outbox.v1";
-
-interface MessagingOutboxEntry {
-  clientMessageId: string;
-  payload: Record<string, unknown>;
-}
-
 function createClientMessageId(prefix: string): string {
   return `${prefix}-${Date.now()}-${crypto.randomUUID()}`;
 }
@@ -16444,31 +16456,6 @@ function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
     .padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(base64);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function readMessagingOutbox(): MessagingOutboxEntry[] {
-  try {
-    const stored = JSON.parse(localStorage.getItem(messagingOutboxStorageKey) ?? "[]") as unknown;
-    return Array.isArray(stored) ? (stored as MessagingOutboxEntry[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function queueMessagingOutbox(entry: MessagingOutboxEntry): void {
-  const entries = readMessagingOutbox().filter(
-    (candidate) => candidate.clientMessageId !== entry.clientMessageId
-  );
-  localStorage.setItem(messagingOutboxStorageKey, JSON.stringify([...entries, entry]));
-}
-
-function removeMessagingOutboxEntry(clientMessageId: string): void {
-  localStorage.setItem(
-    messagingOutboxStorageKey,
-    JSON.stringify(
-      readMessagingOutbox().filter((entry) => entry.clientMessageId !== clientMessageId)
-    )
-  );
 }
 
 async function createChatAttachment(file: File): Promise<ChatAttachment> {

@@ -10,6 +10,7 @@ export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
   cp2?: Cp2RouteOptions;
   databaseHealth?: () => Promise<Record<string, unknown>>;
+  mutationPersistenceFlush?: () => Promise<void>;
 }
 
 export function buildApi(options: BuildApiOptions = {}) {
@@ -19,6 +20,7 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
   const oauthAllowedRedirectOrigins = readOAuthAllowedRedirectOrigins([...allowedCorsOrigins]);
+  const persistenceBarrierRequests = new WeakSet<object>();
 
   void app.register(websocket, {
     options: {
@@ -39,6 +41,23 @@ export function buildApi(options: BuildApiOptions = {}) {
     if (request.method === "OPTIONS") {
       return reply.code(204).send();
     }
+  });
+
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (
+      options.mutationPersistenceFlush === undefined ||
+      request.method === "GET" ||
+      request.method === "HEAD" ||
+      request.method === "OPTIONS" ||
+      reply.statusCode >= 400 ||
+      persistenceBarrierRequests.has(request)
+    ) {
+      return payload;
+    }
+
+    persistenceBarrierRequests.add(request);
+    await options.mutationPersistenceFlush();
+    return payload;
   });
 
   void app.register(async (routes) => {

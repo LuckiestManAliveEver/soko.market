@@ -2393,11 +2393,17 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
+        const sessionId = readSessionCookie(request.headers.cookie);
+        const invites = store.createNetworkInvites({
+          sessionId,
+          businessId: request.params.businessId,
+          contacts: parseNetworkInviteContacts(request.body.contacts)
+        });
         return {
-          invites: store.createNetworkInvites({
-            sessionId: readSessionCookie(request.headers.cookie),
+          invites: await store.deliverNetworkInvites({
+            sessionId,
             businessId: request.params.businessId,
-            contacts: parseNetworkInviteContacts(request.body.contacts)
+            inviteIds: invites.map((invite) => invite.id)
           })
         };
       } catch (error) {

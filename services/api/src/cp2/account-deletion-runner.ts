@@ -3,17 +3,22 @@ import type { AccountDeletionPurgeRunSummary, Cp2Store } from "./store.js";
 const defaultIntervalMs = 24 * 60 * 60 * 1000;
 
 export interface AccountDeletionRunnerOptions {
-  store: Pick<Cp2Store, "purgeExpiredAccountDeletions">;
+  store: Pick<Cp2Store, "purgeExpiredAccountDeletions" | "purgeExpiredShopDeletions">;
   intervalMs?: number;
   runOnStart?: boolean;
   now?: () => Date;
-  onResult?: (result: AccountDeletionPurgeRunSummary) => void;
+  onResult?: (result: DeletionPurgeRunSummary) => void;
   onError?: (error: unknown) => void;
 }
 
 export interface AccountDeletionRunner {
-  runNow: () => Promise<AccountDeletionPurgeRunSummary | null>;
+  runNow: () => Promise<DeletionPurgeRunSummary | null>;
   stop: () => Promise<void>;
+}
+
+export interface DeletionPurgeRunSummary {
+  shopsPurged: number;
+  accounts: AccountDeletionPurgeRunSummary;
 }
 
 export function startAccountDeletionRunner(
@@ -21,17 +26,19 @@ export function startAccountDeletionRunner(
 ): AccountDeletionRunner {
   const intervalMs = normalizeInterval(options.intervalMs);
   let stopped = false;
-  let inFlight: Promise<AccountDeletionPurgeRunSummary | null> | null = null;
+  let inFlight: Promise<DeletionPurgeRunSummary | null> | null = null;
 
-  const runNow = (): Promise<AccountDeletionPurgeRunSummary | null> => {
+  const runNow = (): Promise<DeletionPurgeRunSummary | null> => {
     if (stopped) return Promise.resolve(null);
     if (inFlight !== null) return inFlight;
 
     inFlight = (async () => {
       try {
-        const result = await options.store.purgeExpiredAccountDeletions(
-          options.now?.() ?? new Date()
-        );
+        const now = options.now?.() ?? new Date();
+        const result: DeletionPurgeRunSummary = {
+          shopsPurged: options.store.purgeExpiredShopDeletions(now),
+          accounts: await options.store.purgeExpiredAccountDeletions(now)
+        };
         options.onResult?.(result);
         return result;
       } catch (error) {

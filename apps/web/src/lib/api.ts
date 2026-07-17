@@ -1,5 +1,23 @@
 import { getResponseErrorMessage } from "../user-facing-error";
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
+export function isRetryableApiRequestError(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof ApiRequestError &&
+      (error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500))
+  );
+}
+
 export function readApiBaseUrl(): string {
   const configuredUrl = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_URL;
 
@@ -31,7 +49,7 @@ export async function apiFetch<T>(
   });
 
   if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
+    throw new ApiRequestError(response.status, await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as T;
