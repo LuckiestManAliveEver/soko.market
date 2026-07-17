@@ -20,6 +20,8 @@ import type {
   LaunchIncidentCategory,
   LaunchIncidentSeverity,
   LaunchIncidentStatus,
+  ProductFieldDefinition,
+  ProductFieldInputType,
   ProductImportDraft,
   PublicCustomerCareRequestType,
   ShopPresenceStatus,
@@ -2470,26 +2472,33 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.get(
     "/businesses/:businessId/products/fields",
-    async (_request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
-      // TODO: persist configurable catalogue field structure per business.
-      return reply.code(501).send({
-        code: "product_fields_not_implemented",
-        message: "Product field management is not implemented yet."
-      });
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getProductFieldSchema({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
     }
   );
 
   app.post(
     "/businesses/:businessId/products/fields",
     async (
-      _request: FastifyRequest<{ Params: BusinessParams; Body: ProductFieldStructureBody }>,
+      request: FastifyRequest<{ Params: BusinessParams; Body: ProductFieldStructureBody }>,
       reply
     ) => {
-      // TODO: validate and persist configurable catalogue field structure per business.
-      return reply.code(501).send({
-        code: "product_fields_not_implemented",
-        message: "Product field management is not implemented yet."
-      });
+      try {
+        return store.saveProductFieldSchema({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          fields: parseProductFieldDefinitions(request.body?.fields)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
     }
   );
 
@@ -4257,6 +4266,34 @@ function parseProductBody(body: ProductBody | null | undefined) {
         ? null
         : parseNumber(record.sellingPrice, "sellingPrice")
   };
+}
+
+function parseProductFieldDefinitions(value: unknown): ProductFieldDefinition[] {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "product_fields_required", "Product fields are required.");
+  }
+
+  return value.map((field, index) => {
+    const record = parseRequestBody(field);
+    const inputType = parseString(record.inputType, `fields[${index}].inputType`);
+    if (!isProductFieldInputType(inputType)) {
+      throw new Cp2Error(
+        400,
+        "product_field_type_invalid",
+        `Field ${index + 1} has an unsupported input type.`
+      );
+    }
+    return {
+      id: parseString(record.id, `fields[${index}].id`),
+      label: parseString(record.label, `fields[${index}].label`),
+      inputType,
+      required: parseBoolean(record.required, `fields[${index}].required`)
+    };
+  });
+}
+
+function isProductFieldInputType(value: string): value is ProductFieldInputType {
+  return ["text", "number", "select", "textarea", "yes_no"].includes(value);
 }
 
 function parseContactRecordBody(body: ContactRecordBody | null | undefined) {

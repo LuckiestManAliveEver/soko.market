@@ -15,7 +15,8 @@ const migrationFilenames = [
   "023_storefront_interaction_contracts.sql",
   "024_agent_profiles.sql",
   "025_passkeys.sql",
-  "026_otp_recovery_purpose.sql"
+  "026_otp_recovery_purpose.sql",
+  "027_product_field_schemas.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

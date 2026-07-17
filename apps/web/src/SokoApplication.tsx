@@ -31,7 +31,17 @@ import type {
   ConversationParticipantSummary,
   ConversationView,
   E2eeDeviceSummary,
-  PasskeySummary
+  McpAccessScope,
+  McpAccessTokenCreated,
+  McpAccessTokenSummary,
+  NetworkInviteSummary,
+  PasskeySummary,
+  ProductFieldDefinition,
+  ProductFieldInputType,
+  ProductFieldSchemaSummary,
+  PublicCustomerCareRequestSummary,
+  PublicOrderSummary,
+  PublicStorefrontMessageSummary
 } from "@soko/shared-types";
 import {
   createInitialChatMessages,
@@ -1416,8 +1426,6 @@ interface ProductFormState {
   sellingPrice: string;
 }
 
-type ProductFieldInputType = "text" | "number" | "select" | "textarea" | "yes_no";
-
 interface ProductFieldDraft {
   id: string;
   inputType: ProductFieldInputType;
@@ -1981,6 +1989,9 @@ export function OwnerApp() {
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isContactTyping, setIsContactTyping] = useState(false);
   const [products, setProducts] = useState<ProductSummary[]>([]);
+  const [productFields, setProductFields] = useState<ProductFieldDefinition[]>(() =>
+    createDefaultProductFieldDefinitions()
+  );
   const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
@@ -1999,12 +2010,20 @@ export function OwnerApp() {
   >(null);
   const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
   const [networkGraph, setNetworkGraph] = useState<NetworkGraphSummary | null>(null);
+  const [networkInvites, setNetworkInvites] = useState<NetworkInviteSummary[]>([]);
   const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
   const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
   const [notificationInbox, setNotificationInbox] = useState<NotificationInbox>({
     summary: emptyNotificationSummary,
     notifications: []
   });
+  const [storefrontCareRequests, setStorefrontCareRequests] = useState<
+    PublicCustomerCareRequestSummary[]
+  >([]);
+  const [storefrontMessages, setStorefrontMessages] = useState<PublicStorefrontMessageSummary[]>(
+    []
+  );
+  const [storefrontOrders, setStorefrontOrders] = useState<PublicOrderSummary[]>([]);
   const [securityReview, setSecurityReview] = useState<SecurityReviewSummary | null>(null);
   const [dataExport, setDataExport] = useState<DataExportBundle | null>(null);
   const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
@@ -2299,6 +2318,7 @@ export function OwnerApp() {
 
     if (view === "chat") {
       void loadProducts(business.id);
+      void loadProductFields(business.id);
       void loadSuppliers(business.id);
       void loadCustomers(business.id);
       void loadInvoices(business.id);
@@ -2310,6 +2330,7 @@ export function OwnerApp() {
 
     if (view === "products") {
       void loadProducts(business.id);
+      void loadProductFields(business.id);
     }
 
     if (view === "suppliers") {
@@ -2333,6 +2354,7 @@ export function OwnerApp() {
 
     if (view === "chat" || view === "home" || view === "network") {
       void loadNetworkGraph();
+      void loadNetworkInvites(business.id);
     }
 
     if (view === "runtime") {
@@ -2345,6 +2367,7 @@ export function OwnerApp() {
 
     if (view === "home" || view === "notifications") {
       void loadNotifications(business.id);
+      void loadStorefrontInbox(business.id);
     }
 
     if (view === "payments") {
@@ -3215,6 +3238,17 @@ export function OwnerApp() {
     }
   }
 
+  async function loadProductFields(businessId: string) {
+    try {
+      const schema = await getJson<ProductFieldSchemaSummary>(
+        `/businesses/${businessId}/products/fields`
+      );
+      setProductFields(schema.fields);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function saveProduct(): Promise<boolean> {
     if (business === null) {
       return false;
@@ -3307,12 +3341,13 @@ export function OwnerApp() {
     }
 
     try {
-      await postJson<{ code: string; message: string }>(
+      const schema = await postJson<ProductFieldSchemaSummary>(
         `/businesses/${business.id}/products/fields`,
         {
-          fields
+          fields: productFieldDefinitionsFromDrafts(fields)
         }
       );
+      setProductFields(schema.fields);
       setStatusMessage("Product field structure saved");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3693,6 +3728,16 @@ export function OwnerApp() {
     }
   }
 
+  async function loadNetworkInvites(businessId: string) {
+    try {
+      setNetworkInvites(
+        await getJson<NetworkInviteSummary[]>(`/businesses/${businessId}/network/invites`)
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function syncPhoneNetwork() {
     const contacts = createPhoneNetworkSeed(customers);
 
@@ -3761,6 +3806,7 @@ export function OwnerApp() {
       `/businesses/${business.id}/network/invites`,
       { contacts }
     );
+    await loadNetworkInvites(business.id);
     setStatusMessage(
       `${response.invites.length} invite${response.invites.length === 1 ? "" : "s"} queued for delivery.`
     );
@@ -3892,6 +3938,23 @@ export function OwnerApp() {
       setNotificationInbox(
         await getJson<NotificationInbox>(`/businesses/${businessId}/notifications`)
       );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadStorefrontInbox(businessId: string) {
+    try {
+      const [careRequests, messages, orders] = await Promise.all([
+        getJson<PublicCustomerCareRequestSummary[]>(
+          `/businesses/${businessId}/storefront/customer-care`
+        ),
+        getJson<PublicStorefrontMessageSummary[]>(`/businesses/${businessId}/storefront/messages`),
+        getJson<PublicOrderSummary[]>(`/businesses/${businessId}/storefront/orders`)
+      ]);
+      setStorefrontCareRequests(careRequests);
+      setStorefrontMessages(messages);
+      setStorefrontOrders(orders);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -5024,6 +5087,22 @@ export function OwnerApp() {
     setStatusMessage("Background message notifications enabled");
   }
 
+  async function disableMessagingNotifications() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setStatusMessage("This browser does not support background push notifications");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription === null) {
+      setStatusMessage("Background message notifications are already disabled");
+      return;
+    }
+    await deleteJson("/v1/push/subscriptions", { endpoint: subscription.endpoint });
+    await subscription.unsubscribe();
+    setStatusMessage("Background message notifications disabled on this device");
+  }
+
   async function signalTyping(draft: string) {
     setChatDraft(draft);
     if (activeConversationId === null || session === null) return;
@@ -5054,15 +5133,16 @@ export function OwnerApp() {
     }
   }
 
-  async function logout() {
+  async function logout(allSessions = false) {
     try {
-      await postJson<{ revoked: boolean }>("/auth/logout", {});
+      await postJson(allSessions ? "/auth/logout-all" : "/auth/logout", {});
     } catch {
       // Local state still needs to lock immediately if the API is unavailable.
     }
 
     setSession(null);
     setProducts([]);
+    setProductFields(createDefaultProductFieldDefinitions());
     setSuppliers([]);
     setCustomers([]);
     setInvoices([]);
@@ -5077,6 +5157,10 @@ export function OwnerApp() {
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
+    setNetworkInvites([]);
+    setStorefrontCareRequests([]);
+    setStorefrontMessages([]);
+    setStorefrontOrders([]);
     setDataExport(null);
     setVerificationTier(null);
     setTaxConfig(null);
@@ -5119,7 +5203,13 @@ export function OwnerApp() {
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(false);
-    setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
+    setStatusMessage(
+      allSessions
+        ? "Signed out on every device. Enter your PIN to start a new session."
+        : ownerAuth === null
+          ? "Signed out"
+          : "Signed out. Enter PIN to continue."
+    );
     setIsWorkspaceUnlocked(ownerAuth === null);
   }
 
@@ -5664,7 +5754,11 @@ export function OwnerApp() {
         return (
           <NetworkSurface
             graph={networkGraph}
-            onRefresh={() => void loadNetworkGraph()}
+            invites={networkInvites}
+            onRefresh={() => {
+              void loadNetworkGraph();
+              void loadNetworkInvites(business.id);
+            }}
             onSyncContacts={() => void runAction("network-sync", syncPhoneNetwork)}
             onSyncSocial={(provider) =>
               void runAction("network-social", () => syncSocialNetwork(provider))
@@ -5835,8 +5929,14 @@ export function OwnerApp() {
       case "notifications":
         return (
           <NotificationsSurface
+            careRequests={storefrontCareRequests}
             inbox={notificationInbox}
-            onRefresh={() => void loadNotifications(business.id)}
+            messages={storefrontMessages}
+            orders={storefrontOrders}
+            onRefresh={() => {
+              void loadNotifications(business.id);
+              void loadStorefrontInbox(business.id);
+            }}
             onUpdate={(notificationId, status) =>
               void runAction("notification-update", () =>
                 updateNotification(notificationId, status)
@@ -6106,9 +6206,12 @@ export function OwnerApp() {
             storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
             onBack={returnToChat}
+            onEnableNotifications={requestMessagingNotifications}
+            onDisableNotifications={disableMessagingNotifications}
             onLogout={() => void runAction("logout", logout)}
+            onLogoutAll={() => void runAction("logout-all", () => logout(true))}
             onScheduleAccountDeletion={scheduleAccountDeletion}
-            isLoggingOut={isPending("logout")}
+            isLoggingOut={isPending("logout") || isPending("logout-all")}
           />
         ) : (
           <main className="chat-workspace-shell">
@@ -6143,6 +6246,7 @@ export function OwnerApp() {
               oauthProvidersLoaded={oauthProvidersLoaded}
               pendingAttachments={pendingAttachments}
               productForm={productForm}
+              productFields={productFields}
               productCount={products.length}
               products={products}
               sokoId={business?.sokoId ?? "Not set up yet"}
@@ -6951,6 +7055,7 @@ interface SyncSurfaceProps {
 
 interface NetworkSurfaceProps {
   graph: NetworkGraphSummary | null;
+  invites: NetworkInviteSummary[];
   onRefresh: () => void;
   onSyncContacts: () => void;
   onSyncSocial: (provider: "instagram" | "whatsapp" | "tiktok" | "x") => void;
@@ -7055,6 +7160,23 @@ function NetworkSurface(props: NetworkSurfaceProps) {
           ))}
         </div>
       ) : null}
+
+      <div className="network-source-list">
+        <h4>Invite delivery</h4>
+        {props.invites.length === 0 ? (
+          <p className="shell-note">No contact invites have been queued.</p>
+        ) : (
+          props.invites.map((invite) => (
+            <article key={invite.id}>
+              <span>{invite.contactName}</span>
+              <small>
+                {invite.channel} · {invite.destination} · {invite.status}
+              </small>
+              <small>{formatDate(invite.createdAt)}</small>
+            </article>
+          ))
+        )}
+      </div>
 
       {props.graph !== null && props.graph.routes.length > 0 ? (
         <div className="network-route-list">
@@ -10996,12 +11118,22 @@ function ReportRow(props: ReportRowProps) {
 }
 
 interface NotificationsSurfaceProps {
+  careRequests: PublicCustomerCareRequestSummary[];
   inbox: NotificationInbox;
+  messages: PublicStorefrontMessageSummary[];
+  orders: PublicOrderSummary[];
   onRefresh: () => void;
   onUpdate: (notificationId: string, status: BusinessNotificationSummary["status"]) => void;
 }
 
-function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfaceProps) {
+function NotificationsSurface({
+  careRequests,
+  inbox,
+  messages,
+  orders,
+  onRefresh,
+  onUpdate
+}: NotificationsSurfaceProps) {
   const visibleNotifications = inbox.notifications.filter(
     (notification) => notification.status !== "archived"
   );
@@ -11068,6 +11200,61 @@ function NotificationsSurface({ inbox, onRefresh, onUpdate }: NotificationsSurfa
           ))
         )}
       </section>
+
+      <section className="record-list" aria-label="Storefront requests">
+        <div className="section-heading">
+          <p className="eyebrow">Public storefront</p>
+          <h3>Customer requests</h3>
+          <p>Messages, care requests, and order requests submitted through your public shop.</p>
+        </div>
+        {orders.map((order) => (
+          <article className="record-row" key={order.id}>
+            <div>
+              <p className="eyebrow">Order · {order.status}</p>
+              <h4>{order.customerName}</h4>
+              <p>
+                {order.items.map((item) => `${item.quantity} × ${item.productName}`).join(", ")}
+              </p>
+              <small>
+                {order.phone} · {formatDate(order.createdAt)}
+              </small>
+            </div>
+            <strong>{order.items.length} items</strong>
+          </article>
+        ))}
+        {careRequests.map((request) => (
+          <article className="record-row" key={request.id}>
+            <div>
+              <p className="eyebrow">
+                {formatCareRequestType(request.type)} · {request.status}
+              </p>
+              <h4>{request.customerName ?? "Storefront visitor"}</h4>
+              <p>{request.message ?? "No message supplied."}</p>
+              <small>
+                {request.phone ?? "No phone"} · {formatDate(request.createdAt)}
+              </small>
+            </div>
+          </article>
+        ))}
+        {messages.map((message) => (
+          <article className="record-row" key={message.id}>
+            <div>
+              <p className="eyebrow">Storefront message</p>
+              <h4>Visitor {message.visitorId.slice(0, 12)}</h4>
+              <p>{message.body}</p>
+              <small>
+                {formatDate(message.createdAt)}
+                {message.attachmentNames.length === 0
+                  ? ""
+                  : ` · ${message.attachmentNames.length} attachments`}
+              </small>
+            </div>
+          </article>
+        ))}
+        {orders.length + careRequests.length + messages.length === 0 ? (
+          <p className="shell-note">No storefront requests yet.</p>
+        ) : null}
+      </section>
     </div>
   );
 }
@@ -11080,7 +11267,10 @@ interface AgentProfileSurfaceProps {
   storefrontUrl: string;
   onAgentChange: (agent: AgentSettings) => void;
   onBack: () => void;
+  onDisableNotifications: () => Promise<void>;
+  onEnableNotifications: () => Promise<void>;
   onLogout: () => void;
+  onLogoutAll: () => void;
   onScheduleAccountDeletion: (input: {
     pin: string;
     confirmation: string;
@@ -11097,7 +11287,10 @@ function AgentProfileSurface({
   storefrontUrl,
   onAgentChange,
   onBack,
+  onDisableNotifications,
+  onEnableNotifications,
   onLogout,
+  onLogoutAll,
   onScheduleAccountDeletion,
   isLoggingOut
 }: AgentProfileSurfaceProps) {
@@ -11112,6 +11305,12 @@ function AgentProfileSurface({
     ConnectedSocialAccountSummary[]
   >([]);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
+  const [mcpTokenName, setMcpTokenName] = useState("My integration");
+  const [mcpReadEnabled, setMcpReadEnabled] = useState(true);
+  const [mcpActEnabled, setMcpActEnabled] = useState(false);
+  const [mcpPin, setMcpPin] = useState("");
+  const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
@@ -11158,6 +11357,7 @@ function AgentProfileSurface({
   useEffect(() => {
     void loadConnectedSocialAccounts();
     void loadPasskeys();
+    void loadMcpTokens();
     void loadShopDeletionPreview();
     void loadAgentProfile();
     // initialize model search from URL so browser back/forward works
@@ -11385,6 +11585,53 @@ function AgentProfileSurface({
       await deleteJson<{ revoked: true }>(`/auth/passkeys/${encodeURIComponent(credentialId)}`);
       await loadPasskeys();
       setProfileMessage("Passkey revoked.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadMcpTokens() {
+    try {
+      const response = await getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens");
+      setMcpTokens(response.tokens);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createMcpToken() {
+    const scopes: McpAccessScope[] = [
+      ...(mcpReadEnabled ? (["mcp:read"] as const) : []),
+      ...(mcpActEnabled ? (["mcp:act"] as const) : [])
+    ];
+    if (scopes.length === 0) {
+      setProfileMessage("Select at least one MCP permission.");
+      return;
+    }
+    try {
+      if (mcpActEnabled) {
+        await postJson<{ verified: boolean }>("/auth/pin/verify", { pin: mcpPin });
+      }
+      const created = await postJson<McpAccessTokenCreated>("/v1/mcp/tokens", {
+        name: mcpTokenName,
+        scopes,
+        shopId: business.id,
+        expiresInSeconds: 86_400
+      });
+      setNewMcpAccessToken(created.accessToken);
+      setMcpPin("");
+      await loadMcpTokens();
+      setProfileMessage("MCP token created. Copy it now; the secret is shown only once.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function revokeMcpToken(tokenId: string) {
+    try {
+      await deleteJson<McpAccessTokenSummary>(`/v1/mcp/tokens/${encodeURIComponent(tokenId)}`);
+      await loadMcpTokens();
+      setProfileMessage("MCP token revoked.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -12334,13 +12581,153 @@ function AgentProfileSurface({
 
         <div className="record-form shop-profile-card">
           <div className="section-heading">
-            <p className="eyebrow">Business channels</p>
-            <h3>Connected customer channels</h3>
+            <p className="eyebrow">Devices and sessions</p>
+            <h3>Notifications and account sessions</h3>
           </div>
           <p className="shell-note">
-            These are separate from login accounts. Keep storefront, chat and customer-care channel
-            settings in their existing workspace areas.
+            Control push delivery on this device, or revoke every signed-in session if a device is
+            lost.
           </p>
+          <div className="row-actions">
+            <button
+              type="button"
+              disabled={pendingProfileAction !== null}
+              onClick={() =>
+                void runProfileAction("push-enable", async () => onEnableNotifications())
+              }
+            >
+              Enable notifications
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={pendingProfileAction !== null}
+              onClick={() =>
+                void runProfileAction("push-disable", async () => onDisableNotifications())
+              }
+            >
+              Disable on this device
+            </button>
+            <button
+              className="destructive-button"
+              type="button"
+              disabled={pendingProfileAction !== null || isLoggingOut}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Sign out every Soko session on all devices? You will need to sign in again."
+                  )
+                ) {
+                  onLogoutAll();
+                }
+              }}
+            >
+              Sign out all devices
+            </button>
+          </div>
+        </div>
+
+        <div className="record-form shop-profile-card">
+          <div className="section-heading">
+            <p className="eyebrow">Developer access</p>
+            <h3>MCP access tokens</h3>
+            <p>
+              Create short-lived tokens for trusted AI clients. Action access still preserves Soko
+              confirmation gates.
+            </p>
+          </div>
+          <label>
+            Token name
+            <input value={mcpTokenName} onChange={(event) => setMcpTokenName(event.target.value)} />
+          </label>
+          <div className="checkbox-list">
+            <label>
+              <input
+                type="checkbox"
+                checked={mcpReadEnabled}
+                onChange={(event) => setMcpReadEnabled(event.target.checked)}
+              />
+              Read shops and sync changes
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={mcpActEnabled}
+                onChange={(event) => setMcpActEnabled(event.target.checked)}
+              />
+              Propose actions through the runtime
+            </label>
+          </div>
+          {mcpActEnabled ? (
+            <label>
+              Owner PIN
+              <input
+                type="password"
+                inputMode="numeric"
+                autoComplete="current-password"
+                value={mcpPin}
+                onChange={(event) => setMcpPin(event.target.value)}
+                placeholder="Required for action access"
+              />
+            </label>
+          ) : null}
+          <button
+            type="button"
+            disabled={
+              pendingProfileAction !== null ||
+              mcpTokenName.trim().length < 3 ||
+              (mcpActEnabled && !/^\d{4}$/.test(mcpPin))
+            }
+            onClick={() => void runProfileAction("mcp-create", createMcpToken)}
+          >
+            Create 24-hour token
+          </button>
+          {newMcpAccessToken.length > 0 ? (
+            <div className="soko-id-card" role="status">
+              <span>Copy this secret now—it will not be shown again.</span>
+              <code>{newMcpAccessToken}</code>
+              <button
+                type="button"
+                onClick={() => void copyStorefrontValue(newMcpAccessToken, "MCP token")}
+              >
+                Copy token
+              </button>
+            </div>
+          ) : null}
+          <div className="connected-social-list" aria-label="MCP access tokens">
+            {mcpTokens.length === 0 ? <p className="shell-note">No MCP tokens yet.</p> : null}
+            {mcpTokens.map((token) => (
+              <article className="connected-social-card" key={token.id}>
+                <div>
+                  <span>{token.scopes.join(" · ")}</span>
+                  <strong>{token.name}</strong>
+                  <p>
+                    {token.revokedAt !== null
+                      ? "Revoked"
+                      : Date.parse(token.expiresAt) <= Date.now()
+                        ? "Expired"
+                        : `Expires ${formatDate(token.expiresAt)}`}
+                  </p>
+                </div>
+                <div className="connected-social-meta">
+                  <span>Created: {formatDate(token.createdAt)}</span>
+                  <span>
+                    Last used: {token.lastUsedAt === null ? "—" : formatDate(token.lastUsedAt)}
+                  </span>
+                </div>
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={token.revokedAt !== null || pendingProfileAction !== null}
+                  onClick={() =>
+                    void runProfileAction("mcp-revoke", () => revokeMcpToken(token.id))
+                  }
+                >
+                  Revoke
+                </button>
+              </article>
+            ))}
+          </div>
         </div>
 
         <div className="record-form danger-zone-card">
@@ -12927,6 +13314,7 @@ interface ChatSurfaceProps {
   oauthProvidersLoaded: boolean;
   pendingAttachments: ChatAttachment[];
   productForm: ProductFormState;
+  productFields: ProductFieldDefinition[];
   productCount: number;
   products: ProductSummary[];
   sokoId: string;
@@ -13008,6 +13396,7 @@ function ChatSurface({
   oauthProvidersLoaded,
   pendingAttachments,
   productForm,
+  productFields,
   productCount,
   products,
   sokoId,
@@ -13606,6 +13995,7 @@ function ChatSurface({
             ) : (
               <CatalogueNestedCard
                 form={productForm}
+                fields={productFields}
                 products={products}
                 view={workspaceCardView}
                 onBack={() =>
@@ -13697,6 +14087,7 @@ function ChatSurface({
               ) : (
                 <CatalogueNestedCard
                   form={productForm}
+                  fields={productFields}
                   products={products}
                   view={workspaceCardView}
                   onBack={() =>
@@ -14543,6 +14934,7 @@ function contactSelectionKey(contact: ContactPickerContact): string {
 }
 
 function CatalogueNestedCard({
+  fields,
   form,
   products,
   view,
@@ -14558,6 +14950,7 @@ function CatalogueNestedCard({
   onSaveFields,
   onSaveProduct
 }: {
+  fields: ProductFieldDefinition[];
   form: ProductFormState;
   products: ProductSummary[];
   view: "catalogue" | "addProduct" | "editProduct" | "deleteProduct" | "manageFields";
@@ -14575,8 +14968,12 @@ function CatalogueNestedCard({
 }) {
   const [customProductFields, setCustomProductFields] = useState<ProductFieldDraft[]>([]);
   const [managedFields, setManagedFields] = useState<ProductFieldDraft[]>(() =>
-    createDefaultProductFieldDrafts()
+    fields.map((field) => ({ ...field, value: "" }))
   );
+
+  useEffect(() => {
+    setManagedFields(fields.map((field) => ({ ...field, value: "" })));
+  }, [fields]);
 
   function addCustomProductField() {
     setCustomProductFields((fields) => [...fields, createProductFieldDraft("Custom field")]);
@@ -15002,6 +15399,19 @@ function createDefaultProductFieldDrafts(): ProductFieldDraft[] {
   ];
 }
 
+function createDefaultProductFieldDefinitions(): ProductFieldDefinition[] {
+  return productFieldDefinitionsFromDrafts(createDefaultProductFieldDrafts());
+}
+
+function productFieldDefinitionsFromDrafts(fields: ProductFieldDraft[]): ProductFieldDefinition[] {
+  return fields.map((field) => ({
+    id: field.id,
+    inputType: field.inputType,
+    label: field.label,
+    required: field.required
+  }));
+}
+
 function createProductFieldDraft(
   label: string,
   inputType: ProductFieldInputType = "text",
@@ -15126,10 +15536,19 @@ async function putJson<TResponse>(path: string, body: Record<string, unknown>): 
   return (await response.json()) as TResponse;
 }
 
-async function deleteJson<TResponse>(path: string): Promise<TResponse> {
+async function deleteJson<TResponse>(
+  path: string,
+  body?: Record<string, unknown>
+): Promise<TResponse> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "DELETE",
-    credentials: "include"
+    credentials: "include",
+    ...(body === undefined
+      ? {}
+      : {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body)
+        })
   });
 
   if (!response.ok) {

@@ -225,4 +225,21 @@ describe("frontend user guidance", () => {
       'props.mode === "signup" ? "Continue with phone" : "Use phone and PIN"'
     );
   });
+
+  it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const routes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
+
+    expect(application).toContain('"/auth/logout-all"');
+    expect(application).toContain('deleteJson("/v1/push/subscriptions"');
+    expect(application).toContain('getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")');
+    expect(application).toContain("MCP access tokens");
+    expect(application).toContain("/storefront/customer-care");
+    expect(application).toContain("/storefront/messages");
+    expect(application).toContain("/storefront/orders");
+    expect(application).toContain("/network/invites");
+    expect(application).toContain("/products/fields");
+    expect(routes).toContain("store.saveProductFieldSchema");
+    expect(routes).not.toContain("product_fields_not_implemented");
+  });
 });

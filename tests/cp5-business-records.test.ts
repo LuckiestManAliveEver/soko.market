@@ -57,6 +57,17 @@ interface StockAdjustmentResponse {
   };
 }
 
+interface ProductFieldSchemaResponse {
+  businessId: string;
+  fields: Array<{
+    id: string;
+    label: string;
+    inputType: string;
+    required: boolean;
+  }>;
+  updatedAt: string;
+}
+
 describe("CP5 business core records", () => {
   it("creates, edits, and lists products, customers, suppliers, and stock movements", async () => {
     const store = createCp2Store();
@@ -331,27 +342,30 @@ describe("CP5 business core records", () => {
     await app.close();
   });
 
-  it("keeps configurable product fields explicit until the API is implemented", async () => {
+  it("saves and returns configurable product fields", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
 
-    const response = await app.inject({
-      method: "POST",
-      url: `/businesses/${businessId}/products/fields`,
-      headers: {
-        ...jsonHeaders(),
-        cookie: sessionCookie
+    const saved = await postJson<ProductFieldSchemaResponse>(
+      app,
+      `/businesses/${businessId}/products/fields`,
+      {
+        fields: [{ id: "shelf", label: "Shelf", inputType: "text", required: false }]
       },
-      payload: JSON.stringify({
-        fields: [{ label: "Shelf", inputType: "text" }]
-      })
-    });
+      sessionCookie
+    );
+    const loaded = await getJson<ProductFieldSchemaResponse>(
+      app,
+      `/businesses/${businessId}/products/fields`,
+      sessionCookie
+    );
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json()).toMatchObject({
-      code: "product_fields_not_implemented"
+    expect(saved).toMatchObject({
+      businessId,
+      fields: [{ id: "shelf", label: "Shelf", inputType: "text", required: false }]
     });
+    expect(loaded).toEqual(saved);
 
     await app.close();
   });

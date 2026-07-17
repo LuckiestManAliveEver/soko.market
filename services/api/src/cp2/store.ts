@@ -88,6 +88,9 @@ import type {
   OAuthSessionSummary,
   PaymentSummary,
   PasskeySummary,
+  ProductFieldDefinition,
+  ProductFieldSchemaSummary,
+  ProductFieldInputType,
   ProductImportDraft,
   ProductSummary,
   PublicCustomerCareRequestSummary,
@@ -553,6 +556,7 @@ export interface Cp2Snapshot {
   agentProfiles?: BusinessAgentProfileSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
+  productFieldSchemas: ProductFieldSchemaSummary[];
   products: ProductSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
@@ -728,6 +732,7 @@ export class Cp2Store {
     Set<(event: SyncRealtimeChangesAvailableEvent) => void>
   >();
   private readonly products = new Map<string, ProductSummary>();
+  private readonly productFieldSchemas = new Map<string, ProductFieldSchemaSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
   private readonly salesAgents = new Map<string, SalesAgentSummary>();
@@ -2842,6 +2847,52 @@ export class Cp2Store {
   }): ProductSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
     return [...this.products.values()].filter((product) => product.businessId === input.businessId);
+  }
+
+  getProductFieldSchema(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ProductFieldSchemaSummary {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    return (
+      this.productFieldSchemas.get(input.businessId) ?? {
+        businessId: input.businessId,
+        fields: defaultProductFieldDefinitions(),
+        updatedAt: new Date(0).toISOString()
+      }
+    );
+  }
+
+  saveProductFieldSchema(input: {
+    sessionId: string | null;
+    businessId: string;
+    fields: ProductFieldDefinition[];
+    now?: Date;
+  }): ProductFieldSchemaSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:write",
+      now
+    );
+    const fields = normalizeProductFieldDefinitions(input.fields);
+    const schema: ProductFieldSchemaSummary = {
+      businessId: input.businessId,
+      fields,
+      updatedAt: now.toISOString()
+    };
+    this.productFieldSchemas.set(input.businessId, schema);
+    this.recordAuditEvent({
+      type: "product.fields_updated",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { fieldCount: fields.length }
+    });
+    return schema;
   }
 
   getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
@@ -7898,6 +7949,7 @@ export class Cp2Store {
       agentProfiles: [...this.agentProfiles.values()].map(cloneBusinessAgentProfile),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
+      productFieldSchemas: [...this.productFieldSchemas.values()],
       products: [...this.products.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
@@ -7982,6 +8034,7 @@ export class Cp2Store {
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
     this.products.clear();
+    this.productFieldSchemas.clear();
     this.customers.clear();
     this.suppliers.clear();
     this.salesAgents.clear();
@@ -8117,6 +8170,13 @@ export class Cp2Store {
 
     for (const product of snapshot.products) {
       this.products.set(product.id, product);
+    }
+
+    for (const schema of snapshot.productFieldSchemas ?? []) {
+      this.productFieldSchemas.set(schema.businessId, {
+        ...schema,
+        fields: schema.fields.map((field) => ({ ...field }))
+      });
     }
 
     for (const customer of snapshot.customers) {
@@ -11587,6 +11647,7 @@ export class Cp2Store {
 
     this.verificationTiers.delete(businessId);
     this.taxConfigs.delete(businessId);
+    this.productFieldSchemas.delete(businessId);
     this.betaAccess.delete(businessId);
     this.launchSettings.delete(businessId);
     this.businesses.delete(businessId);
@@ -11639,6 +11700,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentProfiles, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.productFieldSchemas, scope);
       deletedRecordCount += deleteScopedMapRecords(this.products, scope);
       deletedRecordCount += deleteScopedMapRecords(this.customers, scope);
       deletedRecordCount += deleteScopedMapRecords(this.suppliers, scope);
@@ -14283,6 +14345,68 @@ function normalizeRequiredBoundedText(value: string, label: string, maximumLengt
     );
   }
   return normalized;
+}
+
+function defaultProductFieldDefinitions(): ProductFieldDefinition[] {
+  return [
+    { id: "name", label: "Name", inputType: "text", required: true },
+    { id: "sku", label: "SKU", inputType: "text", required: true },
+    { id: "unit", label: "Unit", inputType: "select", required: true },
+    { id: "quantity", label: "Quantity", inputType: "number", required: true },
+    { id: "selling-price", label: "Selling Price", inputType: "number", required: true }
+  ];
+}
+
+function normalizeProductFieldDefinitions(
+  fields: ProductFieldDefinition[]
+): ProductFieldDefinition[] {
+  if (!Array.isArray(fields) || fields.length < 1 || fields.length > 50) {
+    throw new Cp2Error(
+      400,
+      "product_fields_invalid",
+      "A product field schema needs between 1 and 50 fields."
+    );
+  }
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+  const supportedTypes = new Set<ProductFieldInputType>([
+    "text",
+    "number",
+    "select",
+    "textarea",
+    "yes_no"
+  ]);
+
+  return fields.map((field, index) => {
+    const id = normalizeRequiredBoundedText(field.id, `field ${index + 1} id`, 80);
+    const label = normalizeRequiredBoundedText(field.label, `field ${index + 1} label`, 80);
+    const normalizedLabel = label.toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]*$/iu.test(id)) {
+      throw new Cp2Error(
+        400,
+        "product_field_id_invalid",
+        "Product field IDs may use letters, numbers, hyphens, and underscores."
+      );
+    }
+    if (ids.has(id) || labels.has(normalizedLabel)) {
+      throw new Cp2Error(
+        400,
+        "product_field_duplicate",
+        "Product field IDs and labels must be unique."
+      );
+    }
+    if (!supportedTypes.has(field.inputType)) {
+      throw new Cp2Error(400, "product_field_type_invalid", "Product field type is not supported.");
+    }
+    ids.add(id);
+    labels.add(normalizedLabel);
+    return {
+      id,
+      label,
+      inputType: field.inputType,
+      required: field.required === true
+    };
+  });
 }
 
 function normalizeOptionalBoundedText(value: string | null, maximumLength: number): string | null {

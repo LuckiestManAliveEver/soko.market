@@ -23,6 +23,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "agentProfiles", tableName: "cp2_agent_profiles" },
+  { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
@@ -103,6 +104,7 @@ const mutatingMethodNames = new Set([
   "createLogistics",
   "createMcpAccessToken",
   "createProduct",
+  "saveProductFieldSchema",
   "createNetworkInvites",
   "createPublicCustomerCareRequest",
   "createPublicOrder",
@@ -213,7 +215,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "026_otp_recovery_purpose.sql";
+const requiredMigrationFilename = "027_product_field_schemas.sql";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -2442,6 +2444,7 @@ function emptySnapshot(): Cp2Snapshot {
     agentProfiles: [],
     syncChanges: [],
     mcpAccessTokens: [],
+    productFieldSchemas: [],
     products: [],
     customers: [],
     suppliers: [],
@@ -2544,7 +2547,7 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     ].join(":");
   }
 
-  if (key === "activeAiModels" || key === "agentProfiles") {
+  if (key === "activeAiModels" || key === "agentProfiles" || key === "productFieldSchemas") {
     return requiredText(record, "businessId");
   }
 

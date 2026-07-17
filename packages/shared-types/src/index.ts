@@ -338,6 +338,21 @@ export interface ProductSummary {
   updatedAt: string;
 }
 
+export type ProductFieldInputType = "text" | "number" | "select" | "textarea" | "yes_no";
+
+export interface ProductFieldDefinition {
+  id: string;
+  label: string;
+  inputType: ProductFieldInputType;
+  required: boolean;
+}
+
+export interface ProductFieldSchemaSummary {
+  businessId: string;
+  fields: ProductFieldDefinition[];
+  updatedAt: string;
+}
+
 export interface CustomerSummary {
   id: string;
   businessId: string;
