@@ -31,10 +31,10 @@ Creating a conversation message persists one delivery record per eligible push s
 email recipient. The API attempts those records immediately, and the notification runner checks
 remaining due records every 60 seconds by default.
 
-Failed attempts use exponential delays of 1, 2, 4, 8, and up to 60 minutes. A delivery becomes
-`dead_letter` after five failed attempts. Expired push subscriptions are removed and their delivery
-record is terminal. Set `ENABLE_NOTIFICATION_DELIVERY_RUNNER=false` only when another process calls
-the same durable delivery method.
+Failed attempts use exponential delays of 1, 2, 4, and 8 minutes. A delivery becomes `dead_letter`
+after five failed attempts. Expired push subscriptions are removed and their delivery record is
+terminal. Set `ENABLE_NOTIFICATION_DELIVERY_RUNNER=false` only when another process calls the same
+durable delivery method.
 
 Conversation messages and the sync journal remain authoritative even if a secondary notification
 provider is unavailable.
