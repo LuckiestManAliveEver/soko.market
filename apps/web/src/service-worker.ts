@@ -6,9 +6,23 @@ export function registerAppServiceWorker() {
     return;
   }
 
-  window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/sw.js");
-  });
+  function register() {
+    void navigator.serviceWorker
+      .register("/sw.js", {
+        scope: "/",
+        updateViaCache: "none"
+      })
+      .catch((error: unknown) => {
+        console.error("Unable to register the Soko.market service worker.", error);
+      });
+  }
+
+  if (document.readyState === "complete") {
+    register();
+    return;
+  }
+
+  window.addEventListener("load", register, { once: true });
 }
 
 async function unregisterDevelopmentServiceWorkers() {

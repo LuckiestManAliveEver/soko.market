@@ -1883,6 +1883,7 @@ function formatShortCommit(commitSha: string): string {
 }
 
 export function OwnerApp() {
+  const installPrompt = useInstallPrompt();
   const accountDeletionIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const accountRestorationIntent =
@@ -5718,8 +5719,28 @@ export function OwnerApp() {
               </span>
             </button>
           )}
+          {isAuthScreen && installPrompt.canInstall ? (
+            <button
+              className="header-action-button workspace"
+              type="button"
+              data-testid="install-app-button"
+              onClick={() => void installPrompt.installApp()}
+            >
+              Install app
+            </button>
+          ) : null}
           {!isAuthScreen ? (
             <div className="header-actions">
+              {installPrompt.canInstall ? (
+                <button
+                  className="header-action-button workspace"
+                  type="button"
+                  data-testid="install-app-button"
+                  onClick={() => void installPrompt.installApp()}
+                >
+                  Install app
+                </button>
+              ) : null}
               <button
                 className={`header-action-button marketplace ${
                   mode === "marketplace" ? "mode-active" : ""

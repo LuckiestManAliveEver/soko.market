@@ -1,7 +1,16 @@
 /* global URL, caches, self */
 
-const CACHE_NAME = "soko-market-app-v3";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/soko-icon.svg"];
+const CACHE_PREFIX = "soko-market-app-";
+const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const APP_SHELL = [
+  "/",
+  "/manifest.webmanifest",
+  "/icons/soko-icon.svg",
+  "/icons/soko-icon-192.png",
+  "/icons/soko-icon-512.png",
+  "/icons/soko-icon-maskable-512.png",
+  "/icons/apple-touch-icon.png"
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -19,7 +28,7 @@ self.addEventListener("activate", (event) => {
       .then((cacheNames) =>
         Promise.all(
           cacheNames
-            .filter((cacheName) => cacheName !== CACHE_NAME)
+            .filter((cacheName) => cacheName.startsWith(CACHE_PREFIX) && cacheName !== CACHE_NAME)
             .map((cacheName) => caches.delete(cacheName))
         )
       )
@@ -70,8 +79,8 @@ self.addEventListener("message", (event) => {
   event.waitUntil(
     self.registration.showNotification(event.data.title || "New Soko message", {
       body: event.data.body || "Open Soko to read your message.",
-      icon: "/icons/soko-icon.svg",
-      badge: "/icons/soko-icon.svg",
+      icon: "/icons/soko-icon-192.png",
+      badge: "/icons/soko-icon-192.png",
       tag: event.data.tag,
       data: { conversationId: event.data.conversationId, url: "/" }
     })
@@ -88,8 +97,8 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title || "New Soko message", {
       body: "Open Soko to read your message.",
-      icon: "/icons/soko-icon.svg",
-      badge: "/icons/soko-icon.svg",
+      icon: "/icons/soko-icon-192.png",
+      badge: "/icons/soko-icon-192.png",
       tag: payload.messageId ? `soko-message-${payload.messageId}` : "soko-message",
       data: { conversationId: payload.conversationId, url: "/" }
     })
