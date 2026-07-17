@@ -11119,9 +11119,12 @@ function AgentProfileSurface({
   const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
-  const [githubModelStatus, setGitHubModelStatus] = useState(
-    "GitHub model discovery has not run yet."
-  );
+  const [githubModelDiscovery, setGitHubModelDiscovery] = useState<GitHubAiModelSearchResponse>({
+    models: [],
+    status: "unavailable",
+    connection: "public",
+    message: "GitHub model discovery has not run yet."
+  });
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
@@ -11211,7 +11214,7 @@ function AgentProfileSurface({
       );
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
-      setGitHubModelStatus((githubSearchResults ?? githubRegistry).message);
+      setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       if (!isEditing && isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
@@ -11942,11 +11945,21 @@ function AgentProfileSurface({
               </button>
             </div>
           </div>
-          <p
-            className={`github-model-status ${githubModelStatus.includes("connected") ? "ok" : ""}`}
+          <div
+            className={`github-model-status ${
+              githubModelDiscovery.status === "available" ? "ok" : ""
+            }`}
+            role="status"
           >
-            {githubModelStatus}
-          </p>
+            <span className="github-model-connection">
+              GitHub ·{" "}
+              {githubModelDiscovery.connection === "authenticated"
+                ? "Authenticated API"
+                : "Public API"}{" "}
+              · {githubModelDiscovery.status === "available" ? "Available" : "Unavailable"}
+            </span>
+            <span>{githubModelDiscovery.message}</span>
+          </div>
 
           {deviceCapability === null ? (
             <p className="model-device-status">Checking this device…</p>

@@ -3724,10 +3724,15 @@ details.nested-form-section summary {
   border: 1px solid #e4cf91;
   border-radius: 8px;
   color: #594816;
+  display: grid;
   font-size: 12px;
-  font-weight: 700;
+  gap: 2px;
   margin: -6px 0 16px;
   padding: 8px 10px;
+}
+
+.github-model-connection {
+  font-weight: 800;
 }
 
 .github-model-status.ok {

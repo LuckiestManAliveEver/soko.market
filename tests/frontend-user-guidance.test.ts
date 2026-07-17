@@ -93,6 +93,10 @@ describe("frontend user guidance", () => {
     expect(store).toContain("tinyllama-1.1b-chat-q3-k-m-android");
     expect(store).toContain("tinyllama-1.1b-chat-q4-k-m-android");
     expect(store).toContain('id: "llama-cpp-configured"');
+    expect(application).toContain('githubModelDiscovery.connection === "authenticated"');
+    expect(application).toContain(
+      'githubModelDiscovery.status === "available" ? "Available" : "Unavailable"'
+    );
     expect(githubCatalog).toContain('"public API" : "authenticated API"');
     expect(render).toContain("- key: GITHUB_TOKEN");
     expect(render).toContain("- key: LOCAL_MODEL_ENDPOINT");
