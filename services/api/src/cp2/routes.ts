@@ -840,9 +840,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
     if (!providerConfig.implemented) {
       throw new Cp2Error(
-        501,
-        "oauth_provider_not_implemented",
-        `${providerConfig.displayName} sign-in is not implemented yet.`
+        503,
+        "oauth_provider_unavailable",
+        `${providerConfig.displayName} sign-in is unavailable.`
       );
     }
 
@@ -894,9 +894,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
     if (!providerConfig.implemented) {
       throw new Cp2Error(
-        501,
-        "oauth_provider_not_implemented",
-        `${providerConfig.displayName} sign-in is not implemented yet.`
+        503,
+        "oauth_provider_unavailable",
+        `${providerConfig.displayName} sign-in is unavailable.`
       );
     }
 
@@ -2116,11 +2116,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/network/providers/:provider/sync",
     async (request: FastifyRequest<{ Params: NetworkProviderSyncParams }>, reply) => {
       try {
-        parseNetworkSocialProvider(request.params.provider);
-        // TODO: connect provider OAuth tokens to provider-specific graph/contact APIs.
-        return reply.code(501).send({
-          code: "network_provider_sync_not_implemented",
-          message: "Network provider synchronization is not implemented yet."
+        return store.syncConnectedSocialProvider({
+          sessionId: readSessionCookie(request.headers.cookie),
+          provider: parseNetworkSocialProvider(request.params.provider)
         });
       } catch (error) {
         return sendCp2Error(reply, error);

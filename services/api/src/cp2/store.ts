@@ -7608,6 +7608,7 @@ export class Cp2Store {
     const importedContacts = input.contacts.map((contact, index) =>
       normalizeNetworkConnectionInput(contact, `contacts.${index}`)
     );
+    this.disconnectActiveNetworkSources(session.user.id, "phone", now);
     const source = this.createNetworkSource({
       ownerUserId: session.user.id,
       sourceType: "phone_contact",
@@ -7691,6 +7692,7 @@ export class Cp2Store {
     const profiles = input.profiles.map((profile, index) =>
       normalizeNetworkConnectionInput(profile, `profiles.${index}`)
     );
+    this.disconnectActiveNetworkSources(session.user.id, input.provider, now);
     const source = this.createNetworkSource({
       ownerUserId: session.user.id,
       sourceType: "social",
@@ -7768,6 +7770,35 @@ export class Cp2Store {
 
     this.refreshNetworkSourceCounts(source.id, now);
     return this.getNetworkGraph({ sessionId: input.sessionId, now });
+  }
+
+  syncConnectedSocialProvider(input: {
+    sessionId: string | null;
+    provider: SocialNetworkProvider;
+    now?: Date;
+  }): NetworkGraphSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const identity = [...this.userIdentities.values()].find(
+      (candidate) =>
+        candidate.accountId === session.account.id && candidate.provider === input.provider
+    );
+
+    if (identity === undefined) {
+      throw new Cp2Error(
+        409,
+        "network_provider_not_connected",
+        "Connect this provider to your Soko account before synchronizing it."
+      );
+    }
+
+    return this.syncSocialNetwork({
+      sessionId: input.sessionId,
+      provider: input.provider,
+      profiles: [],
+      sourceName: `${providerDisplayName(identity.provider)} network`,
+      now
+    });
   }
 
   getNetworkGraph(input: { sessionId: string | null; now?: Date }): NetworkGraphSummary {
@@ -7893,41 +7924,7 @@ export class Cp2Store {
       throw new Cp2Error(404, "network_source_not_found", "Network sync source was not found.");
     }
 
-    this.networkSources.set(source.id, {
-      ...source,
-      status: "disconnected",
-      updatedAt: now.toISOString(),
-      disconnectedAt: now.toISOString()
-    } as NetworkSyncSourceSummary);
-
-    const nodeIds = new Set(
-      [...this.networkNodes.values()]
-        .filter((node) => node.ownerUserId === session.user.id && node.sourceId === source.id)
-        .map((node) => node.id)
-    );
-
-    for (const edge of [...this.networkEdges.values()]) {
-      if (
-        edge.ownerUserId === session.user.id &&
-        (nodeIds.has(edge.fromNodeId) || nodeIds.has(edge.toNodeId))
-      ) {
-        this.networkEdges.delete(edge.id);
-      }
-    }
-
-    for (const route of [...this.networkRoutes.values()]) {
-      if (
-        route.ownerUserId === session.user.id &&
-        (nodeIds.has(route.directNodeId) || nodeIds.has(route.targetNodeId))
-      ) {
-        this.networkRoutes.delete(route.id);
-        this.networkPermissions.delete(route.permissionId);
-      }
-    }
-
-    for (const nodeId of nodeIds) {
-      this.networkNodes.delete(nodeId);
-    }
+    this.disconnectNetworkSourceRecord(source, now);
 
     return this.networkGraphForUser(session.user.id, now);
   }
@@ -10969,6 +10966,66 @@ export class Cp2Store {
           };
     this.networkSources.set(source.id, source);
     return source;
+  }
+
+  private disconnectActiveNetworkSources(
+    ownerUserId: string,
+    sourcePlatform: "phone" | SocialNetworkProvider,
+    now: Date
+  ): void {
+    for (const source of this.networkSources.values()) {
+      if (
+        source.ownerUserId === ownerUserId &&
+        source.sourcePlatform === sourcePlatform &&
+        source.status === "active"
+      ) {
+        this.disconnectNetworkSourceRecord(source, now);
+      }
+    }
+  }
+
+  private disconnectNetworkSourceRecord(source: NetworkSyncSourceSummary, now: Date): void {
+    this.networkSources.set(source.id, {
+      ...source,
+      status: "disconnected",
+      updatedAt: now.toISOString(),
+      disconnectedAt: now.toISOString()
+    } as NetworkSyncSourceSummary);
+
+    const nodeIds = new Set(
+      [...this.networkNodes.values()]
+        .filter((node) => node.ownerUserId === source.ownerUserId && node.sourceId === source.id)
+        .map((node) => node.id)
+    );
+
+    for (const edge of [...this.networkEdges.values()]) {
+      if (
+        edge.ownerUserId === source.ownerUserId &&
+        (nodeIds.has(edge.fromNodeId) || nodeIds.has(edge.toNodeId))
+      ) {
+        this.networkEdges.delete(edge.id);
+      }
+    }
+
+    for (const route of [...this.networkRoutes.values()]) {
+      if (
+        route.ownerUserId === source.ownerUserId &&
+        (nodeIds.has(route.directNodeId) || nodeIds.has(route.targetNodeId))
+      ) {
+        this.networkRoutes.delete(route.id);
+        this.networkPermissions.delete(route.permissionId);
+      }
+    }
+
+    for (const [id, link] of this.sokoIdentityLinks.entries()) {
+      if (link.ownerUserId === source.ownerUserId && nodeIds.has(link.nodeId)) {
+        this.sokoIdentityLinks.delete(id);
+      }
+    }
+
+    for (const nodeId of nodeIds) {
+      this.networkNodes.delete(nodeId);
+    }
   }
 
   private createImportedNetworkNode(input: {

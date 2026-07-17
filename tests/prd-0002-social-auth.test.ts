@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import type { OAuthProvider } from "../packages/shared-types/src";
@@ -26,6 +26,10 @@ const providers: OAuthProvider[] = [
 ];
 
 describe("authentication channels", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("keeps phone and email OTP authentication available", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
@@ -54,6 +58,26 @@ describe("authentication channels", () => {
         })
       )
     );
+
+    await app.close();
+  });
+
+  it("publishes an OAuth provider when its feature flag and credentials are configured", async () => {
+    vi.stubEnv("OAUTH_GOOGLE_ENABLED", "true");
+    vi.stubEnv("OAUTH_GOOGLE_CLIENT_ID", "google-client-id");
+    vi.stubEnv("OAUTH_GOOGLE_CLIENT_SECRET", "google-client-secret");
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const response = await app.inject({ method: "GET", url: "/auth/oauth/providers" });
+    const google = response
+      .json()
+      .providers.find((provider: { id: OAuthProvider }) => provider.id === "google");
+
+    expect(response.statusCode).toBe(200);
+    expect(google).toMatchObject({
+      id: "google",
+      enabled: true,
+      configured: true
+    });
 
     await app.close();
   });

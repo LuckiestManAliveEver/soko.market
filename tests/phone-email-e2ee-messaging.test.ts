@@ -4,8 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type {
   ConversationMessageSummary,
   ConversationView,
-  E2eeDeviceSummary,
-  E2eePublicKey
+  E2eeDeviceSummary
 } from "@soko/shared-types";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";

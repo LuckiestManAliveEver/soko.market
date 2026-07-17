@@ -222,7 +222,8 @@ function signatureError(): Cp2Error {
 
 function normalizeExtractedText(value: string): string {
   return value
-    .replace(/\u0000/gu, "")
+    .split("\u0000")
+    .join("")
     .replace(/\r\n?/gu, "\n")
     .replace(/[^\S\n]+$/gmu, "")
     .trim();

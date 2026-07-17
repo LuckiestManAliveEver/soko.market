@@ -15,7 +15,10 @@ export function readApiBaseUrl(): string {
   return "http://127.0.0.1:4000";
 }
 
-export async function apiFetch<T>(pathOrUrl: string, options?: { method?: string; body?: unknown }) {
+export async function apiFetch<T>(
+  pathOrUrl: string,
+  options?: { method?: string; body?: unknown }
+) {
   const base = readApiBaseUrl();
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : `${base}${pathOrUrl}`;
 

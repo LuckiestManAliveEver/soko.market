@@ -193,12 +193,12 @@ describe("Network Sync Graph", () => {
     await app.close();
   });
 
-  it("keeps provider graph synchronization explicit until OAuth import is implemented", async () => {
+  it("synchronizes a connected provider and replaces its previous active source", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const { sessionCookie } = await createOwnerBusiness(app, "254700000307");
 
-    const response = await app.inject({
+    const disconnected = await app.inject({
       method: "POST",
       url: "/network/providers/google/sync",
       headers: {
@@ -208,10 +208,47 @@ describe("Network Sync Graph", () => {
       payload: JSON.stringify({})
     });
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json()).toMatchObject({
-      code: "network_provider_sync_not_implemented"
+    expect(disconnected.statusCode).toBe(409);
+    expect(disconnected.json()).toMatchObject({
+      code: "network_provider_not_connected"
     });
+
+    const account = store.snapshot().accounts[0];
+    expect(account).toBeDefined();
+    store.completeOAuthProfileAuthentication({
+      provider: "google",
+      profile: {
+        providerSubject: "google-network-owner",
+        email: "network-owner@example.test",
+        emailVerified: true,
+        displayName: "Network Owner"
+      },
+      tokens: {},
+      linkAccountId: account?.id
+    });
+
+    const first = await postJson<NetworkGraphSummary>(
+      app,
+      "/network/providers/google/sync",
+      {},
+      sessionCookie
+    );
+    expect(first.sources.filter((source) => source.status === "active")).toEqual([
+      expect.objectContaining({
+        sourcePlatform: "google",
+        displayName: "Google network",
+        importedCount: 0
+      })
+    ]);
+
+    const second = await postJson<NetworkGraphSummary>(
+      app,
+      "/network/providers/google/sync",
+      {},
+      sessionCookie
+    );
+    expect(second.sources.filter((source) => source.status === "active")).toHaveLength(1);
+    expect(second.sources.filter((source) => source.status === "disconnected")).toHaveLength(1);
 
     await app.close();
   });

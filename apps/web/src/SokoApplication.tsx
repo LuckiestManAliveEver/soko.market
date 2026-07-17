@@ -92,8 +92,7 @@ type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
   "google" | "facebook" | "tiktok" | "x" | "linkedin" | "apple" | "github" | "microsoft";
-type NetworkSyncProviderId =
-  "phone" | "google" | "facebook" | "instagram" | "x" | "linkedin" | "whatsapp" | "other";
+type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const chatAttachmentAccept = [
@@ -1635,16 +1634,16 @@ const networkSyncProviders: Array<{
     oauthProvider: "facebook"
   },
   {
-    id: "instagram",
-    label: "Instagram",
-    detail: "Provider graph import is not configured",
-    icon: "IG",
-    oauthProvider: null
+    id: "tiktok",
+    label: "TikTok",
+    detail: "Connect your TikTok identity",
+    icon: "TT",
+    oauthProvider: "tiktok"
   },
   {
     id: "x",
     label: "X",
-    detail: "OAuth flow is pending backend implementation",
+    detail: "Connect your X identity",
     icon: "X",
     oauthProvider: "x"
   },
@@ -1656,18 +1655,25 @@ const networkSyncProviders: Array<{
     oauthProvider: "linkedin"
   },
   {
-    id: "whatsapp",
-    label: "WhatsApp",
-    detail: "Connect where platform APIs permit",
-    icon: "WA",
-    oauthProvider: null
+    id: "apple",
+    label: "Apple",
+    detail: "Connect your Apple identity",
+    icon: "A",
+    oauthProvider: "apple"
   },
   {
-    id: "other",
-    label: "Other Provider",
-    detail: "Additional providers will appear here",
-    icon: "+",
-    oauthProvider: null
+    id: "github",
+    label: "GitHub",
+    detail: "Connect your GitHub identity",
+    icon: "GH",
+    oauthProvider: "github"
+  },
+  {
+    id: "microsoft",
+    label: "Microsoft",
+    detail: "Connect your Microsoft identity",
+    icon: "MS",
+    oauthProvider: "microsoft"
   }
 ];
 
@@ -2439,6 +2445,18 @@ export function OwnerApp() {
     setOtp("");
     setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
+    let networkStatus = "";
+
+    try {
+      const graph = await postJson<NetworkGraphSummary>(
+        `/network/providers/${encodeURIComponent(provider)}/sync`,
+        {}
+      );
+      setNetworkGraph(graph);
+      networkStatus = " Network source connected.";
+    } catch (error) {
+      networkStatus = ` Network sync needs attention: ${getErrorMessage(error)}`;
+    }
 
     if (business !== null) {
       const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
@@ -2461,7 +2479,7 @@ export function OwnerApp() {
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       setIsWorkspaceUnlocked(true);
       setView("chat");
-      setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete`);
+      setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete.${networkStatus}`);
       return;
     }
 
@@ -2479,7 +2497,7 @@ export function OwnerApp() {
     setView("chat");
     setIsSignupOpen(false);
     setStatusMessage(
-      `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.`
+      `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.${networkStatus}`
     );
   }
 
@@ -3799,13 +3817,8 @@ export function OwnerApp() {
     return response.invites.length;
   }
 
-  async function syncSocialNetwork(provider: "instagram" | "whatsapp" | "tiktok" | "x") {
-    if (provider === "x") {
-      await authenticateSocialProfile("x");
-      return;
-    }
-
-    setStatusMessage("This login provider is not configured yet.");
+  async function syncSocialNetwork(provider: SocialSignupProvider) {
+    await authenticateSocialProfile(provider);
   }
 
   async function requestNetworkRoute(targetNodeId?: string) {
@@ -5741,6 +5754,7 @@ export function OwnerApp() {
           <NetworkSurface
             graph={networkGraph}
             invites={networkInvites}
+            providers={oauthProviders}
             onRefresh={() => {
               void loadNetworkGraph();
               void loadNetworkInvites(business.id);
@@ -6240,7 +6254,6 @@ export function OwnerApp() {
               workspaceOpen={isWorkspacePanelOpen}
               syncSummary={syncSummary}
               onAttachmentChange={handleChatAttachmentChange}
-              onAddWorkspaceCard={() => setStatusMessage("This feature is not available yet.")}
               onBackToChat={returnToChat}
               onConfirm={(token) =>
                 void runAction("runtime-confirm", () => confirmRuntimeAction(token))
@@ -7041,9 +7054,10 @@ interface SyncSurfaceProps {
 interface NetworkSurfaceProps {
   graph: NetworkGraphSummary | null;
   invites: NetworkInviteSummary[];
+  providers: OAuthProviderSummary[];
   onRefresh: () => void;
   onSyncContacts: () => void;
-  onSyncSocial: (provider: "instagram" | "whatsapp" | "tiktok" | "x") => void;
+  onSyncSocial: (provider: SocialSignupProvider) => void;
   onRoute: (targetNodeId?: string) => void;
   onApproveRoute: (routeId: string) => void;
   onRejectRoute: (routeId: string) => void;
@@ -7056,6 +7070,10 @@ function NetworkSurface(props: NetworkSurfaceProps) {
   const directSocialNodes = directNodes.filter((node) => node.sourceType === "social");
   const extendedNodes = props.graph?.nodes.filter((node) => node.degree === 2) ?? [];
   const activeSources = props.graph?.sources.filter((source) => source.status === "active") ?? [];
+  const configuredProviders = props.providers.filter(
+    (provider) =>
+      provider.configured && provider.enabled !== false && provider.implemented !== false
+  );
 
   return (
     <section className="record-list network-card">
@@ -7077,14 +7095,14 @@ function NetworkSurface(props: NetworkSurfaceProps) {
         <button type="button" onClick={props.onSyncContacts}>
           Sync contacts
         </button>
-        {(["instagram", "whatsapp", "tiktok", "x"] as const).map((provider) => (
+        {configuredProviders.map((provider) => (
           <button
             className="secondary"
-            key={provider}
+            key={provider.id}
             type="button"
-            onClick={() => props.onSyncSocial(provider)}
+            onClick={() => props.onSyncSocial(provider.id)}
           >
-            Connect {provider}
+            Connect {provider.displayName}
           </button>
         ))}
       </div>
@@ -10328,7 +10346,7 @@ function ComplianceSurface(props: ComplianceSurfaceProps) {
 
       <section className="record-form" aria-label="Device trust controls">
         <div className="section-heading">
-          <p className="eyebrow">TIEL placeholder</p>
+          <p className="eyebrow">Trust and identity</p>
           <h3>Device trust</h3>
         </div>
         <label>
@@ -13308,7 +13326,6 @@ interface ChatSurfaceProps {
   syncSummary: SyncQueueSummary;
   workspaceOpen: boolean;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onAddWorkspaceCard: () => void;
   onBackToChat: () => void;
   onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
@@ -13390,7 +13407,6 @@ function ChatSurface({
   syncSummary,
   workspaceOpen,
   onAttachmentChange,
-  onAddWorkspaceCard,
   onBackToChat,
   onCloseWorkspace,
   onDraftChange,
@@ -13946,7 +13962,6 @@ function ChatSurface({
                 notificationCount={notificationCount}
                 report={report}
                 syncSummary={syncSummary}
-                onAddCard={onAddWorkspaceCard}
                 onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
                 onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
                 onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
@@ -14035,7 +14050,6 @@ function ChatSurface({
                   notificationCount={notificationCount}
                   report={report}
                   syncSummary={syncSummary}
-                  onAddCard={onAddWorkspaceCard}
                   onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
                   onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
                   onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
@@ -14382,7 +14396,6 @@ interface ContextualBusinessCardsProps {
   notificationCount: number;
   report: BusinessReportSummary | null;
   syncSummary: SyncQueueSummary;
-  onAddCard: () => void;
   onOpenCatalogue: () => void;
   onOpenNetworkSync: () => void;
   onPreviewStorefront: () => void;
@@ -14396,7 +14409,6 @@ function ContextualBusinessCards({
   notificationCount,
   report,
   syncSummary,
-  onAddCard,
   onOpenCatalogue,
   onOpenNetworkSync,
   onPreviewStorefront,
@@ -14470,18 +14482,17 @@ function ContextualBusinessCards({
       body: "Pickup and delivery fulfillment",
       onClick: () => onNavigate("logistics"),
       value: "Track"
-    },
-    {
-      title: "+ Add card",
-      body: "Add more business cards later",
-      onClick: onAddCard,
-      value: "+"
     }
   ];
 
   const [visibleCards, setVisibleCards] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(workspaceCards.map((c) => [c.title, true]))
   );
+  const hiddenCardCount = workspaceCards.filter((card) => !visibleCards[card.title]).length;
+
+  function restoreWorkspaceCards() {
+    setVisibleCards(Object.fromEntries(workspaceCards.map((card) => [card.title, true])));
+  }
 
   return (
     <section className="generated-card-message" aria-label="Workspace cards">
@@ -14513,6 +14524,22 @@ function ContextualBusinessCards({
             </div>
           ) : null
         )}
+        <div className="generated-card">
+          <button
+            className="generated-card-button"
+            type="button"
+            onClick={restoreWorkspaceCards}
+            aria-label="Restore workspace cards"
+          >
+            <span>+ Add card</span>
+            <strong>{hiddenCardCount}</strong>
+            <small>
+              {hiddenCardCount === 0
+                ? "All available business cards are visible"
+                : "Restore hidden business cards"}
+            </small>
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -14580,6 +14607,17 @@ function NetworkSyncNestedCard({
 
   const activeGraph = localGraph ?? graph;
   const phoneSource = getActiveNetworkSource(activeGraph, "phone");
+  const visibleNetworkSyncProviders = networkSyncProviders.filter(
+    (provider) =>
+      provider.id === "phone" ||
+      oauthProviders.some(
+        (oauthProvider) =>
+          oauthProvider.id === provider.oauthProvider &&
+          oauthProvider.configured &&
+          oauthProvider.enabled !== false &&
+          oauthProvider.implemented !== false
+      )
+  );
   const alreadyOnSokoCount =
     activeGraph?.nodes.filter(
       (node) =>
@@ -14797,7 +14835,7 @@ function NetworkSyncNestedCard({
         </button>
       </div>
       <div className="network-provider-list">
-        {networkSyncProviders.map((provider) => {
+        {visibleNetworkSyncProviders.map((provider) => {
           const source = getActiveNetworkSource(activeGraph, provider.id);
           const oauthConfig =
             provider.oauthProvider === null

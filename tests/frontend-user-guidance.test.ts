@@ -238,8 +238,13 @@ describe("frontend user guidance", () => {
     expect(application).toContain("/storefront/messages");
     expect(application).toContain("/storefront/orders");
     expect(application).toContain("/network/invites");
+    expect(application).toContain("/network/providers/");
     expect(application).toContain("/products/fields");
     expect(routes).toContain("store.saveProductFieldSchema");
+    expect(routes).toContain("store.syncConnectedSocialProvider");
     expect(routes).not.toContain("product_fields_not_implemented");
+    expect(routes).not.toContain("network_provider_sync_not_implemented");
+    expect(application).not.toContain("This feature is not available yet.");
+    expect(application).not.toContain("TIEL placeholder");
   });
 });

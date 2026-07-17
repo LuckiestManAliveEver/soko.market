@@ -22,7 +22,13 @@ export interface AccountRestorationResult {
   membership: { role: string };
 }
 
-export function AccountRestorationPanel({ onCancel, onRestored }: { onCancel: () => void; onRestored: (result: AccountRestorationResult) => void; }) {
+export function AccountRestorationPanel({
+  onCancel,
+  onRestored
+}: {
+  onCancel: () => void;
+  onRestored: (result: AccountRestorationResult) => void;
+}) {
   const [requests, setRequests] = useState<AccountDeletionRequestSummary[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
   const [pin, setPin] = useState("");
@@ -31,9 +37,7 @@ export function AccountRestorationPanel({ onCancel, onRestored }: { onCancel: ()
 
   useEffect(() => {
     let active = true;
-    void apiFetch<{ requests: AccountDeletionRequestSummary[] }>(
-      "/account-restoration/requests"
-    )
+    void apiFetch<{ requests: AccountDeletionRequestSummary[] }>("/account-restoration/requests")
       .then((response) => {
         if (!active) return;
         setRequests(response.requests);

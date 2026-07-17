@@ -201,20 +201,24 @@ const oauthProviders: OAuthProviderConfig[] = [
 ];
 
 export function listOAuthProviders(): PublicOAuthProviderConfig[] {
-  return oauthProviders.map((provider) => ({
-    id: provider.id,
-    displayName: provider.displayName,
-    icon: provider.icon,
-    implemented: provider.implemented,
-    enabled: provider.enabled,
-    authorizationUrl: provider.authorizationUrl,
-    callbackPath: provider.callbackPath,
-    tokenUrl: provider.tokenUrl,
-    userInfoUrl: provider.userInfoUrl,
-    scopes: provider.scopes,
-    pkce: provider.pkce,
-    configured: isOAuthProviderConfigured(provider)
-  }));
+  return oauthProviders.map((provider) => {
+    const enabled = isOAuthProviderEnabled(provider);
+
+    return {
+      id: provider.id,
+      displayName: provider.displayName,
+      icon: provider.icon,
+      implemented: provider.implemented,
+      enabled,
+      authorizationUrl: provider.authorizationUrl,
+      callbackPath: provider.callbackPath,
+      tokenUrl: provider.tokenUrl,
+      userInfoUrl: provider.userInfoUrl,
+      scopes: provider.scopes,
+      pkce: provider.pkce,
+      configured: isOAuthProviderConfigured(provider)
+    };
+  });
 }
 
 export function parseOAuthProvider(value: unknown): OAuthProvider {
@@ -241,12 +245,15 @@ export function getOAuthProviderConfig(provider: OAuthProvider): OAuthProviderCo
     throw new Cp2Error(400, "provider_invalid", "OAuth provider is not supported.");
   }
 
-  return config;
+  return {
+    ...config,
+    enabled: isOAuthProviderEnabled(config)
+  };
 }
 
 export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolean {
   return (
-    provider.enabled &&
+    isOAuthProviderEnabled(provider) &&
     provider.implemented &&
     getOAuthClientId(provider).length > 0 &&
     getOAuthClientSecret(provider).length > 0
@@ -429,6 +436,25 @@ function getOAuthClientSecret(provider: OAuthProviderConfig): string {
     provider.clientSecretEnv,
     ...(provider.clientSecretEnvAliases ?? [])
   ]);
+}
+
+function isOAuthProviderEnabled(provider: OAuthProviderConfig): boolean {
+  const envName = `OAUTH_${provider.id.toUpperCase()}_ENABLED`;
+  const value = process.env[envName]?.trim().toLowerCase();
+
+  if (value === undefined || value.length === 0) {
+    return provider.enabled;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  throw new Error(`${envName} must be true or false.`);
 }
 
 function getFirstConfiguredEnv(names: string[]): string {
