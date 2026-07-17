@@ -70,7 +70,7 @@ import {
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
-import { getUserFacingErrorMessage } from "./user-facing-error";
+import { getResponseErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -4295,7 +4295,10 @@ export function OwnerApp() {
       setImportJobs((jobs) => [job, ...jobs.filter((item) => item.id !== job.id)]);
       setSelectedImportJobId(job.id);
       setStatusMessage(
-        job.status === "failed" ? getUserFacingErrorMessage() : "Import preview ready"
+        job.status === "failed"
+          ? (job.errorMessage ??
+              "The document could not be imported because it did not contain any usable rows.")
+          : "Import preview ready"
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -4599,7 +4602,7 @@ export function OwnerApp() {
       if (caught instanceof DOMException && caught.name === "AbortError") {
         return;
       }
-      setStatusMessage(getUserFacingErrorMessage());
+      setStatusMessage(getUserFacingErrorMessage(caught));
     }
   }
 
@@ -14969,8 +14972,7 @@ async function postJson<TResponse>(
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as { message?: string };
-    throw new Error(error.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as TResponse;
@@ -14990,8 +14992,7 @@ async function patchJson<TResponse>(
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as { message?: string };
-    throw new Error(error.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as TResponse;
@@ -15008,8 +15009,7 @@ async function putJson<TResponse>(path: string, body: Record<string, unknown>): 
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as { message?: string };
-    throw new Error(error.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as TResponse;
@@ -15022,8 +15022,7 @@ async function deleteJson<TResponse>(path: string): Promise<TResponse> {
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as { message?: string };
-    throw new Error(error.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as TResponse;
@@ -15035,8 +15034,7 @@ async function getJson<TResponse>(path: string): Promise<TResponse> {
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as { message?: string };
-    throw new Error(error.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
 
   return (await response.json()) as TResponse;

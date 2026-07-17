@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAsyncActions } from "../../hooks/useAsyncActions";
-import { getUserFacingErrorMessage } from "../../user-facing-error";
+import { getResponseErrorMessage, getUserFacingErrorMessage } from "../../user-facing-error";
 
 interface AccountDeletionRequestSummary {
   id: string;
@@ -154,8 +154,7 @@ async function requestJson<T>(
         })
   });
   if (!response.ok) {
-    const body = (await response.json()) as { message?: string };
-    throw new Error(body.message ?? `Request failed with ${response.status}`);
+    throw new Error(await getResponseErrorMessage(response));
   }
   return (await response.json()) as T;
 }

@@ -1,16 +1,32 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  USER_FACING_ERROR_MESSAGE,
+  getResponseErrorMessage,
   getUserFacingErrorMessage
 } from "../apps/web/src/user-facing-error";
 
 describe("frontend user guidance", () => {
-  it("never exposes backend error details", () => {
+  it("explains the actual issue instead of standardizing every error", async () => {
     expect(getUserFacingErrorMessage(new Error("runtime.turn_failed: private backend event"))).toBe(
-      "YOU'VE JUST EXPERIENCED AN ERROR, ASK THE AGENT FOR HELP"
+      "runtime.turn_failed: private backend event"
     );
-    expect(USER_FACING_ERROR_MESSAGE).not.toContain("runtime.turn_failed");
+    expect(getUserFacingErrorMessage(new TypeError("Failed to fetch"))).toBe(
+      "Soko could not reach the server. Check your internet connection and try again."
+    );
+    expect(getUserFacingErrorMessage(new Error("Firebase: Error (auth/code-expired)."))).toBe(
+      "The SMS verification code has expired. Request a new code."
+    );
+    expect(
+      await getResponseErrorMessage(
+        new Response(JSON.stringify({ message: "No registered user has that email address." }), {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    ).toBe("No registered user has that email address.");
+    expect(await getResponseErrorMessage(new Response(null, { status: 401 }))).toBe(
+      "Your session is missing or has expired. Sign in and try again."
+    );
   });
 
   it("keeps Messages beside Marketplace as a pill and labels the network card My Network", () => {
