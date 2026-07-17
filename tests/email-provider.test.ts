@@ -124,4 +124,158 @@ describe("transactional email API", () => {
     expect(verified.headers["set-cookie"]).toBeDefined();
     await app.close();
   });
+
+  it("signs up, logs out, logs in, and recovers a PIN using the same email account", async () => {
+    const deliveries: EmailOtpInput[] = [];
+    const emailProvider: EmailProvider = {
+      name: "mock-email-roundtrip",
+      exposesDevOtp: false,
+      sendOtp: async (input) => {
+        deliveries.push(input);
+      },
+      sendEncryptedMessageNotification: async () => "sent"
+    };
+    const app = buildApi({ cp2: { store: createCp2Store(), emailProvider } });
+    const email = "owner.roundtrip@example.test";
+
+    const signupRequest = await app.inject({
+      method: "POST",
+      url: "/auth/otp/request",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        method: "email",
+        contact: email,
+        deliveryChannel: "email",
+        purpose: "signup"
+      })
+    });
+    const signupChallengeId = signupRequest.json<{ challengeId: string }>().challengeId;
+    const signupDelivery = deliveries.find(
+      (delivery) => delivery.challengeId === signupChallengeId
+    );
+    const signupVerify = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        method: "email",
+        contact: email,
+        challengeId: signupChallengeId,
+        otp: signupDelivery?.code
+      })
+    });
+    const accountId = signupVerify.json<{ account: { id: string } }>().account.id;
+    const signupCookie = sessionCookie(signupVerify.headers["set-cookie"]);
+
+    expect(signupRequest.statusCode).toBe(200);
+    expect(signupVerify.statusCode).toBe(200);
+    expect(signupVerify.json()).toMatchObject({ resumed: false });
+
+    const pinSetup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/setup",
+      headers: { "content-type": "application/json", cookie: signupCookie },
+      payload: JSON.stringify({ pin: "2468" })
+    });
+    expect(pinSetup.statusCode).toBe(200);
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: signupCookie }
+    });
+
+    const pinLogin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        method: "email",
+        contact: "OWNER.ROUNDTRIP@EXAMPLE.TEST",
+        pin: "2468"
+      })
+    });
+    const pinLoginCookie = sessionCookie(pinLogin.headers["set-cookie"]);
+    expect(pinLogin.statusCode).toBe(200);
+    expect(pinLogin.json()).toMatchObject({ account: { id: accountId } });
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: pinLoginCookie }
+    });
+
+    const recoveryRequest = await app.inject({
+      method: "POST",
+      url: "/auth/otp/request",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        method: "email",
+        contact: email,
+        deliveryChannel: "email",
+        purpose: "recovery"
+      })
+    });
+    const recoveryChallengeId = recoveryRequest.json<{ challengeId: string }>().challengeId;
+    const recoveryDelivery = deliveries.find(
+      (delivery) => delivery.challengeId === recoveryChallengeId
+    );
+    const recoveryVerify = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        method: "email",
+        contact: email,
+        challengeId: recoveryChallengeId,
+        otp: recoveryDelivery?.code
+      })
+    });
+    const recoveryCookie = sessionCookie(recoveryVerify.headers["set-cookie"]);
+
+    expect(recoveryRequest.statusCode).toBe(200);
+    expect(recoveryVerify.statusCode).toBe(200);
+    expect(recoveryVerify.json()).toMatchObject({
+      account: { id: accountId },
+      resumed: true
+    });
+
+    const recoverPin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/recover",
+      headers: { "content-type": "application/json", cookie: recoveryCookie },
+      payload: JSON.stringify({ pin: "1357" })
+    });
+    expect(recoverPin.statusCode).toBe(200);
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: recoveryCookie }
+    });
+
+    const oldPinLogin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "email", contact: email, pin: "2468" })
+    });
+    const recoveredPinLogin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "email", contact: email, pin: "1357" })
+    });
+
+    expect(oldPinLogin.statusCode).toBe(401);
+    expect(recoveredPinLogin.statusCode).toBe(200);
+    expect(recoveredPinLogin.json()).toMatchObject({ account: { id: accountId } });
+    await app.close();
+  });
 });
+
+function sessionCookie(setCookie: string | string[] | undefined): string {
+  const value = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+  if (value === undefined) throw new Error("Session cookie missing.");
+  return value.split(";")[0] ?? value;
+}

@@ -48,6 +48,10 @@ work with real phone numbers. Never set it in production.
 ## Runtime behavior
 
 - `Continue with email` creates a new account through email verification.
+- Returning email users sign in with the verified email address and owner PIN; normal login does not
+  send another code.
+- `Forgot PIN?` sends a challenge-bound email verification code and allows the verified account to
+  set a new PIN, including on a browser without saved local account data.
 - `Continue with phone` creates a new account after Firebase verifies the SMS code.
 - `Use phone and PIN` performs normal login without Firebase.
 - `Forgot PIN?` exposes the recovery flow; phone recovery opens Firebase authentication.

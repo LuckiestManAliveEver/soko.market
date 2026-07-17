@@ -2778,7 +2778,11 @@ export function OwnerApp() {
 
   async function verifyLoginOtp() {
     if (challenge === null) {
-      setStatusMessage("Request an OTP first");
+      setStatusMessage(
+        channel === "email"
+          ? "Request an email verification code first"
+          : "Request an SMS verification code first"
+      );
       return;
     }
 
@@ -2818,9 +2822,20 @@ export function OwnerApp() {
           : await postJson<SessionResponse>("/auth/otp/verify", {
               method: channel,
               contact: contactValue,
+              challengeId: challenge.challengeId,
               otp
             });
       setSession(response);
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: response.account.primaryAuthDestination,
+        countryCode:
+          response.account.primaryAuthChannel === "phone"
+            ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
+            : countryCode,
+        pinSet: true
+      };
+      setOwnerAuth(nextOwnerAuth);
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
       updateOwnerPinSet(pinStatus.hasPin);
       if (!pinStatus.hasPin) {
@@ -2989,15 +3004,18 @@ export function OwnerApp() {
   }
 
   async function recoverLoginPin() {
-    if (ownerAuth === null) {
-      setStatusMessage("No saved owner account found");
+    if (session === null) {
+      setStatusMessage("Verify the email or phone number before resetting your PIN");
       return;
     }
 
     const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (contactValue !== ownerAuth.contact) {
-      setStatusMessage("Contact does not match this account");
+    if (
+      channel !== session.account.primaryAuthChannel ||
+      contactValue !== session.account.primaryAuthDestination
+    ) {
+      setStatusMessage("The recovery contact does not match the verified account");
       return;
     }
 
@@ -3015,7 +3033,9 @@ export function OwnerApp() {
       await postJson<SessionResponse>("/auth/pin/recover", {
         pin: recoveryPin
       });
+      updateOwnerPinSet(true);
       setIsWorkspaceUnlocked(true);
+      setIsLoginOpen(false);
       setIsRecoveringPin(false);
       setLoginPin("");
       setRecoveryPin("");
@@ -3062,6 +3082,7 @@ export function OwnerApp() {
       });
       updateOwnerPinSet(true);
       setIsWorkspaceUnlocked(true);
+      setIsLoginOpen(false);
       setIsRecoveringPin(false);
       setLoginPin("");
       setRecoveryPin("");
@@ -6721,10 +6742,10 @@ function LoginPanel(props: LoginPanelProps) {
                     ? "Sending…"
                     : props.channel === "phone"
                       ? "Send SMS code"
-                      : "Continue"}
+                      : "Send email code"}
                 </button>
                 <label>
-                  OTP
+                  {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
                   <input
                     value={props.otp}
                     onChange={(event) => props.onOtpChange(event.target.value)}
@@ -6738,7 +6759,7 @@ function LoginPanel(props: LoginPanelProps) {
                   disabled={props.challenge === null || props.isVerifyPending}
                   aria-busy={props.isVerifyPending}
                 >
-                  {props.isVerifyPending ? "Verifying…" : "Verify OTP"}
+                  {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
                 </button>
               </>
             ) : (
@@ -6831,7 +6852,7 @@ function LoginPanel(props: LoginPanelProps) {
                 }
                 aria-busy={props.isLoginPending}
               >
-                {props.isLoginPending ? "Signing in…" : "Login"}
+                {props.isLoginPending ? "Signing in…" : `Sign in with ${props.channel}`}
               </button>
               {props.hasLoginPin ? (
                 <button className="secondary" type="button" onClick={props.onStartPinRecovery}>

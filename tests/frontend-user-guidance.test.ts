@@ -111,6 +111,26 @@ describe("frontend user guidance", () => {
     expect(authRoutes).toContain("emailProvider.sendOtp");
   });
 
+  it("completes email signup, PIN login, and challenge-bound email recovery", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const emailLogin = application.slice(
+      application.indexOf("async function requestLoginOtp"),
+      application.indexOf("async function loginWithPasskey")
+    );
+    const loginPanel = application.slice(
+      application.indexOf("function LoginPanel"),
+      application.indexOf("interface SyncSurfaceProps")
+    );
+
+    expect(emailLogin).toContain('deliveryChannel: "email"');
+    expect(emailLogin).toContain("challengeId: challenge.challengeId");
+    expect(emailLogin).toContain('postJson<SessionResponse>("/auth/pin/login"');
+    expect(emailLogin).toContain("response.account.primaryAuthDestination");
+    expect(loginPanel).toContain("Send email code");
+    expect(loginPanel).toContain("Email verification code");
+    expect(loginPanel).toContain("Sign in with");
+  });
+
   it("keeps OTP in account verification and removes it from first-shop registration", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const accountSetup = application.slice(
