@@ -19,7 +19,7 @@ Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token pers
 
 ## Existing auth capabilities
 
-- Email signup verification and email/phone recovery request and verify.
+- Email and Firebase phone signup verification, plus email/phone recovery request and verify.
 - WebAuthn passkey registration, login, listing, and revocation.
 - Session cookie creation and logout.
 - OAuth start/callback flow with server-side token exchange.
@@ -45,13 +45,14 @@ Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token pers
 - OAuth tokens are encrypted before persistence.
 - Existing OAuth state and CSRF validation remains in place.
 - Normal login uses a passkey, PIN, or connected social identity.
-- Firebase SMS is exposed only from lost-account recovery. Recovery challenges cannot create an
-  account.
+- Firebase SMS supports phone signup and lost-account recovery. Only signup challenges may create
+  an account; recovery challenges still require an existing account.
 - Provider secrets stay in server environment variables and are not exposed to Vite.
 
 ## Known follow-up work
 
 - Configure production provider apps in Google, Facebook, and TikTok dashboards.
-- Configure Firebase phone auth and the API project ID before enabling phone recovery in production.
+- Configure Firebase phone auth and the API project ID before enabling phone signup or recovery in
+  production.
 - Add stricter OTP rate-limit backing storage if API instances scale horizontally.
 - Move business channel connect/disconnect UX into a dedicated channel management screen when provider APIs are fully configured.

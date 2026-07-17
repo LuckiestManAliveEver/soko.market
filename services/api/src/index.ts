@@ -9,6 +9,7 @@ import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { createCp2Store } from "./cp2/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
+import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
 
 const config = readEnvironment();
 const runtimeModelProvider = config.localModelEnabled
@@ -25,6 +26,8 @@ const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
 const webPushConfiguration = readWebPushConfiguration();
 const pushNotificationSender =
   webPushConfiguration === null ? undefined : createWebPushSender(webPushConfiguration);
+const emailProvider = createEmailProviderFromEnvironment();
+const messageWebBaseUrl = (process.env.WEB_PUBLIC_URL ?? "https://soko.market").trim();
 const accountDeletionProcessors = readAccountDeletionProcessors();
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
@@ -36,6 +39,9 @@ const shouldUsePostgresStore =
 const cp2StoreOptions = {
   ...(runtimeModelProvider === undefined ? {} : { runtimeModelProvider }),
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
+  messageEmailNotificationSender:
+    emailProvider.sendEncryptedMessageNotification.bind(emailProvider),
+  messageWebBaseUrl,
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
@@ -49,6 +55,7 @@ const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   cp2: {
     store: cp2Store,
+    emailProvider,
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
   }
 };

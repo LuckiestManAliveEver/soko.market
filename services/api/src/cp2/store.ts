@@ -620,6 +620,8 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
   pushNotificationSender?: PushNotificationSender;
+  messageEmailNotificationSender?: MessageEmailNotificationSender;
+  messageWebBaseUrl?: string;
   accountDeletionProcessors?: AccountDeletionProcessor[];
 }
 
@@ -680,6 +682,17 @@ export type PushNotificationSender = (
   subscription: PushSubscriptionSummary,
   payload: PushNotificationPayload
 ) => Promise<"sent" | "expired" | "failed">;
+
+export interface MessageEmailNotificationInput {
+  conversationId: string;
+  messageId: string;
+  openUrl: string;
+  to: string;
+}
+
+export type MessageEmailNotificationSender = (
+  input: MessageEmailNotificationInput
+) => Promise<"sent" | "failed">;
 
 export class Cp2Store {
   constructor(private readonly options: Cp2StoreOptions = {}) {}
@@ -2625,6 +2638,7 @@ export class Cp2Store {
       }
     });
     this.deliverConversationPush(conversation, message, session.account.id, now);
+    this.deliverConversationEmail(conversation, message, session.account.id, now);
     return message;
   }
 
@@ -8977,6 +8991,46 @@ export class Cp2Store {
         this.pushSubscriptions.delete(subscription.id);
         this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
       });
+    }
+  }
+
+  private deliverConversationEmail(
+    conversation: ConversationSummary,
+    message: ConversationMessageSummary,
+    senderAccountId: string,
+    now: Date
+  ): void {
+    const sender = this.options.messageEmailNotificationSender;
+    if (!sender) return;
+    const recipientIds = new Set(
+      this.humanConversationAccountIds(conversation.id).filter(
+        (accountId) => accountId !== senderAccountId
+      )
+    );
+    for (const participant of this.conversationParticipants.values()) {
+      if (
+        participant.conversationId === conversation.id &&
+        participant.accountId !== null &&
+        participant.mutedUntil !== null &&
+        participant.mutedUntil !== undefined &&
+        Date.parse(participant.mutedUntil) > now.getTime()
+      ) {
+        recipientIds.delete(participant.accountId);
+      }
+    }
+    const webBaseUrl = (this.options.messageWebBaseUrl ?? "https://soko.market").replace(
+      /\/+$/u,
+      ""
+    );
+    for (const accountId of recipientIds) {
+      const account = this.accounts.get(accountId);
+      if (account?.primaryAuthChannel !== "email") continue;
+      void sender({
+        conversationId: conversation.id,
+        messageId: message.id,
+        openUrl: `${webBaseUrl}/?conversation=${encodeURIComponent(conversation.id)}`,
+        to: account.primaryAuthDestination
+      }).catch(() => "failed");
     }
   }
 

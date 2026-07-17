@@ -4317,8 +4317,7 @@ details.nested-form-section summary {
 }
 
 .messenger-inbox-tools input,
-.new-conversation-form input,
-.new-conversation-form textarea {
+.new-conversation-form input {
   min-width: 0;
   width: 100%;
 }
@@ -4332,23 +4331,6 @@ details.nested-form-section summary {
   font-size: 12px;
   font-weight: 800;
   gap: 4px;
-}
-
-.guest-sms-intro {
-  display: grid;
-  gap: 2px;
-}
-
-.guest-sms-intro span,
-.guest-sms-note {
-  color: #64736a;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.new-conversation-form textarea {
-  min-height: 88px;
-  resize: vertical;
 }
 
 .conversation-list {

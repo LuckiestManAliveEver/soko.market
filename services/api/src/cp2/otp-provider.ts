@@ -2,7 +2,7 @@ import { createVerify } from "node:crypto";
 import type { AuthChannel } from "@soko/shared-types";
 import { Cp2Error } from "./store.js";
 
-export type OtpDeliveryChannel = "sms";
+export type OtpDeliveryChannel = "email" | "sms";
 
 export interface OtpProvider {
   readonly name: string;

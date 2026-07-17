@@ -228,6 +228,12 @@ export async function createPostgresCp2Store(
     ...(options.pushNotificationSender === undefined
       ? {}
       : { pushNotificationSender: options.pushNotificationSender }),
+    ...(options.messageEmailNotificationSender === undefined
+      ? {}
+      : { messageEmailNotificationSender: options.messageEmailNotificationSender }),
+    ...(options.messageWebBaseUrl === undefined
+      ? {}
+      : { messageWebBaseUrl: options.messageWebBaseUrl }),
     ...(options.accountDeletionProcessors === undefined
       ? {}
       : { accountDeletionProcessors: options.accountDeletionProcessors })

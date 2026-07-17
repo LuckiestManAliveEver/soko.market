@@ -69,7 +69,6 @@ import {
   type E2eeIdentity
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
-import { createGuestSmsLink, maxGuestSmsMessageLength } from "./guest-sms";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
@@ -2056,17 +2055,9 @@ export function OwnerApp() {
     navigateToView("chat");
   }
 
-  function openGuestSms(recipient: string, message: string): boolean {
-    try {
-      const joinUrl = new URL(routes.join, window.location.origin).toString();
-      const smsLink = createGuestSmsLink({ recipient, message, joinUrl });
-      setStatusMessage("Opening your messaging app. Review the SMS, then tap Send.");
-      window.location.assign(smsLink);
-      return true;
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-      return false;
-    }
+  function requireMessagingSignIn() {
+    setIsLoginOpen(true);
+    setStatusMessage("Sign in to send end-to-end encrypted messages.");
   }
 
   useEffect(() => {
@@ -2552,10 +2543,12 @@ export function OwnerApp() {
   }
 
   async function requestOtp() {
-    const contactValue = destination.trim().toLowerCase();
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (!isSignupContactValid("email", countryCode, destination)) {
-      setStatusMessage("Enter a valid email address");
+    if (!isSignupContactValid(channel, countryCode, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
       return;
     }
 
@@ -2564,10 +2557,37 @@ export function OwnerApp() {
     setOtp("");
 
     try {
+      if (channel === "phone") {
+        if (!firebasePhoneAuthConfigured) {
+          throw new Error("Firebase phone authentication is not configured for this website.");
+        }
+
+        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
+          method: "phone",
+          contact: contactValue,
+          deliveryChannel: "sms",
+          purpose: "signup"
+        });
+
+        if (phoneRecaptchaRef.current === null) {
+          throw new Error("Phone verification is unavailable right now.");
+        }
+
+        const confirmationResult = await sendFirebasePhoneOtp(
+          contactValue,
+          phoneRecaptchaRef.current
+        );
+        setChallenge(response);
+        setPhoneConfirmationResult(confirmationResult);
+        setIsOtpVerified(false);
+        setStatusMessage(`Verification code sent to ${response.destination}`);
+        return;
+      }
+
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: "email",
         contact: contactValue,
-        deliveryChannel: "sms",
+        deliveryChannel: "email",
         purpose: "signup"
       });
       setChallenge(response);
@@ -2581,24 +2601,41 @@ export function OwnerApp() {
 
   async function verifyOtp() {
     if (challenge === null) {
-      setStatusMessage("Request an email verification code first");
+      setStatusMessage("Request a verification code first");
       return;
     }
 
-    const contactValue = destination.trim().toLowerCase();
+    const contactValue = composeSignupContact(channel, countryCode, destination);
 
-    if (!isSignupContactValid("email", countryCode, destination)) {
-      setStatusMessage("Enter a valid email address");
+    if (!isSignupContactValid(channel, countryCode, destination)) {
+      setStatusMessage(
+        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
+      );
       return;
     }
 
     try {
-      const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: "email",
-        contact: contactValue,
-        challengeId: challenge.challengeId,
-        otp
-      });
+      const response =
+        channel === "phone"
+          ? await (async () => {
+              if (phoneConfirmationResult === null) {
+                throw new Error("Request a phone verification code first.");
+              }
+              const userCredential = await phoneConfirmationResult.confirm(otp);
+              const firebaseIdToken = await userCredential.user.getIdToken(true);
+              return postJson<SessionResponse>("/auth/otp/verify", {
+                method: "phone",
+                contact: contactValue,
+                challengeId: challenge.challengeId,
+                firebaseIdToken
+              });
+            })()
+          : await postJson<SessionResponse>("/auth/otp/verify", {
+              method: "email",
+              contact: contactValue,
+              challengeId: challenge.challengeId,
+              otp
+            });
       setSession(response);
       setIsOtpVerified(true);
       setPhoneConfirmationResult(null);
@@ -2623,7 +2660,9 @@ export function OwnerApp() {
         return;
       }
 
-      setStatusMessage("Email verified. Add a passkey and create your login PIN.");
+      setStatusMessage(
+        `${channel === "email" ? "Email" : "Phone"} verified. Add a passkey and create your login PIN.`
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2725,7 +2764,7 @@ export function OwnerApp() {
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: channel,
         contact: contactValue,
-        deliveryChannel: "sms",
+        deliveryChannel: "email",
         purpose: "recovery"
       });
       setChallenge(response);
@@ -4796,6 +4835,10 @@ export function OwnerApp() {
   }
 
   async function createDirectConversation(recipient: string, title: string) {
+    if (session === null) {
+      requireMessagingSignIn();
+      return;
+    }
     const created = await postJson<ConversationView>("/v1/conversations", {
       kind: "personal",
       activeShopId: null,
@@ -5019,6 +5062,10 @@ export function OwnerApp() {
   }
 
   async function sendChatDraft() {
+    if (session === null) {
+      requireMessagingSignIn();
+      return;
+    }
     const attachments = pendingAttachments;
     const message =
       chatDraft.trim().length > 0 ? chatDraft.trim() : createAttachmentOnlyMessage(attachments);
@@ -5867,6 +5914,7 @@ export function OwnerApp() {
 
         {shouldShowSignup ? (
           <SetupPanel
+            channel={channel}
             countryCode={countryCode}
             destination={destination}
             challenge={challenge}
@@ -5884,6 +5932,8 @@ export function OwnerApp() {
             passkeySupported={browserSupportsWebAuthn()}
             oauthProviders={oauthProviders}
             oauthProvidersLoaded={oauthProvidersLoaded}
+            onChannelChange={setChannel}
+            onCountryCodeChange={setCountryCode}
             onDestinationChange={setDestination}
             onOtpChange={setOtp}
             onRequestOtp={() => void runAction("signup-otp-request", requestOtp)}
@@ -5895,6 +5945,7 @@ export function OwnerApp() {
             onSocialSignup={(provider) =>
               void runAction("social-signup", () => authenticateSocialProfile(provider))
             }
+            phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -6004,9 +6055,11 @@ export function OwnerApp() {
               isConfirming={isPending("runtime-confirm")}
               isSending={isPending("chat-send")}
               securityLabel={
-                isHumanDirectConversation(activeConversation, session)
-                  ? "End-to-end encrypted"
-                  : "Messages are processed by the Soko agent"
+                session === null
+                  ? "Sign in for end-to-end encrypted messaging"
+                  : isHumanDirectConversation(activeConversation, session)
+                    ? "End-to-end encrypted"
+                    : "Messages are processed by the Soko agent"
               }
               replyToMessageId={replyToMessageId}
               mode={mode}
@@ -6036,7 +6089,7 @@ export function OwnerApp() {
                   createDirectConversation(recipient, title)
                 )
               }
-              onGuestSmsSend={openGuestSms}
+              onRequireSignIn={requireMessagingSignIn}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
                   updateConversationPreference(conversationId, preference)
@@ -6123,6 +6176,7 @@ export function OwnerApp() {
 }
 
 interface SetupPanelProps {
+  channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -6140,6 +6194,8 @@ interface SetupPanelProps {
   passkeySupported: boolean;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
+  onChannelChange: (channel: AuthChannel) => void;
+  onCountryCodeChange: (countryCode: CountryDialCode) => void;
   onDestinationChange: (destination: string) => void;
   onOtpChange: (otp: string) => void;
   onRequestOtp: () => void;
@@ -6149,6 +6205,7 @@ interface SetupPanelProps {
   onSocialSignup: (provider: SocialSignupProvider) => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
+  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
 interface SocialLoginOptionsProps {
@@ -6252,8 +6309,10 @@ function AuthLegalFooter() {
 }
 
 function SetupPanel(props: SetupPanelProps) {
-  const [authView, setAuthView] = useState<"options" | "email">("options");
-  const contactIsValid = isSignupContactValid("email", props.countryCode, props.destination);
+  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
+  const selectedCountryCode = getCountryDialCode(props.countryCode);
+  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
+  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const showAuthForm = authView !== "options" || props.challenge !== null || props.isOtpVerified;
 
   return (
@@ -6262,7 +6321,14 @@ function SetupPanel(props: SetupPanelProps) {
         {!showAuthForm ? (
           <SocialLoginOptions
             mode="signup"
-            onSelectEmail={() => setAuthView("email")}
+            onSelectPhone={() => {
+              props.onChannelChange("phone");
+              setAuthView("phone");
+            }}
+            onSelectEmail={() => {
+              props.onChannelChange("email");
+              setAuthView("email");
+            }}
             onSelectSocial={props.onSocialSignup}
             providers={props.oauthProviders}
             providersLoaded={props.oauthProvidersLoaded}
@@ -6273,33 +6339,77 @@ function SetupPanel(props: SetupPanelProps) {
             <div className="auth-heading-row">
               <div className="section-heading">
                 <p className="eyebrow">First shop registration</p>
-                <h2>Verify your email</h2>
-                <p>
-                  Create the account with email or a social identity. Phone verification is reserved
-                  for lost-account recovery.
-                </p>
+                <h2>Verify your {props.channel}</h2>
+                <p>Create the account with a verified phone number, email, or social identity.</p>
               </div>
             </div>
-            <label>
-              Email address
-              <input
-                type="email"
-                autoComplete="email"
-                value={props.destination}
-                onChange={(event) => props.onDestinationChange(event.target.value)}
-                placeholder="you@example.com"
-              />
-            </label>
+            {props.channel === "phone" ? (
+              <>
+                <div className="phone-contact-row">
+                  <label>
+                    Country code
+                    <select
+                      value={props.countryCode}
+                      onChange={(event) =>
+                        props.onCountryCodeChange(event.target.value as CountryDialCode)
+                      }
+                    >
+                      {countryDialCodes.map((item) => (
+                        <option key={item.code} value={item.code}>
+                          {item.flag} {item.code} {item.country}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Phone number
+                    <input
+                      value={phoneSuffix}
+                      onChange={(event) =>
+                        props.onDestinationChange(
+                          sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
+                        )
+                      }
+                      inputMode="numeric"
+                      maxLength={selectedCountryCode.suffixLength}
+                      pattern="[0-9]*"
+                      type="tel"
+                      placeholder={"0".repeat(selectedCountryCode.suffixLength)}
+                    />
+                  </label>
+                </div>
+                <div
+                  ref={props.phoneRecaptchaRef}
+                  className="firebase-recaptcha"
+                  aria-hidden="true"
+                />
+              </>
+            ) : (
+              <label>
+                Email address
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={props.destination}
+                  onChange={(event) => props.onDestinationChange(event.target.value)}
+                  placeholder="you@example.com"
+                />
+              </label>
+            )}
             <button
               type="button"
               onClick={props.onRequestOtp}
               disabled={!contactIsValid || props.isRequestPending}
               aria-busy={props.isRequestPending}
             >
-              {props.isRequestPending ? "Sending…" : "Send email code"}
+              {props.isRequestPending
+                ? "Sending…"
+                : props.channel === "phone"
+                  ? "Send SMS code"
+                  : "Send email code"}
             </button>
             <label>
-              Email verification code
+              {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
               <input
                 value={props.otp}
                 onChange={(event) => props.onOtpChange(event.target.value)}
@@ -6313,7 +6423,7 @@ function SetupPanel(props: SetupPanelProps) {
               disabled={props.challenge === null || props.isVerifyPending}
               aria-busy={props.isVerifyPending}
             >
-              {props.isVerifyPending ? "Verifying…" : "Verify email"}
+              {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
             </button>
             {!props.isOtpVerified ? (
               <button className="secondary" type="button" onClick={() => setAuthView("options")}>
@@ -12734,7 +12844,7 @@ interface ChatSurfaceProps {
   onDraftChange: (draft: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onCreateConversation: (recipient: string, title: string) => void;
-  onGuestSmsSend: (recipient: string, message: string) => boolean;
+  onRequireSignIn: () => void;
   onConversationPreference: (
     conversationId: string,
     preference: "archive" | "mute" | "pin"
@@ -12813,7 +12923,7 @@ function ChatSurface({
   onDraftChange,
   onSelectConversation,
   onCreateConversation,
-  onGuestSmsSend,
+  onRequireSignIn,
   onConversationPreference,
   onEnableNotifications,
   onInboxOpenChange,
@@ -12850,7 +12960,6 @@ function ChatSurface({
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
-  const [guestSmsMessage, setGuestSmsMessage] = useState("");
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
   const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -12963,7 +13072,12 @@ function ChatSurface({
       <aside className={`messenger-inbox ${isInboxOpen ? "open" : ""}`} aria-label="Conversations">
         <div className="messenger-inbox-heading">
           <h2>Messages</h2>
-          <button type="button" onClick={() => setIsNewConversationOpen((open) => !open)}>
+          <button
+            type="button"
+            onClick={() =>
+              isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
+            }
+          >
             New
           </button>
         </div>
@@ -12977,7 +13091,11 @@ function ChatSurface({
               placeholder="Search messages"
             />
           </label>
-          <button className="secondary" type="button" onClick={onEnableNotifications}>
+          <button
+            className="secondary"
+            type="button"
+            onClick={isAuthenticated ? onEnableNotifications : onRequireSignIn}
+          >
             Notifications
           </button>
         </div>
@@ -12986,65 +13104,33 @@ function ChatSurface({
             className="new-conversation-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (isAuthenticated) {
-                onCreateConversation(newRecipient, newConversationTitle);
-              } else {
-                const opened = onGuestSmsSend(newRecipient, guestSmsMessage);
-                if (!opened) return;
-              }
+              onCreateConversation(newRecipient, newConversationTitle);
               setNewRecipient("");
               setNewConversationTitle("");
-              setGuestSmsMessage("");
               setIsNewConversationOpen(false);
             }}
           >
-            {!isAuthenticated ? (
-              <div className="guest-sms-intro">
-                <strong>Send with your phone</strong>
-                <span>No Soko account is needed.</span>
-              </div>
-            ) : null}
             <label>
-              {isAuthenticated ? "Contact" : "Mobile number"}
+              Phone number or email
               <input
                 required
-                type={isAuthenticated ? "text" : "tel"}
-                inputMode={isAuthenticated ? undefined : "tel"}
-                autoComplete={isAuthenticated ? undefined : "tel"}
                 value={newRecipient}
                 onChange={(event) => setNewRecipient(event.target.value)}
-                placeholder={isAuthenticated ? "Phone or email" : "+254 700 000 000"}
+                placeholder="+254 700 000 000 or name@example.com"
               />
             </label>
-            {isAuthenticated ? (
-              <label>
-                Name
-                <input
-                  value={newConversationTitle}
-                  onChange={(event) => setNewConversationTitle(event.target.value)}
-                  placeholder="Conversation name"
-                />
-              </label>
-            ) : (
-              <>
-                <label>
-                  Message
-                  <textarea
-                    required
-                    rows={4}
-                    maxLength={maxGuestSmsMessageLength}
-                    value={guestSmsMessage}
-                    onChange={(event) => setGuestSmsMessage(event.target.value)}
-                    placeholder="Write a normal text message"
-                  />
-                </label>
-                <small className="guest-sms-note">
-                  “via Soko Messenger” and a short try link will be added. Your default messaging
-                  app will open for final review; carrier SMS charges may apply.
-                </small>
-              </>
-            )}
-            <button type="submit">{isAuthenticated ? "Start chat" : "Continue in Messages"}</button>
+            <label>
+              Name
+              <input
+                value={newConversationTitle}
+                onChange={(event) => setNewConversationTitle(event.target.value)}
+                placeholder="Conversation name"
+              />
+            </label>
+            <small>
+              Only registered Soko users can be messaged. Human chats are end-to-end encrypted.
+            </small>
+            <button type="submit">Start encrypted chat</button>
           </form>
         ) : null}
         <div className="conversation-list">
@@ -13530,96 +13616,105 @@ function ChatSurface({
             </section>
           </div>
         ) : null}
-        <div className="composer">
-          {replyToMessageId ? (
-            <div className="composer-reply">
-              <span>Replying to a message</span>
-              <button type="button" onClick={onCancelReply}>
-                Cancel
-              </button>
-            </div>
-          ) : null}
-          <button
-            className="icon-button composer-icon-button"
-            type="button"
-            aria-label="Voice input"
-            title="Voice input"
-            onClick={() => startVoiceInput(onDraftChange)}
-          >
-            <span className="mic-icon" aria-hidden="true" />
-          </button>
-          <button
-            className="icon-button composer-icon-button"
-            type="button"
-            aria-label="Attach file"
-            title="Attach file"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <span className="attach-icon" aria-hidden="true" />
-          </button>
-          <input
-            ref={fileInputRef}
-            className="chat-file-input"
-            type="file"
-            multiple
-            accept={chatAttachmentAccept}
-            onChange={onAttachmentChange}
-          />
-          {pendingAttachments.length > 0 ? (
-            <div className="attachment-tray" aria-label="Selected attachments">
-              {pendingAttachments.map((attachment) => (
-                <span className="attachment-chip" key={attachment.id}>
-                  <span>
-                    <strong>{attachment.name}</strong>
-                    <small>
-                      {formatAttachmentCategory(attachment.category)} ·{" "}
-                      {formatFileSize(attachment.size)}
-                    </small>
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${attachment.name}`}
-                    onClick={() => onRemoveAttachment(attachment.id)}
-                  >
-                    x
-                  </button>
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <label className="composer-input">
-            <span>Message</span>
-            <textarea
-              aria-label="Message"
-              rows={1}
-              value={chatDraft}
-              onChange={(event) => onDraftChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !isSending) {
-                  event.preventDefault();
-                  onSend();
-                }
-              }}
-              placeholder={
-                mode === "seller"
-                  ? "Ask your agent to manage the shop"
-                  : "What are you looking for?"
-              }
+        {!isAuthenticated ? (
+          <div className="composer composer-card-lock">
+            <span>Sign in to send and receive end-to-end encrypted messages.</span>
+            <button type="button" onClick={onRequireSignIn}>
+              Sign in to message
+            </button>
+          </div>
+        ) : (
+          <div className="composer">
+            {replyToMessageId ? (
+              <div className="composer-reply">
+                <span>Replying to a message</span>
+                <button type="button" onClick={onCancelReply}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Voice input"
+              title="Voice input"
+              onClick={() => startVoiceInput(onDraftChange)}
+            >
+              <span className="mic-icon" aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Attach file"
+              title="Attach file"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <span className="attach-icon" aria-hidden="true" />
+            </button>
+            <input
+              ref={fileInputRef}
+              className="chat-file-input"
+              type="file"
+              multiple
+              accept={chatAttachmentAccept}
+              onChange={onAttachmentChange}
             />
-          </label>
-          <button
-            className="send-button"
-            type="button"
-            onClick={onSend}
-            disabled={
-              isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
-            }
-            aria-busy={isSending}
-          >
-            <span className="send-icon" aria-hidden="true" />
-            <span className="visually-hidden">Send</span>
-          </button>
-        </div>
+            {pendingAttachments.length > 0 ? (
+              <div className="attachment-tray" aria-label="Selected attachments">
+                {pendingAttachments.map((attachment) => (
+                  <span className="attachment-chip" key={attachment.id}>
+                    <span>
+                      <strong>{attachment.name}</strong>
+                      <small>
+                        {formatAttachmentCategory(attachment.category)} ·{" "}
+                        {formatFileSize(attachment.size)}
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${attachment.name}`}
+                      onClick={() => onRemoveAttachment(attachment.id)}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <label className="composer-input">
+              <span>Message</span>
+              <textarea
+                aria-label="Message"
+                rows={1}
+                value={chatDraft}
+                onChange={(event) => onDraftChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !isSending) {
+                    event.preventDefault();
+                    onSend();
+                  }
+                }}
+                placeholder={
+                  mode === "seller"
+                    ? "Ask your agent to manage the shop"
+                    : "What are you looking for?"
+                }
+              />
+            </label>
+            <button
+              className="send-button"
+              type="button"
+              onClick={onSend}
+              disabled={
+                isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
+              }
+              aria-busy={isSending}
+            >
+              <span className="send-icon" aria-hidden="true" />
+              <span className="visually-hidden">Send</span>
+            </button>
+          </div>
+        )}
       </section>
     </div>
   );

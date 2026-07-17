@@ -56,6 +56,7 @@ import {
   type OtpDeliveryChannel,
   type OtpProvider
 } from "./otp-provider.js";
+import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   createGitHubModelCatalogFromEnvironment,
   type GitHubModelCatalog
@@ -78,6 +79,7 @@ import {
 } from "./document-extraction.js";
 
 export interface Cp2RouteOptions {
+  emailProvider?: EmailProvider;
   githubModelCatalog?: GitHubModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
   otpProvider?: OtpProvider;
@@ -690,6 +692,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
+  const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
 
@@ -752,15 +755,26 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
     const purpose = parseOtpPurpose(body.purpose);
 
-    if (channel === "phone" && otpProvider.name.startsWith("firebase") && purpose !== "recovery") {
-      throw new Cp2Error(
-        403,
-        "phone_otp_recovery_only",
-        "Firebase phone verification is available only for lost-account recovery."
-      );
-    }
-
     const otp = store.requestOtp({ channel, destination, purpose });
+
+    if (channel === "email") {
+      await emailProvider.sendOtp({
+        challengeId: otp.challengeId,
+        code: otp.devOtp,
+        expiresAt: otp.expiresAt,
+        to: otp.destination
+      });
+
+      if (emailProvider.exposesDevOtp) {
+        return otp;
+      }
+
+      return {
+        challengeId: otp.challengeId,
+        destination: otp.destination,
+        expiresAt: otp.expiresAt
+      };
+    }
 
     if (otpProvider.canHandle(channel)) {
       await otpProvider.requestOtp({
@@ -795,7 +809,9 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           })
         : store.getOtpChallengeDelivery(parseString(body.challengeId, "challengeId"));
 
-    return otpProvider.verifiesExternally && otpProvider.canHandle(challenge.channel)
+    return challenge.channel === "phone" &&
+      otpProvider.verifiesExternally &&
+      otpProvider.canHandle(challenge.channel)
       ? await verifyProviderOtp(store, otpProvider, challenge.challengeId, challenge, code)
       : store.verifyOtp({ challengeId: challenge.challengeId, code });
   }
@@ -4199,14 +4215,20 @@ function parseOtpDeliveryChannel(
   value: string | undefined,
   authChannel: AuthChannel
 ): OtpDeliveryChannel {
-  void authChannel;
-  const deliveryChannel = value ?? "sms";
+  const deliveryChannel = value ?? (authChannel === "email" ? "email" : "sms");
 
-  if (deliveryChannel !== "sms") {
-    throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be sms.");
+  if (
+    (authChannel === "email" && deliveryChannel !== "email") ||
+    (authChannel === "phone" && deliveryChannel !== "sms")
+  ) {
+    throw new Cp2Error(
+      400,
+      "otp_delivery_channel_invalid",
+      `OTP delivery channel must be ${authChannel === "email" ? "email" : "sms"}.`
+    );
   }
 
-  return deliveryChannel;
+  return deliveryChannel as OtpDeliveryChannel;
 }
 
 function parseLanguage(value: string | undefined) {
