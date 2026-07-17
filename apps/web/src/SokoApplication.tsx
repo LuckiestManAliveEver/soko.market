@@ -5512,6 +5512,10 @@ export function OwnerApp() {
     }
 
     async function appendAgentMessage(body: string, confirmationToken?: string) {
+      if (isRedundantAgentErrorMessage(body)) {
+        return;
+      }
+
       let next: ChatMessage = {
         id: createClientMessageId("agent"),
         author: "sokoclaw",
@@ -6266,7 +6270,9 @@ export function OwnerApp() {
           ) : null}
         </header>
 
-        {!isAuthScreen && statusMessage.length > 0 ? (
+        {!isAuthScreen &&
+        statusMessage.length > 0 &&
+        !isRedundantAgentErrorMessage(statusMessage) ? (
           <div className="app-action-notice" role="status" aria-live="polite">
             {hasPending ? (
               "Working…"
@@ -13803,6 +13809,7 @@ function ChatSurface({
         : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
     );
   });
+  const visibleMessages = messages.filter((message) => !isRedundantAgentErrorMessage(message.body));
 
   useEffect(() => {
     if (!workspaceOpen) {
@@ -14010,7 +14017,7 @@ function ChatSurface({
           </button>
         </header>
         <div className="message-list" aria-live="polite" ref={messageListRef}>
-          {messages.map((message, index) => (
+          {visibleMessages.map((message, index) => (
             <Fragment key={message.id}>
               <article
                 className={`message ${message.author}`}
@@ -16788,6 +16795,15 @@ function formatFileSize(size: number): string {
   }
 
   return `${Math.round(size / 104857.6) / 10} MB`;
+}
+
+function isRedundantAgentErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase().replaceAll("’", "'").replace(/\s+/gu, " ").trim();
+
+  return (
+    normalized.includes("you've just experienced an error") &&
+    normalized.includes("ask the agent for help")
+  );
 }
 
 function getErrorMessage(error: unknown): string {

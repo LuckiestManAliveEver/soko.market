@@ -98,6 +98,16 @@ describe("frontend user guidance", () => {
     expect(styles).toContain("prefers-reduced-motion: reduce");
   });
 
+  it("suppresses the redundant persistent agent error prompt", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+
+    expect(application).toContain("isRedundantAgentErrorMessage");
+    expect(application).toContain(`normalized.includes("you've just experienced an error")`);
+    expect(application).toContain('normalized.includes("ask the agent for help")');
+    expect(application).toContain("const visibleMessages = messages.filter");
+    expect(application).toContain("!isRedundantAgentErrorMessage(message.body)");
+  });
+
   it("connects the Android model library to GitHub discovery and device-fit ranking", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
