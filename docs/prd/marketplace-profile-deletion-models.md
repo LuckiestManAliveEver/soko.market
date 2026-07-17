@@ -33,7 +33,8 @@ must leave the request retryable and visible to operations.
 
 - A fresh visitor lands in Marketplace with no OTP prompt.
 - A signed-in account can open Sell and register its first shop without OTP.
-- A signed-out visitor who opens Sell completes account signup or login before shop registration.
+- A signed-out visitor who opens Sell is directed to the Sign up and Log in actions in the welcome
+  message; account access and shop registration remain separate screens.
 - Phone and PIN unlock an existing owner account without OTP.
 - Firebase phone OTP supports account signup and explicit lost-account recovery, but it is not part
   of shop creation.

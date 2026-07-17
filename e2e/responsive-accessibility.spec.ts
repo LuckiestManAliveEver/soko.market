@@ -71,14 +71,16 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
     if (path.endsWith("/compliance/account-deletion")) deletionRequests += 1;
   });
 
-  await page.goto("/settings/security");
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  await page.getByRole("button", { name: "Delete entire account" }).click();
   await page.getByLabel("Type DELETE to confirm").fill("DELETE");
   await page.getByRole("button", { name: "Continue to verification" }).click();
   await page.getByLabel("Owner PIN").fill("1234");
-  await page.getByLabel(/I understand that access is disabled immediately/).check();
+  await page.getByLabel(/I understand that all account access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
-  await expect(page.getByRole("heading", { name: "Verify your phone" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Owner login" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use phone and PIN" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);
 });

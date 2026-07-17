@@ -3,6 +3,20 @@ import { expect, test } from "@playwright/test";
 test("messaging is locked until the visitor signs in", async ({ page }) => {
   await page.goto("/marketplace");
 
+  const welcome = page.getByTestId("welcome-message");
+  await expect(welcome.getByRole("button", { name: "Sign up" })).toBeVisible({ timeout: 15_000 });
+  await expect(welcome.getByRole("button", { name: "Log in" })).toBeVisible();
+
+  await page.getByTestId("sell-button").click();
+  await expect(page.getByRole("status")).toContainText(
+    "Sign up or log in from the welcome message"
+  );
+  await expect(page.locator('input[autocomplete="one-time-code"]')).toHaveCount(0);
+
+  await welcome.getByRole("button", { name: "Sign up" }).click();
+  await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
+
+  await page.goto("/marketplace");
   const signInButton = page.getByRole("button", { name: "Sign in to message" });
   await expect(signInButton).toBeVisible({ timeout: 15_000 });
   await signInButton.click();

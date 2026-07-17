@@ -2233,6 +2233,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/businesses", async (request: FastifyRequest<{ Body: CreateBusinessBody }>, reply) => {
     try {
+      rejectShopRegistrationOtp(request.body);
       const name = parseString(request.body.name, "name");
       const language = parseLanguage(request.body.language);
       return store.createBusiness({
@@ -5458,4 +5459,19 @@ function sendCp2Error(reply: FastifyReply, error: unknown) {
   }
 
   throw error;
+}
+
+function rejectShopRegistrationOtp(body: CreateBusinessBody): void {
+  const record = body as Record<string, unknown>;
+  const legacyOtpField = ["challengeId", "code", "firebaseIdToken", "otp", "verificationCode"].find(
+    (field) => record[field] !== undefined
+  );
+
+  if (legacyOtpField !== undefined) {
+    throw new Cp2Error(
+      400,
+      "shop_otp_not_supported",
+      "Shop registration does not use OTP verification. Sign in first, then submit only the shop name and language."
+    );
+  }
 }

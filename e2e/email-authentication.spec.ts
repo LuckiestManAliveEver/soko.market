@@ -84,7 +84,7 @@ test("signs up and later logs in with the same email and PIN", async ({ page }) 
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
   await page.goto("/marketplace");
-  await page.getByTestId("sell-button").click();
+  await page.getByTestId("welcome-message").getByRole("button", { name: "Sign up" }).click();
   await page.getByRole("button", { name: "Continue with email" }).click();
   await page.getByLabel("Email address").fill(email);
   await page.getByRole("button", { name: "Send email code" }).click();
@@ -93,9 +93,8 @@ test("signs up and later logs in with the same email and PIN", async ({ page }) 
   await expect(page.getByRole("heading", { name: "Create your owner PIN" })).toBeVisible();
   await page.getByLabel("PIN", { exact: true }).fill(pin);
   await page.getByLabel("Confirm PIN").fill(pin);
-  await page.getByRole("button", { name: "Continue to shop details" }).click();
-  await expect(page.getByRole("heading", { name: "Set up your business" })).toBeVisible();
-  await page.getByRole("button", { name: "Not now" }).click();
+  await page.getByRole("button", { name: "Finish signup" }).click();
+  await expect(page.getByRole("heading", { name: "Set up your business" })).toHaveCount(0);
 
   sessionActive = false;
   await page.reload();

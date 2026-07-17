@@ -49,7 +49,12 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
   await page.getByTestId("sell-button").click();
 
   await expect(page.getByRole("heading", { name: "Set up your business" })).toBeVisible();
-  await expect(page.getByText(/No OTP is required/)).toBeVisible();
+  await expect(
+    page.getByText(
+      "Create your shop once using your signed-in account. No OTP is required, and you can update these details later.",
+      { exact: true }
+    )
+  ).toBeVisible();
   await expect(page.locator('input[autocomplete="one-time-code"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Send (SMS|email) code/ })).toHaveCount(0);
 

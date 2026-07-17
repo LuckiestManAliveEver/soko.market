@@ -55,7 +55,7 @@ describe("owner shell contract", () => {
     expect(getEmptyState("payments")?.body).toContain("payment records");
     expect(getEmptyState("imports")?.body).toContain("supplier records");
     expect(getEmptyState("logistics")?.body).toContain("pickup and delivery");
-    expect(getEmptyState("compliance")?.body).toContain("export, deletion");
+    expect(getEmptyState("compliance")?.body).toContain("export, verification");
     expect(getEmptyState("beta")?.body).toContain("Beta readiness");
     expect(getEmptyState("launch")?.body).toContain("Launch readiness");
     expect(getEmptyState("reports")?.body).toContain("Reports summarize");
@@ -65,7 +65,7 @@ describe("owner shell contract", () => {
   it("creates the initial unified marketplace and seller welcome message", () => {
     expect(createInitialChatMessages("Jane's Shop")[0]).toMatchObject({
       author: "sokoclaw",
-      body: expect.stringContaining("your Soko agent for shopping and for running Jane's Shop")
+      body: expect.stringMatching(/running Jane's Shop.*Sign up or log in/)
     });
   });
 });

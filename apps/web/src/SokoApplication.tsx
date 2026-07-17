@@ -1955,6 +1955,7 @@ export function OwnerApp() {
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
+  const [isSignupOpen, setIsSignupOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(accountDeletionIntent || accountRestorationIntent);
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
@@ -2029,9 +2030,10 @@ export function OwnerApp() {
   const phoneRecaptchaRef = useRef<HTMLDivElement | null>(null);
   const firebasePhoneAuthConfigured = isFirebasePhoneAuthConfigured();
 
-  const shouldShowLogin = isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked);
+  const shouldShowLogin =
+    !isSignupOpen && (isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked));
   const setupComplete = business !== null && !shouldShowLogin;
-  const shouldShowSignup = isBusinessSetupOpen && (session === null || !hasLoginPin);
+  const shouldShowSignup = isSignupOpen && (session === null || !hasLoginPin);
   const isAuthScreen = shouldShowSignup || shouldShowLogin || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Signed out";
@@ -2056,8 +2058,31 @@ export function OwnerApp() {
   }
 
   function requireMessagingSignIn() {
-    setIsLoginOpen(true);
+    openLogin();
     setStatusMessage("Sign in to send end-to-end encrypted messages.");
+  }
+
+  function openSignup() {
+    setChannel("email");
+    setChallenge(null);
+    setOtp("");
+    setPhoneConfirmationResult(null);
+    setIsOtpVerified(false);
+    setIsBusinessSetupOpen(false);
+    setIsLoginOpen(false);
+    setIsSignupOpen(true);
+    setStatusMessage("Create your Soko account. Shop registration is a separate step.");
+  }
+
+  function openLogin() {
+    setChallenge(null);
+    setOtp("");
+    setPhoneConfirmationResult(null);
+    setIsOtpVerified(false);
+    setIsBusinessSetupOpen(false);
+    setIsSignupOpen(false);
+    setIsLoginOpen(true);
+    setStatusMessage("Enter your verified email or phone number and PIN.");
   }
 
   useEffect(() => {
@@ -2442,6 +2467,7 @@ export function OwnerApp() {
     setIsWorkspaceUnlocked(true);
     setMode("marketplace");
     setView("chat");
+    setIsSignupOpen(false);
     setStatusMessage(
       `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.`
     );
@@ -2652,6 +2678,7 @@ export function OwnerApp() {
         setIsWorkspaceUnlocked(true);
         setMode("marketplace");
         setView("chat");
+        setIsSignupOpen(false);
         localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
         localStorage.removeItem(setupDraftStorageKey);
         setStatusMessage(
@@ -3125,9 +3152,11 @@ export function OwnerApp() {
       setSignupPinConfirm("");
       setMode("marketplace");
       setView("chat");
+      setIsSignupOpen(false);
+      setIsBusinessSetupOpen(false);
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Account secured. Complete your first shop registration.");
+      setStatusMessage("Signup complete. Tap Sell when you are ready to register your shop.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4006,8 +4035,9 @@ export function OwnerApp() {
       setBusiness(null);
       setOwnerAuth(null);
       setIsWorkspaceUnlocked(false);
-      setIsBusinessSetupOpen(true);
-      setIsLoginOpen(false);
+      setIsBusinessSetupOpen(false);
+      setIsSignupOpen(false);
+      setIsLoginOpen(true);
       setIsAccountRestorationOpen(false);
       localStorage.removeItem(activeBusinessStorageKey);
       localStorage.removeItem(legacyActiveBusinessStorageKey);
@@ -4479,13 +4509,17 @@ export function OwnerApp() {
 
   function switchMode(nextMode: SokoMode) {
     if (nextMode === "seller" && business === null) {
+      if (session === null) {
+        setIsBusinessSetupOpen(false);
+        setStatusMessage(
+          "Sign up or log in from the welcome message before registering your first shop."
+        );
+        return;
+      }
+
       setChannel("email");
       setIsBusinessSetupOpen(true);
-      setStatusMessage(
-        session === null
-          ? "Sign up with email or a social account to register your first shop."
-          : "Set up your business to start selling."
-      );
+      setStatusMessage("Set up your business to start selling. No OTP is required.");
       return;
     }
 
@@ -5080,6 +5114,7 @@ export function OwnerApp() {
     setMode("marketplace");
     window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
     setIsBusinessSetupOpen(false);
+    setIsSignupOpen(false);
     setIsLoginOpen(false);
     setStatusMessage(ownerAuth === null ? "Signed out" : "Signed out. Enter PIN to continue.");
     setIsWorkspaceUnlocked(ownerAuth === null);
@@ -5915,8 +5950,7 @@ export function OwnerApp() {
                 type="button"
                 onClick={() => {
                   if (business === null) {
-                    setIsLoginOpen(true);
-                    setStatusMessage("Enter your phone number and PIN.");
+                    openLogin();
                   } else {
                     navigateToView("agent");
                   }
@@ -6113,6 +6147,8 @@ export function OwnerApp() {
                 )
               }
               onRequireSignIn={requireMessagingSignIn}
+              onSignUp={openSignup}
+              onLogin={openLogin}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
                   updateConversationPreference(conversationId, preference)
@@ -6467,7 +6503,9 @@ function SetupPanel(props: SetupPanelProps) {
           <div className="section-heading">
             <p className="eyebrow">Account security</p>
             <h2>Create your owner PIN</h2>
-            <p>No additional OTP is required before entering your first shop details.</p>
+            <p>
+              Finish signup now. Shop registration is separate and will not request another OTP.
+            </p>
           </div>
           <label>
             PIN
@@ -6504,7 +6542,7 @@ function SetupPanel(props: SetupPanelProps) {
             }
             aria-busy={props.isCompletePending}
           >
-            {props.isCompletePending ? "Saving…" : "Continue to shop details"}
+            {props.isCompletePending ? "Saving…" : "Finish signup"}
           </button>
           <button
             className="secondary"
@@ -12873,6 +12911,8 @@ interface ChatSurfaceProps {
   onSelectConversation: (conversationId: string) => void;
   onCreateConversation: (recipient: string, title: string) => void;
   onRequireSignIn: () => void;
+  onSignUp: () => void;
+  onLogin: () => void;
   onConversationPreference: (
     conversationId: string,
     preference: "archive" | "mute" | "pin"
@@ -12952,6 +12992,8 @@ function ChatSurface({
   onSelectConversation,
   onCreateConversation,
   onRequireSignIn,
+  onSignUp,
+  onLogin,
   onConversationPreference,
   onEnableNotifications,
   onInboxOpenChange,
@@ -13227,7 +13269,10 @@ function ChatSurface({
         <div className="message-list" aria-live="polite" ref={messageListRef}>
           {messages.map((message, index) => (
             <Fragment key={message.id}>
-              <article className={`message ${message.author}`}>
+              <article
+                className={`message ${message.author}`}
+                data-testid={message.id === "welcome" ? "welcome-message" : undefined}
+              >
                 <span className="message-author">
                   {message.author === "merchant" ? (
                     "You"
@@ -13256,6 +13301,16 @@ function ChatSurface({
                   <small className="message-context">Forwarded</small>
                 ) : null}
                 <p className={message.deletedAt ? "deleted-message" : undefined}>{message.body}</p>
+                {message.id === "welcome" && !isAuthenticated ? (
+                  <div className="welcome-auth-actions" aria-label="Account access">
+                    <button type="button" onClick={onSignUp}>
+                      Sign up
+                    </button>
+                    <button className="secondary" type="button" onClick={onLogin}>
+                      Log in
+                    </button>
+                  </div>
+                ) : null}
                 {message.attachments !== undefined && message.attachments.length > 0 ? (
                   <div className="message-attachments" aria-label="Message attachments">
                     {message.attachments.map((attachment) => (

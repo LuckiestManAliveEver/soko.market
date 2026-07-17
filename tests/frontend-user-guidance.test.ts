@@ -133,6 +133,7 @@ describe("frontend user guidance", () => {
 
   it("keeps OTP in account verification and removes it from first-shop registration", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const accountSetup = application.slice(
       application.indexOf("function SetupPanel"),
       application.indexOf("interface BusinessSetupPanelProps")
@@ -145,12 +146,32 @@ describe("frontend user guidance", () => {
       application.indexOf("async function completeSignup"),
       application.indexOf("async function createBusiness")
     );
+    const switchMode = application.slice(
+      application.indexOf("function switchMode"),
+      application.indexOf("async function logout")
+    );
 
     expect(accountSetup).toContain("Account signup");
     expect(accountSetup).toContain('autoComplete="one-time-code"');
+    expect(accountSetup).toContain("Finish signup");
     expect(shopSetup).toContain("No OTP is required");
     expect(shopSetup).not.toContain('autoComplete="one-time-code"');
     expect(completeSignup).not.toContain("!isOtpVerified");
+    expect(completeSignup).toContain("setIsBusinessSetupOpen(false)");
+    expect(switchMode).toContain("Sign up or log in from the welcome message");
+    expect(authRoutes).toContain("rejectShopRegistrationOtp(request.body)");
+    expect(authRoutes).toContain('"shop_otp_not_supported"');
+  });
+
+  it("shows Sign up and Log in actions in the first greeting", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const welcomeMessage = readFileSync("apps/web/src/app-shell.ts", "utf8");
+
+    expect(application).toContain('data-testid={message.id === "welcome"');
+    expect(application).toContain('<div className="welcome-auth-actions"');
+    expect(application).toContain("onClick={onSignUp}");
+    expect(application).toContain("onClick={onLogin}");
+    expect(welcomeMessage).toContain("Sign up or log in");
   });
 
   it("merges shop and full-account deletion under one Settings action", () => {

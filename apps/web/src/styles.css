@@ -4387,6 +4387,7 @@ details.nested-form-section summary {
 
 .conversation-actions,
 .message-actions,
+.welcome-auth-actions,
 .message-action-menu,
 .forward-picker,
 .message-meta,
@@ -4399,6 +4400,7 @@ details.nested-form-section summary {
 
 .conversation-actions button,
 .message-actions button,
+.welcome-auth-actions button,
 .message-action-menu button,
 .forward-picker button,
 .composer-reply button {
@@ -4408,6 +4410,23 @@ details.nested-form-section summary {
   font-size: 11px;
   min-height: 28px;
   padding: 3px 6px;
+}
+
+.welcome-auth-actions {
+  margin-top: 10px;
+}
+
+.welcome-auth-actions button {
+  background: #117a4f;
+  color: #fff;
+  font-size: 13px;
+  min-height: 36px;
+  padding: 7px 14px;
+}
+
+.welcome-auth-actions button.secondary {
+  background: #edf5f0;
+  color: #1f4d38;
 }
 
 .messenger-thread {
