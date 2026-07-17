@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAsyncActions } from "../../hooks/useAsyncActions";
-import { getResponseErrorMessage, getUserFacingErrorMessage } from "../../user-facing-error";
+import { getUserFacingErrorMessage } from "../../user-facing-error";
+import { apiFetch } from "../../lib/api";
 
 interface AccountDeletionRequestSummary {
   id: string;
@@ -21,15 +22,7 @@ export interface AccountRestorationResult {
   membership: { role: string };
 }
 
-export function AccountRestorationPanel({
-  apiBaseUrl,
-  onCancel,
-  onRestored
-}: {
-  apiBaseUrl: string;
-  onCancel: () => void;
-  onRestored: (result: AccountRestorationResult) => void;
-}) {
+export function AccountRestorationPanel({ onCancel, onRestored }: { onCancel: () => void; onRestored: (result: AccountRestorationResult) => void; }) {
   const [requests, setRequests] = useState<AccountDeletionRequestSummary[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
   const [pin, setPin] = useState("");
@@ -38,8 +31,7 @@ export function AccountRestorationPanel({
 
   useEffect(() => {
     let active = true;
-    void requestJson<{ requests: AccountDeletionRequestSummary[] }>(
-      apiBaseUrl,
+    void apiFetch<{ requests: AccountDeletionRequestSummary[] }>(
       "/account-restoration/requests"
     )
       .then((response) => {
@@ -58,7 +50,7 @@ export function AccountRestorationPanel({
     return () => {
       active = false;
     };
-  }, [apiBaseUrl]);
+  }, []);
 
   async function restoreAccount() {
     if (selectedRequestId === "" || !/^\d{4}$/.test(pin)) {
@@ -67,8 +59,7 @@ export function AccountRestorationPanel({
     }
     await runAction("account-restore", async () => {
       try {
-        const result = await requestJson<AccountRestorationResult>(
-          apiBaseUrl,
+        const result = await apiFetch<AccountRestorationResult>(
           `/account-restoration/${encodeURIComponent(selectedRequestId)}`,
           { method: "POST", body: { pin } }
         );
@@ -136,27 +127,6 @@ export function AccountRestorationPanel({
       </section>
     </main>
   );
-}
-
-async function requestJson<T>(
-  apiBaseUrl: string,
-  path: string,
-  options?: { method: "POST"; body: Record<string, unknown> }
-): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: options?.method ?? "GET",
-    credentials: "include",
-    ...(options === undefined
-      ? {}
-      : {
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(options.body)
-        })
-  });
-  if (!response.ok) {
-    throw new Error(await getResponseErrorMessage(response));
-  }
-  return (await response.json()) as T;
 }
 
 function errorMessage(error: unknown): string {

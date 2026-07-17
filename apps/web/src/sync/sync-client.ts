@@ -1,4 +1,5 @@
 import type { LocalSyncSnapshot, SyncPullPage } from "@soko/shared-types";
+import { readApiBaseUrl } from "../lib/api";
 
 export interface AccountSyncRepository {
   loadSnapshot<T>(accountId: string): Promise<LocalSyncSnapshot<T>>;
@@ -19,7 +20,7 @@ export async function catchUpAccountSync<T = unknown>(
   options: CatchUpAccountSyncOptions
 ): Promise<LocalSyncSnapshot<T>> {
   const fetcher = options.fetcher ?? globalThis.fetch;
-  const endpoint = options.endpoint ?? "/v1/sync/changes";
+  const endpoint = options.endpoint ?? `${readApiBaseUrl()}/v1/sync/changes`;
   const pageSize = Math.min(100, Math.max(1, options.pageSize ?? 100));
   const maxPages = Math.max(1, options.maxPages ?? 1_000);
   let snapshot = await options.repository.loadSnapshot<T>(options.accountId);

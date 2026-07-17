@@ -6169,9 +6169,8 @@ export function OwnerApp() {
             }}
             phoneRecaptchaRef={phoneRecaptchaRef}
           />
-        ) : isAccountRestorationOpen && session !== null ? (
+          isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
-            apiBaseUrl={apiBaseUrl}
             onRestored={completeAccountRestoration}
             onCancel={() => {
               setIsAccountRestorationOpen(false);
