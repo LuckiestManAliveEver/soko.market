@@ -312,7 +312,7 @@ Goal:
 
 Deliverables:
 
-- Phone OTP and/or email OTP flow.
+- Phone-plus-PIN and email OTP authentication flows.
 - Account table.
 - User table.
 - Business creation.

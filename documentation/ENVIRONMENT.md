@@ -44,23 +44,11 @@ pnpm dev:stack:down
 ## Authentication channels
 
 Social OAuth login is disabled in the frontend and API, so OAuth client credentials are not
-required. Phone OTP now uses Firebase Auth on the web client and Firebase token verification on
-the API.
+required. Phone account access uses the Soko PIN routes, email verification uses the configured
+email provider, and first-shop phone capture uses no SMS or external phone-auth provider.
 
-Production phone OTP requires:
-
-- `VITE_FIREBASE_API_KEY`
-- `VITE_FIREBASE_AUTH_DOMAIN`
-- `VITE_FIREBASE_PROJECT_ID`
-- `VITE_FIREBASE_APP_ID`
-- `FIREBASE_PROJECT_ID`
-
-The web Firebase config is public but still environment-specific. The API only needs the Firebase
-project ID to verify the signed ID token.
-
-Local testing may set `VITE_FIREBASE_APP_VERIFICATION_DISABLED_FOR_TESTING=true`, but only with
-fictional phone numbers configured in Firebase Authentication. The production build rejects this
-setting and always uses Firebase app verification.
+There are no Firebase phone-auth environment variables. Owner phone parsing is local to the web and
+API packages through `libphonenumber-js`.
 
 ## Account-deletion processors
 

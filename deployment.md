@@ -91,18 +91,9 @@ DIRECT_DATABASE_URL=<linked from soko-market-db>
 ```
 
 Social OAuth login is disabled in both the frontend and API. Do not add Google, Facebook, TikTok,
-Apple, GitHub, Microsoft, LinkedIn, or X client credentials to Render.
-
-Set these when Firebase lost-account recovery is ready:
-
-```text
-VITE_FIREBASE_API_KEY=<Firebase web API key>
-VITE_FIREBASE_AUTH_DOMAIN=<Firebase auth domain>
-VITE_FIREBASE_PROJECT_ID=<Firebase project ID>
-VITE_FIREBASE_APP_ID=<Firebase app ID>
-VITE_FIREBASE_MESSAGING_SENDER_ID=<Firebase sender ID>
-FIREBASE_PROJECT_ID=<Firebase project ID>
-```
+Apple, GitHub, Microsoft, LinkedIn, or X client credentials to Render. Firebase and SMS-provider
+variables are not required: phone account access is PIN-based and first-shop phone capture is not
+SMS-verified.
 
 Open Render service `soko-market-web`, then go to Environment.
 
@@ -127,35 +118,32 @@ If you change any frontend environment variable, redeploy `soko-market-web` beca
    part of the start command because Render pre-deploy commands are unavailable on free web
    services.
 7. Open `https://api.soko.market/health/db` and confirm `database.status` is `ok` and
-   `latestMigration` is `019_cp23_mcp_access_tokens.sql`.
+   `latestMigration` is `029_owner_phone_identity.sql`.
 
 The Blueprint currently uses Render's free Postgres plan for testing. Render free databases expire
 after 30 days and are not appropriate for production merchant data. Change the database plan to a
 paid Render Postgres instance before production use.
 
-## 5. Add Firebase Phone Auth
+## 5. Confirm Owner Phone Identity
 
-Use Firebase Phone Authentication only for lost-account recovery. New accounts use email
-verification or a configured social identity, then enroll a passkey and owner PIN. During recovery,
-the browser sends the SMS and the API verifies the Firebase ID token before resuming the existing
-CP2 account.
+Phone numbers are required identity and support attributes. They are not SMS-verified during shop
+registration.
 
-1. Create or open a Firebase project.
-2. Add the production web domains and any preview domains under Firebase Authentication settings.
-3. Enable the Phone provider in Firebase Authentication.
-4. Create a web app in Firebase and copy the web config values into the `VITE_FIREBASE_*`
-   environment variables on `soko-market-web`.
-5. Set `FIREBASE_PROJECT_ID` on `soko-market-api`.
-6. Redeploy both Render services.
+1. Apply migration `029_owner_phone_identity.sql`.
+2. Confirm the web and API services are deployed from the same commit.
+3. Create a phone-plus-PIN account or sign in through email.
+4. Open first-shop registration and save a valid phone number.
+5. Confirm the browser sends no SMS request and proceeds to shop details.
+6. Confirm the public storefront response contains no owner phone fields.
 
 Runtime behavior:
 
-- Phone OTP requests are accepted only with the `recovery` purpose.
-- The browser confirms the SMS code, then sends a Firebase ID token to the API.
-- The API verifies the token with Firebase public certificates and resumes an existing CP2 account.
-- A recovery challenge cannot create a new account.
-- First-time signup uses email verification or a configured social identity.
-- The frontend no longer exposes WhatsApp OTP.
+- Phone OTP request and verification routes return `403`.
+- Phone signup and normal phone login use an owner PIN.
+- Email signup and recovery continue to use email verification.
+- First-shop registration stores the normalized owner phone as `unverified`.
+- Settings updates require a recently authenticated session.
+- Public phone display defaults to off.
 
 Phone numbers must be in E.164 format, for example `+254700000000`.
 
@@ -301,13 +289,13 @@ Then verify the frontend can reach the backend:
 5. Confirm API calls go to `https://api.soko.market`.
 6. Confirm there are no CORS errors.
 
-If Firebase is configured, test lost-account recovery:
+Test owner phone capture:
 
-1. Use an existing phone-linked account allowed by your Firebase Authentication phone test setup.
-2. Choose **Forgot PIN?** and request a recovery code from `https://soko.market`.
-3. Confirm the code arrives by SMS.
-4. Enter the received code in the browser prompt.
-5. Confirm the existing account is resumed and the PIN can be reset.
+1. Sign in to an account without a saved owner phone and choose **Sell**.
+2. Confirm **Add your phone number** appears without OTP controls.
+3. Enter a local or international number and continue.
+4. Confirm shop creation succeeds and settings show the number as private and unverified.
+5. Confirm public storefront responses do not contain the number.
 
 Verify Postgres persistence:
 
@@ -357,15 +345,13 @@ If the frontend loads but API calls fail:
 4. Redeploy `soko-market-api`.
 5. Check the browser console for CORS errors.
 
-If Firebase OTP does not send:
+If owner phone capture fails:
 
-1. Confirm the Firebase phone provider is enabled in the Firebase console.
-2. Confirm `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and
-   `VITE_FIREBASE_APP_ID` are set on `soko-market-web`.
-3. Confirm `FIREBASE_PROJECT_ID` is set on `soko-market-api`.
-4. Confirm the production domain is authorized in Firebase Authentication settings.
-5. Confirm the phone number is in E.164 format, for example `+254700000000`.
-6. Check the browser console and Render logs for Firebase auth errors.
+1. Confirm migration `029_owner_phone_identity.sql` is applied.
+2. Confirm the country and number form a plausible phone number.
+3. Confirm the session was authenticated recently.
+4. Check for a `PHONE_ALREADY_IN_USE` conflict without attempting to identify the other account.
+5. Confirm API logs contain only masked phone values.
 
 If Postgres does not activate:
 
@@ -390,8 +376,6 @@ expires after 30 days and has no managed backups.
 - Render outbound IPs: https://render.com/docs/outbound-ip-addresses
 - Render Postgres: https://render.com/docs/postgresql
 - Render free service limits: https://render.com/docs/free
-- Firebase web phone auth: https://firebase.google.com/docs/auth/web/phone-auth
-- Firebase ID token verification: https://firebase.google.com/docs/auth/admin/verify-id-tokens
 - Cloudflare DNS records: https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/
 - Cloudflare apex records: https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-zone-apex/
 - Cloudflare proxy status: https://developers.cloudflare.com/dns/proxy-status/

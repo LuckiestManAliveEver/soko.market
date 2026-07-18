@@ -3,10 +3,10 @@
 ## Product outcome
 
 Soko.market opens in buyer Marketplace mode without forcing account creation. A visitor can browse
-immediately. A visitor who chooses to create an account verifies their email or phone as part of
-account signup. First-shop registration is a separate step: once the account has an active session,
-the Sell button opens shop details without another OTP. Returning owners authenticate with a
-passkey, social identity, or contact and PIN.
+immediately. A visitor who chooses email verifies that email; phone signup uses a Soko PIN.
+First-shop registration is a separate step: once the account has an active session, the Sell button
+captures a compulsory unverified owner phone and then opens shop details without an OTP. Returning
+owners authenticate with a passkey or contact and PIN.
 
 The first Marketplace card is an onboarding item directly after the welcome message. Completing it
 removes it from the normal conversation timeline and adds a Marketplace shortcut beside Sell. The
@@ -36,8 +36,7 @@ must leave the request retryable and visible to operations.
 - A signed-out visitor who opens Sell is directed to the Sign up and Log in actions in the welcome
   message; account access and shop registration remain separate screens.
 - Phone and PIN unlock an existing owner account without OTP.
-- Firebase phone OTP supports account signup and explicit lost-account recovery, but it is not part
-  of shop creation.
+- Phone OTP is unavailable; phone signup/login uses PIN and first-shop phone capture sends no SMS.
 - The Marketplace intro renders once, is keyboard operable, and completion survives reload.
 - The Marketplace header shortcut appears only after onboarding completion.
 - Clicking an agent name opens the agent/shop profile when a shop exists.
@@ -48,7 +47,7 @@ must leave the request retryable and visible to operations.
 
 ## Security and accessibility
 
-Firebase API keys are public client configuration, but service credentials and provider secrets
-remain server-only. Production responses never expose development OTPs. All state-changing routes
-enforce session, tenant membership, and appropriate permissions. Controls use native buttons,
-labels, live status text, focusable names, and disabled states that communicate unavailable actions.
+Provider secrets remain server-only. Production responses never expose development email OTPs or
+owner phone data. All state-changing routes enforce session, tenant membership, and appropriate
+permissions. Controls use native buttons, labels, live status text, focusable names, and disabled
+states that communicate unavailable actions.

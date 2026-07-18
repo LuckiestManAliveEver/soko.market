@@ -15,14 +15,15 @@ No parallel application or authentication service is introduced.
 The initial no-shop/no-owner state no longer sets `shouldShowSignup`. Marketplace remains visible.
 Selecting Sell opens the existing setup surface in this order:
 
-1. Email verification or a configured social identity.
-2. Passkey enrollment and four-digit owner PIN creation.
-3. Business name and language.
-4. Existing `POST /businesses` creation and seller-mode activation.
+1. Email verification or phone-plus-PIN account creation.
+2. Passkey enrollment and four-digit owner PIN creation where required.
+3. Compulsory unverified owner phone capture.
+4. Business name and language.
+5. Existing `POST /businesses` creation and seller-mode activation.
 
-The account icon opens PIN login. Normal login calls `POST /auth/pin/login` directly. OTP controls
-only appear inside lost-account recovery. Firebase-backed phone requests carry
-`purpose: "recovery"` and the API rejects them for first-time signup.
+The account icon opens PIN login. Normal login calls `POST /auth/pin/login` directly. Email OTP is
+available for email verification and recovery; phone OTP routes are rejected. First-shop phone
+capture calls `PUT /account/phone` and does not send an SMS.
 
 ## Marketplace and agent profile
 
@@ -69,8 +70,8 @@ archive manifest table. PostgreSQL startup now requires migration 020.
 ## Deployment
 
 1. Apply migrations with `pnpm db:migrate`.
-2. Confirm the API has `FIREBASE_PROJECT_ID` and the web service has all `VITE_FIREBASE_*` values.
+2. Confirm no obsolete Firebase phone-auth variables remain on the API or web service.
 3. Deploy API and web from the same commit.
 4. Confirm the `soko-market-shop-purge` cron has both database URLs.
-5. Smoke test anonymous Marketplace, first Sell, email signup, passkey enrollment, PIN login,
-   Firebase recovery, model activation, quarantine, and restore.
+5. Smoke test anonymous Marketplace, first Sell, email signup, phone-plus-PIN login, compulsory
+   phone capture, model activation, quarantine, and restore.

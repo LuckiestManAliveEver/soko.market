@@ -1,25 +1,29 @@
 # Current authentication audit
 
-Date: 2026-07-11
+Date: 2026-07-18
 
 ## Framework decision
 
-The repository does not currently use Better Auth, Auth.js/NextAuth, Passport, Supabase Auth, Clerk, or Prisma. It uses Firebase Auth only for phone OTP transport, while CP2 still owns sessions, accounts, and business permissions.
+The repository does not currently use Better Auth, Auth.js/NextAuth, Passport, Supabase Auth,
+Clerk, Prisma, or Firebase Auth. CP2 owns sessions, accounts, PIN access, email verification, and
+business permissions.
 
 Current auth is a custom Node/Fastify CP2 auth implementation:
 
 - API routes: `services/api/src/cp2/routes.ts`
 - Auth/session store: `services/api/src/cp2/store.ts`
 - OAuth provider/token logic: `services/api/src/cp2/oauth.ts`
-- OTP provider adapter: `services/api/src/cp2/otp-provider.ts`
+- Email provider adapter: `services/api/src/cp2/email-provider.ts`
 - Postgres/Drizzle migration execution: `services/api/scripts/migrate-db.mjs`
 - Frontend auth UI: `apps/web/src/main.tsx`
 
-Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token persistence, session cookies, and Drizzle/Postgres migrations, the safe path is to extend the existing implementation instead of adding an overlapping auth framework.
+Because this stack already has email OTP, PIN/passkey access, OAuth state/CSRF, encrypted OAuth
+token persistence, session cookies, and Drizzle/Postgres migrations, the safe path is to extend the
+existing implementation instead of adding an overlapping auth framework.
 
 ## Existing auth capabilities
 
-- Email and Firebase phone signup verification, plus email/phone recovery request and verify.
+- Email signup/recovery verification and phone-plus-PIN signup/login.
 - WebAuthn passkey registration, login, listing, and revocation.
 - Session cookie creation and logout.
 - OAuth start/callback flow with server-side token exchange.
@@ -45,14 +49,12 @@ Because this stack already has OTP, OAuth state/CSRF, encrypted OAuth token pers
 - OAuth tokens are encrypted before persistence.
 - Existing OAuth state and CSRF validation remains in place.
 - Normal login uses a passkey, PIN, or connected social identity.
-- Firebase SMS supports phone signup and lost-account recovery. Only signup challenges may create
-  an account; recovery challenges still require an existing account.
+- Phone OTP is rejected. Phone access uses a Soko PIN, while compulsory first-shop phone capture is
+  stored as an unverified identity/support attribute.
 - Provider secrets stay in server environment variables and are not exposed to Vite.
 
 ## Known follow-up work
 
 - Configure production provider apps in Google, Facebook, and TikTok dashboards.
-- Configure Firebase phone auth and the API project ID before enabling phone signup or recovery in
-  production.
 - Add stricter OTP rate-limit backing storage if API instances scale horizontally.
 - Move business channel connect/disconnect UX into a dedicated channel management screen when provider APIs are fully configured.
