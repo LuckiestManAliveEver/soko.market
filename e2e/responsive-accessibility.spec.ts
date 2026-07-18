@@ -90,9 +90,42 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
 
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Cards are closed and chat still works.");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(composer).toHaveValue("");
   await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
+});
+
+test("SMS handoff confirms cost, normalizes the recipient, and preserves the draft", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/sell");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  const draft = `Hello from Soko. ${"This message may use more than one carrier SMS. ".repeat(4)}`;
+  await composer.fill(draft);
+
+  let sokoMessagePosts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/v1/messages") {
+      sokoMessagePosts += 1;
+    }
+  });
+
+  await page.getByRole("button", { name: "Send as SMS", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Send as SMS" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Your mobile carrier may charge for this SMS.")).toBeVisible();
+  await expect(dialog.getByText(/multiple charges may apply/)).toBeVisible();
+  await dialog.getByLabel("Telephone number").fill("0712 345 678");
+  await dialog.getByRole("button", { name: "Review SMS details" }).click();
+  await expect(dialog.getByText("+254712345678")).toBeVisible();
+  await expect(dialog.getByLabel("Message preview")).toHaveValue(draft);
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(composer).toHaveValue(draft);
+  expect(sokoMessagePosts).toBe(0);
 });
 
 test("persisted owner-control cards stay attached to their historical message", async ({

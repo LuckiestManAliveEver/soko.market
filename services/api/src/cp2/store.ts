@@ -42,6 +42,8 @@ import type {
   ConversationMessageSummary,
   MessageChannel,
   MessageDeliveryAttemptSummary,
+  MessageHandoffStatus,
+  MessageHandoffSummary,
   ConversationParticipantSummary,
   ConversationSummary,
   ConversationTypingSummary,
@@ -2767,6 +2769,62 @@ export class Cp2Store {
     this.pushSubscriptions.delete(subscription.id);
     this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
     return { removed: true };
+  }
+
+  recordMessageHandoff(input: {
+    sessionId: string | null;
+    businessId: string | null;
+    conversationId: string | null;
+    channel: "sms_external_app";
+    status: MessageHandoffStatus;
+    normalizedErrorCode: string | null;
+    now?: Date;
+  }): MessageHandoffSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    if (input.businessId !== null) {
+      this.requireMembership(input.businessId, session.user.id);
+    }
+    if (input.conversationId !== null) {
+      this.requireAccountConversation(input.conversationId, session.account.id);
+    }
+    if (
+      input.normalizedErrorCode !== null &&
+      !/^[a-z0-9_]{1,80}$/.test(input.normalizedErrorCode)
+    ) {
+      throw new Cp2Error(
+        400,
+        "message_handoff_error_invalid",
+        "The normalized handoff error code is invalid."
+      );
+    }
+
+    const handoff: MessageHandoffSummary = {
+      id: randomUUID(),
+      accountId: session.account.id,
+      businessId: input.businessId,
+      conversationId: input.conversationId,
+      channel: input.channel,
+      status: input.status,
+      normalizedErrorCode: input.normalizedErrorCode,
+      createdAt: now.toISOString()
+    };
+    this.recordAuditEvent({
+      type: "message.handoff",
+      aggregateType: "message_handoff",
+      aggregateId: handoff.id,
+      actorId: session.user.id,
+      occurredAt: handoff.createdAt,
+      payload: {
+        accountId: handoff.accountId,
+        businessId: handoff.businessId,
+        conversationId: handoff.conversationId,
+        channel: handoff.channel,
+        status: handoff.status,
+        normalizedErrorCode: handoff.normalizedErrorCode
+      }
+    });
+    return handoff;
   }
 
   createConversationMessage(input: {

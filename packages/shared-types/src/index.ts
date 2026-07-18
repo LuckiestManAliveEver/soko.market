@@ -113,6 +113,28 @@ export type MessageChannel =
   | "instagram_messaging"
   | "email";
 
+export type MessageComposerChannel = "soko" | "sms_external_app" | "sms_native" | "unsupported";
+
+export type MessageHandoffStatus =
+  | "preparing"
+  | "composer_opened"
+  | "no_sms_app"
+  | "invalid_recipient"
+  | "cancelled_before_handoff"
+  | "native_bridge_unavailable"
+  | "unsupported";
+
+export interface MessageHandoffSummary {
+  id: string;
+  accountId: string;
+  businessId: string | null;
+  conversationId: string | null;
+  channel: "sms_external_app";
+  status: MessageHandoffStatus;
+  normalizedErrorCode: string | null;
+  createdAt: string;
+}
+
 export type ConversationMessageDeliveryStatus =
   | "draft"
   | "queued"

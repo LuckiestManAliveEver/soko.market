@@ -1,0 +1,86 @@
+# External SMS composer handoff
+
+## Repository diagnosis
+
+Soko is currently a React 19/Vite progressive web application in `apps/web`. It is not a native
+Android app, Capacitor app, React Native app, Flutter app, or Trusted Web Activity. There is no
+Gradle project, Android manifest, Kotlin source, or native bridge implementation in this
+repository. Android release identity is only proposed and verified by
+`config/android-release-identity.json`; `documentation/CP26_ANDROID_RELEASE_IDENTITY.md` proposes a
+future TWA.
+
+The authenticated chat send flow is:
+
+1. `ChatSurface` in `apps/web/src/SokoApplication.tsx` renders the composer and calls `onSend`.
+2. `sendChatDraft()` creates an optimistic chat item, clears the draft, encrypts human direct
+   messages, and posts to `POST /v1/messages`.
+3. `services/api/src/cp2/routes.ts` parses that request.
+4. `services/api/src/cp2/store.ts` currently accepts only the `soko` server delivery channel and
+   records delivery attempts.
+
+Direct-conversation creation accepts an exact phone number or email, but the API rejects contacts
+without a Soko account. Conversation participant responses identify accounts, shops, and agents;
+they do not expose another account's private phone number. Shop identities use alphanumeric global
+IDs such as `254A12345678`, and are not telephone numbers. Optional browser contact selection exists
+for network sync, not chat delivery. There was no SMS, telephone, or external-intent helper and no
+dual-SIM handling.
+
+## Mode A implementation
+
+`apps/web/src/messaging/sms-handoff.ts` defines the explicit composer channels:
+
+- `soko`
+- `sms_external_app`
+- `sms_native`
+- `unsupported`
+
+Normal chat remains `soko`. SMS is selected only when the user presses **Send as SMS**.
+`sms_native` is disabled; this change does not send with `SmsManager` or make Soko a default SMS
+handler.
+
+The confirmation sheet:
+
+- keeps the original Soko draft and attachments untouched;
+- collects a phone number when the active conversation does not expose one;
+- shows the contact label independently of the normalized number;
+- previews editable text;
+- warns about carrier charges and messages longer than 160 characters;
+- explains that attachments are not included;
+- offers Cancel and Continue to SMS app.
+
+After handoff, Soko does not create a chat message and does not report sent, delivered, read, or
+failed-delivery state. It only says that the composer handoff was requested.
+
+## Phone normalization
+
+The existing `libphonenumber-js` dependency is reused. Numbers are normalized to E.164. A default
+country is used only for input without an international prefix. Kenyan `0712…`, `011…`, `254…`,
+and `+254…` forms are supported. Valid international `+` numbers are not forced to Kenya.
+Empty/invalid input and values containing letters or the `soko:` prefix are rejected.
+
+## Android and PWA behavior
+
+The PWA fallback builds a user-initiated, safely encoded
+`sms:+254…?body=<encoded text>` navigation. Android delegates that URI to a compatible handler and
+the selected SMS app or Android system owns dual-SIM choice. No SMS app package is hard-coded.
+
+A typed `window.SokoAndroid.openSmsComposer(recipient, body)` contract is preferred when a future
+Android wrapper supplies it. That wrapper must implement Mode A with `Intent.ACTION_SENDTO`, a
+`smsto:` URI, the `sms_body` extra, and `resolveActivity()` before `startActivity()`. It must not
+export an intent receiver or accept arbitrary inbound intent data.
+
+Browser navigation does not expose whether an SMS handler actually opened or whether the user sent
+the message. Desktop use is rejected with an explanation. Mobile browser URI handling varies by
+browser and installed SMS apps. A production Android wrapper therefore still needs a separate
+native implementation and device tests.
+
+## Privacy telemetry
+
+`POST /v1/message-handoffs` writes a minimal audit event containing the requesting account,
+optional shop and conversation IDs, `sms_external_app`, timestamp, handoff status, and normalized
+error code. The phone number, contact label, and message body are not sent to this endpoint.
+
+## Permissions
+
+This implementation adds no Android manifest and requests no SMS permissions. In particular it
+does not request `READ_SMS`, `RECEIVE_SMS`, `SEND_SMS`, or `WRITE_SMS`.

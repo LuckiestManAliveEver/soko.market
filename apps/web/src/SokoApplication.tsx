@@ -31,6 +31,7 @@ import type {
   ConversationParticipantSummary,
   ConversationView,
   E2eeDeviceSummary,
+  MessageHandoffStatus,
   McpAccessScope,
   McpAccessTokenCreated,
   McpAccessTokenSummary,
@@ -93,6 +94,8 @@ import {
   readMessagingOutbox,
   removeMessagingOutboxEntry
 } from "./messaging/outbox";
+import { SmsHandoffDialog, type SmsHandoffRequest } from "./messaging/SmsHandoffDialog";
+import { normalizeSmsRecipient } from "./messaging/sms-handoff";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -5429,6 +5432,19 @@ export function OwnerApp() {
     }).catch(() => undefined);
   }
 
+  function recordSmsHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+    if (session === null) return;
+    void postJson("/v1/message-handoffs", {
+      businessId: business?.id ?? null,
+      conversationId: activeConversationId,
+      channel: "sms_external_app",
+      status,
+      normalizedErrorCode
+    }).catch(() => {
+      // SMS composer use must not be blocked by optional telemetry.
+    });
+  }
+
   async function retryQueuedMessages() {
     if (!navigator.onLine || session === null) return;
     const accountId = session.account.id;
@@ -6668,6 +6684,9 @@ export function OwnerApp() {
                     ? "End-to-end encrypted"
                     : "Messages are processed by the Soko agent"
               }
+              smsDefaultCountry={
+                (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE"
+              }
               replyToMessageId={replyToMessageId}
               mode={mode}
               networkGraph={networkGraph}
@@ -6771,6 +6790,7 @@ export function OwnerApp() {
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen}
               onSend={() => void runAction("chat-send", sendChatDraft)}
+              onSmsHandoff={recordSmsHandoff}
             >
               {renderActiveWorkspace()}
             </ChatSurface>
@@ -14256,6 +14276,7 @@ interface ChatSurfaceProps {
   isConfirming: boolean;
   isSending: boolean;
   securityLabel: string;
+  smsDefaultCountry: CountryCode;
   replyToMessageId: string | null;
   mode: SokoMode;
   marketplaceIntroComplete: boolean;
@@ -14318,6 +14339,7 @@ interface ChatSurfaceProps {
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
   onSend: () => void;
+  onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
 }
 
 function ChatSurface({
@@ -14339,6 +14361,7 @@ function ChatSurface({
   isConfirming,
   isSending,
   securityLabel,
+  smsDefaultCountry,
   replyToMessageId,
   mode,
   marketplaceIntroComplete,
@@ -14395,7 +14418,8 @@ function ChatSurface({
   onRemoveAttachment,
   onStatusChange,
   onConfirm,
-  onSend
+  onSend,
+  onSmsHandoff
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -14408,6 +14432,7 @@ function ChatSurface({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
   const workspaceDialogRef = useRef<HTMLElement | null>(null);
   const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
@@ -14434,6 +14459,20 @@ function ChatSurface({
     );
   });
   const visibleMessages = messages.filter((message) => !isRedundantAgentErrorMessage(message.body));
+
+  function openSmsHandoff(recipient: string, label: string) {
+    let normalizedCandidate = "";
+    try {
+      normalizedCandidate = normalizeSmsRecipient(recipient, smsDefaultCountry);
+    } catch {
+      // The confirmation sheet collects or corrects a missing contact number.
+    }
+    setSmsHandoffRequest({
+      body: chatDraft,
+      label: label.trim() || "SMS recipient",
+      recipient: normalizedCandidate || recipient
+    });
+  }
 
   useEffect(() => {
     if (!workspaceOpen) {
@@ -14574,7 +14613,17 @@ function ChatSurface({
             <small>
               Only registered Soko users can be messaged. Human chats are end-to-end encrypted.
             </small>
-            <button type="submit">Start encrypted chat</button>
+            <div className="new-conversation-actions">
+              <button type="submit">Start encrypted chat</button>
+              <button
+                className="secondary"
+                type="button"
+                disabled={newRecipient.trim().length === 0 || chatDraft.trim().length === 0}
+                onClick={() => openSmsHandoff(newRecipient, newConversationTitle)}
+              >
+                Send as SMS
+              </button>
+            </div>
           </form>
         ) : null}
         <div className="conversation-list">
@@ -15139,20 +15188,45 @@ function ChatSurface({
                 }
               />
             </label>
-            <button
-              className="send-button"
-              type="button"
-              onClick={onSend}
-              disabled={
-                isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
-              }
-              aria-busy={isSending}
-            >
-              <span className="send-icon" aria-hidden="true" />
-              <span className="visually-hidden">Send</span>
-            </button>
+            <div className="composer-send-actions">
+              <button
+                className="sms-send-button"
+                type="button"
+                disabled={chatDraft.trim().length === 0}
+                onClick={() =>
+                  openSmsHandoff(
+                    selectedConversation?.title ?? "",
+                    selectedConversation?.title ?? "SMS recipient"
+                  )
+                }
+              >
+                Send as SMS
+              </button>
+              <button
+                className="send-button"
+                type="button"
+                onClick={onSend}
+                disabled={
+                  isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
+                }
+                aria-busy={isSending}
+              >
+                <span className="send-icon" aria-hidden="true" />
+                <span className="visually-hidden">Send</span>
+              </button>
+            </div>
           </div>
         )}
+        {smsHandoffRequest !== null ? (
+          <SmsHandoffDialog
+            key={`${smsHandoffRequest.recipient}:${smsHandoffRequest.body}`}
+            {...smsHandoffRequest}
+            defaultCountry={smsDefaultCountry}
+            hasAttachments={pendingAttachments.length > 0}
+            onClose={() => setSmsHandoffRequest(null)}
+            onRecord={onSmsHandoff}
+          />
+        ) : null}
       </section>
     </div>
   );

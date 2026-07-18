@@ -21,6 +21,7 @@ import type {
   LaunchIncidentCategory,
   LaunchIncidentSeverity,
   LaunchIncidentStatus,
+  MessageHandoffStatus,
   ProductFieldDefinition,
   ProductFieldInputType,
   ProductImportDraft,
@@ -267,6 +268,14 @@ interface CreateMessageBody {
   agent?: RuntimeTurnBody & {
     businessId?: string;
   };
+}
+
+interface MessageHandoffBody {
+  businessId?: string | null;
+  conversationId?: string | null;
+  channel?: string;
+  status?: string;
+  normalizedErrorCode?: string | null;
 }
 
 interface UpdateConversationBody {
@@ -2089,6 +2098,40 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.post(
+    "/v1/message-handoffs",
+    async (request: FastifyRequest<{ Body: MessageHandoffBody }>, reply) => {
+      try {
+        const channel = parseString(request.body.channel, "channel");
+        if (channel !== "sms_external_app") {
+          throw new Cp2Error(
+            400,
+            "message_handoff_channel_invalid",
+            "The handoff channel is invalid."
+          );
+        }
+        const status = parseString(request.body.status, "status");
+        if (!isMessageHandoffStatus(status)) {
+          throw new Cp2Error(
+            400,
+            "message_handoff_status_invalid",
+            "The handoff status is invalid."
+          );
+        }
+        return store.recordMessageHandoff({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseNullableString(request.body.businessId),
+          conversationId: parseNullableString(request.body.conversationId),
+          channel,
+          status,
+          normalizedErrorCode: parseNullableString(request.body.normalizedErrorCode)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.patch(
     "/v1/conversations/:conversationId",
@@ -4426,6 +4469,18 @@ function isMessageChannel(value: string): value is MessageChannel {
     "facebook_messenger",
     "instagram_messaging",
     "email"
+  ].includes(value);
+}
+
+function isMessageHandoffStatus(value: string): value is MessageHandoffStatus {
+  return [
+    "preparing",
+    "composer_opened",
+    "no_sms_app",
+    "invalid_recipient",
+    "cancelled_before_handoff",
+    "native_bridge_unavailable",
+    "unsupported"
   ].includes(value);
 }
 

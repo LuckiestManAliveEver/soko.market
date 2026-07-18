@@ -4,6 +4,7 @@ import type {
   ConversationMessageSummary,
   ConversationView,
   MessageDeliveryAttemptSummary,
+  MessageHandoffSummary,
   SokoSessionContext
 } from "@soko/shared-types";
 import { buildApi } from "../services/api/src/app";
@@ -316,6 +317,27 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     expect(unavailableChannel.statusCode).toBe(400);
     expect(unavailableChannel.json().code).toBe("message_channel_unavailable");
 
+    const handoff = await postJson<MessageHandoffSummary>(
+      app,
+      "/v1/message-handoffs",
+      {
+        businessId: shop.business.id,
+        conversationId: conversation.conversation.id,
+        channel: "sms_external_app",
+        status: "composer_opened",
+        normalizedErrorCode: null
+      },
+      ownerCookie
+    );
+    expect(handoff).toMatchObject({
+      accountId: context.accountId,
+      businessId: shop.business.id,
+      conversationId: conversation.conversation.id,
+      channel: "sms_external_app",
+      status: "composer_opened",
+      normalizedErrorCode: null
+    });
+
     const ownerControlsOutsideSellerMode = await postResponse(
       app,
       "/v1/messages",
@@ -348,9 +370,13 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       actualChannel: "soko"
     });
     expect(hydratedStore.snapshot().messageDeliveryAttempts).toHaveLength(1);
-    expect(hydratedStore.snapshot().auditEvents.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["conversation.created", "message.created"])
+    const hydratedAuditEvents = hydratedStore.snapshot().auditEvents;
+    expect(hydratedAuditEvents.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["conversation.created", "message.created", "message.handoff"])
     );
+    const handoffAudit = hydratedAuditEvents.find((event) => event.type === "message.handoff");
+    expect(JSON.stringify(handoffAudit)).not.toContain("Hello");
+    expect(JSON.stringify(handoffAudit)).not.toContain("+254");
 
     await hydratedApp.close();
   });
