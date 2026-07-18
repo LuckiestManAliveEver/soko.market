@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type {
   ConversationMessageSummary,
   ConversationView,
+  MessageDeliveryAttemptSummary,
   SokoSessionContext
 } from "@soko/shared-types";
 import { buildApi } from "../services/api/src/app";
@@ -241,8 +242,11 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     const payload = {
       conversationId: conversation.conversation.id,
       clientMessageId: "android-message-0001",
+      idempotencyKey: "offline-message-attempt-0001",
       content: { type: "text", text: "Do you have 10 kg of maize flour?" },
-      clientTimestamp: "2026-07-11T21:04:27+03:00"
+      clientTimestamp: "2026-07-11T21:04:27+03:00",
+      queuedAt: "2026-07-11T18:04:20.000Z",
+      selectedChannel: "soko"
     };
     const firstMessage = await postJson<ConversationMessageSummary>(
       app,
@@ -253,10 +257,37 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     const repeatedMessage = await postJson<ConversationMessageSummary>(
       app,
       "/v1/messages",
-      payload,
+      { ...payload, clientMessageId: "android-message-retry-0002" },
       ownerCookie
     );
     expect(repeatedMessage.id).toBe(firstMessage.id);
+    expect(firstMessage).toMatchObject({
+      idempotencyKey: payload.idempotencyKey,
+      status: "delivered",
+      queuedAt: payload.queuedAt,
+      sentAt: expect.any(String),
+      deliveredAt: expect.any(String),
+      retryCount: 0,
+      selectedChannel: "soko",
+      actualChannel: "soko",
+      failureCode: null
+    });
+    const attempts = await getJson<{ attempts: MessageDeliveryAttemptSummary[] }>(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/messages/${firstMessage.id}/delivery-attempts`,
+      ownerCookie
+    );
+    expect(attempts.attempts).toEqual([
+      expect.objectContaining({
+        accountId: context.accountId,
+        conversationId: conversation.conversation.id,
+        messageId: firstMessage.id,
+        channel: "soko",
+        provider: "soko",
+        attemptNumber: 1,
+        result: "succeeded"
+      })
+    ]);
 
     const forbiddenConversation = await getResponse(
       app,
@@ -264,6 +295,26 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       strangerCookie
     );
     expect(forbiddenConversation.statusCode).toBe(404);
+    const forbiddenAttempts = await getResponse(
+      app,
+      `/v1/conversations/${conversation.conversation.id}/messages/${firstMessage.id}/delivery-attempts`,
+      strangerCookie
+    );
+    expect(forbiddenAttempts.statusCode).toBe(404);
+
+    const unavailableChannel = await postResponse(
+      app,
+      "/v1/messages",
+      {
+        ...payload,
+        clientMessageId: "android-message-sms-0003",
+        idempotencyKey: "offline-message-attempt-0003",
+        selectedChannel: "sms"
+      },
+      ownerCookie
+    );
+    expect(unavailableChannel.statusCode).toBe(400);
+    expect(unavailableChannel.json().code).toBe("message_channel_unavailable");
 
     const ownerControlsOutsideSellerMode = await postResponse(
       app,
@@ -291,6 +342,12 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     );
     expect(restored.messages).toHaveLength(1);
     expect(restored.messages[0]?.id).toBe(firstMessage.id);
+    expect(restored.messages[0]).toMatchObject({
+      idempotencyKey: payload.idempotencyKey,
+      selectedChannel: "soko",
+      actualChannel: "soko"
+    });
+    expect(hydratedStore.snapshot().messageDeliveryAttempts).toHaveLength(1);
     expect(hydratedStore.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining(["conversation.created", "message.created"])
     );

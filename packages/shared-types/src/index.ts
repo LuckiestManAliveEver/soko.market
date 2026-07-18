@@ -102,8 +102,29 @@ export type ConversationParticipantRole = "account" | "shop" | "agent";
 
 export type ConversationMessageAuthor = "user" | "agent" | "system";
 
+export type MessageChannel =
+  | "soko"
+  | "sms"
+  | "mms"
+  | "rcs_business"
+  | "whatsapp_business"
+  | "telegram"
+  | "facebook_messenger"
+  | "instagram_messaging"
+  | "email";
+
 export type ConversationMessageDeliveryStatus =
-  "pending" | "sent" | "delivered" | "read" | "failed";
+  | "draft"
+  | "queued"
+  | "sending"
+  | "retrying"
+  | "pending"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed";
+
+export type MessageDeliveryAttemptResult = "succeeded" | "transient_failure" | "permanent_failure";
 
 export interface ConversationAttachment {
   id: string;
@@ -197,12 +218,24 @@ export interface ConversationMessageSummary {
   id: string;
   conversationId: string;
   clientMessageId: string;
+  idempotencyKey: string;
   author: ConversationMessageAuthor;
   authorId: string;
   content: ConversationMessageContent;
   status?: ConversationMessageDeliveryStatus;
+  queuedAt?: string | null;
+  sentAt?: string | null;
   deliveredAt?: string | null;
   readAt?: string | null;
+  failureCode?: string | null;
+  retryCount?: number;
+  nextRetryAt?: string | null;
+  selectedChannel?: MessageChannel;
+  actualChannel?: MessageChannel | null;
+  providerMessageId?: string | null;
+  importedSource?: string | null;
+  importedExternalId?: string | null;
+  consentRecordId?: string | null;
   editedAt?: string | null;
   deletedAt?: string | null;
   replyToMessageId?: string | null;
@@ -210,6 +243,21 @@ export interface ConversationMessageSummary {
   reactions?: ConversationReaction[];
   clientTimestamp: string | null;
   createdAt: string;
+}
+
+export interface MessageDeliveryAttemptSummary {
+  id: string;
+  accountId: string;
+  conversationId: string;
+  messageId: string;
+  channel: MessageChannel;
+  provider: string;
+  attemptNumber: number;
+  requestedAt: string;
+  respondedAt: string | null;
+  result: MessageDeliveryAttemptResult;
+  normalizedFailureCode: string | null;
+  providerResponseReference: string | null;
 }
 
 export interface ConversationInboxItem extends ConversationSummary {

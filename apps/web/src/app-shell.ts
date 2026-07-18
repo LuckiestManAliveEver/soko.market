@@ -1,3 +1,5 @@
+import type { ConversationMessageDeliveryStatus } from "@soko/shared-types";
+
 export type ShellView =
   | "home"
   | "chat"
@@ -44,7 +46,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   confirmationToken?: string;
   createdAt?: string;
-  status?: "pending" | "sent" | "delivered" | "read" | "failed";
+  status?: ConversationMessageDeliveryStatus;
   editedAt?: string | null;
   deletedAt?: string | null;
   replyToMessageId?: string | null;

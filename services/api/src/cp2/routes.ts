@@ -34,6 +34,7 @@ import type {
   ConversationKind,
   ConversationMessageContent,
   E2eePublicKey,
+  MessageChannel,
   SokoChatSurface,
   SokoMode,
   SyncRealtimeReadyEvent,
@@ -255,8 +256,11 @@ interface ConversationParams {
 interface CreateMessageBody {
   conversationId?: string;
   clientMessageId?: string;
+  idempotencyKey?: string;
   content?: unknown;
   clientTimestamp?: string | null;
+  queuedAt?: string | null;
+  selectedChannel?: string;
   author?: string;
   replyToMessageId?: string | null;
   forwardedFromMessageId?: string | null;
@@ -2021,15 +2025,27 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         request.body.clientTimestamp === undefined || request.body.clientTimestamp === null
           ? null
           : parseIsoTimestamp(request.body.clientTimestamp, "clientTimestamp");
+      const queuedAt =
+        request.body.queuedAt === undefined || request.body.queuedAt === null
+          ? null
+          : parseIsoTimestamp(request.body.queuedAt, "queuedAt");
+      const selectedChannel = parseOptionalString(request.body.selectedChannel);
+      if (selectedChannel !== undefined && !isMessageChannel(selectedChannel)) {
+        throw new Cp2Error(400, "message_channel_invalid", "selectedChannel is invalid.");
+      }
+      const idempotencyKey = parseOptionalString(request.body.idempotencyKey);
       const message = store.createConversationMessage({
         sessionId: readSessionCookie(request.headers.cookie),
         conversationId: parseString(request.body.conversationId, "conversationId"),
         clientMessageId: parseString(request.body.clientMessageId, "clientMessageId"),
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
         content: parseConversationMessageContent(request.body.content),
         author: request.body.author === "agent" ? "agent" : "user",
         replyToMessageId: parseNullableString(request.body.replyToMessageId),
         forwardedFromMessageId: parseNullableString(request.body.forwardedFromMessageId),
-        clientTimestamp
+        clientTimestamp,
+        queuedAt,
+        ...(selectedChannel !== undefined ? { selectedChannel } : {})
       });
       await store.deliverPendingMessageNotifications({ messageId: message.id });
       return message;
@@ -2060,6 +2076,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           ...(request.body.read !== undefined ? { read: request.body.read } : {}),
           ...(request.body.title !== undefined ? { title: request.body.title } : {})
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/:conversationId/messages/:messageId/delivery-attempts",
+    async (request: FastifyRequest<{ Params: MessageParams }>, reply) => {
+      try {
+        return {
+          attempts: store.listMessageDeliveryAttempts({
+            sessionId: readSessionCookie(request.headers.cookie),
+            conversationId: parseString(request.params.conversationId, "conversationId"),
+            messageId: parseString(request.params.messageId, "messageId")
+          })
+        };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -4344,6 +4377,20 @@ function parseOptionalString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function isMessageChannel(value: string): value is MessageChannel {
+  return [
+    "soko",
+    "sms",
+    "mms",
+    "rcs_business",
+    "whatsapp_business",
+    "telegram",
+    "facebook_messenger",
+    "instagram_messaging",
+    "email"
+  ].includes(value);
 }
 
 function parsePasskeyResponse<T>(value: unknown): T {

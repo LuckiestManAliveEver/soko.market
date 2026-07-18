@@ -40,6 +40,8 @@ import type {
   ConversationMessageContent,
   ConversationMessageAuthor,
   ConversationMessageSummary,
+  MessageChannel,
+  MessageDeliveryAttemptSummary,
   ConversationParticipantSummary,
   ConversationSummary,
   ConversationTypingSummary,
@@ -564,6 +566,7 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  messageDeliveryAttempts?: MessageDeliveryAttemptSummary[];
   messageNotificationDeliveries?: MessageNotificationDelivery[];
   e2eeDevices?: E2eeDeviceSummary[];
   pushSubscriptions?: PushSubscriptionSummary[];
@@ -771,6 +774,7 @@ export class Cp2Store {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly messageDeliveryAttempts = new Map<string, MessageDeliveryAttemptSummary>();
   private readonly messageNotificationDeliveries = new Map<string, MessageNotificationDelivery>();
   private readonly e2eeDevices = new Map<string, E2eeDeviceSummary>();
   private readonly pushSubscriptions = new Map<string, PushSubscriptionSummary>();
@@ -784,6 +788,7 @@ export class Cp2Store {
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
+  private readonly messageByIdempotencyKey = new Map<string, string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
   private readonly mcpAccessTokens = new Map<string, McpAccessTokenRecord>();
@@ -2761,11 +2766,14 @@ export class Cp2Store {
     sessionId: string | null;
     conversationId: string;
     clientMessageId: string;
+    idempotencyKey?: string;
     content: ConversationMessageContent;
     author?: ConversationMessageAuthor;
     replyToMessageId?: string | null;
     forwardedFromMessageId?: string | null;
     clientTimestamp?: string | null;
+    queuedAt?: string | null;
+    selectedChannel?: MessageChannel;
     now?: Date;
   }): ConversationMessageSummary {
     const now = input.now ?? new Date();
@@ -2781,8 +2789,30 @@ export class Cp2Store {
       );
     }
 
-    const idempotencyKey = `${conversation.id}:${clientMessageId}`;
-    const existingId = this.messageByClientId.get(idempotencyKey);
+    const idempotencyKey = (
+      input.idempotencyKey ?? `soko:${conversation.id}:${clientMessageId}`
+    ).trim();
+    if (idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+      throw new Cp2Error(
+        400,
+        "idempotency_key_invalid",
+        "idempotencyKey must be between 8 and 200 characters."
+      );
+    }
+    const selectedChannel = input.selectedChannel ?? "soko";
+    if (selectedChannel !== "soko") {
+      throw new Cp2Error(
+        400,
+        "message_channel_unavailable",
+        "The requested messaging channel is not configured."
+      );
+    }
+
+    const clientLookupKey = `${conversation.id}:${clientMessageId}`;
+    const idempotencyLookupKey = `${conversation.id}:${idempotencyKey}`;
+    const existingId =
+      this.messageByClientId.get(clientLookupKey) ??
+      this.messageByIdempotencyKey.get(idempotencyLookupKey);
 
     if (existingId !== undefined) {
       return this.conversationMessages.get(existingId) as ConversationMessageSummary;
@@ -2833,12 +2863,24 @@ export class Cp2Store {
       id: randomUUID(),
       conversationId: conversation.id,
       clientMessageId,
+      idempotencyKey,
       author,
       authorId: author === "agent" ? `account-${session.account.id}-agent` : session.user.id,
       content: input.content,
       status: "delivered",
+      queuedAt: input.queuedAt ?? null,
+      sentAt: now.toISOString(),
       deliveredAt: now.toISOString(),
       readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel,
+      actualChannel: "soko",
+      providerMessageId: null,
+      importedSource: null,
+      importedExternalId: null,
+      consentRecordId: null,
       editedAt: null,
       deletedAt: null,
       replyToMessageId: input.replyToMessageId ?? null,
@@ -2848,7 +2890,23 @@ export class Cp2Store {
       createdAt: now.toISOString()
     };
     this.conversationMessages.set(message.id, message);
-    this.messageByClientId.set(idempotencyKey, message.id);
+    this.messageByClientId.set(clientLookupKey, message.id);
+    this.messageByIdempotencyKey.set(idempotencyLookupKey, message.id);
+    const attempt: MessageDeliveryAttemptSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: message.id,
+      channel: "soko",
+      provider: "soko",
+      attemptNumber: 1,
+      requestedAt: now.toISOString(),
+      respondedAt: now.toISOString(),
+      result: "succeeded",
+      normalizedFailureCode: null,
+      providerResponseReference: null
+    };
+    this.messageDeliveryAttempts.set(attempt.id, attempt);
     this.conversations.set(conversation.id, {
       ...conversation,
       updatedAt: now.toISOString()
@@ -2875,12 +2933,37 @@ export class Cp2Store {
       occurredAt: now.toISOString(),
       payload: {
         clientMessageId,
+        idempotencyKey,
         contentType: message.content.type,
-        conversationId: conversation.id
+        conversationId: conversation.id,
+        selectedChannel
       }
     });
     this.enqueueConversationNotifications(conversation, message, session.account.id, now);
     return message;
+  }
+
+  listMessageDeliveryAttempts(input: {
+    sessionId: string | null;
+    conversationId: string;
+    messageId: string;
+    now?: Date;
+  }): MessageDeliveryAttemptSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    this.requireConversationMessage(input.messageId, conversation.id);
+    return [...this.messageDeliveryAttempts.values()]
+      .filter(
+        (attempt) =>
+          attempt.accountId === session.account.id &&
+          attempt.conversationId === conversation.id &&
+          attempt.messageId === input.messageId
+      )
+      .sort(
+        (left, right) =>
+          left.attemptNumber - right.attemptNumber ||
+          left.requestedAt.localeCompare(right.requestedAt)
+      );
   }
 
   async deliverPendingMessageNotifications(
@@ -8288,6 +8371,7 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      messageDeliveryAttempts: [...this.messageDeliveryAttempts.values()],
       messageNotificationDeliveries: [...this.messageNotificationDeliveries.values()],
       e2eeDevices: [...this.e2eeDevices.values()],
       pushSubscriptions: [...this.pushSubscriptions.values()],
@@ -8372,6 +8456,7 @@ export class Cp2Store {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.messageDeliveryAttempts.clear();
     this.messageNotificationDeliveries.clear();
     this.e2eeDevices.clear();
     this.pushSubscriptions.clear();
@@ -8381,6 +8466,7 @@ export class Cp2Store {
     this.agentProfiles.clear();
     this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
+    this.messageByIdempotencyKey.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
     this.products.clear();
@@ -8482,11 +8568,51 @@ export class Cp2Store {
     }
 
     for (const message of snapshot.conversationMessages ?? []) {
-      this.conversationMessages.set(message.id, message);
+      const restored: ConversationMessageSummary = {
+        ...message,
+        idempotencyKey:
+          message.idempotencyKey ?? `soko:${message.conversationId}:${message.clientMessageId}`,
+        queuedAt: message.queuedAt ?? null,
+        sentAt:
+          message.sentAt === undefined
+            ? message.status === "sent" ||
+              message.status === "delivered" ||
+              message.status === "read" ||
+              message.status === undefined
+              ? (message.deliveredAt ?? message.createdAt)
+              : null
+            : message.sentAt,
+        failureCode: message.failureCode ?? null,
+        retryCount: message.retryCount ?? 0,
+        nextRetryAt: message.nextRetryAt ?? null,
+        selectedChannel: message.selectedChannel ?? "soko",
+        actualChannel:
+          message.actualChannel === undefined
+            ? message.status === "sent" ||
+              message.status === "delivered" ||
+              message.status === "read" ||
+              message.status === undefined
+              ? "soko"
+              : null
+            : message.actualChannel,
+        providerMessageId: message.providerMessageId ?? null,
+        importedSource: message.importedSource ?? null,
+        importedExternalId: message.importedExternalId ?? null,
+        consentRecordId: message.consentRecordId ?? null
+      };
+      this.conversationMessages.set(restored.id, restored);
       this.messageByClientId.set(
-        `${message.conversationId}:${message.clientMessageId}`,
-        message.id
+        `${restored.conversationId}:${restored.clientMessageId}`,
+        restored.id
       );
+      this.messageByIdempotencyKey.set(
+        `${restored.conversationId}:${restored.idempotencyKey}`,
+        restored.id
+      );
+    }
+
+    for (const attempt of snapshot.messageDeliveryAttempts ?? []) {
+      this.messageDeliveryAttempts.set(attempt.id, attempt);
     }
 
     for (const delivery of snapshot.messageNotificationDeliveries ?? []) {
@@ -12325,6 +12451,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.conversations, scope);
       deletedRecordCount += deleteScopedMapRecords(this.conversationParticipants, scope);
       deletedRecordCount += deleteScopedMapRecords(this.conversationMessages, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.messageDeliveryAttempts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.messageNotificationDeliveries, scope);
       deletedRecordCount += deleteScopedMapRecords(this.e2eeDevices, scope);
       deletedRecordCount += deleteScopedMapRecords(this.pushSubscriptions, scope);
@@ -12411,9 +12538,14 @@ export class Cp2Store {
     for (const user of this.users.values()) this.userByAccount.set(user.accountId, user.id);
 
     this.messageByClientId.clear();
+    this.messageByIdempotencyKey.clear();
     for (const message of this.conversationMessages.values()) {
       this.messageByClientId.set(
         `${message.conversationId}:${message.clientMessageId}`,
+        message.id
+      );
+      this.messageByIdempotencyKey.set(
+        `${message.conversationId}:${message.idempotencyKey}`,
         message.id
       );
     }

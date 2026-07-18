@@ -20,6 +20,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  { key: "messageDeliveryAttempts", tableName: "cp2_message_delivery_attempts" },
   {
     key: "messageNotificationDeliveries",
     tableName: "cp2_message_notification_deliveries"
@@ -249,7 +250,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "030_phone_pin_recovery_code.sql";
+const requiredMigrationFilename = "031_message_delivery_state.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -2751,6 +2752,7 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    messageDeliveryAttempts: [],
     messageNotificationDeliveries: [],
     e2eeDevices: [],
     pushSubscriptions: [],

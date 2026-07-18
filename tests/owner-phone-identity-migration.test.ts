@@ -21,9 +21,7 @@ describe("owner phone identity migration", () => {
 
     expect(schema).toContain('phoneNumberE164: text("phone_number_e164")');
     expect(schema).toContain('publicPhoneEnabled: boolean("public_phone_enabled")');
-    expect(postgresStore).toContain(
-      'requiredMigrationFilename = "030_phone_pin_recovery_code.sql"'
-    );
+    expect(postgresStore).toContain('requiredMigrationFilename = "031_message_delivery_state.sql"');
     expect(postgresStore).toContain("phone_number_e164");
     expect(postgresStore).toContain('"updateOwnerPhone"');
   });

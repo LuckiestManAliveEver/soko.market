@@ -216,9 +216,24 @@ export const conversationMessages = pgTable(
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
     clientMessageId: text("client_message_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
     author: text("author").notNull(),
     authorId: text("author_id").notNull(),
     content: jsonb("content").notNull(),
+    status: text("status").notNull().default("delivered"),
+    queuedAt: timestamp("queued_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    failureCode: text("failure_code"),
+    retryCount: integer("retry_count").notNull().default(0),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    selectedChannel: text("selected_channel").notNull().default("soko"),
+    actualChannel: text("actual_channel"),
+    providerMessageId: text("provider_message_id"),
+    importedSource: text("imported_source"),
+    importedExternalId: text("imported_external_id"),
+    consentRecordId: uuid("consent_record_id"),
     clientTimestamp: timestamp("client_timestamp", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull()
   },
@@ -227,9 +242,48 @@ export const conversationMessages = pgTable(
       table.conversationId,
       table.clientMessageId
     ),
+    idempotencyUnique: uniqueIndex("conversation_messages_idempotency_idx").on(
+      table.conversationId,
+      table.idempotencyKey
+    ),
     conversationCreated: index("conversation_messages_conversation_created_idx").on(
       table.conversationId,
       table.createdAt
+    )
+  })
+);
+
+export const messageDeliveryAttempts = pgTable(
+  "message_delivery_attempts",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => conversationMessages.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    provider: text("provider").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    result: text("result").notNull(),
+    normalizedFailureCode: text("normalized_failure_code"),
+    providerResponseReference: text("provider_response_reference")
+  },
+  (table) => ({
+    accountRequested: index("message_delivery_attempts_account_requested_idx").on(
+      table.accountId,
+      table.requestedAt
+    ),
+    messageAttempt: uniqueIndex("message_delivery_attempts_message_channel_attempt_idx").on(
+      table.messageId,
+      table.channel,
+      table.attemptNumber
     )
   })
 );
