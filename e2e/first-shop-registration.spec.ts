@@ -12,7 +12,17 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
     if (path === "/session") {
       return json({
         account: { id: "first-shop-account" },
-        user: { id: "first-shop-user", displayName: "First Shop Owner", language: "en" },
+        user: {
+          id: "first-shop-user",
+          displayName: "First Shop Owner",
+          language: "en",
+          phoneNumberE164: "+254712345678",
+          phoneCountryCode: "KE",
+          phoneNationalNumber: "712345678",
+          phoneVerificationStatus: "unverified",
+          phoneSource: "shop_registration",
+          publicPhoneEnabled: false
+        },
         session: { expiresAt: "2099-01-01T00:00:00.000Z" }
       });
     }
@@ -65,7 +75,93 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
     .poll(() => createBusinessBody)
     .toEqual({
       name: "No OTP Shop",
-      language: "en"
+      language: "en",
+      phoneNumber: "+254712345678",
+      phoneCountry: "KE"
     });
   await expect(page.getByRole("heading", { name: "Set up your business" })).toBeHidden();
+});
+
+test("captures and normalizes the compulsory owner phone without SMS", async ({ page }) => {
+  let savedPhoneBody: Record<string, unknown> | null = null;
+  let otpRequests = 0;
+  const user = {
+    id: "phone-capture-user",
+    displayName: "Phone Capture Owner",
+    language: "en",
+    phoneNumberE164: null,
+    phoneCountryCode: null,
+    phoneNationalNumber: null,
+    phoneVerificationStatus: null,
+    phoneSource: null,
+    publicPhoneEnabled: false
+  };
+
+  await page.route("http://127.0.0.1:4000/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+
+    if (path.startsWith("/auth/otp/")) {
+      otpRequests += 1;
+      return json({ message: "OTP must not be used for shop phone capture." }, 500);
+    }
+    if (path === "/auth/oauth/providers") return json({ providers: [] });
+    if (path === "/session") {
+      return json({
+        account: {
+          id: "phone-capture-account",
+          primaryAuthChannel: "email",
+          primaryAuthDestination: "phone-capture@example.test"
+        },
+        user,
+        session: { expiresAt: "2099-01-01T00:00:00.000Z" }
+      });
+    }
+    if (path === "/v1/marketplace-intro") {
+      return json({ completedAt: "2026-07-17T00:00:00.000Z" });
+    }
+    if (path === "/v1/conversations" && request.method() === "GET") {
+      return json({ conversations: [] });
+    }
+    if (path === "/v1/e2ee/devices" && request.method() === "POST") {
+      return json({ id: "phone-capture-device", accountId: "phone-capture-account" });
+    }
+    if (path === "/account/phone" && request.method() === "PUT") {
+      savedPhoneBody = request.postDataJSON() as Record<string, unknown>;
+      Object.assign(user, {
+        phoneNumberE164: "+254712345678",
+        phoneCountryCode: "KE",
+        phoneNationalNumber: "712345678",
+        phoneVerificationStatus: "unverified",
+        phoneSource: "shop_registration"
+      });
+      return json({ user });
+    }
+
+    return json({ message: `The test does not provide ${request.method()} ${path}.` }, 404);
+  });
+
+  await page.addInitScript(() => {
+    localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
+  });
+  await page.goto("/marketplace");
+  await page.getByTestId("sell-button").click();
+
+  await expect(page.getByRole("heading", { name: "Add your phone number" })).toBeVisible();
+  const continueButton = page.getByRole("button", { name: "Continue", exact: true });
+  await expect(continueButton).toBeDisabled();
+  await page.getByLabel("Phone number").fill("123");
+  await continueButton.click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "Enter a valid phone number for the selected country."
+  );
+
+  await page.getByLabel("Phone number").fill("254712345678");
+  await continueButton.click();
+
+  await expect.poll(() => savedPhoneBody).toEqual({ phoneNumber: "+254712345678", country: "KE" });
+  await expect(page.getByRole("heading", { name: "Set up your business" })).toBeVisible();
+  expect(otpRequests).toBe(0);
 });

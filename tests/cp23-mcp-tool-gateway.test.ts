@@ -3,11 +3,6 @@ import type { FastifyInstance } from "fastify";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-interface OtpResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface McpTokenResponse {
   accessToken: string;
   token: { id: string; shopId: string | null; scopes: string[] };
@@ -240,15 +235,11 @@ async function mcpPost(
 }
 
 async function createSession(app: FastifyInstance, destination: string): Promise<string> {
-  const otp = await postJson<OtpResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination
-  });
   const response = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ challengeId: otp.challengeId, code: otp.devOtp })
+    payload: JSON.stringify({ method: "phone", contact: destination, pin: "1234" })
   });
   expect(response.statusCode).toBe(200);
   return extractCookie(response.headers["set-cookie"]);

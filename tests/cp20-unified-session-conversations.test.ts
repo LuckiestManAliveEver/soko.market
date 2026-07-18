@@ -8,11 +8,6 @@ import type {
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-interface OtpRequestResponse {
-  challengeId: string;
-  devOtp?: string;
-}
-
 interface BusinessResponse {
   business: {
     id: string;
@@ -493,13 +488,10 @@ function encryptedFixture(deviceIds: string[], ciphertextSeed: string) {
 }
 
 async function createAccountSession(app: FastifyInstance, destination: string): Promise<string> {
-  const otp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination
-  });
-  const response = await postResponse(app, "/auth/otp/verify", {
-    challengeId: otp.challengeId,
-    code: otp.devOtp
+  const response = await postResponse(app, "/auth/pin/signup", {
+    method: "phone",
+    contact: destination,
+    pin: "1234"
   });
   return extractSessionCookie(response.headers["set-cookie"]);
 }

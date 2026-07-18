@@ -18,7 +18,7 @@ describe("API persistence acknowledgement barrier", () => {
       method: "POST",
       url: "/auth/otp/request",
       headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ channel: "phone", destination: "+254700000111" })
+      payload: JSON.stringify({ channel: "email", destination: "persistence-one@example.test" })
     });
 
     expect(response.statusCode).toBe(200);
@@ -36,7 +36,7 @@ describe("API persistence acknowledgement barrier", () => {
       method: "POST",
       url: "/auth/otp/request",
       headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ channel: "phone", destination: "+254700000222" })
+      payload: JSON.stringify({ channel: "email", destination: "persistence-two@example.test" })
     });
 
     expect(response.statusCode).toBe(500);

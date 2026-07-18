@@ -5,10 +5,10 @@ import type { Cp2Error } from "../services/api/src/cp2/store";
 describe("OTP recovery purpose", () => {
   it("resumes an existing account and never creates one from a recovery challenge", () => {
     const store = createCp2Store();
-    const phone = "+254700000880";
+    const email = "otp-recovery@example.test";
     const signup = store.requestOtp({
-      channel: "phone",
-      destination: phone,
+      channel: "email",
+      destination: email,
       purpose: "signup"
     });
     const created = store.verifyOtp({
@@ -19,8 +19,8 @@ describe("OTP recovery purpose", () => {
     expect(created.resumed).toBe(false);
 
     const recovery = store.requestOtp({
-      channel: "phone",
-      destination: phone,
+      channel: "email",
+      destination: email,
       purpose: "recovery"
     });
     const resumed = store.verifyOtp({
@@ -32,8 +32,8 @@ describe("OTP recovery purpose", () => {
     expect(resumed.account.id).toBe(created.account.id);
 
     const unknownRecovery = store.requestOtp({
-      channel: "phone",
-      destination: "+254700000881",
+      channel: "email",
+      destination: "unknown-recovery@example.test",
       purpose: "recovery"
     });
 

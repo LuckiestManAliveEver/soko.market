@@ -299,17 +299,14 @@ describe("binary document upload to agent-persisted records", () => {
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 10_000)}`.slice(-10);
-  const otp = await postJson<{ challengeId: string; devOtp: string }>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination: `2547${suffix}`
-  });
   const verified = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
-      challengeId: otp.challengeId,
-      code: otp.devOtp
+      method: "phone",
+      contact: "+254700000301",
+      pin: "1234"
     })
   });
   expect(verified.statusCode).toBe(200);

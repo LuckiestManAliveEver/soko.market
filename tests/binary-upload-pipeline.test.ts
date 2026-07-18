@@ -117,18 +117,15 @@ describe("binary upload security pipeline", () => {
 });
 
 async function createOwner(app: ReturnType<typeof buildApi>) {
-  const otpResponse = await app.inject({
-    method: "POST",
-    url: "/auth/otp/request",
-    headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ channel: "phone", destination: "+254700000554" })
-  });
-  const otp = otpResponse.json<{ challengeId: string; devOtp: string }>();
   const verified = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ challengeId: otp.challengeId, code: otp.devOtp })
+    payload: JSON.stringify({
+      method: "phone",
+      contact: "+254700000554",
+      pin: "1234"
+    })
   });
   const setCookie = verified.headers["set-cookie"];
   const cookie = String(Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0] ?? "";

@@ -2,11 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-interface OtpRequestResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface VerifyOtpResponse {
   session: {
     id: string;
@@ -347,17 +342,14 @@ describe("CP7 offline local data and sync queue", () => {
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
-  const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination: "254700000007"
-  });
   const verifyResponse = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
-      challengeId: otpResponse.challengeId,
-      code: otpResponse.devOtp
+      method: "phone",
+      contact: "254700000007",
+      pin: "1234"
     })
   });
   const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);

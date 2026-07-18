@@ -68,16 +68,15 @@ describe("product field schema", () => {
 });
 
 async function createSession(app: FastifyInstance): Promise<string> {
-  const challenge = await postJson<{ challengeId: string; devOtp: string }>(
-    app,
-    "/auth/otp/request",
-    { channel: "phone", destination: "+254700000827" }
-  );
   const verified = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
-    payload: { challengeId: challenge.challengeId, code: challenge.devOtp }
+    payload: {
+      method: "phone",
+      contact: "+254700000827",
+      pin: "1234"
+    }
   });
   expect(verified.statusCode).toBe(200);
   const setCookie = verified.headers["set-cookie"];

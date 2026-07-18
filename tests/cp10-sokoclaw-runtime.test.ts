@@ -10,11 +10,6 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import { cp10RuntimeEvalCommands } from "./ai-eval/cp10-runtime-commands";
 
-interface OtpRequestResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface VerifyOtpResponse {
   session: {
     id: string;
@@ -412,17 +407,14 @@ describe("CP10 Sokoclaw runtime", () => {
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
-  const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination: "254700000009"
-  });
   const verifyResponse = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
-      challengeId: otpResponse.challengeId,
-      code: otpResponse.devOtp
+      method: "phone",
+      contact: "254700000009",
+      pin: "1234"
     })
   });
   const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);

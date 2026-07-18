@@ -214,10 +214,19 @@ async function createAccountSession(
   channel: "email" | "phone",
   destination: string
 ): Promise<string> {
+  if (channel === "phone") {
+    const response = await postResponse(app, "/auth/pin/signup", {
+      method: "phone",
+      contact: destination,
+      pin: "1234"
+    });
+    expect(response.statusCode).toBe(200);
+    return extractSessionCookie(response.headers["set-cookie"]);
+  }
   const otp = await postJson<{ challengeId: string; devOtp: string }>(app, "/auth/otp/request", {
     channel,
     destination,
-    deliveryChannel: channel === "email" ? "email" : "sms"
+    deliveryChannel: "email"
   });
   const response = await postResponse(app, "/auth/otp/verify", {
     challengeId: otp.challengeId,

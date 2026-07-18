@@ -3,11 +3,6 @@ import { buildApi } from "../services/api/src/app";
 import { createContactHash, createCp2Store } from "../services/api/src/cp2/store";
 import type { AgentRouteSummary, NetworkGraphSummary } from "../packages/shared-types/src";
 
-interface OtpRequestResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface CreateBusinessResponse {
   business: {
     id: string;
@@ -258,17 +253,14 @@ async function createOwnerBusiness(
   app: ReturnType<typeof buildApi>,
   destination: string
 ): Promise<CreateBusinessResponse & { sessionCookie: string }> {
-  const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination
-  });
   const verifyResponse = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
-      challengeId: otpResponse.challengeId,
-      code: otpResponse.devOtp
+      method: "phone",
+      contact: destination,
+      pin: "1234"
     })
   });
   const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);

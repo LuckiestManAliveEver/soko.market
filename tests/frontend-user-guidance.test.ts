@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   getResponseErrorMessage,
@@ -138,7 +138,7 @@ describe("frontend user guidance", () => {
     expect(render).toContain("tinyllama-1.1b-chat-q4-k-m-android");
   });
 
-  it("keeps Firebase phone OTP out of signup and lost-account recovery", () => {
+  it("removes Firebase phone OTP while preserving email verification", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const emailSignup = application.slice(
@@ -169,6 +169,9 @@ describe("frontend user guidance", () => {
     expect(recovery).not.toContain("firebaseIdToken");
     expect(authRoutes).toContain("phone_pin_only");
     expect(authRoutes).toContain("emailProvider.sendOtp");
+    expect(authRoutes).not.toContain("firebase");
+    expect(existsSync("apps/web/src/firebase-auth.ts")).toBe(false);
+    expect(existsSync("services/api/src/cp2/otp-provider.ts")).toBe(false);
   });
 
   it("completes email signup, PIN login, and challenge-bound email recovery", () => {
@@ -196,7 +199,7 @@ describe("frontend user guidance", () => {
     expect(application).not.toContain("firebase-auth");
   });
 
-  it("keeps account verification separate from authenticated first-shop registration", () => {
+  it("captures a compulsory unverified phone before authenticated first-shop registration", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const accountSetup = application.slice(
@@ -225,8 +228,16 @@ describe("frontend user guidance", () => {
     expect(accountSetup).toContain("No verification code is required");
     expect(accountSetup).toContain("onSignupWithPhonePin");
     expect(accountSetup).not.toContain("sendFirebasePhoneOtp");
+    expect(shopSetup).toContain("FIRST SHOP REGISTRATION");
+    expect(shopSetup).toContain("Add your phone number");
+    expect(shopSetup).toContain("shop identity, account recovery, and last-resort customer");
+    expect(shopSetup).toContain("Your phone number is required to register and recover your shop.");
+    expect(shopSetup).toContain("Back to login options");
+    expect(shopSetup).toContain('"Saving…" : "Continue"');
     expect(shopSetup).toContain("Create your shop once using your signed-in account");
     expect(shopSetup).not.toContain("OTP");
+    expect(shopSetup).not.toContain("Send SMS code");
+    expect(shopSetup).not.toContain("Firebase");
     expect(shopSetup).not.toContain('autoComplete="one-time-code"');
     expect(completeSignup).not.toContain("!isOtpVerified");
     expect(completeSignup).toContain("setIsBusinessSetupOpen(false)");
@@ -237,6 +248,9 @@ describe("frontend user guidance", () => {
     );
     expect(createBusinessRoute).not.toContain("otp");
     expect(createBusinessRoute).not.toContain("challengeId");
+    expect(createBusinessRoute).toContain("phoneNumber");
+    expect(createBusinessRoute).toContain("phoneCountry");
+    expect(createBusinessRoute).toContain('app.put("/account/phone"');
   });
 
   it("shows Sign up and Log in actions in the first greeting", () => {

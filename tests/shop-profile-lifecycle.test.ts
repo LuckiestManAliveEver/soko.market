@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
-import type { OtpProvider } from "../services/api/src/cp2/otp-provider";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 interface OtpRequestResponse {
@@ -41,24 +40,9 @@ interface ShopDeletionRequestResponse {
 }
 
 describe("Shop profile lifecycle", () => {
-  it("rejects Firebase phone verification and keeps shop deletion PIN-only", async () => {
+  it("rejects phone OTP verification and keeps shop deletion PIN-only", async () => {
     const store = createCp2Store();
-    const providerRequests: string[] = [];
-    const providerVerifications: string[] = [];
-    const otpProvider: OtpProvider = {
-      name: "firebase_test",
-      exposesDevOtp: false,
-      verifiesExternally: true,
-      canHandle: (channel) => channel === "phone",
-      requestOtp: async ({ destination }) => {
-        providerRequests.push(destination);
-      },
-      verifyOtp: async ({ destination, code }) => {
-        providerVerifications.push(destination);
-        return code === "firebase-id-token";
-      }
-    };
-    const app = buildApi({ cp2: { store, otpProvider } });
+    const app = buildApi({ cp2: { store } });
     const phone = "+254700000709";
 
     const rejectedSignup = await app.inject({
@@ -89,11 +73,6 @@ describe("Shop profile lifecycle", () => {
     expect(rejectedRecovery.statusCode).toBe(403);
     expect(rejectedRecovery.json()).toMatchObject({ code: "phone_pin_only" });
 
-    const staleChallenge = store.requestOtp({
-      channel: "phone",
-      destination: phone,
-      purpose: "recovery"
-    });
     const rejectedVerification = await app.inject({
       method: "POST",
       url: "/auth/otp/verify",
@@ -101,8 +80,8 @@ describe("Shop profile lifecycle", () => {
       payload: JSON.stringify({
         method: "phone",
         contact: phone,
-        challengeId: staleChallenge.challengeId,
-        firebaseIdToken: "firebase-id-token"
+        challengeId: "obsolete-phone-challenge",
+        code: "123456"
       })
     });
     expect(rejectedVerification.statusCode).toBe(403);
@@ -123,7 +102,7 @@ describe("Shop profile lifecycle", () => {
     const shop = await postJson<BusinessResponse>(
       app,
       "/businesses",
-      { name: "Firebase Delete", language: "en" },
+      { name: "PIN Delete", language: "en" },
       ownerCookie
     );
 
@@ -139,14 +118,12 @@ describe("Shop profile lifecycle", () => {
       {
         pin: "1234",
         acknowledgement: true,
-        idempotencyKey: "firebase-delete-shop"
+        idempotencyKey: "pin-delete-shop"
       },
       ownerCookie
     );
     expect(quarantined.status).toBe("QUARANTINED");
     expect(store.snapshot().businesses).toHaveLength(1);
-    expect(providerRequests).toEqual([]);
-    expect(providerVerifications).toEqual([]);
 
     expect(store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(
       1
@@ -307,6 +284,24 @@ async function verifyOtp(
   channel: "phone" | "email",
   destination: string
 ): Promise<SessionResponse & { setCookie: string | string[] | undefined }> {
+  if (channel === "phone") {
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: destination.startsWith("+") ? destination : `+${destination}`,
+        pin: "1234"
+      })
+    });
+    expect(response.statusCode).toBe(200);
+    return {
+      ...response.json<SessionResponse>(),
+      setCookie: response.headers["set-cookie"]
+    };
+  }
+
   const otp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
     channel,
     destination

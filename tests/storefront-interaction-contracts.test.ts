@@ -169,15 +169,13 @@ async function createOwnerBusiness(
   name: string,
   pin: string
 ) {
-  const otp = await injectJson(app, "POST", "/auth/otp/request", { channel: "phone", destination });
   const verify = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: jsonHeaders(),
-    payload: JSON.stringify({ challengeId: otp.challengeId, code: otp.devOtp })
+    payload: JSON.stringify({ method: "phone", contact: destination, pin })
   });
   const cookie = extractSessionCookie(verify.headers["set-cookie"]);
-  await injectJson(app, "POST", "/auth/pin/setup", { pin }, cookie);
   const business = await injectJson(app, "POST", "/businesses", { name, language: "en" }, cookie);
   return { business: business.business as { id: string; sokoId: string }, cookie };
 }

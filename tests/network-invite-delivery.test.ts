@@ -75,18 +75,15 @@ describe("network invite delivery pipeline", () => {
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
-  const otp = await app.inject({
-    method: "POST",
-    url: "/auth/otp/request",
-    headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ channel: "phone", destination: "+254700000332" })
-  });
-  const challenge = otp.json<{ challengeId: string; devOtp: string }>();
   const verified = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ challengeId: challenge.challengeId, code: challenge.devOtp })
+    payload: JSON.stringify({
+      method: "phone",
+      contact: "+254700000332",
+      pin: "1234"
+    })
   });
   const setCookie = verified.headers["set-cookie"];
   const cookie = String(Array.isArray(setCookie) ? setCookie[0] : setCookie).split(";")[0] ?? "";

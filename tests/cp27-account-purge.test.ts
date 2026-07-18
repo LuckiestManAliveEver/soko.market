@@ -132,14 +132,14 @@ describe("CP27 complete account purge", () => {
       expect(headers.get("x-soko-deletion-signature")).toBe(
         `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`
       );
-      return new Response(JSON.stringify({ externalReference: "firebase-delete-456" }), {
+      return new Response(JSON.stringify({ externalReference: "identity-delete-456" }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
     vi.stubGlobal("fetch", fetchMock);
     const processor = createSignedDeletionWebhookProcessor(
-      { id: "firebase", url: "https://processor.example.test/delete" },
+      { id: "identity-provider", url: "https://processor.example.test/delete" },
       secret
     );
 
@@ -148,7 +148,7 @@ describe("CP27 complete account purge", () => {
         requestId: "request-123",
         subjects: [{ provider: "primary_phone", subject: "+254700000001" }]
       })
-    ).resolves.toEqual({ externalReference: "firebase-delete-456" });
+    ).resolves.toEqual({ externalReference: "identity-delete-456" });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
@@ -169,6 +169,8 @@ function seedAccount(store: ReturnType<typeof createCp2Store>) {
     sessionId: auth.session.id,
     name: "Deletion Proof Shop",
     language: "en",
+    phoneNumber: "+254712345678",
+    phoneCountry: "KE",
     now: requestedAt
   });
   store.createProduct({

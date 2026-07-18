@@ -29,22 +29,19 @@ describe("Account deletion HTTP + purge integration", () => {
     const store = createCp2Store({ accountDeletionProcessors: [processor] });
     const app = buildApi({ cp2: { store } });
 
-    const otpResponse = await app.inject({
-      method: "POST",
-      url: "/auth/otp/request",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ channel: "phone", destination: "+254700000999" })
-    });
-    const otp = otpResponse.json<{ challengeId: string; devOtp: string }>();
     const verifyResponse = await app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/auth/pin/signup",
       headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ challengeId: otp.challengeId, code: otp.devOtp })
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000999",
+        pin: "1234"
+      })
     });
     const setCookie = verifyResponse.headers["set-cookie"] as string | string[] | undefined;
     const cookieValue = Array.isArray(setCookie) ? setCookie[0] : setCookie;
-    if (!cookieValue) throw new Error("Expected session cookie from OTP verify");
+    if (!cookieValue) throw new Error("Expected session cookie from PIN signup");
     const cookie = cookieValue.split(";")[0];
 
     const businessResponse = await app.inject({

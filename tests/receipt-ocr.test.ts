@@ -6,11 +6,6 @@ import {
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-interface OtpRequestResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface VerifyOtpResponse {
   session: {
     id: string;
@@ -524,21 +519,13 @@ describe("Receipt OCR", () => {
 });
 
 async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
-  const otp = await postJson<OtpRequestResponse>(
-    app,
-    "/auth/otp/request",
-    {
-      channel: "phone",
-      destination: "+254700000099"
-    },
-    null
-  );
   const verified = await postJson<VerifyOtpResponse>(
     app,
-    "/auth/otp/verify",
+    "/auth/pin/signup",
     {
-      challengeId: otp.challengeId,
-      code: otp.devOtp
+      method: "phone",
+      contact: "+254700000099",
+      pin: "1234"
     },
     null
   );

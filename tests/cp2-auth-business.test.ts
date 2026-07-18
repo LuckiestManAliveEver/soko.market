@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
-import {
-  createOtpProviderFromEnvironment,
-  type OtpProvider
-} from "../services/api/src/cp2/otp-provider";
 
 interface OtpRequestResponse {
   challengeId: string;
@@ -76,43 +72,18 @@ interface PublicStorefrontResponse {
 }
 
 describe("CP2 auth and business creation", () => {
-  it("fails closed for production phone OTP when Firebase is not configured", async () => {
-    const provider = createOtpProviderFromEnvironment({ NODE_ENV: "production" });
-
-    expect(provider.exposesDevOtp).toBe(false);
-    expect(provider.verifiesExternally).toBe(true);
-    expect(provider.canHandle("phone")).toBe(true);
-    await expect(
-      provider.requestOtp({
-        channel: "phone",
-        deliveryChannel: "sms",
-        destination: "+254700000700"
-      })
-    ).rejects.toMatchObject({
-      statusCode: 503,
-      code: "firebase_phone_auth_unconfigured"
-    });
-  });
-
   it("creates an owner account, session, business, language preference, role, and audit events", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
-    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      channel: "phone",
-      destination: "254700000001"
-    });
-
-    expect(otpResponse.destination).toBe("+254700000001");
-    expect(otpResponse.devOtp).toHaveLength(6);
-
     const verifyResponse = await app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/auth/pin/signup",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        challengeId: otpResponse.challengeId,
-        code: otpResponse.devOtp
+        method: "phone",
+        contact: "+254700000001",
+        pin: "1234"
       })
     });
     const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
@@ -120,7 +91,6 @@ describe("CP2 auth and business creation", () => {
 
     expect(verifyResponse.statusCode).toBe(200);
     expect(sessionCookie).toContain("soko_session=");
-    expect(auth.resumed).toBe(false);
 
     const sessionResponse = await app.inject({
       method: "GET",
@@ -188,7 +158,7 @@ describe("CP2 auth and business creation", () => {
       expect.arrayContaining([
         "user.created",
         "auth.session_created",
-        "auth.otp_verified",
+        "auth.pin_signup",
         "account.created",
         "business.created",
         "business.global_shop_id_created",
@@ -277,7 +247,24 @@ describe("CP2 auth and business creation", () => {
       })
     });
 
-    expect(createdBusiness.statusCode).toBe(200);
+    expect(createdBusiness.statusCode).toBe(400);
+    expect(createdBusiness.json()).toMatchObject({ code: "phone_number_required" });
+
+    const createdBusinessWithPhone = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: {
+        ...jsonHeaders(),
+        cookie: sessionCookie
+      },
+      payload: JSON.stringify({
+        name: "Session Only Shop",
+        language: "en",
+        phoneNumber: "0712345678",
+        phoneCountry: "KE"
+      })
+    });
+    expect(createdBusinessWithPhone.statusCode).toBe(200);
 
     const roleResponse = await app.inject({
       method: "POST",
@@ -418,21 +405,21 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
-  it("sets and verifies an owner login PIN after OTP", async () => {
+  it("sets and verifies an owner login PIN after email verification", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
     const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      method: "phone",
-      contact: "+254700000003"
+      method: "email",
+      contact: "pin-owner@example.test"
     });
     const verifyResponse = await app.inject({
       method: "POST",
       url: "/auth/otp/verify",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         otp: otpResponse.devOtp
       })
     });
@@ -484,7 +471,9 @@ describe("CP2 auth and business creation", () => {
       "/businesses",
       {
         name: "Pinned Shop",
-        language: "en"
+        language: "en",
+        phoneNumber: "0712345678",
+        phoneCountry: "KE"
       },
       sessionCookie
     );
@@ -508,8 +497,8 @@ describe("CP2 auth and business creation", () => {
       url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         pin: "0000"
       })
     });
@@ -524,8 +513,8 @@ describe("CP2 auth and business creation", () => {
       url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         pin: "1234"
       })
     });
@@ -558,16 +547,17 @@ describe("CP2 auth and business creation", () => {
     });
 
     const recoveryOtp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      method: "phone",
-      contact: "+254700000003"
+      method: "email",
+      contact: "pin-owner@example.test",
+      purpose: "recovery"
     });
     const recoveryVerify = await app.inject({
       method: "POST",
       url: "/auth/otp/verify",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         otp: recoveryOtp.devOtp
       })
     });
@@ -607,8 +597,8 @@ describe("CP2 auth and business creation", () => {
       url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         pin: "1234"
       })
     });
@@ -617,8 +607,8 @@ describe("CP2 auth and business creation", () => {
       url: "/auth/pin/login",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        method: "phone",
-        contact: "+254700000003",
+        method: "email",
+        contact: "pin-owner@example.test",
         pin: "7777"
       })
     });
@@ -636,17 +626,14 @@ describe("CP2 auth and business creation", () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
-    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      channel: "phone",
-      destination: "254700000004"
-    });
     const verifyResponse = await app.inject({
       method: "POST",
-      url: "/auth/otp/verify",
+      url: "/auth/pin/signup",
       headers: jsonHeaders(),
       payload: JSON.stringify({
-        challengeId: otpResponse.challengeId,
-        code: otpResponse.devOtp
+        method: "phone",
+        contact: "+254700000004",
+        pin: "1234"
       })
     });
     const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
@@ -730,117 +717,7 @@ describe("CP2 auth and business creation", () => {
 
     await app.close();
   });
-
-  it("uses an external OTP provider without exposing a development code", async () => {
-    const store = createCp2Store();
-    const provider = new FakeOtpProvider("123456");
-    const app = buildApi({ cp2: { store, otpProvider: provider } });
-
-    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
-      channel: "phone",
-      destination: "254700000002"
-    });
-
-    expect(otpResponse.destination).toBe("+254700000002");
-    expect(otpResponse.devOtp).toBeUndefined();
-    expect(provider.requests).toEqual([
-      {
-        channel: "phone",
-        deliveryChannel: "sms",
-        destination: "+254700000002"
-      }
-    ]);
-
-    const whatsappRequest = await app.inject({
-      method: "POST",
-      url: "/auth/whatsapp/request-otp",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        contact: "254700000004"
-      })
-    });
-
-    expect(whatsappRequest.statusCode).toBe(400);
-
-    const badOtp = await app.inject({
-      method: "POST",
-      url: "/auth/otp/verify",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        challengeId: otpResponse.challengeId,
-        code: "000000"
-      })
-    });
-
-    expect(badOtp.statusCode).toBe(401);
-
-    const verifyResponse = await app.inject({
-      method: "POST",
-      url: "/auth/otp/verify",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        challengeId: otpResponse.challengeId,
-        code: "123456"
-      })
-    });
-    const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
-    const auth = verifyResponse.json<VerifyOtpResponse>();
-
-    expect(verifyResponse.statusCode).toBe(200);
-    expect(sessionCookie).toContain("soko_session=");
-    expect(auth.account.id).toHaveLength(36);
-    expect(provider.verifications).toEqual([
-      {
-        channel: "phone",
-        destination: "+254700000002",
-        code: "000000"
-      },
-      {
-        channel: "phone",
-        destination: "+254700000002",
-        code: "123456"
-      }
-    ]);
-
-    await app.close();
-  });
 });
-
-class FakeOtpProvider implements OtpProvider {
-  readonly name = "fake";
-  readonly exposesDevOtp = false;
-  readonly verifiesExternally = true;
-  readonly requests: Array<{
-    channel: "phone" | "email";
-    deliveryChannel: "sms" | "whatsapp";
-    destination: string;
-  }> = [];
-  readonly verifications: Array<{ channel: "phone" | "email"; destination: string; code: string }> =
-    [];
-
-  constructor(private readonly acceptedCode: string) {}
-
-  canHandle(channel: "phone" | "email"): boolean {
-    return channel === "phone";
-  }
-
-  async requestOtp(input: {
-    channel: "phone" | "email";
-    deliveryChannel: "sms" | "whatsapp";
-    destination: string;
-  }): Promise<void> {
-    this.requests.push(input);
-  }
-
-  async verifyOtp(input: {
-    channel: "phone" | "email";
-    destination: string;
-    code: string;
-  }): Promise<boolean> {
-    this.verifications.push(input);
-    return input.code === this.acceptedCode;
-  }
-}
 
 function createExpectedAgentId(businessId: string, businessName: string): string {
   const seed = `${businessId}-${businessName}`

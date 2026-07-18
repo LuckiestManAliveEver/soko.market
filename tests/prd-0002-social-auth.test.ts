@@ -30,7 +30,7 @@ describe("authentication channels", () => {
     vi.unstubAllEnvs();
   });
 
-  it("keeps phone and email OTP authentication available", async () => {
+  it("keeps phone PIN and email OTP authentication available", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
@@ -141,6 +141,20 @@ async function verifyOtp(
   channel: "phone" | "email",
   destination: string
 ): Promise<SessionResponse> {
+  if (channel === "phone") {
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: destination,
+        pin: "1234"
+      })
+    });
+    expect(response.statusCode).toBe(200);
+    return response.json<SessionResponse>();
+  }
   const otp = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
     channel,
     destination

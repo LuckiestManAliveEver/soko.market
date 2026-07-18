@@ -204,23 +204,14 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>): Promise<{
   businessId: string;
   cookie: string;
 }> {
-  const otpResponse = await app.inject({
-    method: "POST",
-    url: "/auth/otp/request",
-    headers: { "content-type": "application/json" },
-    payload: JSON.stringify({
-      channel: "phone",
-      destination: "+254700000991"
-    })
-  });
-  const otp = otpResponse.json<{ challengeId: string; devOtp: string }>();
   const verifyResponse = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
     payload: JSON.stringify({
-      challengeId: otp.challengeId,
-      code: otp.devOtp
+      method: "phone",
+      contact: "+254700000991",
+      pin: "1234"
     })
   });
   const setCookie = verifyResponse.headers["set-cookie"];

@@ -11,11 +11,6 @@ import {
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-interface OtpResponse {
-  challengeId: string;
-  devOtp: string;
-}
-
 interface SessionResponse {
   account: { id: string };
 }
@@ -264,15 +259,11 @@ async function createSession(
   app: FastifyInstance,
   destination: string
 ): Promise<{ accountId: string; cookie: string }> {
-  const otp = await postJson<OtpResponse>(app, "/auth/otp/request", {
-    channel: "phone",
-    destination
-  });
   const response = await app.inject({
     method: "POST",
-    url: "/auth/otp/verify",
+    url: "/auth/pin/signup",
     headers: { "content-type": "application/json" },
-    payload: JSON.stringify({ challengeId: otp.challengeId, code: otp.devOtp })
+    payload: JSON.stringify({ method: "phone", contact: destination, pin: "1234" })
   });
   expect(response.statusCode).toBe(200);
   const session = response.json<SessionResponse>();
