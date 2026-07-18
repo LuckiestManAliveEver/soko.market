@@ -108,15 +108,20 @@ describe("frontend user guidance", () => {
     expect(application).toContain("!isRedundantAgentErrorMessage(message.body)");
   });
 
-  it("connects the Android model library to GitHub discovery and device-fit ranking", () => {
+  it("connects the Android model library to Hugging Face, GitHub, and device-fit ranking", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
     const store = readFileSync("services/api/src/cp2/store.ts", "utf8");
     const githubCatalog = readFileSync("services/api/src/cp2/github-model-catalog.ts", "utf8");
+    const huggingFaceCatalog = readFileSync(
+      "services/api/src/cp2/huggingface-model-catalog.ts",
+      "utf8"
+    );
     const render = readFileSync("render.yaml", "utf8");
 
     expect(application).toContain("/v1/ai-models/github");
-    expect(application).toContain("Search Soko + GitHub");
+    expect(application).toContain("/v1/ai-models/huggingface");
+    expect(application).toContain("Search all model sources");
     expect(application).toContain("rankCatalogModelsForDevice");
     expect(manager).toContain("verified GitHub release asset");
     expect(manager).toContain("The downloaded file is not a valid GGUF model.");
@@ -128,7 +133,10 @@ describe("frontend user guidance", () => {
       'githubModelDiscovery.status === "available" ? "Available" : "Unavailable"'
     );
     expect(githubCatalog).toContain('"public API" : "authenticated API"');
+    expect(huggingFaceCatalog).toContain('"public API" : "authenticated API"');
+    expect(huggingFaceCatalog).toContain("https://huggingface.co/api/models");
     expect(render).toContain("- key: GITHUB_TOKEN");
+    expect(render).toContain("- key: HF_TOKEN");
     expect(render).toContain("- key: LOCAL_MODEL_ENDPOINT");
     expect(render).toContain("tinyllama-1.1b-chat-q4-k-m-android");
   });

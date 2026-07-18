@@ -166,7 +166,7 @@ interface ActiveAiModelSummary {
   modelId: AgentModel;
 }
 
-interface GitHubAiModelSearchResponse {
+interface CatalogAiModelSearchResponse {
   models: AiModelSummary[];
   status: "available" | "unavailable";
   connection: "authenticated" | "public";
@@ -11581,12 +11581,19 @@ function AgentProfileSurface({
   const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
-  const [githubModelDiscovery, setGitHubModelDiscovery] = useState<GitHubAiModelSearchResponse>({
+  const [githubModelDiscovery, setGitHubModelDiscovery] = useState<CatalogAiModelSearchResponse>({
     models: [],
     status: "unavailable",
     connection: "public",
     message: "GitHub model discovery has not run yet."
   });
+  const [huggingFaceModelDiscovery, setHuggingFaceModelDiscovery] =
+    useState<CatalogAiModelSearchResponse>({
+      models: [],
+      status: "unavailable",
+      connection: "public",
+      message: "Hugging Face model discovery has not run yet."
+    });
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
@@ -11659,21 +11666,36 @@ function AgentProfileSurface({
     const offlineDefaults: AiModelSummary[] = defaultOfflineAiModels;
     try {
       const normalizedSearch = search?.trim() ?? "";
-      const [registry, active, searchResults, githubRegistry, githubSearchResults] =
-        await Promise.all([
-          getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
-          getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
-          normalizedSearch.length > 0
-            ? getJson<{ models: AiModelSummary[] }>(
-                `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
-              )
-            : Promise.resolve(null),
-          loadGitHubModels(),
-          normalizedSearch.length > 0 ? loadGitHubModels(normalizedSearch) : Promise.resolve(null)
-        ]);
+      const [
+        registry,
+        active,
+        searchResults,
+        githubRegistry,
+        githubSearchResults,
+        huggingFaceRegistry,
+        huggingFaceSearchResults
+      ] = await Promise.all([
+        getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
+        getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
+        normalizedSearch.length > 0
+          ? getJson<{ models: AiModelSummary[] }>(
+              `/v1/ai-models?search=${encodeURIComponent(normalizedSearch)}`
+            )
+          : Promise.resolve(null),
+        loadGitHubModels(),
+        normalizedSearch.length > 0 ? loadGitHubModels(normalizedSearch) : Promise.resolve(null),
+        loadHuggingFaceModels(),
+        normalizedSearch.length > 0
+          ? loadHuggingFaceModels(normalizedSearch)
+          : Promise.resolve(null)
+      ]);
+      const externalRegistry = mergeAiModelCatalogs(
+        githubRegistry.models,
+        huggingFaceRegistry.models
+      );
       const allModels = mergeAiModelCatalogs(
         offlineDefaults,
-        mergeAiModelCatalogs(registry.models, githubRegistry.models)
+        mergeAiModelCatalogs(registry.models, externalRegistry)
       );
       const visibleModels = mergeAiModelCatalogs(
         offlineDefaults.filter((model) =>
@@ -11685,12 +11707,16 @@ function AgentProfileSurface({
         ),
         mergeAiModelCatalogs(
           searchResults?.models ?? registry.models,
-          githubSearchResults?.models ?? githubRegistry.models
+          mergeAiModelCatalogs(
+            githubSearchResults?.models ?? githubRegistry.models,
+            huggingFaceSearchResults?.models ?? huggingFaceRegistry.models
+          )
         )
       );
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
+      setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
       if (!isEditing && isAgentModel(active.modelId)) {
         setDraftAgent((current) => ({ ...current, model: active.modelId }));
       }
@@ -11708,10 +11734,10 @@ function AgentProfileSurface({
     }
   }
 
-  async function loadGitHubModels(search?: string): Promise<GitHubAiModelSearchResponse> {
+  async function loadGitHubModels(search?: string): Promise<CatalogAiModelSearchResponse> {
     try {
       const query = search?.trim();
-      return await getJson<GitHubAiModelSearchResponse>(
+      return await getJson<CatalogAiModelSearchResponse>(
         query ? `/v1/ai-models/github?search=${encodeURIComponent(query)}` : "/v1/ai-models/github"
       );
     } catch {
@@ -11720,6 +11746,24 @@ function AgentProfileSurface({
         status: "unavailable",
         connection: "public",
         message: "GitHub model discovery is temporarily unavailable."
+      };
+    }
+  }
+
+  async function loadHuggingFaceModels(search?: string): Promise<CatalogAiModelSearchResponse> {
+    try {
+      const query = search?.trim();
+      return await getJson<CatalogAiModelSearchResponse>(
+        query
+          ? `/v1/ai-models/huggingface?search=${encodeURIComponent(query)}`
+          : "/v1/ai-models/huggingface"
+      );
+    } catch {
+      return {
+        models: [],
+        status: "unavailable",
+        connection: "public",
+        message: "Hugging Face model discovery is temporarily unavailable."
       };
     }
   }
@@ -12447,8 +12491,9 @@ function AgentProfileSurface({
             <p className="eyebrow">Private on-device AI</p>
             <h3>Android model library</h3>
             <p>
-              Find commercially permissible small OSS models in the curated catalog and verified
-              GitHub release assets, then install the best fit into browser-private storage.
+              Find commercially permissible small OSS models in the curated catalog, Hugging Face
+              Hub, and verified GitHub release assets, then install the best fit into
+              browser-private storage.
             </p>
           </div>
 
@@ -12494,12 +12539,12 @@ function AgentProfileSurface({
               <input
                 value={modelSearch}
                 onChange={(event) => setModelSearch(event.target.value)}
-                placeholder="Search Soko and GitHub by model or capability"
+                placeholder="Search Soko, Hugging Face, and GitHub"
               />
             </label>
             <div className="ai-model-search-actions">
               <button type="button" onClick={() => void searchAiModels()}>
-                Search Soko + GitHub
+                Search all model sources
               </button>
               <button
                 className="secondary"
@@ -12534,6 +12579,21 @@ function AgentProfileSurface({
               · {githubModelDiscovery.status === "available" ? "Available" : "Unavailable"}
             </span>
             <span>{githubModelDiscovery.message}</span>
+          </div>
+          <div
+            className={`github-model-status ${
+              huggingFaceModelDiscovery.status === "available" ? "ok" : ""
+            }`}
+            role="status"
+          >
+            <span className="github-model-connection">
+              Hugging Face ·{" "}
+              {huggingFaceModelDiscovery.connection === "authenticated"
+                ? "Authenticated API"
+                : "Public API"}{" "}
+              · {huggingFaceModelDiscovery.status === "available" ? "Available" : "Unavailable"}
+            </span>
+            <span>{huggingFaceModelDiscovery.message}</span>
           </div>
 
           {deviceCapability === null ? (
@@ -16288,7 +16348,8 @@ function isAgentModel(value: unknown): value is AgentModel {
     value === "openai-reasoning" ||
     (typeof value === "string" &&
       (/^custom:[a-z0-9][a-z0-9._-]{0,79}$/.test(value) ||
-        /^github:[a-z0-9][a-z0-9._-]{0,149}$/.test(value)))
+        /^github:[a-z0-9][a-z0-9._-]{0,149}$/.test(value) ||
+        /^huggingface:[a-z0-9][a-z0-9._-]{0,167}$/.test(value)))
   );
 }
 
@@ -16300,14 +16361,31 @@ function mergeAiModelCatalogs(
   primary: AiModelSummary[],
   additional: AiModelSummary[]
 ): AiModelSummary[] {
-  return [
-    ...new Map(
-      [...primary, ...additional].map((model) => [
-        model.id,
-        { ...model, capabilities: [...model.capabilities] }
-      ])
-    ).values()
-  ];
+  const models: AiModelSummary[] = [];
+  const ids = new Set<string>();
+  const downloads = new Set<string>();
+
+  for (const model of [...primary, ...additional]) {
+    const downloadKey = normalizeModelDownloadUrl(model.downloadUrl);
+    if (ids.has(model.id) || (downloadKey !== null && downloads.has(downloadKey))) {
+      continue;
+    }
+    ids.add(model.id);
+    if (downloadKey !== null) downloads.add(downloadKey);
+    models.push({ ...model, capabilities: [...model.capabilities] });
+  }
+
+  return models;
+}
+
+function normalizeModelDownloadUrl(downloadUrl: string | null): string | null {
+  if (downloadUrl === null) return null;
+  try {
+    const url = new URL(downloadUrl);
+    return `${url.origin}${decodeURIComponent(url.pathname).toLowerCase()}`;
+  } catch {
+    return downloadUrl.split("?")[0]?.toLowerCase() ?? null;
+  }
 }
 
 function formatModelBytes(bytes: number | null): string {

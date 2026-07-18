@@ -65,6 +65,10 @@ import {
   type GitHubModelCatalog
 } from "./github-model-catalog.js";
 import {
+  createHuggingFaceModelCatalogFromEnvironment,
+  type HuggingFaceModelCatalog
+} from "./huggingface-model-catalog.js";
+import {
   createOAuthStartPayload,
   exchangeOAuthCode,
   fetchOAuthProfile,
@@ -87,6 +91,7 @@ export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
   githubModelCatalog?: GitHubModelCatalog;
+  huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
   otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
@@ -705,6 +710,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const binaryUploadPipeline = options.binaryUploadPipeline;
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
+  const huggingFaceModelCatalog =
+    options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
   const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
@@ -1777,6 +1784,17 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
       try {
         return await githubModelCatalog.searchModels(request.query.search);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/ai-models/huggingface",
+    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
+      try {
+        return await huggingFaceModelCatalog.searchModels(request.query.search);
       } catch (error) {
         return sendCp2Error(reply, error);
       }

@@ -69,6 +69,8 @@ services:
         sync: false
       - key: GITHUB_TOKEN
         sync: false
+      - key: HF_TOKEN
+        sync: false
       - key: LOCAL_MODEL_ENABLED
         sync: false
       - key: LOCAL_MODEL_ENDPOINT

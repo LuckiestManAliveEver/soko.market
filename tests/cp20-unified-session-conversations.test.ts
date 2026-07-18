@@ -112,12 +112,25 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       modelId: "github:example.android-gguf.qwen-mini-q4-k-m"
     });
 
+    const huggingFace = await app.inject({
+      method: "PUT",
+      url: `/businesses/${shop.business.id}/ai-model`,
+      headers: { "content-type": "application/json", cookie: sessionCookie },
+      payload: JSON.stringify({
+        modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
+      })
+    });
+    expect(huggingFace.statusCode).toBe(200);
+    expect(huggingFace.json()).toMatchObject({
+      modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
+    });
+
     const snapshot = store.snapshot();
     expect(snapshot.marketplaceIntroStates).toHaveLength(1);
     expect(snapshot.activeAiModels).toContainEqual(
       expect.objectContaining({
         businessId: shop.business.id,
-        modelId: "github:example.android-gguf.qwen-mini-q4-k-m"
+        modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
       })
     );
     await app.close();
