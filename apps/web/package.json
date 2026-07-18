@@ -18,6 +18,7 @@
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
     "@soko/ui": "workspace:*",
+    "libphonenumber-js": "^1.13.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

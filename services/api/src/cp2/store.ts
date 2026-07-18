@@ -159,6 +159,13 @@ import {
   type OAuthTokenResponse
 } from "./oauth.js";
 import {
+  maskPhoneNumber,
+  normalizeInternationalOwnerPhoneNumber,
+  normalizeOwnerPhoneNumber,
+  PhoneIdentityError,
+  type NormalizedOwnerPhoneIdentity
+} from "./phone-identity.js";
+import {
   accountDeletionScheduledEvent,
   betaAccessUpdatedEvent,
   betaDeviceTestRecordedEvent,
@@ -534,6 +541,10 @@ export interface CreateBusinessResult {
   membership: MembershipSummary;
 }
 
+export interface OwnerPhoneIdentityResult {
+  user: UserSummary;
+}
+
 export interface RoleCheckResult {
   allowed: boolean;
   role: BusinessRole;
@@ -750,6 +761,7 @@ export class Cp2Store {
   private readonly userByAccount = new Map<string, string>();
   private readonly businesses = new Map<string, BusinessSummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
+  private readonly phoneUpdateAttemptsByAccount = new Map<string, number[]>();
   private readonly sessionContexts = new Map<string, StoredSokoSessionContext>();
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
@@ -845,6 +857,13 @@ export class Cp2Store {
     purpose?: "signup" | "recovery";
     now?: Date;
   }): OtpRequestResult {
+    if (input.channel === "phone") {
+      throw new Cp2Error(
+        403,
+        "phone_pin_only",
+        "Phone accounts use a PIN. SMS verification is not available."
+      );
+    }
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -1769,6 +1788,8 @@ export class Cp2Store {
     sessionId: string | null;
     name: string;
     language: SupportedLanguage;
+    phoneNumber?: string;
+    phoneCountry?: string;
     now?: Date;
   }): CreateBusinessResult {
     const now = input.now ?? new Date();
@@ -1782,6 +1803,27 @@ export class Cp2Store {
         "business_name_invalid",
         "Business name must be at least 2 characters."
       );
+    }
+
+    const currentUser = this.requireUser(session.user.id);
+    const hasSavedPhone =
+      typeof currentUser.phoneNumberE164 === "string" &&
+      currentUser.phoneNumberE164.length > 0 &&
+      currentUser.phoneVerificationStatus === "unverified";
+
+    if (input.phoneNumber === undefined || input.phoneCountry === undefined) {
+      if (!hasSavedPhone) {
+        throw new Cp2Error(400, "phone_number_required", "Enter your phone number to continue.");
+      }
+    } else {
+      this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+      this.applyOwnerPhoneIdentity({
+        session,
+        phoneNumber: input.phoneNumber,
+        country: input.phoneCountry,
+        source: "shop_registration",
+        now
+      });
     }
 
     const businessId = randomUUID();
@@ -1805,8 +1847,9 @@ export class Cp2Store {
 
     this.businesses.set(business.id, business);
     this.memberships.set(membership.id, membership);
+    const currentOwner = this.requireUser(session.user.id);
     this.users.set(session.user.id, {
-      ...session.user,
+      ...currentOwner,
       language: input.language
     });
     this.recordSyncChange({
@@ -1860,6 +1903,27 @@ export class Cp2Store {
     return {
       business,
       membership
+    };
+  }
+
+  updateOwnerPhone(input: {
+    sessionId: string | null;
+    phoneNumber: string;
+    country: string;
+    now?: Date;
+  }): OwnerPhoneIdentityResult {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    this.enforcePhoneUpdateRateLimit(session.account.id, now);
+
+    return {
+      user: this.applyOwnerPhoneIdentity({
+        session,
+        phoneNumber: input.phoneNumber,
+        country: input.country,
+        source: "shop_registration",
+        now
+      })
     };
   }
 
@@ -8229,6 +8293,7 @@ export class Cp2Store {
     this.userByAccount.clear();
     this.businesses.clear();
     this.memberships.clear();
+    this.phoneUpdateAttemptsByAccount.clear();
     this.sessionContexts.clear();
     this.conversations.clear();
     this.conversationParticipants.clear();
@@ -8723,11 +8788,27 @@ export class Cp2Store {
       primaryAuthChannel: channel,
       primaryAuthDestination: destination
     };
+    let phoneIdentity: NormalizedOwnerPhoneIdentity | null = null;
+    if (channel === "phone") {
+      try {
+        phoneIdentity = normalizeInternationalOwnerPhoneNumber(destination);
+      } catch {
+        phoneIdentity = null;
+      }
+    }
     const user: UserSummary = {
       id: randomUUID(),
       accountId: account.id,
       displayName: defaultDisplayName(destination),
-      language: "en"
+      language: "en",
+      phoneNumberE164: phoneIdentity?.e164 ?? null,
+      phoneCountryCode: phoneIdentity?.country ?? null,
+      phoneNationalNumber: phoneIdentity?.nationalNumber ?? null,
+      phoneVerificationStatus: phoneIdentity === null ? null : "unverified",
+      phoneAddedAt: phoneIdentity === null ? null : now.toISOString(),
+      phoneUpdatedAt: phoneIdentity === null ? null : now.toISOString(),
+      phoneSource: phoneIdentity === null ? null : "phone_login",
+      publicPhoneEnabled: false
     };
 
     this.accounts.set(account.id, account);
@@ -9504,6 +9585,117 @@ export class Cp2Store {
     }
 
     return session;
+  }
+
+  private requireRecentlyAuthenticatedSession(
+    sessionId: string | null,
+    now: Date
+  ): AuthSessionView {
+    const session = this.requireAnySession(sessionId, now);
+    const sessionRecord = this.sessions.get(session.session.id);
+    const authenticatedAt =
+      this.accountPinHashes.has(session.account.id) && sessionRecord?.pinVerifiedAt !== null
+        ? sessionRecord?.pinVerifiedAt
+        : sessionRecord?.createdAt;
+
+    if (
+      authenticatedAt === undefined ||
+      authenticatedAt === null ||
+      now.getTime() - new Date(authenticatedAt).getTime() > 15 * 60 * 1000
+    ) {
+      throw new Cp2Error(
+        401,
+        "recent_authentication_required",
+        "Your session has expired. Sign in again."
+      );
+    }
+
+    return session;
+  }
+
+  private enforcePhoneUpdateRateLimit(accountId: string, now: Date): void {
+    const cutoff = now.getTime() - 60 * 60 * 1000;
+    const recentAttempts = (this.phoneUpdateAttemptsByAccount.get(accountId) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+
+    if (recentAttempts.length >= 5) {
+      throw new Cp2Error(
+        429,
+        "phone_update_rate_limited",
+        "Too many phone-number updates. Try again later."
+      );
+    }
+
+    recentAttempts.push(now.getTime());
+    this.phoneUpdateAttemptsByAccount.set(accountId, recentAttempts);
+  }
+
+  private applyOwnerPhoneIdentity(input: {
+    session: AuthSessionView;
+    phoneNumber: string;
+    country: string;
+    source: "phone_login" | "shop_registration";
+    now: Date;
+  }): UserSummary {
+    let phone: NormalizedOwnerPhoneIdentity;
+
+    try {
+      phone = normalizeOwnerPhoneNumber(input.phoneNumber, input.country);
+    } catch (error) {
+      if (error instanceof PhoneIdentityError) {
+        throw new Cp2Error(400, error.code, error.message);
+      }
+      throw error;
+    }
+
+    const conflictingUser = [...this.users.values()].find(
+      (user) => user.id !== input.session.user.id && user.phoneNumberE164 === phone.e164
+    );
+    if (conflictingUser !== undefined) {
+      throw new Cp2Error(
+        409,
+        "PHONE_ALREADY_IN_USE",
+        "This phone number is already associated with another account."
+      );
+    }
+
+    const current = this.requireUser(input.session.user.id);
+    if (
+      current.phoneNumberE164 === phone.e164 &&
+      current.phoneCountryCode === phone.country &&
+      current.phoneNationalNumber === phone.nationalNumber
+    ) {
+      return current;
+    }
+
+    const updated: UserSummary = {
+      ...current,
+      phoneNumberE164: phone.e164,
+      phoneCountryCode: phone.country,
+      phoneNationalNumber: phone.nationalNumber,
+      phoneVerificationStatus: "unverified",
+      phoneAddedAt: current.phoneAddedAt ?? input.now.toISOString(),
+      phoneUpdatedAt: input.now.toISOString(),
+      phoneSource: input.source,
+      publicPhoneEnabled: current.publicPhoneEnabled ?? false
+    };
+    this.users.set(updated.id, updated);
+    this.recordAuditEvent({
+      type: "owner.phone_updated",
+      aggregateType: "user",
+      aggregateId: updated.id,
+      actorId: updated.id,
+      occurredAt: input.now.toISOString(),
+      payload: {
+        previousPhone: maskPhoneNumber(current.phoneNumberE164),
+        newPhone: maskPhoneNumber(updated.phoneNumberE164),
+        source: input.source,
+        verificationStatus: "unverified"
+      }
+    });
+
+    return updated;
   }
 
   private requirePinVerifiedSession(sessionId: string | null, now: Date): AuthSessionView {

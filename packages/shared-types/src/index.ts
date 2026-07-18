@@ -46,6 +46,14 @@ export interface UserSummary {
   accountId: string;
   displayName: string;
   language: SupportedLanguage;
+  phoneNumberE164?: string | null;
+  phoneCountryCode?: string | null;
+  phoneNationalNumber?: string | null;
+  phoneVerificationStatus?: "unverified" | null;
+  phoneAddedAt?: string | null;
+  phoneUpdatedAt?: string | null;
+  phoneSource?: "phone_login" | "shop_registration" | null;
+  publicPhoneEnabled?: boolean;
 }
 
 export interface BusinessSummary {

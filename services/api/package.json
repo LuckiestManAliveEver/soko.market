@@ -41,6 +41,7 @@
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
     "fastify": "^5.2.1",
+    "libphonenumber-js": "^1.13.9",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
