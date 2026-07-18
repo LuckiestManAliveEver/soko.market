@@ -1137,6 +1137,11 @@ interface RuntimeTurnResult {
   };
 }
 
+interface ProcessedConversationMessageResponse extends ConversationMessageSummary {
+  agentMessage?: ConversationMessageSummary;
+  runtime?: RuntimeTurnResult | null;
+}
+
 type VerificationTier = "unverified" | "owner_verified" | "business_verified";
 type DeviceTrustLevel = "unknown" | "trusted" | "restricted";
 
@@ -5595,23 +5600,60 @@ export function OwnerApp() {
             clientMessageId,
             content: messageContent,
             replyToMessageId,
-            clientTimestamp: new Date().toISOString()
+            clientTimestamp: new Date().toISOString(),
+            ...(!hasHumanRecipient && business !== null
+              ? {
+                  agent: {
+                    businessId: business.id,
+                    ...(runtimeSessionId === null ? {} : { runtimeSessionId }),
+                    message: runtimeMessage,
+                    agentProfile: createAgentRuntimeProfile(agentSettings)
+                  }
+                }
+              : {})
           }
         : null;
+    let serverAgentProcessing: {
+      agentMessage: ConversationMessageSummary;
+      runtime: RuntimeTurnResult | null;
+    } | null = null;
 
     if (payload !== null) {
       try {
-        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", payload);
+        const persisted = await postJson<ProcessedConversationMessageResponse>(
+          "/v1/messages",
+          payload
+        );
         if (activeConversation !== null && session !== null) {
-          setChatMessages((messages) =>
-            messages.map((item) =>
+          setChatMessages((messages) => {
+            const reconciled = messages.map((item) =>
               item.id === clientMessageId
                 ? persisted.content.type === "encrypted"
                   ? mergePersistedEncryptedMessage(item, persisted)
                   : mapConversationMessage(persisted, activeConversation.participants, session)
                 : item
-            )
-          );
+            );
+            if (
+              persisted.agentMessage === undefined ||
+              reconciled.some((item) => item.id === persisted.agentMessage?.id)
+            ) {
+              return reconciled;
+            }
+            return [
+              ...reconciled,
+              mapConversationMessage(
+                persisted.agentMessage,
+                activeConversation.participants,
+                session
+              )
+            ];
+          });
+        }
+        if (persisted.agentMessage !== undefined) {
+          serverAgentProcessing = {
+            agentMessage: persisted.agentMessage,
+            runtime: persisted.runtime ?? null
+          };
         }
       } catch (error) {
         if (!isRetryableApiRequestError(error)) {
@@ -5676,6 +5718,48 @@ export function OwnerApp() {
       setChatMessages((messages) => [...messages, next]);
     }
 
+    async function applyRuntimeResult(result: RuntimeTurnResult, appendResponse: boolean) {
+      setRuntimeSessionId(result.session.id);
+      setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
+      if (appendResponse) {
+        const confirmationToken = result.turn.plan.confirmationToken;
+        await appendAgentMessage(
+          result.turn.response,
+          confirmationToken === null ? undefined : confirmationToken
+        );
+      }
+
+      if (result.turn.plan.toolName === "products.list" && business !== null) {
+        await loadProducts(business.id);
+        setView("products");
+      }
+
+      if (result.turn.plan.toolName === "invoices.list" && business !== null) {
+        await loadInvoices(business.id);
+        setView("invoices");
+      }
+
+      if (isNetworkDiscoveryRequest(agentRequest)) {
+        await loadNetworkGraph();
+        await requestNetworkRoute();
+        setView("network");
+      }
+
+      if (business !== null) {
+        await loadRuntimeSessions(business.id);
+      }
+      setStatusMessage(formatRuntimeTurnStatus(result));
+    }
+
+    if (serverAgentProcessing !== null) {
+      if (serverAgentProcessing.runtime !== null) {
+        await applyRuntimeResult(serverAgentProcessing.runtime, false);
+      } else {
+        setStatusMessage("Agent processed");
+      }
+      return;
+    }
+
     if (helpCommand === null) {
       await appendAgentMessage(createAgentHelpReply());
       return;
@@ -5712,36 +5796,11 @@ export function OwnerApp() {
         business.id
       );
       const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
-        runtimeSessionId,
+        ...(runtimeSessionId === null ? {} : { runtimeSessionId }),
         message: runtimeMessage,
         agentProfile: createAgentRuntimeProfile(agentSettings)
       });
-      setRuntimeSessionId(result.session.id);
-      setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
-      const confirmationToken = result.turn.plan.confirmationToken;
-      await appendAgentMessage(
-        result.turn.response,
-        confirmationToken === null ? undefined : confirmationToken
-      );
-
-      if (result.turn.plan.toolName === "products.list") {
-        await loadProducts(business.id);
-        setView("products");
-      }
-
-      if (result.turn.plan.toolName === "invoices.list") {
-        await loadInvoices(business.id);
-        setView("invoices");
-      }
-
-      if (isNetworkDiscoveryRequest(agentRequest)) {
-        await loadNetworkGraph();
-        await requestNetworkRoute();
-        setView("network");
-      }
-
-      await loadRuntimeSessions(business.id);
-      setStatusMessage(formatRuntimeTurnStatus(result));
+      await applyRuntimeResult(result, true);
     } catch (error) {
       const parserReply = createLocalParserReply(agentRequest);
       await appendAgentMessage(parserReply.body);

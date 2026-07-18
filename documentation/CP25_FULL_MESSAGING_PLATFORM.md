@@ -44,6 +44,11 @@ all message and conversation mutations verify that the active account is a parti
 threads reject agent-authored messages so an account cannot impersonate the Soko agent in a human
 conversation.
 
+Agent-only threads are processed server-side as part of `POST /v1/messages`. The user message,
+runtime turn, and agent reply share the message idempotency boundary, so foreground sends and
+offline-outbox retries behave the same and cannot generate duplicate agent turns. Human direct
+messages remain end-to-end encrypted and are not sent to the business agent implicitly.
+
 ## API
 
 ```http

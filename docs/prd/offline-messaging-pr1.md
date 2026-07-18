@@ -38,6 +38,13 @@ It does not add a transport adapter, Android SMS access, provider connection, hi
 
 `POST /v1/messages` accepts `idempotencyKey`, `queuedAt`, and `selectedChannel`. Repeating a request with the same conversation and idempotency key returns the original message even if a later client message ID differs. The only currently available channel is `soko`.
 
+An agent-only conversation can include an `agent` processing request with its business ID, message,
+optional runtime session, and agent profile. The API persists the user message, creates the runtime
+turn, and persists the agent reply as one server-side operation. Replaying the same message returns
+the existing reply without running the agent again, so messages delivered later by the offline
+outbox are processed too. Human direct messages do not request this processing and the API rejects
+attempts to attach it to an encrypted human conversation.
+
 `GET /v1/conversations/:conversationId/messages/:messageId/delivery-attempts` returns attempt metadata only after account ownership is verified. The record deliberately excludes message bodies, access tokens, and provider credentials.
 
 Legacy snapshots are hydrated with deterministic Soko idempotency keys and safe state defaults. New snapshots persist delivery attempts in `cp2_message_delivery_attempts`.

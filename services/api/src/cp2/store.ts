@@ -651,6 +651,12 @@ export interface Cp2StoreOptions {
   accountDeletionProcessors?: AccountDeletionProcessor[];
 }
 
+export interface AgentConversationMessageResult {
+  message: ConversationMessageSummary;
+  agentMessage: ConversationMessageSummary;
+  runtime: RuntimeTurnResult | null;
+}
+
 export interface NetworkInviteDeliveryInput {
   inviteId: string;
   businessId: string;
@@ -2942,6 +2948,106 @@ export class Cp2Store {
     });
     this.enqueueConversationNotifications(conversation, message, session.account.id, now);
     return message;
+  }
+
+  async createAgentConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    clientMessageId: string;
+    idempotencyKey?: string;
+    content: ConversationMessageContent;
+    replyToMessageId?: string | null;
+    forwardedFromMessageId?: string | null;
+    clientTimestamp?: string | null;
+    queuedAt?: string | null;
+    selectedChannel?: MessageChannel;
+    businessId: string;
+    message: string;
+    runtimeSessionId?: string;
+    agentProfile?: RuntimeAgentProfile;
+    now?: Date;
+  }): Promise<AgentConversationMessageResult> {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const hasHumanRecipient = [...this.conversationParticipants.values()].some(
+      (participant) =>
+        participant.conversationId === conversation.id &&
+        participant.role === "account" &&
+        participant.accountId !== session.account.id
+    );
+
+    if (hasHumanRecipient) {
+      throw new Cp2Error(
+        409,
+        "agent_processing_requires_agent_conversation",
+        "Encrypted direct messages are not processed by the business agent."
+      );
+    }
+
+    const message = this.createConversationMessage({
+      sessionId: input.sessionId,
+      conversationId: input.conversationId,
+      clientMessageId: input.clientMessageId,
+      ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+      content: input.content,
+      ...(input.replyToMessageId === undefined ? {} : { replyToMessageId: input.replyToMessageId }),
+      ...(input.forwardedFromMessageId === undefined
+        ? {}
+        : { forwardedFromMessageId: input.forwardedFromMessageId }),
+      ...(input.clientTimestamp === undefined ? {} : { clientTimestamp: input.clientTimestamp }),
+      ...(input.queuedAt === undefined ? {} : { queuedAt: input.queuedAt }),
+      ...(input.selectedChannel === undefined ? {} : { selectedChannel: input.selectedChannel }),
+      now
+    });
+    const existingAgentMessage = this.messagesForConversation(conversation.id).find(
+      (candidate) =>
+        candidate.author === "agent" &&
+        candidate.replyToMessageId === message.id &&
+        candidate.deletedAt === null
+    );
+
+    if (existingAgentMessage !== undefined) {
+      return {
+        message,
+        agentMessage: existingAgentMessage,
+        runtime: null
+      };
+    }
+
+    const runtime = await this.createRuntimeTurn({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      ...(input.runtimeSessionId === undefined ? {} : { runtimeSessionId: input.runtimeSessionId }),
+      message: input.message,
+      ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
+      now
+    });
+    const confirmationToken = runtime.turn.plan.confirmationToken;
+    const agentMessage = this.createConversationMessage({
+      sessionId: input.sessionId,
+      conversationId: conversation.id,
+      clientMessageId: `agent-reply-${message.id}`,
+      idempotencyKey: `soko-agent-reply:${message.id}`,
+      author: "agent",
+      content:
+        confirmationToken === null
+          ? { type: "text", text: runtime.turn.response }
+          : {
+              type: "confirmation",
+              confirmationToken,
+              prompt: runtime.turn.response
+            },
+      replyToMessageId: message.id,
+      clientTimestamp: now.toISOString(),
+      now
+    });
+
+    return {
+      message,
+      agentMessage,
+      runtime
+    };
   }
 
   listMessageDeliveryAttempts(input: {

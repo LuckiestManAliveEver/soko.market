@@ -104,6 +104,7 @@ const mutatingMethodNames = new Set([
   "createBetaSupportTicket",
   "createBusiness",
   "createConversation",
+  "createAgentConversationMessage",
   "createConversationMessage",
   "createDataExport",
   "createInvoice",

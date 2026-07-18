@@ -264,6 +264,9 @@ interface CreateMessageBody {
   author?: string;
   replyToMessageId?: string | null;
   forwardedFromMessageId?: string | null;
+  agent?: RuntimeTurnBody & {
+    businessId?: string;
+  };
 }
 
 interface UpdateConversationBody {
@@ -2021,6 +2024,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/v1/messages", async (request: FastifyRequest<{ Body: CreateMessageBody }>, reply) => {
     try {
+      const sessionId = readSessionCookie(request.headers.cookie);
       const clientTimestamp =
         request.body.clientTimestamp === undefined || request.body.clientTimestamp === null
           ? null
@@ -2034,18 +2038,50 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         throw new Cp2Error(400, "message_channel_invalid", "selectedChannel is invalid.");
       }
       const idempotencyKey = parseOptionalString(request.body.idempotencyKey);
-      const message = store.createConversationMessage({
-        sessionId: readSessionCookie(request.headers.cookie),
+      const content = parseConversationMessageContent(request.body.content);
+      const messageInput = {
+        sessionId,
         conversationId: parseString(request.body.conversationId, "conversationId"),
         clientMessageId: parseString(request.body.clientMessageId, "clientMessageId"),
         ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-        content: parseConversationMessageContent(request.body.content),
-        author: request.body.author === "agent" ? "agent" : "user",
+        content,
         replyToMessageId: parseNullableString(request.body.replyToMessageId),
         forwardedFromMessageId: parseNullableString(request.body.forwardedFromMessageId),
         clientTimestamp,
         queuedAt,
         ...(selectedChannel !== undefined ? { selectedChannel } : {})
+      };
+
+      if (request.body.agent !== undefined) {
+        if (request.body.author === "agent") {
+          throw new Cp2Error(
+            400,
+            "agent_processing_invalid",
+            "An agent-authored message cannot request another agent turn."
+          );
+        }
+        const agent = parseRequestBody(request.body.agent);
+        const runtime = parseRuntimeTurnBody(agent);
+        const processed = await store.createAgentConversationMessage({
+          ...messageInput,
+          businessId: parseString(agent.businessId, "agent.businessId"),
+          message: runtime.message,
+          ...(runtime.runtimeSessionId === undefined
+            ? {}
+            : { runtimeSessionId: runtime.runtimeSessionId }),
+          ...(runtime.agentProfile === undefined ? {} : { agentProfile: runtime.agentProfile })
+        });
+        await store.deliverPendingMessageNotifications({ messageId: processed.message.id });
+        return {
+          ...processed.message,
+          agentMessage: processed.agentMessage,
+          runtime: processed.runtime
+        };
+      }
+
+      const message = store.createConversationMessage({
+        ...messageInput,
+        author: request.body.author === "agent" ? "agent" : "user"
       });
       await store.deliverPendingMessageNotifications({ messageId: message.id });
       return message;
@@ -4872,11 +4908,11 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
 } {
   const record = parseRequestBody(body);
   const runtimeSessionId =
-    record.runtimeSessionId === undefined
+    record.runtimeSessionId === undefined || record.runtimeSessionId === null
       ? undefined
       : parseString(record.runtimeSessionId, "runtimeSessionId");
   const confirmationToken =
-    record.confirmationToken === undefined
+    record.confirmationToken === undefined || record.confirmationToken === null
       ? undefined
       : parseString(record.confirmationToken, "confirmationToken");
   const parsed = {

@@ -31,6 +31,33 @@ interface ProductResponse {
   quantity: number;
 }
 
+interface ConversationInboxResponse {
+  conversations: Array<{
+    id: string;
+  }>;
+}
+
+interface ProcessedConversationMessageResponse {
+  id: string;
+  content: {
+    type: string;
+  };
+  agentMessage: {
+    id: string;
+    author: string;
+    replyToMessageId: string | null;
+    content:
+      | {
+          type: "text";
+          text: string;
+        }
+      | {
+          type: string;
+        };
+  };
+  runtime: RuntimeTurnResponse | null;
+}
+
 interface RuntimeTurnResponse {
   session: {
     id: string;
@@ -251,6 +278,85 @@ describe("CP11 local model adapter", () => {
         toolName: "products.list"
       }
     });
+
+    await app.close();
+  });
+
+  it("processes a persisted agent-chat message exactly once across idempotent retries", async () => {
+    let completionCount = 0;
+    const provider = createTestModelProvider(async () => {
+      completionCount += 1;
+      return availableCompletion({
+        type: "response",
+        message: "The agent processed this chat message."
+      });
+    });
+    const store = createCp2Store({ runtimeModelProvider: provider });
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const inboxResponse = await app.inject({
+      method: "GET",
+      url: "/v1/conversations",
+      headers: { cookie: sessionCookie }
+    });
+    expect(inboxResponse.statusCode).toBe(200);
+    const conversationId = inboxResponse.json<ConversationInboxResponse>().conversations[0]?.id;
+    expect(conversationId).toBeTruthy();
+    const payload = {
+      conversationId,
+      clientMessageId: "message-agent-processing-0001",
+      content: {
+        type: "text",
+        text: "Please process this in the agent chat."
+      },
+      clientTimestamp: new Date().toISOString(),
+      agent: {
+        businessId,
+        runtimeSessionId: null,
+        message: "Please process this in the agent chat."
+      }
+    };
+
+    const first = await postJson<ProcessedConversationMessageResponse>(
+      app,
+      "/v1/messages",
+      payload,
+      sessionCookie
+    );
+    const retried = await postJson<ProcessedConversationMessageResponse>(
+      app,
+      "/v1/messages",
+      payload,
+      sessionCookie
+    );
+
+    expect(completionCount).toBe(1);
+    expect(first.runtime?.turn).toMatchObject({
+      status: "completed",
+      model: {
+        provider: "test",
+        status: "available",
+        fallbackUsed: false,
+        outputKind: "response"
+      },
+      response: "The agent processed this chat message."
+    });
+    expect(first.agentMessage).toMatchObject({
+      author: "agent",
+      replyToMessageId: first.id,
+      content: {
+        type: "text",
+        text: "The agent processed this chat message."
+      }
+    });
+    expect(retried.id).toBe(first.id);
+    expect(retried.agentMessage.id).toBe(first.agentMessage.id);
+    expect(retried.runtime).toBeNull();
+    expect(
+      store
+        .snapshot()
+        .conversationMessages.filter((message) => message.conversationId === conversationId)
+    ).toHaveLength(2);
 
     await app.close();
   });
