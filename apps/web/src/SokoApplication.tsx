@@ -5,8 +5,7 @@ import {
   useState,
   type ChangeEvent,
   type FormEvent,
-  type ReactNode,
-  type RefObject
+  type ReactNode
 } from "react";
 import {
   browserSupportsWebAuthn,
@@ -53,11 +52,6 @@ import {
   type ShellView,
   type SokoMode
 } from "./app-shell";
-import {
-  isFirebasePhoneAuthConfigured,
-  sendFirebasePhoneOtp,
-  type FirebaseConfirmationResult
-} from "./firebase-auth";
 import {
   openIndexedDbSyncRepository,
   type IndexedDbSyncRepository
@@ -1943,8 +1937,6 @@ export function OwnerApp() {
   );
   const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
   const [otp, setOtp] = useState("");
-  const [phoneConfirmationResult, setPhoneConfirmationResult] =
-    useState<FirebaseConfirmationResult | null>(null);
   const [isOtpVerified, setIsOtpVerified] = useState(false);
   const [signupPin, setSignupPin] = useState("");
   const [signupPinConfirm, setSignupPinConfirm] = useState("");
@@ -2057,9 +2049,7 @@ export function OwnerApp() {
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
-  const phoneRecaptchaRef = useRef<HTMLDivElement | null>(null);
   const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
-  const firebasePhoneAuthConfigured = isFirebasePhoneAuthConfigured();
 
   const shouldShowLogin =
     !isSignupOpen && (isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked));
@@ -2099,7 +2089,6 @@ export function OwnerApp() {
     setChannel("email");
     setChallenge(null);
     setOtp("");
-    setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
     setIsBusinessSetupOpen(false);
     setIsLoginOpen(false);
@@ -2110,12 +2099,11 @@ export function OwnerApp() {
   function openLogin() {
     setChallenge(null);
     setOtp("");
-    setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(true);
-    setStatusMessage("Enter your verified email or phone number and PIN.");
+    setStatusMessage("Enter your email or phone number and PIN.");
   }
 
   useEffect(() => {
@@ -2486,7 +2474,6 @@ export function OwnerApp() {
     setSession(response);
     setChallenge(null);
     setOtp("");
-    setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
     let networkStatus = "";
 
@@ -2648,7 +2635,6 @@ export function OwnerApp() {
     }
 
     setChallenge(null);
-    setPhoneConfirmationResult(null);
     setOtp("");
 
     try {
@@ -2689,7 +2675,6 @@ export function OwnerApp() {
       });
       setSession(response);
       setIsOtpVerified(true);
-      setPhoneConfirmationResult(null);
       const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
       setHasLoginPin(pinStatus.hasPin);
 
@@ -2811,50 +2796,24 @@ export function OwnerApp() {
   }
 
   async function requestLoginOtp() {
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    if (channel !== "email") {
+      setStatusMessage("Phone accounts use PIN-only sign in.");
+      return;
+    }
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    const contactValue = destination.trim().toLowerCase();
+
+    if (!isValidContact("email", contactValue)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
     setChallenge(null);
-    setPhoneConfirmationResult(null);
     setOtp("");
 
     try {
-      if (channel === "phone") {
-        if (!firebasePhoneAuthConfigured) {
-          throw new Error("Firebase phone authentication is not configured for this website.");
-        }
-
-        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-          method: "phone",
-          contact: contactValue,
-          deliveryChannel: "sms",
-          purpose: "recovery"
-        });
-
-        if (phoneRecaptchaRef.current === null) {
-          throw new Error("Phone verification is unavailable right now.");
-        }
-
-        const confirmationResult = await sendFirebasePhoneOtp(
-          contactValue,
-          phoneRecaptchaRef.current
-        );
-        setChallenge(response);
-        setPhoneConfirmationResult(confirmationResult);
-        setOtp("");
-        setIsOtpVerified(false);
-        setStatusMessage(`OTP sent to ${response.destination}`);
-        return;
-      }
-
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        method: channel,
+        method: "email",
         contact: contactValue,
         deliveryChannel: "email",
         purpose: "recovery"
@@ -2870,53 +2829,29 @@ export function OwnerApp() {
 
   async function verifyLoginOtp() {
     if (challenge === null) {
-      setStatusMessage(
-        channel === "email"
-          ? "Request an email verification code first"
-          : "Request an SMS verification code first"
-      );
+      setStatusMessage("Request an email verification code first");
       return;
     }
 
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    if (channel !== "email") {
+      setStatusMessage("Phone accounts use PIN-only sign in.");
+      return;
+    }
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    const contactValue = destination.trim().toLowerCase();
+
+    if (!isValidContact("email", contactValue)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
     try {
-      const response =
-        channel === "phone"
-          ? await (async () => {
-              if (!firebasePhoneAuthConfigured) {
-                throw new Error(
-                  "Firebase phone authentication is not configured for this website."
-                );
-              }
-
-              if (phoneConfirmationResult === null) {
-                throw new Error("Request an OTP first");
-              }
-
-              const userCredential = await phoneConfirmationResult.confirm(otp);
-              const firebaseIdToken = await userCredential.user.getIdToken(true);
-
-              return postJson<SessionResponse>("/auth/otp/verify", {
-                method: "phone",
-                contact: contactValue,
-                challengeId: challenge.challengeId,
-                firebaseIdToken
-              });
-            })()
-          : await postJson<SessionResponse>("/auth/otp/verify", {
-              method: channel,
-              contact: contactValue,
-              challengeId: challenge.challengeId,
-              otp
-            });
+      const response = await postJson<SessionResponse>("/auth/otp/verify", {
+        method: "email",
+        contact: contactValue,
+        challengeId: challenge.challengeId,
+        otp
+      });
       setSession(response);
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: response.account.primaryAuthDestination,
@@ -2934,7 +2869,6 @@ export function OwnerApp() {
         setIsRecoveringPin(false);
       }
       setIsOtpVerified(true);
-      setPhoneConfirmationResult(null);
       setStatusMessage(
         pinStatus.hasPin
           ? isRecoveringPin
@@ -2948,6 +2882,13 @@ export function OwnerApp() {
   }
 
   function startPinRecovery() {
+    if (channel !== "email") {
+      setStatusMessage(
+        "Phone accounts use PIN-only sign in. Use a passkey or another linked sign-in method if you forgot the PIN."
+      );
+      return;
+    }
+
     setIsRecoveringPin(true);
     setChallenge(null);
     setOtp("");
@@ -3097,7 +3038,7 @@ export function OwnerApp() {
 
   async function recoverLoginPin() {
     if (session === null) {
-      setStatusMessage("Verify the email or phone number before resetting your PIN");
+      setStatusMessage("Verify the email address before resetting your PIN");
       return;
     }
 
@@ -5371,7 +5312,6 @@ export function OwnerApp() {
     setReplyToMessageId(null);
     setChallenge(null);
     setOtp("");
-    setPhoneConfirmationResult(null);
     setIsOtpVerified(false);
     setSignupPin("");
     setSignupPinConfirm("");
@@ -6370,7 +6310,6 @@ export function OwnerApp() {
               setIsWorkspaceUnlocked(true);
               setStatusMessage("Marketplace ready. Tap Sell when you want to register a shop.");
             }}
-            phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
@@ -7085,7 +7024,6 @@ interface LoginPanelProps {
   onPasskeyLogin: () => void;
   onCancel: () => void;
   onSocialLogin: (provider: SocialSignupProvider) => void;
-  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
 }
 
 function LoginPanel(props: LoginPanelProps) {
@@ -7093,8 +7031,10 @@ function LoginPanel(props: LoginPanelProps) {
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
-  const isSettingPin = !props.hasLoginPin;
-  const needsOtp = props.isRecoveringPin || isSettingPin;
+  const isEmailRecovery = props.channel === "email" && props.isRecoveringPin;
+  const isSettingPin = props.channel === "email" && !props.hasLoginPin;
+  const needsOtp = isEmailRecovery || isSettingPin;
+  const isPhoneWithoutPin = props.channel === "phone" && !props.hasLoginPin;
   const showAuthForm =
     authView !== "options" ||
     props.challenge !== null ||
@@ -7109,10 +7049,12 @@ function LoginPanel(props: LoginPanelProps) {
             mode="login"
             onSelectPasskey={props.onPasskeyLogin}
             onSelectPhone={() => {
+              props.onCancelPinRecovery();
               props.onChannelChange("phone");
               setAuthView("phone");
             }}
             onSelectEmail={() => {
+              props.onCancelPinRecovery();
               props.onChannelChange("email");
               setAuthView("email");
             }}
@@ -7183,27 +7125,16 @@ function LoginPanel(props: LoginPanelProps) {
                   This verification is only for reclaiming access when your passkey or PIN is
                   unavailable.
                 </p>
-                {props.channel === "phone" ? (
-                  <div
-                    ref={props.phoneRecaptchaRef}
-                    className="firebase-recaptcha"
-                    aria-hidden="true"
-                  />
-                ) : null}
                 <button
                   type="button"
                   onClick={props.onRequestOtp}
                   disabled={!contactIsValid || props.isRequestPending}
                   aria-busy={props.isRequestPending}
                 >
-                  {props.isRequestPending
-                    ? "Sending…"
-                    : props.channel === "phone"
-                      ? "Send SMS code"
-                      : "Send email code"}
+                  {props.isRequestPending ? "Sending…" : "Send email code"}
                 </button>
                 <label>
-                  {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
+                  Email verification code
                   <input
                     value={props.otp}
                     onChange={(event) => props.onOtpChange(event.target.value)}
@@ -7217,13 +7148,14 @@ function LoginPanel(props: LoginPanelProps) {
                   disabled={props.challenge === null || props.isVerifyPending}
                   aria-busy={props.isVerifyPending}
                 >
-                  {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
+                  {props.isVerifyPending ? "Verifying…" : "Verify email"}
                 </button>
               </>
             ) : (
               <p className="shell-note">
-                Recovery verification is not required for normal login. Use your saved contact and
-                PIN.
+                {props.channel === "phone"
+                  ? "Phone sign in uses your phone number and 4-digit PIN only."
+                  : "Recovery verification is not required for normal login. Use your saved email and PIN."}
               </p>
             )}
           </>
@@ -7234,11 +7166,35 @@ function LoginPanel(props: LoginPanelProps) {
         <section className="panel auth-card">
           <div className="section-heading">
             <p className="eyebrow">
-              {isSettingPin ? "PIN setup" : props.isRecoveringPin ? "PIN recovery" : "Login PIN"}
+              {isPhoneWithoutPin
+                ? "PIN unavailable"
+                : isSettingPin
+                  ? "PIN setup"
+                  : isEmailRecovery
+                    ? "PIN recovery"
+                    : "Login PIN"}
             </p>
-            <h2>{isSettingPin ? "Set PIN" : props.isRecoveringPin ? "Reset PIN" : "Enter PIN"}</h2>
+            <h2>
+              {isPhoneWithoutPin
+                ? "Use another sign-in method"
+                : isSettingPin
+                  ? "Set PIN"
+                  : isEmailRecovery
+                    ? "Reset PIN"
+                    : "Enter PIN"}
+            </h2>
           </div>
-          {props.isRecoveringPin || isSettingPin ? (
+          {isPhoneWithoutPin ? (
+            <>
+              <p className="shell-note">
+                Phone verification is not available. Use a passkey or another linked sign-in method
+                to access this account.
+              </p>
+              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
+                Back to login options
+              </button>
+            </>
+          ) : isEmailRecovery || isSettingPin ? (
             <>
               <label>
                 {isSettingPin ? "PIN" : "New PIN"}
@@ -7312,7 +7268,7 @@ function LoginPanel(props: LoginPanelProps) {
               >
                 {props.isLoginPending ? "Signing in…" : `Sign in with ${props.channel}`}
               </button>
-              {props.hasLoginPin ? (
+              {props.channel === "email" && props.hasLoginPin ? (
                 <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
                   Forgot PIN?
                 </button>

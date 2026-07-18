@@ -41,7 +41,7 @@ interface ShopDeletionRequestResponse {
 }
 
 describe("Shop profile lifecycle", () => {
-  it("uses Firebase for lost-account recovery but not for shop deletion", async () => {
+  it("rejects Firebase phone verification and keeps shop deletion PIN-only", async () => {
     const store = createCp2Store();
     const providerRequests: string[] = [];
     const providerVerifications: string[] = [];
@@ -73,38 +73,53 @@ describe("Shop profile lifecycle", () => {
       })
     });
     expect(rejectedSignup.statusCode).toBe(403);
-    expect(rejectedSignup.json()).toMatchObject({ code: "phone_otp_recovery_only" });
+    expect(rejectedSignup.json()).toMatchObject({ code: "phone_pin_only" });
 
-    const initialChallenge = store.requestOtp({
+    const rejectedRecovery = await app.inject({
+      method: "POST",
+      url: "/auth/otp/request",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        deliveryChannel: "sms",
+        purpose: "recovery"
+      })
+    });
+    expect(rejectedRecovery.statusCode).toBe(403);
+    expect(rejectedRecovery.json()).toMatchObject({ code: "phone_pin_only" });
+
+    const staleChallenge = store.requestOtp({
       channel: "phone",
       destination: phone,
-      purpose: "signup"
-    });
-    store.verifyOtp({
-      challengeId: initialChallenge.challengeId,
-      code: initialChallenge.devOtp
-    });
-
-    const otpRequest = await postJson<{ challengeId: string }>(app, "/auth/otp/request", {
-      method: "phone",
-      contact: phone,
-      deliveryChannel: "sms",
       purpose: "recovery"
     });
-    const owner = await app.inject({
+    const rejectedVerification = await app.inject({
       method: "POST",
       url: "/auth/otp/verify",
       headers: jsonHeaders(),
       payload: JSON.stringify({
         method: "phone",
         contact: phone,
-        challengeId: otpRequest.challengeId,
+        challengeId: staleChallenge.challengeId,
         firebaseIdToken: "firebase-id-token"
+      })
+    });
+    expect(rejectedVerification.statusCode).toBe(403);
+    expect(rejectedVerification.json()).toMatchObject({ code: "phone_pin_only" });
+
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        pin: "1234"
       })
     });
     expect(owner.statusCode).toBe(200);
     const ownerCookie = extractSessionCookie(owner.headers["set-cookie"]);
-    await postJson<SessionResponse>(app, "/auth/pin/setup", { pin: "1234" }, ownerCookie);
     const shop = await postJson<BusinessResponse>(
       app,
       "/businesses",
@@ -130,8 +145,8 @@ describe("Shop profile lifecycle", () => {
     );
     expect(quarantined.status).toBe("QUARANTINED");
     expect(store.snapshot().businesses).toHaveLength(1);
-    expect(providerRequests).toEqual([phone]);
-    expect(providerVerifications).toEqual([phone]);
+    expect(providerRequests).toEqual([]);
+    expect(providerVerifications).toEqual([]);
 
     expect(store.purgeExpiredShopDeletions(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(
       1

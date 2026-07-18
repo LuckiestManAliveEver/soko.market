@@ -1,30 +1,6 @@
 const unexplainedErrorMessage =
   "Soko could not complete this request because the server did not provide an explanation. Please try again.";
 
-const firebaseErrorMessages: Array<[pattern: RegExp, message: string]> = [
-  [
-    /auth\/invalid-phone-number/i,
-    "That phone number is not valid. Include the country code, for example +254700000000."
-  ],
-  [
-    /auth\/invalid-verification-code/i,
-    "The SMS verification code is incorrect. Check the code and enter it again."
-  ],
-  [/auth\/code-expired/i, "The SMS verification code has expired. Request a new code."],
-  [
-    /auth\/too-many-requests/i,
-    "Phone verification is temporarily blocked because too many attempts were made. Wait before trying again."
-  ],
-  [
-    /auth\/network-request-failed/i,
-    "Phone verification could not reach Firebase. Check your internet connection and try again."
-  ],
-  [
-    /auth\/(?:invalid-app-credential|missing-app-credential)/i,
-    "Phone verification could not start because this deployment's Firebase configuration is incomplete."
-  ]
-];
-
 export function getUserFacingErrorMessage(
   error: unknown,
   fallback = unexplainedErrorMessage
@@ -33,12 +9,6 @@ export function getUserFacingErrorMessage(
 
   if (message === null) {
     return fallback;
-  }
-
-  for (const [pattern, explanation] of firebaseErrorMessages) {
-    if (pattern.test(message)) {
-      return explanation;
-    }
   }
 
   if (/failed to fetch|networkerror|network request failed|load failed/i.test(message)) {

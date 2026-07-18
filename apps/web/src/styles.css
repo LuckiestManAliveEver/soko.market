@@ -1185,10 +1185,6 @@ button:disabled {
   gap: 12px;
 }
 
-.firebase-recaptcha {
-  min-height: 1px;
-}
-
 .social-signup-grid {
   display: grid;
   gap: 8px;

@@ -51,7 +51,7 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
   await expect(page.getByRole("heading", { name: "Set up your business" })).toBeVisible();
   await expect(
     page.getByText(
-      "Create your shop once using your signed-in account. No OTP is required, and you can update these details later.",
+      "Create your shop once using your signed-in account. You can update these details later.",
       { exact: true }
     )
   ).toBeVisible();

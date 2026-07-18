@@ -776,12 +776,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
     const purpose = parseOtpPurpose(body.purpose);
 
-    if (channel === "phone" && otpProvider.name.startsWith("firebase") && purpose !== "recovery") {
-      throw new Cp2Error(
-        403,
-        "phone_otp_recovery_only",
-        "Firebase phone verification is available only for lost-account recovery."
-      );
+    if (channel === "phone" && otpProvider.name.startsWith("firebase")) {
+      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
     }
 
     const otp = store.requestOtp({ channel, destination, purpose });
@@ -829,7 +825,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   }
 
   async function verifyOtpForBody(body: OtpVerifyBody) {
-    const code = parseString(body.firebaseIdToken ?? body.otp ?? body.code, "otp");
     const challenge =
       body.challengeId === undefined
         ? store.getOtpChallengeDeliveryByContact({
@@ -837,6 +832,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
             destination: parseString(body.contact, "contact")
           })
         : store.getOtpChallengeDelivery(parseString(body.challengeId, "challengeId"));
+
+    if (challenge.channel === "phone" && otpProvider.name.startsWith("firebase")) {
+      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
+    }
+
+    const code = parseString(body.firebaseIdToken ?? body.otp ?? body.code, "otp");
 
     return challenge.channel === "phone" &&
       otpProvider.verifiesExternally &&

@@ -13,9 +13,6 @@ describe("frontend user guidance", () => {
     expect(getUserFacingErrorMessage(new TypeError("Failed to fetch"))).toBe(
       "Soko could not reach the server. Check your internet connection and try again."
     );
-    expect(getUserFacingErrorMessage(new Error("Firebase: Error (auth/code-expired)."))).toBe(
-      "The SMS verification code has expired. Request a new code."
-    );
     expect(
       await getResponseErrorMessage(
         new Response(JSON.stringify({ message: "No registered user has that email address." }), {
@@ -141,7 +138,7 @@ describe("frontend user guidance", () => {
     expect(render).toContain("tinyllama-1.1b-chat-q4-k-m-android");
   });
 
-  it("keeps Firebase phone OTP out of signup and inside lost-account recovery", () => {
+  it("keeps Firebase phone OTP out of signup and lost-account recovery", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const emailSignup = application.slice(
@@ -166,8 +163,11 @@ describe("frontend user guidance", () => {
     expect(phoneSignup).not.toContain("/auth/otp/");
     expect(phoneSignup).not.toContain("sendFirebasePhoneOtp");
     expect(recovery).toContain('purpose: "recovery"');
-    expect(recovery).toContain("sendFirebasePhoneOtp");
-    expect(authRoutes).toContain("phone_otp_recovery_only");
+    expect(recovery).toContain('method: "email"');
+    expect(recovery).not.toContain('method: "phone"');
+    expect(recovery).not.toContain("sendFirebasePhoneOtp");
+    expect(recovery).not.toContain("firebaseIdToken");
+    expect(authRoutes).toContain("phone_pin_only");
     expect(authRoutes).toContain("emailProvider.sendOtp");
   });
 
@@ -189,6 +189,11 @@ describe("frontend user guidance", () => {
     expect(loginPanel).toContain("Send email code");
     expect(loginPanel).toContain("Email verification code");
     expect(loginPanel).toContain("Sign in with");
+    expect(loginPanel).toContain("Phone sign in uses your phone number and 4-digit PIN only.");
+    expect(loginPanel).not.toContain("Send SMS code");
+    expect(loginPanel).not.toContain("SMS verification code");
+    expect(loginPanel).not.toContain("firebase-recaptcha");
+    expect(application).not.toContain("firebase-auth");
   });
 
   it("keeps account verification separate from authenticated first-shop registration", () => {
