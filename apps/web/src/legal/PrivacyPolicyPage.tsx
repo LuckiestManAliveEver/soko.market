@@ -11,6 +11,7 @@ import partTwoMarkdown from "./privacy-v1-draft-part-ii.md?raw";
 import partThreeMarkdown from "./privacy-v1-draft-part-iii.md?raw";
 import partFourMarkdown from "./privacy-v1-draft-part-iv.md?raw";
 import { readApiBaseUrl } from "../lib/api";
+import { AppIcon } from "../AppIcon";
 
 interface PrivacyPart {
   description: string;
@@ -96,7 +97,8 @@ export default function PrivacyPolicyPage() {
       <main className="legal-document-shell">
         <header className="legal-document-header">
           <a className="legal-brand" href="/" aria-label="Back to Soko.market home">
-            soko.market
+            <AppIcon className="legal-brand-icon" />
+            <span>soko.market</span>
           </a>
           <p className="eyebrow">Legal</p>
           <h1>Privacy Policy</h1>

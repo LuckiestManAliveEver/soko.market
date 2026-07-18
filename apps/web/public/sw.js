@@ -1,11 +1,13 @@
 /* global URL, caches, self */
 
 const CACHE_PREFIX = "soko-market-app-";
-const CACHE_NAME = `${CACHE_PREFIX}v5`;
+const CACHE_NAME = `${CACHE_PREFIX}v6`;
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
+  "/favicon.ico",
   "/icons/soko-icon.svg",
+  "/icons/soko-icon-32.png",
   "/icons/soko-icon-192.png",
   "/icons/soko-icon-512.png",
   "/icons/soko-icon-maskable-512.png",

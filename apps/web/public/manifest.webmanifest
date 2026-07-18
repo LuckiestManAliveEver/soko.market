@@ -15,6 +15,12 @@
   "categories": ["business", "productivity", "shopping"],
   "icons": [
     {
+      "src": "/icons/soko-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
       "src": "/icons/soko-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",

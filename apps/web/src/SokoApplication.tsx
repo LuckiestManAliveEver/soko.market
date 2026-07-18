@@ -101,6 +101,7 @@ import {
   AccountRestorationPanel,
   type AccountRestorationResult
 } from "./features/account-restoration/AccountRestorationPanel";
+import { AppIcon } from "./AppIcon";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
@@ -6157,14 +6158,17 @@ export function OwnerApp() {
       <div className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}>
         <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
           {business === null ? (
-            <div className="auth-brand-title">soko.market</div>
+            <div className="auth-brand-title">
+              <AppIcon className="auth-header-icon" />
+              <span>soko.market</span>
+            </div>
           ) : (
             <button
               className="brand-lockup"
               type="button"
               onClick={() => setupComplete && navigateToView("agent")}
             >
-              <span className="logo-mark">S</span>
+              <AppIcon className="logo-mark" />
               <span>
                 <strong>Soko.market</strong>
                 <span>{business.name}</span>
@@ -6733,6 +6737,7 @@ function SocialLoginOptions(props: SocialLoginOptionsProps) {
 function AuthBrand() {
   return (
     <div className="auth-brand">
+      <AppIcon className="auth-brand-icon" />
       <h1>soko.market</h1>
       <p>Karibu Soko</p>
     </div>

@@ -1,7 +1,63 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Soko.market icon">
-  <rect width="512" height="512" rx="96" fill="#117a4f" />
-  <path d="M128 184c0-35 28-63 63-63h130c35 0 63 28 63 63v192H128V184Z" fill="#ffffff" />
-  <path d="M176 183c0-44 36-80 80-80s80 36 80 80" fill="none" stroke="#17211b" stroke-width="34" stroke-linecap="round" />
-  <path d="M168 246h176v92H168z" fill="#dcefe2" />
-  <path d="M202 292h108" stroke="#117a4f" stroke-width="28" stroke-linecap="round" />
+<svg width="480" height="480" viewBox="100 50 480 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="soko-icon-title soko-icon-description">
+<title id="soko-icon-title">Soko.market app icon</title>
+<desc id="soko-icon-description">Two round African woven kiondo baskets with striped multicolor weave on a white background</desc>
+<defs>
+<clipPath id="bodyL">
+<path d="M175 250 C175 250 168 400 175 430 C185 468 335 468 345 430 C352 400 345 250 345 250 Z"/>
+</clipPath>
+<clipPath id="bodyR">
+<path d="M378 205 C378 205 372 320 378 345 C387 378 533 378 542 345 C548 320 542 205 542 205 Z"/>
+</clipPath>
+</defs>
+
+<rect x="100" y="50" width="480" height="480" fill="#ffffff"/>
+
+<g clip-path="url(#bodyL)">
+<rect x="160" y="250" width="200" height="20" fill="#ece0c2"/>
+<rect x="160" y="270" width="200" height="14" fill="#c94f3c"/>
+<rect x="160" y="284" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="294" width="200" height="14" fill="#3d6bb0"/>
+<rect x="160" y="308" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="318" width="200" height="14" fill="#e0b23c"/>
+<rect x="160" y="332" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="342" width="200" height="14" fill="#3d8b5f"/>
+<rect x="160" y="356" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="366" width="200" height="14" fill="#c94f3c"/>
+<rect x="160" y="380" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="390" width="200" height="14" fill="#3d6bb0"/>
+<rect x="160" y="404" width="200" height="10" fill="#ece0c2"/>
+<rect x="160" y="414" width="200" height="14" fill="#e0b23c"/>
+<rect x="160" y="428" width="200" height="40" fill="#ece0c2"/>
+</g>
+<path d="M175 250 C175 250 168 400 175 430 C185 468 335 468 345 430 C352 400 345 250 345 250 Z" fill="none" stroke="#8a6a3e" stroke-width="3"/>
+
+<path d="M170 250 C170 250 350 250 350 250 L350 232 C350 220 170 220 170 232 Z" fill="#8b2f36" stroke="#6e2228" stroke-width="2"/>
+<path d="M188 232 C188 190 200 168 200 168" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M200 168 C210 178 214 192 214 205" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M330 232 C330 190 318 168 318 168" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M318 168 C308 178 304 192 304 205" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+
+<g clip-path="url(#bodyR)">
+<rect x="365" y="205" width="190" height="18" fill="#ece0c2"/>
+<rect x="365" y="223" width="190" height="12" fill="#3d6bb0"/>
+<rect x="365" y="235" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="244" width="190" height="12" fill="#c94f3c"/>
+<rect x="365" y="256" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="265" width="190" height="12" fill="#3d8b5f"/>
+<rect x="365" y="277" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="286" width="190" height="12" fill="#e0b23c"/>
+<rect x="365" y="298" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="307" width="190" height="12" fill="#3d6bb0"/>
+<rect x="365" y="319" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="328" width="190" height="12" fill="#c94f3c"/>
+<rect x="365" y="340" width="190" height="9" fill="#ece0c2"/>
+<rect x="365" y="349" width="190" height="30" fill="#ece0c2"/>
+</g>
+<path d="M378 205 C378 205 372 320 378 345 C387 378 533 378 542 345 C548 320 542 205 542 205 Z" fill="none" stroke="#8a6a3e" stroke-width="3"/>
+
+<path d="M373 205 C373 205 547 205 547 205 L547 188 C547 178 373 178 373 188 Z" fill="#2f6b47" stroke="#254f36" stroke-width="2"/>
+<path d="M390 188 C390 150 400 130 400 130" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M400 130 C408 140 412 152 412 165" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M525 188 C525 150 515 130 515 130" fill="none" stroke="#c9bd9e" stroke-width="4"/>
+<path d="M515 130 C507 140 503 152 503 165" fill="none" stroke="#c9bd9e" stroke-width="4"/>
 </svg>

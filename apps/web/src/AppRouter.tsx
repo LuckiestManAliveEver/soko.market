@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
+import { AppIcon } from "./AppIcon";
 import { readOwnerRoute, routes } from "./routes";
 
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
@@ -36,6 +37,7 @@ export function AppRouter() {
   ) {
     return (
       <main className="legal-placeholder">
+        <AppIcon className="route-brand-icon" />
         <h1>Destination unavailable</h1>
         <p>This address does not match a Soko.market page.</p>
         <a href={routes.marketplace}>Return to the marketplace</a>
@@ -51,6 +53,7 @@ function LazyRoute({ page }: { page: ReactNode }) {
     <Suspense
       fallback={
         <main className="legal-placeholder" aria-busy="true">
+          <AppIcon className="route-brand-icon" />
           <p>Loading Soko.market…</p>
         </main>
       }
@@ -65,6 +68,7 @@ function LegalRoute({ label, page }: { label: string; page: ReactNode }) {
     <Suspense
       fallback={
         <main className="legal-placeholder" aria-busy="true">
+          <AppIcon className="route-brand-icon" />
           <p>Loading {label}…</p>
         </main>
       }

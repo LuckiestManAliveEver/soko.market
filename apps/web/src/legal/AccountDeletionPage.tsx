@@ -1,4 +1,5 @@
 import { Surface } from "@soko/ui";
+import { AppIcon } from "../AppIcon";
 
 export default function AccountDeletionPage() {
   return (
@@ -9,7 +10,8 @@ export default function AccountDeletionPage() {
       <main className="legal-document-shell account-deletion-shell">
         <header className="legal-document-header">
           <a className="legal-brand" href="/" aria-label="Back to Soko.market home">
-            soko.market
+            <AppIcon className="legal-brand-icon" />
+            <span>soko.market</span>
           </a>
           <p className="eyebrow">Privacy control</p>
           <h1>Delete your Soko.market account</h1>

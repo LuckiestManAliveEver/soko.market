@@ -6,6 +6,7 @@ import partTwoMarkdown from "./terms-v1-draft-part-ii.md?raw";
 import partThreeMarkdown from "./terms-v1-draft-part-iii.md?raw";
 import partFourMarkdown from "./terms-v1-draft-part-iv.md?raw";
 import { readApiBaseUrl } from "../lib/api";
+import { AppIcon } from "../AppIcon";
 
 interface TermsPart {
   description: string;
@@ -90,7 +91,8 @@ export default function TermsOfServicePage() {
       <main className="legal-document-shell">
         <header className="legal-document-header">
           <a className="legal-brand" href="/" aria-label="Back to Soko.market home">
-            soko.market
+            <AppIcon className="legal-brand-icon" />
+            <span>soko.market</span>
           </a>
           <p className="eyebrow">Legal</p>
           <h1>Terms of Service</h1>
