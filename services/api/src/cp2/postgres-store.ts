@@ -140,6 +140,7 @@ const mutatingMethodNames = new Set([
   "logout",
   "logoutAll",
   "recoverAccountPin",
+  "recoverPhoneAccountPin",
   "recordBetaDeviceTest",
   "recordBetaTelemetry",
   "recordPayment",
@@ -248,7 +249,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "029_owner_phone_identity.sql";
+const requiredMigrationFilename = "030_phone_pin_recovery_code.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -1402,14 +1403,16 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
   const accountPinHashesResult = await timedQuery<{
     account_id: string;
     pin_hash: string;
+    recovery_code_hash: string | null;
   }>(
     pool,
     "load account PIN hashes",
-    "select account_id, pin_hash from account_pin_hashes order by account_id"
+    "select account_id, pin_hash, recovery_code_hash from account_pin_hashes order by account_id"
   );
   snapshot.accountPinHashes = accountPinHashesResult.rows.map((row) => ({
     accountId: row.account_id,
-    pinHash: row.pin_hash
+    pinHash: row.pin_hash,
+    recoveryCodeHash: row.recovery_code_hash
   }));
 
   const deviceTrustResult = await timedQuery<{
@@ -2491,13 +2494,18 @@ async function savePhase1AuthSecurityRecords(
   for (const record of snapshotRecords(snapshot.accountPinHashes)) {
     await client.query(
       `
-        insert into account_pin_hashes (account_id, pin_hash, updated_at)
-        values ($1, $2, now())
+        insert into account_pin_hashes (account_id, pin_hash, recovery_code_hash, updated_at)
+        values ($1, $2, $3, now())
         on conflict (account_id) do update set
           pin_hash = excluded.pin_hash,
+          recovery_code_hash = excluded.recovery_code_hash,
           updated_at = now()
       `,
-      [requiredText(record, "accountId"), requiredText(record, "pinHash")]
+      [
+        requiredText(record, "accountId"),
+        requiredText(record, "pinHash"),
+        firstText(record, ["recoveryCodeHash"])
+      ]
     );
   }
 

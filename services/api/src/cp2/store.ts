@@ -1,4 +1,4 @@
-import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -545,6 +545,10 @@ export interface OwnerPhoneIdentityResult {
   user: UserSummary;
 }
 
+export interface PhonePinAuthResult extends AuthSessionView {
+  recoveryCode: string;
+}
+
 export interface RoleCheckResult {
   allowed: boolean;
   role: BusinessRole;
@@ -615,6 +619,7 @@ export interface Cp2Snapshot {
   accountPinHashes: Array<{
     accountId: string;
     pinHash: string;
+    recoveryCodeHash?: string | null;
   }>;
   networkNodes: NetworkNodeSummary[];
   networkEdges: NetworkEdgeSummary[];
@@ -839,6 +844,7 @@ export class Cp2Store {
   private readonly identityByEmail = new Map<string, string>();
   private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
+  private readonly accountRecoveryCodeHashes = new Map<string, string>();
   private readonly networkNodes = new Map<string, NetworkNodeSummary>();
   private readonly networkEdges = new Map<string, NetworkEdgeSummary>();
   private readonly networkSources = new Map<string, NetworkSyncSourceSummary>();
@@ -1380,7 +1386,7 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
+  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): PhonePinAuthResult {
     const now = input.now ?? new Date();
     const destination = normalizeDestination("phone", input.destination);
     const destinationKey = destinationAccountKey("phone", destination);
@@ -1398,6 +1404,8 @@ export class Cp2Store {
     const user = this.requireUser(this.userByAccount.get(account.id));
     const session = this.createSession(account, user, now);
     this.accountPinHashes.set(account.id, hashPin(account.id, pin));
+    const recoveryCode = createPhoneRecoveryCode();
+    this.accountRecoveryCodeHashes.set(account.id, hashPhoneRecoveryCode(account.id, recoveryCode));
     this.markSessionPinVerified(session.id, now);
 
     this.recordAuditEvent({
@@ -1424,7 +1432,10 @@ export class Cp2Store {
       }
     });
 
-    return this.requireAnySession(session.id, now);
+    return {
+      ...this.requireAnySession(session.id, now),
+      recoveryCode
+    };
   }
 
   getAccountPinStatus(input: { sessionId: string | null; now?: Date }): { hasPin: boolean } {
@@ -1458,6 +1469,68 @@ export class Cp2Store {
     });
 
     return this.requireAnySession(input.sessionId, now);
+  }
+
+  recoverPhoneAccountPin(input: {
+    destination: string;
+    recoveryCode: string;
+    pin: string;
+    now?: Date;
+  }): PhonePinAuthResult {
+    const now = input.now ?? new Date();
+    const destination = normalizeDestination("phone", input.destination);
+    const accountId = this.accountByDestination.get(destinationAccountKey("phone", destination));
+    const candidateAccountId = accountId ?? destination;
+    const candidateHash = hashPhoneRecoveryCode(candidateAccountId, input.recoveryCode);
+    const expectedHash =
+      (accountId === undefined ? undefined : this.accountRecoveryCodeHashes.get(accountId)) ??
+      "0".repeat(64);
+
+    if (
+      accountId === undefined ||
+      expectedHash === "0".repeat(64) ||
+      !hashMatches(candidateHash, expectedHash)
+    ) {
+      throw new Cp2Error(
+        401,
+        "phone_recovery_invalid",
+        "The phone number or recovery code is invalid."
+      );
+    }
+
+    const account = this.requireAccount(accountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const pin = normalizePin(input.pin);
+    const replacementRecoveryCode = createPhoneRecoveryCode();
+    this.accountPinHashes.set(account.id, hashPin(account.id, pin));
+    this.accountRecoveryCodeHashes.set(
+      account.id,
+      hashPhoneRecoveryCode(account.id, replacementRecoveryCode)
+    );
+
+    for (const existingSession of this.sessions.values()) {
+      if (existingSession.accountId === account.id && existingSession.revokedAt === null) {
+        existingSession.revokedAt = now.toISOString();
+      }
+    }
+
+    const session = this.createSession(account, user, now);
+    this.markSessionPinVerified(session.id, now);
+    this.recordAuditEvent({
+      type: "auth.pin_recovered",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        method: "recovery_code"
+      }
+    });
+
+    return {
+      ...this.requireAnySession(session.id, now),
+      recoveryCode: replacementRecoveryCode
+    };
   }
 
   verifyAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
@@ -8272,7 +8345,8 @@ export class Cp2Store {
       oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
       accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
         accountId,
-        pinHash
+        pinHash,
+        recoveryCodeHash: this.accountRecoveryCodeHashes.get(accountId) ?? null
       })),
       networkNodes: [...this.networkNodes.values()],
       networkEdges: [...this.networkEdges.values()],
@@ -8361,6 +8435,7 @@ export class Cp2Store {
     this.identityByEmail.clear();
     this.oauthSessions.clear();
     this.accountPinHashes.clear();
+    this.accountRecoveryCodeHashes.clear();
     this.networkNodes.clear();
     this.networkEdges.clear();
     this.networkSources.clear();
@@ -8720,6 +8795,9 @@ export class Cp2Store {
 
     for (const pinHash of snapshot.accountPinHashes ?? []) {
       this.accountPinHashes.set(pinHash.accountId, pinHash.pinHash);
+      if (typeof pinHash.recoveryCodeHash === "string") {
+        this.accountRecoveryCodeHashes.set(pinHash.accountId, pinHash.recoveryCodeHash);
+      }
     }
 
     for (const node of snapshot.networkNodes ?? []) {
@@ -12300,6 +12378,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.accountRecoveryCodeHashes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkNodes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkEdges, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkSources, scope);
@@ -14085,6 +14164,22 @@ function normalizePin(pin: string): string {
   return pin;
 }
 
+function normalizePhoneRecoveryCode(recoveryCode: string): string {
+  const normalized = recoveryCode.trim().replace(/[\s-]/g, "").toUpperCase();
+  if (!/^[A-F0-9]{24}$/.test(normalized)) {
+    return "";
+  }
+  return normalized;
+}
+
+function createPhoneRecoveryCode(): string {
+  return randomBytes(12)
+    .toString("hex")
+    .toUpperCase()
+    .match(/.{1,4}/g)!
+    .join("-");
+}
+
 function createAuditEvent<TPayload extends Record<string, unknown>>(
   event: BusinessEvent<TPayload>
 ): BusinessEvent<TPayload> {
@@ -14642,6 +14737,12 @@ function secureCookieSuffix(): string {
 
 function hashPin(accountId: string, pin: string): string {
   return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+}
+
+function hashPhoneRecoveryCode(accountId: string, recoveryCode: string): string {
+  return createHash("sha256")
+    .update(`${accountId}:${normalizePhoneRecoveryCode(recoveryCode)}`)
+    .digest("hex");
 }
 
 function hashMcpAccessToken(accessToken: string): string {

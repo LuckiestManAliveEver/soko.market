@@ -177,6 +177,10 @@ interface PinLoginBody extends PinBody {
   method?: string;
 }
 
+interface PhonePinRecoveryBody extends PinLoginBody {
+  recoveryCode?: string;
+}
+
 interface PasskeyRegistrationVerifyBody {
   ceremonyId?: string;
   label?: string;
@@ -1569,6 +1573,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.post(
+    "/auth/pin/recover/phone",
+    async (request: FastifyRequest<{ Body: PhonePinRecoveryBody }>, reply) => {
+      try {
+        const result = store.recoverPhoneAccountPin({
+          destination: parseString(request.body.contact ?? request.body.destination, "contact"),
+          recoveryCode: parseString(request.body.recoveryCode, "recoveryCode"),
+          pin: parseString(request.body.pin, "pin")
+        });
+        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get("/session", async (request, reply) => {
     const session = store.getSession(readSessionCookie(request.headers.cookie));

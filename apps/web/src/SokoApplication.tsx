@@ -212,6 +212,10 @@ interface SessionResponse {
   };
 }
 
+interface PhonePinAuthResponse extends SessionResponse {
+  recoveryCode: string;
+}
+
 interface PasskeyRegistrationOptionsResponse {
   ceremonyId: string;
   options: PublicKeyCredentialCreationOptionsJSON;
@@ -1956,6 +1960,8 @@ export function OwnerApp() {
   const [hasLoginPin, setHasLoginPin] = useState(initialOwnerAuth?.pinSet ?? true);
   const [recoveryPin, setRecoveryPin] = useState("");
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
+  const [phoneRecoveryCodeInput, setPhoneRecoveryCodeInput] = useState("");
+  const [generatedPhoneRecoveryCode, setGeneratedPhoneRecoveryCode] = useState("");
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
@@ -2108,6 +2114,8 @@ export function OwnerApp() {
     setChallenge(null);
     setOtp("");
     setIsOtpVerified(false);
+    setPhoneRecoveryCodeInput("");
+    setGeneratedPhoneRecoveryCode("");
     setIsBusinessSetupOpen(false);
     setIsLoginOpen(false);
     setIsSignupOpen(true);
@@ -2118,6 +2126,8 @@ export function OwnerApp() {
     setChallenge(null);
     setOtp("");
     setIsOtpVerified(false);
+    setPhoneRecoveryCodeInput("");
+    setGeneratedPhoneRecoveryCode("");
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(true);
@@ -2756,7 +2766,7 @@ export function OwnerApp() {
     }
 
     try {
-      const response = await postJson<SessionResponse>("/auth/pin/signup", {
+      const response = await postJson<PhonePinAuthResponse>("/auth/pin/signup", {
         method: "phone",
         contact: contactValue,
         pin: signupPin
@@ -2772,13 +2782,11 @@ export function OwnerApp() {
       setIsWorkspaceUnlocked(true);
       setSignupPin("");
       setSignupPinConfirm("");
-      setMode("marketplace");
-      setView("chat");
-      setIsSignupOpen(false);
+      setGeneratedPhoneRecoveryCode(response.recoveryCode);
       setIsBusinessSetupOpen(false);
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Phone account created. Tap Sell when you are ready to register your shop.");
+      setStatusMessage("Phone account created. Save the recovery code before continuing.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2921,13 +2929,6 @@ export function OwnerApp() {
   }
 
   function startPinRecovery() {
-    if (channel !== "email") {
-      setStatusMessage(
-        "Phone accounts use PIN-only sign in. Use a passkey or another linked sign-in method if you forgot the PIN."
-      );
-      return;
-    }
-
     setIsRecoveringPin(true);
     setChallenge(null);
     setOtp("");
@@ -2935,7 +2936,13 @@ export function OwnerApp() {
     setLoginPin("");
     setRecoveryPin("");
     setRecoveryPinConfirm("");
-    setStatusMessage("Use your recovery contact to verify the account, then set a new PIN.");
+    setPhoneRecoveryCodeInput("");
+    setGeneratedPhoneRecoveryCode("");
+    setStatusMessage(
+      channel === "phone"
+        ? "Enter the recovery code saved during phone signup, then set a new PIN."
+        : "Use your recovery contact to verify the account, then set a new PIN."
+    );
   }
 
   function cancelPinRecovery() {
@@ -2945,6 +2952,8 @@ export function OwnerApp() {
     setIsOtpVerified(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
+    setPhoneRecoveryCodeInput("");
+    setGeneratedPhoneRecoveryCode("");
     setStatusMessage("Enter your login contact and PIN.");
   }
 
@@ -3076,6 +3085,48 @@ export function OwnerApp() {
   }
 
   async function recoverLoginPin() {
+    if (channel === "phone") {
+      const contactValue = composeSignupContact(channel, countryCode, destination);
+      if (!isSignupContactValid("phone", countryCode, destination)) {
+        setStatusMessage("Enter the phone number used to create the account");
+        return;
+      }
+      if (phoneRecoveryCodeInput.trim().length === 0) {
+        setStatusMessage("Enter your saved recovery code");
+        return;
+      }
+      if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
+        setStatusMessage("Enter and confirm a new 4-digit PIN");
+        return;
+      }
+
+      try {
+        const response = await postJson<PhonePinAuthResponse>("/auth/pin/recover/phone", {
+          method: "phone",
+          contact: contactValue,
+          recoveryCode: phoneRecoveryCodeInput,
+          pin: recoveryPin
+        });
+        const nextOwnerAuth: OwnerAuthRecord = {
+          contact: response.account.primaryAuthDestination,
+          countryCode: inferCountryCode(response.account.primaryAuthDestination) ?? countryCode,
+          pinSet: true
+        };
+        setSession(response);
+        setOwnerAuth(nextOwnerAuth);
+        setHasLoginPin(true);
+        setGeneratedPhoneRecoveryCode(response.recoveryCode);
+        setPhoneRecoveryCodeInput("");
+        setRecoveryPin("");
+        setRecoveryPinConfirm("");
+        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+        setStatusMessage("PIN reset. Save the replacement recovery code before continuing.");
+      } catch (error) {
+        setStatusMessage(getErrorMessage(error));
+      }
+      return;
+    }
+
     if (session === null) {
       setStatusMessage("Verify the email address before resetting your PIN");
       return;
@@ -3117,6 +3168,23 @@ export function OwnerApp() {
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
+  }
+
+  function finishPhoneSignup() {
+    setGeneratedPhoneRecoveryCode("");
+    setMode("marketplace");
+    setView("chat");
+    setIsSignupOpen(false);
+    setStatusMessage("Phone account secured. Tap Sell when you are ready to register your shop.");
+  }
+
+  function finishPhoneRecovery() {
+    setGeneratedPhoneRecoveryCode("");
+    setIsRecoveringPin(false);
+    setIsWorkspaceUnlocked(true);
+    setIsLoginOpen(false);
+    setView("chat");
+    setStatusMessage("PIN reset. Login complete.");
   }
 
   function completeAccountRestoration(result: AccountRestorationResult) {
@@ -5401,6 +5469,8 @@ export function OwnerApp() {
     setIsRecoveringPin(false);
     setRecoveryPin("");
     setRecoveryPinConfirm("");
+    setPhoneRecoveryCodeInput("");
+    setGeneratedPhoneRecoveryCode("");
     setView("chat");
     setMode("marketplace");
     window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
@@ -6320,6 +6390,7 @@ export function OwnerApp() {
             otp={otp}
             signupPin={signupPin}
             signupPinConfirm={signupPinConfirm}
+            generatedPhoneRecoveryCode={generatedPhoneRecoveryCode}
             session={session}
             statusMessage={statusMessage}
             isRequestPending={isPending("signup-otp-request")}
@@ -6342,6 +6413,7 @@ export function OwnerApp() {
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
             onSignupWithPhonePin={() => void runAction("signup-phone-pin", signupWithPhonePin)}
+            onFinishPhoneSignup={finishPhoneSignup}
             onSocialSignup={(provider) =>
               void runAction("social-signup", () => authenticateSocialProfile(provider))
             }
@@ -6359,6 +6431,8 @@ export function OwnerApp() {
             hasLoginPin={hasLoginPin}
             recoveryPin={recoveryPin}
             recoveryPinConfirm={recoveryPinConfirm}
+            phoneRecoveryCodeInput={phoneRecoveryCodeInput}
+            generatedPhoneRecoveryCode={generatedPhoneRecoveryCode}
             statusMessage={statusMessage}
             oauthProviders={oauthProviders}
             oauthProvidersLoaded={oauthProvidersLoaded}
@@ -6378,9 +6452,11 @@ export function OwnerApp() {
             onLoginPinChange={setLoginPin}
             onRecoveryPinChange={setRecoveryPin}
             onRecoveryPinConfirmChange={setRecoveryPinConfirm}
+            onPhoneRecoveryCodeInputChange={setPhoneRecoveryCodeInput}
             onStartPinRecovery={startPinRecovery}
             onCancelPinRecovery={cancelPinRecovery}
             onRecoverPin={() => void runAction("login-pin-update", recoverLoginPin)}
+            onFinishPhoneRecovery={finishPhoneRecovery}
             onSetMissingPin={() => void runAction("login-pin-update", setMissingLoginPin)}
             onLogin={() => void runAction("login-pin", loginWithPin)}
             onPasskeyLogin={() => void runAction("passkey-login", loginWithPasskey)}
@@ -6659,6 +6735,7 @@ interface SetupPanelProps {
   otp: string;
   signupPin: string;
   signupPinConfirm: string;
+  generatedPhoneRecoveryCode: string;
   session: SessionResponse | null;
   statusMessage: string;
   isRequestPending: boolean;
@@ -6682,6 +6759,7 @@ interface SetupPanelProps {
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
   onSignupWithPhonePin: () => void;
+  onFinishPhoneSignup: () => void;
 }
 
 interface SocialLoginOptionsProps {
@@ -6963,46 +7041,78 @@ function SetupPanel(props: SetupPanelProps) {
         <section className="panel">
           <div className="section-heading">
             <p className="eyebrow">Account security</p>
-            <h2>Create your owner PIN</h2>
-            <p>Finish signup now. You can create your shop when you are ready.</p>
+            <h2>
+              {props.generatedPhoneRecoveryCode.length > 0
+                ? "Save your recovery code"
+                : "Create your owner PIN"}
+            </h2>
+            <p>
+              {props.generatedPhoneRecoveryCode.length > 0
+                ? "Keep this code private. It is the only way to reset a forgotten phone-account PIN without SMS."
+                : "Finish signup now. You can create your shop when you are ready."}
+            </p>
           </div>
-          <label>
-            PIN
-            <input
-              value={props.signupPin}
-              onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
-              inputMode="numeric"
-              maxLength={4}
-              pattern="[0-9]*"
-              type="password"
-              placeholder="4-digit PIN"
-            />
-          </label>
-          <label>
-            Confirm PIN
-            <input
-              value={props.signupPinConfirm}
-              onChange={(event) => props.onSignupPinConfirmChange(sanitizePin(event.target.value))}
-              inputMode="numeric"
-              maxLength={4}
-              pattern="[0-9]*"
-              type="password"
-              placeholder="Re-enter PIN"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={props.onCompleteSignup}
-            disabled={
-              props.session === null ||
-              !isValidPin(props.signupPin) ||
-              props.signupPin !== props.signupPinConfirm ||
-              props.isCompletePending
-            }
-            aria-busy={props.isCompletePending}
-          >
-            {props.isCompletePending ? "Saving…" : "Finish signup"}
-          </button>
+          {props.generatedPhoneRecoveryCode.length > 0 ? (
+            <>
+              <label>
+                Phone account recovery code
+                <input
+                  value={props.generatedPhoneRecoveryCode}
+                  readOnly
+                  autoComplete="off"
+                  aria-describedby="phone-recovery-code-note"
+                />
+              </label>
+              <p className="shell-note" id="phone-recovery-code-note">
+                Store it somewhere safe. Soko stores only a hash and cannot show this code again.
+              </p>
+              <button type="button" onClick={props.onFinishPhoneSignup}>
+                I saved my recovery code
+              </button>
+            </>
+          ) : (
+            <>
+              <label>
+                PIN
+                <input
+                  value={props.signupPin}
+                  onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="[0-9]*"
+                  type="password"
+                  placeholder="4-digit PIN"
+                />
+              </label>
+              <label>
+                Confirm PIN
+                <input
+                  value={props.signupPinConfirm}
+                  onChange={(event) =>
+                    props.onSignupPinConfirmChange(sanitizePin(event.target.value))
+                  }
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="[0-9]*"
+                  type="password"
+                  placeholder="Re-enter PIN"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={props.onCompleteSignup}
+                disabled={
+                  props.session === null ||
+                  !isValidPin(props.signupPin) ||
+                  props.signupPin !== props.signupPinConfirm ||
+                  props.isCompletePending
+                }
+                aria-busy={props.isCompletePending}
+              >
+                {props.isCompletePending ? "Saving…" : "Finish signup"}
+              </button>
+            </>
+          )}
           <button
             className="secondary"
             type="button"
@@ -7207,6 +7317,8 @@ interface LoginPanelProps {
   hasLoginPin: boolean;
   recoveryPin: string;
   recoveryPinConfirm: string;
+  phoneRecoveryCodeInput: string;
+  generatedPhoneRecoveryCode: string;
   statusMessage: string;
   oauthProviders: OAuthProviderSummary[];
   oauthProvidersLoaded: boolean;
@@ -7226,9 +7338,11 @@ interface LoginPanelProps {
   onLoginPinChange: (pin: string) => void;
   onRecoveryPinChange: (pin: string) => void;
   onRecoveryPinConfirmChange: (pin: string) => void;
+  onPhoneRecoveryCodeInputChange: (code: string) => void;
   onStartPinRecovery: () => void;
   onCancelPinRecovery: () => void;
   onRecoverPin: () => void;
+  onFinishPhoneRecovery: () => void;
   onSetMissingPin: () => void;
   onLogin: () => void;
   onPasskeyLogin: () => void;
@@ -7242,9 +7356,12 @@ function LoginPanel(props: LoginPanelProps) {
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isEmailRecovery = props.channel === "email" && props.isRecoveringPin;
+  const isPhoneRecovery = props.channel === "phone" && props.isRecoveringPin;
   const isSettingPin = props.channel === "email" && !props.hasLoginPin;
   const needsOtp = isEmailRecovery || isSettingPin;
-  const isPhoneWithoutPin = props.channel === "phone" && !props.hasLoginPin;
+  const isPhoneWithoutPin =
+    props.channel === "phone" && !props.hasLoginPin && !props.isRecoveringPin;
+  const phoneRecoveryComplete = isPhoneRecovery && props.generatedPhoneRecoveryCode.length > 0;
   const showAuthForm =
     authView !== "options" ||
     props.challenge !== null ||
@@ -7363,9 +7480,11 @@ function LoginPanel(props: LoginPanelProps) {
               </>
             ) : (
               <p className="shell-note">
-                {props.channel === "phone"
-                  ? "Phone sign in uses your phone number and 4-digit PIN only."
-                  : "Recovery verification is not required for normal login. Use your saved email and PIN."}
+                {isPhoneRecovery
+                  ? "Use the recovery code saved during signup. No SMS or phone verification is required."
+                  : props.channel === "phone"
+                    ? "Phone sign in uses your phone number and 4-digit PIN only."
+                    : "Recovery verification is not required for normal login. Use your saved email and PIN."}
               </p>
             )}
           </>
@@ -7378,23 +7497,41 @@ function LoginPanel(props: LoginPanelProps) {
             <p className="eyebrow">
               {isPhoneWithoutPin
                 ? "PIN unavailable"
-                : isSettingPin
-                  ? "PIN setup"
-                  : isEmailRecovery
-                    ? "PIN recovery"
-                    : "Login PIN"}
+                : phoneRecoveryComplete
+                  ? "Recovery complete"
+                  : isSettingPin
+                    ? "PIN setup"
+                    : isEmailRecovery
+                      ? "PIN recovery"
+                      : "Login PIN"}
             </p>
             <h2>
               {isPhoneWithoutPin
                 ? "Use another sign-in method"
-                : isSettingPin
-                  ? "Set PIN"
-                  : isEmailRecovery
-                    ? "Reset PIN"
-                    : "Enter PIN"}
+                : phoneRecoveryComplete
+                  ? "Save your new recovery code"
+                  : isSettingPin
+                    ? "Set PIN"
+                    : isEmailRecovery
+                      ? "Reset PIN"
+                      : "Enter PIN"}
             </h2>
           </div>
-          {isPhoneWithoutPin ? (
+          {phoneRecoveryComplete ? (
+            <>
+              <p className="shell-note">
+                Your previous recovery code has been consumed. Save this replacement before
+                continuing.
+              </p>
+              <label>
+                Replacement recovery code
+                <input value={props.generatedPhoneRecoveryCode} readOnly autoComplete="off" />
+              </label>
+              <button type="button" onClick={props.onFinishPhoneRecovery}>
+                I saved my new recovery code
+              </button>
+            </>
+          ) : isPhoneWithoutPin ? (
             <>
               <p className="shell-note">
                 Phone verification is not available. Use a passkey or another linked sign-in method
@@ -7404,8 +7541,21 @@ function LoginPanel(props: LoginPanelProps) {
                 Back to login options
               </button>
             </>
-          ) : isEmailRecovery || isSettingPin ? (
+          ) : isEmailRecovery || isPhoneRecovery || isSettingPin ? (
             <>
+              {isPhoneRecovery ? (
+                <label>
+                  Recovery code
+                  <input
+                    value={props.phoneRecoveryCodeInput}
+                    onChange={(event) =>
+                      props.onPhoneRecoveryCodeInputChange(event.target.value.toUpperCase())
+                    }
+                    autoComplete="off"
+                    placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                  />
+                </label>
+              ) : null}
               <label>
                 {isSettingPin ? "PIN" : "New PIN"}
                 <input
@@ -7436,7 +7586,8 @@ function LoginPanel(props: LoginPanelProps) {
                 type="button"
                 onClick={isSettingPin ? props.onSetMissingPin : props.onRecoverPin}
                 disabled={
-                  !props.isOtpVerified ||
+                  (!isPhoneRecovery && !props.isOtpVerified) ||
+                  (isPhoneRecovery && props.phoneRecoveryCodeInput.trim().length === 0) ||
                   !isValidPin(props.recoveryPin) ||
                   props.recoveryPin !== props.recoveryPinConfirm ||
                   props.isPinPending
@@ -7478,7 +7629,7 @@ function LoginPanel(props: LoginPanelProps) {
               >
                 {props.isLoginPending ? "Signing in…" : `Sign in with ${props.channel}`}
               </button>
-              {props.channel === "email" && props.hasLoginPin ? (
+              {props.hasLoginPin ? (
                 <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
                   Forgot PIN?
                 </button>

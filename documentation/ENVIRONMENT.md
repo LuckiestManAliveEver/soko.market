@@ -63,6 +63,10 @@ email provider, and first-shop phone capture uses no SMS or external phone-auth 
 There are no Firebase phone-auth environment variables. Owner phone parsing is local to the web and
 API packages through `libphonenumber-js`.
 
+Phone-plus-PIN signup returns a high-entropy recovery code once. The user must save it before
+continuing. Only its SHA-256 hash is persisted, successful recovery consumes and rotates the code,
+and phone recovery does not send an SMS or use an OTP provider.
+
 ## Account-deletion processors
 
 The production account-purge cron requires:

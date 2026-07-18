@@ -118,7 +118,7 @@ If you change any frontend environment variable, redeploy `soko-market-web` beca
    part of the start command because Render pre-deploy commands are unavailable on free web
    services.
 7. Open `https://api.soko.market/health/db` and confirm `database.status` is `ok` and
-   `latestMigration` is `029_owner_phone_identity.sql`.
+   `latestMigration` is `030_phone_pin_recovery_code.sql`.
 
 The Blueprint currently uses Render's free Postgres plan for testing. Render free databases expire
 after 30 days and are not appropriate for production merchant data. Change the database plan to a
@@ -130,16 +130,19 @@ Phone numbers are required identity and support attributes. They are not SMS-ver
 registration.
 
 1. Apply migration `029_owner_phone_identity.sql`.
-2. Confirm the web and API services are deployed from the same commit.
-3. Create a phone-plus-PIN account or sign in through email.
-4. Open first-shop registration and save a valid phone number.
-5. Confirm the browser sends no SMS request and proceeds to shop details.
-6. Confirm the public storefront response contains no owner phone fields.
+2. Apply migration `030_phone_pin_recovery_code.sql`.
+3. Confirm the web and API services are deployed from the same commit.
+4. Create a phone-plus-PIN account or sign in through email.
+5. Open first-shop registration and save a valid phone number.
+6. Confirm the browser sends no SMS request and proceeds to shop details.
+7. Confirm the public storefront response contains no owner phone fields.
 
 Runtime behavior:
 
 - Phone OTP request and verification routes return `403`.
 - Phone signup and normal phone login use an owner PIN.
+- Phone signup shows a high-entropy recovery code once and persists only its hash.
+- Successful recovery resets the PIN, revokes older sessions, and rotates the recovery code.
 - Email signup and recovery continue to use email verification.
 - First-shop registration stores the normalized owner phone as `unverified`.
 - Settings updates require a recently authenticated session.
