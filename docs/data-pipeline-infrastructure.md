@@ -43,12 +43,14 @@ provider is unavailable.
 
 Configure:
 
+- `MALWARE_SCANNER_ENABLED=true`
 - `MALWARE_SCANNER_URL`
 - `MALWARE_SCANNER_SECRET` with at least 32 characters
-- `REQUIRE_BINARY_UPLOAD_SECURITY=true` outside production when fail-closed scanning is desired
 
-Production defaults to fail closed. Setting `REQUIRE_BINARY_UPLOAD_SECURITY=false` is an explicit
-operational bypass. Non-local endpoints must use HTTPS.
+Scanning is opt-in and defaults to disabled. When disabled, the API logs
+`[BinaryUpload] Malware scanning disabled.` and uses a passthrough pipeline without requiring
+scanner credentials. When explicitly enabled, incomplete scanner configuration fails startup.
+Non-local endpoints must use HTTPS.
 
 The API sends a JSON `POST` containing schema version, business ID, file name, content type, byte
 length, SHA-256 checksum, and base64 content. Requests include:
@@ -69,8 +71,8 @@ Configure:
 - `OBJECT_STORAGE_SECRET` with at least 32 characters
 - `REQUIRE_OBJECT_STORAGE=true` when retained source storage is mandatory
 
-The request body and signing protocol match the malware scanner. Object storage cannot be enabled
-without malware scanning. The adapter must return `{"storageKey":"..."}` after durable storage.
+The request body and signing protocol match the malware scanner. The object-storage adapter is used
+only by the scanner-enabled pipeline. It must return `{"storageKey":"..."}` after durable storage.
 That key is saved in document-import provenance as `originalStorageKey`.
 
 Supplier and product source imports request retention. Receipt OCR and one-off extraction requests

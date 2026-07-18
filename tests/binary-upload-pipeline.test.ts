@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import {
   createBinaryUploadPipelineFromEnvironment,
@@ -7,21 +7,83 @@ import {
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 describe("binary upload security pipeline", () => {
-  it("fails closed in production when malware scanning is not configured", () => {
-    expect(() =>
-      createBinaryUploadPipelineFromEnvironment({
-        NODE_ENV: "production"
-      })
-    ).toThrow("required for secure binary uploads");
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it("does not allow object storage without malware scanning", () => {
+  it("creates the scanning pipeline when malware scanning is enabled and configured", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ status: "clean" }));
+    vi.stubGlobal("fetch", fetcher);
+    const pipeline = createBinaryUploadPipelineFromEnvironment({
+      MALWARE_SCANNER_ENABLED: "true",
+      MALWARE_SCANNER_URL: "https://scanner.example.test",
+      MALWARE_SCANNER_SECRET: "scanner-secret-with-at-least-32-characters"
+    });
+
+    const result = await pipeline.process(
+      {
+        businessId: "business-1",
+        fileName: "source.csv",
+        contentType: "text/csv",
+        bytes: Buffer.from("safe")
+      },
+      { retain: false }
+    );
+
+    expect(result).toEqual({
+      checksum: "8b3369944dd2a3fab39e32d1aeb1f763946a458ae3e6368a46432adc8f3a0860",
+      storageKey: null
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("fails startup when malware scanning is enabled with missing configuration", () => {
     expect(() =>
       createBinaryUploadPipelineFromEnvironment({
-        OBJECT_STORAGE_URL: "https://storage.example.test",
-        OBJECT_STORAGE_SECRET: "storage-secret-with-at-least-32-characters"
+        MALWARE_SCANNER_ENABLED: "true"
       })
-    ).toThrow("required for secure binary uploads");
+    ).toThrow(
+      "MALWARE_SCANNER_URL and MALWARE_SCANNER_SECRET are required when malware scanning is enabled."
+    );
+  });
+
+  it("uses a passthrough pipeline when malware scanning is disabled", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const pipeline = createBinaryUploadPipelineFromEnvironment({
+      MALWARE_SCANNER_ENABLED: "false",
+      MALWARE_SCANNER_URL: "https://scanner.example.test",
+      MALWARE_SCANNER_SECRET: "scanner-secret-with-at-least-32-characters"
+    });
+
+    const result = await pipeline.process(
+      {
+        businessId: "business-1",
+        fileName: "source.csv",
+        contentType: "text/csv",
+        bytes: Buffer.from("passthrough")
+      },
+      { retain: true }
+    );
+
+    expect(result.storageKey).toBeNull();
+    expect(result.checksum).toMatch(/^[a-f0-9]{64}$/u);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[BinaryUpload] Malware scanning disabled.");
+  });
+
+  it("boots in production when malware scanning is disabled and configuration is missing", () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    expect(() =>
+      createBinaryUploadPipelineFromEnvironment({
+        NODE_ENV: "production",
+        MALWARE_SCANNER_ENABLED: "false"
+      })
+    ).not.toThrow();
+    expect(log).toHaveBeenCalledWith("[BinaryUpload] Malware scanning disabled.");
   });
 
   it("scans and stores retained uploads through signed adapters", async () => {

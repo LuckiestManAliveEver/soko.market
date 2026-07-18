@@ -81,6 +81,8 @@ services:
         value: "1"
       - key: OCR_JOB_TIMEOUT_SECONDS
         value: "120"
+      - key: MALWARE_SCANNER_ENABLED
+        value: "false"
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY

@@ -54,9 +54,10 @@ Audit date: 2026-07-17
   `NETWORK_INVITE_WEBHOOK_SECRET`. Without them, invites remain queued.
 - Push and email providers still require their normal credentials. Failed delivery records remain
   durable and are retried while the notification runner is enabled.
-- Production binary upload routes require the signed malware scanner unless
-  `REQUIRE_BINARY_UPLOAD_SECURITY=false` is deliberately set. Retained import sources use the signed
-  object-storage adapter when configured; receipt bytes remain ephemeral.
+- Binary upload malware scanning is opt-in with `MALWARE_SCANNER_ENABLED=true`; otherwise the API
+  uses a passthrough pipeline and does not require scanner credentials. Retained import sources use
+  the signed object-storage adapter when the scanner-enabled pipeline is configured; receipt bytes
+  remain ephemeral.
 
 See [Data pipeline infrastructure](./data-pipeline-infrastructure.md) for deployment and adapter
 contracts.

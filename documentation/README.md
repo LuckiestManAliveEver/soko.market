@@ -4,6 +4,21 @@ This folder contains the planning, architecture, runtime, product, and control d
 
 Soko.market is a mobile-first, offline-capable, AI-assisted business operating system for informal and small businesses. The core product goal is to let merchants manage products, customers, invoices, payments, inventory, debt, reports, and eventually marketplace skills through a chat-first interface that still exposes clear mobile screens for confirmation and review.
 
+## Optional malware scanning
+
+Binary upload malware scanning is opt-in. The default development configuration uses a passthrough
+pipeline, so the API boots without an external scanner:
+
+```text
+MALWARE_SCANNER_ENABLED=false
+MALWARE_SCANNER_URL=
+MALWARE_SCANNER_SECRET=
+```
+
+Set `MALWARE_SCANNER_ENABLED=true` only when both scanner values are configured. The URL and secret
+are validated at startup in that mode, and uploads continue to use the signed scanning protocol
+documented in `docs/data-pipeline-infrastructure.md`.
+
 ## Document Authority
 
 When documents disagree, follow this order:

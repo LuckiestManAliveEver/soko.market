@@ -27,29 +27,42 @@ interface SignedEndpoint {
 
 export function createBinaryUploadPipelineFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env
-): BinaryUploadPipeline | undefined {
+): BinaryUploadPipeline {
+  const scannerEnabled = environment.MALWARE_SCANNER_ENABLED?.trim().toLowerCase() === "true";
+  if (!scannerEnabled) {
+    console.info("[BinaryUpload] Malware scanning disabled.");
+    return createPassthroughBinaryUploadPipeline();
+  }
+
   const scanner = readSignedEndpoint(environment, "MALWARE_SCANNER_URL", "MALWARE_SCANNER_SECRET");
-  const storage = readSignedEndpoint(environment, "OBJECT_STORAGE_URL", "OBJECT_STORAGE_SECRET");
-  const scannerRequired =
-    environment.REQUIRE_BINARY_UPLOAD_SECURITY === "true" ||
-    (environment.NODE_ENV === "production" &&
-      environment.REQUIRE_BINARY_UPLOAD_SECURITY !== "false");
-  const storageRequired = environment.REQUIRE_OBJECT_STORAGE === "true";
-  if (scanner === undefined && (scannerRequired || storage !== undefined)) {
+  if (scanner === undefined) {
     throw new Error(
-      "MALWARE_SCANNER_URL and MALWARE_SCANNER_SECRET are required for secure binary uploads."
+      "MALWARE_SCANNER_URL and MALWARE_SCANNER_SECRET are required when malware scanning is enabled."
     );
   }
+
+  const storage = readSignedEndpoint(environment, "OBJECT_STORAGE_URL", "OBJECT_STORAGE_SECRET");
+  const storageRequired = environment.REQUIRE_OBJECT_STORAGE === "true";
   if (storage === undefined && storageRequired) {
     throw new Error(
       "OBJECT_STORAGE_URL and OBJECT_STORAGE_SECRET are required when object storage is enabled."
     );
   }
-  if (scanner === undefined && storage === undefined) return undefined;
   return createHttpBinaryUploadPipeline({
-    ...(scanner === undefined ? {} : { scanner }),
+    scanner,
     ...(storage === undefined ? {} : { storage })
   });
+}
+
+export function createPassthroughBinaryUploadPipeline(): BinaryUploadPipeline {
+  return {
+    async process(input) {
+      return {
+        checksum: calculateChecksum(input.bytes),
+        storageKey: null
+      };
+    }
+  };
 }
 
 export function createHttpBinaryUploadPipeline(options: {
@@ -60,7 +73,7 @@ export function createHttpBinaryUploadPipeline(options: {
   const fetcher = options.fetcher ?? fetch;
   return {
     async process(input, processOptions) {
-      const checksum = createHash("sha256").update(input.bytes).digest("hex");
+      const checksum = calculateChecksum(input.bytes);
       const payload = {
         schemaVersion: 1,
         businessId: input.businessId,
@@ -118,6 +131,10 @@ export function createHttpBinaryUploadPipeline(options: {
       return { checksum, storageKey: result.storageKey };
     }
   };
+}
+
+function calculateChecksum(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function readSignedEndpoint(

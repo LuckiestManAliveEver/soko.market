@@ -41,6 +41,19 @@ pnpm dev:stack:down
 - Business-changing feature switches must be explicit and auditable.
 - AI or model provider configuration must remain outside business-core packages.
 
+## Binary upload malware scanning
+
+Malware scanning is disabled by default so a local API can boot without an external scanner:
+
+```text
+MALWARE_SCANNER_ENABLED=false
+MALWARE_SCANNER_URL=
+MALWARE_SCANNER_SECRET=
+```
+
+When `MALWARE_SCANNER_ENABLED=true`, both the scanner URL and a secret of at least 32 characters are
+required. With scanning disabled, binary uploads use the local passthrough pipeline.
+
 ## Authentication channels
 
 Social OAuth login is disabled in the frontend and API, so OAuth client credentials are not
