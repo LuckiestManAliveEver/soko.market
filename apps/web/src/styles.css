@@ -2638,19 +2638,56 @@ button:disabled {
   width: fit-content;
 }
 
-.generated-card-grid button {
+.generated-card {
+  flex: 0 1 clamp(132px, 24vw, 178px);
+  min-width: 0;
+  position: relative;
+}
+
+.generated-card-button {
   align-content: start;
   background: #ffffff;
   border: 1px solid #dbe4dc;
   border-radius: 8px;
   color: #17211b;
   display: grid;
-  flex: 0 1 clamp(132px, 24vw, 178px);
   gap: 6px;
+  height: 100%;
   min-height: 86px;
   min-width: 0;
   padding: 10px;
   text-align: left;
+  width: 100%;
+}
+
+.generated-card:has(.generated-card-close) .generated-card-button {
+  padding-right: 48px;
+}
+
+.generated-card-grid .generated-card-close {
+  align-content: center;
+  align-items: center;
+  background: #eef2f6;
+  border: 1px solid #cbd6ce;
+  border-radius: 999px;
+  color: #23342a;
+  display: inline-flex;
+  font-size: 18px;
+  height: 40px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0;
+  position: absolute;
+  right: 5px;
+  text-align: center;
+  top: 5px;
+  width: 40px;
+  z-index: 1;
+}
+
+.generated-card-grid .generated-card-close:hover,
+.generated-card-grid .generated-card-close:focus-visible {
+  background: #dfe8e2;
 }
 
 .generated-card-grid span {
@@ -4381,8 +4418,11 @@ details.nested-form-section summary {
     width: 100%;
   }
 
-  .generated-card-grid button {
-    flex: initial;
+  .generated-card {
+    width: 100%;
+  }
+
+  .generated-card-button {
     min-height: 76px;
   }
 

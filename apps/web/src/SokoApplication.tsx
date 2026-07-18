@@ -3341,10 +3341,47 @@ export function OwnerApp() {
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
       localStorage.removeItem(setupDraftStorageKey);
       await refreshSession();
+      await createInitialOwnerControlsMessage(nextBusiness.id);
       setView("chat");
       setStatusMessage("Business ready. Seller controls are now active.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createInitialOwnerControlsMessage(shopId: string) {
+    try {
+      let response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+      let conversationId =
+        response.conversations.find(
+          (conversation) =>
+            conversation.kind === "personal" &&
+            (conversation.activeShopId === shopId || conversation.activeShopId === null)
+        )?.id ?? null;
+
+      if (conversationId === null) {
+        const created = await postJson<ConversationView>("/v1/conversations", {
+          kind: "personal",
+          activeShopId: shopId,
+          title: "Soko agent"
+        });
+        conversationId = created.conversation.id;
+        response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+        setConversationInbox(response.conversations);
+      }
+
+      await postJson<ConversationMessageSummary>("/v1/messages", {
+        conversationId,
+        clientMessageId: `shop-welcome-owner-controls-${shopId}`,
+        author: "agent",
+        content: { type: "owner-controls", shopId },
+        clientTimestamp: new Date().toISOString()
+      });
+      setActiveConversationId(conversationId);
+      await loadConversationThread(conversationId);
+    } catch {
+      // Shop creation remains successful if messaging is temporarily unavailable.
+      // The idempotent client message ID allows a later retry without duplicates.
     }
   }
 
@@ -6545,6 +6582,7 @@ export function OwnerApp() {
             <ChatSurface
               activeView={view}
               agent={agentSettings}
+              businessId={business?.id ?? null}
               businessName={business?.name ?? "Your shop"}
               hasBusiness={business !== null}
               chatDraft={chatDraft}
@@ -6625,6 +6663,7 @@ export function OwnerApp() {
               }
               onRetryMessages={() => void runAction("message-retry", retryQueuedMessages)}
               onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
+              onOpenWorkspace={() => setIsWorkspacePanelOpen(true)}
               onNavigate={navigateToView}
               onModeChange={switchMode}
               onProductEdit={(product) => {
@@ -13314,7 +13353,7 @@ function AgentProfileSurface({
               </span>
             </div>
           </div>
-          <div className="connected-social-list" aria-label="Passkeys">
+          <div className="connected-social-list" role="group" aria-label="Passkeys">
             {passkeys.map((passkey) => (
               <article className="connected-social-card" key={passkey.id}>
                 <div>
@@ -14137,6 +14176,7 @@ interface ChatSurfaceProps {
   activeConversationId: string | null;
   activeView: ShellView;
   agent: AgentSettings;
+  businessId: string | null;
   businessName: string;
   hasBusiness: boolean;
   chatDraft: string;
@@ -14192,6 +14232,7 @@ interface ChatSurfaceProps {
   onForwardMessage: (messageId: string, conversationId: string) => void;
   onRetryMessages: () => void;
   onNavigate: (view: ShellView) => void;
+  onOpenWorkspace: () => void;
   onModeChange: (mode: SokoMode) => void;
   onOpenAgentProfile: () => void;
   onCompleteMarketplaceIntro: () => void;
@@ -14218,6 +14259,7 @@ function ChatSurface({
   activeConversationId,
   activeView,
   agent,
+  businessId,
   businessName,
   hasBusiness,
   chatDraft,
@@ -14270,6 +14312,7 @@ function ChatSurface({
   onForwardMessage,
   onRetryMessages,
   onNavigate,
+  onOpenWorkspace,
   onModeChange,
   onOpenAgentProfile,
   onCompleteMarketplaceIntro,
@@ -14567,6 +14610,30 @@ function ChatSurface({
                   <small className="message-context">Forwarded</small>
                 ) : null}
                 <p className={message.deletedAt ? "deleted-message" : undefined}>{message.body}</p>
+                {message.businessCards !== undefined &&
+                message.businessCards.shopId === businessId ? (
+                  <ContextualBusinessCards
+                    productCount={productCount}
+                    customerCount={customerCount}
+                    invoiceCount={invoiceCount}
+                    notificationCount={notificationCount}
+                    report={report}
+                    syncSummary={syncSummary}
+                    onOpenCatalogue={() => {
+                      setWorkspaceCardView("catalogue");
+                      onOpenWorkspace();
+                    }}
+                    onOpenNetworkSync={() => {
+                      setWorkspaceCardView("networkSync");
+                      onOpenWorkspace();
+                    }}
+                    onPreviewStorefront={() => {
+                      setWorkspaceCardView("storefrontPreview");
+                      onOpenWorkspace();
+                    }}
+                    onNavigate={onNavigate}
+                  />
+                ) : null}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
                     <button type="button" onClick={onSignUp}>
@@ -14798,78 +14865,6 @@ function ChatSurface({
               {children}
             </section>
           ) : null}
-          {activeView === "chat" && mode === "seller" ? (
-            workspaceCardView === "cards" ? (
-              <ContextualBusinessCards
-                productCount={productCount}
-                customerCount={customerCount}
-                invoiceCount={invoiceCount}
-                notificationCount={notificationCount}
-                report={report}
-                syncSummary={syncSummary}
-                onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
-                onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
-                onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
-                onNavigate={onNavigate}
-              />
-            ) : workspaceCardView === "networkSync" ? (
-              <NetworkSyncNestedCard
-                graph={networkGraph}
-                oauthProviders={oauthProviders}
-                oauthProvidersLoaded={oauthProvidersLoaded}
-                onBack={() => setWorkspaceCardView("cards")}
-                onDisconnectSource={onNetworkDisconnectSource}
-                onOAuthProvider={onNetworkProviderOAuth}
-                onPhoneContactsSync={onNetworkPhoneContactsSync}
-                onInviteContacts={onNetworkInviteContacts}
-                onRefresh={onNetworkRefresh}
-              />
-            ) : workspaceCardView === "storefrontPreview" ? (
-              <StorefrontPreviewCard
-                businessName={businessName}
-                products={products}
-                sokoId={sokoId}
-                onBack={() => setWorkspaceCardView("cards")}
-                onOpenProfile={onOpenAgentProfile}
-                onAddToOrder={(product) =>
-                  onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
-                }
-                onSell={() => onModeChange("marketplace")}
-                onMessage={() => onDraftChange(`Hello ${businessName}, `)}
-              />
-            ) : (
-              <CatalogueNestedCard
-                form={productForm}
-                fields={productFields}
-                products={products}
-                view={workspaceCardView}
-                onBack={() =>
-                  setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
-                }
-                onChangeForm={onProductFormChange}
-                onDeleteProduct={onProductRemove}
-                onEditProduct={onProductEdit}
-                onOpenAdd={() => {
-                  onProductReset();
-                  setWorkspaceCardView("addProduct");
-                }}
-                onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
-                onOpenEdit={() => {
-                  if (products[0] !== undefined) onProductEdit(products[0]);
-                  setWorkspaceCardView("editProduct");
-                }}
-                onOpenFields={() => setWorkspaceCardView("manageFields")}
-                onOpenProduct={(product) => {
-                  onProductEdit(product);
-                  setWorkspaceCardView("editProduct");
-                }}
-                onSaveFields={onProductFieldsSave}
-                onSaveProduct={async () => {
-                  if (await onProductSave()) setWorkspaceCardView("catalogue");
-                }}
-              />
-            )
-          ) : null}
         </div>
         {workspaceOpen ? (
           <div className="workspace-panel-backdrop" role="presentation">
@@ -14884,7 +14879,7 @@ function ChatSurface({
               <div className="workspace-panel-heading">
                 <h2>{workspacePanelTitle(workspaceCardView)}</h2>
                 <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
-                  x
+                  ×
                 </button>
               </div>
               {workspaceCardView === "cards" ? (
@@ -17058,6 +17053,9 @@ function mapConversationMessage(
         : message.content.type === "encrypted"
           ? (decrypted?.text ?? "Encrypted message unavailable on this device")
           : conversationMessageText(message),
+    ...(message.content.type === "owner-controls"
+      ? { businessCards: { shopId: message.content.shopId } }
+      : {}),
     ...((message.content.type === "text" && message.content.attachments?.length) ||
     (message.content.type === "encrypted" && decrypted?.attachments.length)
       ? {

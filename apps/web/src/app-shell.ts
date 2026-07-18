@@ -38,6 +38,9 @@ export interface ChatMessage {
   author: "merchant" | "sokoclaw" | "contact";
   authorLabel?: string;
   body: string;
+  businessCards?: {
+    shopId: string;
+  };
   attachments?: ChatAttachment[];
   confirmationToken?: string;
   createdAt?: string;

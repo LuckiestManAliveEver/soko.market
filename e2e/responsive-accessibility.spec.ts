@@ -47,7 +47,7 @@ test("central navigation preserves marketplace, settings, and browser back behav
   await expect(page).toHaveURL(/\/settings$/);
 });
 
-test("workspace dialog traps a useful action, reports unavailable cards, and closes with Escape", async ({
+test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
   page
 }) => {
   await page.goto("/sell");
@@ -55,11 +55,62 @@ test("workspace dialog traps a useful action, reports unavailable cards, and clo
   await workspaceButton.click();
   const dialog = page.getByRole("dialog", { name: "Workspace cards" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: /\+ Add card/ }).click();
-  await expect(page.getByRole("status")).toContainText("This feature is not available yet.");
+  await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
+  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Restore workspace cards" }).click();
+  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(workspaceButton).toBeFocused();
+});
+
+test("existing shops keep cards out of the chat until the launcher opens them", async ({
+  page
+}) => {
+  await page.goto("/sell");
+  await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
+
+  const launcher = page.getByRole("button", { name: "Workspace", exact: true });
+  await launcher.click();
+  const dialog = page.getByRole("dialog", { name: "Workspace cards" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("section.generated-card-message")).toHaveCount(1);
+
+  await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
+  await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
+  await expect(dialog.locator(".generated-card-close")).toHaveCount(9);
+
+  await dialog.getByRole("button", { name: "Close workspace" }).click();
+  await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
+  await expect(launcher).toBeFocused();
+
+  await launcher.click();
+  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("Cards are closed and chat still works.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(composer).toHaveValue("");
+  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
+});
+
+test("persisted owner-control cards stay attached to their historical message", async ({
+  page
+}) => {
+  await page.setExtraHTTPHeaders({ "x-soko-test-owner-controls": "true" });
+  await page.goto("/sell");
+  const historicalMessage = page
+    .locator("article.message")
+    .filter({ hasText: "Shared owner controls" });
+  await expect(historicalMessage).toHaveCount(1);
+  await expect(historicalMessage.locator("section.generated-card-message")).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
+
+  await historicalMessage.getByRole("button", { name: "Close Catalogue card" }).click();
+  await expect(
+    historicalMessage.getByRole("button", { name: "Catalogue", exact: true })
+  ).toHaveCount(0);
 });
 
 test("account deletion requires DELETE, PIN, acknowledgement, and signs out", async ({ page }) => {
@@ -126,7 +177,7 @@ test("messaging inbox and thread adapt across phone and desktop screens", async 
     await page.setViewportSize(viewport);
     await page.goto("/");
     if (viewport.width < 760) {
-      await page.getByRole("button", { name: "Conversations" }).click();
+      await page.getByRole("button", { name: "Messages", exact: true }).click();
     }
     await expect(page.getByRole("heading", { name: "Messages" })).toBeVisible();
     await page.getByRole("button", { name: /Delivery coordination/ }).click();
@@ -387,7 +438,11 @@ async function installApiMocks(page: Page): Promise<void> {
       return json({ conversations: [mockConversationInbox] });
     }
     if (path === "/v1/conversations/responsive-conversation" && method === "GET") {
-      return json(mockConversationView);
+      return json(
+        route.request().headers()["x-soko-test-owner-controls"] === "true"
+          ? mockOwnerControlsConversationView
+          : mockConversationView
+      );
     }
     if (path === "/v1/conversations/responsive-conversation" && method === "PATCH") {
       return json(mockConversationView);
@@ -467,6 +522,13 @@ const mockMessage = {
   createdAt: "2026-07-15T12:00:00.000Z"
 };
 
+const mockOwnerControlsMessage = {
+  ...mockMessage,
+  id: "responsive-owner-controls-message",
+  clientMessageId: "responsive-owner-controls-client-message",
+  content: { type: "owner-controls", shopId: "responsive-certification-shop" }
+};
+
 const mockParticipant = {
   id: "responsive-participant",
   conversationId: "responsive-conversation",
@@ -500,6 +562,11 @@ const mockConversationView = {
   participants: [mockParticipant],
   messages: [mockMessage],
   typing: []
+};
+
+const mockOwnerControlsConversationView = {
+  ...mockConversationView,
+  messages: [mockOwnerControlsMessage]
 };
 
 const modelCatalog = [
