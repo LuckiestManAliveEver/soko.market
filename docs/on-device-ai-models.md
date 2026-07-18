@@ -18,8 +18,14 @@ a failed transfer. No model weights pass through the Soko API.
 
 The agent AI model dropdown separates models that are installed on the current phone from catalog
 models that still require a download. A catalog model cannot be activated until its GGUF weights
-are present in private device storage. Completing a download installs and selects that model; the
-merchant then saves the agent settings to activate it.
+are present in private device storage. Completing a download installs and selects that model in
+the library; the merchant then saves the agent settings.
+
+Browser storage is not an inference runtime. The current web/PWA build does not execute a GGUF file
+directly from origin-private storage. Processing a message with a downloaded model still requires
+the API operator to connect a llama.cpp-compatible server with `LOCAL_MODEL_ENABLED=true`. If the
+selected model has no configured provider, the message is handled by the deterministic runtime and
+the interface reports that model fallback explicitly.
 
 SmolLM2 360M and Qwen2.5 0.5B are also embedded as catalog metadata in the web client, so a
 temporary API/catalog outage does not make the default choices disappear. The “Install offline
@@ -49,6 +55,10 @@ Render declares `GITHUB_TOKEN` as a secret environment value for the API service
 The “Built-in and hosted” selector also exposes the configured llama.cpp runtime. A loopback
 `LOCAL_MODEL_ENDPOINT` is labeled built-in; a remote endpoint is labeled hosted. The option is
 enabled only when `LOCAL_MODEL_ENABLED=true`, so it never advertises an unavailable runtime.
+
+Hosted OpenAI profiles are enabled when the API has `OPENAI_API_KEY`. They are processed through
+the OpenAI Responses API and can be configured with `OPENAI_FAST_MODEL` and
+`OPENAI_REASONING_MODEL`.
 
 The phone ranks compatible Hugging Face and GitHub candidates using reported RAM, free private
 storage, model size, useful capabilities, and catalog recommendations. An install remains a

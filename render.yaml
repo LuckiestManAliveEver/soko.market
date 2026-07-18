@@ -75,6 +75,12 @@ services:
         sync: false
       - key: LOCAL_MODEL_PROFILE
         value: tinyllama-1.1b-chat-q4-k-m-android
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_FAST_MODEL
+        value: gpt-5-mini
+      - key: OPENAI_REASONING_MODEL
+        value: gpt-5.2
       - key: OCR_WORKER_URL
         sync: false
       - key: OCR_CONCURRENCY

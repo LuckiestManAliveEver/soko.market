@@ -1,4 +1,7 @@
-import { createLlamaCppRuntimeModelProvider } from "@soko/ai-runtime";
+import {
+  createLlamaCppRuntimeModelProvider,
+  createOpenAiRuntimeModelProvider
+} from "@soko/ai-runtime";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import {
@@ -28,6 +31,32 @@ const runtimeModelProvider = config.localModelEnabled
       timeoutMs: config.localModelTimeoutMs
     })
   : undefined;
+const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
+const openAiFastProvider =
+  openAiApiKey.length === 0
+    ? undefined
+    : createOpenAiRuntimeModelProvider({
+        apiKey: openAiApiKey,
+        model: process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini",
+        maxOutputTokens: 256,
+        reasoningEffort: "minimal",
+        timeoutMs: 15_000
+      });
+const openAiReasoningProvider =
+  openAiApiKey.length === 0
+    ? undefined
+    : createOpenAiRuntimeModelProvider({
+        apiKey: openAiApiKey,
+        model: process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2",
+        maxOutputTokens: 512,
+        reasoningEffort: "medium",
+        timeoutMs: 30_000
+      });
+const runtimeModelProviderResolver = (modelId: string) => {
+  if (modelId === "openai-fast") return openAiFastProvider;
+  if (modelId === "openai-reasoning") return openAiReasoningProvider;
+  return runtimeModelProvider;
+};
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
 const webPushConfiguration = readWebPushConfiguration();
@@ -48,6 +77,7 @@ const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
   ...(runtimeModelProvider === undefined ? {} : { runtimeModelProvider }),
+  runtimeModelProviderResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),

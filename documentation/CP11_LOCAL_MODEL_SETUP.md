@@ -4,6 +4,8 @@ CP11 supports a llama.cpp-compatible local model adapter behind the CP10 runtime
 
 The browser model library can predownload curated GGUF weights into Android origin-private storage.
 API operators still place the model served by their llama.cpp endpoint outside this repository.
+The browser download is storage preparation only; the current PWA does not execute the GGUF file
+itself.
 
 ## Android 2GB Profile
 
@@ -71,6 +73,20 @@ A loopback endpoint is shown as a built-in llama.cpp option. A non-loopback endp
 hosted. Both use the same bounded runtime contract, and the option remains disabled unless
 `LOCAL_MODEL_ENABLED=true`.
 
+## Hosted OpenAI Models
+
+The `openai-fast` and `openai-reasoning` agent profiles use the OpenAI Responses API. Enable them
+on the API service with:
+
+```text
+OPENAI_API_KEY=...
+OPENAI_FAST_MODEL=gpt-5-mini
+OPENAI_REASONING_MODEL=gpt-5.2
+```
+
+The API key remains server-side. `OPENAI_FAST_MODEL` and `OPENAI_REASONING_MODEL` are optional and
+allow operators to change the concrete model behind each stable Soko profile.
+
 ## Output Contract
 
 The local model must return only one JSON object in `content`.
@@ -93,7 +109,10 @@ Read-only response:
 { "type": "response", "message": "I can help with products, invoices, payments, and imports." }
 ```
 
-Unsupported tools, malformed JSON, timeouts, unavailable adapters, and empty completions fall back to deterministic CP10 runtime behavior.
+Unsupported tools, malformed JSON, timeouts, unavailable adapters, and empty completions fall back
+to deterministic CP10 runtime behavior. The runtime response includes the selected provider status
+and an error code; the messaging interface surfaces that fallback instead of implying that the
+model processed the message.
 
 ## Safety Boundaries
 

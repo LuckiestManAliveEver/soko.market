@@ -264,6 +264,9 @@ export async function createPostgresCp2Store(
     ...(options.runtimeModelProvider === undefined
       ? {}
       : { runtimeModelProvider: options.runtimeModelProvider }),
+    ...(options.runtimeModelProviderResolver === undefined
+      ? {}
+      : { runtimeModelProviderResolver: options.runtimeModelProviderResolver }),
     ...(options.pushNotificationSender === undefined
       ? {}
       : { pushNotificationSender: options.pushNotificationSender }),

@@ -1987,7 +1987,7 @@ export interface RuntimeContextSummary {
   knowledgeFactCount: number;
 }
 
-export type RuntimeModelProviderName = "llama.cpp" | "test";
+export type RuntimeModelProviderName = "llama.cpp" | "openai" | "test";
 
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";

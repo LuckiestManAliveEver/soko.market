@@ -1124,6 +1124,12 @@ interface RuntimeTurnResult {
   turn: {
     status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
     response: string;
+    model: {
+      provider: "llama.cpp" | "openai" | "test" | null;
+      status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
+      fallbackUsed: boolean;
+      errorCode: string | null;
+    } | null;
     plan: {
       toolName: string;
       confirmationToken: string | null;
@@ -5735,7 +5741,7 @@ export function OwnerApp() {
       }
 
       await loadRuntimeSessions(business.id);
-      setStatusMessage(`Runtime ${result.turn.status.replace("_", " ")}`);
+      setStatusMessage(formatRuntimeTurnStatus(result));
     } catch (error) {
       const parserReply = createLocalParserReply(agentRequest);
       await appendAgentMessage(parserReply.body);
@@ -17773,6 +17779,23 @@ function createAgentRuntimeProfile(agent: AgentSettings): AgentRuntimeProfile {
     instructions: agent.instructions,
     tools: agent.tools
   };
+}
+
+function formatRuntimeTurnStatus(result: RuntimeTurnResult): string {
+  const runtimeStatus = result.turn.status.replace("_", " ");
+  const model = result.turn.model;
+
+  if (model === null) {
+    return `Runtime ${runtimeStatus}`;
+  }
+  if (model.fallbackUsed) {
+    const reason =
+      model.errorCode === "model_provider_unconfigured"
+        ? "selected model has no configured inference provider"
+        : `model ${model.status}`;
+    return `Model fallback: ${reason}. Deterministic runtime ${runtimeStatus}.`;
+  }
+  return `${model.provider ?? "Agent"} model processed · Runtime ${runtimeStatus}`;
 }
 
 function createAgentRuntimeDecision(input: {

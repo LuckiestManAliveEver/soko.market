@@ -5,6 +5,10 @@ export {
   createLlamaCppRuntimeModelProvider,
   type LlamaCppRuntimeModelOptions
 } from "./local-model.js";
+export {
+  createOpenAiRuntimeModelProvider,
+  type OpenAiRuntimeModelOptions
+} from "./openai-model.js";
 
 export function buildAiRuntime() {
   const app = Fastify({

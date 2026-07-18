@@ -7,7 +7,8 @@ import type {
 import { parseRuntimeModelOutput } from "../packages/tool-core/src";
 import {
   buildLlamaPrompt,
-  createLlamaCppRuntimeModelProvider
+  createLlamaCppRuntimeModelProvider,
+  createOpenAiRuntimeModelProvider
 } from "../services/ai-runtime/src/app";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
@@ -132,6 +133,126 @@ describe("CP11 local model adapter", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("processes hosted agent turns through the OpenAI Responses API", async () => {
+    const previousFetch = globalThis.fetch;
+    let request: {
+      url: string;
+      authorization: string | null;
+      body: Record<string, unknown>;
+    } | null = null;
+    globalThis.fetch = async (input, init) => {
+      request = {
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>
+      };
+      return new Response(
+        JSON.stringify({
+          output: [
+            {
+              type: "message",
+              content: [
+                {
+                  type: "output_text",
+                  text: JSON.stringify({
+                    type: "tool",
+                    toolName: "products.list",
+                    input: {},
+                    reason: "List products through the hosted model."
+                  })
+                }
+              ]
+            }
+          ]
+        }),
+        {
+          headers: { "content-type": "application/json" },
+          status: 200
+        }
+      );
+    };
+
+    try {
+      const provider = createOpenAiRuntimeModelProvider({
+        apiKey: "test-openai-key",
+        model: "gpt-test",
+        maxOutputTokens: 128,
+        reasoningEffort: "minimal",
+        timeoutMs: 8_000
+      });
+      const completion = await provider.complete(emptyRuntimePrompt("show products"));
+
+      expect(request).toMatchObject({
+        url: "https://api.openai.com/v1/responses",
+        authorization: "Bearer test-openai-key",
+        body: {
+          model: "gpt-test",
+          max_output_tokens: 128,
+          reasoning: { effort: "minimal" },
+          store: false
+        }
+      });
+      expect((request as { body: { input: string } } | null)?.body.input).toContain(
+        'User message: "show products"'
+      );
+      expect(completion).toMatchObject({
+        provider: "openai",
+        status: "available",
+        metadata: {
+          endpointHost: "api.openai.com",
+          model: "gpt-test"
+        }
+      });
+      expect(parseRuntimeModelOutput(completion.outputText ?? "")).toMatchObject({
+        ok: true,
+        output: {
+          kind: "tool",
+          proposal: { toolName: "products.list" }
+        }
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("reports an explicit fallback when the active model has no inference provider", async () => {
+    let selectedModelId: string | null = null;
+    const store = createCp2Store({
+      runtimeModelProviderResolver: (modelId) => {
+        selectedModelId = modelId;
+        return undefined;
+      }
+    });
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const turn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        message: "open products"
+      },
+      sessionCookie
+    );
+
+    expect(selectedModelId).toBe("qwen2.5-0.5b-android");
+    expect(turn.turn).toMatchObject({
+      status: "completed",
+      model: {
+        provider: null,
+        status: "disabled",
+        fallbackUsed: true,
+        outputKind: null,
+        errorCode: "model_provider_unconfigured"
+      },
+      plan: {
+        toolName: "products.list"
+      }
+    });
+
+    await app.close();
   });
 
   it("builds llama.cpp prompts with bounded context and no business record names", async () => {

@@ -643,6 +643,7 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
+  runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
   networkInviteSender?: NetworkInviteSender;
@@ -7888,12 +7889,14 @@ export class Cp2Store {
             agentProfile === undefined
               ? {
                   message: input.message,
+                  modelId: activeModelId,
                   context,
                   now,
                   appendTelemetry
                 }
               : {
                   message: input.message,
+                  modelId: activeModelId,
                   context,
                   now,
                   appendTelemetry,
@@ -12814,6 +12817,7 @@ export class Cp2Store {
   private async createRuntimeModelRoute(input: {
     agentProfile?: RuntimeAgentProfile;
     message: string;
+    modelId: string;
     context: RuntimeContextSummary;
     now: Date;
     appendTelemetry: (
@@ -12827,12 +12831,22 @@ export class Cp2Store {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
-    const provider = this.options.runtimeModelProvider;
+    const provider =
+      this.options.runtimeModelProviderResolver === undefined
+        ? this.options.runtimeModelProvider
+        : this.options.runtimeModelProviderResolver(input.modelId);
 
     if (provider === undefined) {
       return {
         proposal: null,
-        trace: null
+        trace: {
+          provider: null,
+          status: "disabled",
+          durationMs: null,
+          fallbackUsed: true,
+          outputKind: null,
+          errorCode: "model_provider_unconfigured"
+        }
       };
     }
 
@@ -12843,7 +12857,7 @@ export class Cp2Store {
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
       allowedToolCount: prompt.allowedTools.length,
-      modelProfile: input.agentProfile?.model ?? null,
+      modelProfile: input.modelId,
       messageLength: input.message.trim().length,
       productCount: input.context.productCount,
       invoiceCount: input.context.invoiceCount
