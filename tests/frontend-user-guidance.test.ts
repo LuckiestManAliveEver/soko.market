@@ -175,7 +175,7 @@ describe("frontend user guidance", () => {
     expect(loginPanel).toContain("Sign in with");
   });
 
-  it("keeps OTP in account verification and removes it from first-shop registration", () => {
+  it("keeps account verification separate from authenticated first-shop registration", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const accountSetup = application.slice(
@@ -198,13 +198,18 @@ describe("frontend user guidance", () => {
     expect(accountSetup).toContain("Account signup");
     expect(accountSetup).toContain('autoComplete="one-time-code"');
     expect(accountSetup).toContain("Finish signup");
-    expect(shopSetup).toContain("No OTP is required");
+    expect(shopSetup).toContain("Create your shop once using your signed-in account");
+    expect(shopSetup).not.toContain("OTP");
     expect(shopSetup).not.toContain('autoComplete="one-time-code"');
     expect(completeSignup).not.toContain("!isOtpVerified");
     expect(completeSignup).toContain("setIsBusinessSetupOpen(false)");
     expect(switchMode).toContain("Sign up or log in from the welcome message");
-    expect(authRoutes).toContain("rejectShopRegistrationOtp(request.body)");
-    expect(authRoutes).toContain('"shop_otp_not_supported"');
+    const createBusinessRoute = authRoutes.slice(
+      authRoutes.indexOf('app.post("/businesses"'),
+      authRoutes.indexOf('app.post("/roles/check"')
+    );
+    expect(createBusinessRoute).not.toContain("otp");
+    expect(createBusinessRoute).not.toContain("challengeId");
   });
 
   it("shows Sign up and Log in actions in the first greeting", () => {

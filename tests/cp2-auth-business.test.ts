@@ -253,28 +253,7 @@ describe("CP2 auth and business creation", () => {
       code: otpResponse.devOtp
     });
     const sessionCookie = `soko_session=${invalidRole.session.id}`;
-    const businessWithLegacyOtp = await app.inject({
-      method: "POST",
-      url: "/businesses",
-      headers: {
-        ...jsonHeaders(),
-        cookie: sessionCookie
-      },
-      payload: JSON.stringify({
-        name: "Legacy OTP Shop",
-        language: "en",
-        challengeId: otpResponse.challengeId,
-        otp: otpResponse.devOtp
-      })
-    });
-
-    expect(businessWithLegacyOtp.statusCode).toBe(400);
-    expect(businessWithLegacyOtp.json()).toMatchObject({
-      code: "shop_otp_not_supported",
-      message: expect.stringContaining("Shop registration does not use OTP verification")
-    });
-
-    const businessWithoutOtp = await app.inject({
+    const createdBusiness = await app.inject({
       method: "POST",
       url: "/businesses",
       headers: {
@@ -287,7 +266,7 @@ describe("CP2 auth and business creation", () => {
       })
     });
 
-    expect(businessWithoutOtp.statusCode).toBe(200);
+    expect(createdBusiness.statusCode).toBe(200);
 
     const roleResponse = await app.inject({
       method: "POST",

@@ -4753,7 +4753,7 @@ export function OwnerApp() {
 
       setChannel("email");
       setIsBusinessSetupOpen(true);
-      setStatusMessage("Set up your business to start selling. No OTP is required.");
+      setStatusMessage("Set up your business to start selling.");
       return;
     }
 
@@ -6885,9 +6885,7 @@ function SetupPanel(props: SetupPanelProps) {
           <div className="section-heading">
             <p className="eyebrow">Account security</p>
             <h2>Create your owner PIN</h2>
-            <p>
-              Finish signup now. Shop registration is separate and will not request another OTP.
-            </p>
+            <p>Finish signup now. You can create your shop when you are ready.</p>
           </div>
           <label>
             PIN
@@ -6964,8 +6962,7 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
           <p className="eyebrow">Start selling</p>
           <h2>Set up your business</h2>
           <p>
-            Create your shop once using your signed-in account. No OTP is required, and you can
-            update these details later.
+            Create your shop once using your signed-in account. You can update these details later.
           </p>
         </div>
         <label>
