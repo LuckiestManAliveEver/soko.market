@@ -2640,12 +2640,10 @@ export function OwnerApp() {
   }
 
   async function requestOtp() {
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    const contactValue = destination.trim().toLowerCase();
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    if (!isValidContact("email", contactValue)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
@@ -2654,33 +2652,6 @@ export function OwnerApp() {
     setOtp("");
 
     try {
-      if (channel === "phone") {
-        if (!firebasePhoneAuthConfigured) {
-          throw new Error("Firebase phone authentication is not configured for this website.");
-        }
-
-        const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-          method: "phone",
-          contact: contactValue,
-          deliveryChannel: "sms",
-          purpose: "signup"
-        });
-
-        if (phoneRecaptchaRef.current === null) {
-          throw new Error("Phone verification is unavailable right now.");
-        }
-
-        const confirmationResult = await sendFirebasePhoneOtp(
-          contactValue,
-          phoneRecaptchaRef.current
-        );
-        setChallenge(response);
-        setPhoneConfirmationResult(confirmationResult);
-        setIsOtpVerified(false);
-        setStatusMessage(`Verification code sent to ${response.destination}`);
-        return;
-      }
-
       const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
         method: "email",
         contact: contactValue,
@@ -2702,37 +2673,20 @@ export function OwnerApp() {
       return;
     }
 
-    const contactValue = composeSignupContact(channel, countryCode, destination);
+    const contactValue = destination.trim().toLowerCase();
 
-    if (!isSignupContactValid(channel, countryCode, destination)) {
-      setStatusMessage(
-        channel === "email" ? "Enter a valid email address" : "Enter a valid phone number"
-      );
+    if (!isValidContact("email", contactValue)) {
+      setStatusMessage("Enter a valid email address");
       return;
     }
 
     try {
-      const response =
-        channel === "phone"
-          ? await (async () => {
-              if (phoneConfirmationResult === null) {
-                throw new Error("Request a phone verification code first.");
-              }
-              const userCredential = await phoneConfirmationResult.confirm(otp);
-              const firebaseIdToken = await userCredential.user.getIdToken(true);
-              return postJson<SessionResponse>("/auth/otp/verify", {
-                method: "phone",
-                contact: contactValue,
-                challengeId: challenge.challengeId,
-                firebaseIdToken
-              });
-            })()
-          : await postJson<SessionResponse>("/auth/otp/verify", {
-              method: "email",
-              contact: contactValue,
-              challengeId: challenge.challengeId,
-              otp
-            });
+      const response = await postJson<SessionResponse>("/auth/otp/verify", {
+        method: "email",
+        contact: contactValue,
+        challengeId: challenge.challengeId,
+        otp
+      });
       setSession(response);
       setIsOtpVerified(true);
       setPhoneConfirmationResult(null);
@@ -2758,9 +2712,49 @@ export function OwnerApp() {
         return;
       }
 
-      setStatusMessage(
-        `${channel === "email" ? "Email" : "Phone"} verified. Add a passkey and create your login PIN.`
-      );
+      setStatusMessage("Email verified. Add a passkey and create your login PIN.");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function signupWithPhonePin() {
+    const contactValue = composeSignupContact("phone", countryCode, destination);
+
+    if (!isSignupContactValid("phone", countryCode, destination)) {
+      setStatusMessage("Enter a valid phone number");
+      return;
+    }
+
+    if (!isValidPin(signupPin) || signupPin !== signupPinConfirm) {
+      setStatusMessage("Enter and confirm a 4-digit PIN");
+      return;
+    }
+
+    try {
+      const response = await postJson<SessionResponse>("/auth/pin/signup", {
+        method: "phone",
+        contact: contactValue,
+        pin: signupPin
+      });
+      const nextOwnerAuth: OwnerAuthRecord = {
+        contact: response.account.primaryAuthDestination,
+        countryCode: inferCountryCode(response.account.primaryAuthDestination) ?? countryCode,
+        pinSet: true
+      };
+      setSession(response);
+      setOwnerAuth(nextOwnerAuth);
+      setHasLoginPin(true);
+      setIsWorkspaceUnlocked(true);
+      setSignupPin("");
+      setSignupPinConfirm("");
+      setMode("marketplace");
+      setView("chat");
+      setIsSignupOpen(false);
+      setIsBusinessSetupOpen(false);
+      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+      localStorage.removeItem(setupDraftStorageKey);
+      setStatusMessage("Phone account created. Tap Sell when you are ready to register your shop.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -6298,7 +6292,6 @@ export function OwnerApp() {
 
         {shouldShowSignup ? (
           <SetupPanel
-            channel={channel}
             countryCode={countryCode}
             destination={destination}
             challenge={challenge}
@@ -6310,6 +6303,7 @@ export function OwnerApp() {
             isRequestPending={isPending("signup-otp-request")}
             isVerifyPending={isPending("signup-otp-verify")}
             isCompletePending={isPending("signup-complete")}
+            isPhoneSignupPending={isPending("signup-phone-pin")}
             isPasskeyPending={isPending("signup-passkey")}
             isSocialPending={isPending("social-signup")}
             passkeySupported={browserSupportsWebAuthn()}
@@ -6325,10 +6319,10 @@ export function OwnerApp() {
             onRegisterPasskey={() => void runAction("signup-passkey", registerCurrentDevicePasskey)}
             onSignupPinChange={setSignupPin}
             onSignupPinConfirmChange={setSignupPinConfirm}
+            onSignupWithPhonePin={() => void runAction("signup-phone-pin", signupWithPhonePin)}
             onSocialSignup={(provider) =>
               void runAction("social-signup", () => authenticateSocialProfile(provider))
             }
-            phoneRecaptchaRef={phoneRecaptchaRef}
           />
         ) : shouldShowLogin ? (
           <LoginPanel
@@ -6621,7 +6615,6 @@ function PrimaryNavigation({
 }
 
 interface SetupPanelProps {
-  channel: AuthChannel;
   countryCode: CountryDialCode;
   destination: string;
   challenge: OtpRequestResponse | null;
@@ -6633,6 +6626,7 @@ interface SetupPanelProps {
   isRequestPending: boolean;
   isVerifyPending: boolean;
   isCompletePending: boolean;
+  isPhoneSignupPending: boolean;
   isPasskeyPending: boolean;
   isSocialPending: boolean;
   passkeySupported: boolean;
@@ -6649,7 +6643,7 @@ interface SetupPanelProps {
   onSocialSignup: (provider: SocialSignupProvider) => void;
   onSignupPinChange: (pin: string) => void;
   onSignupPinConfirmChange: (pin: string) => void;
-  phoneRecaptchaRef: RefObject<HTMLDivElement | null>;
+  onSignupWithPhonePin: () => void;
 }
 
 interface SocialLoginOptionsProps {
@@ -6757,8 +6751,9 @@ function SetupPanel(props: SetupPanelProps) {
   const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
-  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
-  const showAuthForm = authView !== "options" || props.challenge !== null;
+  const emailIsValid = isValidContact("email", props.destination);
+  const phoneIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
+  const showAuthForm = authView !== "options";
 
   return (
     <main className="setup-grid auth-landing-grid" id="signup">
@@ -6769,10 +6764,12 @@ function SetupPanel(props: SetupPanelProps) {
               mode="signup"
               onSelectPhone={() => {
                 props.onChannelChange("phone");
+                props.onDestinationChange("");
                 setAuthView("phone");
               }}
               onSelectEmail={() => {
                 props.onChannelChange("email");
+                props.onDestinationChange("");
                 setAuthView("email");
               }}
               onSelectSocial={props.onSocialSignup}
@@ -6785,11 +6782,15 @@ function SetupPanel(props: SetupPanelProps) {
               <div className="auth-heading-row">
                 <div className="section-heading">
                   <p className="eyebrow">Account signup</p>
-                  <h2>Verify your {props.channel}</h2>
-                  <p>This verifies your account identity before you register a shop.</p>
+                  <h2>{authView === "phone" ? "Continue with phone" : "Verify your email"}</h2>
+                  <p>
+                    {authView === "phone"
+                      ? "Enter your phone number and create a PIN. No verification code is required."
+                      : "Use email or a social account to create your Soko account."}
+                  </p>
                 </div>
               </div>
-              {props.channel === "phone" ? (
+              {authView === "phone" ? (
                 <>
                   <div className="phone-contact-row">
                     <label>
@@ -6819,6 +6820,7 @@ function SetupPanel(props: SetupPanelProps) {
                             )
                           )
                         }
+                        autoComplete="tel-national"
                         inputMode="numeric"
                         maxLength={selectedCountryCode.suffixLength}
                         pattern="[0-9]*"
@@ -6827,53 +6829,87 @@ function SetupPanel(props: SetupPanelProps) {
                       />
                     </label>
                   </div>
-                  <div
-                    ref={props.phoneRecaptchaRef}
-                    className="firebase-recaptcha"
-                    aria-hidden="true"
-                  />
+                  <label>
+                    Create owner PIN
+                    <input
+                      value={props.signupPin}
+                      onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
+                      autoComplete="new-password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      pattern="[0-9]*"
+                      type="password"
+                      placeholder="4-digit PIN"
+                    />
+                  </label>
+                  <label>
+                    Confirm owner PIN
+                    <input
+                      value={props.signupPinConfirm}
+                      onChange={(event) =>
+                        props.onSignupPinConfirmChange(sanitizePin(event.target.value))
+                      }
+                      autoComplete="new-password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      pattern="[0-9]*"
+                      type="password"
+                      placeholder="Re-enter PIN"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={props.onSignupWithPhonePin}
+                    disabled={
+                      !phoneIsValid ||
+                      !isValidPin(props.signupPin) ||
+                      props.signupPin !== props.signupPinConfirm ||
+                      props.isPhoneSignupPending
+                    }
+                    aria-busy={props.isPhoneSignupPending}
+                  >
+                    {props.isPhoneSignupPending ? "Creating account…" : "Continue with phone"}
+                  </button>
                 </>
               ) : (
-                <label>
-                  Email address
-                  <input
-                    type="email"
-                    autoComplete="email"
-                    value={props.destination}
-                    onChange={(event) => props.onDestinationChange(event.target.value)}
-                    placeholder="you@example.com"
-                  />
-                </label>
+                <>
+                  <label>
+                    Email address
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      value={props.destination}
+                      onChange={(event) => props.onDestinationChange(event.target.value)}
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={props.onRequestOtp}
+                    disabled={!emailIsValid || props.isRequestPending}
+                    aria-busy={props.isRequestPending}
+                  >
+                    {props.isRequestPending ? "Sending…" : "Send email code"}
+                  </button>
+                  <label>
+                    Email verification code
+                    <input
+                      value={props.otp}
+                      onChange={(event) => props.onOtpChange(event.target.value)}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={props.onVerifyOtp}
+                    disabled={props.challenge === null || props.isVerifyPending}
+                    aria-busy={props.isVerifyPending}
+                  >
+                    {props.isVerifyPending ? "Verifying…" : "Verify email"}
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                onClick={props.onRequestOtp}
-                disabled={!contactIsValid || props.isRequestPending}
-                aria-busy={props.isRequestPending}
-              >
-                {props.isRequestPending
-                  ? "Sending…"
-                  : props.channel === "phone"
-                    ? "Send SMS code"
-                    : "Send email code"}
-              </button>
-              <label>
-                {props.channel === "phone" ? "SMS verification code" : "Email verification code"}
-                <input
-                  value={props.otp}
-                  onChange={(event) => props.onOtpChange(event.target.value)}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={props.onVerifyOtp}
-                disabled={props.challenge === null || props.isVerifyPending}
-                aria-busy={props.isVerifyPending}
-              >
-                {props.isVerifyPending ? "Verifying…" : `Verify ${props.channel}`}
-              </button>
               <button className="secondary" type="button" onClick={() => setAuthView("options")}>
                 Back to signup options
               </button>

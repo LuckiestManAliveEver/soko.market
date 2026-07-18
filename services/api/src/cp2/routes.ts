@@ -776,6 +776,14 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
     const purpose = parseOtpPurpose(body.purpose);
 
+    if (channel === "phone" && otpProvider.name.startsWith("firebase") && purpose !== "recovery") {
+      throw new Cp2Error(
+        403,
+        "phone_otp_recovery_only",
+        "Firebase phone verification is available only for lost-account recovery."
+      );
+    }
+
     const otp = store.requestOtp({ channel, destination, purpose });
 
     if (channel === "email") {
@@ -1511,6 +1519,25 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         sessionId: readSessionCookie(request.headers.cookie),
         pin
       });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post("/auth/pin/signup", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
+    try {
+      const channel = parseAuthChannel(request.body.method ?? request.body.channel ?? "phone");
+
+      if (channel !== "phone") {
+        throw new Cp2Error(400, "phone_pin_signup_only", "PIN signup requires a phone number.");
+      }
+
+      const result = store.signupWithPhonePin({
+        destination: parseString(request.body.contact ?? request.body.destination, "contact"),
+        pin: parseString(request.body.pin, "pin")
+      });
+      reply.header("set-cookie", serializeSessionCookie(result.session.id));
+      return result;
     } catch (error) {
       return sendCp2Error(reply, error);
     }

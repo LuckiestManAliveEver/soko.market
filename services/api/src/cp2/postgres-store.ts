@@ -152,6 +152,7 @@ const mutatingMethodNames = new Set([
   "revokePasskey",
   "revokeMcpAccessToken",
   "setAccountPin",
+  "signupWithPhonePin",
   "syncPhoneContacts",
   "syncSocialNetwork",
   "setConversationTyping",

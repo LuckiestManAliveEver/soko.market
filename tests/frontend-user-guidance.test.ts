@@ -141,11 +141,15 @@ describe("frontend user guidance", () => {
     expect(render).toContain("tinyllama-1.1b-chat-q4-k-m-android");
   });
 
-  it("connects Firebase phone OTP to signup and lost-account recovery", () => {
+  it("keeps Firebase phone OTP out of signup and inside lost-account recovery", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
-    const signup = application.slice(
+    const emailSignup = application.slice(
       application.indexOf("async function requestOtp()"),
+      application.indexOf("async function signupWithPhonePin()")
+    );
+    const phoneSignup = application.slice(
+      application.indexOf("async function signupWithPhonePin()"),
       application.indexOf("async function authenticateSocialProfile")
     );
     const recovery = application.slice(
@@ -153,13 +157,17 @@ describe("frontend user guidance", () => {
       application.indexOf("async function loginWithPin()")
     );
 
-    expect(signup).toContain('method: "phone"');
-    expect(signup).toContain('method: "email"');
-    expect(signup).toContain('purpose: "signup"');
-    expect(signup).toContain("sendFirebasePhoneOtp");
+    expect(emailSignup).toContain('method: "email"');
+    expect(emailSignup).toContain('purpose: "signup"');
+    expect(emailSignup).not.toContain('method: "phone"');
+    expect(emailSignup).not.toContain("sendFirebasePhoneOtp");
+    expect(phoneSignup).toContain('postJson<SessionResponse>("/auth/pin/signup"');
+    expect(phoneSignup).toContain('method: "phone"');
+    expect(phoneSignup).not.toContain("/auth/otp/");
+    expect(phoneSignup).not.toContain("sendFirebasePhoneOtp");
     expect(recovery).toContain('purpose: "recovery"');
     expect(recovery).toContain("sendFirebasePhoneOtp");
-    expect(authRoutes).not.toContain("phone_otp_recovery_only");
+    expect(authRoutes).toContain("phone_otp_recovery_only");
     expect(authRoutes).toContain("emailProvider.sendOtp");
   });
 
@@ -204,8 +212,14 @@ describe("frontend user guidance", () => {
     );
 
     expect(accountSetup).toContain("Account signup");
+    expect(accountSetup).toContain("Verify your email");
     expect(accountSetup).toContain('autoComplete="one-time-code"');
     expect(accountSetup).toContain("Finish signup");
+    expect(accountSetup).not.toContain("Verify your phone");
+    expect(accountSetup).toContain("Continue with phone");
+    expect(accountSetup).toContain("No verification code is required");
+    expect(accountSetup).toContain("onSignupWithPhonePin");
+    expect(accountSetup).not.toContain("sendFirebasePhoneOtp");
     expect(shopSetup).toContain("Create your shop once using your signed-in account");
     expect(shopSetup).not.toContain("OTP");
     expect(shopSetup).not.toContain('autoComplete="one-time-code"');
@@ -264,9 +278,8 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       "Account deactivated and anonymization scheduled. Create a new account to continue."
     );
-    expect(application).toContain(
-      'props.mode === "signup" ? "Continue with phone" : "Use phone and PIN"'
-    );
+    expect(application).toContain("Continue with phone");
+    expect(application).toContain("Use phone and PIN");
   });
 
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {

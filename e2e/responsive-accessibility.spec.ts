@@ -80,7 +80,13 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   await page.getByLabel(/I understand that all account access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
   await expect(page.getByLabel("signup options")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue with phone" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue with phone" }).click();
+  await expect(page.getByRole("heading", { name: "Continue with phone" })).toBeVisible();
+  await expect(page.getByLabel("Phone number")).toBeVisible();
+  await expect(page.getByLabel("Create owner PIN")).toBeVisible();
+  await expect(page.getByLabel("Confirm owner PIN")).toBeVisible();
+  await expect(page.getByLabel(/verification code/i)).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to signup options" }).click();
   await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
   await expect(page.getByLabel("login options")).toHaveCount(0);
   expect(pinVerifications).toBe(1);

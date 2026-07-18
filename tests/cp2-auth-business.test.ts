@@ -26,6 +26,17 @@ interface VerifyOtpResponse {
   resumed: boolean;
 }
 
+interface PhonePinSignupResponse {
+  account: {
+    id: string;
+    primaryAuthChannel: string;
+    primaryAuthDestination: string;
+  };
+  session: {
+    id: string;
+  };
+}
+
 interface CreateBusinessResponse {
   business: {
     id: string;
@@ -337,6 +348,72 @@ describe("CP2 auth and business creation", () => {
     expect(social.json()).toMatchObject({ code: "social_login_disabled" });
     expect(social.headers["set-cookie"]).toBeUndefined();
     expect(store.snapshot().accounts).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it("creates a phone account and session with a PIN without requesting an OTP", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const phone = "+254700000088";
+
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        pin: "2468"
+      })
+    });
+    const signupCookie = extractSessionCookie(signup.headers["set-cookie"]);
+
+    expect(signup.statusCode).toBe(200);
+    expect(signup.json<PhonePinSignupResponse>().account).toMatchObject({
+      primaryAuthChannel: "phone",
+      primaryAuthDestination: phone
+    });
+    expect(signupCookie).toContain("soko_session=");
+    expect(store.snapshot().otpChallenges).toHaveLength(0);
+
+    const pinStatus = await app.inject({
+      method: "GET",
+      url: "/auth/pin/status",
+      headers: { cookie: signupCookie }
+    });
+    expect(pinStatus.json()).toMatchObject({ hasPin: true });
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        pin: "2468"
+      })
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({ code: "account_exists" });
+
+    await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: signupCookie }
+    });
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: phone,
+        pin: "2468"
+      })
+    });
+    expect(login.statusCode).toBe(200);
+    expect(extractSessionCookie(login.headers["set-cookie"])).toContain("soko_session=");
 
     await app.close();
   });
