@@ -49,16 +49,10 @@ import {
   serializeSessionCookie,
   type BusinessAgentProfileInput,
   type Cp2Store,
-  type OtpChallengeDelivery,
   type PhoneContactNetworkInput,
   type RuntimeAgentProfile,
   type SocialProfileNetworkInput
 } from "./store.js";
-import {
-  createOtpProviderFromEnvironment,
-  type OtpDeliveryChannel,
-  type OtpProvider
-} from "./otp-provider.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   createGitHubModelCatalogFromEnvironment,
@@ -93,7 +87,6 @@ export interface Cp2RouteOptions {
   githubModelCatalog?: GitHubModelCatalog;
   huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
-  otpProvider?: OtpProvider;
   realtimeAllowedOrigins?: string[];
   receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
@@ -113,10 +106,11 @@ interface OtpVerifyBody {
   challengeId?: string;
   code?: string;
   contact?: string;
-  firebaseIdToken?: string;
   method?: string;
   otp?: string;
 }
+
+type OtpDeliveryChannel = "email" | "sms";
 
 interface OAuthStartBody {
   provider?: string;
@@ -197,6 +191,13 @@ interface PasskeyAuthenticationVerifyBody {
 interface CreateBusinessBody {
   name?: string;
   language?: string;
+  phoneCountry?: string;
+  phoneNumber?: string;
+}
+
+interface OwnerPhoneBody {
+  country?: string;
+  phoneNumber?: string;
 }
 
 interface RoleCheckBody {
@@ -712,7 +713,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
   const huggingFaceModelCatalog =
     options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
-  const otpProvider = options.otpProvider ?? createOtpProviderFromEnvironment();
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
@@ -773,10 +773,10 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   async function requestOtpForBody(body: OtpRequestBody) {
     const channel = parseAuthChannel(body.method ?? body.channel);
     const destination = parseString(body.contact ?? body.destination, "contact");
-    const deliveryChannel = parseOtpDeliveryChannel(body.deliveryChannel, channel);
+    parseOtpDeliveryChannel(body.deliveryChannel, channel);
     const purpose = parseOtpPurpose(body.purpose);
 
-    if (channel === "phone" && otpProvider.name.startsWith("firebase")) {
+    if (channel === "phone") {
       throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
     }
 
@@ -801,30 +801,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       };
     }
 
-    if (otpProvider.canHandle(channel)) {
-      await otpProvider.requestOtp({
-        channel,
-        deliveryChannel,
-        destination: otp.destination
-      });
-    }
-
-    if (
-      otpProvider.exposesDevOtp ||
-      !otpProvider.verifiesExternally ||
-      !otpProvider.canHandle(channel)
-    ) {
-      return otp;
-    }
-
-    return {
-      challengeId: otp.challengeId,
-      destination: otp.destination,
-      expiresAt: otp.expiresAt
-    };
+    return otp;
   }
 
   async function verifyOtpForBody(body: OtpVerifyBody) {
+    if (body.method !== undefined && parseAuthChannel(body.method) === "phone") {
+      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
+    }
     const challenge =
       body.challengeId === undefined
         ? store.getOtpChallengeDeliveryByContact({
@@ -833,17 +816,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           })
         : store.getOtpChallengeDelivery(parseString(body.challengeId, "challengeId"));
 
-    if (challenge.channel === "phone" && otpProvider.name.startsWith("firebase")) {
+    if (challenge.channel === "phone") {
       throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
     }
 
-    const code = parseString(body.firebaseIdToken ?? body.otp ?? body.code, "otp");
-
-    return challenge.channel === "phone" &&
-      otpProvider.verifiesExternally &&
-      otpProvider.canHandle(challenge.channel)
-      ? await verifyProviderOtp(store, otpProvider, challenge.challengeId, challenge, code)
-      : store.verifyOtp({ challengeId: challenge.challengeId, code });
+    const code = parseString(body.otp ?? body.code, "otp");
+    return store.verifyOtp({ challengeId: challenge.challengeId, code });
   }
 
   function enabledAuthProviders() {
@@ -2298,7 +2276,25 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return store.createBusiness({
         sessionId: readSessionCookie(request.headers.cookie),
         name,
-        language
+        language,
+        ...(request.body.phoneNumber === undefined
+          ? {}
+          : { phoneNumber: request.body.phoneNumber }),
+        ...(request.body.phoneCountry === undefined
+          ? {}
+          : { phoneCountry: request.body.phoneCountry })
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.put("/account/phone", async (request: FastifyRequest<{ Body: OwnerPhoneBody }>, reply) => {
+    try {
+      return store.updateOwnerPhone({
+        sessionId: readSessionCookie(request.headers.cookie),
+        phoneNumber: typeof request.body.phoneNumber === "string" ? request.body.phoneNumber : "",
+        country: typeof request.body.country === "string" ? request.body.country : ""
       });
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -4208,26 +4204,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   return store;
-}
-
-async function verifyProviderOtp(
-  store: Cp2Store,
-  otpProvider: OtpProvider,
-  challengeId: string,
-  challenge: OtpChallengeDelivery,
-  code: string
-) {
-  const isApproved = await otpProvider.verifyOtp({
-    channel: challenge.channel,
-    destination: challenge.destination,
-    code
-  });
-
-  if (!isApproved) {
-    throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
-  }
-
-  return store.verifyExternallyApprovedOtp({ challengeId });
 }
 
 function parseSyncMutationBody(body: SyncMutationBody | null | undefined): {

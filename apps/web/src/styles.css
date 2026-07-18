@@ -1043,6 +1043,13 @@ button:disabled {
   font-size: 13px;
 }
 
+.setup-error {
+  color: #a12622;
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+}
+
 .signup-video-panel {
   background: #ffffff;
   border: 1px solid #dde4dc;

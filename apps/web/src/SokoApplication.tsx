@@ -14,6 +14,7 @@ import {
   type PublicKeyCredentialCreationOptionsJSON,
   type PublicKeyCredentialRequestOptionsJSON
 } from "@simplewebauthn/browser";
+import type { CountryCode } from "libphonenumber-js";
 import {
   defaultProductVocabularyContextScript,
   parseMerchantCommand,
@@ -56,6 +57,7 @@ import {
   openIndexedDbSyncRepository,
   type IndexedDbSyncRepository
 } from "./sync/indexeddb-repository";
+import { normalizeOwnerPhoneInput } from "./phone-identity";
 import {
   catchUpAccountSync,
   createLocalSyncMutation,
@@ -196,6 +198,14 @@ interface SessionResponse {
     id: string;
     displayName: string;
     language: SupportedLanguage;
+    phoneNumberE164?: string | null;
+    phoneCountryCode?: string | null;
+    phoneNationalNumber?: string | null;
+    phoneVerificationStatus?: "unverified" | null;
+    phoneAddedAt?: string | null;
+    phoneUpdatedAt?: string | null;
+    phoneSource?: "phone_login" | "shop_registration" | null;
+    publicPhoneEnabled?: boolean;
   };
   session: {
     expiresAt: string;
@@ -1756,17 +1766,18 @@ const defaultAgentContextScripts = [
 const countryDialCodes: Array<{
   code: CountryDialCode;
   country: string;
+  countryCode: CountryCode;
   flag: string;
   suffixLength: number;
 }> = [
-  { code: "+254", country: "Kenya", flag: "KE", suffixLength: 9 },
-  { code: "+1", country: "United States", flag: "US", suffixLength: 10 },
-  { code: "+44", country: "United Kingdom", flag: "UK", suffixLength: 10 },
-  { code: "+234", country: "Nigeria", flag: "NG", suffixLength: 10 },
-  { code: "+27", country: "South Africa", flag: "ZA", suffixLength: 9 },
-  { code: "+255", country: "Tanzania", flag: "TZ", suffixLength: 9 },
-  { code: "+256", country: "Uganda", flag: "UG", suffixLength: 9 },
-  { code: "+250", country: "Rwanda", flag: "RW", suffixLength: 9 }
+  { code: "+254", country: "Kenya", countryCode: "KE", flag: "KE", suffixLength: 9 },
+  { code: "+1", country: "United States", countryCode: "US", flag: "US", suffixLength: 10 },
+  { code: "+44", country: "United Kingdom", countryCode: "GB", flag: "UK", suffixLength: 10 },
+  { code: "+234", country: "Nigeria", countryCode: "NG", flag: "NG", suffixLength: 10 },
+  { code: "+27", country: "South Africa", countryCode: "ZA", flag: "ZA", suffixLength: 9 },
+  { code: "+255", country: "Tanzania", countryCode: "TZ", flag: "TZ", suffixLength: 9 },
+  { code: "+256", country: "Uganda", countryCode: "UG", flag: "UG", suffixLength: 9 },
+  { code: "+250", country: "Rwanda", countryCode: "RW", flag: "RW", suffixLength: 9 }
 ];
 
 const emptyProductForm: ProductFormState = {
@@ -1950,6 +1961,13 @@ export function OwnerApp() {
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
+  const [businessSetupStep, setBusinessSetupStep] = useState<"phone" | "details">("phone");
+  const [shopPhoneCountryCode, setShopPhoneCountryCode] = useState<CountryDialCode>(countryCode);
+  const [shopPhoneNumber, setShopPhoneNumber] = useState(
+    initialOwnerAuth !== null && !initialOwnerAuth.contact.includes("@")
+      ? initialOwnerAuth.contact
+      : ""
+  );
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
   const [ownerAuth, setOwnerAuth] = useState<OwnerAuthRecord | null>(initialOwnerAuth);
   const [isWorkspaceUnlocked, setIsWorkspaceUnlocked] = useState(initialOwnerAuth === null);
@@ -2114,6 +2132,27 @@ export function OwnerApp() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (session === null) return;
+
+    const savedPhone =
+      session.user.phoneNumberE164 ??
+      (session.account.primaryAuthChannel === "phone"
+        ? session.account.primaryAuthDestination
+        : null);
+    if (savedPhone === null) return;
+
+    const savedCountryCode = inferCountryCode(savedPhone);
+    if (savedCountryCode !== null) {
+      setShopPhoneCountryCode(savedCountryCode);
+    }
+    setShopPhoneNumber(savedPhone);
+  }, [
+    session?.account.primaryAuthChannel,
+    session?.account.primaryAuthDestination,
+    session?.user.phoneNumberE164
+  ]);
 
   useEffect(() => {
     function restoreRoute() {
@@ -3168,6 +3207,33 @@ export function OwnerApp() {
     }
   }
 
+  async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
+    if (session === null) {
+      setStatusMessage("Your session has expired. Sign in again.");
+      return;
+    }
+
+    try {
+      const response = await putJson<{ user: SessionResponse["user"] }>("/account/phone", {
+        phoneNumber,
+        country
+      });
+      setSession((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              user: response.user
+            }
+      );
+      setShopPhoneNumber(response.user.phoneNumberE164 ?? phoneNumber);
+      setBusinessSetupStep("details");
+      setStatusMessage("Phone number saved. Add your shop details.");
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
   async function createBusiness() {
     if (businessName.trim().length === 0) {
       setStatusMessage("Business name is required");
@@ -3180,9 +3246,16 @@ export function OwnerApp() {
     }
 
     try {
+      const selectedPhoneCountry = getCountryDialCode(shopPhoneCountryCode);
+      const normalizedPhone = normalizeOwnerPhoneInput(
+        shopPhoneNumber,
+        selectedPhoneCountry.countryCode
+      );
       const response = await postJson<BusinessResponse>("/businesses", {
         name: businessName.trim(),
-        language
+        language,
+        phoneNumber: normalizedPhone,
+        phoneCountry: selectedPhoneCountry.countryCode
       });
       const nextBusiness = {
         ...response.business,
@@ -4688,8 +4761,17 @@ export function OwnerApp() {
       }
 
       setChannel("email");
+      setBusinessSetupStep(
+        typeof session.user.phoneNumberE164 === "string" && session.user.phoneNumberE164.length > 0
+          ? "details"
+          : "phone"
+      );
       setIsBusinessSetupOpen(true);
-      setStatusMessage("Set up your business to start selling.");
+      setStatusMessage(
+        session.user.phoneNumberE164
+          ? "Set up your business to start selling."
+          : "Add your phone number to register your first shop."
+      );
       return;
     }
 
@@ -6326,12 +6408,25 @@ export function OwnerApp() {
           />
         ) : isBusinessSetupOpen && business === null ? (
           <BusinessSetupPanel
+            step={businessSetupStep}
             businessName={businessName}
             language={language}
+            phoneCountryCode={shopPhoneCountryCode}
+            phoneNumber={shopPhoneNumber}
             statusMessage={statusMessage}
-            isPending={isPending("business-create")}
+            isPending={isPending("business-create") || isPending("owner-phone-save")}
             onBusinessNameChange={setBusinessName}
             onLanguageChange={setLanguage}
+            onPhoneCountryCodeChange={setShopPhoneCountryCode}
+            onPhoneNumberChange={setShopPhoneNumber}
+            onContinuePhone={(phoneNumber, country) =>
+              void runAction("owner-phone-save", () => saveOwnerPhoneForShop(phoneNumber, country))
+            }
+            onEditPhone={() => setBusinessSetupStep("phone")}
+            onBackToLoginOptions={() => {
+              setIsBusinessSetupOpen(false);
+              openLogin();
+            }}
             onCancel={() => {
               setIsBusinessSetupOpen(false);
               setStatusMessage("Business setup cancelled. You can keep browsing the marketplace.");
@@ -6344,8 +6439,12 @@ export function OwnerApp() {
             business={business}
             oauthProviders={oauthProviders}
             ownerLabel={userLabel}
+            ownerUser={session?.user ?? null}
             storefrontUrl={publicStorefrontUrl}
             onAgentChange={setAgentSettings}
+            onOwnerUserChange={(user) =>
+              setSession((current) => (current === null ? current : { ...current, user }))
+            }
             onBack={returnToChat}
             onEnableNotifications={requestMessagingNotifications}
             onDisableNotifications={disableMessagingNotifications}
@@ -6924,17 +7023,125 @@ function SetupPanel(props: SetupPanelProps) {
 }
 
 interface BusinessSetupPanelProps {
+  step: "phone" | "details";
   businessName: string;
   language: SupportedLanguage;
+  phoneCountryCode: CountryDialCode;
+  phoneNumber: string;
   statusMessage: string;
   isPending: boolean;
   onBusinessNameChange: (businessName: string) => void;
   onLanguageChange: (language: SupportedLanguage) => void;
+  onPhoneCountryCodeChange: (countryCode: CountryDialCode) => void;
+  onPhoneNumberChange: (phoneNumber: string) => void;
+  onContinuePhone: (phoneNumber: string, country: CountryCode) => void;
+  onEditPhone: () => void;
+  onBackToLoginOptions: () => void;
   onCancel: () => void;
   onCreateBusiness: () => void;
 }
 
 function BusinessSetupPanel(props: BusinessSetupPanelProps) {
+  const [phoneError, setPhoneError] = useState("");
+  const phoneInputRef = useRef<HTMLInputElement | null>(null);
+
+  function continueWithPhone() {
+    const selectedCountry = getCountryDialCode(props.phoneCountryCode);
+
+    try {
+      const normalizedPhone = normalizeOwnerPhoneInput(
+        props.phoneNumber,
+        selectedCountry.countryCode
+      );
+      setPhoneError("");
+      props.onPhoneNumberChange(normalizedPhone);
+      props.onContinuePhone(normalizedPhone, selectedCountry.countryCode);
+    } catch (error) {
+      setPhoneError(getErrorMessage(error));
+      phoneInputRef.current?.focus();
+    }
+  }
+
+  if (props.step === "phone") {
+    const selectedCountry = getCountryDialCode(props.phoneCountryCode);
+
+    return (
+      <main className="setup-grid business-setup-grid">
+        <section className="panel auth-card">
+          <div className="section-heading">
+            <p className="eyebrow">FIRST SHOP REGISTRATION</p>
+            <h2>Add your phone number</h2>
+            <p>
+              Add a phone number for shop identity, account recovery, and last-resort customer
+              support. This number will not be shown publicly unless you choose to display it in
+              your shop settings.
+            </p>
+          </div>
+          <div className="phone-contact-row">
+            <label>
+              Country
+              <select
+                value={props.phoneCountryCode}
+                onChange={(event) => {
+                  props.onPhoneCountryCodeChange(event.target.value as CountryDialCode);
+                  setPhoneError("");
+                }}
+              >
+                {countryDialCodes.map((item) => (
+                  <option key={item.code} value={item.code}>
+                    {item.flag} {item.country} ({item.code})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Phone number
+              <input
+                ref={phoneInputRef}
+                autoFocus
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={props.phoneNumber}
+                onChange={(event) => {
+                  props.onPhoneNumberChange(event.target.value);
+                  setPhoneError("");
+                }}
+                placeholder={`e.g. 0712345678 or ${selectedCountry.code}712345678`}
+                aria-invalid={phoneError.length > 0}
+                aria-describedby={phoneError.length > 0 ? "shop-phone-error" : "shop-phone-help"}
+              />
+            </label>
+          </div>
+          <p id="shop-phone-help" className="shell-note">
+            Your phone number is required to register and recover your shop.
+          </p>
+          {phoneError.length > 0 ? (
+            <p id="shop-phone-error" className="setup-error" role="alert">
+              {phoneError}
+            </p>
+          ) : null}
+          <div className="compact-actions">
+            <button
+              type="button"
+              onClick={continueWithPhone}
+              disabled={props.phoneNumber.trim().length === 0 || props.isPending}
+              aria-busy={props.isPending}
+            >
+              {props.isPending ? "Saving…" : "Continue"}
+            </button>
+            <button className="secondary" type="button" onClick={props.onBackToLoginOptions}>
+              Back to login options
+            </button>
+          </div>
+          <p className="setup-status" role="status" aria-live="polite">
+            {props.statusMessage}
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="setup-grid business-setup-grid">
       <section className="panel auth-card">
@@ -6975,6 +7182,9 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
           </button>
           <button className="secondary" type="button" onClick={props.onCancel}>
             Not now
+          </button>
+          <button className="secondary" type="button" onClick={props.onEditPhone}>
+            Edit phone number
           </button>
         </div>
         <p className="setup-status" role="status" aria-live="polite">
@@ -11524,8 +11734,10 @@ interface AgentProfileSurfaceProps {
   business: ActiveBusiness;
   oauthProviders: OAuthProviderSummary[];
   ownerLabel: string;
+  ownerUser: SessionResponse["user"] | null;
   storefrontUrl: string;
   onAgentChange: (agent: AgentSettings) => void;
+  onOwnerUserChange: (user: SessionResponse["user"]) => void;
   onBack: () => void;
   onDisableNotifications: () => Promise<void>;
   onEnableNotifications: () => Promise<void>;
@@ -11544,8 +11756,10 @@ function AgentProfileSurface({
   business,
   oauthProviders,
   ownerLabel,
+  ownerUser,
   storefrontUrl,
   onAgentChange,
+  onOwnerUserChange,
   onBack,
   onDisableNotifications,
   onEnableNotifications,
@@ -11572,6 +11786,11 @@ function AgentProfileSurface({
   const [mcpPin, setMcpPin] = useState("");
   const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
+  const [ownerPhoneCountryCode, setOwnerPhoneCountryCode] = useState<CountryDialCode>(
+    inferCountryCode(ownerUser?.phoneNumberE164 ?? "") ?? "+254"
+  );
+  const [ownerPhoneNumber, setOwnerPhoneNumber] = useState(ownerUser?.phoneNumberE164 ?? "");
+  const [ownerPhoneError, setOwnerPhoneError] = useState("");
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
@@ -11620,6 +11839,14 @@ function AgentProfileSurface({
       setDraftAgent(agent);
     }
   }, [agent, isEditing]);
+
+  useEffect(() => {
+    const savedPhone = ownerUser?.phoneNumberE164;
+    if (savedPhone === undefined || savedPhone === null) return;
+
+    setOwnerPhoneNumber(savedPhone);
+    setOwnerPhoneCountryCode(inferCountryCode(savedPhone) ?? "+254");
+  }, [ownerUser?.phoneNumberE164]);
 
   useEffect(() => {
     void loadConnectedSocialAccounts();
@@ -11877,6 +12104,29 @@ function AgentProfileSurface({
       setPasskeys(response.passkeys);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function updateOwnerPhone() {
+    const selectedCountry = getCountryDialCode(ownerPhoneCountryCode);
+
+    try {
+      const normalizedPhone = normalizeOwnerPhoneInput(
+        ownerPhoneNumber,
+        selectedCountry.countryCode
+      );
+      const response = await putJson<{ user: SessionResponse["user"] }>("/account/phone", {
+        phoneNumber: normalizedPhone,
+        country: selectedCountry.countryCode
+      });
+      onOwnerUserChange(response.user);
+      setOwnerPhoneNumber(response.user.phoneNumberE164 ?? normalizedPhone);
+      setOwnerPhoneError("");
+      setProfileMessage("Private owner phone number updated. Verification status: unverified.");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setOwnerPhoneError(message);
+      setProfileMessage(message);
     }
   }
 
@@ -12849,8 +13099,69 @@ function AgentProfileSurface({
             <h3>Passkeys and login accounts</h3>
             <p>
               Passkeys use your device unlock and keep biometric data on the device. Email, social
-              login, and a verified recovery contact remain available if your passkey is lost.
+              login, and your private recovery contact remain available if your passkey is lost.
             </p>
+          </div>
+          <div className="record-form">
+            <div className="section-heading">
+              <p className="eyebrow">Private identity contact</p>
+              <h4>Owner phone number</h4>
+              <p>
+                Required for shop identity, recovery, support escalation, and fraud review. It is
+                unverified and hidden from customers by default.
+              </p>
+            </div>
+            <div className="phone-contact-row">
+              <label>
+                Country
+                <select
+                  value={ownerPhoneCountryCode}
+                  onChange={(event) => {
+                    setOwnerPhoneCountryCode(event.target.value as CountryDialCode);
+                    setOwnerPhoneError("");
+                  }}
+                >
+                  {countryDialCodes.map((item) => (
+                    <option key={item.code} value={item.code}>
+                      {item.flag} {item.country} ({item.code})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Owner phone number
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={ownerPhoneNumber}
+                  onChange={(event) => {
+                    setOwnerPhoneNumber(event.target.value);
+                    setOwnerPhoneError("");
+                  }}
+                  aria-invalid={ownerPhoneError.length > 0}
+                  aria-describedby={ownerPhoneError.length > 0 ? "owner-phone-error" : undefined}
+                />
+              </label>
+            </div>
+            {ownerPhoneError.length > 0 ? (
+              <p id="owner-phone-error" className="setup-error" role="alert">
+                {ownerPhoneError}
+              </p>
+            ) : null}
+            <div className="compact-actions">
+              <button
+                type="button"
+                disabled={ownerPhoneNumber.trim().length === 0 || pendingProfileAction !== null}
+                aria-busy={pendingProfileAction === "owner-phone-update"}
+                onClick={() => void runProfileAction("owner-phone-update", updateOwnerPhone)}
+              >
+                {pendingProfileAction === "owner-phone-update" ? "Saving…" : "Save phone number"}
+              </button>
+              <span className="shell-note">
+                Status: {ownerUser?.phoneVerificationStatus ?? "unverified"} · Public display: off
+              </span>
+            </div>
           </div>
           <div className="connected-social-list" aria-label="Passkeys">
             {passkeys.map((passkey) => (
@@ -16450,6 +16761,7 @@ function getCountryDialCode(countryCode: CountryDialCode) {
     countryDialCodes.find((item) => item.code === countryCode) ?? {
       code: "+254" as const,
       country: "Kenya",
+      countryCode: "KE" as const,
       flag: "KE",
       suffixLength: 9
     }
