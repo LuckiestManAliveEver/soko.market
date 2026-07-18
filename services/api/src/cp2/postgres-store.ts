@@ -167,6 +167,7 @@ const mutatingMethodNames = new Set([
   "updateLaunchSettings",
   "updateLogisticsStatus",
   "updateNotificationStatus",
+  "updateOwnerPhone",
   "updateProduct",
   "updateProductImportRow",
   "updateSalesAgent",
@@ -247,7 +248,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "028_data_pipeline_infrastructure.sql";
+const requiredMigrationFilename = "029_owner_phone_identity.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -768,17 +769,50 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     account_id: string;
     display_name: string;
     language: string;
+    phone_number_e164: string | null;
+    phone_country_code: string | null;
+    phone_national_number: string | null;
+    phone_verification_status: "unverified" | null;
+    phone_added_at: Date | null;
+    phone_updated_at: Date | null;
+    phone_source: "phone_login" | "shop_registration" | null;
+    public_phone_enabled: boolean;
     created_at: Date;
   }>(
     pool,
     "load users",
-    "select id, account_id, display_name, language, created_at from users order by id"
+    `
+      select
+        id,
+        account_id,
+        display_name,
+        language,
+        phone_number_e164,
+        phone_country_code,
+        phone_national_number,
+        phone_verification_status,
+        phone_added_at,
+        phone_updated_at,
+        phone_source,
+        public_phone_enabled,
+        created_at
+      from users
+      order by id
+    `
   );
   snapshot.users = usersResult.rows.map((row) => ({
     id: row.id,
     accountId: row.account_id,
     displayName: row.display_name,
     language: row.language,
+    phoneNumberE164: row.phone_number_e164,
+    phoneCountryCode: row.phone_country_code,
+    phoneNationalNumber: row.phone_national_number,
+    phoneVerificationStatus: row.phone_verification_status,
+    phoneAddedAt: row.phone_added_at === null ? null : timestampToIso(row.phone_added_at),
+    phoneUpdatedAt: row.phone_updated_at === null ? null : timestampToIso(row.phone_updated_at),
+    phoneSource: row.phone_source,
+    publicPhoneEnabled: row.public_phone_enabled,
     createdAt: timestampToIso(row.created_at)
   })) as Cp2Snapshot["users"];
 
@@ -1611,18 +1645,48 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.users)) {
     await client.query(
       `
-        insert into users (id, account_id, display_name, language, created_at)
-        values ($1, $2, $3, $4, $5)
+        insert into users (
+          id,
+          account_id,
+          display_name,
+          language,
+          phone_number_e164,
+          phone_country_code,
+          phone_national_number,
+          phone_verification_status,
+          phone_added_at,
+          phone_updated_at,
+          phone_source,
+          public_phone_enabled,
+          created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         on conflict (id) do update set
           account_id = excluded.account_id,
           display_name = excluded.display_name,
-          language = excluded.language
+          language = excluded.language,
+          phone_number_e164 = excluded.phone_number_e164,
+          phone_country_code = excluded.phone_country_code,
+          phone_national_number = excluded.phone_national_number,
+          phone_verification_status = excluded.phone_verification_status,
+          phone_added_at = excluded.phone_added_at,
+          phone_updated_at = excluded.phone_updated_at,
+          phone_source = excluded.phone_source,
+          public_phone_enabled = excluded.public_phone_enabled
       `,
       [
         requiredText(record, "id"),
         requiredText(record, "accountId"),
         requiredText(record, "displayName"),
         requiredText(record, "language"),
+        firstText(record, ["phoneNumberE164"]),
+        firstText(record, ["phoneCountryCode"]),
+        firstText(record, ["phoneNationalNumber"]),
+        firstText(record, ["phoneVerificationStatus"]),
+        firstText(record, ["phoneAddedAt"]),
+        firstText(record, ["phoneUpdatedAt"]),
+        firstText(record, ["phoneSource"]),
+        record.publicPhoneEnabled === true,
         now
       ]
     );

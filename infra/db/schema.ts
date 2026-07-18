@@ -44,15 +44,31 @@ export const accounts = pgTable("accounts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey(),
-  accountId: uuid("account_id")
-    .notNull()
-    .references(() => accounts.id),
-  displayName: text("display_name").notNull(),
-  language: text("language").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    displayName: text("display_name").notNull(),
+    language: text("language").notNull(),
+    phoneNumberE164: text("phone_number_e164"),
+    phoneCountryCode: text("phone_country_code"),
+    phoneNationalNumber: text("phone_national_number"),
+    phoneVerificationStatus: text("phone_verification_status"),
+    phoneAddedAt: timestamp("phone_added_at", { withTimezone: true }),
+    phoneUpdatedAt: timestamp("phone_updated_at", { withTimezone: true }),
+    phoneSource: text("phone_source"),
+    publicPhoneEnabled: boolean("public_phone_enabled").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    phoneNumberUnique: uniqueIndex("users_phone_number_e164_unique_idx")
+      .on(table.phoneNumberE164)
+      .where(sql`${table.phoneNumberE164} is not null`)
+  })
+);
 
 export const identityProviders = pgTable("identity_providers", {
   id: text("id").primaryKey(),
