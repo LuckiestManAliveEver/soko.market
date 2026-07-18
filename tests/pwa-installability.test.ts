@@ -51,11 +51,15 @@ describe("PWA installability", () => {
     const html = readFileSync("apps/web/index.html", "utf8");
     const entrypoint = readFileSync("apps/web/src/main.tsx", "utf8");
     const serviceWorkerRegistration = readFileSync("apps/web/src/service-worker.ts", "utf8");
+    const serviceWorker = readFileSync("apps/web/public/sw.js", "utf8");
 
     expect(html).toContain('rel="manifest" href="/manifest.webmanifest"');
     expect(html).toContain('rel="apple-touch-icon"');
     expect(entrypoint).toContain("registerAppServiceWorker()");
     expect(serviceWorkerRegistration).toContain('.register("/sw.js"');
     expect(serviceWorkerRegistration).toContain('document.readyState === "complete"');
+    expect(serviceWorker).toContain("const CACHE_NAME = `${CACHE_PREFIX}v5`");
+    expect(serviceWorker).toContain("cacheName !== CACHE_NAME");
+    expect(serviceWorker).toContain("caches.delete(cacheName)");
   });
 });
