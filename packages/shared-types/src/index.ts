@@ -1560,13 +1560,23 @@ export interface OfflineCacheSnapshot {
   inventoryMovements: InventoryMovementSummary[];
 }
 
-export type SyncCollection =
-  | "session_context"
-  | "shops"
-  | "conversations"
-  | "conversation_messages"
-  | "conversation_participants"
-  | "conversation_typing";
+export const ACCOUNT_SYNC_COLLECTIONS = [
+  "session_context",
+  "shops",
+  "conversations",
+  "conversation_messages",
+  "conversation_participants",
+  "conversation_typing"
+] as const;
+
+export type AccountSyncCollection = (typeof ACCOUNT_SYNC_COLLECTIONS)[number];
+export type SyncCollection = AccountSyncCollection;
+
+const accountSyncCollectionSet = new Set<string>(ACCOUNT_SYNC_COLLECTIONS);
+
+export function isAccountSyncCollection(value: unknown): value is AccountSyncCollection {
+  return typeof value === "string" && accountSyncCollectionSet.has(value);
+}
 
 export type SyncChangeOperation = "upsert" | "delete";
 

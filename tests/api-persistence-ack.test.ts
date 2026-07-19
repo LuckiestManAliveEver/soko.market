@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildApi } from "../services/api/src/app";
+import { AccountSyncPersistenceError } from "../services/api/src/cp2/postgres-store";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 describe("API persistence acknowledgement barrier", () => {
@@ -44,6 +45,70 @@ describe("API persistence acknowledgement barrier", () => {
       statusCode: 500,
       error: "Internal Server Error"
     });
+    await app.close();
+  });
+
+  it("sanitizes account sync persistence failures without exposing PostgreSQL details", async () => {
+    const rawDatabaseMessage =
+      'new row for relation "account_sync_changes" violates check constraint';
+    const app = buildApi({
+      cp2: { store: createCp2Store() },
+      mutationPersistenceFlush: vi
+        .fn()
+        .mockRejectedValue(
+          new AccountSyncPersistenceError(
+            "account-internal-id",
+            "conversation_typing",
+            "account_sync_changes_collection_check",
+            { cause: new Error(rawDatabaseMessage) }
+          )
+        )
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/otp/request",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ channel: "email", destination: "sync-failure@example.test" })
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      code: "ACCOUNT_SYNC_INITIALIZATION_FAILED",
+      message: "We could not finish setting up your account. Please try again."
+    });
+    expect(response.body).not.toContain(rawDatabaseMessage);
+    expect(response.body).not.toContain("account_sync_changes");
+    await app.close();
+  });
+
+  it("does not issue an orphaned session cookie when PIN login persistence fails", async () => {
+    const store = createCp2Store();
+    const phone = "+254700200001";
+    store.signupWithPhonePin({ destination: phone, pin: "1234" });
+    const app = buildApi({
+      cp2: { store },
+      mutationPersistenceFlush: vi
+        .fn()
+        .mockRejectedValue(
+          new AccountSyncPersistenceError(
+            "account-internal-id",
+            "conversation_typing",
+            "account_sync_changes_collection_check"
+          )
+        )
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.json()).toMatchObject({ code: "ACCOUNT_SYNC_INITIALIZATION_FAILED" });
     await app.close();
   });
 });

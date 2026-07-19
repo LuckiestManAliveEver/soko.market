@@ -11,6 +11,7 @@ import {
   type RegistrationResponseJSON
 } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
+import { isAccountSyncCollection } from "@soko/shared-types";
 import type {
   AccountSummary,
   ActiveAiModelSummary,
@@ -9382,11 +9383,9 @@ export class Cp2Store {
     };
 
     this.sessions.set(session.id, session);
-    const conversation = this.createAccountConversation({
+    const conversation = this.ensurePersonalAccountConversation({
       accountId: account.id,
       userId: user.id,
-      kind: "personal",
-      activeShopId: null,
       now
     });
     const context: StoredSokoSessionContext = {
@@ -9430,11 +9429,9 @@ export class Cp2Store {
       return existing;
     }
 
-    const conversation = this.createAccountConversation({
+    const conversation = this.ensurePersonalAccountConversation({
       accountId: session.account.id,
       userId: session.user.id,
-      kind: "personal",
-      activeShopId: null,
       now
     });
     const context: StoredSokoSessionContext = {
@@ -9499,6 +9496,14 @@ export class Cp2Store {
     entity: unknown | null;
     now: Date;
   }): SyncChange {
+    if (!isAccountSyncCollection(input.collection)) {
+      throw new Cp2Error(
+        500,
+        "account_sync_collection_invalid",
+        "Account sync initialization could not be completed."
+      );
+    }
+
     const sequence = this.nextSyncSequenceByAccount.get(input.accountId) ?? 1;
     const changedAt = input.now.toISOString();
     const change: SyncChange = {
@@ -9698,6 +9703,29 @@ export class Cp2Store {
     );
 
     return conversation;
+  }
+
+  private ensurePersonalAccountConversation(input: {
+    accountId: string;
+    userId: string;
+    now: Date;
+  }): ConversationSummary {
+    const existing = [...this.conversations.values()].find(
+      (conversation) =>
+        conversation.accountId === input.accountId &&
+        conversation.kind === "personal" &&
+        conversation.activeShopId === null &&
+        this.accountConversationParticipant(conversation.id, input.accountId) !== null
+    );
+
+    return (
+      existing ??
+      this.createAccountConversation({
+        ...input,
+        kind: "personal",
+        activeShopId: null
+      })
+    );
   }
 
   private requireAccountConversation(

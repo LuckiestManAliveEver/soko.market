@@ -1,5 +1,7 @@
 const unexplainedErrorMessage =
   "Soko could not complete this request because the server did not provide an explanation. Please try again.";
+export const accountSyncInitializationMessage =
+  "We could not finish setting up your account. Please try again.";
 
 export function getUserFacingErrorMessage(
   error: unknown,
@@ -17,6 +19,20 @@ export function getUserFacingErrorMessage(
 
   if (/aborterror|the operation was aborted|request was aborted/i.test(message)) {
     return "The request was cancelled before it finished. Try again when you are ready.";
+  }
+
+  return message;
+}
+
+export function getAccountLoginErrorMessage(error: unknown): string {
+  const message = getUserFacingErrorMessage(error, accountSyncInitializationMessage);
+
+  if (
+    /account_sync_changes|check constraint|databaseerror|postgres(?:ql)?|new row for relation/iu.test(
+      message
+    )
+  ) {
+    return accountSyncInitializationMessage;
   }
 
   return message;

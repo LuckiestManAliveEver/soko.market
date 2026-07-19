@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  accountSyncInitializationMessage,
+  getAccountLoginErrorMessage,
   getResponseErrorMessage,
   getUserFacingErrorMessage
 } from "../apps/web/src/user-facing-error";
@@ -24,6 +26,28 @@ describe("frontend user guidance", () => {
     expect(await getResponseErrorMessage(new Response(null, { status: 401 }))).toBe(
       "Your session is missing or has expired. Sign in and try again."
     );
+  });
+
+  it("sanitizes login initialization errors and guarantees the pending action is released", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const asyncActions = readFileSync("apps/web/src/hooks/useAsyncActions.ts", "utf8");
+    const login = application.slice(
+      application.indexOf("async function loginWithPin"),
+      application.indexOf("async function loginWithPasskey")
+    );
+
+    expect(
+      getAccountLoginErrorMessage(
+        new Error(
+          'new row for relation "account_sync_changes" violates check constraint "account_sync_changes_collection_check"'
+        )
+      )
+    ).toBe(accountSyncInitializationMessage);
+    expect(login).toContain("getAccountLoginErrorMessage(error)");
+    expect(login).not.toContain("setDestination(");
+    expect(asyncActions).toContain("if (activeActions.current.has(key)) return undefined");
+    expect(asyncActions).toContain("finally");
+    expect(asyncActions).toContain("activeActions.current.delete(key)");
   });
 
   it("keeps Messages beside Marketplace as a pill and labels the network card My Network", () => {

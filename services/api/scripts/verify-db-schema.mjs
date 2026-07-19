@@ -17,7 +17,11 @@ const migrationFilenames = [
   "025_passkeys.sql",
   "026_otp_recovery_purpose.sql",
   "027_product_field_schemas.sql",
-  "028_data_pipeline_infrastructure.sql"
+  "028_data_pipeline_infrastructure.sql",
+  "029_owner_phone_identity.sql",
+  "030_phone_pin_recovery_code.sql",
+  "031_message_delivery_state.sql",
+  "032_account_sync_collection_constraint.sql"
 ];
 
 if (databaseUrl === undefined || databaseUrl.trim() === "") {

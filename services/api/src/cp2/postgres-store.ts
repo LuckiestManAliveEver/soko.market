@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { SyncRealtimeChangesAvailableEvent } from "@soko/shared-types";
+import {
+  isAccountSyncCollection,
+  type AccountSyncCollection,
+  type SyncRealtimeChangesAvailableEvent
+} from "@soko/shared-types";
 import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
 import { createCp2Store, type Cp2Snapshot, type Cp2Store, type Cp2StoreOptions } from "./store.js";
 
@@ -219,6 +223,20 @@ export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
   databaseUrl: string;
 }
 
+export class AccountSyncPersistenceError extends Error {
+  readonly code = "ACCOUNT_SYNC_INITIALIZATION_FAILED";
+
+  constructor(
+    readonly accountId: string,
+    readonly attemptedCollection: string,
+    readonly constraintName: string | null,
+    options?: ErrorOptions
+  ) {
+    super("Account sync initialization could not be completed.", options);
+    this.name = "AccountSyncPersistenceError";
+  }
+}
+
 export type PostgresCp2Store = Cp2Store & {
   close: () => Promise<void>;
   flush: () => Promise<void>;
@@ -251,7 +269,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "031_message_delivery_state.sql";
+const requiredMigrationFilename = "032_account_sync_collection_constraint.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -293,6 +311,7 @@ export async function createPostgresCp2Store(
     }
   }
 
+  let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
   let lastPersistenceError: unknown = null;
   let lastRealtimeListenerError: unknown = null;
@@ -356,6 +375,7 @@ export async function createPostgresCp2Store(
       .then(async () => {
         const snapshot = store.snapshot();
         await saveNormalizedSnapshot(pool, snapshot);
+        lastPersistedSnapshot = structuredClone(snapshot);
         try {
           await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
           lastRealtimePublishError = null;
@@ -369,8 +389,25 @@ export async function createPostgresCp2Store(
           lastPersistenceError = null;
         },
         (error: unknown) => {
+          store.hydrateSnapshot(structuredClone(lastPersistedSnapshot));
           lastPersistenceError = error;
-          console.error("Failed to persist CP2 store records.", error);
+          console.error(
+            JSON.stringify({
+              event: "cp2_persistence_failed",
+              code:
+                error instanceof AccountSyncPersistenceError
+                  ? error.code
+                  : "CP2_PERSISTENCE_FAILED",
+              accountId:
+                error instanceof AccountSyncPersistenceError ? error.accountId : "unavailable",
+              attemptedCollection:
+                error instanceof AccountSyncPersistenceError
+                  ? error.attemptedCollection
+                  : "unavailable",
+              constraintName:
+                error instanceof AccountSyncPersistenceError ? error.constraintName : null
+            })
+          );
         }
       );
   }
@@ -702,6 +739,27 @@ function normalizeDatabaseSslMode(connectionString: string): string {
     /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
     "$1sslmode=verify-full"
   );
+}
+
+function requireAccountSyncCollection(accountId: string, value: unknown): AccountSyncCollection {
+  if (isAccountSyncCollection(value)) {
+    return value;
+  }
+
+  throw new AccountSyncPersistenceError(
+    accountId,
+    typeof value === "string" ? value : typeof value,
+    null
+  );
+}
+
+function readConstraintName(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("constraint" in error)) {
+    return null;
+  }
+
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return typeof constraint === "string" ? constraint : null;
 }
 
 async function assertDatabaseMigrated(pool: Pool): Promise<void> {
@@ -1453,7 +1511,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     account_id: string;
     sequence: string;
     cursor: string;
-    collection: Cp2Snapshot["syncChanges"][number]["collection"];
+    collection: string;
     entity_id: string;
     operation: Cp2Snapshot["syncChanges"][number]["operation"];
     shop_id: string | null;
@@ -1470,19 +1528,22 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
       order by account_id, sequence
     `
   );
-  snapshot.syncChanges = syncChangesResult.rows.map((row) => ({
-    accountId: row.account_id,
-    sequence: Number(row.sequence),
-    cursor: row.cursor,
-    collection: row.collection,
-    entityId: row.entity_id,
-    operation: row.operation,
-    shopId: row.shop_id,
-    entity: row.entity,
-    changedAt: timestampToIso(row.changed_at),
-    tombstoneExpiresAt:
-      row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
-  }));
+  snapshot.syncChanges = syncChangesResult.rows.map((row) => {
+    const collection = requireAccountSyncCollection(row.account_id, row.collection);
+    return {
+      accountId: row.account_id,
+      sequence: Number(row.sequence),
+      cursor: row.cursor,
+      collection,
+      entityId: row.entity_id,
+      operation: row.operation,
+      shopId: row.shop_id,
+      entity: row.entity,
+      changedAt: timestampToIso(row.changed_at),
+      tombstoneExpiresAt:
+        row.tombstone_expires_at === null ? null : timestampToIso(row.tombstone_expires_at)
+    };
+  });
 
   const mcpAccessTokensResult = await timedQuery<{
     id: string;
@@ -1524,6 +1585,10 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
 }
 
 async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
+  for (const change of snapshot.syncChanges) {
+    requireAccountSyncCollection(change.accountId, change.collection);
+  }
+
   const client = await pool.connect();
   const startedAt = Date.now();
 
@@ -2103,36 +2168,45 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   );
 
   for (const change of snapshot.syncChanges) {
-    await client.query(
-      `
-        insert into account_sync_changes (
-          account_id, sequence, cursor, collection, entity_id, operation,
-          shop_id, entity, changed_at, tombstone_expires_at
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
-        on conflict (account_id, sequence) do update set
-          cursor = excluded.cursor,
-          collection = excluded.collection,
-          entity_id = excluded.entity_id,
-          operation = excluded.operation,
-          shop_id = excluded.shop_id,
-          entity = excluded.entity,
-          changed_at = excluded.changed_at,
-          tombstone_expires_at = excluded.tombstone_expires_at
-      `,
-      [
+    try {
+      await client.query(
+        `
+          insert into account_sync_changes (
+            account_id, sequence, cursor, collection, entity_id, operation,
+            shop_id, entity, changed_at, tombstone_expires_at
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+          on conflict (account_id, sequence) do update set
+            cursor = excluded.cursor,
+            collection = excluded.collection,
+            entity_id = excluded.entity_id,
+            operation = excluded.operation,
+            shop_id = excluded.shop_id,
+            entity = excluded.entity,
+            changed_at = excluded.changed_at,
+            tombstone_expires_at = excluded.tombstone_expires_at
+        `,
+        [
+          change.accountId,
+          change.sequence,
+          change.cursor,
+          change.collection,
+          change.entityId,
+          change.operation,
+          change.shopId,
+          change.entity === null ? null : JSON.stringify(change.entity),
+          change.changedAt,
+          change.tombstoneExpiresAt
+        ]
+      );
+    } catch (cause) {
+      throw new AccountSyncPersistenceError(
         change.accountId,
-        change.sequence,
-        change.cursor,
         change.collection,
-        change.entityId,
-        change.operation,
-        change.shopId,
-        change.entity === null ? null : JSON.stringify(change.entity),
-        change.changedAt,
-        change.tombstoneExpiresAt
-      ]
-    );
+        readConstraintName(cause),
+        { cause }
+      );
+    }
   }
 }
 

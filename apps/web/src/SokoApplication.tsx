@@ -87,7 +87,7 @@ import {
 } from "./e2ee";
 import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
-import { getUserFacingErrorMessage } from "./user-facing-error";
+import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "./lib/api";
 import {
   queueMessagingOutbox,
@@ -3023,7 +3023,7 @@ export function OwnerApp() {
       );
       setStatusMessage("Login complete");
     } catch (error) {
-      setStatusMessage(getErrorMessage(error));
+      setStatusMessage(getAccountLoginErrorMessage(error));
     }
   }
 

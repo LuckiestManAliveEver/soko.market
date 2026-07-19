@@ -15,6 +15,11 @@ import {
   uuid
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { ACCOUNT_SYNC_COLLECTIONS } from "../../packages/shared-types/src/index.js";
+
+const accountSyncCollectionValues = sql.raw(
+  ACCOUNT_SYNC_COLLECTIONS.map((collection) => `'${collection}'`).join(", ")
+);
 
 export const businessEvents = pgTable("business_events", {
   id: uuid("id").primaryKey(),
@@ -356,6 +361,10 @@ export const accountSyncChanges = pgTable(
       table.sequence
     ),
     cursorUnique: uniqueIndex("account_sync_changes_cursor_unique_idx").on(table.cursor),
+    validCollection: check(
+      "account_sync_changes_collection_check",
+      sql`${table.collection} in (${accountSyncCollectionValues})`
+    ),
     validPayload: check(
       "account_sync_changes_valid_payload_check",
       sql`(${table.operation} = 'upsert' and ${table.entity} is not null and ${table.tombstoneExpiresAt} is null) or (${table.operation} = 'delete' and ${table.entity} is null and ${table.tombstoneExpiresAt} is not null)`

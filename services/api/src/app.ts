@@ -61,6 +61,33 @@ export function buildApi(options: BuildApiOptions = {}) {
     return payload;
   });
 
+  app.setErrorHandler((error, request, reply) => {
+    const syncFailure = readAccountSyncFailure(error);
+    if (syncFailure === null) {
+      return reply.send(error);
+    }
+
+    request.log.error(
+      {
+        operation:
+          request.routeOptions.url === "/auth/pin/login"
+            ? "phone_pin_owner_login"
+            : "persist_account_sync_change",
+        accountId: syncFailure.accountId,
+        attemptedCollection: syncFailure.attemptedCollection,
+        constraintName: syncFailure.constraintName,
+        requestCorrelationId: request.id,
+        code: "ACCOUNT_SYNC_INITIALIZATION_FAILED"
+      },
+      "Account sync persistence failed."
+    );
+    reply.removeHeader("set-cookie");
+    return reply.code(503).send({
+      code: "ACCOUNT_SYNC_INITIALIZATION_FAILED",
+      message: "We could not finish setting up your account. Please try again."
+    });
+  });
+
   void app.register(async (routes) => {
     routes.get(
       "/health",
@@ -142,4 +169,30 @@ function readOAuthAllowedRedirectOrigins(fallback: string[]): string[] {
     .map((origin) => new URL(origin).origin);
 
   return origins.length > 0 ? [...new Set(origins)] : fallback;
+}
+
+function readAccountSyncFailure(error: unknown): {
+  accountId: string;
+  attemptedCollection: string;
+  constraintName: string | null;
+} | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    error.code !== "ACCOUNT_SYNC_INITIALIZATION_FAILED"
+  ) {
+    return null;
+  }
+
+  const record = error as Record<string, unknown>;
+  if (typeof record.accountId !== "string" || typeof record.attemptedCollection !== "string") {
+    return null;
+  }
+
+  return {
+    accountId: record.accountId,
+    attemptedCollection: record.attemptedCollection,
+    constraintName: typeof record.constraintName === "string" ? record.constraintName : null
+  };
 }
