@@ -356,10 +356,6 @@ export const accountSyncChanges = pgTable(
   },
   (table) => ({
     primary: primaryKey({ columns: [table.accountId, table.sequence] }),
-    accountSequence: index("account_sync_changes_account_sequence_idx").on(
-      table.accountId,
-      table.sequence
-    ),
     cursorUnique: uniqueIndex("account_sync_changes_cursor_unique_idx").on(table.cursor),
     validCollection: check(
       "account_sync_changes_collection_check",

@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { Pool } from "pg";
+import { databasePoolConfig, readDatabaseUrl } from "./database-connection.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const rollbacksDir = resolve(rootDir, "infra/db/rollbacks");
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 const rollbackEnabled = process.env.ALLOW_DB_ROLLBACK?.trim().toLowerCase() === "true";
 const requestedSteps = Number(process.env.DB_ROLLBACK_STEPS ?? "0");
 
@@ -15,7 +16,7 @@ if (!rollbackEnabled) {
   process.exit(1);
 }
 
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+if (databaseUrl === null) {
   console.error(
     "DATABASE_URL or DIRECT_DATABASE_URL is required to roll back database migrations."
   );
@@ -27,7 +28,13 @@ if (!Number.isInteger(requestedSteps) || requestedSteps <= 0) {
   process.exit(1);
 }
 
-const pool = new Pool(poolConfig(databaseUrl));
+const pool = new Pool(
+  databasePoolConfig(databaseUrl, {
+    applicationName: "soko-market-rollback",
+    max: 2,
+    useQueryTimeouts: false
+  })
+);
 
 try {
   await withAdvisoryLock(async () => {
@@ -101,24 +108,4 @@ async function withAdvisoryLock(callback) {
       .catch(() => undefined);
     client.release();
   }
-}
-
-function poolConfig(connectionString) {
-  connectionString = normalizeDatabaseSslMode(connectionString);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    connectionString,
-    max: 2,
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString) {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
-  );
 }

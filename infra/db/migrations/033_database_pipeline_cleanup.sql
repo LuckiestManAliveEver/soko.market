@@ -1,0 +1,32 @@
+drop index if exists account_sync_changes_account_sequence_idx;
+
+alter table accounts
+  validate constraint accounts_primary_auth_destination_nonempty_check;
+alter table users
+  validate constraint users_display_name_nonempty_check;
+alter table businesses
+  validate constraint businesses_name_nonempty_check;
+alter table products
+  validate constraint products_name_nonempty_check;
+alter table products
+  validate constraint products_quantity_nonnegative_check;
+alter table products
+  validate constraint products_unit_nonempty_check;
+alter table customers
+  validate constraint customers_name_nonempty_check;
+alter table suppliers
+  validate constraint suppliers_name_nonempty_check;
+alter table invoices
+  validate constraint invoices_amounts_nonnegative_check;
+alter table invoice_items
+  validate constraint invoice_items_amounts_positive_check;
+alter table payments
+  validate constraint payments_amount_positive_check;
+alter table sales_agents
+  validate constraint sales_agents_name_nonempty_check;
+alter table receipt_ocr_jobs
+  validate constraint receipt_ocr_jobs_confidence_range_check;
+alter table purchase_receipts
+  validate constraint purchase_receipts_total_nonnegative_check;
+alter table receipt_line_items
+  validate constraint receipt_line_items_amounts_positive_check;

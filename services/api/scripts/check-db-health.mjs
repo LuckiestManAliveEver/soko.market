@@ -1,13 +1,19 @@
 import { Pool } from "pg";
+import { databasePoolConfig, readDatabaseUrl } from "./database-connection.mjs";
 
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to check database health.");
   process.exit(1);
 }
 
-const pool = new Pool(poolConfig(databaseUrl));
+const pool = new Pool(
+  databasePoolConfig(databaseUrl, {
+    applicationName: "soko-market-db-health",
+    poolMaxFallback: 2
+  })
+);
 const startedAt = Date.now();
 
 try {
@@ -67,44 +73,4 @@ try {
   process.exitCode = 1;
 } finally {
   await pool.end();
-}
-
-function poolConfig(connectionString) {
-  connectionString = normalizeDatabaseSslMode(connectionString);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    connectionString,
-    connectionTimeoutMillis: numberFromEnv("DB_CONNECTION_TIMEOUT_MS", 5000),
-    idleTimeoutMillis: numberFromEnv("DB_IDLE_TIMEOUT_MS", 30000),
-    max: numberFromEnv("DB_POOL_MAX", 2),
-    query_timeout: numberFromEnv("DB_QUERY_TIMEOUT_MS", 15000),
-    statement_timeout: numberFromEnv("DB_STATEMENT_TIMEOUT_MS", 15000),
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString) {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
-  );
-}
-
-function numberFromEnv(name, fallback) {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-
-  return parsed;
 }

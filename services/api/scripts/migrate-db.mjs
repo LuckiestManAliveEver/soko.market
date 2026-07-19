@@ -3,29 +3,27 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { Pool } from "pg";
+import {
+  databasePoolConfig,
+  isAcceptedMigrationChecksum,
+  readDatabaseUrl
+} from "./database-connection.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const migrationsDir = resolve(rootDir, "infra/db/migrations");
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
-// Migration 014 originally copied orphaned compatibility PINs without resolving
-// their account. Databases that completed that safe subset may retain its exact
-// historical checksum; all other checksum drift still fails closed.
-const legacyMigrationChecksums = new Map([
-  [
-    "014_cp2_phase1_auth_security_relational.sql",
-    new Set([
-      "bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a",
-      "695019b487acf03ba6dfe87c64c5dd4204bbb52bfb9d551d8623cff2519560a6"
-    ])
-  ]
-]);
-
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+const databaseUrl = readDatabaseUrl();
+if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to run database migrations.");
   process.exit(1);
 }
 
-const pool = new Pool(poolConfig(databaseUrl));
+const pool = new Pool(
+  databasePoolConfig(databaseUrl, {
+    applicationName: "soko-market-migrate",
+    max: 2,
+    useQueryTimeouts: false
+  })
+);
 
 try {
   await ensureMigrationTable();
@@ -41,7 +39,7 @@ try {
       if (alreadyApplied.rows.length > 0) {
         const appliedChecksum = alreadyApplied.rows[0]?.checksum;
 
-        if (!isAcceptedChecksum(migration.filename, appliedChecksum, migration.checksum)) {
+        if (!isAcceptedMigrationChecksum(migration.filename, appliedChecksum, migration.checksum)) {
           throw new Error(
             `Migration checksum mismatch for ${migration.filename}. Refusing to continue.`
           );
@@ -78,13 +76,6 @@ try {
   console.log("Database migrations are up to date.");
 } finally {
   await pool.end();
-}
-
-function isAcceptedChecksum(filename, appliedChecksum, currentChecksum) {
-  return (
-    appliedChecksum === currentChecksum ||
-    legacyMigrationChecksums.get(filename)?.has(appliedChecksum) === true
-  );
 }
 
 async function ensureMigrationTable() {
@@ -127,25 +118,5 @@ async function listMigrations() {
         sql
       };
     })
-  );
-}
-
-function poolConfig(connectionString) {
-  connectionString = normalizeDatabaseSslMode(connectionString);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    connectionString,
-    max: 2,
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString) {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
   );
 }

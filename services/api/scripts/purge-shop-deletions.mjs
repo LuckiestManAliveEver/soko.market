@@ -1,8 +1,9 @@
 import { createPostgresCp2Store } from "../dist/cp2/postgres-store.js";
+import { readDatabaseUrl } from "./database-connection.mjs";
 
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to purge expired shops.");
   process.exit(1);
 }

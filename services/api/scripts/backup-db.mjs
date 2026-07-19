@@ -4,10 +4,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath, URL } from "node:url";
 import { Pool } from "pg";
+import { databasePoolConfig, readDatabaseUrl } from "./database-connection.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const backupDir = resolve(process.env.BACKUP_DIR ?? resolve(rootDir, "backups"));
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 const uploadCommand = process.env.BACKUP_UPLOAD_COMMAND;
 const retentionDays = Number(process.env.BACKUP_RETENTION_DAYS ?? "14");
 
@@ -18,7 +19,7 @@ if (process.env.NODE_ENV === "production" && isBlank(uploadCommand)) {
   process.exit(1);
 }
 
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to create a database backup.");
   process.exit(1);
 }
@@ -34,7 +35,12 @@ const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const outputPath = resolve(backupDir, `soko-market-${stamp}.dump`);
 const runId = randomUUID();
 const startedAt = new Date();
-const pool = new Pool(poolConfig(databaseUrl));
+const pool = new Pool(
+  databasePoolConfig(databaseUrl, {
+    applicationName: "soko-market-backup",
+    max: 1
+  })
+);
 
 await recordBackupStarted();
 
@@ -153,25 +159,5 @@ async function recordBackupFailed(errorMessage) {
       where id = $1
     `,
     [runId, errorMessage]
-  );
-}
-
-function poolConfig(connectionString) {
-  connectionString = normalizeDatabaseSslMode(connectionString);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    connectionString,
-    max: 1,
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString) {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
   );
 }

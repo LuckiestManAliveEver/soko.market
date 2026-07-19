@@ -2,9 +2,10 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { databasePoolConfig, readDatabaseUrl } from "./database-connection.mjs";
 
 const backupFile = process.env.DB_BACKUP_FILE;
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 
 if (backupFile === undefined || backupFile.trim() === "" || !existsSync(backupFile)) {
   console.error("DB_BACKUP_FILE must point to an existing pg_dump custom-format backup.");
@@ -26,11 +27,16 @@ child.on("exit", async (code) => {
 });
 
 async function recordRestoreDrill(status) {
-  if (databaseUrl === undefined || databaseUrl.trim() === "") {
+  if (databaseUrl === null) {
     return;
   }
 
-  const pool = new Pool(poolConfig(databaseUrl));
+  const pool = new Pool(
+    databasePoolConfig(databaseUrl, {
+      applicationName: "soko-market-verify-backup",
+      max: 1
+    })
+  );
 
   try {
     await pool.query(
@@ -43,24 +49,4 @@ async function recordRestoreDrill(status) {
   } finally {
     await pool.end();
   }
-}
-
-function poolConfig(connectionString) {
-  connectionString = normalizeDatabaseSslMode(connectionString);
-  const sslRequired =
-    !/[?&]sslmode=/i.test(connectionString) &&
-    (connectionString.includes(".neon.tech") || connectionString.includes(".neon.database"));
-
-  return {
-    connectionString,
-    max: 1,
-    ...(sslRequired ? { ssl: true } : {})
-  };
-}
-
-function normalizeDatabaseSslMode(connectionString) {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
-  );
 }

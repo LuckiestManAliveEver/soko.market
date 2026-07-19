@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { readDatabaseUrl } from "./database-connection.mjs";
 
-const databaseUrl = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+const databaseUrl = readDatabaseUrl();
 const restoreFile = process.env.DB_RESTORE_FILE;
 
-if (databaseUrl === undefined || databaseUrl.trim() === "") {
+if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to restore a database backup.");
   process.exit(1);
 }

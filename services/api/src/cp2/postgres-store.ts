@@ -269,47 +269,66 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "032_account_sync_collection_constraint.sql";
+const requiredMigrationFilename = "033_database_pipeline_cleanup.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
 ): Promise<PostgresCp2Store> {
   const pool = new Pool(poolConfig(options.databaseUrl));
-  await assertDatabaseMigrated(pool);
-  const realtimePool = new Pool({ ...poolConfig(options.databaseUrl), max: 1 });
-
-  const store = createCp2Store({
-    ...(options.runtimeModelProvider === undefined
-      ? {}
-      : { runtimeModelProvider: options.runtimeModelProvider }),
-    ...(options.runtimeModelProviderResolver === undefined
-      ? {}
-      : { runtimeModelProviderResolver: options.runtimeModelProviderResolver }),
-    ...(options.pushNotificationSender === undefined
-      ? {}
-      : { pushNotificationSender: options.pushNotificationSender }),
-    ...(options.messageEmailNotificationSender === undefined
-      ? {}
-      : { messageEmailNotificationSender: options.messageEmailNotificationSender }),
-    ...(options.networkInviteSender === undefined
-      ? {}
-      : { networkInviteSender: options.networkInviteSender }),
-    ...(options.messageWebBaseUrl === undefined
-      ? {}
-      : { messageWebBaseUrl: options.messageWebBaseUrl }),
-    ...(options.accountDeletionProcessors === undefined
-      ? {}
-      : { accountDeletionProcessors: options.accountDeletionProcessors })
+  pool.on("error", (error) => {
+    console.error("Unexpected PostgreSQL pool error.", error);
   });
-  const savedSnapshot = await loadNormalizedSnapshot(pool);
+  let store: Cp2Store;
+  let savedSnapshot: Cp2Snapshot;
 
-  if (snapshotHasData(savedSnapshot)) {
-    store.hydrateSnapshot(savedSnapshot);
-    if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
-      await saveNormalizedSnapshot(pool, store.snapshot());
-    }
+  try {
+    await assertDatabaseMigrated(pool);
+    store = createCp2Store({
+      ...(options.runtimeModelProvider === undefined
+        ? {}
+        : { runtimeModelProvider: options.runtimeModelProvider }),
+      ...(options.runtimeModelProviderResolver === undefined
+        ? {}
+        : { runtimeModelProviderResolver: options.runtimeModelProviderResolver }),
+      ...(options.pushNotificationSender === undefined
+        ? {}
+        : { pushNotificationSender: options.pushNotificationSender }),
+      ...(options.messageEmailNotificationSender === undefined
+        ? {}
+        : { messageEmailNotificationSender: options.messageEmailNotificationSender }),
+      ...(options.networkInviteSender === undefined
+        ? {}
+        : { networkInviteSender: options.networkInviteSender }),
+      ...(options.messageWebBaseUrl === undefined
+        ? {}
+        : { messageWebBaseUrl: options.messageWebBaseUrl }),
+      ...(options.accountDeletionProcessors === undefined
+        ? {}
+        : { accountDeletionProcessors: options.accountDeletionProcessors })
+    });
+    savedSnapshot = await loadNormalizedSnapshot(pool);
+  } catch (error) {
+    await pool.end().catch(() => undefined);
+    throw error;
   }
+
+  try {
+    if (snapshotHasData(savedSnapshot)) {
+      store.hydrateSnapshot(savedSnapshot);
+      if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
+        await saveNormalizedSnapshot(pool, store.snapshot());
+      }
+    }
+  } catch (error) {
+    await pool.end().catch(() => undefined);
+    throw error;
+  }
+
+  const realtimePool = new Pool({ ...poolConfig(options.databaseUrl), max: 1 });
+  realtimePool.on("error", (error) => {
+    console.error("Unexpected PostgreSQL realtime pool error.", error);
+  });
 
   let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
@@ -735,10 +754,9 @@ function poolConfig(databaseUrl: string): PoolConfig {
 }
 
 function normalizeDatabaseSslMode(connectionString: string): string {
-  return connectionString.replace(
-    /([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi,
-    "$1sslmode=verify-full"
-  );
+  return connectionString
+    .trim()
+    .replace(/([?&])sslmode=(?:prefer|require|verify-ca)(?=&|$)/gi, "$1sslmode=verify-full");
 }
 
 function requireAccountSyncCollection(accountId: string, value: unknown): AccountSyncCollection {
