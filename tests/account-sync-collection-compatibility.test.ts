@@ -11,6 +11,10 @@ const migrationPath = resolve(
   process.cwd(),
   "infra/db/migrations/032_account_sync_collection_constraint.sql"
 );
+const repairMigrationPath = resolve(
+  process.cwd(),
+  "infra/db/migrations/034_account_sync_constraint_repair.sql"
+);
 
 describe("account sync collection compatibility", () => {
   it("defines the complete canonical registry once", () => {
@@ -39,6 +43,38 @@ describe("account sync collection compatibility", () => {
     for (const collection of ACCOUNT_SYNC_COLLECTIONS) {
       expect(constraintSql).toContain(`'${collection}'`);
     }
+  });
+
+  it("reasserts the canonical constraint during the current deployment", async () => {
+    const sql = await readFile(repairMigrationPath, "utf8");
+    const constraintSql = sql.slice(sql.lastIndexOf("add constraint"));
+
+    for (const collection of ACCOUNT_SYNC_COLLECTIONS) {
+      expect(constraintSql).toContain(`'${collection}'`);
+    }
+    expect(sql).toContain("drop constraint if exists account_sync_changes_collection_check");
+    expect(sql).toContain("refusing to repair account_sync_changes_collection_check");
+  });
+
+  it("persists authentication state before the non-critical sync journal", async () => {
+    const postgresStore = await readFile(
+      resolve(process.cwd(), "services/api/src/cp2/postgres-store.ts"),
+      "utf8"
+    );
+    const corePersistence = postgresStore.slice(
+      postgresStore.indexOf("async function saveRelationalCoreRecords"),
+      postgresStore.indexOf("async function replaceAccountSyncChanges")
+    );
+    const syncPersistence = postgresStore.slice(
+      postgresStore.indexOf("async function replaceAccountSyncChanges"),
+      postgresStore.indexOf("async function deleteRemovedAccountRelationalGraph")
+    );
+
+    expect(corePersistence).toContain("insert into sessions");
+    expect(corePersistence).not.toContain("insert into account_sync_changes");
+    expect(syncPersistence).toContain("insert into account_sync_changes");
+    expect(postgresStore).toContain("syncJournalError");
+    expect(postgresStore).toContain("authenticationBlocked: false");
   });
 
   it("normalizes known serializer aliases before replacing the constraint", async () => {

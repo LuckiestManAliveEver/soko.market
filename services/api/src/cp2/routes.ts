@@ -1571,6 +1571,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         destination: parseString(request.body.contact ?? request.body.destination, "contact"),
         pin: parseString(request.body.pin, "pin")
       });
+      request.log.info(
+        {
+          event: "auth.pin_verified",
+          accountId: result.account.id,
+          requestCorrelationId: request.id
+        },
+        "Owner PIN verified."
+      );
+      request.log.info(
+        {
+          event: "auth.session_created",
+          accountId: result.account.id,
+          sessionId: result.session.id,
+          requestCorrelationId: request.id
+        },
+        "Owner session created."
+      );
       reply.header("set-cookie", serializeSessionCookie(result.session.id));
       return result;
     } catch (error) {
@@ -1617,6 +1634,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       });
     }
 
+    request.log.info(
+      {
+        event: "auth.authenticated_user_loaded",
+        accountId: session.account.id,
+        sessionId: session.session.id,
+        requestCorrelationId: request.id
+      },
+      "Authenticated owner session loaded."
+    );
     return session;
   });
 

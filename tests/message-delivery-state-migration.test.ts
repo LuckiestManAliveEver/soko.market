@@ -18,7 +18,7 @@ describe("message delivery state migration", () => {
     expect(schema).toContain('idempotencyKey: text("idempotency_key")');
     expect(schema).toContain("export const messageDeliveryAttempts = pgTable(");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "033_database_pipeline_cleanup.sql"'
+      'requiredMigrationFilename = "034_account_sync_constraint_repair.sql"'
     );
     expect(postgresStore).toContain('tableName: "cp2_message_delivery_attempts"');
   });

@@ -66,6 +66,26 @@ describe("frontend user guidance", () => {
     expect(application).toContain('title: "My Network"');
   });
 
+  it("refreshes the active owner view on a bounded foreground schedule", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const refreshEffect = application.slice(
+      application.indexOf("async function refreshActiveView"),
+      application.indexOf("async function handleOAuthCallback")
+    );
+
+    expect(application).toContain("const uiBackgroundRefreshIntervalMs = 30_000");
+    expect(refreshEffect).toContain("window.setInterval");
+    expect(refreshEffect).toContain("uiBackgroundRefreshIntervalMs");
+    expect(refreshEffect).toContain('document.visibilityState !== "visible"');
+    expect(refreshEffect).toContain("!navigator.onLine");
+    expect(refreshEffect).toContain("refreshInFlight");
+    expect(refreshEffect).toContain("Promise.allSettled(refreshes)");
+    expect(refreshEffect).toContain('document.addEventListener("visibilitychange"');
+    expect(refreshEffect).toContain('window.addEventListener("focus"');
+    expect(refreshEffect).toContain('window.addEventListener("online"');
+    expect(refreshEffect).toContain("window.clearInterval(interval)");
+  });
+
   it("accepts only Markdown files in the protected context-file importer", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     expect(application).toContain('accept=".md,.markdown,text/markdown"');
@@ -217,6 +237,10 @@ describe("frontend user guidance", () => {
     expect(emailLogin).toContain("challengeId: challenge.challengeId");
     expect(emailLogin).toContain('postJson<SessionResponse>("/auth/pin/login"');
     expect(emailLogin).toContain("response.account.primaryAuthDestination");
+    expect(emailLogin).toContain('logAuthenticationLifecycle("session_response_received"');
+    expect(emailLogin).toContain('logAuthenticationLifecycle("frontend_session_stored"');
+    expect(emailLogin).toContain('logAuthenticationLifecycle("redirect_issued"');
+    expect(application).toContain('logAuthenticationLifecycle("authenticated_user_loaded"');
     expect(loginPanel).toContain("Send email code");
     expect(loginPanel).toContain("Email verification code");
     expect(loginPanel).toContain("Sign in with");

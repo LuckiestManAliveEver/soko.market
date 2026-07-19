@@ -212,6 +212,7 @@ interface SessionResponse {
     publicPhoneEnabled?: boolean;
   };
   session: {
+    id: string;
     expiresAt: string;
   };
 }
@@ -1569,6 +1570,7 @@ interface LaunchFormState {
 }
 
 const apiBaseUrl = readApiBaseUrl();
+const uiBackgroundRefreshIntervalMs = 30_000;
 const buildIdentity = {
   apiBaseUrl,
   appName: __APP_NAME__,
@@ -2435,88 +2437,133 @@ export function OwnerApp() {
       return;
     }
 
-    if (view === "chat") {
-      void loadProducts(business.id);
-      void loadProductFields(business.id);
-      void loadSuppliers(business.id);
-      void loadCustomers(business.id);
-      void loadInvoices(business.id);
-      void loadSyncQueue(business.id);
-      void loadReports(business.id);
-      void loadNotifications(business.id);
-      void loadRuntimeSessions(business.id);
+    let cancelled = false;
+    let refreshInFlight = false;
+    const businessId = business.id;
+
+    async function refreshActiveView(force = false) {
+      if (
+        cancelled ||
+        refreshInFlight ||
+        (!force &&
+          (session === null || !navigator.onLine || document.visibilityState !== "visible"))
+      ) {
+        return;
+      }
+
+      refreshInFlight = true;
+      const refreshes: Promise<void>[] = [];
+
+      if (view === "chat") {
+        refreshes.push(
+          loadProducts(businessId),
+          loadProductFields(businessId),
+          loadSuppliers(businessId),
+          loadCustomers(businessId),
+          loadInvoices(businessId),
+          loadSyncQueue(businessId),
+          loadReports(businessId),
+          loadNotifications(businessId),
+          loadRuntimeSessions(businessId)
+        );
+      }
+
+      if (view === "products") {
+        refreshes.push(loadProducts(businessId), loadProductFields(businessId));
+      }
+
+      if (view === "suppliers") {
+        refreshes.push(loadSuppliers(businessId));
+      }
+
+      if (view === "customers") {
+        refreshes.push(loadCustomers(businessId));
+      }
+
+      if (view === "invoices") {
+        refreshes.push(
+          loadProducts(businessId),
+          loadCustomers(businessId),
+          loadInvoices(businessId)
+        );
+      }
+
+      if (view === "home" || view === "sync") {
+        refreshes.push(loadSyncQueue(businessId), loadOfflineCache(businessId));
+      }
+
+      if (view === "chat" || view === "home" || view === "network") {
+        refreshes.push(loadNetworkGraph(), loadNetworkInvites(businessId));
+      }
+
+      if (view === "runtime") {
+        refreshes.push(loadRuntimeSessions(businessId));
+      }
+
+      if (view === "home" || view === "reports") {
+        refreshes.push(loadReports(businessId));
+      }
+
+      if (view === "home" || view === "notifications") {
+        refreshes.push(loadNotifications(businessId), loadStorefrontInbox(businessId));
+      }
+
+      if (view === "payments") {
+        refreshes.push(loadInvoices(businessId), loadPaymentData(businessId));
+      }
+
+      if (view === "imports") {
+        refreshes.push(
+          loadDocumentImports(businessId),
+          loadSuppliers(businessId),
+          loadProducts(businessId)
+        );
+      }
+
+      if (view === "logistics") {
+        refreshes.push(loadInvoices(businessId), loadLogistics(businessId));
+      }
+
+      if (view === "compliance") {
+        refreshes.push(loadCompliance(businessId));
+      }
+
+      if (view === "home" || view === "beta") {
+        refreshes.push(loadBetaReadiness(businessId));
+      }
+
+      if (view === "home" || view === "launch") {
+        refreshes.push(loadLaunchReadiness(businessId));
+      }
+
+      await Promise.allSettled(refreshes);
+      refreshInFlight = false;
     }
 
-    if (view === "products") {
-      void loadProducts(business.id);
-      void loadProductFields(business.id);
-    }
+    void refreshActiveView(true);
+    const interval = window.setInterval(
+      () => void refreshActiveView(),
+      uiBackgroundRefreshIntervalMs
+    );
+    const refreshWhenForegrounded = () => {
+      if (document.visibilityState === "visible") {
+        void refreshActiveView();
+      }
+    };
+    const refreshWhenOnline = () => void refreshActiveView();
 
-    if (view === "suppliers") {
-      void loadSuppliers(business.id);
-    }
+    document.addEventListener("visibilitychange", refreshWhenForegrounded);
+    window.addEventListener("focus", refreshWhenForegrounded);
+    window.addEventListener("online", refreshWhenOnline);
 
-    if (view === "customers") {
-      void loadCustomers(business.id);
-    }
-
-    if (view === "invoices") {
-      void loadProducts(business.id);
-      void loadCustomers(business.id);
-      void loadInvoices(business.id);
-    }
-
-    if (view === "home" || view === "sync") {
-      void loadSyncQueue(business.id);
-      void loadOfflineCache(business.id);
-    }
-
-    if (view === "chat" || view === "home" || view === "network") {
-      void loadNetworkGraph();
-      void loadNetworkInvites(business.id);
-    }
-
-    if (view === "runtime") {
-      void loadRuntimeSessions(business.id);
-    }
-
-    if (view === "home" || view === "reports") {
-      void loadReports(business.id);
-    }
-
-    if (view === "home" || view === "notifications") {
-      void loadNotifications(business.id);
-      void loadStorefrontInbox(business.id);
-    }
-
-    if (view === "payments") {
-      void loadInvoices(business.id);
-      void loadPaymentData(business.id);
-    }
-
-    if (view === "imports") {
-      void loadDocumentImports(business.id);
-      void loadSuppliers(business.id);
-      void loadProducts(business.id);
-    }
-
-    if (view === "logistics") {
-      void loadInvoices(business.id);
-      void loadLogistics(business.id);
-    }
-
-    if (view === "compliance") {
-      void loadCompliance(business.id);
-    }
-
-    if (view === "home" || view === "beta") {
-      void loadBetaReadiness(business.id);
-    }
-
-    if (view === "home" || view === "launch") {
-      void loadLaunchReadiness(business.id);
-    }
-  }, [business, setupComplete, view]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenForegrounded);
+      window.removeEventListener("focus", refreshWhenForegrounded);
+      window.removeEventListener("online", refreshWhenOnline);
+    };
+  }, [business?.id, session?.account.id, setupComplete, view]);
 
   async function handleOAuthCallback(): Promise<boolean> {
     if (window.location.pathname !== routes.oauthCallback) {
@@ -2635,6 +2682,7 @@ export function OwnerApp() {
 
       if (response.ok) {
         const nextSession = (await response.json()) as SessionResponse;
+        logAuthenticationLifecycle("authenticated_user_loaded", nextSession);
         setSession(nextSession);
         setIsWorkspaceUnlocked(true);
         if (!accountDeletionIntent && !accountRestorationIntent) {
@@ -3023,6 +3071,7 @@ export function OwnerApp() {
         contact: contactValue,
         pin: loginPin
       });
+      logAuthenticationLifecycle("session_response_received", response);
       setSession(response);
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: contactValue,
@@ -3036,12 +3085,16 @@ export function OwnerApp() {
       setIsLoginOpen(false);
       setIsOtpVerified(false);
       setLoginPin("");
+      logAuthenticationLifecycle("frontend_session_stored", response);
       if (accountRestorationIntent) {
         setIsAccountRestorationOpen(true);
         setStatusMessage("Login complete. Re-enter your PIN to restore the account.");
         return;
       }
       const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
+      logAuthenticationLifecycle("redirect_issued", response, {
+        destination: pathForOwnerView(destinationView, mode)
+      });
       setView(destinationView);
       window.history.replaceState(
         { mode, view: destinationView },
@@ -17738,6 +17791,21 @@ function runViewTransition(update: () => void): void {
   }
 
   update();
+}
+
+function logAuthenticationLifecycle(
+  event: string,
+  session: SessionResponse,
+  details: Record<string, unknown> = {}
+): void {
+  console.info(
+    JSON.stringify({
+      event: `auth.${event}`,
+      accountId: session.account.id,
+      sessionId: session.session.id,
+      ...details
+    })
+  );
 }
 
 function contactPickerContactToCustomer(

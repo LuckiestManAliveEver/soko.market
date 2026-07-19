@@ -120,7 +120,7 @@ describePostgres("CP2 Postgres store", () => {
     expect((await restoredStore.health()).syncChangeCount).toBeGreaterThan(0);
 
     await restoredApp.close();
-  });
+  }, 15_000);
 
   it("completes phone PIN login with canonical, non-duplicated sync rows", async () => {
     expect(databaseUrl).toBeDefined();
@@ -165,6 +165,7 @@ describePostgres("CP2 Postgres store", () => {
     await store.flush();
     expect(await syncCount(pool, accountId)).toBe(countBeforeWrongPin);
 
+    const loginSessionIds: string[] = [];
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const login = await app.inject({
         method: "POST",
@@ -173,7 +174,21 @@ describePostgres("CP2 Postgres store", () => {
         payload: JSON.stringify({ method: "phone", contact: uniquePhone, pin: "4826" })
       });
       expect(login.statusCode).toBe(200);
-      expect(extractSessionCookie(login.headers["set-cookie"])).toContain("soko_session=");
+      const loginCookie = extractSessionCookie(login.headers["set-cookie"]);
+      const loginBody = login.json<{ session: { id: string } }>();
+      loginSessionIds.push(loginBody.session.id);
+      expect(loginCookie).toContain("soko_session=");
+
+      const authenticated = await app.inject({
+        method: "GET",
+        url: "/session",
+        headers: { cookie: loginCookie }
+      });
+      expect(authenticated.statusCode).toBe(200);
+      expect(authenticated.json()).toMatchObject({
+        account: { id: accountId },
+        session: { id: loginBody.session.id }
+      });
     }
 
     const rows = await pool.query<{ collection: string }>(
@@ -202,6 +217,11 @@ describePostgres("CP2 Postgres store", () => {
       [accountId]
     );
     expect(duplicates.rows[0]?.count).toBe("0");
+    const persistedLoginSessions = await pool.query<{ count: string }>(
+      "select count(*)::text as count from sessions where id = any($1::uuid[])",
+      [loginSessionIds]
+    );
+    expect(persistedLoginSessions.rows[0]?.count).toBe("2");
 
     const constraint = await pool.query<{ definition: string }>(
       `
@@ -217,7 +237,7 @@ describePostgres("CP2 Postgres store", () => {
     await pool.end();
     await app.close();
     await store.close();
-  });
+  }, 15_000);
 
   it("normalizes known aliases and fails safely on unknown historical collections", async () => {
     expect(databaseUrl).toBeDefined();
@@ -259,7 +279,7 @@ describePostgres("CP2 Postgres store", () => {
       client.release();
       await pool.end();
     }
-  });
+  }, 15_000);
 });
 
 async function syncCount(pool: SqlExecutor, accountId: string): Promise<number> {

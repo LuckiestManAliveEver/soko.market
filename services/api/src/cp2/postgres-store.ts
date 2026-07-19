@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
   type AccountSyncCollection,
   type SyncRealtimeChangesAvailableEvent
@@ -249,6 +250,10 @@ export interface PostgresStoreHealth {
   latencyMs: number;
   latestMigration: string | null;
   persistenceError: string | null;
+  syncJournal: {
+    status: "ok" | "degraded";
+    error: string | null;
+  };
   realtimeFanout: {
     status: "ok" | "degraded";
     error: string | null;
@@ -269,7 +274,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "033_database_pipeline_cleanup.sql";
+const requiredMigrationFilename = "034_account_sync_constraint_repair.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -281,6 +286,7 @@ export async function createPostgresCp2Store(
   });
   let store: Cp2Store;
   let savedSnapshot: Cp2Snapshot;
+  let initialSyncPersistenceError: AccountSyncPersistenceError | null = null;
 
   try {
     await assertDatabaseMigrated(pool);
@@ -317,7 +323,8 @@ export async function createPostgresCp2Store(
     if (snapshotHasData(savedSnapshot)) {
       store.hydrateSnapshot(savedSnapshot);
       if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
-        await saveNormalizedSnapshot(pool, store.snapshot());
+        const result = await saveNormalizedSnapshot(pool, store.snapshot());
+        initialSyncPersistenceError = result.syncJournalError;
       }
     }
   } catch (error) {
@@ -333,6 +340,10 @@ export async function createPostgresCp2Store(
   let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
   let lastPersistenceError: unknown = null;
+  let lastSyncPersistenceError: AccountSyncPersistenceError | null = initialSyncPersistenceError;
+  if (lastSyncPersistenceError !== null) {
+    logAccountSyncDegradation(lastSyncPersistenceError);
+  }
   let lastRealtimeListenerError: unknown = null;
   let lastRealtimePublishError: unknown = null;
   const instanceId = randomUUID();
@@ -393,8 +404,13 @@ export async function createPostgresCp2Store(
     saveQueue = saveQueue
       .then(async () => {
         const snapshot = store.snapshot();
-        await saveNormalizedSnapshot(pool, snapshot);
+        const result = await saveNormalizedSnapshot(pool, snapshot);
         lastPersistedSnapshot = structuredClone(snapshot);
+        lastSyncPersistenceError = result.syncJournalError;
+        if (result.syncJournalError !== null) {
+          logAccountSyncDegradation(result.syncJournalError);
+          return;
+        }
         try {
           await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
           lastRealtimePublishError = null;
@@ -535,7 +551,12 @@ export async function createPostgresCp2Store(
 
     return {
       database: "postgres",
-      status: lastPersistenceError === null && lastRealtimeError === null ? "ok" : "degraded",
+      status:
+        lastPersistenceError === null &&
+        lastSyncPersistenceError === null &&
+        lastRealtimeError === null
+          ? "ok"
+          : "degraded",
       latencyMs: Date.now() - startedAt,
       latestMigration: row?.latest_migration ?? null,
       persistenceError:
@@ -544,6 +565,13 @@ export async function createPostgresCp2Store(
           : lastPersistenceError === null
             ? null
             : "PostgreSQL persistence failed.",
+      syncJournal:
+        lastSyncPersistenceError === null
+          ? { status: "ok", error: null }
+          : {
+              status: "degraded",
+              error: "Account sync journal persistence is temporarily unavailable."
+            },
       realtimeFanout:
         lastRealtimeError === null
           ? { status: "ok", error: null }
@@ -771,6 +799,37 @@ function requireAccountSyncCollection(accountId: string, value: unknown): Accoun
   );
 }
 
+function normalizeAccountSyncPersistenceError(
+  error: unknown,
+  snapshot: Cp2Snapshot
+): AccountSyncPersistenceError {
+  if (error instanceof AccountSyncPersistenceError) {
+    return error;
+  }
+
+  const attemptedChange = snapshot.syncChanges.at(-1);
+  return new AccountSyncPersistenceError(
+    attemptedChange?.accountId ?? "unavailable",
+    attemptedChange?.collection ?? "unavailable",
+    readConstraintName(error),
+    { cause: error }
+  );
+}
+
+function logAccountSyncDegradation(error: AccountSyncPersistenceError): void {
+  console.error(
+    JSON.stringify({
+      event: "account_sync_changes_insert_failed",
+      code: error.code,
+      accountId: error.accountId,
+      attemptedCollection: error.attemptedCollection,
+      constraintName: error.constraintName,
+      criticalPersistenceCommitted: true,
+      authenticationBlocked: false
+    })
+  );
+}
+
 function readConstraintName(error: unknown): string | null {
   if (typeof error !== "object" || error === null || !("constraint" in error)) {
     return null;
@@ -805,6 +864,32 @@ async function assertDatabaseMigrated(pool: Pool): Promise<void> {
   if (result.rows[0]?.applied !== true) {
     throw new Error(
       `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredMigrationFilename}.`
+    );
+  }
+
+  const constraint = await pool.query<{ definition: string }>(
+    `
+      select pg_get_constraintdef(oid) as definition
+      from pg_constraint
+      where conrelid = 'account_sync_changes'::regclass
+        and conname = 'account_sync_changes_collection_check'
+    `
+  );
+  const definition = constraint.rows[0]?.definition;
+  const allowedCollections = new Set(
+    definition === undefined
+      ? []
+      : [...definition.matchAll(/'([^']+)'(?:::text)?/g)].map((match) => match[1])
+  );
+  if (
+    definition === undefined ||
+    ACCOUNT_SYNC_COLLECTIONS.some((collection) => !allowedCollections.has(collection)) ||
+    [...allowedCollections].some(
+      (collection) => !ACCOUNT_SYNC_COLLECTIONS.includes(collection as AccountSyncCollection)
+    )
+  ) {
+    throw new Error(
+      'Database account_sync_changes collection constraint is stale. Run "pnpm db:migrate" before starting the API.'
     );
   }
 }
@@ -1602,37 +1687,77 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
   }));
 }
 
-async function saveNormalizedSnapshot(pool: Pool, snapshot: Cp2Snapshot): Promise<void> {
-  for (const change of snapshot.syncChanges) {
-    requireAccountSyncCollection(change.accountId, change.collection);
-  }
-
+async function saveNormalizedSnapshot(
+  pool: Pool,
+  snapshot: Cp2Snapshot
+): Promise<{ syncJournalError: AccountSyncPersistenceError | null }> {
   const client = await pool.connect();
   const startedAt = Date.now();
 
   try {
-    await client.query("begin");
-    await client.query("select pg_advisory_xact_lock(hashtext('soko.cp2.normalized_store'))");
+    await client.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
+    try {
+      await client.query("begin");
 
-    for (const collection of normalizedCollections) {
-      await saveCollectionRecords(
-        client,
-        collection,
-        getSnapshotCollection(snapshot, collection.key)
-      );
+      for (const collection of normalizedCollections) {
+        await saveCollectionRecords(
+          client,
+          collection,
+          getSnapshotCollection(snapshot, collection.key)
+        );
+      }
+
+      await saveRelationalCoreRecords(client, snapshot);
+      await client.query("commit");
+      logSlowQuery("persist CP2 relational store", startedAt);
+    } catch (error) {
+      await client.query("rollback").catch((rollbackError: unknown) => {
+        console.error("Failed to roll back CP2 normalized persistence transaction.", rollbackError);
+      });
+      throw error;
     }
 
-    await saveRelationalCoreRecords(client, snapshot);
+    try {
+      await saveAccountSyncChanges(client, snapshot);
+      return { syncJournalError: null };
+    } catch (error) {
+      return {
+        syncJournalError: normalizeAccountSyncPersistenceError(error, snapshot)
+      };
+    }
+  } finally {
+    await client
+      .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
+      .catch((error: unknown) => {
+        console.error("Failed to release CP2 normalized persistence lock.", error);
+      });
+    client.release();
+  }
+}
 
+async function saveAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
+  const startedAt = Date.now();
+
+  try {
+    await client.query("begin");
+    for (const change of snapshot.syncChanges) {
+      requireAccountSyncCollection(change.accountId, change.collection);
+    }
+    await replaceAccountSyncChanges(client, snapshot);
     await client.query("commit");
-    logSlowQuery("persist CP2 relational store", startedAt);
+    logSlowQuery("persist account sync journal", startedAt);
+    console.info(
+      JSON.stringify({
+        event: "account_sync_changes_transaction_committed",
+        changeCount: snapshot.syncChanges.length,
+        accountCount: new Set(snapshot.syncChanges.map((change) => change.accountId)).size
+      })
+    );
   } catch (error) {
     await client.query("rollback").catch((rollbackError: unknown) => {
-      console.error("Failed to roll back CP2 normalized persistence transaction.", rollbackError);
+      console.error("Failed to roll back account sync journal transaction.", rollbackError);
     });
     throw error;
-  } finally {
-    client.release();
   }
 }
 
@@ -2164,7 +2289,9 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
       ]
     );
   }
+}
 
+async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapshot): Promise<void> {
   await client.query(
     `
       delete from account_sync_changes as persisted

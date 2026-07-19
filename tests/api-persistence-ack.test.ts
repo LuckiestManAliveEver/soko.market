@@ -82,7 +82,7 @@ describe("API persistence acknowledgement barrier", () => {
     await app.close();
   });
 
-  it("does not issue an orphaned session cookie when PIN login persistence fails", async () => {
+  it("keeps PIN authentication available when only account sync persistence fails", async () => {
     const store = createCp2Store();
     const phone = "+254700200001";
     store.signupWithPhonePin({ destination: phone, pin: "1234" });
@@ -106,9 +106,22 @@ describe("API persistence acknowledgement barrier", () => {
       payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
     });
 
-    expect(response.statusCode).toBe(503);
-    expect(response.headers["set-cookie"]).toBeUndefined();
-    expect(response.json()).toMatchObject({ code: "ACCOUNT_SYNC_INITIALIZATION_FAILED" });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toContain("soko_session=");
+    expect(response.json()).toMatchObject({
+      account: { primaryAuthDestination: phone },
+      session: { id: expect.any(String) }
+    });
+
+    const authenticated = await app.inject({
+      method: "GET",
+      url: "/session",
+      headers: { cookie: response.headers["set-cookie"] as string }
+    });
+    expect(authenticated.statusCode).toBe(200);
+    expect(authenticated.json()).toMatchObject({
+      account: { primaryAuthDestination: phone }
+    });
     await app.close();
   });
 });

@@ -57,8 +57,55 @@ export function buildApi(options: BuildApiOptions = {}) {
     }
 
     persistenceBarrierRequests.add(request);
-    await options.mutationPersistenceFlush();
+    try {
+      await options.mutationPersistenceFlush();
+    } catch (error) {
+      const syncFailure = readAccountSyncFailure(error);
+      if (syncFailure === null || reply.getHeader("set-cookie") === undefined) {
+        throw error;
+      }
+
+      request.log.error(
+        {
+          event: "auth.account_sync_degraded",
+          operation: "persist_account_sync_change",
+          accountId: syncFailure.accountId,
+          attemptedCollection: syncFailure.attemptedCollection,
+          constraintName: syncFailure.constraintName,
+          requestCorrelationId: request.id,
+          authenticationBlocked: false
+        },
+        "Authentication committed without the non-critical account sync journal."
+      );
+      return payload;
+    }
+    if (request.routeOptions.url === "/auth/pin/login") {
+      request.log.info(
+        {
+          event: "auth.transaction_committed",
+          requestCorrelationId: request.id
+        },
+        "PIN login transaction committed."
+      );
+    }
     return payload;
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    if (
+      request.routeOptions.url === "/auth/pin/login" &&
+      reply.statusCode < 400 &&
+      reply.getHeader("set-cookie") !== undefined
+    ) {
+      request.log.info(
+        {
+          event: "auth.session_cookie_returned",
+          requestCorrelationId: request.id,
+          statusCode: reply.statusCode
+        },
+        "PIN login session cookie returned."
+      );
+    }
   });
 
   app.setErrorHandler((error, request, reply) => {
