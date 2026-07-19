@@ -3,6 +3,7 @@ import type {
   ModelCompatibilityStatus,
   ModelInstallationStatus
 } from "@soko/shared-types";
+export { listBrowserModels } from "./browser-model-registry";
 
 export interface DeviceModelCapability {
   deviceMemoryGb: number | null;

@@ -21,11 +21,15 @@ models that still require a download. A catalog model cannot be activated until 
 are present in private device storage. Completing a download installs and selects that model in
 the library; the merchant then saves the agent settings.
 
-Browser storage is not an inference runtime. The current web/PWA build does not execute a GGUF file
-directly from origin-private storage. Processing a message with a downloaded model still requires
-the API operator to connect a llama.cpp-compatible server with `LOCAL_MODEL_ENABLED=true`. If the
-selected model has no configured provider, the message is handled by the deterministic runtime and
-the interface reports that model fallback explicitly.
+Browser storage is not itself an inference runtime. The PWA does not execute a GGUF file directly
+from OPFS; GGUF inference still requires the Android `SokoAgentModelRuntime` bridge or a configured
+llama.cpp-compatible server.
+
+An optional browser-local backend uses the approved
+`onnx-community/SmolLM2-360M-Instruct-ONNX` model through Transformers.js and ONNX Runtime Web. It
+uses WebGPU when available and a conservative WASM fallback. This backend is disabled by default
+with `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=false`, requires an explicit per-user download action,
+and shares the existing Soko agent/chat router rather than treating a cached model as active.
 
 SmolLM2 360M and Qwen2.5 0.5B are also embedded as catalog metadata in the web client, so a
 temporary API/catalog outage does not make the default choices disappear. The “Install offline

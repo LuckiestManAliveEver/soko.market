@@ -1,0 +1,180 @@
+import type { BrowserDeviceTier, BrowserInferenceCapability } from "./browser-inference-types";
+
+export interface BrowserCapabilitySignals {
+  webGpu: boolean;
+  wasm: boolean;
+  indexedDb: boolean;
+  worker: boolean;
+  workerInitialized: boolean;
+  crossOriginIsolated: boolean;
+  deviceMemoryGb?: number;
+  logicalProcessors: number;
+  availableStorageBytes?: number;
+  persistentStorage: boolean;
+  installedPwa: boolean;
+  userAgent: string;
+}
+
+let modelWorkerProbe: Promise<boolean> | null = null;
+
+export function classifyBrowserInferenceCapability(
+  signals: BrowserCapabilitySignals
+): BrowserInferenceCapability {
+  const reasons: string[] = [];
+  const browser = parseBrowser(signals.userAgent);
+  const memory = finitePositive(signals.deviceMemoryGb);
+  const processors = Math.max(1, Math.floor(signals.logicalProcessors));
+  const storage = finitePositive(signals.availableStorageBytes);
+
+  if (!signals.wasm) reasons.push("WebAssembly is unavailable.");
+  if (!signals.indexedDb) reasons.push("Private browser database storage is unavailable.");
+  if (!signals.worker || !signals.workerInitialized) {
+    reasons.push("The dedicated model worker could not initialize.");
+  }
+  if (storage !== undefined && storage < 350_000_000) {
+    reasons.push("Less than 350 MB of browser storage is available.");
+  }
+
+  const deviceTier: BrowserDeviceTier =
+    (memory ?? 4) >= 8 && processors >= 8
+      ? "high"
+      : (memory ?? 4) >= 4 && processors >= 4
+        ? "medium"
+        : "low";
+  const basicSupport =
+    signals.wasm &&
+    signals.indexedDb &&
+    signals.worker &&
+    signals.workerInitialized &&
+    (storage === undefined || storage >= 350_000_000);
+  const backend = basicSupport ? (signals.webGpu ? "webgpu" : "wasm") : "none";
+
+  if (!signals.webGpu && basicSupport) {
+    reasons.push("WebGPU is unavailable; the slower WebAssembly backend will be used.");
+  }
+  if (!signals.crossOriginIsolated && backend === "wasm") {
+    reasons.push("Cross-origin isolation is off, so WASM threading may be limited.");
+  }
+  if (deviceTier === "low") {
+    reasons.push("Conservative context and output limits are required on this device.");
+  }
+
+  return {
+    supported: backend !== "none",
+    backend,
+    deviceTier,
+    ...(memory === undefined ? {} : { estimatedMemoryGb: memory }),
+    ...(backend === "none" ? {} : { recommendedModelId: "smollm2-360m-instruct-browser" }),
+    maxRecommendedContextTokens: deviceTier === "low" ? 1_024 : 2_048,
+    reasons,
+    browser,
+    crossOriginIsolated: signals.crossOriginIsolated,
+    logicalProcessors: processors,
+    ...(storage === undefined ? {} : { availableStorageBytes: storage }),
+    indexedDbAvailable: signals.indexedDb,
+    persistentStorage: signals.persistentStorage,
+    installedPwa: signals.installedPwa,
+    workerAvailable: signals.worker && signals.workerInitialized
+  };
+}
+
+export async function inspectBrowserInferenceCapability(input?: {
+  workerProbe?: () => Promise<boolean>;
+}): Promise<BrowserInferenceCapability> {
+  try {
+    const estimate = await navigator.storage?.estimate().catch(() => undefined);
+    const persistentStorage = await navigator.storage?.persisted?.().catch(() => false);
+    const nav = navigator as Navigator & { deviceMemory?: number; gpu?: unknown };
+    const workerInitialized = await (input?.workerProbe?.() ?? probeBrowserModelWorker());
+    return classifyBrowserInferenceCapability({
+      webGpu: nav.gpu !== undefined,
+      wasm: typeof WebAssembly === "object",
+      indexedDb: globalThis.indexedDB !== undefined,
+      worker: "Worker" in window,
+      workerInitialized,
+      crossOriginIsolated: globalThis.crossOriginIsolated === true,
+      ...(nav.deviceMemory === undefined ? {} : { deviceMemoryGb: nav.deviceMemory }),
+      logicalProcessors: navigator.hardwareConcurrency || 1,
+      ...(estimate?.quota === undefined
+        ? {}
+        : { availableStorageBytes: Math.max(0, estimate.quota - (estimate.usage ?? 0)) }),
+      persistentStorage: persistentStorage === true,
+      installedPwa:
+        window.matchMedia("(display-mode: standalone)").matches ||
+        (navigator as Navigator & { standalone?: boolean }).standalone === true,
+      userAgent: navigator.userAgent
+    });
+  } catch {
+    return classifyBrowserInferenceCapability({
+      webGpu: false,
+      wasm: typeof WebAssembly === "object",
+      indexedDb: false,
+      worker: false,
+      workerInitialized: false,
+      crossOriginIsolated: false,
+      logicalProcessors: 1,
+      persistentStorage: false,
+      installedPwa: false,
+      userAgent: navigator.userAgent
+    });
+  }
+}
+
+function probeBrowserModelWorker(): Promise<boolean> {
+  if (!("Worker" in window)) return Promise.resolve(false);
+  modelWorkerProbe ??= new Promise<boolean>((resolve) => {
+    const requestId = `capability-${Date.now().toString(36)}`;
+    const probe = new Worker(new URL("./workers/browser-model.worker.ts", import.meta.url), {
+      type: "module",
+      name: "soko-browser-model-capability-probe"
+    });
+    const finish = (supported: boolean) => {
+      window.clearTimeout(timeout);
+      probe.terminate();
+      resolve(supported);
+    };
+    const timeout = window.setTimeout(() => finish(false), 5_000);
+    probe.addEventListener(
+      "message",
+      (event: MessageEvent<unknown>) => {
+        const response = event.data as { type?: unknown; requestId?: unknown };
+        if (response.type === "READY" && response.requestId === requestId) finish(true);
+      },
+      { once: true }
+    );
+    probe.addEventListener("error", () => finish(false), { once: true });
+    probe.postMessage({
+      type: "INITIALIZE",
+      requestId,
+      config: {
+        backend: (navigator as Navigator & { gpu?: unknown }).gpu === undefined ? "wasm" : "webgpu",
+        approvedModelOrigins: ["https://huggingface.co"],
+        maxContextTokens: 1_024
+      }
+    });
+  });
+  return modelWorkerProbe;
+}
+
+function parseBrowser(userAgent: string): BrowserInferenceCapability["browser"] {
+  const mobile = /Android|iPhone|iPad|Mobile/i.test(userAgent);
+  const match =
+    userAgent.match(/Edg\/([\d.]+)/) ??
+    userAgent.match(/Chrome\/([\d.]+)/) ??
+    userAgent.match(/Firefox\/([\d.]+)/) ??
+    userAgent.match(/Version\/([\d.]+).*Safari/);
+  const name = userAgent.includes("Edg/")
+    ? "Edge"
+    : userAgent.includes("Chrome/")
+      ? "Chrome"
+      : userAgent.includes("Firefox/")
+        ? "Firefox"
+        : userAgent.includes("Safari/")
+          ? "Safari"
+          : "Unknown";
+  return { name, version: match?.[1] ?? null, mobile };
+}
+
+function finitePositive(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
+}

@@ -53,7 +53,10 @@ test result is configuration metadata and is not written into the customer conve
 ## Platform limitation
 
 This repository does not contain an Android application/native llama.cpp implementation or a
-browser WebAssembly GGUF engine. It therefore supplies and tests the smallest truthful adapter at
-the existing web/native boundary. A normal browser PWA can install and validate the GGUF file in
-OPFS, but cannot execute it until a supported `SokoAgentModelRuntime` bridge is provided. CI mocks
-only this heavy native boundary; it does not fake a successful runtime in production.
+browser GGUF engine. A normal browser PWA can install and validate a GGUF file in OPFS, but cannot
+execute that GGUF until a supported `SokoAgentModelRuntime` bridge is provided.
+
+Browser-local inference is a separate backend inside the same Soko agent router. It uses a
+Transformers.js ONNX model through WebGPU or WASM and does not execute the installed GGUF. It is
+disabled by default, requires explicit user consent, and preserves the native bridge as a fallback.
+CI mocks only the heavy engine boundary; it does not fake a successful runtime in production.

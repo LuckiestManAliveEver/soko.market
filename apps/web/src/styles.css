@@ -4030,6 +4030,34 @@ details.nested-form-section summary {
   border-color: #a8ceb4;
 }
 
+.browser-model-control {
+  background: #f8fcf9;
+  border: 1px solid #b8d8c1;
+  border-radius: 10px;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.browser-model-control p,
+.browser-model-control small {
+  color: #516258;
+  margin: 0;
+}
+
+.browser-model-toggle {
+  align-items: center;
+  display: flex;
+  font-weight: 800;
+  gap: 9px;
+}
+
+.browser-model-toggle input {
+  height: 18px;
+  margin: 0;
+  width: 18px;
+}
+
 .agent-model-empty,
 .agent-model-current {
   background: #ffffff;

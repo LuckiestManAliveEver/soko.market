@@ -41,6 +41,12 @@ pnpm dev:stack:down
 - Business-changing feature switches must be explicit and auditable.
 - AI or model provider configuration must remain outside business-core packages.
 
+## Browser-local inference
+
+`VITE_BROWSER_LOCAL_INFERENCE_ENABLED=false` is the safe default. Setting it to `true` only exposes
+the browser-local model controls; it does not download or activate a model. Each authenticated user
+must explicitly opt in from Agent model settings. No frontend API key is used.
+
 ## Binary upload malware scanning
 
 Malware scanning is disabled by default so a local API can boot without an external scanner:

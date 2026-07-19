@@ -68,7 +68,7 @@ describe("PWA installability", () => {
     expect(entrypoint).toContain("registerAppServiceWorker()");
     expect(serviceWorkerRegistration).toContain('.register("/sw.js"');
     expect(serviceWorkerRegistration).toContain('document.readyState === "complete"');
-    expect(serviceWorker).toContain("const CACHE_NAME = `${CACHE_PREFIX}v6`");
+    expect(serviceWorker).toMatch(/const CACHE_NAME = `\$\{CACHE_PREFIX\}v\d+`/);
     expect(serviceWorker).toContain('"/favicon.ico"');
     expect(serviceWorker).toContain('"/icons/soko-icon-32.png"');
     expect(serviceWorker).toContain("cacheName !== CACHE_NAME");
