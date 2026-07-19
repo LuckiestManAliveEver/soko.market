@@ -35,6 +35,8 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "agentProfiles", tableName: "cp2_agent_profiles" },
+  { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
+  { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
@@ -190,6 +192,7 @@ const mutatingMethodNames = new Set([
   "verifyOtp",
   "finalizeShopDeletion",
   "activateAiModel",
+  "assignAgentModel",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
   "confirmInvoice",
@@ -217,6 +220,9 @@ const mutatingMethodNames = new Set([
   "registerE2eeDevice",
   "revokeE2eeDevice",
   "registerPushSubscription",
+  "registerInstalledAgentModel",
+  "removeAgentModelAssignment",
+  "validateInstalledAgentModel",
   "removePushSubscription"
 ]);
 
@@ -274,7 +280,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "034_account_sync_constraint_repair.sql";
+const requiredMigrationFilename = "035_agent_model_assignments.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -2982,6 +2988,8 @@ function emptySnapshot(): Cp2Snapshot {
     marketplaceIntroStates: [],
     activeAiModels: [],
     agentProfiles: [],
+    installedAgentModels: [],
+    agentModelAssignments: [],
     syncChanges: [],
     mcpAccessTokens: [],
     productFieldSchemas: [],
@@ -3089,6 +3097,10 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
 
   if (key === "activeAiModels" || key === "agentProfiles" || key === "productFieldSchemas") {
     return requiredText(record, "businessId");
+  }
+
+  if (key === "agentModelAssignments") {
+    return [requiredText(record, "businessId"), requiredText(record, "deviceId")].join(":");
   }
 
   if (key === "verificationTiers" || key === "taxConfigs" || key === "betaAccess") {

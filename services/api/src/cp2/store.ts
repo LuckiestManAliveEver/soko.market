@@ -14,6 +14,10 @@ import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
 import type {
   AccountSummary,
+  AgentModelAssignmentSummary,
+  AgentModelFallbackPolicy,
+  AgentModelReadinessStatus,
+  AgentModelRuntimeBackend,
   ActiveAiModelSummary,
   AiModelSummary,
   AccountDeletionRequestSummary,
@@ -62,6 +66,7 @@ import type {
   E2eePublicKey,
   InvoicePaymentSummary,
   InventoryMovementSummary,
+  InstalledAgentModelSummary,
   InvoiceItemSummary,
   InvoicePreview,
   InvoiceSummary,
@@ -98,6 +103,7 @@ import type {
   ProductFieldInputType,
   ProductImportDraft,
   ProductSummary,
+  PreferredExecutionMode,
   PublicCustomerCareRequestSummary,
   PublicCustomerCareRequestType,
   PublicOrderSummary,
@@ -577,6 +583,8 @@ export interface Cp2Snapshot {
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
   activeAiModels?: ActiveAiModelSummary[];
   agentProfiles?: BusinessAgentProfileSummary[];
+  installedAgentModels?: InstalledAgentModelSummary[];
+  agentModelAssignments?: AgentModelAssignmentSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -803,6 +811,8 @@ export class Cp2Store {
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
+  private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
+  private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
   private readonly messageByIdempotencyKey = new Map<string, string>();
@@ -2449,16 +2459,24 @@ export class Cp2Store {
 
   listAiModels(search?: string): AiModelSummary[] {
     const normalizedSearch = search?.trim().toLowerCase();
+    const compactSearch =
+      normalizedSearch === undefined ? undefined : normalizeModelCatalogSearch(normalizedSearch);
     return aiModelRegistry
       .filter((model) => {
         if (!normalizedSearch) return true;
-        return (
+        const exactMatch =
           model.label.toLowerCase().includes(normalizedSearch) ||
           model.description.toLowerCase().includes(normalizedSearch) ||
           model.capabilities.some((capability) =>
             capability.toLowerCase().includes(normalizedSearch)
           ) ||
-          model.id.toLowerCase().includes(normalizedSearch)
+          model.id.toLowerCase().includes(normalizedSearch);
+        return (
+          exactMatch ||
+          (compactSearch !== undefined &&
+            normalizeModelCatalogSearch(
+              `${model.id} ${model.label} ${model.description} ${model.capabilities.join(" ")}`
+            ).includes(compactSearch))
         );
       })
       .map((model) => ({ ...model, capabilities: [...model.capabilities] }));
@@ -2529,6 +2547,275 @@ export class Cp2Store {
       payload: { modelId: selection.modelId }
     });
     return selection;
+  }
+
+  listInstalledAgentModels(input: {
+    sessionId: string | null;
+    deviceId?: string;
+    now?: Date;
+  }): InstalledAgentModelSummary[] {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return [...this.installedAgentModels.values()]
+      .filter(
+        (model) =>
+          model.accountId === session.account.id &&
+          model.userId === session.user.id &&
+          (input.deviceId === undefined || model.deviceId === input.deviceId) &&
+          model.installationStatus !== "REMOVED"
+      )
+      .sort((left, right) => right.installedAt.localeCompare(left.installedAt))
+      .map(cloneInstalledAgentModel);
+  }
+
+  registerInstalledAgentModel(input: {
+    sessionId: string | null;
+    model: Omit<InstalledAgentModelSummary, "accountId" | "userId">;
+    now?: Date;
+  }): InstalledAgentModelSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const model = normalizeInstalledAgentModel(input.model, session.account.id, session.user.id);
+    const existing = this.installedAgentModels.get(model.id);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id ||
+        existing.userId !== session.user.id ||
+        existing.deviceId !== model.deviceId)
+    ) {
+      throw new Cp2Error(
+        403,
+        "model_installation_owner_mismatch",
+        "This model installation belongs to another account or device."
+      );
+    }
+    this.installedAgentModels.set(model.id, model);
+    this.recordAuditEvent({
+      type: "agent_model.installation_registered",
+      aggregateType: "model_installation",
+      aggregateId: model.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        modelId: model.modelId,
+        deviceId: model.deviceId,
+        installationStatus: model.installationStatus,
+        compatibilityStatus: model.compatibilityStatus,
+        runtimeBackend: model.runtimeBackend
+      }
+    });
+    return cloneInstalledAgentModel(model);
+  }
+
+  validateInstalledAgentModel(input: {
+    sessionId: string | null;
+    installationId: string;
+    deviceId: string;
+    installationStatus: InstalledAgentModelSummary["installationStatus"];
+    compatibilityStatus: InstalledAgentModelSummary["compatibilityStatus"];
+    validationError: string | null;
+    now?: Date;
+  }): InstalledAgentModelSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    const existing = this.requireOwnedModelInstallation(
+      session.account.id,
+      session.user.id,
+      input.deviceId,
+      input.installationId
+    );
+    const updated: InstalledAgentModelSummary = {
+      ...existing,
+      installationStatus: input.installationStatus,
+      compatibilityStatus: input.compatibilityStatus,
+      validationError:
+        input.validationError === null
+          ? null
+          : normalizeRequiredBoundedText(input.validationError, "validation error", 120),
+      lastVerifiedAt: now.toISOString()
+    };
+    this.installedAgentModels.set(updated.id, updated);
+    return cloneInstalledAgentModel(updated);
+  }
+
+  getAgentModelAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): AgentModelAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const existing = this.agentModelAssignments.get(
+      agentModelAssignmentKey(input.businessId, input.deviceId)
+    );
+    if (existing !== undefined) return { ...existing };
+
+    const modelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    return {
+      agentId: input.businessId,
+      businessId: input.businessId,
+      accountId: session.account.id,
+      userId: session.user.id,
+      deviceId: input.deviceId,
+      activeModelInstallationId: null,
+      modelId,
+      preferredExecutionMode: "CLOUD_ONLY",
+      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+      readinessStatus: "READY",
+      runtimeBackend: modelId.startsWith("openai") ? "CLOUD" : "OLLAMA",
+      lastSuccessfulInferenceAt: null,
+      lastErrorCode: null,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+  }
+
+  assignAgentModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    installationId: string;
+    preferredExecutionMode: PreferredExecutionMode;
+    fallbackPolicy: AgentModelFallbackPolicy;
+    readinessStatus: AgentModelReadinessStatus;
+    lastSuccessfulInferenceAt: string | null;
+    lastErrorCode: string | null;
+    now?: Date;
+  }): AgentModelAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const installation = this.requireOwnedModelInstallation(
+      session.account.id,
+      session.user.id,
+      input.deviceId,
+      input.installationId
+    );
+    assertModelCanBeAssigned(installation);
+    if (input.readinessStatus !== "READY" || input.lastSuccessfulInferenceAt === null) {
+      throw new Cp2Error(
+        409,
+        "agent_model_not_ready",
+        "Run a successful local test inference before activating this model."
+      );
+    }
+    const assignment: AgentModelAssignmentSummary = {
+      agentId: input.businessId,
+      businessId: input.businessId,
+      accountId: session.account.id,
+      userId: session.user.id,
+      deviceId: input.deviceId,
+      activeModelInstallationId: installation.id,
+      modelId: installation.modelId,
+      preferredExecutionMode: normalizeExecutionMode(input.preferredExecutionMode),
+      fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
+      readinessStatus: "READY",
+      runtimeBackend: installation.runtimeBackend,
+      lastSuccessfulInferenceAt: input.lastSuccessfulInferenceAt,
+      lastErrorCode:
+        input.lastErrorCode === null
+          ? null
+          : normalizeRequiredBoundedText(input.lastErrorCode, "model error code", 120),
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentModelAssignments.set(
+      agentModelAssignmentKey(input.businessId, input.deviceId),
+      assignment
+    );
+    const selection: ActiveAiModelSummary = {
+      businessId: input.businessId,
+      modelId: installation.modelId,
+      activatedAt: assignment.updatedAt,
+      activatedBy: session.user.id
+    };
+    this.activeAiModels.set(input.businessId, selection);
+    const profile = this.agentProfiles.get(input.businessId);
+    if (profile !== undefined) {
+      this.agentProfiles.set(input.businessId, {
+        ...profile,
+        modelId: installation.modelId,
+        updatedAt: assignment.updatedAt,
+        updatedBy: session.user.id
+      });
+    }
+    this.recordAuditEvent({
+      type: "agent_model.assigned",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: assignment.updatedAt,
+      payload: {
+        installationId: installation.id,
+        modelId: installation.modelId,
+        deviceId: installation.deviceId,
+        runtimeBackend: installation.runtimeBackend,
+        preferredExecutionMode: assignment.preferredExecutionMode,
+        fallbackPolicy: assignment.fallbackPolicy
+      }
+    });
+    return { ...assignment };
+  }
+
+  removeAgentModelAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): { removed: true } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const key = agentModelAssignmentKey(input.businessId, input.deviceId);
+    const existing = this.agentModelAssignments.get(key);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
+    ) {
+      throw new Cp2Error(403, "agent_model_owner_mismatch", "Agent model access was denied.");
+    }
+    this.agentModelAssignments.delete(key);
+    const selection: ActiveAiModelSummary = {
+      businessId: input.businessId,
+      modelId: defaultAiModelId,
+      activatedAt: now.toISOString(),
+      activatedBy: session.user.id
+    };
+    this.activeAiModels.set(input.businessId, selection);
+    const profile = this.agentProfiles.get(input.businessId);
+    if (profile !== undefined) {
+      this.agentProfiles.set(input.businessId, {
+        ...profile,
+        modelId: defaultAiModelId,
+        updatedAt: selection.activatedAt,
+        updatedBy: session.user.id
+      });
+    }
+    this.recordAuditEvent({
+      type: "agent_model.removed",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: selection.activatedAt,
+      payload: {
+        installationId: existing?.activeModelInstallationId ?? null,
+        deviceId: input.deviceId
+      }
+    });
+    return { removed: true };
   }
 
   getAgentProfile(input: {
@@ -8655,6 +8942,10 @@ export class Cp2Store {
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
       activeAiModels: [...this.activeAiModels.values()],
       agentProfiles: [...this.agentProfiles.values()].map(cloneBusinessAgentProfile),
+      installedAgentModels: [...this.installedAgentModels.values()].map(cloneInstalledAgentModel),
+      agentModelAssignments: [...this.agentModelAssignments.values()].map((assignment) => ({
+        ...assignment
+      })),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       productFieldSchemas: [...this.productFieldSchemas.values()],
@@ -8741,6 +9032,8 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.activeAiModels.clear();
     this.agentProfiles.clear();
+    this.installedAgentModels.clear();
+    this.agentModelAssignments.clear();
     this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
     this.messageByIdempotencyKey.clear();
@@ -8918,6 +9211,17 @@ export class Cp2Store {
 
     for (const profile of snapshot.agentProfiles ?? []) {
       this.agentProfiles.set(profile.businessId, cloneBusinessAgentProfile(profile));
+    }
+
+    for (const model of snapshot.installedAgentModels ?? []) {
+      this.installedAgentModels.set(model.id, cloneInstalledAgentModel(model));
+    }
+
+    for (const assignment of snapshot.agentModelAssignments ?? []) {
+      this.agentModelAssignments.set(
+        agentModelAssignmentKey(assignment.businessId, assignment.deviceId),
+        { ...assignment }
+      );
     }
 
     for (const request of snapshot.accountDeletionRequests ?? []) {
@@ -10398,6 +10702,28 @@ export class Cp2Store {
     }
 
     return business;
+  }
+
+  private requireOwnedModelInstallation(
+    accountId: string,
+    userId: string,
+    deviceId: string,
+    installationId: string
+  ): InstalledAgentModelSummary {
+    const model = this.installedAgentModels.get(installationId);
+    if (
+      model === undefined ||
+      model.accountId !== accountId ||
+      model.userId !== userId ||
+      model.deviceId !== deviceId
+    ) {
+      throw new Cp2Error(
+        404,
+        "model_installation_not_found",
+        "The model installation was not found on this device."
+      );
+    }
+    return model;
   }
 
   private requireProduct(businessId: string, productId: string): ProductSummary {
@@ -12763,6 +13089,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
       deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentProfiles, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.installedAgentModels, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentModelAssignments, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
       deletedRecordCount += deleteScopedMapRecords(this.productFieldSchemas, scope);
       deletedRecordCount += deleteScopedMapRecords(this.products, scope);
@@ -15425,6 +15753,147 @@ function cloneBusinessAgentProfile(
     integrations: [...profile.integrations],
     contextScripts: [...profile.contextScripts]
   };
+}
+
+function agentModelAssignmentKey(businessId: string, deviceId: string): string {
+  return `${businessId}:${deviceId}`;
+}
+
+function normalizeModelCatalogSearch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function cloneInstalledAgentModel(model: InstalledAgentModelSummary): InstalledAgentModelSummary {
+  return { ...model };
+}
+
+function normalizeInstalledAgentModel(
+  input: Omit<InstalledAgentModelSummary, "accountId" | "userId">,
+  accountId: string,
+  userId: string
+): InstalledAgentModelSummary {
+  const installationStatuses = new Set<InstalledAgentModelSummary["installationStatus"]>([
+    "DOWNLOADING",
+    "INSTALLED",
+    "CORRUPT",
+    "REMOVED",
+    "FAILED"
+  ]);
+  const compatibilityStatuses = new Set<InstalledAgentModelSummary["compatibilityStatus"]>([
+    "UNKNOWN",
+    "COMPATIBLE",
+    "INCOMPATIBLE",
+    "INSUFFICIENT_MEMORY",
+    "UNSUPPORTED_ARCHITECTURE",
+    "UNSUPPORTED_QUANTIZATION"
+  ]);
+  const runtimeBackends = new Set<AgentModelRuntimeBackend>([
+    "LLAMA_CPP_ANDROID",
+    "LLAMA_CPP_BROWSER",
+    "OLLAMA",
+    "CLOUD"
+  ]);
+  if (!installationStatuses.has(input.installationStatus)) {
+    throw new Cp2Error(400, "model_installation_status_invalid", "Installation status is invalid.");
+  }
+  if (!compatibilityStatuses.has(input.compatibilityStatus)) {
+    throw new Cp2Error(
+      400,
+      "model_compatibility_status_invalid",
+      "Compatibility status is invalid."
+    );
+  }
+  if (!runtimeBackends.has(input.runtimeBackend)) {
+    throw new Cp2Error(400, "model_runtime_backend_invalid", "Runtime backend is invalid.");
+  }
+  if (
+    input.provider !== "huggingface" &&
+    input.provider !== "github" &&
+    input.provider !== "custom"
+  ) {
+    throw new Cp2Error(400, "model_provider_invalid", "Model provider is invalid.");
+  }
+  if (input.format !== "GGUF") {
+    throw new Cp2Error(400, "model_format_invalid", "Only GGUF installations are supported.");
+  }
+  if (!Number.isSafeInteger(input.fileSizeBytes) || input.fileSizeBytes < 4) {
+    throw new Cp2Error(400, "model_file_size_invalid", "Model file size is invalid.");
+  }
+  const normalizeNullable = (
+    value: string | null,
+    label: string,
+    maximum: number
+  ): string | null => (value === null ? null : normalizeRequiredBoundedText(value, label, maximum));
+  const normalizeNullableCount = (value: number | null, label: string): number | null => {
+    if (value === null) return null;
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Cp2Error(400, `${label.replaceAll(" ", "_")}_invalid`, `${label} is invalid.`);
+    }
+    return value;
+  };
+  return {
+    id: normalizeRequiredBoundedText(input.id, "model installation id", 160),
+    accountId,
+    userId,
+    deviceId: normalizeRequiredBoundedText(input.deviceId, "device id", 160),
+    modelId: normalizeRequiredBoundedText(input.modelId, "model id", 200),
+    displayName: normalizeRequiredBoundedText(input.displayName, "model display name", 160),
+    provider: input.provider,
+    repositoryId: normalizeNullable(input.repositoryId, "model repository id", 240),
+    filename: normalizeRequiredBoundedText(input.filename, "model filename", 240),
+    format: "GGUF",
+    quantization: normalizeNullable(input.quantization, "model quantization", 80),
+    architecture: normalizeNullable(input.architecture, "model architecture", 80),
+    parameterCount: normalizeNullableCount(input.parameterCount, "model parameter count"),
+    contextLength: normalizeNullableCount(input.contextLength, "model context length"),
+    fileSizeBytes: input.fileSizeBytes,
+    checksum: normalizeNullable(input.checksum, "model checksum", 160),
+    license: normalizeRequiredBoundedText(input.license, "model license", 160),
+    commercialUseAllowed: input.commercialUseAllowed === true,
+    storageKey: normalizeRequiredBoundedText(input.storageKey, "private storage key", 240),
+    runtimeBackend: input.runtimeBackend,
+    installationStatus: input.installationStatus,
+    compatibilityStatus: input.compatibilityStatus,
+    installedAt: normalizeRequiredBoundedText(input.installedAt, "model installed at", 80),
+    lastVerifiedAt:
+      input.lastVerifiedAt === null
+        ? null
+        : normalizeRequiredBoundedText(input.lastVerifiedAt, "model verified at", 80),
+    validationError: normalizeNullable(input.validationError, "model validation error", 120)
+  };
+}
+
+function assertModelCanBeAssigned(model: InstalledAgentModelSummary): void {
+  if (model.installationStatus !== "INSTALLED") {
+    throw new Cp2Error(409, "model_not_installed", "The selected model is not installed.");
+  }
+  if (model.compatibilityStatus !== "COMPATIBLE") {
+    throw new Cp2Error(409, "model_incompatible", "The selected model is not compatible.");
+  }
+  if (!model.commercialUseAllowed) {
+    throw new Cp2Error(
+      409,
+      "model_license_restricted",
+      "The selected model is not approved for commercial use."
+    );
+  }
+}
+
+function normalizeExecutionMode(mode: PreferredExecutionMode): PreferredExecutionMode {
+  if (mode === "LOCAL_ONLY" || mode === "LOCAL_FIRST" || mode === "CLOUD_ONLY") return mode;
+  throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
+}
+
+function normalizeFallbackPolicy(policy: AgentModelFallbackPolicy): AgentModelFallbackPolicy {
+  if (
+    policy === "NEVER" ||
+    policy === "WHEN_LOCAL_UNAVAILABLE" ||
+    policy === "WHEN_LOCAL_FAILS" ||
+    policy === "WHEN_CONTEXT_EXCEEDED"
+  ) {
+    return policy;
+  }
+  throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
 }
 
 function ensureRequiredAgentContextScripts(scripts: string[]): string[] {

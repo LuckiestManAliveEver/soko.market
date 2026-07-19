@@ -15,6 +15,13 @@ import type {
   DeviceTrustLevel,
   FulfillmentMethod,
   FulfillmentStatus,
+  AgentModelFallbackPolicy,
+  AgentModelReadinessStatus,
+  AgentModelRuntimeBackend,
+  InstalledAgentModelSummary,
+  ModelCompatibilityStatus,
+  ModelInstallationStatus,
+  PreferredExecutionMode,
   LaunchAccessStatus,
   LaunchChecklistKey,
   LaunchChecklistStatus,
@@ -166,6 +173,61 @@ interface SyncPullQuery {
 
 interface AiModelSearchQuery {
   search?: string;
+}
+
+interface InstalledModelQuery {
+  deviceId?: string;
+}
+
+interface InstalledModelParams {
+  installationId: string;
+}
+
+interface InstalledModelBody {
+  id?: unknown;
+  deviceId?: unknown;
+  modelId?: unknown;
+  displayName?: unknown;
+  provider?: unknown;
+  repositoryId?: unknown;
+  filename?: unknown;
+  format?: unknown;
+  quantization?: unknown;
+  architecture?: unknown;
+  parameterCount?: unknown;
+  contextLength?: unknown;
+  fileSizeBytes?: unknown;
+  checksum?: unknown;
+  license?: unknown;
+  commercialUseAllowed?: unknown;
+  storageKey?: unknown;
+  runtimeBackend?: unknown;
+  installationStatus?: unknown;
+  compatibilityStatus?: unknown;
+  installedAt?: unknown;
+  lastVerifiedAt?: unknown;
+  validationError?: unknown;
+}
+
+interface InstalledModelValidationBody {
+  deviceId?: unknown;
+  installationStatus?: unknown;
+  compatibilityStatus?: unknown;
+  validationError?: unknown;
+}
+
+interface AgentModelQuery {
+  deviceId?: string;
+}
+
+interface AgentModelAssignmentBody {
+  deviceId?: unknown;
+  installationId?: unknown;
+  preferredExecutionMode?: unknown;
+  fallbackPolicy?: unknown;
+  readinessStatus?: unknown;
+  lastSuccessfulInferenceAt?: unknown;
+  lastErrorCode?: unknown;
 }
 
 interface PinBody {
@@ -1871,6 +1933,62 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.get(
+    "/v1/models/installed",
+    async (request: FastifyRequest<{ Querystring: InstalledModelQuery }>, reply) => {
+      try {
+        return {
+          models: store.listInstalledAgentModels({
+            sessionId: readSessionCookie(request.headers.cookie),
+            ...(request.query.deviceId === undefined
+              ? {}
+              : { deviceId: parseString(request.query.deviceId, "deviceId") })
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/models/installed",
+    async (request: FastifyRequest<{ Body: InstalledModelBody }>, reply) => {
+      try {
+        return store.registerInstalledAgentModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          model: parseInstalledModelBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/models/:installationId/validate",
+    async (
+      request: FastifyRequest<{
+        Params: InstalledModelParams;
+        Body: InstalledModelValidationBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.validateInstalledAgentModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          installationId: request.params.installationId,
+          deviceId: parseString(request.body.deviceId, "deviceId"),
+          installationStatus: parseModelInstallationStatus(request.body.installationStatus),
+          compatibilityStatus: parseModelCompatibilityStatus(request.body.compatibilityStatus),
+          validationError: parseNullableString(request.body.validationError)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
     "/businesses/:businessId/ai-model",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
       try {
@@ -1895,6 +2013,66 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           modelId: parseString(request.body.modelId, "modelId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-model",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
+      reply
+    ) => {
+      try {
+        return store.getAgentModelAssignment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.query.deviceId, "deviceId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/agent-model",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: AgentModelAssignmentBody }>,
+      reply
+    ) => {
+      try {
+        return store.assignAgentModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.body.deviceId, "deviceId"),
+          installationId: parseString(request.body.installationId, "installationId"),
+          preferredExecutionMode: parsePreferredExecutionMode(request.body.preferredExecutionMode),
+          fallbackPolicy: parseAgentModelFallbackPolicy(request.body.fallbackPolicy),
+          readinessStatus: parseAgentModelReadinessStatus(request.body.readinessStatus),
+          lastSuccessfulInferenceAt: parseNullableString(request.body.lastSuccessfulInferenceAt),
+          lastErrorCode: parseNullableString(request.body.lastErrorCode)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/agent-model",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
+      reply
+    ) => {
+      try {
+        return store.removeAgentModelAssignment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.query.deviceId, "deviceId")
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -5856,6 +6034,116 @@ function parseNullableString(value: unknown): string | null {
   }
 
   return value;
+}
+
+function parseInstalledModelBody(
+  body: InstalledModelBody
+): Omit<InstalledAgentModelSummary, "accountId" | "userId"> {
+  return {
+    id: parseString(body.id, "id"),
+    deviceId: parseString(body.deviceId, "deviceId"),
+    modelId: parseString(body.modelId, "modelId"),
+    displayName: parseString(body.displayName, "displayName"),
+    provider: parseModelProvider(body.provider),
+    repositoryId: parseNullableString(body.repositoryId),
+    filename: parseString(body.filename, "filename"),
+    format: parseModelFormat(body.format),
+    quantization: parseNullableString(body.quantization),
+    architecture: parseNullableString(body.architecture),
+    parameterCount: parseNullablePositiveInteger(body.parameterCount, "parameterCount"),
+    contextLength: parseNullablePositiveInteger(body.contextLength, "contextLength"),
+    fileSizeBytes: parsePositiveInteger(body.fileSizeBytes, "fileSizeBytes"),
+    checksum: parseNullableString(body.checksum),
+    license: parseString(body.license, "license"),
+    commercialUseAllowed: parseBoolean(body.commercialUseAllowed, "commercialUseAllowed"),
+    storageKey: parseString(body.storageKey, "storageKey"),
+    runtimeBackend: parseAgentModelRuntimeBackend(body.runtimeBackend),
+    installationStatus: parseModelInstallationStatus(body.installationStatus),
+    compatibilityStatus: parseModelCompatibilityStatus(body.compatibilityStatus),
+    installedAt: parseIsoTimestamp(body.installedAt, "installedAt"),
+    lastVerifiedAt:
+      body.lastVerifiedAt === null
+        ? null
+        : parseIsoTimestamp(body.lastVerifiedAt, "lastVerifiedAt"),
+    validationError: parseNullableString(body.validationError)
+  };
+}
+
+function parseModelProvider(value: unknown): InstalledAgentModelSummary["provider"] {
+  if (value === "huggingface" || value === "github" || value === "custom") return value;
+  throw new Cp2Error(400, "model_provider_invalid", "Model provider is invalid.");
+}
+
+function parseModelFormat(value: unknown): "GGUF" {
+  if (value === "GGUF") return value;
+  throw new Cp2Error(400, "model_format_invalid", "Only GGUF models are supported.");
+}
+
+function parseModelInstallationStatus(value: unknown): ModelInstallationStatus {
+  if (
+    value === "DOWNLOADING" ||
+    value === "INSTALLED" ||
+    value === "CORRUPT" ||
+    value === "REMOVED" ||
+    value === "FAILED"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "model_installation_status_invalid", "Installation status is invalid.");
+}
+
+function parseModelCompatibilityStatus(value: unknown): ModelCompatibilityStatus {
+  if (
+    value === "UNKNOWN" ||
+    value === "COMPATIBLE" ||
+    value === "INCOMPATIBLE" ||
+    value === "INSUFFICIENT_MEMORY" ||
+    value === "UNSUPPORTED_ARCHITECTURE" ||
+    value === "UNSUPPORTED_QUANTIZATION"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "model_compatibility_status_invalid", "Compatibility status is invalid.");
+}
+
+function parseAgentModelRuntimeBackend(value: unknown): AgentModelRuntimeBackend {
+  if (
+    value === "LLAMA_CPP_ANDROID" ||
+    value === "LLAMA_CPP_BROWSER" ||
+    value === "OLLAMA" ||
+    value === "CLOUD"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "model_runtime_backend_invalid", "Runtime backend is invalid.");
+}
+
+function parsePreferredExecutionMode(value: unknown): PreferredExecutionMode {
+  if (value === "LOCAL_ONLY" || value === "LOCAL_FIRST" || value === "CLOUD_ONLY") return value;
+  throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
+}
+
+function parseAgentModelFallbackPolicy(value: unknown): AgentModelFallbackPolicy {
+  if (
+    value === "NEVER" ||
+    value === "WHEN_LOCAL_UNAVAILABLE" ||
+    value === "WHEN_LOCAL_FAILS" ||
+    value === "WHEN_CONTEXT_EXCEEDED"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
+}
+
+function parseAgentModelReadinessStatus(value: unknown): AgentModelReadinessStatus {
+  if (value === "ATTACHED" || value === "LOADING" || value === "READY" || value === "FAILED") {
+    return value;
+  }
+  throw new Cp2Error(400, "model_readiness_status_invalid", "Readiness status is invalid.");
+}
+
+function parseNullablePositiveInteger(value: unknown, name: string): number | null {
+  return value === null ? null : parsePositiveInteger(value, name);
 }
 
 function parseNumber(value: unknown, name: string): number {

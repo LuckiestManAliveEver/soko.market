@@ -1,3 +1,9 @@
+import type {
+  AgentModelRuntimeBackend,
+  ModelCompatibilityStatus,
+  ModelInstallationStatus
+} from "@soko/shared-types";
+
 export interface DeviceModelCapability {
   deviceMemoryGb: number | null;
   hardwareConcurrency: number;
@@ -40,12 +46,30 @@ export interface RankedCatalogModel<T extends CatalogModelFitInput> {
 
 export interface LocalAiModel {
   id: string;
+  modelId: string;
   label: string;
+  displayName: string;
+  provider: "huggingface" | "github" | "custom";
+  repositoryId: string | null;
   fileName: string;
+  storageKey: string;
+  format: "GGUF";
+  quantization: string | null;
+  architecture: string | null;
+  parameterCount: number | null;
+  contextLength: number | null;
   fileSizeBytes: number;
+  checksum: string | null;
   license: string;
-  source: "catalog" | "custom";
+  commercialUseAllowed: boolean;
+  runtimeBackend: AgentModelRuntimeBackend;
+  installationStatus: ModelInstallationStatus;
+  compatibilityStatus: ModelCompatibilityStatus;
+  deviceId: string;
   storedAt: string;
+  installedAt: string;
+  lastVerifiedAt: string | null;
+  validationError: string | null;
 }
 
 export interface ModelTransferProgress {
@@ -106,6 +130,8 @@ export const defaultOfflineAiModels: DefaultOfflineAiModel[] = [
 
 const modelDirectoryName = "soko-ai-models";
 const localModelMetadataKey = "soko.local-ai-models.v1";
+const canonicalModelMetadataKey = "soko.local-ai-models.v2";
+const deviceModelScopeKey = "soko.device-model-scope.v1";
 
 export function assessDeviceModelCapability(
   signals: DeviceCapabilitySignals
@@ -218,11 +244,35 @@ export function rankCatalogModelsForDevice<T extends CatalogModelFitInput>(
 
 export function listLocalAiModels(): LocalAiModel[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(localModelMetadataKey) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter(isLocalAiModel) : [];
+    const canonical: unknown = JSON.parse(localStorage.getItem(canonicalModelMetadataKey) ?? "[]");
+    if (Array.isArray(canonical)) {
+      const records = canonical.filter(isLocalAiModel);
+      if (records.length > 0 || localStorage.getItem(canonicalModelMetadataKey) !== null) {
+        return records.filter((model) => model.installationStatus !== "REMOVED");
+      }
+    }
+
+    const legacy: unknown = JSON.parse(localStorage.getItem(localModelMetadataKey) ?? "[]");
+    const migrated = Array.isArray(legacy)
+      ? legacy.flatMap((value) => migrateLegacyLocalModel(value))
+      : [];
+    if (migrated.length > 0) {
+      saveLocalModels(migrated);
+    }
+    return migrated;
   } catch {
     return [];
   }
+}
+
+export function getOrCreateDeviceModelScopeId(): string {
+  const existing = localStorage.getItem(deviceModelScopeKey)?.trim();
+  if (existing) return existing;
+  const generated =
+    globalThis.crypto?.randomUUID?.() ??
+    `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  localStorage.setItem(deviceModelScopeKey, generated);
+  return generated;
 }
 
 export async function downloadCatalogModel(
@@ -253,15 +303,17 @@ export async function downloadCatalogModel(
     onProgress,
     true
   );
-  const localModel: LocalAiModel = {
-    id: model.id,
+  const now = new Date().toISOString();
+  const localModel = createInstalledModelRecord({
+    modelId: model.id,
     label: model.label,
+    provider: model.source === "github" ? "github" : "huggingface",
+    repositoryId: repositoryIdFromModel(model),
     fileName: model.fileName,
     fileSizeBytes: model.fileSizeBytes,
     license: model.license,
-    source: "catalog",
-    storedAt: new Date().toISOString()
-  };
+    storedAt: now
+  });
   saveLocalModel(localModel);
   return localModel;
 }
@@ -284,23 +336,89 @@ export async function importCustomGgufModel(
   const storedFileName = `${id.replace(":", "-")}.gguf`;
   const directory = await openModelDirectory();
   await streamToDeviceFile(directory, storedFileName, file.stream(), file.size, onProgress);
-  const localModel: LocalAiModel = {
-    id,
+  const localModel = createInstalledModelRecord({
+    modelId: id,
     label: file.name.replace(/\.gguf$/i, ""),
+    provider: "custom",
+    repositoryId: null,
     fileName: storedFileName,
     fileSizeBytes: file.size,
     license: "User-confirmed commercial license",
-    source: "custom",
     storedAt: new Date().toISOString()
-  };
+  });
   saveLocalModel(localModel);
   return localModel;
 }
 
 export async function removeLocalAiModel(model: LocalAiModel): Promise<void> {
   const directory = await openModelDirectory();
-  await directory.removeEntry(model.fileName).catch(() => undefined);
-  saveLocalModels(listLocalAiModels().filter((candidate) => candidate.id !== model.id));
+  await directory.removeEntry(model.storageKey).catch(() => undefined);
+  saveLocalModels(
+    listLocalAiModels().filter(
+      (candidate) =>
+        candidate.id !== model.id &&
+        !(
+          candidate.deviceId === model.deviceId &&
+          candidate.modelId === model.modelId &&
+          candidate.storageKey === model.storageKey
+        )
+    )
+  );
+}
+
+export async function validateLocalAiModel(
+  model: LocalAiModel,
+  capability?: DeviceModelCapability | null
+): Promise<LocalAiModel> {
+  const verifiedAt = new Date().toISOString();
+  let updated: LocalAiModel;
+
+  try {
+    const directory = await openModelDirectory();
+    const handle = await directory.getFileHandle(model.storageKey);
+    const file = await handle.getFile();
+    const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    if (String.fromCharCode(...signature) !== "GGUF") {
+      updated = {
+        ...model,
+        installationStatus: "CORRUPT",
+        compatibilityStatus: "INCOMPATIBLE",
+        lastVerifiedAt: verifiedAt,
+        validationError: "MODEL_CORRUPT"
+      };
+    } else if (Math.abs(file.size - model.fileSizeBytes) > Math.max(1024 ** 2, file.size * 0.01)) {
+      updated = {
+        ...model,
+        installationStatus: "CORRUPT",
+        compatibilityStatus: "INCOMPATIBLE",
+        lastVerifiedAt: verifiedAt,
+        validationError: "MODEL_FILE_SIZE_MISMATCH"
+      };
+    } else {
+      const compatible =
+        capability === undefined ||
+        capability === null ||
+        canRunCatalogModel(capability, estimatedMinimumMemoryGb(model), model.fileSizeBytes);
+      updated = {
+        ...model,
+        installationStatus: "INSTALLED",
+        compatibilityStatus: compatible ? "COMPATIBLE" : "INSUFFICIENT_MEMORY",
+        lastVerifiedAt: verifiedAt,
+        validationError: compatible ? null : "INSUFFICIENT_MEMORY"
+      };
+    }
+  } catch {
+    updated = {
+      ...model,
+      installationStatus: "FAILED",
+      compatibilityStatus: "UNKNOWN",
+      lastVerifiedAt: verifiedAt,
+      validationError: "MODEL_FILE_MISSING"
+    };
+  }
+
+  saveLocalModel(updated);
+  return updated;
 }
 
 async function openModelDirectory(): Promise<FileSystemDirectoryHandle> {
@@ -438,11 +556,22 @@ function assertCatalogDownloadUrl(model: DownloadableAiModel): void {
 }
 
 function saveLocalModel(model: LocalAiModel): void {
-  saveLocalModels([...listLocalAiModels().filter((candidate) => candidate.id !== model.id), model]);
+  saveLocalModels([
+    ...listLocalAiModels().filter(
+      (candidate) =>
+        candidate.id !== model.id &&
+        !(
+          candidate.deviceId === model.deviceId &&
+          candidate.modelId === model.modelId &&
+          candidate.storageKey === model.storageKey
+        )
+    ),
+    model
+  ]);
 }
 
 function saveLocalModels(models: LocalAiModel[]): void {
-  localStorage.setItem(localModelMetadataKey, JSON.stringify(models));
+  localStorage.setItem(canonicalModelMetadataKey, JSON.stringify(models));
 }
 
 function isLocalAiModel(value: unknown): value is LocalAiModel {
@@ -450,13 +579,151 @@ function isLocalAiModel(value: unknown): value is LocalAiModel {
   const model = value as Partial<LocalAiModel>;
   return (
     typeof model.id === "string" &&
+    typeof model.modelId === "string" &&
     typeof model.label === "string" &&
+    typeof model.displayName === "string" &&
+    (model.provider === "huggingface" ||
+      model.provider === "github" ||
+      model.provider === "custom") &&
+    (model.repositoryId === null || typeof model.repositoryId === "string") &&
     typeof model.fileName === "string" &&
+    typeof model.storageKey === "string" &&
+    model.format === "GGUF" &&
     typeof model.fileSizeBytes === "number" &&
     typeof model.license === "string" &&
-    (model.source === "catalog" || model.source === "custom") &&
-    typeof model.storedAt === "string"
+    typeof model.commercialUseAllowed === "boolean" &&
+    typeof model.deviceId === "string" &&
+    typeof model.storedAt === "string" &&
+    typeof model.installedAt === "string" &&
+    typeof model.runtimeBackend === "string" &&
+    typeof model.installationStatus === "string" &&
+    typeof model.compatibilityStatus === "string"
   );
+}
+
+function migrateLegacyLocalModel(value: unknown): LocalAiModel[] {
+  if (typeof value !== "object" || value === null) return [];
+  const model = value as {
+    id?: unknown;
+    label?: unknown;
+    fileName?: unknown;
+    fileSizeBytes?: unknown;
+    license?: unknown;
+    source?: unknown;
+    storedAt?: unknown;
+  };
+  if (
+    typeof model.id !== "string" ||
+    typeof model.label !== "string" ||
+    typeof model.fileName !== "string" ||
+    typeof model.fileSizeBytes !== "number" ||
+    typeof model.license !== "string" ||
+    (model.source !== "catalog" && model.source !== "custom") ||
+    typeof model.storedAt !== "string"
+  ) {
+    return [];
+  }
+  return [
+    createInstalledModelRecord({
+      modelId: model.id,
+      label: model.label,
+      provider:
+        model.source === "custom"
+          ? "custom"
+          : model.id.startsWith("github:")
+            ? "github"
+            : "huggingface",
+      repositoryId: model.source === "custom" ? null : repositoryIdFromModelId(model.id),
+      fileName: model.fileName,
+      fileSizeBytes: model.fileSizeBytes,
+      license: model.license,
+      storedAt: model.storedAt
+    })
+  ];
+}
+
+function createInstalledModelRecord(input: {
+  modelId: string;
+  label: string;
+  provider: LocalAiModel["provider"];
+  repositoryId: string | null;
+  fileName: string;
+  fileSizeBytes: number;
+  license: string;
+  storedAt: string;
+}): LocalAiModel {
+  return {
+    id:
+      globalThis.crypto?.randomUUID?.() ??
+      `installation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`,
+    modelId: input.modelId,
+    label: input.label,
+    displayName: input.label,
+    provider: input.provider,
+    repositoryId: input.repositoryId,
+    fileName: input.fileName,
+    storageKey: input.fileName,
+    format: "GGUF",
+    quantization: inferQuantization(input.fileName),
+    architecture: inferArchitecture(`${input.modelId} ${input.fileName}`),
+    parameterCount: inferParameterCount(`${input.label} ${input.fileName}`),
+    contextLength: 2_048,
+    fileSizeBytes: input.fileSizeBytes,
+    checksum: null,
+    license: input.license,
+    commercialUseAllowed:
+      input.license === "Apache-2.0" || input.license === "User-confirmed commercial license",
+    runtimeBackend: "LLAMA_CPP_ANDROID",
+    installationStatus: "INSTALLED",
+    compatibilityStatus: "UNKNOWN",
+    deviceId: getOrCreateDeviceModelScopeId(),
+    storedAt: input.storedAt,
+    installedAt: input.storedAt,
+    lastVerifiedAt: null,
+    validationError: null
+  };
+}
+
+function repositoryIdFromModel(model: DownloadableAiModel): string | null {
+  return repositoryIdFromModelId(model.id);
+}
+
+function repositoryIdFromModelId(modelId: string): string | null {
+  if (modelId.startsWith("huggingface:")) {
+    return modelId.slice("huggingface:".length).split(".").slice(0, 2).join("/");
+  }
+  if (modelId.startsWith("github:")) {
+    return modelId.slice("github:".length).split(".").slice(0, 2).join("/");
+  }
+  if (modelId === "qwen2.5-0.5b-android") return "Qwen/Qwen2.5-0.5B-Instruct-GGUF";
+  if (modelId === "smollm2-360m-android") {
+    return "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF";
+  }
+  return null;
+}
+
+function inferQuantization(fileName: string): string | null {
+  return fileName.match(/(?:^|[._-])(q\d(?:_[a-z0-9]+)+)(?:[._-]|$)/i)?.[1]?.toUpperCase() ?? null;
+}
+
+function inferArchitecture(value: string): string | null {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("qwen")) return "qwen2";
+  if (normalized.includes("smollm")) return "llama";
+  if (normalized.includes("tinyllama") || normalized.includes("llama")) return "llama";
+  return null;
+}
+
+function inferParameterCount(value: string): number | null {
+  const match = value.toLowerCase().match(/(\d+(?:\.\d+)?)\s*([bm])\b/);
+  if (match === null) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+  return Math.round(amount * (match[2] === "b" ? 1_000_000_000 : 1_000_000));
+}
+
+function estimatedMinimumMemoryGb(model: LocalAiModel): number {
+  return Math.max(2, Math.ceil((model.fileSizeBytes * 2.5) / 1024 ** 3));
 }
 
 function finitePositive(value: number | undefined): number | null {

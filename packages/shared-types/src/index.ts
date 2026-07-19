@@ -347,6 +347,88 @@ export interface ActiveAiModelSummary {
   activatedBy: string;
 }
 
+export type ModelInstallationStatus =
+  "DOWNLOADING" | "INSTALLED" | "CORRUPT" | "REMOVED" | "FAILED";
+
+export type ModelCompatibilityStatus =
+  | "UNKNOWN"
+  | "COMPATIBLE"
+  | "INCOMPATIBLE"
+  | "INSUFFICIENT_MEMORY"
+  | "UNSUPPORTED_ARCHITECTURE"
+  | "UNSUPPORTED_QUANTIZATION";
+
+export type AgentModelRuntimeBackend =
+  "LLAMA_CPP_ANDROID" | "LLAMA_CPP_BROWSER" | "OLLAMA" | "CLOUD";
+
+export type PreferredExecutionMode = "LOCAL_ONLY" | "LOCAL_FIRST" | "CLOUD_ONLY";
+
+export type AgentModelFallbackPolicy =
+  "NEVER" | "WHEN_LOCAL_UNAVAILABLE" | "WHEN_LOCAL_FAILS" | "WHEN_CONTEXT_EXCEEDED";
+
+export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAILED";
+
+export interface InstalledAgentModelSummary {
+  id: string;
+  accountId: string;
+  userId: string;
+  deviceId: string;
+  modelId: string;
+  displayName: string;
+  provider: "huggingface" | "github" | "custom";
+  repositoryId: string | null;
+  filename: string;
+  format: "GGUF";
+  quantization: string | null;
+  architecture: string | null;
+  parameterCount: number | null;
+  contextLength: number | null;
+  fileSizeBytes: number;
+  checksum: string | null;
+  license: string;
+  commercialUseAllowed: boolean;
+  storageKey: string;
+  runtimeBackend: AgentModelRuntimeBackend;
+  installationStatus: ModelInstallationStatus;
+  compatibilityStatus: ModelCompatibilityStatus;
+  installedAt: string;
+  lastVerifiedAt: string | null;
+  validationError: string | null;
+}
+
+export interface AgentModelAssignmentSummary {
+  agentId: string;
+  businessId: string;
+  accountId: string;
+  userId: string;
+  deviceId: string;
+  activeModelInstallationId: string | null;
+  modelId: string | null;
+  preferredExecutionMode: PreferredExecutionMode;
+  fallbackPolicy: AgentModelFallbackPolicy;
+  readinessStatus: AgentModelReadinessStatus;
+  runtimeBackend: AgentModelRuntimeBackend | null;
+  lastSuccessfulInferenceAt: string | null;
+  lastErrorCode: string | null;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface AgentModelReadinessResult {
+  success: boolean;
+  modelId: string;
+  installationId: string;
+  backend: AgentModelRuntimeBackend;
+  loadDurationMs: number;
+  inferenceDurationMs: number;
+  inputTokenCount: number | null;
+  outputTokenCount: number | null;
+  memoryWarning: string | null;
+  errorCode: string | null;
+  message: string;
+  checkedAt: string;
+}
+
 export interface SokoSessionContext {
   accountId: string;
   userId: string;

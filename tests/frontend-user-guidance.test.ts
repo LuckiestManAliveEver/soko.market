@@ -119,10 +119,12 @@ describe("frontend user guidance", () => {
   it("separates installed Android models from the commercially permitted download catalog", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
-    expect(application).toContain('label="Installed on this phone"');
-    expect(application).toContain('label="Commercial-use catalog — install first"');
     expect(application).toContain("Predownload & install");
-    expect(application).toContain("must be installed on this phone before it can be selected");
+    expect(application).toContain("Installed on this device. Choose ‘Use with this agent’");
+    expect(application).toContain("Use with this agent");
+    expect(application).toContain("Test model");
+    expect(application).not.toContain("Ready without a connection");
+    expect(application).not.toContain("offline ready");
     expect(application).toContain("Install offline starter");
     expect(manager).toContain("defaultOfflineAiModels");
     expect(manager).toContain("Qwen2.5 0.5B offline default");

@@ -30,6 +30,9 @@ import type {
   ConversationMessageSummary,
   ConversationParticipantSummary,
   ConversationView,
+  AgentModelAssignmentSummary,
+  AgentModelFallbackPolicy,
+  PreferredExecutionMode,
   E2eeDeviceSummary,
   MessageHandoffStatus,
   McpAccessScope,
@@ -74,10 +77,29 @@ import {
   listLocalAiModels,
   rankCatalogModelsForDevice,
   removeLocalAiModel,
+  validateLocalAiModel,
+  getOrCreateDeviceModelScopeId,
   type DeviceModelCapability,
   type LocalAiModel,
   type ModelTransferProgress
 } from "./ai-model-manager";
+import {
+  assignmentAfterReadiness,
+  assignmentFromServer,
+  clearDeviceAgentModelAssignment,
+  createPendingDeviceAssignment,
+  readDeviceAgentModelAssignment,
+  saveDeviceAgentModelAssignment,
+  type DeviceAgentModelAssignment
+} from "./agent-model-assignment";
+import {
+  AgentModelRuntimeError,
+  buildLocalAgentPrompt,
+  createAgentModelRuntime,
+  fallbackAllowed,
+  testAgentModelRuntime,
+  type AgentModelRuntime
+} from "./agent-model-runtime";
 import {
   decryptDirectMessage,
   encryptDirectMessage,
@@ -2100,6 +2122,7 @@ export function OwnerApp() {
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
   const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
+  const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
 
   const shouldShowLogin =
     !isSignupOpen && (isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked));
@@ -5691,6 +5714,22 @@ export function OwnerApp() {
     setReplyToMessageId(null);
 
     const hasHumanRecipient = isHumanDirectConversation(activeConversation, session);
+    const localAssignment =
+      business === null
+        ? null
+        : readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId());
+    const shouldResolveLocal =
+      !hasHumanRecipient &&
+      localAssignment !== null &&
+      localAssignment.activeModelInstallationId !== null &&
+      localAssignment.preferredExecutionMode !== "CLOUD_ONLY";
+    const localInstallation =
+      shouldResolveLocal && localAssignment?.activeModelInstallationId !== null
+        ? (listLocalAiModels().find(
+            (model) => model.id === localAssignment?.activeModelInstallationId
+          ) ?? null)
+        : null;
+    let localFallbackStatus: string | null = null;
     let messageContent: ConversationMessageContent = {
       type: "text",
       text: message,
@@ -5725,7 +5764,7 @@ export function OwnerApp() {
             content: messageContent,
             replyToMessageId,
             clientTimestamp: new Date().toISOString(),
-            ...(!hasHumanRecipient && business !== null
+            ...(!hasHumanRecipient && business !== null && !shouldResolveLocal
               ? {
                   agent: {
                     businessId: business.id,
@@ -5807,8 +5846,10 @@ export function OwnerApp() {
             item.id === clientMessageId ? { ...item, status: "failed" } : item
           )
         );
-        setStatusMessage("Message queued. It will retry when the connection returns.");
-        return;
+        if (!shouldResolveLocal) {
+          setStatusMessage("Message queued. It will retry when the connection returns.");
+          return;
+        }
       }
     }
 
@@ -5856,6 +5897,70 @@ export function OwnerApp() {
       setChatMessages((messages) => [...messages, next]);
     }
 
+    if (shouldResolveLocal && localAssignment !== null) {
+      try {
+        if (localInstallation === null) {
+          throw new AgentModelRuntimeError(
+            "MODEL_FILE_MISSING",
+            "The attached model file is missing from this device."
+          );
+        }
+        const runtime =
+          chatModelRuntimeRef.current ?? (chatModelRuntimeRef.current = createAgentModelRuntime());
+        setStatusMessage(`${localInstallation.displayName} · Local · Loading`);
+        await runtime.load(localInstallation);
+        const generation = await runtime.generate({
+          installationId: localInstallation.id,
+          prompt: buildLocalAgentPrompt({
+            role: agentSettings.role,
+            instructions: agentSettings.instructions,
+            message: runtimeMessage,
+            recentMessages: chatMessages
+              .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
+              .map((item) => ({
+                role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
+                content: item.body
+              }))
+          }),
+          maxTokens: 192,
+          temperature: 0.2
+        });
+        const usedAt = new Date().toISOString();
+        saveDeviceAgentModelAssignment({
+          ...localAssignment,
+          readinessStatus: "READY",
+          lastSuccessfulInferenceAt: usedAt,
+          lastErrorCode: null,
+          updatedAt: usedAt
+        });
+        await appendAgentMessage(generation.text);
+        setStatusMessage(`${localInstallation.displayName} · Local · In use`);
+        return;
+      } catch (error) {
+        const code = error instanceof AgentModelRuntimeError ? error.code : "MODEL_LOAD_FAILED";
+        saveDeviceAgentModelAssignment({
+          ...localAssignment,
+          readinessStatus: "FAILED",
+          lastErrorCode: code,
+          updatedAt: new Date().toISOString()
+        });
+        const allowed =
+          localAssignment.preferredExecutionMode === "LOCAL_FIRST" &&
+          fallbackAllowed(localAssignment.fallbackPolicy, code);
+        if (!allowed) {
+          await appendAgentMessage(
+            `The local model could not process this message (${formatModelStatus(code)}). Cloud fallback is disabled.`
+          );
+          setStatusMessage(`${localInstallation?.displayName ?? "Local model"} · Failed · ${code}`);
+          return;
+        }
+        localFallbackStatus = code;
+        setStatusMessage(
+          `${localInstallation?.displayName ?? "Local model"} failed · Using configured cloud fallback (${code})`
+        );
+      }
+    }
+
     async function applyRuntimeResult(result: RuntimeTurnResult, appendResponse: boolean) {
       setRuntimeSessionId(result.session.id);
       setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
@@ -5886,7 +5991,11 @@ export function OwnerApp() {
       if (business !== null) {
         await loadRuntimeSessions(business.id);
       }
-      setStatusMessage(formatRuntimeTurnStatus(result));
+      setStatusMessage(
+        localFallbackStatus === null
+          ? formatRuntimeTurnStatus(result)
+          : `${formatRuntimeTurnStatus(result)} · Cloud fallback (${localFallbackStatus})`
+      );
     }
 
     if (serverAgentProcessing !== null) {
@@ -12188,6 +12297,14 @@ function AgentProfileSurface({
   const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
+  const [deviceId] = useState(() => getOrCreateDeviceModelScopeId());
+  const [agentModelAssignment, setAgentModelAssignment] =
+    useState<DeviceAgentModelAssignment | null>(() =>
+      readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId())
+    );
+  const [modelChooserOpen, setModelChooserOpen] = useState(false);
+  const [modelRuntimeBusy, setModelRuntimeBusy] = useState(false);
+  const modelRuntime = useRef<AgentModelRuntime | null>(null);
   const [githubModelDiscovery, setGitHubModelDiscovery] = useState<CatalogAiModelSearchResponse>({
     models: [],
     status: "unavailable",
@@ -12245,6 +12362,7 @@ function AgentProfileSurface({
     void loadMcpTokens();
     void loadShopDeletionPreview();
     void loadAgentProfile();
+    void loadAgentModelAssignment();
     // initialize model search from URL so browser back/forward works
     const params = new URLSearchParams(location.search);
     const initialSearch = params.get("ai_search") ?? "";
@@ -12266,6 +12384,11 @@ function AgentProfileSurface({
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [business.id]);
+
+  function getModelRuntime(): AgentModelRuntime {
+    modelRuntime.current ??= createAgentModelRuntime();
+    return modelRuntime.current;
+  }
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
     if (pendingProfileAction !== null) return;
@@ -12412,15 +12535,13 @@ function AgentProfileSurface({
   async function predownloadAiModel(model: AiModelSummary) {
     try {
       setProfileMessage(`Downloading ${model.label} to this device…`);
-      await downloadCatalogModel(model, (progress) => {
+      const installed = await downloadCatalogModel(model, (progress) => {
         setModelTransfers((current) => ({ ...current, [model.id]: progress }));
       });
+      const verified = await validateLocalAiModel(installed, deviceCapability);
       setLocalAiModels(listLocalAiModels());
-      setIsEditing(true);
-      updateAgent({ model: model.id });
-      setProfileMessage(
-        `${model.label} is installed on this phone and selected. Save the agent to activate it.`
-      );
+      if (navigator.onLine) await registerInstalledModel(verified);
+      setProfileMessage("Installed on this device. Choose ‘Use with this agent’ to activate it.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -12446,10 +12567,10 @@ function AgentProfileSurface({
       const model = await importCustomGgufModel(file, (progress) => {
         setModelTransfers((current) => ({ ...current, [transferId]: progress }));
       });
+      const verified = await validateLocalAiModel(model, deviceCapability);
       setLocalAiModels(listLocalAiModels());
-      setIsEditing(true);
-      updateAgent({ model: model.id });
-      setProfileMessage(`${model.label} was imported and selected. Save the agent to activate it.`);
+      if (navigator.onLine) await registerInstalledModel(verified);
+      setProfileMessage("Installed on this device. Choose ‘Use with this agent’ to activate it.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -12463,15 +12584,222 @@ function AgentProfileSurface({
 
   async function deleteDeviceModel(model: LocalAiModel) {
     try {
+      if (agentModelAssignment?.activeModelInstallationId === model.id) {
+        await removeModelFromAgent();
+      }
+      await getModelRuntime().unload(model.id);
       await removeLocalAiModel(model);
       setLocalAiModels(listLocalAiModels());
-      if (draftAgent.model === model.id) {
-        setIsEditing(true);
-        updateAgent({ model: "sokoclaw-local" });
-      }
       setProfileMessage(`${model.label} was removed from this device.`);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadAgentModelAssignment() {
+    const local = readDeviceAgentModelAssignment(business.id, deviceId);
+    if (local !== null) setAgentModelAssignment(local);
+    if (!navigator.onLine) return;
+    try {
+      if (
+        local?.activeModelInstallationId !== null &&
+        local?.activeModelInstallationId !== undefined &&
+        local.readinessStatus === "READY" &&
+        local.lastSuccessfulInferenceAt !== null
+      ) {
+        const installation = listLocalAiModels().find(
+          (model) => model.id === local.activeModelInstallationId
+        );
+        if (installation !== undefined) {
+          await registerInstalledModel(installation);
+          const saved = await putJson<AgentModelAssignmentSummary>(
+            `/businesses/${business.id}/agent-model`,
+            {
+              deviceId,
+              installationId: installation.id,
+              preferredExecutionMode: local.preferredExecutionMode,
+              fallbackPolicy: local.fallbackPolicy,
+              readinessStatus: local.readinessStatus,
+              lastSuccessfulInferenceAt: local.lastSuccessfulInferenceAt,
+              lastErrorCode: local.lastErrorCode
+            }
+          );
+          const synchronized = assignmentFromServer(saved);
+          saveDeviceAgentModelAssignment(synchronized);
+          setAgentModelAssignment(synchronized);
+          return;
+        }
+      }
+      const server = await getJson<AgentModelAssignmentSummary>(
+        `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+      );
+      if (server.activeModelInstallationId === null) {
+        if (local === null) setAgentModelAssignment(null);
+        return;
+      }
+      const restored = assignmentFromServer(server);
+      saveDeviceAgentModelAssignment(restored);
+      setAgentModelAssignment(restored);
+    } catch (error) {
+      if (local === null) setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function registerInstalledModel(model: LocalAiModel): Promise<void> {
+    await postJson("/v1/models/installed", installedModelRequest(model));
+  }
+
+  async function useModelWithAgent(model: LocalAiModel) {
+    if (modelRuntimeBusy) return;
+    const previous = agentModelAssignment;
+    setModelRuntimeBusy(true);
+    setModelChooserOpen(false);
+    try {
+      setProfileMessage(`Checking ${model.displayName} installation and compatibility…`);
+      const verified = await validateLocalAiModel(model, deviceCapability);
+      setLocalAiModels(listLocalAiModels());
+      if (
+        verified.installationStatus !== "INSTALLED" ||
+        verified.compatibilityStatus !== "COMPATIBLE"
+      ) {
+        throw new Error(
+          verified.validationError === "MODEL_FILE_MISSING"
+            ? "The model file is missing from this device."
+            : verified.compatibilityStatus === "INSUFFICIENT_MEMORY"
+              ? "This device does not have enough memory for the model."
+              : "The installed model is not compatible with this device."
+        );
+      }
+      if (!verified.commercialUseAllowed) {
+        throw new Error("This model is not approved for commercial use.");
+      }
+      if (navigator.onLine) await registerInstalledModel(verified);
+
+      const pending = createPendingDeviceAssignment({
+        businessId: business.id,
+        deviceId,
+        installation: verified,
+        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"
+      });
+      saveDeviceAgentModelAssignment(pending);
+      setAgentModelAssignment(pending);
+      setProfileMessage(`Loading ${verified.displayName} and running a real test inference…`);
+      const result = await testAgentModelRuntime(getModelRuntime(), verified);
+      const tested = assignmentAfterReadiness(pending, result);
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+      if (navigator.onLine) {
+        const saved = await putJson<AgentModelAssignmentSummary>(
+          `/businesses/${business.id}/agent-model`,
+          {
+            deviceId,
+            installationId: verified.id,
+            preferredExecutionMode: tested.preferredExecutionMode,
+            fallbackPolicy: tested.fallbackPolicy,
+            readinessStatus: tested.readinessStatus,
+            lastSuccessfulInferenceAt: tested.lastSuccessfulInferenceAt,
+            lastErrorCode: tested.lastErrorCode
+          }
+        );
+        const synchronized = assignmentFromServer(saved);
+        saveDeviceAgentModelAssignment(synchronized);
+        setAgentModelAssignment(synchronized);
+      } else {
+        saveDeviceAgentModelAssignment(tested);
+        setAgentModelAssignment(tested);
+      }
+      if (
+        previous?.activeModelInstallationId !== null &&
+        previous?.activeModelInstallationId !== undefined &&
+        previous.activeModelInstallationId !== verified.id
+      ) {
+        await getModelRuntime().unload(previous.activeModelInstallationId);
+      }
+      updateAgent({ model: verified.modelId });
+      onAgentChange({ ...agent, model: verified.modelId });
+      setProfileMessage(result.message);
+    } catch (error) {
+      await getModelRuntime().unload(model.id);
+      if (previous === null) {
+        clearDeviceAgentModelAssignment(business.id, deviceId);
+        setAgentModelAssignment(null);
+      } else {
+        saveDeviceAgentModelAssignment(previous);
+        setAgentModelAssignment(previous);
+      }
+      setProfileMessage(`${getErrorMessage(error)} The previous working model was left unchanged.`);
+    } finally {
+      setModelRuntimeBusy(false);
+    }
+  }
+
+  async function testAssignedModel() {
+    const assignment = agentModelAssignment;
+    if (modelRuntimeBusy || assignment === null || assignment.activeModelInstallationId === null) {
+      return;
+    }
+    const model = localAiModels.find(
+      (candidate) => candidate.id === assignment.activeModelInstallationId
+    );
+    if (model === undefined) {
+      setProfileMessage("The attached model file is missing from this device.");
+      return;
+    }
+    setModelRuntimeBusy(true);
+    try {
+      setProfileMessage(`Testing ${model.displayName} with a real local inference…`);
+      const result = await testAgentModelRuntime(getModelRuntime(), model);
+      const next = assignmentAfterReadiness(assignment, result);
+      saveDeviceAgentModelAssignment(next);
+      setAgentModelAssignment(next);
+      setProfileMessage(result.message);
+    } finally {
+      setModelRuntimeBusy(false);
+    }
+  }
+
+  async function removeModelFromAgent() {
+    const installationId = agentModelAssignment?.activeModelInstallationId;
+    if (installationId === null || installationId === undefined) return;
+    if (!navigator.onLine) {
+      throw new Error("Connect to the internet to synchronize removal from this agent.");
+    }
+    await deleteJson(
+      `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+    );
+    await getModelRuntime().unload(installationId);
+    clearDeviceAgentModelAssignment(business.id, deviceId);
+    setAgentModelAssignment(null);
+    updateAgent({ model: "sokoclaw-local" });
+    onAgentChange({ ...agent, model: "sokoclaw-local" });
+    setProfileMessage("The local model was removed from this agent.");
+  }
+
+  async function updateAgentModelPolicy(
+    patch: Partial<Pick<DeviceAgentModelAssignment, "preferredExecutionMode" | "fallbackPolicy">>
+  ) {
+    if (agentModelAssignment === null) return;
+    const next = { ...agentModelAssignment, ...patch, updatedAt: new Date().toISOString() };
+    saveDeviceAgentModelAssignment(next);
+    setAgentModelAssignment(next);
+    if (navigator.onLine && next.activeModelInstallationId !== null) {
+      const saved = await putJson<AgentModelAssignmentSummary>(
+        `/businesses/${business.id}/agent-model`,
+        {
+          deviceId,
+          installationId: next.activeModelInstallationId,
+          preferredExecutionMode: next.preferredExecutionMode,
+          fallbackPolicy: next.fallbackPolicy,
+          readinessStatus: next.readinessStatus,
+          lastSuccessfulInferenceAt: next.lastSuccessfulInferenceAt,
+          lastErrorCode: next.lastErrorCode
+        }
+      );
+      const synchronized = assignmentFromServer(saved);
+      saveDeviceAgentModelAssignment(synchronized);
+      setAgentModelAssignment(synchronized);
     }
   }
 
@@ -12739,23 +13067,6 @@ function AgentProfileSurface({
     setDraftAgent((currentAgent) => ({ ...currentAgent, ...patch }));
   }
 
-  function selectAgentModel(modelId: string) {
-    const catalogModel = aiModels.find((model) => model.id === modelId);
-    const installedOnDevice = localAiModels.some((model) => model.id === modelId);
-    if (
-      catalogModel !== undefined &&
-      isDownloadableCatalogModel(catalogModel) &&
-      !installedOnDevice
-    ) {
-      setProfileMessage(
-        `${catalogModel.label} must be installed on this phone before it can be selected.`
-      );
-      return;
-    }
-    setIsEditing(true);
-    updateAgent({ model: modelId });
-  }
-
   function startEditing() {
     setDraftAgent(agent);
     setIsEditing(true);
@@ -12776,7 +13087,7 @@ function AgentProfileSurface({
       selectedCatalogModel !== undefined &&
       isDownloadableCatalogModel(selectedCatalogModel) &&
       draftAgent.model !== agent.model &&
-      !localAiModels.some((model) => model.id === draftAgent.model)
+      !localAiModels.some((model) => model.modelId === draftAgent.model)
     ) {
       setProfileMessage(
         `Install ${selectedCatalogModel.label} on this phone before activating it.`
@@ -12972,7 +13283,19 @@ function AgentProfileSurface({
       : rankCatalogModelsForDevice(defaultOfflineAiModels, deviceCapability)[0]?.model;
   const offlineStarterInstalled =
     offlineStarter !== undefined &&
-    localAiModels.some((localModel) => localModel.id === offlineStarter.id);
+    localAiModels.some((localModel) => localModel.modelId === offlineStarter.id);
+  const activeInstalledModel =
+    agentModelAssignment?.activeModelInstallationId === null ||
+    agentModelAssignment?.activeModelInstallationId === undefined
+      ? null
+      : (localAiModels.find(
+          (model) => model.id === agentModelAssignment.activeModelInstallationId
+        ) ?? null);
+  const orderedInstalledModels = [...localAiModels].sort((left, right) => {
+    const leftCompatible = left.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
+    const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
+    return leftCompatible - rightCompatible || left.displayName.localeCompare(right.displayName);
+  });
 
   return (
     <main className="agent-profile-surface">
@@ -13046,72 +13369,15 @@ function AgentProfileSurface({
             />
           </label>
           <label>
-            AI model
-            <select
-              value={draftAgent.model}
-              disabled={!isEditing}
-              onChange={(event) => selectAgentModel(event.target.value)}
-            >
-              <optgroup label="Installed on this phone">
-                {aiModels
-                  .filter(
-                    (model) =>
-                      isDownloadableCatalogModel(model) &&
-                      model.license === "Apache-2.0" &&
-                      localAiModels.some((localModel) => localModel.id === model.id)
-                  )
-                  .map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} — offline ready
-                    </option>
-                  ))}
-                {localAiModels
-                  .filter((model) => model.source === "custom")
-                  .map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} — custom, offline ready
-                    </option>
-                  ))}
-                {localAiModels
-                  .filter(
-                    (model) =>
-                      model.source === "catalog" &&
-                      !aiModels.some((catalogModel) => catalogModel.id === model.id)
-                  )
-                  .map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} — offline ready
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label="Commercial-use catalog — install first">
-                {aiModels
-                  .filter(
-                    (model) =>
-                      isDownloadableCatalogModel(model) &&
-                      model.license === "Apache-2.0" &&
-                      !localAiModels.some((localModel) => localModel.id === model.id)
-                  )
-                  .map((model) => (
-                    <option key={model.id} value={model.id} disabled>
-                      {model.label} — {formatModelBytes(model.fileSizeBytes)} download required
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label="Built-in and hosted">
-                {aiModels
-                  .filter((model) => !isDownloadableCatalogModel(model))
-                  .map((model) => (
-                    <option key={model.id} value={model.id} disabled={!model.available}>
-                      {model.label}
-                      {model.available ? "" : " (unavailable)"}
-                    </option>
-                  ))}
-              </optgroup>
-            </select>
+            Current conversational model
+            <input
+              value={activeInstalledModel?.displayName ?? draftAgent.model}
+              disabled
+              aria-label="Current conversational model"
+            />
             <small className="model-select-hint">
-              Hugging Face and GitHub models appear as ready only after their Apache-2.0 GGUF file
-              is installed in this phone's private storage.
+              Installing a file does not connect it. Local models become ready only after a real
+              runtime test succeeds.
             </small>
           </label>
           <label>
@@ -13122,6 +13388,180 @@ function AgentProfileSurface({
               onChange={(event) => updateAgent({ role: event.target.value })}
             />
           </label>
+        </div>
+
+        <div className="record-form agent-model-panel">
+          <div className="section-heading">
+            <p className="eyebrow">One agent · one active model</p>
+            <h3>Agent model</h3>
+            <p>Choose, verify, and connect an installed model to this business agent.</p>
+          </div>
+          {activeInstalledModel === null ? (
+            <div className="agent-model-empty">
+              <strong>No local model selected</strong>
+              <span>Existing cloud behavior remains unchanged until you attach a local model.</span>
+            </div>
+          ) : (
+            <article className="agent-model-current">
+              <div>
+                <span className="model-badge">Local</span>
+                <span
+                  className={`model-badge status-${agentModelAssignment?.readinessStatus.toLowerCase()}`}
+                >
+                  {agentModelAssignment?.readinessStatus === "READY"
+                    ? "Ready"
+                    : agentModelAssignment?.readinessStatus === "LOADING"
+                      ? "Loading"
+                      : agentModelAssignment?.readinessStatus === "FAILED"
+                        ? "Failed"
+                        : "Attached to agent"}
+                </span>
+              </div>
+              <h4>{activeInstalledModel.displayName}</h4>
+              <p>
+                {formatModelBytes(activeInstalledModel.fileSizeBytes)}
+                {activeInstalledModel.quantization === null
+                  ? ""
+                  : ` · ${activeInstalledModel.quantization}`}
+                {` · ${formatModelStatus(activeInstalledModel.installationStatus)}`}
+                {` · ${formatModelStatus(activeInstalledModel.compatibilityStatus)}`}
+              </p>
+              <small>
+                Last successful inference:{" "}
+                {agentModelAssignment?.lastSuccessfulInferenceAt === null ||
+                agentModelAssignment?.lastSuccessfulInferenceAt === undefined
+                  ? "Not yet"
+                  : formatDate(agentModelAssignment.lastSuccessfulInferenceAt)}
+              </small>
+            </article>
+          )}
+          <label>
+            Execution mode
+            <select
+              value={agentModelAssignment?.preferredExecutionMode ?? "CLOUD_ONLY"}
+              disabled={agentModelAssignment === null || modelRuntimeBusy}
+              onChange={(event) =>
+                void updateAgentModelPolicy({
+                  preferredExecutionMode: event.target.value as PreferredExecutionMode
+                }).catch((error) => setProfileMessage(getErrorMessage(error)))
+              }
+            >
+              <option value="LOCAL_ONLY">Local only</option>
+              <option value="LOCAL_FIRST">Local first</option>
+              <option value="CLOUD_ONLY">Cloud only</option>
+            </select>
+          </label>
+          <label>
+            Fallback policy
+            <select
+              value={agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"}
+              disabled={agentModelAssignment === null || modelRuntimeBusy}
+              onChange={(event) =>
+                void updateAgentModelPolicy({
+                  fallbackPolicy: event.target.value as AgentModelFallbackPolicy
+                }).catch((error) => setProfileMessage(getErrorMessage(error)))
+              }
+            >
+              <option value="NEVER">Never</option>
+              <option value="WHEN_LOCAL_UNAVAILABLE">When local is unavailable</option>
+              <option value="WHEN_LOCAL_FAILS">When local fails</option>
+              <option value="WHEN_CONTEXT_EXCEEDED">When context is exceeded</option>
+            </select>
+          </label>
+          <div className="ai-model-card-actions">
+            <button
+              type="button"
+              disabled={modelRuntimeBusy}
+              onClick={() => setModelChooserOpen(true)}
+            >
+              Choose model
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={activeInstalledModel === null || modelRuntimeBusy}
+              onClick={() => void testAssignedModel()}
+            >
+              Test model
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={activeInstalledModel === null || modelRuntimeBusy}
+              onClick={() =>
+                void removeModelFromAgent().catch((error) =>
+                  setProfileMessage(getErrorMessage(error))
+                )
+              }
+            >
+              Remove from agent
+            </button>
+          </div>
+          {modelChooserOpen ? (
+            <div
+              className="agent-model-chooser"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Choose model"
+            >
+              <div className="section-heading">
+                <h4>Installed models</h4>
+                <button
+                  className="secondary"
+                  type="button"
+                  aria-label="Close model chooser"
+                  onClick={() => setModelChooserOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              {orderedInstalledModels.map((model) => {
+                const usable =
+                  model.installationStatus === "INSTALLED" &&
+                  (model.compatibilityStatus === "COMPATIBLE" ||
+                    model.compatibilityStatus === "UNKNOWN") &&
+                  model.commercialUseAllowed;
+                return (
+                  <article className="agent-model-choice" key={model.id}>
+                    <div>
+                      <strong>{model.displayName}</strong>
+                      <small>
+                        {formatModelParameters(model.parameterCount)} ·{" "}
+                        {model.quantization ?? "Quantization unknown"} ·{" "}
+                        {formatModelBytes(model.fileSizeBytes)}
+                      </small>
+                      <small>
+                        {model.license} ·{" "}
+                        {model.commercialUseAllowed
+                          ? "Commercial use allowed"
+                          : "Commercial use restricted"}{" "}
+                        · estimated {formatModelBytes(Math.ceil(model.fileSizeBytes * 2.5))} RAM
+                      </small>
+                      <small>
+                        {formatModelStatus(model.compatibilityStatus)} ·{" "}
+                        {agentModelAssignment?.activeModelInstallationId === model.id
+                          ? formatModelStatus(agentModelAssignment.readinessStatus)
+                          : "Installed, not attached"}
+                      </small>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!usable || modelRuntimeBusy}
+                      title={
+                        usable ? undefined : (model.validationError ?? "Model is not compatible")
+                      }
+                      onClick={() => void useModelWithAgent(model)}
+                    >
+                      Use with this agent
+                    </button>
+                  </article>
+                );
+              })}
+              {orderedInstalledModels.length === 0 ? (
+                <p>No installed local models. Install one from the library below.</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="record-form ai-model-library">
@@ -13141,7 +13581,7 @@ function AgentProfileSurface({
           >
             <div>
               <p className="eyebrow">
-                {offlineStarterInstalled ? "Ready without a connection" : "One-time setup"}
+                {offlineStarterInstalled ? "Installed on this device" : "One-time setup"}
               </p>
               <h4>
                 {offlineStarterInstalled
@@ -13150,7 +13590,7 @@ function AgentProfileSurface({
               </h4>
               <p>
                 {offlineStarterInstalled
-                  ? "The model file is saved in private storage on this device."
+                  ? "The file is in private storage. Choose ‘Use with this agent’ to validate and activate it."
                   : offlineStarter === undefined
                     ? "This device does not report enough storage for a default offline model."
                     : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
@@ -13286,7 +13726,9 @@ function AgentProfileSurface({
                 (model) => isDownloadableCatalogModel(model) && model.license === "Apache-2.0"
               )
               .map((model) => {
-                const localModel = localAiModels.find((candidate) => candidate.id === model.id);
+                const localModel = localAiModels.find(
+                  (candidate) => candidate.modelId === model.id
+                );
                 const transfer = modelTransfers[model.id];
                 const compatible =
                   deviceCapability === null ||
@@ -13327,21 +13769,10 @@ function AgentProfileSurface({
                         <>
                           <button
                             type="button"
-                            onClick={() => {
-                              selectAgentModel(model.id);
-                              try {
-                                const u = new URL(location.href);
-                                u.searchParams.set("ai_model", model.id);
-                                window.history.pushState({}, "", `${u.pathname}${u.search}`);
-                              } catch {
-                                /* ignore */
-                              }
-                              setProfileMessage(
-                                `${model.label} selected. Save the agent to activate it.`
-                              );
-                            }}
+                            disabled={modelRuntimeBusy}
+                            onClick={() => void useModelWithAgent(localModel)}
                           >
-                            Use model
+                            Use with this agent
                           </button>
                           <button
                             className="secondary"
@@ -13401,7 +13832,7 @@ function AgentProfileSurface({
                 : `Importing ${modelTransfers["custom-import"].percent}%`}
             </button>
             {localAiModels
-              .filter((model) => model.source === "custom")
+              .filter((model) => model.provider === "custom")
               .map((model) => (
                 <div className="custom-model-row" key={model.id}>
                   <span>
@@ -13410,18 +13841,10 @@ function AgentProfileSurface({
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      selectAgentModel(model.id);
-                      try {
-                        const u = new URL(location.href);
-                        u.searchParams.set("ai_model", model.id);
-                        window.history.pushState({}, "", `${u.pathname}${u.search}`);
-                      } catch {
-                        /* ignore */
-                      }
-                    }}
+                    disabled={modelRuntimeBusy}
+                    onClick={() => void useModelWithAgent(model)}
                   >
-                    Use
+                    Use with this agent
                   </button>
                   <button
                     className="secondary"
@@ -17123,6 +17546,49 @@ function formatModelBytes(bytes: number | null): string {
   if (bytes === null || !Number.isFinite(bytes)) return "Size unavailable";
   if (bytes >= 1000 ** 3) return `${(bytes / 1000 ** 3).toFixed(2)} GB`;
   return `${Math.round(bytes / 1000 ** 2)} MB`;
+}
+
+function formatModelParameters(parameters: number | null): string {
+  if (parameters === null || !Number.isFinite(parameters)) return "Parameters unknown";
+  if (parameters >= 1_000_000_000) {
+    return `${(parameters / 1_000_000_000).toFixed(parameters < 10_000_000_000 ? 1 : 0)}B parameters`;
+  }
+  return `${Math.round(parameters / 1_000_000)}M parameters`;
+}
+
+function formatModelStatus(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/^\w/, (character) => character.toUpperCase());
+}
+
+function installedModelRequest(model: LocalAiModel): Record<string, unknown> {
+  return {
+    id: model.id,
+    deviceId: model.deviceId,
+    modelId: model.modelId,
+    displayName: model.displayName,
+    provider: model.provider,
+    repositoryId: model.repositoryId,
+    filename: model.fileName,
+    format: model.format,
+    quantization: model.quantization,
+    architecture: model.architecture,
+    parameterCount: model.parameterCount,
+    contextLength: model.contextLength,
+    fileSizeBytes: model.fileSizeBytes,
+    checksum: model.checksum,
+    license: model.license,
+    commercialUseAllowed: model.commercialUseAllowed,
+    storageKey: model.storageKey,
+    runtimeBackend: model.runtimeBackend,
+    installationStatus: model.installationStatus,
+    compatibilityStatus: model.compatibilityStatus,
+    installedAt: model.installedAt,
+    lastVerifiedAt: model.lastVerifiedAt,
+    validationError: model.validationError
+  };
 }
 
 function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
