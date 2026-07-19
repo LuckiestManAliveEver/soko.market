@@ -34,6 +34,7 @@ import type {
   AgentModelFallbackPolicy,
   PreferredExecutionMode,
   E2eeDeviceSummary,
+  InstalledAgentModelSummary,
   MessageHandoffStatus,
   McpAccessScope,
   McpAccessTokenCreated,
@@ -12495,6 +12496,8 @@ function AgentProfileSurface({
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
+  const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
+  const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
   const [modelLibraryLoaded, setModelLibraryLoaded] = useState(false);
   const [modelLibraryLoading, setModelLibraryLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
@@ -12733,6 +12736,7 @@ function AgentProfileSurface({
       );
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
+      setActiveAiModelId(active.modelId);
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
       if (!isEditing && isAgentModel(active.modelId)) {
@@ -12929,11 +12933,26 @@ function AgentProfileSurface({
     await postJson("/v1/models/installed", installedModelRequest(model));
   }
 
+  async function validateInstalledModelOnBackend(
+    model: LocalAiModel
+  ): Promise<InstalledAgentModelSummary> {
+    return postJson<InstalledAgentModelSummary>(
+      `/v1/models/${encodeURIComponent(model.id)}/validate`,
+      {
+        deviceId,
+        installationStatus: model.installationStatus,
+        compatibilityStatus: model.compatibilityStatus,
+        validationError: model.validationError
+      }
+    );
+  }
+
   async function useModelWithAgent(model: LocalAiModel) {
     if (modelRuntimeBusyRef.current) return;
     const previous = agentModelAssignment;
     modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
+    setActivatingModelId(model.modelId);
     setModelChooserOpen(false);
     try {
       if (navigator.onLine) {
@@ -12958,7 +12977,19 @@ function AgentProfileSurface({
       if (!verified.commercialUseAllowed) {
         throw new Error("This model is not approved for commercial use.");
       }
-      if (navigator.onLine) await registerInstalledModel(verified);
+      if (navigator.onLine) {
+        await registerInstalledModel(verified);
+        const backendValidation = await validateInstalledModelOnBackend(verified);
+        if (
+          backendValidation.installationStatus !== "INSTALLED" ||
+          backendValidation.compatibilityStatus !== "COMPATIBLE"
+        ) {
+          throw new Error(
+            backendValidation.validationError ??
+              "The backend could not validate this model installation."
+          );
+        }
+      }
 
       const pending = createPendingDeviceAssignment({
         businessId: business.id,
@@ -12991,9 +13022,11 @@ function AgentProfileSurface({
         const synchronized = assignmentFromServer(saved);
         saveDeviceAgentModelAssignment(synchronized);
         setAgentModelAssignment(synchronized);
+        setActiveAiModelId(synchronized.modelId ?? verified.modelId);
       } else {
         saveDeviceAgentModelAssignment(tested);
         setAgentModelAssignment(tested);
+        setActiveAiModelId(tested.modelId ?? verified.modelId);
       }
       if (
         previous?.activeModelInstallationId !== null &&
@@ -13022,6 +13055,80 @@ function AgentProfileSurface({
       );
     } finally {
       modelRuntimeBusyRef.current = false;
+      setActivatingModelId(null);
+      setModelRuntimeBusy(false);
+    }
+  }
+
+  async function useBackendModelWithAgent(model: AiModelSummary) {
+    if (modelRuntimeBusyRef.current || !model.available) return;
+    if (!navigator.onLine) {
+      setProfileMessage("Connect to the internet to activate this backend model.");
+      return;
+    }
+
+    const previous = agentModelAssignment;
+    let detachedLocalAssignment = false;
+    modelRuntimeBusyRef.current = true;
+    setModelRuntimeBusy(true);
+    setActivatingModelId(model.id);
+    try {
+      setProfileMessage(`Starting ${model.label}…`);
+      await onEnsureRuntimeSession();
+
+      if (previous !== null && previous.activeModelInstallationId !== null) {
+        await deleteJson(
+          `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+        );
+        detachedLocalAssignment = true;
+      }
+
+      const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
+        modelId: model.id
+      });
+      if (activated.modelId !== model.id) {
+        throw new Error("The backend did not activate the selected model.");
+      }
+
+      if (previous !== null && previous.activeModelInstallationId !== null) {
+        await getModelRuntime().unload(previous.activeModelInstallationId);
+      }
+      clearDeviceAgentModelAssignment(business.id, deviceId);
+      setAgentModelAssignment(null);
+      setActiveAiModelId(activated.modelId);
+      updateAgent({ model: activated.modelId });
+      onAgentChange({ ...agent, model: activated.modelId });
+      setProfileMessage(`${model.label} is active for this agent.`);
+    } catch (error) {
+      if (
+        detachedLocalAssignment &&
+        previous !== null &&
+        previous.activeModelInstallationId !== null
+      ) {
+        try {
+          const restored = await putJson<AgentModelAssignmentSummary>(
+            `/businesses/${business.id}/agent-model`,
+            {
+              deviceId,
+              installationId: previous.activeModelInstallationId,
+              preferredExecutionMode: previous.preferredExecutionMode,
+              fallbackPolicy: previous.fallbackPolicy,
+              readinessStatus: previous.readinessStatus,
+              lastSuccessfulInferenceAt: previous.lastSuccessfulInferenceAt,
+              lastErrorCode: previous.lastErrorCode
+            }
+          );
+          const synchronized = assignmentFromServer(restored);
+          saveDeviceAgentModelAssignment(synchronized);
+          setAgentModelAssignment(synchronized);
+        } catch {
+          // Preserve the original activation error; a refresh will reconcile backend state.
+        }
+      }
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      modelRuntimeBusyRef.current = false;
+      setActivatingModelId(null);
       setModelRuntimeBusy(false);
     }
   }
@@ -13060,12 +13167,16 @@ function AgentProfileSurface({
     await deleteJson(
       `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
     );
+    const fallback = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
+      modelId: "sokoclaw-local"
+    });
     await getModelRuntime().unload(installationId);
     clearDeviceAgentModelAssignment(business.id, deviceId);
     setAgentModelAssignment(null);
-    updateAgent({ model: "sokoclaw-local" });
-    onAgentChange({ ...agent, model: "sokoclaw-local" });
-    setProfileMessage("The local model was removed from this agent.");
+    setActiveAiModelId(fallback.modelId);
+    updateAgent({ model: fallback.modelId });
+    onAgentChange({ ...agent, model: fallback.modelId });
+    setProfileMessage("The local model was removed and the backend model was restored.");
   }
 
   async function updateAgentModelPolicy(
@@ -13582,6 +13693,8 @@ function AgentProfileSurface({
       : (localAiModels.find(
           (model) => model.id === agentModelAssignment.activeModelInstallationId
         ) ?? null);
+  const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
+  const backendModels = visibleAiModels.filter((model) => model.format === "remote");
   const orderedInstalledModels = [...localAiModels].sort((left, right) => {
     const leftCompatible = left.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
     const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
@@ -13662,13 +13775,13 @@ function AgentProfileSurface({
           <label>
             Current conversational model
             <input
-              value={activeInstalledModel?.displayName ?? draftAgent.model}
+              value={activeInstalledModel?.displayName ?? activeAiModel?.label ?? activeAiModelId}
               disabled
               aria-label="Current conversational model"
             />
             <small className="model-select-hint">
-              Installing a file does not connect it. Local models become ready only after a real
-              runtime test succeeds.
+              The selected model is synchronized with the backend. Local models become ready only
+              after backend validation and a real runtime test succeed.
             </small>
           </label>
           <label>
@@ -13688,10 +13801,18 @@ function AgentProfileSurface({
             <p>Choose, verify, and connect an installed model to this business agent.</p>
           </div>
           {activeInstalledModel === null ? (
-            <div className="agent-model-empty">
-              <strong>No local model selected</strong>
-              <span>Existing cloud behavior remains unchanged until you attach a local model.</span>
-            </div>
+            <article className="agent-model-current">
+              <div>
+                <span className="model-badge">Backend</span>
+                <span className="model-badge status-ready">Active</span>
+              </div>
+              <h4>{activeAiModel?.label ?? activeAiModelId}</h4>
+              <p>
+                {activeAiModel?.description ??
+                  "This model is managed by the backend inference runtime."}
+              </p>
+              <small>Backend model ID: {activeAiModelId}</small>
+            </article>
           ) : (
             <article className="agent-model-current">
               <div>
@@ -13899,13 +14020,17 @@ function AgentProfileSurface({
                     </div>
                     <button
                       type="button"
-                      disabled={!usable || modelRuntimeBusy}
+                      disabled={!usable || modelRuntimeBusy || activeAiModelId === model.modelId}
                       title={
                         usable ? undefined : (model.validationError ?? "Model is not compatible")
                       }
                       onClick={() => void useModelWithAgent(model)}
                     >
-                      Use with this agent
+                      {activeAiModelId === model.modelId
+                        ? "Model in use"
+                        : activatingModelId === model.modelId
+                          ? "Activating…"
+                          : "Use model"}
                     </button>
                   </article>
                 );
@@ -13944,6 +14069,54 @@ function AgentProfileSurface({
             </div>
           ) : (
             <>
+              <section aria-label="Backend models">
+                <div className="section-subheading">
+                  <h4>Backend models</h4>
+                  <p>
+                    Select a configured server or hosted model. Activation updates the business
+                    backend before the UI marks the model as active.
+                  </p>
+                </div>
+                <div className="ai-model-catalog">
+                  {backendModels.map((model) => (
+                    <article className="ai-model-card" key={model.id}>
+                      <div>
+                        <p className="eyebrow">
+                          {model.source === "hosted" ? "Hosted" : "Server runtime"} ·{" "}
+                          {model.available ? "Available" : "Not configured"}
+                        </p>
+                        <h4>{model.label}</h4>
+                        <p>{model.description}</p>
+                        <small>{model.capabilities.join(" · ")}</small>
+                      </div>
+                      <div className="ai-model-card-actions">
+                        <button
+                          type="button"
+                          disabled={
+                            !model.available || modelRuntimeBusy || activeAiModelId === model.id
+                          }
+                          title={
+                            model.available
+                              ? undefined
+                              : "Configure this inference provider on the backend first."
+                          }
+                          onClick={() => void useBackendModelWithAgent(model)}
+                        >
+                          {activeAiModelId === model.id
+                            ? "Model in use"
+                            : activatingModelId === model.id
+                              ? "Activating…"
+                              : model.available
+                                ? "Use model"
+                                : "Unavailable"}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {backendModels.length === 0 ? <p>No backend models match this search.</p> : null}
+                </div>
+              </section>
+
               <section
                 className={`offline-starter-card ${offlineStarterInstalled ? "installed" : ""}`}
                 aria-label="Offline starter model"
@@ -13959,7 +14132,7 @@ function AgentProfileSurface({
                   </h4>
                   <p>
                     {offlineStarterInstalled
-                      ? "The file is in private storage. Choose ‘Use with this agent’ to validate and activate it."
+                      ? "The file is in private storage. Choose ‘Use model’ to validate and activate it."
                       : offlineStarter === undefined
                         ? "This device does not report enough storage for a default offline model."
                         : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
@@ -14142,10 +14315,16 @@ function AgentProfileSurface({
                             <>
                               <button
                                 type="button"
-                                disabled={modelRuntimeBusy}
+                                disabled={
+                                  modelRuntimeBusy || activeAiModelId === localModel.modelId
+                                }
                                 onClick={() => void useModelWithAgent(localModel)}
                               >
-                                Use with this agent
+                                {activeAiModelId === localModel.modelId
+                                  ? "Model in use"
+                                  : activatingModelId === localModel.modelId
+                                    ? "Activating…"
+                                    : "Use model"}
                               </button>
                               <button
                                 className="secondary"
@@ -14217,10 +14396,14 @@ function AgentProfileSurface({
                       </span>
                       <button
                         type="button"
-                        disabled={modelRuntimeBusy}
+                        disabled={modelRuntimeBusy || activeAiModelId === model.modelId}
                         onClick={() => void useModelWithAgent(model)}
                       >
-                        Use with this agent
+                        {activeAiModelId === model.modelId
+                          ? "Model in use"
+                          : activatingModelId === model.modelId
+                            ? "Activating…"
+                            : "Use model"}
                       </button>
                       <button
                         className="secondary"

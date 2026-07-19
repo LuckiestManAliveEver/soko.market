@@ -58,13 +58,21 @@ export async function getCachedJson<TResponse>(
 
 export function invalidateApiCacheForMutation(path: string): void {
   const normalized = path.split("?")[0] ?? path;
+  const businessRoot = normalized.match(/^(\/businesses\/[^/]+)/)?.[1];
   const businessResource = normalized.match(/^(\/businesses\/[^/]+\/[^/]+)/)?.[1];
+  const modelSelectionChanged =
+    normalized.endsWith("/agent-model") || normalized.endsWith("/ai-model");
 
   for (const key of responseCache.keys()) {
     const cachePath = key.split("?")[0] ?? key;
     const invalid =
       cachePath === normalized ||
       (businessResource !== undefined && cachePath.startsWith(businessResource)) ||
+      (modelSelectionChanged &&
+        businessRoot !== undefined &&
+        (cachePath === `${businessRoot}/agent-model` ||
+          cachePath === `${businessRoot}/ai-model` ||
+          cachePath === `${businessRoot}/agent-profile`)) ||
       (normalized.startsWith("/v1/messages") && cachePath.startsWith("/v1/conversations")) ||
       (normalized.startsWith("/v1/conversations") && cachePath.startsWith("/v1/conversations")) ||
       (normalized.startsWith("/auth/") && cachePath.startsWith("/auth/"));

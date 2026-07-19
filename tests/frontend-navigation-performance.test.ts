@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clearApiRequestCache, getCachedJson } from "../apps/web/src/api-request-cache";
+import {
+  clearApiRequestCache,
+  getCachedJson,
+  invalidateApiCacheForMutation
+} from "../apps/web/src/api-request-cache";
 
 afterEach(() => {
   clearApiRequestCache();
@@ -58,6 +62,33 @@ describe("frontend navigation performance contracts", () => {
     expect(performanceSource).toContain("performance.mark");
     expect(performanceSource).toContain("performance.measure");
     expect(performanceSource).toContain('"longtask"');
+  });
+
+  it("invalidates related active-model reads after either model selection changes", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL) =>
+        new Response(
+          JSON.stringify({
+            path: typeof input === "string" ? input : input.toString(),
+            request: fetchMock.mock.calls.length
+          }),
+          {
+            headers: { "content-type": "application/json" },
+            status: 200
+          }
+        )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getCachedJson("/businesses/business-1/agent-model?deviceId=device-1");
+    await getCachedJson("/businesses/business-1/ai-model");
+    await getCachedJson("/businesses/business-1/agent-profile");
+    invalidateApiCacheForMutation("/businesses/business-1/agent-model?deviceId=device-1");
+    await getCachedJson("/businesses/business-1/agent-model?deviceId=device-1");
+    await getCachedJson("/businesses/business-1/ai-model");
+    await getCachedJson("/businesses/business-1/agent-profile");
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });
 
