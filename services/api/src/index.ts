@@ -1,9 +1,11 @@
 import {
   createLlamaCppRuntimeModelProvider,
+  createOllamaRuntimeModelProvider,
   createOpenAiRuntimeModelProvider
 } from "@soko/ai-runtime";
+import type { RuntimeModelProvider } from "@soko/shared-types";
 import { buildApi } from "./app.js";
-import { readEnvironment } from "./config.js";
+import { readEnvironment, resolveOllamaModelName } from "./config.js";
 import {
   startAccountDeletionRunner,
   type AccountDeletionRunner
@@ -22,15 +24,31 @@ import {
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 
 const config = readEnvironment();
-const runtimeModelProvider = config.localModelEnabled
-  ? createLlamaCppRuntimeModelProvider({
-      endpoint: config.localModelEndpoint,
-      maxTokens: config.localModelMaxTokens,
-      modelProfile: config.localModelProfile,
-      temperature: config.localModelTemperature,
-      timeoutMs: config.localModelTimeoutMs
-    })
-  : undefined;
+const localRuntimeModelProviders = new Map<string, RuntimeModelProvider>();
+const createLocalRuntimeModelProvider = (modelId: string): RuntimeModelProvider | undefined => {
+  if (!config.localModelEnabled) return undefined;
+  const cached = localRuntimeModelProviders.get(modelId);
+  if (cached !== undefined) return cached;
+  const provider =
+    config.localModelProvider === "ollama"
+      ? createOllamaRuntimeModelProvider({
+          endpoint: config.localModelEndpoint,
+          model: resolveOllamaModelName(modelId, config.localModelId, config.localModelProfile),
+          maxTokens: config.localModelMaxTokens,
+          temperature: config.localModelTemperature,
+          timeoutMs: config.localModelTimeoutMs
+        })
+      : createLlamaCppRuntimeModelProvider({
+          endpoint: config.localModelEndpoint,
+          maxTokens: config.localModelMaxTokens,
+          modelProfile: config.localModelProfile,
+          temperature: config.localModelTemperature,
+          timeoutMs: config.localModelTimeoutMs
+        });
+  localRuntimeModelProviders.set(modelId, provider);
+  return provider;
+};
+const runtimeModelProvider = createLocalRuntimeModelProvider(config.localModelId);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
 const openAiFastProvider =
   openAiApiKey.length === 0
@@ -55,7 +73,7 @@ const openAiReasoningProvider =
 const runtimeModelProviderResolver = (modelId: string) => {
   if (modelId === "openai-fast") return openAiFastProvider;
   if (modelId === "openai-reasoning") return openAiReasoningProvider;
-  return runtimeModelProvider;
+  return createLocalRuntimeModelProvider(modelId);
 };
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
@@ -107,10 +125,32 @@ const app = buildApi(
     ? {
         ...apiOptions,
         databaseHealth: () => cp2Store.health(),
+        agentRuntimeDiagnostic: (runInference) =>
+          runtimeModelProvider?.diagnose?.(runInference) ??
+          Promise.resolve({
+            provider: config.localModelProvider,
+            status: "unavailable" as const,
+            model: config.localModelProfile,
+            modelAvailable: null,
+            inferenceAvailable: null,
+            errorCode: "MODEL_PROVIDER_UNCONFIGURED",
+            checkedAt: new Date().toISOString()
+          }),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
     : {
         ...apiOptions,
+        agentRuntimeDiagnostic: (runInference) =>
+          runtimeModelProvider?.diagnose?.(runInference) ??
+          Promise.resolve({
+            provider: config.localModelProvider,
+            status: "unavailable" as const,
+            model: config.localModelProfile,
+            modelAvailable: null,
+            inferenceAvailable: null,
+            errorCode: "MODEL_PROVIDER_UNCONFIGURED",
+            checkedAt: new Date().toISOString()
+          }),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
 );

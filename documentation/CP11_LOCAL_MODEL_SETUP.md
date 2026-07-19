@@ -37,18 +37,31 @@ llama-server \
   --threads 2
 ```
 
+For the recommended Ollama setup, install the approved model and start Ollama:
+
+```bash
+ollama pull qwen2.5:0.5b
+ollama serve
+```
+
 Then enable the adapter for the API:
 
 ```text
 LOCAL_MODEL_ENABLED=true
-LOCAL_MODEL_ENDPOINT=http://127.0.0.1:8080
-LOCAL_MODEL_PROFILE=tinyllama-1.1b-chat-q4-k-m-android
-LOCAL_MODEL_TIMEOUT_MS=8000
+LOCAL_MODEL_PROVIDER=ollama
+LOCAL_MODEL_ENDPOINT=http://127.0.0.1:11434
+LOCAL_MODEL_ID=qwen2.5-0.5b-android
+LOCAL_MODEL_MODEL=qwen2.5:0.5b
+LOCAL_MODEL_TIMEOUT_MS=90000
 LOCAL_MODEL_MAX_TOKENS=128
 LOCAL_MODEL_TEMPERATURE=0
 ```
 
-## Expected Local Server
+The stable Soko model ID is `qwen2.5-0.5b-android`; the provider model identifier sent to Ollama is
+`qwen2.5:0.5b`. `GET /health/ready` checks reachability and model installation without inference.
+`GET /health/ai` additionally runs a simple inference diagnostic.
+
+## Alternative llama.cpp Server
 
 Run a llama.cpp-compatible HTTP server that exposes `/completion`.
 
@@ -61,10 +74,13 @@ llama-server --model /path/to/model.gguf --host 127.0.0.1 --port 8080
 Then configure the runtime adapter with:
 
 ```text
-endpoint: http://127.0.0.1:8080
-timeoutMs: 8000
-temperature: 0
-maxTokens: 128
+LOCAL_MODEL_ENABLED=true
+LOCAL_MODEL_PROVIDER=llama.cpp
+LOCAL_MODEL_ENDPOINT=http://127.0.0.1:8080
+LOCAL_MODEL_PROFILE=/path/to/model.gguf
+LOCAL_MODEL_TIMEOUT_MS=90000
+LOCAL_MODEL_MAX_TOKENS=128
+LOCAL_MODEL_TEMPERATURE=0
 ```
 
 The adapter normalizes the endpoint to `/completion`.

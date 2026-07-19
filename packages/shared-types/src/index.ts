@@ -13,7 +13,9 @@ export interface EnvironmentConfig {
   databaseUrl: string;
   localModelEnabled: boolean;
   localModelEndpoint: string;
+  localModelId: string;
   localModelMaxTokens: number;
+  localModelProvider: "llama.cpp" | "ollama";
   localModelProfile: string;
   localModelTemperature: number;
   localModelTimeoutMs: number;
@@ -2009,16 +2011,32 @@ export interface RuntimeContextSummary {
   knowledgeFactCount: number;
 }
 
-export type RuntimeModelProviderName = "llama.cpp" | "openai" | "test";
+export type RuntimeModelProviderName = "llama.cpp" | "ollama" | "openai" | "test";
 
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
 
 export interface RuntimeModelPrompt {
   message: string;
+  conversationHistory?: RuntimeModelConversationMessage[];
   context: RuntimeContextSummary;
   allowedTools: RuntimeToolName[];
   schemaVersion: "cp11-runtime-model-v1";
+}
+
+export interface RuntimeModelConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface RuntimeModelDiagnostic {
+  provider: RuntimeModelProviderName;
+  status: "ready" | "unavailable";
+  model: string | null;
+  modelAvailable: boolean | null;
+  inferenceAvailable: boolean | null;
+  errorCode: string | null;
+  checkedAt: string;
 }
 
 export interface RuntimeModelCompletionResult {
@@ -2033,6 +2051,7 @@ export interface RuntimeModelCompletionResult {
 export interface RuntimeModelProvider {
   name: RuntimeModelProviderName;
   complete(prompt: RuntimeModelPrompt): Promise<RuntimeModelCompletionResult>;
+  diagnose?(runInference?: boolean): Promise<RuntimeModelDiagnostic>;
 }
 
 export interface RuntimeModelTrace {

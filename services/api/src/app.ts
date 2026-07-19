@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
-import type { HealthResponse } from "@soko/shared-types";
+import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 
@@ -9,6 +9,7 @@ const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:51
 export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
   cp2?: Cp2RouteOptions;
+  agentRuntimeDiagnostic?: (runInference: boolean) => Promise<RuntimeModelDiagnostic>;
   databaseHealth?: () => Promise<Record<string, unknown>>;
   mutationPersistenceFlush?: () => Promise<void>;
 }
@@ -61,13 +62,47 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   void app.register(async (routes) => {
-    routes.get("/health", async (): Promise<HealthResponse> => {
-      return {
-        service: "api",
-        status: "ok",
-        timestamp: new Date().toISOString()
-      };
-    });
+    routes.get(
+      "/health",
+      async (): Promise<
+        HealthResponse & { agentDispatch: { configured: boolean; mode: "synchronous" } }
+      > => {
+        return {
+          service: "api",
+          status: "ok",
+          timestamp: new Date().toISOString(),
+          agentDispatch: {
+            configured: options.agentRuntimeDiagnostic !== undefined,
+            mode: "synchronous"
+          }
+        };
+      }
+    );
+
+    if (options.agentRuntimeDiagnostic !== undefined) {
+      routes.get("/health/ready", async (_request, reply) => {
+        const model = await options.agentRuntimeDiagnostic?.(false);
+        if (model?.status !== "ready") reply.code(503);
+        return {
+          service: "api",
+          status: model?.status === "ready" ? "ready" : "unavailable",
+          timestamp: new Date().toISOString(),
+          dispatch: { mode: "synchronous" },
+          model
+        };
+      });
+
+      routes.get("/health/ai", async (_request, reply) => {
+        const model = await options.agentRuntimeDiagnostic?.(true);
+        if (model?.status !== "ready") reply.code(503);
+        return {
+          service: "api",
+          status: model?.status === "ready" ? "ready" : "unavailable",
+          timestamp: new Date().toISOString(),
+          model
+        };
+      });
+    }
 
     if (options.databaseHealth !== undefined) {
       routes.get("/health/db", async () => {

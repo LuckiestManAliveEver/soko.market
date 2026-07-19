@@ -8,3 +8,8 @@ export {
   createOpenAiRuntimeModelProvider,
   type OpenAiRuntimeModelOptions
 } from "./openai-model.js";
+export {
+  createOllamaRuntimeModelProvider,
+  normalizeOllamaModelText,
+  type OllamaRuntimeModelOptions
+} from "./ollama-model.js";

@@ -95,6 +95,9 @@ export function createLlamaCppRuntimeModelProvider(
 
 export function buildLlamaPrompt(prompt: RuntimeModelPrompt): string {
   const tools = prompt.allowedTools.join(", ");
+  const history = (prompt.conversationHistory ?? [])
+    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
+    .join("\n");
 
   return [
     "You are the local model behind the Soko runtime.",
@@ -104,6 +107,7 @@ export function buildLlamaPrompt(prompt: RuntimeModelPrompt): string {
     'or {"type":"response","message":"..."}.',
     `Allowed tools: ${tools}.`,
     `Context: role=${prompt.context.role}; products=${prompt.context.productCount}; customers=${prompt.context.customerCount}; invoices=${prompt.context.invoiceCount}; openInvoices=${prompt.context.openInvoiceCount}; imports=${prompt.context.importJobCount}; logistics=${prompt.context.logisticsCount}; activeLogistics=${prompt.context.activeLogisticsCount}; lowStock=${prompt.context.lowStockCount}; outstandingDebt=${prompt.context.outstandingDebtTotal}; unreadNotifications=${prompt.context.unreadNotificationCount}; knowledgeFacts=${prompt.context.knowledgeFactCount}.`,
+    ...(history.length === 0 ? [] : [`Recent conversation (oldest first):\n${history}`]),
     `User message: ${JSON.stringify(prompt.message)}`
   ].join("\n");
 }

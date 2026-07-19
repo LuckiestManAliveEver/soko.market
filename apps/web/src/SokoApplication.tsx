@@ -1128,7 +1128,7 @@ interface RuntimeTurnResult {
     status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
     response: string;
     model: {
-      provider: "llama.cpp" | "openai" | "test" | null;
+      provider: "llama.cpp" | "ollama" | "openai" | "test" | null;
       status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
       fallbackUsed: boolean;
       errorCode: string | null;
@@ -1143,6 +1143,12 @@ interface RuntimeTurnResult {
 interface ProcessedConversationMessageResponse extends ConversationMessageSummary {
   agentMessage?: ConversationMessageSummary;
   runtime?: RuntimeTurnResult | null;
+  processing?: {
+    correlationId: string;
+    status: "completed" | "failed";
+    errorCode: string | null;
+    retryable: boolean;
+  };
 }
 
 type VerificationTier = "unverified" | "owner_verified" | "business_verified";
@@ -5451,16 +5457,37 @@ export function OwnerApp() {
     const queued = readMessagingOutbox(accountId);
     for (const entry of queued) {
       try {
-        const sent = await postJson<ConversationMessageSummary>("/v1/messages", entry.payload);
-        setChatMessages((messages) =>
-          messages.map((message) =>
-            message.id === entry.clientMessageId && session !== null && activeConversation !== null
+        const sent = await postJson<ProcessedConversationMessageResponse>(
+          "/v1/messages",
+          entry.payload
+        );
+        setChatMessages((messages) => {
+          const reconciled = messages.map((message) =>
+            (message.id === entry.clientMessageId || message.id === sent.id) &&
+            session !== null &&
+            activeConversation !== null
               ? sent.content.type === "encrypted"
                 ? mergePersistedEncryptedMessage(message, sent)
                 : mapConversationMessage(sent, activeConversation.participants, session)
               : message
-          )
-        );
+          );
+          if (
+            sent.agentMessage === undefined ||
+            session === null ||
+            activeConversation === null ||
+            reconciled.some((message) => message.id === sent.agentMessage?.id)
+          ) {
+            return reconciled;
+          }
+          return [
+            ...reconciled,
+            mapConversationMessage(sent.agentMessage, activeConversation.participants, session)
+          ];
+        });
+        if (sent.processing?.status === "failed") {
+          setStatusMessage(agentProcessingFailureMessage(sent.processing.errorCode));
+          break;
+        }
         removeMessagingOutboxEntry(accountId, entry.clientMessageId);
       } catch (error) {
         if (isRetryableApiRequestError(error)) break;
@@ -5578,6 +5605,7 @@ export function OwnerApp() {
       replyToMessageId
     };
     setChatMessages((messages) => [...messages, merchantMessage]);
+    setStatusMessage("Agent processing…");
     setChatDraft("");
     setPendingAttachments([]);
     setReplyToMessageId(null);
@@ -5633,6 +5661,7 @@ export function OwnerApp() {
       agentMessage: ConversationMessageSummary;
       runtime: RuntimeTurnResult | null;
     } | null = null;
+    let agentProcessingFailed = false;
 
     if (payload !== null) {
       try {
@@ -5671,6 +5700,15 @@ export function OwnerApp() {
             runtime: persisted.runtime ?? null
           };
         }
+        if (persisted.processing?.status === "failed") {
+          queueMessagingOutbox({
+            accountId: session.account.id,
+            clientMessageId,
+            payload
+          });
+          setStatusMessage(agentProcessingFailureMessage(persisted.processing.errorCode));
+          agentProcessingFailed = true;
+        }
       } catch (error) {
         if (!isRetryableApiRequestError(error)) {
           setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
@@ -5696,6 +5734,10 @@ export function OwnerApp() {
 
     if (hasHumanRecipient) {
       await loadMessagingInbox(activeConversationId);
+      return;
+    }
+
+    if (agentProcessingFailed) {
       return;
     }
 
@@ -17480,6 +17522,22 @@ function isRedundantAgentErrorMessage(message: string): boolean {
 
 function getErrorMessage(error: unknown): string {
   return getUserFacingErrorMessage(error);
+}
+
+function agentProcessingFailureMessage(errorCode: string | null): string {
+  if (errorCode === "MODEL_NOT_INSTALLED") {
+    return "Agent model is not installed. Ask an administrator to install the configured model, then retry.";
+  }
+  if (errorCode === "MODEL_PROVIDER_UNCONFIGURED") {
+    return "Agent processing is not configured. Ask an administrator to configure the local model, then retry.";
+  }
+  if (errorCode === "MODEL_PROVIDER_TIMEOUT") {
+    return "The local agent timed out. Your message is saved; retry agent processing.";
+  }
+  if (errorCode === "MODEL_RESPONSE_PARSE_FAILED" || errorCode === "MODEL_EMPTY_RESPONSE") {
+    return "The local agent returned an invalid response. Your message is saved; retry agent processing.";
+  }
+  return "The local agent is unavailable. Your message is saved; retry agent processing.";
 }
 
 function asSupplierImportDraft(mapped: DocumentImportDraft): SupplierImportDraft {

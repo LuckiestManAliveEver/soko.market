@@ -71,10 +71,16 @@ services:
         sync: false
       - key: LOCAL_MODEL_ENABLED
         sync: false
+      - key: LOCAL_MODEL_PROVIDER
+        value: ollama
       - key: LOCAL_MODEL_ENDPOINT
         sync: false
-      - key: LOCAL_MODEL_PROFILE
-        value: tinyllama-1.1b-chat-q4-k-m-android
+      - key: LOCAL_MODEL_ID
+        value: qwen2.5-0.5b-android
+      - key: LOCAL_MODEL_MODEL
+        value: qwen2.5:0.5b
+      - key: LOCAL_MODEL_TIMEOUT_MS
+        value: "90000"
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_FAST_MODEL

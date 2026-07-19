@@ -17,4 +17,47 @@ describe("api health", () => {
 
     await app.close();
   });
+
+  it("reports lightweight readiness separately from inference diagnostics", async () => {
+    const diagnosticCalls: boolean[] = [];
+    const app = buildApi({
+      agentRuntimeDiagnostic: async (runInference) => {
+        diagnosticCalls.push(runInference);
+        return {
+          provider: "ollama",
+          status: "ready",
+          model: "qwen2.5:0.5b",
+          modelAvailable: true,
+          inferenceAvailable: runInference ? true : null,
+          errorCode: null,
+          checkedAt: new Date().toISOString()
+        };
+      }
+    });
+
+    const readiness = await app.inject({ method: "GET", url: "/health/ready" });
+    const inference = await app.inject({ method: "GET", url: "/health/ai" });
+
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json()).toMatchObject({
+      status: "ready",
+      dispatch: { mode: "synchronous" },
+      model: {
+        provider: "ollama",
+        model: "qwen2.5:0.5b",
+        modelAvailable: true,
+        inferenceAvailable: null
+      }
+    });
+    expect(inference.statusCode).toBe(200);
+    expect(inference.json()).toMatchObject({
+      status: "ready",
+      model: {
+        inferenceAvailable: true
+      }
+    });
+    expect(diagnosticCalls).toEqual([false, true]);
+
+    await app.close();
+  });
 });

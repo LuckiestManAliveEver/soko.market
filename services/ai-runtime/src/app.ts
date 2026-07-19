@@ -9,6 +9,11 @@ export {
   createOpenAiRuntimeModelProvider,
   type OpenAiRuntimeModelOptions
 } from "./openai-model.js";
+export {
+  createOllamaRuntimeModelProvider,
+  normalizeOllamaModelText,
+  type OllamaRuntimeModelOptions
+} from "./ollama-model.js";
 
 export function buildAiRuntime() {
   const app = Fastify({

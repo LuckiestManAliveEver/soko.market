@@ -2080,11 +2080,33 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
             : { runtimeSessionId: runtime.runtimeSessionId }),
           ...(runtime.agentProfile === undefined ? {} : { agentProfile: runtime.agentProfile })
         });
+        const modelPromptEvent = processed.runtime?.turn.telemetry.find(
+          (event) => event.state === "model.prompt_built"
+        );
+        request.log.info(
+          {
+            correlationId: processed.processing.correlationId,
+            tenantId: parseString(agent.businessId, "agent.businessId"),
+            conversationId: processed.message.conversationId,
+            messageId: processed.message.id,
+            agentId: processed.agentMessage?.authorId ?? null,
+            modelId: modelPromptEvent?.metadata.modelProfile ?? null,
+            provider: processed.runtime?.turn.model?.provider ?? null,
+            processingStage:
+              processed.processing.status === "completed"
+                ? "assistant_persisted"
+                : "model_processing_failed",
+            normalizedErrorCode: processed.processing.errorCode,
+            durationMs: processed.runtime?.turn.model?.durationMs ?? null
+          },
+          "Agent chat processing completed."
+        );
         await store.deliverPendingMessageNotifications({ messageId: processed.message.id });
         return {
           ...processed.message,
-          agentMessage: processed.agentMessage,
-          runtime: processed.runtime
+          ...(processed.agentMessage === null ? {} : { agentMessage: processed.agentMessage }),
+          runtime: processed.runtime,
+          processing: processed.processing
         };
       }
 

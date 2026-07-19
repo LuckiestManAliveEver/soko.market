@@ -85,6 +85,12 @@ function stringListFromEnv(name: string, fallback: string[]): string[] {
 }
 
 export function readEnvironment(): EnvironmentConfig {
+  const localModelProvider = readLocalModelProvider();
+  const defaultEndpoint =
+    localModelProvider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:8080";
+  const configuredModel =
+    process.env.LOCAL_MODEL_MODEL?.trim() || process.env.LOCAL_MODEL_PROFILE?.trim();
+
   return {
     apiHost: stringFromEnv("API_HOST", "127.0.0.1"),
     apiPort: numberFromEnvList(["API_PORT", "PORT"], 4000),
@@ -97,11 +103,36 @@ export function readEnvironment(): EnvironmentConfig {
       "postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market"
     ),
     localModelEnabled: booleanFromEnv("LOCAL_MODEL_ENABLED", false),
-    localModelEndpoint: stringFromEnv("LOCAL_MODEL_ENDPOINT", "http://127.0.0.1:8080"),
+    localModelEndpoint: stringFromEnv("LOCAL_MODEL_ENDPOINT", defaultEndpoint),
+    localModelId: stringFromEnv("LOCAL_MODEL_ID", "qwen2.5-0.5b-android"),
     localModelMaxTokens: numberFromEnv("LOCAL_MODEL_MAX_TOKENS", 128),
-    localModelProfile: stringFromEnv("LOCAL_MODEL_PROFILE", "tinyllama-1.1b-chat-q4-k-m-android"),
+    localModelProvider,
+    localModelProfile: configuredModel || "qwen2.5:0.5b",
     localModelTemperature: floatFromEnv("LOCAL_MODEL_TEMPERATURE", 0),
-    localModelTimeoutMs: numberFromEnv("LOCAL_MODEL_TIMEOUT_MS", 8000),
+    localModelTimeoutMs: numberFromEnv("LOCAL_MODEL_TIMEOUT_MS", 90_000),
     redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")
   };
+}
+
+function readLocalModelProvider(): EnvironmentConfig["localModelProvider"] {
+  const value = stringFromEnv("LOCAL_MODEL_PROVIDER", "ollama").trim().toLowerCase();
+  if (value === "ollama" || value === "llama.cpp") {
+    return value;
+  }
+  throw new Error("LOCAL_MODEL_PROVIDER must be ollama or llama.cpp.");
+}
+
+export function resolveOllamaModelName(
+  modelId: string,
+  configuredModelId: string,
+  configuredProviderModel: string
+): string {
+  if (modelId === configuredModelId) return configuredProviderModel;
+  return (
+    {
+      "qwen2.5-0.5b-android": "qwen2.5:0.5b",
+      "qwen2.5-1.5b-android": "qwen2.5:1.5b",
+      "smollm2-360m-android": "smollm2:360m"
+    }[modelId] ?? modelId
+  );
 }

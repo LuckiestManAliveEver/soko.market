@@ -106,6 +106,7 @@ import type {
   PushSubscriptionSummary,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
+  RuntimeModelConversationMessage,
   RuntimeModelPrompt,
   RuntimeModelProvider,
   RuntimeModelTrace,
@@ -655,8 +656,14 @@ export interface Cp2StoreOptions {
 
 export interface AgentConversationMessageResult {
   message: ConversationMessageSummary;
-  agentMessage: ConversationMessageSummary;
+  agentMessage: ConversationMessageSummary | null;
   runtime: RuntimeTurnResult | null;
+  processing: {
+    correlationId: string;
+    status: "completed" | "failed";
+    errorCode: string | null;
+    retryable: boolean;
+  };
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -3069,18 +3076,55 @@ export class Cp2Store {
       return {
         message,
         agentMessage: existingAgentMessage,
-        runtime: null
+        runtime: null,
+        processing: {
+          correlationId: message.id,
+          status: "completed",
+          errorCode: null,
+          retryable: false
+        }
       };
     }
 
+    const conversationHistory = this.runtimeConversationHistory(conversation.id, message.id);
     const runtime = await this.createRuntimeTurn({
       sessionId: input.sessionId,
       businessId: input.businessId,
       ...(input.runtimeSessionId === undefined ? {} : { runtimeSessionId: input.runtimeSessionId }),
       message: input.message,
+      conversationHistory,
       ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
       now
     });
+    const modelFailure = runtime.turn.model;
+    if (modelFailure !== null && modelFailure.status !== "available") {
+      const failedMessage: ConversationMessageSummary = {
+        ...message,
+        status: "failed",
+        failureCode: modelFailure.errorCode ?? modelFailureCode(modelFailure.status),
+        retryCount: (message.retryCount ?? 0) + 1,
+        nextRetryAt: new Date(now.getTime() + 2_000).toISOString()
+      };
+      this.conversationMessages.set(message.id, failedMessage);
+      this.recordConversationSyncForParticipants(
+        conversation.id,
+        "conversation_messages",
+        failedMessage.id,
+        failedMessage,
+        now
+      );
+      return {
+        message: failedMessage,
+        agentMessage: null,
+        runtime,
+        processing: {
+          correlationId: message.id,
+          status: "failed",
+          errorCode: failedMessage.failureCode ?? "MODEL_PROVIDER_UNAVAILABLE",
+          retryable: true
+        }
+      };
+    }
     const confirmationToken = runtime.turn.plan.confirmationToken;
     const agentMessage = this.createConversationMessage({
       sessionId: input.sessionId,
@@ -3100,12 +3144,70 @@ export class Cp2Store {
       clientTimestamp: now.toISOString(),
       now
     });
+    const deliveredMessage =
+      message.status === "failed"
+        ? {
+            ...message,
+            status: "delivered" as const,
+            failureCode: null,
+            nextRetryAt: null
+          }
+        : message;
+    if (deliveredMessage !== message) {
+      this.conversationMessages.set(message.id, deliveredMessage);
+      this.recordConversationSyncForParticipants(
+        conversation.id,
+        "conversation_messages",
+        deliveredMessage.id,
+        deliveredMessage,
+        now
+      );
+    }
 
     return {
-      message,
+      message: deliveredMessage,
       agentMessage,
-      runtime
+      runtime,
+      processing: {
+        correlationId: message.id,
+        status: "completed",
+        errorCode: null,
+        retryable: false
+      }
     };
+  }
+
+  private runtimeConversationHistory(
+    conversationId: string,
+    currentMessageId: string
+  ): RuntimeModelConversationMessage[] {
+    return this.messagesForConversation(conversationId)
+      .filter(
+        (message) =>
+          message.id !== currentMessageId &&
+          message.deletedAt === null &&
+          (message.content.type === "text" || message.content.type === "confirmation")
+      )
+      .slice(-12)
+      .flatMap((message): RuntimeModelConversationMessage[] => {
+        if (message.content.type === "text") {
+          return [
+            {
+              role: message.author === "agent" ? "assistant" : "user",
+              content: message.content.text.slice(0, 1_000)
+            }
+          ];
+        }
+        if (message.content.type === "confirmation") {
+          return [
+            {
+              role: message.author === "agent" ? "assistant" : "user",
+              content: message.content.prompt.slice(0, 1_000)
+            }
+          ];
+        }
+        return [];
+      });
   }
 
   listMessageDeliveryAttempts(input: {
@@ -7897,6 +7999,7 @@ export class Cp2Store {
     businessId: string;
     runtimeSessionId?: string;
     message: string;
+    conversationHistory?: RuntimeModelConversationMessage[];
     agentProfile?: RuntimeAgentProfile;
     confirmationToken?: string;
     now?: Date;
@@ -8053,6 +8156,9 @@ export class Cp2Store {
             agentProfile === undefined
               ? {
                   message: input.message,
+                  ...(input.conversationHistory === undefined
+                    ? {}
+                    : { conversationHistory: input.conversationHistory }),
                   modelId: activeModelId,
                   context,
                   now,
@@ -8060,6 +8166,9 @@ export class Cp2Store {
                 }
               : {
                   message: input.message,
+                  ...(input.conversationHistory === undefined
+                    ? {}
+                    : { conversationHistory: input.conversationHistory }),
                   modelId: activeModelId,
                   context,
                   now,
@@ -12980,6 +13089,7 @@ export class Cp2Store {
 
   private async createRuntimeModelRoute(input: {
     agentProfile?: RuntimeAgentProfile;
+    conversationHistory?: RuntimeModelConversationMessage[];
     message: string;
     modelId: string;
     context: RuntimeContextSummary;
@@ -13016,7 +13126,8 @@ export class Cp2Store {
 
     const prompt = buildRuntimeModelPrompt(
       formatRuntimeModelMessage(input.message, input.agentProfile),
-      input.context
+      input.context,
+      input.conversationHistory
     );
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
@@ -13089,7 +13200,7 @@ export class Cp2Store {
       input.appendTelemetry("model.fallback", "completed", null, null, {
         provider: completion.provider,
         adapterStatus: "malformed",
-        errorCode: parsed.errors[0] ?? "model_output_malformed"
+        errorCode: "MODEL_RESPONSE_PARSE_FAILED"
       });
 
       return {
@@ -13100,7 +13211,7 @@ export class Cp2Store {
           durationMs: completion.durationMs,
           fallbackUsed: true,
           outputKind: null,
-          errorCode: parsed.errors[0] ?? "model_output_malformed"
+          errorCode: "MODEL_RESPONSE_PARSE_FAILED"
         }
       };
     }
@@ -14288,14 +14399,23 @@ function formatRuntimeModelMessage(
 
 function buildRuntimeModelPrompt(
   message: string,
-  context: RuntimeContextSummary
+  context: RuntimeContextSummary,
+  conversationHistory?: RuntimeModelConversationMessage[]
 ): RuntimeModelPrompt {
   return {
     message,
+    ...(conversationHistory === undefined ? {} : { conversationHistory }),
     context,
     allowedTools: Object.keys(runtimeToolRegistry) as RuntimeToolName[],
     schemaVersion: "cp11-runtime-model-v1"
   };
+}
+
+function modelFailureCode(status: RuntimeModelTrace["status"]): string {
+  if (status === "disabled") return "MODEL_PROVIDER_UNCONFIGURED";
+  if (status === "timeout") return "MODEL_PROVIDER_TIMEOUT";
+  if (status === "malformed") return "MODEL_RESPONSE_PARSE_FAILED";
+  return "MODEL_PROVIDER_UNREACHABLE";
 }
 
 function modelTraceFromCompletion(
@@ -14731,14 +14851,19 @@ const defaultBusinessAgentContextScripts = [
   ].join("\n"),
   documentUploadContextScript
 ];
-const configuredLlamaCppProfile =
-  process.env.LOCAL_MODEL_PROFILE?.trim() || "tinyllama-1.1b-chat-q4-k-m-android";
-const configuredLlamaCppEndpoint =
-  process.env.LOCAL_MODEL_ENDPOINT?.trim() || "http://127.0.0.1:8080";
-const configuredLlamaCppEnabled = ["1", "true", "yes", "on"].includes(
+const configuredLocalModelProvider =
+  process.env.LOCAL_MODEL_PROVIDER?.trim().toLowerCase() === "llama.cpp" ? "llama.cpp" : "ollama";
+const configuredLocalModelProfile =
+  process.env.LOCAL_MODEL_MODEL?.trim() ||
+  process.env.LOCAL_MODEL_PROFILE?.trim() ||
+  "qwen2.5:0.5b";
+const configuredLocalModelEndpoint =
+  process.env.LOCAL_MODEL_ENDPOINT?.trim() ||
+  (configuredLocalModelProvider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:8080");
+const configuredLocalModelEnabled = ["1", "true", "yes", "on"].includes(
   process.env.LOCAL_MODEL_ENABLED?.trim().toLowerCase() ?? ""
 );
-const configuredLlamaCppSource = isLoopbackModelEndpoint(configuredLlamaCppEndpoint)
+const configuredLocalModelSource = isLoopbackModelEndpoint(configuredLocalModelEndpoint)
   ? "builtin"
   : "hosted";
 const aiModelRegistry: AiModelSummary[] = [
@@ -14859,15 +14984,20 @@ const aiModelRegistry: AiModelSummary[] = [
   },
   {
     id: "llama-cpp-configured",
-    label: `${configuredLlamaCppProfile} (${configuredLlamaCppSource} llama.cpp)`,
+    label: `${configuredLocalModelProfile} (${configuredLocalModelSource} ${configuredLocalModelProvider})`,
     provider: "local",
     description:
-      configuredLlamaCppSource === "builtin"
-        ? "Llama-compatible model served by the configured on-device or same-host llama.cpp runtime."
-        : "Llama-compatible model served by the configured remote llama.cpp endpoint.",
-    capabilities: ["chat", "tool-routing", "llama.cpp", configuredLlamaCppSource],
-    available: configuredLlamaCppEnabled,
-    source: configuredLlamaCppSource,
+      configuredLocalModelSource === "builtin"
+        ? `Local model served by the configured on-device or same-host ${configuredLocalModelProvider} runtime.`
+        : `Local model served by the configured remote ${configuredLocalModelProvider} endpoint.`,
+    capabilities: [
+      "chat",
+      "tool-routing",
+      configuredLocalModelProvider,
+      configuredLocalModelSource
+    ],
+    available: configuredLocalModelEnabled,
+    source: configuredLocalModelSource,
     format: "remote",
     license: null,
     licenseUrl: null,
