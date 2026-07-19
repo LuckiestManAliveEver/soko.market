@@ -131,6 +131,9 @@ import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes }
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "./lib/api";
+import { getCachedJson, invalidateApiCacheForMutation } from "./api-request-cache";
+import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
+import { RuntimeManager } from "./runtime-manager";
 import {
   queueMessagingOutbox,
   readMessagingOutbox,
@@ -1613,6 +1616,7 @@ interface LaunchFormState {
 
 const apiBaseUrl = readApiBaseUrl();
 const uiBackgroundRefreshIntervalMs = 30_000;
+const runtimeManager = new RuntimeManager();
 const buildIdentity = {
   apiBaseUrl,
   appName: __APP_NAME__,
@@ -2156,12 +2160,15 @@ export function OwnerApp() {
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
   function navigateToView(nextView: ShellView, options?: { replace?: boolean }) {
+    const nextPath = pathForOwnerView(nextView, mode);
+    const measurement = startNavigationMeasurement(nextPath);
     runViewTransition(() => {
       setView(nextView);
-      const nextPath = pathForOwnerView(nextView, mode);
-      if (window.location.pathname === nextPath) return;
-      const method = options?.replace ? "replaceState" : "pushState";
-      window.history[method]({ mode, view: nextView }, "", nextPath);
+      if (window.location.pathname !== nextPath) {
+        const method = options?.replace ? "replaceState" : "pushState";
+        window.history[method]({ mode, view: nextView }, "", nextPath);
+      }
+      markNavigationCommitted(measurement);
     });
   }
 
@@ -2261,9 +2268,11 @@ export function OwnerApp() {
     function restoreRoute() {
       const route = readOwnerRoute(window.location.pathname);
       if (route === null) return;
+      const measurement = startNavigationMeasurement(window.location.pathname);
       setMode(route.mode);
       setView(route.view);
       setIsWorkspacePanelOpen(false);
+      markNavigationCommitted(measurement);
     }
 
     window.addEventListener("popstate", restoreRoute);
@@ -2505,10 +2514,8 @@ export function OwnerApp() {
           loadSuppliers(businessId),
           loadCustomers(businessId),
           loadInvoices(businessId),
-          loadSyncQueue(businessId),
           loadReports(businessId),
-          loadNotifications(businessId),
-          loadRuntimeSessions(businessId)
+          loadNotifications(businessId)
         );
       }
 
@@ -4086,23 +4093,49 @@ export function OwnerApp() {
   }
 
   async function createRuntimeHistorySession() {
-    if (business === null) {
+    if (business === null || session === null) {
       return;
     }
 
     try {
-      const session = await postJson<RuntimeSessionSummary>(
-        `/businesses/${business.id}/runtime/sessions`,
-        {}
+      runtimeManager.stop();
+      const runtimeSessionId = await createManagedRuntimeSession();
+      runtimeManager.adoptSession(
+        runtimeManagerKey(session.account.id, business.id),
+        runtimeSessionId
       );
-      setRuntimeSessions((sessions) => [...sessions, session]);
-      setSelectedRuntimeHistorySessionId(session.id);
       setRuntimeTurns([]);
-      setRuntimeSessionId(session.id);
+      setRuntimeSessionId(runtimeSessionId);
       setStatusMessage("Runtime session created");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
+  }
+
+  async function createManagedRuntimeSession(): Promise<string> {
+    if (business === null || session === null) {
+      throw new Error("Sign in and select a shop before starting the AI runtime.");
+    }
+    const created = await postJson<RuntimeSessionSummary>(
+      `/businesses/${business.id}/runtime/sessions`,
+      {}
+    );
+    setRuntimeSessions((sessions) =>
+      sessions.some((item) => item.id === created.id) ? sessions : [...sessions, created]
+    );
+    setSelectedRuntimeHistorySessionId(created.id);
+    return created.id;
+  }
+
+  async function ensureRuntimeSession(): Promise<string> {
+    if (business === null || session === null) {
+      throw new Error("Sign in and select a shop before starting the AI runtime.");
+    }
+
+    const key = runtimeManagerKey(session.account.id, business.id);
+    const runtimeSessionId = await runtimeManager.ensureSession(key, createManagedRuntimeSession);
+    setRuntimeSessionId(runtimeSessionId);
+    return runtimeSessionId;
   }
 
   async function loadRuntimeTurns(businessId: string, sessionId: string) {
@@ -5028,16 +5061,15 @@ export function OwnerApp() {
       return;
     }
 
+    const nextPath = pathForOwnerView("chat", nextMode);
+    const measurement = startNavigationMeasurement(nextPath);
     runViewTransition(() => {
       setMode(nextMode);
-      window.history.pushState(
-        { mode: nextMode, view: "chat" },
-        "",
-        pathForOwnerView("chat", nextMode)
-      );
+      window.history.pushState({ mode: nextMode, view: "chat" }, "", nextPath);
       setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
       setView("chat");
       setIsWorkspacePanelOpen(false);
+      markNavigationCommitted(measurement);
     });
     setChatMessages((messages) => [
       ...messages,
@@ -5764,6 +5796,18 @@ export function OwnerApp() {
           ) ?? null)
         : null;
     const shouldResolveLocal = shouldResolveBrowser || shouldResolveNative;
+    let activeServerRuntimeSessionId = runtimeSessionId;
+    if (!hasHumanRecipient && business !== null && !shouldResolveLocal && navigator.onLine) {
+      try {
+        activeServerRuntimeSessionId = await ensureRuntimeSession();
+      } catch {
+        setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
+        setChatDraft(message);
+        setPendingAttachments(attachments);
+        setStatusMessage("The AI runtime could not start. Try again.");
+        return;
+      }
+    }
     let localFallbackStatus: string | null = null;
     let messageContent: ConversationMessageContent = {
       type: "text",
@@ -5803,7 +5847,9 @@ export function OwnerApp() {
               ? {
                   agent: {
                     businessId: business.id,
-                    ...(runtimeSessionId === null ? {} : { runtimeSessionId }),
+                    ...(activeServerRuntimeSessionId === null
+                      ? {}
+                      : { runtimeSessionId: activeServerRuntimeSessionId }),
                     message: runtimeMessage,
                     agentProfile: createAgentRuntimeProfile(agentSettings)
                   }
@@ -5819,10 +5865,21 @@ export function OwnerApp() {
 
     if (payload !== null) {
       try {
-        const persisted = await postJson<ProcessedConversationMessageResponse>(
-          "/v1/messages",
-          payload
-        );
+        const persisted =
+          !hasHumanRecipient && business !== null && !shouldResolveLocal
+            ? await runtimeManager.runWithSession(
+                runtimeManagerKey(session.account.id, business.id),
+                createManagedRuntimeSession,
+                (managedRuntimeSessionId) =>
+                  postJson<ProcessedConversationMessageResponse>("/v1/messages", {
+                    ...payload,
+                    agent: {
+                      ...(payload.agent as Record<string, unknown>),
+                      runtimeSessionId: managedRuntimeSessionId
+                    }
+                  })
+              )
+            : await postJson<ProcessedConversationMessageResponse>("/v1/messages", payload);
         if (activeConversation !== null && session !== null) {
           setChatMessages((messages) => {
             const reconciled = messages.map((item) =>
@@ -6087,6 +6144,12 @@ export function OwnerApp() {
     }
 
     async function applyRuntimeResult(result: RuntimeTurnResult, appendResponse: boolean) {
+      if (business !== null && session !== null) {
+        runtimeManager.adoptSession(
+          runtimeManagerKey(session.account.id, business.id),
+          result.session.id
+        );
+      }
       setRuntimeSessionId(result.session.id);
       setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
       if (appendResponse) {
@@ -6167,11 +6230,17 @@ export function OwnerApp() {
         attachments,
         business.id
       );
-      const result = await postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
-        ...(runtimeSessionId === null ? {} : { runtimeSessionId }),
-        message: runtimeMessage,
-        agentProfile: createAgentRuntimeProfile(agentSettings)
-      });
+      const key = runtimeManagerKey(session.account.id, business.id);
+      const result = await runtimeManager.runWithSession(
+        key,
+        createManagedRuntimeSession,
+        (managedRuntimeSessionId) =>
+          postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
+            runtimeSessionId: managedRuntimeSessionId,
+            message: runtimeMessage,
+            agentProfile: createAgentRuntimeProfile(agentSettings)
+          })
+      );
       await applyRuntimeResult(result, true);
     } catch (error) {
       const parserReply = createLocalParserReply(agentRequest);
@@ -6767,15 +6836,12 @@ export function OwnerApp() {
                 data-testid="marketplace-button"
                 aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
                 onClick={() => {
-                  const alreadyInMarketplace = mode === "marketplace";
-                  setMode("marketplace");
-                  window.history.pushState(
-                    { mode: "marketplace", view: "chat" },
-                    "",
-                    routes.marketplace
-                  );
-                  setView("chat");
-                  setIsMarketplaceShortcutOpen((open) => (alreadyInMarketplace ? !open : true));
+                  if (mode === "marketplace") {
+                    navigateToView("chat");
+                    setIsMarketplaceShortcutOpen((open) => !open);
+                    return;
+                  }
+                  switchMode("marketplace");
                 }}
               >
                 Marketplace
@@ -6985,6 +7051,7 @@ export function OwnerApp() {
             onBack={returnToChat}
             onEnableNotifications={requestMessagingNotifications}
             onDisableNotifications={disableMessagingNotifications}
+            onEnsureRuntimeSession={ensureRuntimeSession}
             onLogout={() => void runAction("logout", logout)}
             onLogoutAll={() => void runAction("logout-all", () => logout(true))}
             onScheduleAccountDeletion={scheduleAccountDeletion}
@@ -12372,6 +12439,7 @@ interface AgentProfileSurfaceProps {
   onBack: () => void;
   onDisableNotifications: () => Promise<void>;
   onEnableNotifications: () => Promise<void>;
+  onEnsureRuntimeSession: () => Promise<string>;
   onLogout: () => void;
   onLogoutAll: () => void;
   onScheduleAccountDeletion: (input: {
@@ -12395,6 +12463,7 @@ function AgentProfileSurface({
   onBack,
   onDisableNotifications,
   onEnableNotifications,
+  onEnsureRuntimeSession,
   onLogout,
   onLogoutAll,
   onScheduleAccountDeletion,
@@ -12426,6 +12495,8 @@ function AgentProfileSurface({
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
+  const [modelLibraryLoaded, setModelLibraryLoaded] = useState(false);
+  const [modelLibraryLoading, setModelLibraryLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
   const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
@@ -12436,6 +12507,7 @@ function AgentProfileSurface({
     );
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [modelRuntimeBusy, setModelRuntimeBusy] = useState(false);
+  const modelRuntimeBusyRef = useRef(false);
   const modelRuntime = useRef<AgentModelRuntime | null>(null);
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
@@ -12501,20 +12573,19 @@ function AgentProfileSurface({
     void loadShopDeletionPreview();
     void loadAgentProfile();
     void loadAgentModelAssignment();
-    void loadBrowserInferenceState(accountId, business.id).then(setBrowserInferenceState);
-    // initialize model search from URL so browser back/forward works
     const params = new URLSearchParams(location.search);
     const initialSearch = params.get("ai_search") ?? "";
     setModelSearch(initialSearch);
-    void loadAiModels(initialSearch);
-    void inspectDeviceModelCapability().then(setDeviceCapability);
+  }, [accountId, business.id]);
 
+  useEffect(() => {
+    if (!modelLibraryLoaded) return;
     const onPopState = () => {
-      const p = new URLSearchParams(location.search);
-      const searchParam = p.get("ai_search") ?? "";
+      const params = new URLSearchParams(location.search);
+      const searchParam = params.get("ai_search") ?? "";
       setModelSearch(searchParam);
       void loadAiModels(searchParam);
-      const selectedModel = p.get("ai_model");
+      const selectedModel = params.get("ai_model");
       if (selectedModel) {
         setDraftAgent((current) => ({ ...current, model: selectedModel }));
       }
@@ -12522,7 +12593,29 @@ function AgentProfileSurface({
 
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [accountId, business.id]);
+  }, [modelLibraryLoaded]);
+
+  async function openModelLibrary() {
+    if (modelLibraryLoaded || modelLibraryLoading) return;
+    setModelLibraryLoading(true);
+    setProfileMessage("Opening model settings…");
+    try {
+      const initialSearch = new URLSearchParams(location.search).get("ai_search") ?? "";
+      const [browserState, capability] = await Promise.all([
+        loadBrowserInferenceState(accountId, business.id),
+        inspectDeviceModelCapability(),
+        loadAiModels(initialSearch)
+      ]);
+      setBrowserInferenceState(browserState);
+      setDeviceCapability(capability);
+      setModelLibraryLoaded(true);
+      setProfileMessage("Model settings ready.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setModelLibraryLoading(false);
+    }
+  }
 
   async function setBrowserInferenceEnabled(enabled: boolean) {
     if (modelRuntimeBusy) return;
@@ -12837,12 +12930,17 @@ function AgentProfileSurface({
   }
 
   async function useModelWithAgent(model: LocalAiModel) {
-    if (modelRuntimeBusy) return;
+    if (modelRuntimeBusyRef.current) return;
     const previous = agentModelAssignment;
+    modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
     setModelChooserOpen(false);
     try {
-      setProfileMessage(`Checking ${model.displayName} installation and compatibility…`);
+      if (navigator.onLine) {
+        setProfileMessage("Starting local AI runtime…");
+        await onEnsureRuntimeSession();
+      }
+      setProfileMessage(`Activating ${model.displayName}…`);
       const verified = await validateLocalAiModel(model, deviceCapability);
       setLocalAiModels(listLocalAiModels());
       if (
@@ -12916,8 +13014,14 @@ function AgentProfileSurface({
         saveDeviceAgentModelAssignment(previous);
         setAgentModelAssignment(previous);
       }
-      setProfileMessage(`${getErrorMessage(error)} The previous working model was left unchanged.`);
+      const message = getErrorMessage(error);
+      setProfileMessage(
+        `${
+          /runtime|session/i.test(message) ? "The AI runtime could not start. Try again." : message
+        } The previous working model was left unchanged.`
+      );
     } finally {
+      modelRuntimeBusyRef.current = false;
       setModelRuntimeBusy(false);
     }
   }
@@ -13824,287 +13928,312 @@ function AgentProfileSurface({
             </p>
           </div>
 
-          <section
-            className={`offline-starter-card ${offlineStarterInstalled ? "installed" : ""}`}
-            aria-label="Offline starter model"
-          >
-            <div>
-              <p className="eyebrow">
-                {offlineStarterInstalled ? "Installed on this device" : "One-time setup"}
-              </p>
-              <h4>
-                {offlineStarterInstalled
-                  ? `${offlineStarter?.label ?? "Offline model"} is installed`
-                  : "Install an offline starter"}
-              </h4>
+          {!modelLibraryLoaded ? (
+            <div className="deferred-model-library">
               <p>
-                {offlineStarterInstalled
-                  ? "The file is in private storage. Choose ‘Use with this agent’ to validate and activate it."
-                  : offlineStarter === undefined
-                    ? "This device does not report enough storage for a default offline model."
-                    : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
-                        offlineStarter.fileSizeBytes
-                      )}). Download it once while connected, then keep it available on the go.`}
+                Device checks and remote model catalogs stay paused until you open this library.
               </p>
-            </div>
-            {!offlineStarterInstalled && offlineStarter !== undefined ? (
               <button
                 type="button"
-                disabled={modelTransfers[offlineStarter.id] !== undefined}
-                onClick={() => void predownloadAiModel(offlineStarter)}
+                disabled={modelLibraryLoading}
+                aria-busy={modelLibraryLoading}
+                onClick={() => void openModelLibrary()}
               >
-                {modelTransfers[offlineStarter.id] === undefined
-                  ? "Install offline starter"
-                  : `Installing ${modelTransfers[offlineStarter.id]?.percent ?? 0}%`}
-              </button>
-            ) : null}
-          </section>
-
-          <div className="ai-model-search">
-            <label>
-              Search models
-              <input
-                value={modelSearch}
-                onChange={(event) => setModelSearch(event.target.value)}
-                placeholder="Search Soko, Hugging Face, and GitHub"
-              />
-            </label>
-            <div className="ai-model-search-actions">
-              <button type="button" onClick={() => void searchAiModels()}>
-                Search all model sources
-              </button>
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => {
-                  setModelSearch("");
-                  try {
-                    const u = new URL(location.href);
-                    u.searchParams.delete("ai_search");
-                    window.history.pushState({}, "", `${u.pathname}${u.search}`);
-                  } catch {
-                    /* ignore history update errors in unusual environments */
-                  }
-                  void loadAiModels();
-                }}
-              >
-                Clear
+                {modelLibraryLoading ? "Opening model settings…" : "Open model library"}
               </button>
             </div>
-          </div>
-          <div
-            className={`github-model-status ${
-              githubModelDiscovery.status === "available" ? "ok" : ""
-            }`}
-            role="status"
-          >
-            <span className="github-model-connection">
-              GitHub ·{" "}
-              {githubModelDiscovery.connection === "authenticated"
-                ? "Authenticated API"
-                : "Public API"}{" "}
-              · {githubModelDiscovery.status === "available" ? "Available" : "Unavailable"}
-            </span>
-            <span>{githubModelDiscovery.message}</span>
-          </div>
-          <div
-            className={`github-model-status ${
-              huggingFaceModelDiscovery.status === "available" ? "ok" : ""
-            }`}
-            role="status"
-          >
-            <span className="github-model-connection">
-              Hugging Face ·{" "}
-              {huggingFaceModelDiscovery.connection === "authenticated"
-                ? "Authenticated API"
-                : "Public API"}{" "}
-              · {huggingFaceModelDiscovery.status === "available" ? "Available" : "Unavailable"}
-            </span>
-            <span>{huggingFaceModelDiscovery.message}</span>
-          </div>
-
-          {deviceCapability === null ? (
-            <p className="model-device-status">Checking this device…</p>
           ) : (
-            <div className={`model-device-status ${deviceCapability.level}`}>
-              <strong>{deviceCapability.level} device profile</strong>
-              <span>{deviceCapability.reason}</span>
-              <small>
-                {deviceCapability.deviceMemoryGb === null
-                  ? "RAM not reported"
-                  : `${deviceCapability.deviceMemoryGb} GB RAM reported`}
-                {` · ${deviceCapability.hardwareConcurrency} CPU threads`}
-                {deviceCapability.freeStorageBytes === null
-                  ? " · storage not reported"
-                  : ` · ${formatModelBytes(deviceCapability.freeStorageBytes)} free`}
-              </small>
-            </div>
-          )}
-
-          <div className="ai-model-best-fit">
-            <div className="section-subheading">
-              <h4>Best fit models</h4>
-              <p>
-                Ranked across the Soko and GitHub catalogs using reported RAM, CPU, storage, model
-                size, and useful agent capabilities.
-              </p>
-            </div>
-            {deviceCapability === null ? (
-              <p className="model-device-status">Checking compatibility…</p>
-            ) : (
-              <div className="ai-model-best-fit-list">
-                {bestFitModels.map(({ model, reasons }) => (
-                  <div className="ai-model-best-fit-card" key={model.id}>
-                    <strong>
-                      {model.label} · {model.source === "github" ? "GitHub" : "Hugging Face"}
-                    </strong>
-                    <span>{model.description}</span>
-                    <small>{reasons.slice(0, 2).join(" · ")}</small>
-                  </div>
-                ))}
-                {bestFitModels.length === 0 ? (
-                  <p>No compatible catalog models were found for this device.</p>
-                ) : null}
-              </div>
-            )}
-          </div>
-
-          <div className="ai-model-catalog">
-            {visibleAiModels
-              .filter(
-                (model) => isDownloadableCatalogModel(model) && model.license === "Apache-2.0"
-              )
-              .map((model) => {
-                const localModel = localAiModels.find(
-                  (candidate) => candidate.modelId === model.id
-                );
-                const transfer = modelTransfers[model.id];
-                const compatible =
-                  deviceCapability === null ||
-                  canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes);
-                return (
-                  <article className="ai-model-card" key={model.id}>
-                    <div>
-                      <p className="eyebrow">
-                        {localModel === undefined ? "Available to install · " : "Installed · "}
-                        {model.recommended ? "Recommended · " : ""}
-                        {model.source === "github" ? "GitHub release · " : "Hugging Face · "}
-                        {model.license} · {model.format}
-                      </p>
-                      <h4>{model.label}</h4>
-                      <p>{model.description}</p>
-                      <small>
-                        {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB minimum
-                        RAM · {model.capabilities.join(" · ")}
-                      </small>
-                    </div>
-                    <div className="ai-model-card-actions">
-                      {model.modelCardUrl !== null ? (
-                        <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
-                          {model.source === "github" ? "GitHub release" : "Model card"}
-                        </a>
-                      ) : null}
-                      {localModel === undefined ? (
-                        <button
-                          type="button"
-                          disabled={!compatible || transfer !== undefined}
-                          onClick={() => void predownloadAiModel(model)}
-                        >
-                          {transfer === undefined
-                            ? "Predownload & install"
-                            : `Installing ${transfer.percent}%`}
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            disabled={modelRuntimeBusy}
-                            onClick={() => void useModelWithAgent(localModel)}
-                          >
-                            Use with this agent
-                          </button>
-                          <button
-                            className="secondary"
-                            type="button"
-                            onClick={() => void deleteDeviceModel(localModel)}
-                          >
-                            Remove
-                          </button>
-                        </>
-                      )}
-                    </div>
-                    {!compatible ? (
-                      <p className="model-compatibility-warning">
-                        This model exceeds the reported memory or storage available on this device.
-                      </p>
-                    ) : null}
-                  </article>
-                );
-              })}
-          </div>
-
-          <div className="custom-model-import">
-            <div>
-              <h4>Add a custom AI model</h4>
-              <p>
-                High-capability devices can import a local GGUF file. Soko does not upload or verify
-                custom model licenses.
-              </p>
-            </div>
-            <label className="license-confirmation">
-              <input
-                type="checkbox"
-                checked={customLicenseConfirmed}
-                disabled={deviceCapability?.customModelsAllowed !== true}
-                onChange={(event) => setCustomLicenseConfirmed(event.target.checked)}
-              />
-              I confirm this model's license permits my commercial use.
-            </label>
-            <input
-              ref={customModelInput}
-              className="model-file-input"
-              type="file"
-              accept=".gguf,application/octet-stream"
-              onChange={(event) => void importCustomModel(event)}
-            />
-            <button
-              type="button"
-              disabled={
-                deviceCapability?.customModelsAllowed !== true ||
-                !customLicenseConfirmed ||
-                modelTransfers["custom-import"] !== undefined
-              }
-              onClick={() => customModelInput.current?.click()}
-            >
-              {modelTransfers["custom-import"] === undefined
-                ? "Choose custom GGUF"
-                : `Importing ${modelTransfers["custom-import"].percent}%`}
-            </button>
-            {localAiModels
-              .filter((model) => model.provider === "custom")
-              .map((model) => (
-                <div className="custom-model-row" key={model.id}>
-                  <span>
-                    <strong>{model.label}</strong>
-                    <small>{formatModelBytes(model.fileSizeBytes)} · stored on this device</small>
-                  </span>
+            <>
+              <section
+                className={`offline-starter-card ${offlineStarterInstalled ? "installed" : ""}`}
+                aria-label="Offline starter model"
+              >
+                <div>
+                  <p className="eyebrow">
+                    {offlineStarterInstalled ? "Installed on this device" : "One-time setup"}
+                  </p>
+                  <h4>
+                    {offlineStarterInstalled
+                      ? `${offlineStarter?.label ?? "Offline model"} is installed`
+                      : "Install an offline starter"}
+                  </h4>
+                  <p>
+                    {offlineStarterInstalled
+                      ? "The file is in private storage. Choose ‘Use with this agent’ to validate and activate it."
+                      : offlineStarter === undefined
+                        ? "This device does not report enough storage for a default offline model."
+                        : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
+                            offlineStarter.fileSizeBytes
+                          )}). Download it once while connected, then keep it available on the go.`}
+                  </p>
+                </div>
+                {!offlineStarterInstalled && offlineStarter !== undefined ? (
                   <button
                     type="button"
-                    disabled={modelRuntimeBusy}
-                    onClick={() => void useModelWithAgent(model)}
+                    disabled={modelTransfers[offlineStarter.id] !== undefined}
+                    onClick={() => void predownloadAiModel(offlineStarter)}
                   >
-                    Use with this agent
+                    {modelTransfers[offlineStarter.id] === undefined
+                      ? "Install offline starter"
+                      : `Installing ${modelTransfers[offlineStarter.id]?.percent ?? 0}%`}
+                  </button>
+                ) : null}
+              </section>
+
+              <div className="ai-model-search">
+                <label>
+                  Search models
+                  <input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    placeholder="Search Soko, Hugging Face, and GitHub"
+                  />
+                </label>
+                <div className="ai-model-search-actions">
+                  <button type="button" onClick={() => void searchAiModels()}>
+                    Search all model sources
                   </button>
                   <button
                     className="secondary"
                     type="button"
-                    onClick={() => void deleteDeviceModel(model)}
+                    onClick={() => {
+                      setModelSearch("");
+                      try {
+                        const u = new URL(location.href);
+                        u.searchParams.delete("ai_search");
+                        window.history.pushState({}, "", `${u.pathname}${u.search}`);
+                      } catch {
+                        /* ignore history update errors in unusual environments */
+                      }
+                      void loadAiModels();
+                    }}
                   >
-                    Remove
+                    Clear
                   </button>
                 </div>
-              ))}
-          </div>
+              </div>
+              <div
+                className={`github-model-status ${
+                  githubModelDiscovery.status === "available" ? "ok" : ""
+                }`}
+                role="status"
+              >
+                <span className="github-model-connection">
+                  GitHub ·{" "}
+                  {githubModelDiscovery.connection === "authenticated"
+                    ? "Authenticated API"
+                    : "Public API"}{" "}
+                  · {githubModelDiscovery.status === "available" ? "Available" : "Unavailable"}
+                </span>
+                <span>{githubModelDiscovery.message}</span>
+              </div>
+              <div
+                className={`github-model-status ${
+                  huggingFaceModelDiscovery.status === "available" ? "ok" : ""
+                }`}
+                role="status"
+              >
+                <span className="github-model-connection">
+                  Hugging Face ·{" "}
+                  {huggingFaceModelDiscovery.connection === "authenticated"
+                    ? "Authenticated API"
+                    : "Public API"}{" "}
+                  · {huggingFaceModelDiscovery.status === "available" ? "Available" : "Unavailable"}
+                </span>
+                <span>{huggingFaceModelDiscovery.message}</span>
+              </div>
+
+              {deviceCapability === null ? (
+                <p className="model-device-status">Checking this device…</p>
+              ) : (
+                <div className={`model-device-status ${deviceCapability.level}`}>
+                  <strong>{deviceCapability.level} device profile</strong>
+                  <span>{deviceCapability.reason}</span>
+                  <small>
+                    {deviceCapability.deviceMemoryGb === null
+                      ? "RAM not reported"
+                      : `${deviceCapability.deviceMemoryGb} GB RAM reported`}
+                    {` · ${deviceCapability.hardwareConcurrency} CPU threads`}
+                    {deviceCapability.freeStorageBytes === null
+                      ? " · storage not reported"
+                      : ` · ${formatModelBytes(deviceCapability.freeStorageBytes)} free`}
+                  </small>
+                </div>
+              )}
+
+              <div className="ai-model-best-fit">
+                <div className="section-subheading">
+                  <h4>Best fit models</h4>
+                  <p>
+                    Ranked across the Soko and GitHub catalogs using reported RAM, CPU, storage,
+                    model size, and useful agent capabilities.
+                  </p>
+                </div>
+                {deviceCapability === null ? (
+                  <p className="model-device-status">Checking compatibility…</p>
+                ) : (
+                  <div className="ai-model-best-fit-list">
+                    {bestFitModels.map(({ model, reasons }) => (
+                      <div className="ai-model-best-fit-card" key={model.id}>
+                        <strong>
+                          {model.label} · {model.source === "github" ? "GitHub" : "Hugging Face"}
+                        </strong>
+                        <span>{model.description}</span>
+                        <small>{reasons.slice(0, 2).join(" · ")}</small>
+                      </div>
+                    ))}
+                    {bestFitModels.length === 0 ? (
+                      <p>No compatible catalog models were found for this device.</p>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              <div className="ai-model-catalog">
+                {visibleAiModels
+                  .filter(
+                    (model) => isDownloadableCatalogModel(model) && model.license === "Apache-2.0"
+                  )
+                  .map((model) => {
+                    const localModel = localAiModels.find(
+                      (candidate) => candidate.modelId === model.id
+                    );
+                    const transfer = modelTransfers[model.id];
+                    const compatible =
+                      deviceCapability === null ||
+                      canRunCatalogModel(
+                        deviceCapability,
+                        model.minimumMemoryGb,
+                        model.fileSizeBytes
+                      );
+                    return (
+                      <article className="ai-model-card" key={model.id}>
+                        <div>
+                          <p className="eyebrow">
+                            {localModel === undefined ? "Available to install · " : "Installed · "}
+                            {model.recommended ? "Recommended · " : ""}
+                            {model.source === "github" ? "GitHub release · " : "Hugging Face · "}
+                            {model.license} · {model.format}
+                          </p>
+                          <h4>{model.label}</h4>
+                          <p>{model.description}</p>
+                          <small>
+                            {formatModelBytes(model.fileSizeBytes)} · {model.minimumMemoryGb} GB
+                            minimum RAM · {model.capabilities.join(" · ")}
+                          </small>
+                        </div>
+                        <div className="ai-model-card-actions">
+                          {model.modelCardUrl !== null ? (
+                            <a href={model.modelCardUrl} target="_blank" rel="noreferrer">
+                              {model.source === "github" ? "GitHub release" : "Model card"}
+                            </a>
+                          ) : null}
+                          {localModel === undefined ? (
+                            <button
+                              type="button"
+                              disabled={!compatible || transfer !== undefined}
+                              onClick={() => void predownloadAiModel(model)}
+                            >
+                              {transfer === undefined
+                                ? "Predownload & install"
+                                : `Installing ${transfer.percent}%`}
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                disabled={modelRuntimeBusy}
+                                onClick={() => void useModelWithAgent(localModel)}
+                              >
+                                Use with this agent
+                              </button>
+                              <button
+                                className="secondary"
+                                type="button"
+                                onClick={() => void deleteDeviceModel(localModel)}
+                              >
+                                Remove
+                              </button>
+                            </>
+                          )}
+                        </div>
+                        {!compatible ? (
+                          <p className="model-compatibility-warning">
+                            This model exceeds the reported memory or storage available on this
+                            device.
+                          </p>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+              </div>
+
+              <div className="custom-model-import">
+                <div>
+                  <h4>Add a custom AI model</h4>
+                  <p>
+                    High-capability devices can import a local GGUF file. Soko does not upload or
+                    verify custom model licenses.
+                  </p>
+                </div>
+                <label className="license-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={customLicenseConfirmed}
+                    disabled={deviceCapability?.customModelsAllowed !== true}
+                    onChange={(event) => setCustomLicenseConfirmed(event.target.checked)}
+                  />
+                  I confirm this model's license permits my commercial use.
+                </label>
+                <input
+                  ref={customModelInput}
+                  className="model-file-input"
+                  type="file"
+                  accept=".gguf,application/octet-stream"
+                  onChange={(event) => void importCustomModel(event)}
+                />
+                <button
+                  type="button"
+                  disabled={
+                    deviceCapability?.customModelsAllowed !== true ||
+                    !customLicenseConfirmed ||
+                    modelTransfers["custom-import"] !== undefined
+                  }
+                  onClick={() => customModelInput.current?.click()}
+                >
+                  {modelTransfers["custom-import"] === undefined
+                    ? "Choose custom GGUF"
+                    : `Importing ${modelTransfers["custom-import"].percent}%`}
+                </button>
+                {localAiModels
+                  .filter((model) => model.provider === "custom")
+                  .map((model) => (
+                    <div className="custom-model-row" key={model.id}>
+                      <span>
+                        <strong>{model.label}</strong>
+                        <small>
+                          {formatModelBytes(model.fileSizeBytes)} · stored on this device
+                        </small>
+                      </span>
+                      <button
+                        type="button"
+                        disabled={modelRuntimeBusy}
+                        onClick={() => void useModelWithAgent(model)}
+                      >
+                        Use with this agent
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={() => void deleteDeviceModel(model)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="record-form">
@@ -15574,7 +15703,12 @@ function ChatSurface({
                         key={attachment.id}
                       >
                         {attachment.category === "image" && attachment.dataUrl ? (
-                          <img src={attachment.dataUrl} alt={attachment.name} />
+                          <img
+                            src={attachment.dataUrl}
+                            alt={attachment.name}
+                            loading="lazy"
+                            decoding="async"
+                          />
                         ) : null}
                         <span>{attachment.name}</span>
                         <small>
@@ -17338,29 +17472,37 @@ async function postJson<TResponse>(
   path: string,
   body: Record<string, unknown>
 ): Promise<TResponse> {
-  return apiFetch<TResponse>(path, { method: "POST", body });
+  const response = await apiFetch<TResponse>(path, { method: "POST", body });
+  invalidateApiCacheForMutation(path);
+  return response;
 }
 
 async function patchJson<TResponse>(
   path: string,
   body: Record<string, unknown>
 ): Promise<TResponse> {
-  return apiFetch<TResponse>(path, { method: "PATCH", body });
+  const response = await apiFetch<TResponse>(path, { method: "PATCH", body });
+  invalidateApiCacheForMutation(path);
+  return response;
 }
 
 async function putJson<TResponse>(path: string, body: Record<string, unknown>): Promise<TResponse> {
-  return apiFetch<TResponse>(path, { method: "PUT", body });
+  const response = await apiFetch<TResponse>(path, { method: "PUT", body });
+  invalidateApiCacheForMutation(path);
+  return response;
 }
 
 async function deleteJson<TResponse>(
   path: string,
   body?: Record<string, unknown>
 ): Promise<TResponse> {
-  return apiFetch<TResponse>(path, { method: "DELETE", body });
+  const response = await apiFetch<TResponse>(path, { method: "DELETE", body });
+  invalidateApiCacheForMutation(path);
+  return response;
 }
 
 async function getJson<TResponse>(path: string): Promise<TResponse> {
-  return apiFetch<TResponse>(path);
+  return getCachedJson<TResponse>(path);
 }
 
 function useInstallPrompt() {
@@ -18520,6 +18662,10 @@ function runViewTransition(update: () => void): void {
   }
 
   update();
+}
+
+function runtimeManagerKey(accountId: string, businessId: string): string {
+  return `${accountId}:${businessId}`;
 }
 
 function logAuthenticationLifecycle(

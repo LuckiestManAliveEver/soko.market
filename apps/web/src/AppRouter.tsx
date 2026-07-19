@@ -1,5 +1,6 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Profiler, Suspense, type ReactNode } from "react";
 import { AppIcon } from "./AppIcon";
+import { recordComponentRender, recordRouteRender } from "./performance";
 import { readOwnerRoute, routes } from "./routes";
 
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
@@ -50,16 +51,24 @@ export function AppRouter() {
 
 function LazyRoute({ page }: { page: ReactNode }) {
   return (
-    <Suspense
-      fallback={
-        <main className="legal-placeholder" aria-busy="true">
-          <AppIcon className="route-brand-icon" />
-          <p>Loading Soko.market…</p>
-        </main>
-      }
+    <Profiler
+      id="application-route"
+      onRender={(_, phase, actualDuration, baseDuration) => {
+        recordComponentRender("application-route", phase, actualDuration, baseDuration);
+        recordRouteRender(window.location.pathname);
+      }}
     >
-      {page}
-    </Suspense>
+      <Suspense
+        fallback={
+          <main className="legal-placeholder" aria-busy="true">
+            <AppIcon className="route-brand-icon" />
+            <p>Loading Soko.market…</p>
+          </main>
+        }
+      >
+        {page}
+      </Suspense>
+    </Profiler>
   );
 }
 

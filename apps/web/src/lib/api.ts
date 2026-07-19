@@ -1,4 +1,5 @@
 import { getResponseErrorMessage } from "../user-facing-error";
+import { recordApiRequest } from "../performance";
 
 export class ApiRequestError extends Error {
   readonly status: number;
@@ -35,22 +36,33 @@ export function readApiBaseUrl(): string {
 
 export async function apiFetch<T>(
   pathOrUrl: string,
-  options?: { method?: string; body?: unknown }
+  options?: { method?: string; body?: unknown; signal?: AbortSignal }
 ) {
   const base = readApiBaseUrl();
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : `${base}${pathOrUrl}`;
+  const method = options?.method ?? "GET";
+  const startedAt = performance.now();
 
-  const response = await fetch(url, {
-    method: options?.method ?? "GET",
-    credentials: "include",
-    ...(options?.body === undefined
-      ? {}
-      : { headers: { "content-type": "application/json" }, body: JSON.stringify(options.body) })
-  });
+  try {
+    const response = await fetch(url, {
+      method,
+      credentials: "include",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      ...(options?.body === undefined
+        ? {}
+        : { headers: { "content-type": "application/json" }, body: JSON.stringify(options.body) })
+    });
+    recordApiRequest(method, url, startedAt, response.status);
 
-  if (!response.ok) {
-    throw new ApiRequestError(response.status, await getResponseErrorMessage(response));
+    if (!response.ok) {
+      throw new ApiRequestError(response.status, await getResponseErrorMessage(response));
+    }
+
+    return (await response.json()) as T;
+  } catch (error) {
+    if (!(error instanceof ApiRequestError)) {
+      recordApiRequest(method, url, startedAt, "failed");
+    }
+    throw error;
   }
-
-  return (await response.json()) as T;
 }
