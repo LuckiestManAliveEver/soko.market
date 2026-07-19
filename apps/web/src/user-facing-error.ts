@@ -24,6 +24,44 @@ export function getUserFacingErrorMessage(
   return message;
 }
 
+export type AuthenticationPromptTarget = "login" | "signup";
+
+export function getAuthenticationPromptTarget(message: string): AuthenticationPromptTarget | null {
+  const normalized = message.trim().toLowerCase();
+
+  if (
+    /(?:^|_)(?:signup|registration)_required$/.test(normalized) ||
+    /\bplease (?:sign[ -]?up|register|create (?:an? )?account)\b/.test(normalized) ||
+    /\b(?:sign[ -]?up|signup|register)(?: or (?:sign|log)[ -]?in)? (?:before|to)\b/.test(
+      normalized
+    ) ||
+    (/\b(sign[ -]?up|signup|registration|create (?:an? )?account)\b/.test(normalized) &&
+      /\b(required|must|need(?:ed)?|to continue)\b/.test(normalized))
+  ) {
+    return "signup";
+  }
+
+  if (
+    /(?:^|_)(?:auth|authentication|login|signin|session)_required$/.test(normalized) ||
+    /\bauthentication (?:is )?required\b/.test(normalized) ||
+    /\bnot authenticated\b/.test(normalized) ||
+    /\b(?:valid )?(?:account|owner )?session (?:is )?required\b/.test(normalized) ||
+    /\bsession (?:is |has )?(?:missing|expired)\b/.test(normalized) ||
+    /\b(?:please|need to|must) (?:sign|log)[ -]?in\b/.test(normalized) ||
+    /\byou (?:need|must) to (?:sign|log)[ -]?in\b/.test(normalized) ||
+    /\b(?:sign|log)[ -]?in (?:before|to)\b/.test(normalized) ||
+    /\b(?:sign[ -]?in|log[ -]?in) (?:is )?required\b/.test(normalized) ||
+    /\b(?:sign[ -]?in|log[ -]?in) (?:and try again|to continue)\b/.test(normalized) ||
+    /\bmust be (?:signed|logged) in\b/.test(normalized) ||
+    /\bmust be authenticated\b/.test(normalized) ||
+    /\blogin pin verification (?:is )?required\b/.test(normalized)
+  ) {
+    return "login";
+  }
+
+  return null;
+}
+
 export function getAccountLoginErrorMessage(error: unknown): string {
   const message = getUserFacingErrorMessage(error, accountSyncInitializationMessage);
 

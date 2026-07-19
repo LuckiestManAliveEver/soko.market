@@ -137,6 +137,15 @@ button:disabled {
   text-underline-offset: 2px;
 }
 
+.authentication-required-link {
+  color: inherit;
+  cursor: pointer;
+  font-weight: 800;
+  pointer-events: auto;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .top-bar {
   align-items: center;
   background: rgba(255, 255, 255, 0.96);

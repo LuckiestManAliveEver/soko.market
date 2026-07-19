@@ -39,6 +39,17 @@ export const routes = {
   oauthCallback: "/auth/oauth/callback"
 } as const;
 
+export type AuthenticationRouteTarget = "login" | "signup";
+
+export function authenticationRoute(target: AuthenticationRouteTarget): string {
+  return `${routes.marketplace}#${target}`;
+}
+
+export function readAuthenticationRouteHash(hash: string): AuthenticationRouteTarget | null {
+  const target = hash.replace(/^#/, "").trim().toLowerCase();
+  return target === "login" || target === "signup" ? target : null;
+}
+
 const viewPaths: Partial<Record<ShellView, string>> = {
   home: routes.home,
   chat: routes.chat,

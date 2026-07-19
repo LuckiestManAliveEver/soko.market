@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useAsyncActions } from "../../hooks/useAsyncActions";
 import { getUserFacingErrorMessage } from "../../user-facing-error";
 import { apiFetch } from "../../lib/api";
+import { AuthenticationActionMessage } from "../../AuthenticationActionMessage";
 
 interface AccountDeletionRequestSummary {
   id: string;
@@ -114,7 +115,7 @@ export function AccountRestorationPanel({
           </>
         ) : null}
         <p className="setup-status" role="status">
-          {status}
+          <AuthenticationActionMessage message={status} />
         </p>
         <div className="row-actions">
           <button className="secondary" type="button" onClick={onCancel}>

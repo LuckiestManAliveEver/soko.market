@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   accountSyncInitializationMessage,
   getAccountLoginErrorMessage,
+  getAuthenticationPromptTarget,
   getResponseErrorMessage,
   getUserFacingErrorMessage
 } from "../apps/web/src/user-facing-error";
+import { authenticationRoute, readAuthenticationRouteHash } from "../apps/web/src/routes";
 
 describe("frontend user guidance", () => {
   it("explains the actual issue instead of standardizing every error", async () => {
@@ -296,15 +298,40 @@ describe("frontend user guidance", () => {
     expect(welcomeMessage).toContain("Sign up or log in");
   });
 
-  it("links the signed-out session notice directly to signup", () => {
+  it("links authentication requirements to the correct login or signup process", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const actionMessage = readFileSync("apps/web/src/AuthenticationActionMessage.tsx", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
-    expect(application).toContain('statusMessage === "Sign in to continue"');
-    expect(application).toContain('href="#signup"');
-    expect(application).toContain("openSignup();");
+    expect(getAuthenticationPromptTarget("Authentication is required.")).toBe("login");
+    expect(getAuthenticationPromptTarget("recent_authentication_required")).toBe("login");
+    expect(getAuthenticationPromptTarget("You need to log in.")).toBe("login");
+    expect(getAuthenticationPromptTarget("You are not authenticated.")).toBe("login");
+    expect(getAuthenticationPromptTarget("Sign in to send a message.")).toBe("login");
+    expect(getAuthenticationPromptTarget("Sign in before creating your owner PIN.")).toBe("login");
+    expect(getAuthenticationPromptTarget("Your session has expired. Sign in again.")).toBe("login");
+    expect(getAuthenticationPromptTarget("Login PIN verification is required.")).toBe("login");
+    expect(getAuthenticationPromptTarget("Sign up to continue.")).toBe("signup");
+    expect(getAuthenticationPromptTarget("Please create an account.")).toBe("signup");
+    expect(getAuthenticationPromptTarget("registration_required")).toBe("signup");
+    expect(getAuthenticationPromptTarget("Sign up or log in before setting up a business.")).toBe(
+      "signup"
+    );
+    expect(getAuthenticationPromptTarget("Account registration is required.")).toBe("signup");
+    expect(getAuthenticationPromptTarget("Login PIN is invalid.")).toBeNull();
+    expect(getAuthenticationPromptTarget("Product could not be found.")).toBeNull();
+    expect(authenticationRoute("login")).toBe("/marketplace#login");
+    expect(authenticationRoute("signup")).toBe("/marketplace#signup");
+    expect(readAuthenticationRouteHash("#LOGIN")).toBe("login");
+    expect(readAuthenticationRouteHash("#signup")).toBe("signup");
+    expect(readAuthenticationRouteHash("#catalogue")).toBeNull();
+    expect(actionMessage).toContain("getAuthenticationPromptTarget(message)");
+    expect(actionMessage).toContain("href={authenticationRoute(target)}");
+    expect(application).toContain("<AuthenticationActionMessage message={statusMessage} />");
+    expect(application).toContain("readAuthenticationRouteHash(window.location.hash)");
     expect(application).toContain('className="setup-grid auth-landing-grid" id="signup"');
-    expect(styles).toContain(".app-action-notice a");
+    expect(application).toContain('className="setup-grid auth-landing-grid login-grid" id="login"');
+    expect(styles).toContain(".authentication-required-link");
     expect(styles).toContain("pointer-events: auto");
   });
 

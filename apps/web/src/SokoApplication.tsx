@@ -85,7 +85,7 @@ import {
   type DecryptedMessage,
   type E2eeIdentity
 } from "./e2ee";
-import { pathForOwnerView, readOwnerRoute, routes } from "./routes";
+import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes } from "./routes";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "./lib/api";
@@ -101,6 +101,7 @@ import {
   type AccountRestorationResult
 } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
+import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 
 type AuthChannel = "phone" | "email";
 type SupportedLanguage = "en" | "sw";
@@ -1948,6 +1949,7 @@ export function OwnerApp() {
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const accountRestorationIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-restoration";
+  const initialAuthenticationTarget = readAuthenticationRouteHash(window.location.hash);
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
@@ -2010,8 +2012,10 @@ export function OwnerApp() {
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
-  const [isSignupOpen, setIsSignupOpen] = useState(false);
-  const [isLoginOpen, setIsLoginOpen] = useState(accountDeletionIntent || accountRestorationIntent);
+  const [isSignupOpen, setIsSignupOpen] = useState(initialAuthenticationTarget === "signup");
+  const [isLoginOpen, setIsLoginOpen] = useState(
+    accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget === "login"
+  );
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
   const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
@@ -2153,6 +2157,29 @@ export function OwnerApp() {
     setIsLoginOpen(true);
     setStatusMessage("Enter your email or phone number and PIN.");
   }
+
+  useEffect(() => {
+    function openAuthenticationFromHash() {
+      const target = readAuthenticationRouteHash(window.location.hash);
+      if (target === null) return;
+
+      if (target === "signup") {
+        openSignup();
+      } else {
+        openLogin();
+      }
+
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${window.location.search}`
+      );
+    }
+
+    openAuthenticationFromHash();
+    window.addEventListener("hashchange", openAuthenticationFromHash);
+    return () => window.removeEventListener("hashchange", openAuthenticationFromHash);
+  }, []);
 
   useEffect(() => {
     void loadOAuthProviders();
@@ -6524,21 +6551,7 @@ export function OwnerApp() {
         statusMessage.length > 0 &&
         !isRedundantAgentErrorMessage(statusMessage) ? (
           <div className="app-action-notice" role="status" aria-live="polite">
-            {hasPending ? (
-              "Working…"
-            ) : statusMessage === "Sign in to continue" ? (
-              <a
-                href="#signup"
-                onClick={(event) => {
-                  event.preventDefault();
-                  openSignup();
-                }}
-              >
-                Sign in to continue
-              </a>
-            ) : (
-              statusMessage
-            )}
+            {hasPending ? "Working…" : <AuthenticationActionMessage message={statusMessage} />}
           </div>
         ) : null}
 
@@ -7198,7 +7211,7 @@ function SetupPanel(props: SetupPanelProps) {
             </>
           )}
           <p className="setup-status" role="status" aria-live="polite">
-            {props.statusMessage}
+            <AuthenticationActionMessage message={props.statusMessage} />
           </p>
         </section>
       ) : null}
@@ -7411,7 +7424,7 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
             </button>
           </div>
           <p className="setup-status" role="status" aria-live="polite">
-            {props.statusMessage}
+            <AuthenticationActionMessage message={props.statusMessage} />
           </p>
         </section>
       </main>
@@ -7464,7 +7477,7 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
           </button>
         </div>
         <p className="setup-status" role="status" aria-live="polite">
-          {props.statusMessage}
+          <AuthenticationActionMessage message={props.statusMessage} />
         </p>
       </section>
     </main>
@@ -7535,7 +7548,7 @@ function LoginPanel(props: LoginPanelProps) {
     !props.hasLoginPin;
 
   return (
-    <main className="setup-grid auth-landing-grid login-grid">
+    <main className="setup-grid auth-landing-grid login-grid" id="login">
       <section className="panel auth-card">
         {!showAuthForm ? (
           <SocialLoginOptions
@@ -7806,7 +7819,7 @@ function LoginPanel(props: LoginPanelProps) {
             </>
           )}
           <p className="setup-status" role="status" aria-live="polite">
-            {props.statusMessage}
+            <AuthenticationActionMessage message={props.statusMessage} />
           </p>
           <button className="secondary" type="button" onClick={props.onCancel}>
             Back to marketplace
@@ -7814,7 +7827,7 @@ function LoginPanel(props: LoginPanelProps) {
         </section>
       ) : (
         <p className="setup-status auth-status" role="status" aria-live="polite">
-          {props.statusMessage}
+          <AuthenticationActionMessage message={props.statusMessage} />
         </p>
       )}
     </main>
@@ -9639,7 +9652,9 @@ export function PublicStorefrontChat(props: { agentId: string }) {
           <section className="public-chat-panel">
             <div className="message sokoclaw">
               <span>Agent</span>
-              <p>{error || "Storefront was not found."}</p>
+              <p>
+                <AuthenticationActionMessage message={error || "Storefront was not found."} />
+              </p>
             </div>
           </section>
         </main>
@@ -9887,7 +9902,13 @@ export function PublicStorefrontChat(props: { agentId: string }) {
                 className={`message ${message.author === "agent" ? "sokoclaw" : "merchant"}`}
               >
                 <span>{message.author === "agent" ? "Agent" : "You"}</span>
-                <p>{message.body}</p>
+                <p>
+                  {message.author === "agent" ? (
+                    <AuthenticationActionMessage message={message.body} />
+                  ) : (
+                    message.body
+                  )}
+                </p>
               </div>
             ))}
 
@@ -13589,7 +13610,11 @@ function AgentProfileSurface({
                 );
               })}
           </div>
-          {profileMessage.length > 0 ? <p className="shell-note">{profileMessage}</p> : null}
+          {profileMessage.length > 0 ? (
+            <p className="shell-note">
+              <AuthenticationActionMessage message={profileMessage} />
+            </p>
+          ) : null}
         </div>
 
         <div className="record-form shop-profile-card">
@@ -14151,7 +14176,11 @@ function AgentProfileSurface({
               <button type="button" onClick={unlockContextScripts} disabled={!isEditing}>
                 Unlock context files
               </button>
-              {contextUnlockError.length > 0 ? <p>{contextUnlockError}</p> : null}
+              {contextUnlockError.length > 0 ? (
+                <p>
+                  <AuthenticationActionMessage message={contextUnlockError} />
+                </p>
+              ) : null}
             </div>
           ) : (
             <div className="context-script-editor">
@@ -14765,7 +14794,13 @@ function ChatSurface({
                 {message.forwardedFromMessageId ? (
                   <small className="message-context">Forwarded</small>
                 ) : null}
-                <p className={message.deletedAt ? "deleted-message" : undefined}>{message.body}</p>
+                <p className={message.deletedAt ? "deleted-message" : undefined}>
+                  {message.author === "sokoclaw" ? (
+                    <AuthenticationActionMessage message={message.body} />
+                  ) : (
+                    message.body
+                  )}
+                </p>
                 {message.businessCards !== undefined &&
                 message.businessCards.shopId === businessId ? (
                   <ContextualBusinessCards
@@ -15865,7 +15900,11 @@ function NetworkSyncNestedCard({
             <NetworkContactGroup contacts={unknownContacts} title="Unknown contacts" />
           </div>
         ) : null}
-        {message.length > 0 ? <p className="setup-status">{message}</p> : null}
+        {message.length > 0 ? (
+          <p className="setup-status">
+            <AuthenticationActionMessage message={message} />
+          </p>
+        ) : null}
       </section>
     );
   }
@@ -15935,7 +15974,11 @@ function NetworkSyncNestedCard({
           );
         })}
       </div>
-      {message.length > 0 ? <p className="setup-status">{message}</p> : null}
+      {message.length > 0 ? (
+        <p className="setup-status">
+          <AuthenticationActionMessage message={message} />
+        </p>
+      ) : null}
     </section>
   );
 }
