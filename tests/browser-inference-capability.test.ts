@@ -45,6 +45,23 @@ describe("browser inference capability", () => {
     expect(capability.reasons.join(" ")).toContain("WebGPU is unavailable");
   });
 
+  it("reserves enough storage for the measured 400 MB browser model", () => {
+    const tooSmall = classifyBrowserInferenceCapability({
+      ...base,
+      webGpu: true,
+      availableStorageBytes: 450_000_000
+    });
+    const sufficient = classifyBrowserInferenceCapability({
+      ...base,
+      webGpu: true,
+      availableStorageBytes: 500_000_000
+    });
+
+    expect(tooSmall.supported).toBe(false);
+    expect(tooSmall.reasons.join(" ")).toContain("475 MB");
+    expect(sufficient.supported).toBe(true);
+  });
+
   it.each([
     ["no WASM", { wasm: false }],
     ["no IndexedDB", { indexedDb: false }],

@@ -34,11 +34,26 @@ const cancelledRequests = new Set<string>();
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+if (env.backends.onnx.wasm === undefined) {
+  throw new Error("The ONNX WASM backend is unavailable.");
+}
+env.backends.onnx.wasm.wasmPaths = {
+  wasm: new URL(
+    "../../node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.wasm",
+    import.meta.url
+  ).href
+};
 
 worker.addEventListener("message", (event: MessageEvent<unknown>) => {
   const request = event.data;
   if (!isBrowserModelWorkerRequest(request)) return;
   void handleRequest(request).catch((error: unknown) => {
+    if (__DEPLOYMENT_ENV__ === "staging" && request.type === "LOAD_MODEL") {
+      console.error(
+        "Browser model staging diagnostic:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     status = "error";
     post({
       type: "ERROR",

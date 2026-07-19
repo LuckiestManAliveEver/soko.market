@@ -113,6 +113,7 @@ import {
   removeBrowserModel,
   type BrowserInferenceState
 } from "./browser-inference-session";
+import { recordBrowserInferenceDiagnostic } from "./browser-inference-diagnostics";
 import { browserLocalInferenceDeploymentEnabled } from "./browser-model-registry";
 import {
   requestNeedsComplexReasoning,
@@ -6008,6 +6009,11 @@ export function OwnerApp() {
           return;
         }
         localFallbackStatus = code;
+        recordBrowserInferenceDiagnostic({
+          type: "fallback",
+          route: shouldResolveNative ? "native" : "server",
+          reasonCode: code
+        });
         setStatusMessage(`On-device failed · Using Cloud (${code})`);
       } finally {
         setIsBrowserGenerating(false);
@@ -13644,7 +13650,7 @@ function AgentProfileSurface({
               {browserModelProgress === null
                 ? (browserInferenceState?.settings?.status ?? "Not downloaded")
                 : `${browserModelProgress.status} ${Math.round(browserModelProgress.percent)}%`}
-              {" · "}SmolLM2 360M · about 260 MB download · about 850 MB working memory
+              {" · "}SmolLM2 360M · about 400 MB download · about 850 MB working memory
             </small>
             <div className="ai-model-card-actions">
               {browserModelProgress !== null ? (

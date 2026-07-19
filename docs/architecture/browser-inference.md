@@ -60,6 +60,12 @@ an explicit settings action and does not delete chat data.
 ## Deployment
 
 Set `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true` at frontend build time to expose the opt-in control.
-The default is false. This initial rollout does not require COOP/COEP headers; WASM may use fewer
-threads without cross-origin isolation. Revisit headers only after auditing OAuth, analytics,
-hosted assets and service-worker behavior.
+The default and production Blueprint remain false. `soko-market-web-staging` enables the flag and
+adds a strict CSP plus `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`, allowing memory measurements and threaded WASM
+without changing production authentication or integrations.
+
+The staging CSP permits only same-origin application assets and workers, the configured Soko API,
+and HTTPS downloads under the Hugging Face `huggingface.co`/`hf.co` host families. The latter is
+required because Hub downloads redirect to separate CDN/storage subdomains. Staging may force the
+WASM route with `?browserInferenceBackend=wasm`; production ignores this diagnostic override.

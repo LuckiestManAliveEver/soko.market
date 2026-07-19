@@ -24,6 +24,28 @@ export default defineConfig(({ mode }) => {
     process.env.VITE_DEPLOYMENT_ENV ??
     env.VITE_DEPLOYMENT_ENV ??
     (process.env.RENDER === "true" ? "render" : mode);
+  const stagingSecurityHeaders =
+    deploymentEnvironment === "staging"
+      ? {
+          "Content-Security-Policy": [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+            "script-src 'self' 'wasm-unsafe-eval' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "manifest-src 'self'",
+            "worker-src 'self' blob:",
+            "child-src 'self' blob:",
+            "connect-src 'self' http://127.0.0.1:4000 ws://127.0.0.1:5173 ws://localhost:5173 https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co"
+          ].join("; "),
+          "Cross-Origin-Embedder-Policy": "credentialless",
+          "Cross-Origin-Opener-Policy": "same-origin"
+        }
+      : {};
 
   return {
     build: {
@@ -47,7 +69,8 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       headers: {
-        "Cache-Control": "no-store"
+        "Cache-Control": "no-store",
+        ...stagingSecurityHeaders
       },
       hmr: true,
       host: "0.0.0.0",

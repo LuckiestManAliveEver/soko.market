@@ -6,6 +6,7 @@ import {
   updateRollingConversationSummary
 } from "./browser-context-manager";
 import { inspectBrowserInferenceCapability } from "./browser-inference-capability";
+import { recordBrowserInferenceDiagnostic } from "./browser-inference-diagnostics";
 import {
   BrowserInferenceError,
   type BrowserGenerationResult,
@@ -80,6 +81,14 @@ export async function loadBrowserInferenceState(
       .catch(() => null),
     inspectBrowserInferenceCapability().catch(() => unsupportedCapability())
   ]);
+  recordBrowserInferenceDiagnostic({
+    type: "capability",
+    backend: capability.backend,
+    deviceTier: capability.deviceTier,
+    supported: capability.supported,
+    crossOriginIsolated: capability.crossOriginIsolated,
+    availableStorageBytes: capability.availableStorageBytes ?? null
+  });
   return {
     deploymentEnabled: browserLocalInferenceDeploymentEnabled,
     settings,
@@ -100,11 +109,13 @@ export async function enableBrowserInference(input: {
     );
   }
   const capability = await inspectBrowserInferenceCapability();
+  const backend = capability.backend;
   const model = getBrowserModel(input.modelId);
   if (
     model === null ||
     !capability.supported ||
-    !browserModelSupports(model, capability.deviceTier, capability.backend)
+    backend === "none" ||
+    !browserModelSupports(model, capability.deviceTier, backend)
   ) {
     throw new BrowserInferenceError(
       "UNSUPPORTED_BROWSER",
@@ -122,6 +133,7 @@ export async function enableBrowserInference(input: {
   }
   await navigator.storage?.persist?.().catch(() => false);
   const repository = await getRepository();
+  const loadStartedAt = performance.now();
   const downloading = settingsRecord(input, "downloading", false, null);
   await repository.putSettings(downloading);
   await repository.putModel(input.accountId, model, "downloading");
@@ -130,6 +142,14 @@ export async function enableBrowserInference(input: {
     const ready = settingsRecord(input, "ready", true, null);
     await repository.putModel(input.accountId, model, "ready");
     await repository.putSettings(ready);
+    recordBrowserInferenceDiagnostic({
+      type: "model-load",
+      backend,
+      modelId: model.id,
+      durationMs: Math.round(performance.now() - loadStartedAt),
+      outcome: "ready",
+      errorCode: null
+    });
     return { deploymentEnabled: true, settings: ready, capability };
   } catch (error) {
     const normalized = normalizeSessionError(error);
@@ -140,11 +160,20 @@ export async function enableBrowserInference(input: {
       normalized.code === "GENERATION_CANCELLED" ? null : normalized.code
     );
     await repository.putSettings(failed);
+    recordBrowserInferenceDiagnostic({
+      type: "model-load",
+      backend,
+      modelId: model.id,
+      durationMs: Math.round(performance.now() - loadStartedAt),
+      outcome: normalized.code === "GENERATION_CANCELLED" ? "cancelled" : "error",
+      errorCode: normalized.code
+    });
     throw normalized;
   }
 }
 
 export function cancelBrowserModelLoad(): void {
+  recordBrowserInferenceDiagnostic({ type: "cancellation", target: "download" });
   engine.terminate();
   engine = createBrowserModelEngine();
   initializedBackend = null;
@@ -224,6 +253,7 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
   const repository = await getRepository();
   const settings = await repository.getSettings(input.accountId, input.businessId);
   const capability = await inspectBrowserInferenceCapability();
+  const reservedGenerationTokens = generationTokenBudget(capability.deviceTier);
   const model =
     settings?.selectedModelId === null || settings?.selectedModelId === undefined
       ? null
@@ -271,7 +301,7 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
             model.contextWindowTokens,
             capability.maxRecommendedContextTokens
           ),
-          reservedGenerationTokens: capability.deviceTier === "low" ? 96 : 160
+          reservedGenerationTokens
         });
   const route = decideInferenceRoute({
     deploymentEnabled: browserLocalInferenceDeploymentEnabled,
@@ -285,12 +315,24 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
     complexReasoning: requestNeedsComplexReasoning(input.message),
     pageActive: document.visibilityState === "visible"
   });
-  if (route.route !== "browser-local" || model === null || context === null || settings === null) {
+  if (
+    route.route !== "browser-local" ||
+    model === null ||
+    context === null ||
+    settings === null ||
+    capability.backend === "none"
+  ) {
+    recordBrowserInferenceDiagnostic({
+      type: "fallback",
+      route: route.route === "browser-local" ? "server" : route.route,
+      reasonCode: route.reasonCode
+    });
     throw new BrowserInferenceError(
       route.reasonCode === "CONTEXT_TOO_LARGE" ? "CONTEXT_LIMIT_EXCEEDED" : "MODEL_LOAD_FAILED",
       route.explanation
     );
   }
+  const backend = capability.backend;
   await ensureModelLoaded(model.id, capability, input.onProgress);
   context = await buildBrowserModelContext({
     systemPrompt: input.systemPrompt,
@@ -306,7 +348,7 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
       model.contextWindowTokens,
       capability.maxRecommendedContextTokens
     ),
-    reservedGenerationTokens: capability.deviceTier === "low" ? 96 : 160,
+    reservedGenerationTokens,
     tokenizer: {
       countTokens: (messages) => engine.countTokens(messages)
     }
@@ -329,6 +371,16 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
         ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress })
       }
     );
+    recordBrowserInferenceDiagnostic({
+      type: "generation",
+      backend,
+      modelId: model.id,
+      promptTokenCount: result.promptTokenCount ?? context.estimatedPromptTokens,
+      generatedTokenCount: result.generatedTokenCount,
+      durationMs: result.durationMs,
+      timeToFirstTokenMs: result.timeToFirstTokenMs,
+      tokensPerSecond: result.tokensPerSecond
+    });
     const nextSummary = updateRollingConversationSummary({
       conversationId: input.conversationId,
       messages: input.recentMessages,
@@ -349,8 +401,18 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
   }
 }
 
+function generationTokenBudget(deviceTier: "low" | "medium" | "high" | "unsupported"): number {
+  const defaultBudget = deviceTier === "low" ? 96 : 160;
+  if (__DEPLOYMENT_ENV__ !== "staging" || typeof window === "undefined") return defaultBudget;
+  const requested = Number(
+    new URLSearchParams(window.location.search).get("browserInferenceMaxNewTokens")
+  );
+  return Number.isInteger(requested) && requested === 32 ? requested : defaultBudget;
+}
+
 export async function cancelBrowserGeneration(): Promise<void> {
   if (activeRequestId === null) return;
+  recordBrowserInferenceDiagnostic({ type: "cancellation", target: "generation" });
   await engine.cancel(activeRequestId);
 }
 

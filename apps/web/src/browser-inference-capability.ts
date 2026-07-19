@@ -31,8 +31,8 @@ export function classifyBrowserInferenceCapability(
   if (!signals.worker || !signals.workerInitialized) {
     reasons.push("The dedicated model worker could not initialize.");
   }
-  if (storage !== undefined && storage < 350_000_000) {
-    reasons.push("Less than 350 MB of browser storage is available.");
+  if (storage !== undefined && storage < 475_000_000) {
+    reasons.push("Less than 475 MB of browser storage is available.");
   }
 
   const deviceTier: BrowserDeviceTier =
@@ -46,7 +46,7 @@ export function classifyBrowserInferenceCapability(
     signals.indexedDb &&
     signals.worker &&
     signals.workerInitialized &&
-    (storage === undefined || storage >= 350_000_000);
+    (storage === undefined || storage >= 475_000_000);
   const backend = basicSupport ? (signals.webGpu ? "webgpu" : "wasm") : "none";
 
   if (!signals.webGpu && basicSupport) {
@@ -85,9 +85,13 @@ export async function inspectBrowserInferenceCapability(input?: {
     const estimate = await navigator.storage?.estimate().catch(() => undefined);
     const persistentStorage = await navigator.storage?.persisted?.().catch(() => false);
     const nav = navigator as Navigator & { deviceMemory?: number; gpu?: unknown };
-    const workerInitialized = await (input?.workerProbe?.() ?? probeBrowserModelWorker());
-    return classifyBrowserInferenceCapability({
-      webGpu: nav.gpu !== undefined,
+    const forceWasm =
+      __DEPLOYMENT_ENV__ === "staging" &&
+      new URLSearchParams(window.location.search).get("browserInferenceBackend") === "wasm";
+    const backend = nav.gpu !== undefined && !forceWasm ? "webgpu" : "wasm";
+    const workerInitialized = await (input?.workerProbe?.() ?? probeBrowserModelWorker(backend));
+    const report = classifyBrowserInferenceCapability({
+      webGpu: backend === "webgpu",
       wasm: typeof WebAssembly === "object",
       indexedDb: globalThis.indexedDB !== undefined,
       worker: "Worker" in window,
@@ -104,6 +108,12 @@ export async function inspectBrowserInferenceCapability(input?: {
         (navigator as Navigator & { standalone?: boolean }).standalone === true,
       userAgent: navigator.userAgent
     });
+    return forceWasm
+      ? {
+          ...report,
+          reasons: [...report.reasons, "Staging diagnostics forced the WebAssembly backend."]
+        }
+      : report;
   } catch {
     return classifyBrowserInferenceCapability({
       webGpu: false,
@@ -120,7 +130,7 @@ export async function inspectBrowserInferenceCapability(input?: {
   }
 }
 
-function probeBrowserModelWorker(): Promise<boolean> {
+function probeBrowserModelWorker(backend: "webgpu" | "wasm"): Promise<boolean> {
   if (!("Worker" in window)) return Promise.resolve(false);
   modelWorkerProbe ??= new Promise<boolean>((resolve) => {
     const requestId = `capability-${Date.now().toString(36)}`;
@@ -131,9 +141,10 @@ function probeBrowserModelWorker(): Promise<boolean> {
     const finish = (supported: boolean) => {
       window.clearTimeout(timeout);
       probe.terminate();
+      if (!supported) modelWorkerProbe = null;
       resolve(supported);
     };
-    const timeout = window.setTimeout(() => finish(false), 5_000);
+    const timeout = window.setTimeout(() => finish(false), 15_000);
     probe.addEventListener(
       "message",
       (event: MessageEvent<unknown>) => {
@@ -147,7 +158,7 @@ function probeBrowserModelWorker(): Promise<boolean> {
       type: "INITIALIZE",
       requestId,
       config: {
-        backend: (navigator as Navigator & { gpu?: unknown }).gpu === undefined ? "wasm" : "webgpu",
+        backend,
         approvedModelOrigins: ["https://huggingface.co"],
         maxContextTokens: 1_024
       }

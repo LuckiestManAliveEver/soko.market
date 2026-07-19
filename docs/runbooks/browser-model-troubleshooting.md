@@ -3,7 +3,8 @@
 ## Supported baseline
 
 - Current Chromium-based browser with WebGPU, or WebAssembly for the conservative fallback.
-- IndexedDB, Web Workers and at least 350 MB available browser storage.
+- IndexedDB, Web Workers and at least 475 MB available browser storage.
+- About 400 MB download/cache space for the currently selected q4 assets.
 - About 850 MB working memory for the SmolLM2 360M q4 starter model.
 - `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true` in the frontend build.
 
@@ -23,6 +24,8 @@ native or Cloud route.
 7. For `OUT_OF_MEMORY`, close other tabs, retry on WebGPU, or leave browser inference disabled.
 8. For `CONTEXT_LIMIT_EXCEEDED` or a server-tool request, confirm the compact status changes to
    Cloud and that the original user message remains present.
+9. In staging, run `pnpm benchmark:browser-inference -- --profile=pixel-5
+--backends=webgpu,wasm`. The staging query override is intentionally unavailable in production.
 
 ## Clear model data
 

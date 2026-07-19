@@ -17,4 +17,23 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("key: ACCOUNT_DELETION_PROCESSORS_JSON\n        sync: false");
     expect(blueprint).toContain("key: ACCOUNT_DELETION_WEBHOOK_SECRET\n        sync: false");
   });
+
+  it("isolates browser-local inference to a secured staging frontend", async () => {
+    const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+    const staging = blueprint.slice(blueprint.indexOf("name: soko-market-web-staging"));
+    const production = blueprint.slice(
+      blueprint.indexOf("name: soko-market-web"),
+      blueprint.indexOf("name: soko-market-web-staging")
+    );
+
+    expect(staging).toContain("VITE_DEPLOYMENT_ENV\n        value: staging");
+    expect(staging).toContain('VITE_BROWSER_LOCAL_INFERENCE_ENABLED\n        value: "true"');
+    expect(staging).toContain("Content-Security-Policy");
+    expect(staging).toContain("script-src 'self' 'wasm-unsafe-eval'");
+    expect(staging).toContain("https://*.huggingface.co");
+    expect(staging).toContain("https://*.hf.co");
+    expect(staging).toContain("Cross-Origin-Embedder-Policy");
+    expect(staging).toContain("Cross-Origin-Opener-Policy");
+    expect(production).not.toContain("VITE_BROWSER_LOCAL_INFERENCE_ENABLED");
+  });
 });

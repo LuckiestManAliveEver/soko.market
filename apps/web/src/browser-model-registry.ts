@@ -16,7 +16,7 @@ export const browserModelRegistry: readonly BrowserModelDescriptor[] = [
     modelUrl: "https://huggingface.co/onnx-community/SmolLM2-360M-Instruct-ONNX",
     modelFormat: "ONNX",
     quantization: "q4",
-    approximateDownloadBytes: 260_000_000,
+    approximateDownloadBytes: 400_000_000,
     approximateRuntimeMemoryBytes: 850_000_000,
     contextWindowTokens: 2_048,
     minimumDeviceTier: "low",

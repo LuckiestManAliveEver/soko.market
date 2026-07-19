@@ -19,6 +19,52 @@ The backend is a Node/Fastify API in `services/api`.
 The frontend service is a Render Static Site. It must not run the Vite development
 server in production.
 
+## Browser-inference staging service
+
+The Blueprint also defines `soko-market-web-staging` on `agent/passkey-auth`. It is intentionally
+separate from `soko-market-web` and:
+
+- builds with `VITE_DEPLOYMENT_ENV=staging`;
+- enables `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true`;
+- requires a staging-only `VITE_API_BASE_URL` value during Blueprint sync;
+- applies CSP, COOP and COEP headers needed for model downloads, worker execution, threaded WASM and
+  memory measurement;
+- has no production custom domain.
+
+Do not point `VITE_API_BASE_URL` at the production API. Create or select an isolated staging API,
+then sync the Blueprint and confirm the staging static-site URL. Production remains on `main` with
+browser-local inference disabled.
+
+After deployment, verify headers:
+
+```bash
+curl -sSI https://<staging-static-site>.onrender.com/
+```
+
+Then run each backend in a fresh browser process so a timed-out WebGPU queue cannot delay the WASM
+measurement:
+
+```bash
+pnpm benchmark:browser-inference -- \
+  --url=https://<staging-static-site>.onrender.com \
+  --api-origin=https://<staging-api>.onrender.com \
+  --profile=pixel-5 \
+  --backends=webgpu \
+  --max-new-tokens=32 \
+  --output=/tmp/soko-browser-inference-webgpu.json
+
+pnpm benchmark:browser-inference -- \
+  --url=https://<staging-static-site>.onrender.com \
+  --api-origin=https://<staging-api>.onrender.com \
+  --profile=pixel-5 \
+  --backends=wasm \
+  --max-new-tokens=32 \
+  --output=/tmp/soko-browser-inference-wasm.json
+```
+
+The Pixel/Galaxy profiles emulate viewport, user agent, reported memory and processor count. They do
+not substitute for physical Android GPU, thermal or memory-pressure testing.
+
 ## Required Render dashboard checks
 
 Open both Render services and confirm:
