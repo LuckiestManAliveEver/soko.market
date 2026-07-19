@@ -5,10 +5,12 @@ import type {
 } from "./browser-inference-types";
 
 export const browserLocalInferenceDeploymentEnabled =
-  import.meta.env.VITE_BROWSER_LOCAL_INFERENCE_ENABLED === "true";
+  import.meta.env.VITE_BROWSER_LOCAL_INFERENCE_ENABLED === "true" &&
+  import.meta.env.VITE_INFERENCE_CLIENT_FIRST !== "false";
 
 export const browserModelRegistry: readonly BrowserModelDescriptor[] = [
   {
+    manifestVersion: 1,
     id: "smollm2-360m-instruct-browser",
     displayName: "SmolLM2 360M browser assistant",
     provider: "browser-local",
@@ -19,6 +21,7 @@ export const browserModelRegistry: readonly BrowserModelDescriptor[] = [
     approximateDownloadBytes: 400_000_000,
     approximateRuntimeMemoryBytes: 850_000_000,
     contextWindowTokens: 2_048,
+    supportedRuntimes: ["browser-webgpu", "browser-wasm"],
     minimumDeviceTier: "low",
     supportedBackends: ["webgpu", "wasm"],
     license: "Apache-2.0",

@@ -46,6 +46,8 @@ import type {
   SokoChatSurface,
   SokoMode,
   SyncRealtimeReadyEvent,
+  InferenceRequest,
+  OwnerInferenceNodeMessage,
   VerificationTier
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
@@ -89,6 +91,7 @@ import {
 } from "./document-extraction.js";
 import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
+import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
@@ -96,6 +99,7 @@ export interface Cp2RouteOptions {
   githubModelCatalog?: GitHubModelCatalog;
   huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
+  ownerNodeBroker?: OwnerNodeBroker;
   realtimeAllowedOrigins?: string[];
   receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
@@ -1854,6 +1858,123 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       socket.once("error", cleanup);
     }
   );
+
+  if (options.ownerNodeBroker !== undefined) {
+    const ownerNodeBroker = options.ownerNodeBroker;
+    app.get(
+      "/v1/inference/owner-node",
+      {
+        websocket: true,
+        preValidation: async (request, reply) => {
+          const origin = request.headers.origin;
+          if (origin !== undefined && !realtimeAllowedOrigins.has(origin)) {
+            return reply.code(403).send({ code: "inference_origin_forbidden" });
+          }
+          if (store.getSession(readSessionCookie(request.headers.cookie)) === null) {
+            return reply.code(401).send({ code: "session_required" });
+          }
+        }
+      },
+      (socket, request) => {
+        const session = store.getSession(readSessionCookie(request.headers.cookie));
+        if (session === null) {
+          socket.close(1008, "Session required");
+          return;
+        }
+        let registeredNodeId: string | null = null;
+        socket.on("message", (raw) => {
+          try {
+            const message = JSON.parse(String(raw)) as OwnerInferenceNodeMessage;
+            if (message.type === "inference.node.register") {
+              if (
+                !store
+                  .listAccountShops({ sessionId: session.session.id })
+                  .some((shop) => shop.business.id === message.presence.tenantId)
+              ) {
+                throw new Error("Tenant access is forbidden.");
+              }
+              const presence = ownerNodeBroker.register({
+                ...message.presence,
+                userId: session.user.id,
+                send: (job) => socket.send(JSON.stringify({ type: "inference.job", job }))
+              });
+              registeredNodeId = presence.nodeId;
+              socket.send(JSON.stringify({ type: "inference.node.ready", presence }));
+              return;
+            }
+            if (message.type === "inference.node.heartbeat") {
+              ownerNodeBroker.heartbeat(message.nodeId, session.user.id);
+              return;
+            }
+            if (message.type === "inference.job.chunk") {
+              ownerNodeBroker.acceptChunk({
+                nodeId: message.nodeId,
+                userId: session.user.id,
+                jobToken: message.jobToken,
+                sequence: message.sequence,
+                chunk: message.chunk
+              });
+            }
+          } catch {
+            socket.close(1008, "Invalid owner-node message");
+          }
+        });
+        const cleanup = () => {
+          if (registeredNodeId !== null) {
+            try {
+              ownerNodeBroker.unregister(registeredNodeId, session.user.id);
+            } catch {
+              // The ephemeral node may already have expired.
+            }
+          }
+        };
+        socket.once("close", cleanup);
+        socket.once("error", cleanup);
+      }
+    );
+
+    app.post(
+      "/v1/inference/owner-node/jobs",
+      async (request: FastifyRequest<{ Body: InferenceRequest }>, reply) => {
+        const session = store.getSession(readSessionCookie(request.headers.cookie));
+        if (session === null) {
+          return reply.code(401).send({ code: "session_required" });
+        }
+        try {
+          const inferenceRequest = parseOwnerInferenceRequest(request.body);
+          if (
+            !store
+              .listAccountShops({ sessionId: session.session.id })
+              .some((shop) => shop.business.id === inferenceRequest.tenantId)
+          ) {
+            return reply.code(403).send({ code: "inference_tenant_forbidden" });
+          }
+          const dispatched = ownerNodeBroker.dispatch(inferenceRequest);
+          reply.hijack();
+          reply.raw.writeHead(200, {
+            "content-type": "application/x-ndjson",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "x-inference-runtime": "owner-node"
+          });
+          for await (const chunk of dispatched.chunks) {
+            reply.raw.write(`${JSON.stringify(chunk)}\n`);
+          }
+          reply.raw.end();
+          return reply;
+        } catch {
+          if (!reply.sent) {
+            return reply.code(503).send({
+              code: "owner_node_unavailable",
+              message: "The shop device is unavailable."
+            });
+          }
+          reply.raw.end();
+          return reply;
+        }
+      }
+    );
+  }
 
   app.get(
     "/v1/conversations",
@@ -6034,6 +6155,57 @@ function parseNullableString(value: unknown): string | null {
   }
 
   return value;
+}
+
+function parseOwnerInferenceRequest(value: unknown): InferenceRequest {
+  const body = parseRequestBody(value);
+  if (!Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 100) {
+    throw new Cp2Error(400, "inference_messages_invalid", "Inference messages are invalid.");
+  }
+  const messages = body.messages.map((item, index) => {
+    const message = parseRequestBody(item);
+    const role = message.role;
+    if (role !== "system" && role !== "user" && role !== "assistant") {
+      throw new Cp2Error(
+        400,
+        "inference_message_role_invalid",
+        `messages[${index}].role is invalid.`
+      );
+    }
+    const content = parseString(message.content, `messages[${index}].content`);
+    if (content.length > 32_000) {
+      throw new Cp2Error(
+        400,
+        "inference_message_too_large",
+        `messages[${index}].content is too large.`
+      );
+    }
+    return { role, content } satisfies InferenceRequest["messages"][number];
+  });
+  const request: InferenceRequest = {
+    requestId: parseString(body.requestId, "requestId"),
+    tenantId: parseString(body.tenantId, "tenantId"),
+    conversationId: parseString(body.conversationId, "conversationId"),
+    agentId: parseString(body.agentId, "agentId"),
+    modelId: parseString(body.modelId, "modelId"),
+    messages
+  };
+  if (typeof body.systemPrompt === "string") request.systemPrompt = body.systemPrompt;
+  if (body.maxTokens !== undefined) {
+    request.maxTokens = Math.min(512, parsePositiveInteger(body.maxTokens, "maxTokens"));
+  }
+  if (typeof body.temperature === "number" && Number.isFinite(body.temperature)) {
+    request.temperature = Math.max(0, Math.min(2, body.temperature));
+  }
+  if (
+    body.taskType === "conversation" ||
+    body.taskType === "reasoning" ||
+    body.taskType === "coding" ||
+    body.taskType === "verification"
+  ) {
+    request.taskType = body.taskType;
+  }
+  return request;
 }
 
 function parseInstalledModelBody(

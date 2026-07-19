@@ -81,6 +81,7 @@ class FakeWorker extends EventTarget {
 }
 
 const model: BrowserModelDescriptor = {
+  manifestVersion: 1,
   id: "model",
   displayName: "Model",
   provider: "browser-local",
@@ -91,6 +92,7 @@ const model: BrowserModelDescriptor = {
   approximateDownloadBytes: 100,
   approximateRuntimeMemoryBytes: 200,
   contextWindowTokens: 2_048,
+  supportedRuntimes: ["browser-webgpu", "browser-wasm"],
   minimumDeviceTier: "low",
   supportedBackends: ["webgpu", "wasm"],
   license: "Apache-2.0",

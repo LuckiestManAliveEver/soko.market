@@ -11,16 +11,123 @@ export interface EnvironmentConfig {
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
-  localModelEnabled: boolean;
-  localModelEndpoint: string;
-  localModelId: string;
-  localModelMaxTokens: number;
-  localModelProvider: "llama.cpp" | "ollama";
-  localModelProfile: string;
-  localModelTemperature: number;
-  localModelTimeoutMs: number;
+  inferenceClientFirst: boolean;
+  inferenceOwnerNodeEnabled: boolean;
+  inferenceCloudFallbackEnabled: boolean;
+  inferenceCloudProvider: "" | "openai";
+  inferenceCloudModelAllowlist: string[];
+  inferenceCloudMonthlyTokenBudget: number;
+  inferenceMaxFallbacks: number;
+  inferenceJobTimeoutMs: number;
   redisUrl: string;
 }
+
+export type InferenceRuntime =
+  "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node" | "cloud-fallback";
+
+export interface InferenceMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface InferenceRequest {
+  requestId: string;
+  tenantId: string;
+  conversationId: string;
+  agentId: string;
+  modelId: string;
+  messages: InferenceMessage[];
+  systemPrompt?: string;
+  maxTokens?: number;
+  temperature?: number;
+  taskType?: "conversation" | "reasoning" | "coding" | "verification";
+  signal?: AbortSignal;
+}
+
+export interface InferenceChunk {
+  requestId: string;
+  text: string;
+  done: boolean;
+  runtime: InferenceRuntime;
+  modelId: string;
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+  };
+}
+
+export interface InferenceProvider {
+  id: string;
+  runtime: InferenceRuntime;
+  isAvailable(): Promise<boolean>;
+  supports(modelId: string): Promise<boolean>;
+  generate(request: InferenceRequest): AsyncIterable<InferenceChunk>;
+  cancel?(requestId: string): Promise<void>;
+}
+
+export type InferenceMemoryClass = "low" | "medium" | "high" | "unknown";
+
+export interface DeviceInferenceCapabilities {
+  webgpu: boolean;
+  wasm: boolean;
+  nativeBridge: boolean;
+  ownerNodeReachable: boolean;
+  online: boolean;
+  estimatedMemoryClass: InferenceMemoryClass;
+  hardwareConcurrency?: number;
+  cachedModelIds: string[];
+}
+
+export interface InferenceRouteDecision {
+  providerId: string;
+  runtime: InferenceRuntime;
+  modelId: string;
+  reason: string;
+  fallbackProviderIds: string[];
+}
+
+export interface InferenceRoutingPolicy {
+  priority: InferenceRuntime[];
+  maximumFallbacks: number;
+  allowNativeBridge: boolean;
+  allowOwnerNode: boolean;
+  allowCloudFallback: boolean;
+  requireCachedBrowserModelWhenOffline: boolean;
+  privacyMode: "local-only" | "tenant-devices" | "cloud-with-consent";
+}
+
+export interface InferenceNodePresence {
+  nodeId: string;
+  tenantId: string;
+  userId: string;
+  agentIds: string[];
+  supportedModelIds: string[];
+  runtimes: InferenceRuntime[];
+  connectedAt: string;
+  lastHeartbeatAt: string;
+  maxConcurrentJobs: number;
+}
+
+export interface OwnerInferenceJob {
+  jobId: string;
+  jobToken: string;
+  expiresAt: string;
+  request: InferenceRequest;
+}
+
+export type OwnerInferenceNodeMessage =
+  | {
+      type: "inference.node.register";
+      presence: Omit<InferenceNodePresence, "connectedAt" | "lastHeartbeatAt">;
+    }
+  | { type: "inference.node.heartbeat"; nodeId: string }
+  | {
+      type: "inference.job.chunk";
+      nodeId: string;
+      jobToken: string;
+      sequence: number;
+      chunk: InferenceChunk;
+    };
 
 export interface FeatureFlag {
   key: string;

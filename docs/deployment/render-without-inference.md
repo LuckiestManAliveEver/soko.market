@@ -1,0 +1,86 @@
+# Deploy Render without local inference
+
+## Guarantee
+
+The `soko-market-api` service performs authentication, PostgreSQL access, synchronization,
+business APIs, message routing, metadata, ephemeral owner-node coordination, and an optional
+backend-only cloud proxy. It does not import llama.cpp/Ollama adapters, load GGUF/ONNX models,
+start a model worker, spawn a local model server, or download model weights.
+
+`pnpm check:render-inference-boundaries` enforces this against the API manifest, API source/build
+imports, and the API section of `render.yaml`.
+
+## Build and start
+
+Build:
+
+```bash
+COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
+COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build
+COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
+COREPACK_HOME=/tmp/corepack corepack pnpm check:render-inference-boundaries
+```
+
+Start:
+
+```bash
+COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate
+COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
+```
+
+`services/ai-runtime` is intentionally outside the API dependency and build-filter graph. It
+remains available for installed applications, owner-node development, and legacy local testing.
+
+## Required API variables
+
+- `NODE_ENV=production`
+- `API_HOST=0.0.0.0`
+- `DATABASE_URL` and `DIRECT_DATABASE_URL`
+- the existing authentication/session variables
+- `INFERENCE_CLIENT_FIRST=true`
+
+## Optional inference variables
+
+- `INFERENCE_OWNER_NODE_ENABLED=false`
+- `INFERENCE_JOB_SIGNING_SECRET` (required only when owner-node is enabled; 32+ random chars)
+- `INFERENCE_JOB_TIMEOUT_MS=120000`
+- `INFERENCE_CLOUD_FALLBACK_ENABLED=false`
+- `INFERENCE_CLOUD_PROVIDER=` (currently only `openai`)
+- `INFERENCE_CLOUD_MODEL_ALLOWLIST=`
+- `INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET=100000`
+- `INFERENCE_MAX_FALLBACKS=2`
+- `OPENAI_API_KEY`, `OPENAI_FAST_MODEL`, and `OPENAI_REASONING_MODEL` (server-only and inert while
+  cloud fallback is off)
+
+Do not configure `LOCAL_MODEL_*` on Render.
+
+## Browser static-site variables
+
+The static site can enable client-first, WebGPU, and WASM. Model files are fetched by the user's
+browser and are not held in Render's Node process. The Blueprint CSP allows only the approved
+Soko and Hugging Face HTTPS/WebSocket origins and enables the isolation headers used by threaded
+WASM.
+
+## Verification
+
+Run:
+
+```bash
+pnpm --filter @soko/api... build
+pnpm check:render-inference-boundaries
+grep -R "@soko/ai-runtime" services/api/dist services/api/package.json
+curl https://api.soko.market/health
+```
+
+The boundary command must pass, grep must return no match, and health must boot without
+llama.cpp, Ollama, GPU libraries, or model files. Expected idle inference CPU is zero; memory is
+normal Fastify/PostgreSQL application memory. Cloud or owner-node routing adds network I/O, not
+local model compute.
+
+## Rollback
+
+Turn off `VITE_INFERENCE_CLIENT_FIRST` and redeploy the static site to restore the previous
+server/deterministic routing behavior. Keep owner-node and cloud flags off. Do not restore
+`LOCAL_MODEL_*` to Render. If code rollback is required, use the prior application version while
+leaving local model variables absent, so the old optional adapter remains unavailable rather than
+provisioning model compute on Render.

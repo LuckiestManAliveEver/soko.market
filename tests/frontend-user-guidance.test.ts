@@ -182,10 +182,10 @@ describe("frontend user guidance", () => {
     expect(huggingFaceCatalog).toContain("https://huggingface.co/api/models");
     expect(render).toContain("- key: GITHUB_TOKEN");
     expect(render).toContain("- key: HF_TOKEN");
-    expect(render).toContain("- key: LOCAL_MODEL_PROVIDER");
-    expect(render).toContain("- key: LOCAL_MODEL_ENDPOINT");
-    expect(render).toContain("qwen2.5-0.5b-android");
-    expect(render).toContain("qwen2.5:0.5b");
+    expect(render).not.toContain("LOCAL_MODEL_");
+    expect(render).toContain("- key: INFERENCE_CLIENT_FIRST");
+    expect(render).toContain("- key: INFERENCE_OWNER_NODE_ENABLED");
+    expect(render).toContain("- key: INFERENCE_CLOUD_FALLBACK_ENABLED");
   });
 
   it("removes Firebase phone OTP while preserving email verification", () => {

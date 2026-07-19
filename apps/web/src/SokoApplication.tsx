@@ -5742,7 +5742,7 @@ export function OwnerApp() {
       !hasHumanRecipient &&
       business !== null &&
       (await browserInferenceEnabled(session.account.id, business.id).catch(() => false));
-    const shouldResolveBrowser =
+    const browserInferenceCandidate =
       browserInferencePreference &&
       !requestRequiresServerTool(runtimeMessage) &&
       !requestNeedsComplexReasoning(runtimeMessage) &&
@@ -5756,6 +5756,7 @@ export function OwnerApp() {
       localAssignment !== null &&
       localAssignment.activeModelInstallationId !== null &&
       localAssignment.preferredExecutionMode !== "CLOUD_ONLY";
+    const shouldResolveBrowser = browserInferenceCandidate && !shouldResolveNative;
     const localInstallation =
       shouldResolveNative && localAssignment?.activeModelInstallationId !== null
         ? (listLocalAiModels().find(
@@ -5948,6 +5949,7 @@ export function OwnerApp() {
       try {
         setStatusMessage("On-device · Preparing context");
         const browserResponse = await generateBrowserAgentResponse({
+          requestId: clientMessageId,
           accountId: session.account.id,
           businessId: business.id,
           conversationId: activeConversationId ?? `agent:${business.id}`,
@@ -6003,7 +6005,7 @@ export function OwnerApp() {
               localAssignment.fallbackPolicy !== "NEVER"));
         if (!fallbackAllowedForTurn) {
           await appendAgentMessage(
-            `The on-device model could not process this message (${formatModelStatus(code)}). Cloud fallback is unavailable.`
+            `The on-device model could not process this message (${formatModelStatus(code)}). A permitted fallback is unavailable.`
           );
           setStatusMessage(`On-device · Failed · ${code}`);
           return;
@@ -6014,7 +6016,7 @@ export function OwnerApp() {
           route: shouldResolveNative ? "native" : "server",
           reasonCode: code
         });
-        setStatusMessage(`On-device failed · Using Cloud (${code})`);
+        setStatusMessage(`On-device failed · Using Soko fallback (${code})`);
       } finally {
         setIsBrowserGenerating(false);
       }
@@ -6072,14 +6074,14 @@ export function OwnerApp() {
           fallbackAllowed(localAssignment.fallbackPolicy, code);
         if (!allowed) {
           await appendAgentMessage(
-            `The local model could not process this message (${formatModelStatus(code)}). Cloud fallback is disabled.`
+            `The local model could not process this message (${formatModelStatus(code)}). A permitted fallback is disabled.`
           );
           setStatusMessage(`${localInstallation?.displayName ?? "Local model"} · Failed · ${code}`);
           return;
         }
         localFallbackStatus = code;
         setStatusMessage(
-          `${localInstallation?.displayName ?? "Local model"} failed · Using configured cloud fallback (${code})`
+          `${localInstallation?.displayName ?? "Local model"} failed · Using configured fallback (${code})`
         );
       }
     }
@@ -6117,7 +6119,7 @@ export function OwnerApp() {
       setStatusMessage(
         localFallbackStatus === null
           ? formatRuntimeTurnStatus(result)
-          : `${formatRuntimeTurnStatus(result)} · Cloud fallback (${localFallbackStatus})`
+          : `${formatRuntimeTurnStatus(result)} · Fallback (${localFallbackStatus})`
       );
     }
 

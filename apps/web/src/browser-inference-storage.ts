@@ -64,6 +64,44 @@ export class BrowserInferenceRepository {
     });
   }
 
+  async listCachedModelIds(accountId: string): Promise<string[]> {
+    const transaction = this.database.transaction("browserModels", "readonly");
+    const completion = transactionCompletion(transaction);
+    const records = await requestResult<Array<{ id?: unknown; status?: unknown }>>(
+      transaction.objectStore("browserModels").index("by_account").getAll(accountId)
+    );
+    await completion;
+    return records
+      .filter(
+        (record): record is { id: string; status: string } =>
+          typeof record.id === "string" && record.status === "ready"
+      )
+      .map((record) => record.id)
+      .sort();
+  }
+
+  async evictCachedModels(
+    accountId: string,
+    options: { keepModelIds: string[]; maximumEntries: number }
+  ): Promise<string[]> {
+    const transaction = this.database.transaction("browserModels", "readwrite");
+    const completion = transactionCompletion(transaction);
+    const store = transaction.objectStore("browserModels");
+    const records = await requestResult<
+      Array<{ accountId: string; id: string; updatedAt?: string }>
+    >(store.index("by_account").getAll(accountId));
+    const keep = new Set(options.keepModelIds);
+    const candidates = records
+      .filter((record) => !keep.has(record.id))
+      .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
+    const evicted = candidates
+      .slice(Math.max(0, options.maximumEntries))
+      .map((record) => record.id);
+    for (const id of evicted) store.delete([accountId, id]);
+    await completion;
+    return evicted;
+  }
+
   async putSummary(accountId: string, summary: ConversationSummary): Promise<void> {
     await this.put("conversationSummaries", {
       accountId,

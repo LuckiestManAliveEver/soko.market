@@ -1,3 +1,5 @@
+import type { InferenceRuntime } from "@soko/shared-types";
+
 export type BrowserInferenceBackend = "webgpu" | "wasm" | "none";
 export type BrowserDeviceTier = "low" | "medium" | "high";
 
@@ -20,6 +22,7 @@ export interface BrowserInferenceCapability {
 }
 
 export interface BrowserModelDescriptor {
+  manifestVersion: number;
   id: string;
   displayName: string;
   provider: "browser-local";
@@ -31,6 +34,8 @@ export interface BrowserModelDescriptor {
   approximateDownloadBytes: number;
   approximateRuntimeMemoryBytes: number;
   contextWindowTokens: number;
+  sha256?: string;
+  supportedRuntimes: InferenceRuntime[];
   minimumDeviceTier: BrowserDeviceTier;
   supportedBackends: Array<Exclude<BrowserInferenceBackend, "none">>;
   license: string;

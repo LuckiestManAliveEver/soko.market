@@ -15207,21 +15207,16 @@ const defaultBusinessAgentContextScripts = [
   ].join("\n"),
   documentUploadContextScript
 ];
-const configuredLocalModelProvider =
-  process.env.LOCAL_MODEL_PROVIDER?.trim().toLowerCase() === "llama.cpp" ? "llama.cpp" : "ollama";
-const configuredLocalModelProfile =
-  process.env.LOCAL_MODEL_MODEL?.trim() ||
-  process.env.LOCAL_MODEL_PROFILE?.trim() ||
-  "qwen2.5:0.5b";
-const configuredLocalModelEndpoint =
-  process.env.LOCAL_MODEL_ENDPOINT?.trim() ||
-  (configuredLocalModelProvider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:8080");
-const configuredLocalModelEnabled = ["1", "true", "yes", "on"].includes(
-  process.env.LOCAL_MODEL_ENABLED?.trim().toLowerCase() ?? ""
+const configuredCloudModelIds = new Set(
+  (process.env.INFERENCE_CLOUD_MODEL_ALLOWLIST ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
 );
-const configuredLocalModelSource = isLoopbackModelEndpoint(configuredLocalModelEndpoint)
-  ? "builtin"
-  : "hosted";
+const configuredCloudFallbackAvailable =
+  process.env.INFERENCE_CLOUD_FALLBACK_ENABLED?.trim().toLowerCase() === "true" &&
+  process.env.INFERENCE_CLOUD_PROVIDER?.trim().toLowerCase() === "openai" &&
+  (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0;
 const aiModelRegistry: AiModelSummary[] = [
   {
     id: "smollm2-360m-android",
@@ -15340,20 +15335,12 @@ const aiModelRegistry: AiModelSummary[] = [
   },
   {
     id: "llama-cpp-configured",
-    label: `${configuredLocalModelProfile} (${configuredLocalModelSource} ${configuredLocalModelProvider})`,
+    label: "Installed app llama.cpp bridge",
     provider: "local",
-    description:
-      configuredLocalModelSource === "builtin"
-        ? `Local model served by the configured on-device or same-host ${configuredLocalModelProvider} runtime.`
-        : `Local model served by the configured remote ${configuredLocalModelProvider} endpoint.`,
-    capabilities: [
-      "chat",
-      "tool-routing",
-      configuredLocalModelProvider,
-      configuredLocalModelSource
-    ],
-    available: configuredLocalModelEnabled,
-    source: configuredLocalModelSource,
+    description: "Optional native model runtime exposed by a supported installed Soko application.",
+    capabilities: ["chat", "tool-routing", "llama.cpp", "native-bridge"],
+    available: false,
+    source: "builtin",
     format: "remote",
     license: null,
     licenseUrl: null,
@@ -15370,7 +15357,10 @@ const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Fast hosted reasoning for connected shops.",
     capabilities: ["chat", "tool-routing"],
-    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0,
+    available:
+      configuredCloudFallbackAvailable &&
+      (configuredCloudModelIds.has("openai-fast") ||
+        configuredCloudModelIds.has(process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini")),
     source: "hosted",
     format: "remote",
     license: null,
@@ -15388,7 +15378,10 @@ const aiModelRegistry: AiModelSummary[] = [
     provider: "openai",
     description: "Higher-reasoning hosted profile for complex business tasks.",
     capabilities: ["chat", "reasoning", "tool-routing"],
-    available: (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0,
+    available:
+      configuredCloudFallbackAvailable &&
+      (configuredCloudModelIds.has("openai-reasoning") ||
+        configuredCloudModelIds.has(process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2")),
     source: "hosted",
     format: "remote",
     license: null,
@@ -15401,15 +15394,6 @@ const aiModelRegistry: AiModelSummary[] = [
     recommended: false
   }
 ];
-
-function isLoopbackModelEndpoint(endpoint: string): boolean {
-  try {
-    const hostname = new URL(endpoint).hostname.toLowerCase();
-    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
-  } catch {
-    return true;
-  }
-}
 
 function validateConversationMessageContent(content: ConversationMessageContent): void {
   switch (content.type) {

@@ -1,11 +1,8 @@
-import {
-  createLlamaCppRuntimeModelProvider,
-  createOllamaRuntimeModelProvider,
-  createOpenAiRuntimeModelProvider
-} from "@soko/ai-runtime";
 import type { RuntimeModelProvider } from "@soko/shared-types";
 import { buildApi } from "./app.js";
-import { readEnvironment, resolveOllamaModelName } from "./config.js";
+import { readEnvironment } from "./config.js";
+import { createCloudFallbackProvider } from "./inference/cloud-fallback.js";
+import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import {
   startAccountDeletionRunner,
   type AccountDeletionRunner
@@ -24,56 +21,29 @@ import {
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 
 const config = readEnvironment();
-const localRuntimeModelProviders = new Map<string, RuntimeModelProvider>();
-const createLocalRuntimeModelProvider = (modelId: string): RuntimeModelProvider | undefined => {
-  if (!config.localModelEnabled) return undefined;
-  const cached = localRuntimeModelProviders.get(modelId);
-  if (cached !== undefined) return cached;
-  const provider =
-    config.localModelProvider === "ollama"
-      ? createOllamaRuntimeModelProvider({
-          endpoint: config.localModelEndpoint,
-          model: resolveOllamaModelName(modelId, config.localModelId, config.localModelProfile),
-          maxTokens: config.localModelMaxTokens,
-          temperature: config.localModelTemperature,
-          timeoutMs: config.localModelTimeoutMs
-        })
-      : createLlamaCppRuntimeModelProvider({
-          endpoint: config.localModelEndpoint,
-          maxTokens: config.localModelMaxTokens,
-          modelProfile: config.localModelProfile,
-          temperature: config.localModelTemperature,
-          timeoutMs: config.localModelTimeoutMs
-        });
-  localRuntimeModelProviders.set(modelId, provider);
-  return provider;
-};
-const runtimeModelProvider = createLocalRuntimeModelProvider(config.localModelId);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
-const openAiFastProvider =
-  openAiApiKey.length === 0
-    ? undefined
-    : createOpenAiRuntimeModelProvider({
-        apiKey: openAiApiKey,
-        model: process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini",
-        maxOutputTokens: 256,
-        reasoningEffort: "minimal",
-        timeoutMs: 15_000
-      });
-const openAiReasoningProvider =
-  openAiApiKey.length === 0
-    ? undefined
-    : createOpenAiRuntimeModelProvider({
-        apiKey: openAiApiKey,
-        model: process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2",
-        maxOutputTokens: 512,
-        reasoningEffort: "medium",
-        timeoutMs: 30_000
-      });
+const cloudProviders = new Map<string, RuntimeModelProvider>();
+for (const [modelId, model, maxOutputTokens, timeoutMs] of [
+  ["openai-fast", process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini", 256, 15_000],
+  ["openai-reasoning", process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2", 512, 30_000]
+] as const) {
+  const provider = createCloudFallbackProvider({
+    enabled:
+      config.inferenceClientFirst &&
+      config.inferenceCloudFallbackEnabled &&
+      config.inferenceCloudProvider === "openai",
+    apiKey: openAiApiKey,
+    model,
+    modelId,
+    modelAllowlist: config.inferenceCloudModelAllowlist,
+    maxOutputTokens,
+    monthlyTokenBudget: config.inferenceCloudMonthlyTokenBudget,
+    timeoutMs
+  });
+  if (provider !== undefined) cloudProviders.set(modelId, provider);
+}
 const runtimeModelProviderResolver = (modelId: string) => {
-  if (modelId === "openai-fast") return openAiFastProvider;
-  if (modelId === "openai-reasoning") return openAiReasoningProvider;
-  return createLocalRuntimeModelProvider(modelId);
+  return cloudProviders.get(modelId);
 };
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
@@ -86,6 +56,19 @@ const accountDeletionProcessors = readAccountDeletionProcessors();
 const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
+const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
+if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
+  throw new Error(
+    "INFERENCE_JOB_SIGNING_SECRET must contain at least 32 characters when owner-node inference is enabled."
+  );
+}
+const ownerNodeBroker =
+  !config.inferenceOwnerNodeEnabled || ownerNodeSigningSecret.length < 32
+    ? undefined
+    : new OwnerNodeBroker({
+        signingSecret: ownerNodeSigningSecret,
+        jobTimeoutMs: config.inferenceJobTimeoutMs
+      });
 
 if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databaseUrl === "") {
   throw new Error("DATABASE_URL is required in production unless CP2_STORE=memory is explicit.");
@@ -94,7 +77,6 @@ if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databa
 const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
-  ...(runtimeModelProvider === undefined ? {} : { runtimeModelProvider }),
   runtimeModelProviderResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
@@ -115,6 +97,7 @@ const apiOptions = {
   cp2: {
     store: cp2Store,
     emailProvider,
+    ...(ownerNodeBroker === undefined ? {} : { ownerNodeBroker }),
     ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
     ...(receiptOCRProcessor === undefined ? {} : { receiptOCRProcessor }),
     ...(webPushConfiguration === null ? {} : { vapidPublicKey: webPushConfiguration.publicKey })
@@ -125,32 +108,12 @@ const app = buildApi(
     ? {
         ...apiOptions,
         databaseHealth: () => cp2Store.health(),
-        agentRuntimeDiagnostic: (runInference) =>
-          runtimeModelProvider?.diagnose?.(runInference) ??
-          Promise.resolve({
-            provider: config.localModelProvider,
-            status: "unavailable" as const,
-            model: config.localModelProfile,
-            modelAvailable: null,
-            inferenceAvailable: null,
-            errorCode: "MODEL_PROVIDER_UNCONFIGURED",
-            checkedAt: new Date().toISOString()
-          }),
+        agentRuntimeDiagnostic: () => cloudDiagnostic(),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
     : {
         ...apiOptions,
-        agentRuntimeDiagnostic: (runInference) =>
-          runtimeModelProvider?.diagnose?.(runInference) ??
-          Promise.resolve({
-            provider: config.localModelProvider,
-            status: "unavailable" as const,
-            model: config.localModelProfile,
-            modelAvailable: null,
-            inferenceAvailable: null,
-            errorCode: "MODEL_PROVIDER_UNCONFIGURED",
-            checkedAt: new Date().toISOString()
-          }),
+        agentRuntimeDiagnostic: () => cloudDiagnostic(),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
 );
@@ -207,4 +170,19 @@ function isHealthyStore(
 
 function isFlushableStore(store: unknown): store is { flush: () => Promise<void> } {
   return typeof (store as { flush?: unknown }).flush === "function";
+}
+
+async function cloudDiagnostic() {
+  const provider = cloudProviders.values().next().value as RuntimeModelProvider | undefined;
+  return (
+    (await provider?.diagnose?.(false)) ?? {
+      provider: "openai" as const,
+      status: "unavailable" as const,
+      model: null,
+      modelAvailable: null,
+      inferenceAvailable: null,
+      errorCode: "CLOUD_FALLBACK_DISABLED",
+      checkedAt: new Date().toISOString()
+    }
+  );
 }

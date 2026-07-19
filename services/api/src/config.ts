@@ -28,22 +28,6 @@ function numberFromEnvList(names: string[], fallback: number): number {
   return fallback;
 }
 
-function floatFromEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-
-  if (value === undefined || value.trim() === "") {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`${name} must be a finite number.`);
-  }
-
-  return parsed;
-}
-
 function booleanFromEnv(name: string, fallback: boolean): boolean {
   const value = process.env[name];
 
@@ -85,12 +69,6 @@ function stringListFromEnv(name: string, fallback: string[]): string[] {
 }
 
 export function readEnvironment(): EnvironmentConfig {
-  const localModelProvider = readLocalModelProvider();
-  const defaultEndpoint =
-    localModelProvider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:8080";
-  const configuredModel =
-    process.env.LOCAL_MODEL_MODEL?.trim() || process.env.LOCAL_MODEL_PROFILE?.trim();
-
   return {
     apiHost: stringFromEnv("API_HOST", "127.0.0.1"),
     apiPort: numberFromEnvList(["API_PORT", "PORT"], 4000),
@@ -102,26 +80,31 @@ export function readEnvironment(): EnvironmentConfig {
       "DATABASE_URL",
       "postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market"
     ),
-    localModelEnabled: booleanFromEnv("LOCAL_MODEL_ENABLED", false),
-    localModelEndpoint: stringFromEnv("LOCAL_MODEL_ENDPOINT", defaultEndpoint),
-    localModelId: stringFromEnv("LOCAL_MODEL_ID", "qwen2.5-0.5b-android"),
-    localModelMaxTokens: numberFromEnv("LOCAL_MODEL_MAX_TOKENS", 128),
-    localModelProvider,
-    localModelProfile: configuredModel || "qwen2.5:0.5b",
-    localModelTemperature: floatFromEnv("LOCAL_MODEL_TEMPERATURE", 0),
-    localModelTimeoutMs: numberFromEnv("LOCAL_MODEL_TIMEOUT_MS", 90_000),
+    inferenceClientFirst: booleanFromEnv("INFERENCE_CLIENT_FIRST", true),
+    inferenceOwnerNodeEnabled: booleanFromEnv("INFERENCE_OWNER_NODE_ENABLED", false),
+    inferenceCloudFallbackEnabled: booleanFromEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", false),
+    inferenceCloudProvider: readCloudProvider(),
+    inferenceCloudModelAllowlist: stringListFromEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", []),
+    inferenceCloudMonthlyTokenBudget: numberFromEnv(
+      "INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET",
+      100_000
+    ),
+    inferenceMaxFallbacks: numberFromEnv("INFERENCE_MAX_FALLBACKS", 2),
+    inferenceJobTimeoutMs: numberFromEnv("INFERENCE_JOB_TIMEOUT_MS", 120_000),
     redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")
   };
 }
 
-function readLocalModelProvider(): EnvironmentConfig["localModelProvider"] {
-  const value = stringFromEnv("LOCAL_MODEL_PROVIDER", "ollama").trim().toLowerCase();
-  if (value === "ollama" || value === "llama.cpp") {
+function readCloudProvider(): EnvironmentConfig["inferenceCloudProvider"] {
+  const value = stringFromEnv("INFERENCE_CLOUD_PROVIDER", "").trim().toLowerCase();
+  if (value === "" || value === "openai") {
     return value;
   }
-  throw new Error("LOCAL_MODEL_PROVIDER must be ollama or llama.cpp.");
+  throw new Error("INFERENCE_CLOUD_PROVIDER must be empty or openai.");
 }
 
+// Kept as a pure compatibility helper for installed-app and owner-node configuration tooling.
+// The Render API does not call it or construct an Ollama provider.
 export function resolveOllamaModelName(
   modelId: string,
   configuredModelId: string,

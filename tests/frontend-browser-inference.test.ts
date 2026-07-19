@@ -20,7 +20,7 @@ describe("browser inference frontend integration", () => {
     expect(application).toContain("generateBrowserAgentResponse");
     expect(application).toContain("setChatMessages((messages) =>");
     expect(application).toContain("Cancel on-device generation");
-    expect(application).toContain("Using Cloud");
+    expect(application).toContain("Using Soko fallback");
     expect(application).toContain("requestRequiresServerTool(runtimeMessage)");
     expect(application).toContain("queueMessagingOutbox");
     expect(application).toContain("postJson<RuntimeTurnResult>");

@@ -47,6 +47,7 @@ export interface BrowserInferenceState {
 }
 
 export interface BrowserChatInput {
+  requestId?: string;
   accountId: string;
   businessId: string;
   conversationId: string;
@@ -354,6 +355,7 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
     }
   });
   const requestId =
+    input.requestId ??
     globalThis.crypto?.randomUUID?.() ??
     `browser-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   activeRequestId = requestId;
