@@ -41,6 +41,12 @@ describe("Render Blueprint", () => {
     expect(blueprint).not.toContain("LOCAL_MODEL_");
     expect(blueprint).not.toContain("services/ai-runtime/**");
     expect(blueprint).toContain("check:render-inference-boundaries");
-    expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "false"');
+    expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
+    expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
+    expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
+    expect(production).toContain('VITE_INFERENCE_NATIVE_BRIDGE_ENABLED\n        value: "true"');
+    expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
+    expect(production).toContain('VITE_INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
+    expect(production).toContain('VITE_INFERENCE_MAX_FALLBACKS\n        value: "3"');
   });
 });

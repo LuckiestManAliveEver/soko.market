@@ -15317,10 +15317,11 @@ const aiModelRegistry: AiModelSummary[] = [
   },
   {
     id: "sokoclaw-local",
-    label: "Sokoclaw local legacy",
+    label: "Soko deterministic compatibility fallback",
     provider: "local",
-    description: "Compatibility profile for existing local deployments.",
-    capabilities: ["chat", "tool-routing", "offline"],
+    description:
+      "Built-in deterministic agent behavior for compatibility; not a general-purpose language model.",
+    capabilities: ["tool-routing", "offline"],
     available: true,
     source: "builtin",
     format: "remote",

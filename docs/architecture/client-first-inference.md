@@ -27,8 +27,9 @@ Prompts and responses are not routing telemetry.
   safe unavailable implementation.
 - The owner-node broker lives in `services/api/src/inference/owner-node-broker.ts`. Render relays
   signed, expiring jobs and chunks; it does not execute them.
-- The only permitted backend model execution is the disabled-by-default cloud fallback in
-  `services/api/src/inference/cloud-fallback.ts`.
+- The only permitted backend model execution is the allow-listed cloud fallback in
+  `services/api/src/inference/cloud-fallback.ts`. The production Blueprint enables the route, but
+  it remains unavailable without a server-only provider key and explicit user consent.
 
 ## Browser flow
 
@@ -63,5 +64,10 @@ details are never rendered to ordinary users.
 ## Feature rollout
 
 The master client-first flag must be on before any new client provider can be selected. Native,
-owner-node, and cloud routes remain separately disabled. Browser WebGPU and WASM can be rolled
-out independently while preserving the existing deterministic Soko agent fallback.
+owner-node, and cloud routes have separate deployment gates and user permissions. The production
+Blueprint enables those capabilities, but native still requires a detected trusted bridge,
+owner-node requires an authenticated same-shop device, and cloud requires explicit consent plus
+an allow-listed configured provider. Browser WebGPU and WASM require an explicit model download.
+
+`sokoclaw-local` remains the deterministic compatibility fallback when no real model route is
+available. It is not presented as a general-purpose language model.

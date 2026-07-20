@@ -24,11 +24,12 @@ structured logs.
 
 ## Rollout and scaling
 
-The feature is off by default and requires `INFERENCE_OWNER_NODE_ENABLED=true` plus a 32-character
-or longer `INFERENCE_JOB_SIGNING_SECRET`. The current broker is process-local and therefore valid
-only for one API instance. Before enabling multiple Render instances, implement the same broker
-contract over authenticated Redis pub/sub with TTL presence and jobs. Do not create a PostgreSQL
-heartbeat row.
+The production Blueprint enables the feature and generates a 32-character or longer
+`INFERENCE_JOB_SIGNING_SECRET`. A shop must still explicitly allow owner-device routing, and the
+chat client checks authenticated same-shop presence before submitting a job. The current broker
+is process-local and therefore valid only for one API instance. Before enabling multiple Render
+instances, implement the same broker contract over authenticated Redis pub/sub with TTL presence
+and jobs. Do not create a PostgreSQL heartbeat row.
 
 Registration is bounded per user, concurrency is capped, heartbeats expire, duplicate request IDs
 are rejected, and chunk sequence numbers prevent replay. Edge rate limiting should additionally be

@@ -71,21 +71,21 @@ services:
       - key: INFERENCE_CLIENT_FIRST
         value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED
-        value: "false"
+        value: "true"
       - key: INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "false"
+        value: "true"
       - key: INFERENCE_CLOUD_PROVIDER
-        value: ""
+        value: openai
       - key: INFERENCE_CLOUD_MODEL_ALLOWLIST
-        value: ""
+        value: openai-fast,openai-reasoning
       - key: INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET
         value: "100000"
       - key: INFERENCE_MAX_FALLBACKS
-        value: "2"
+        value: "3"
       - key: INFERENCE_JOB_TIMEOUT_MS
         value: "120000"
       - key: INFERENCE_JOB_SIGNING_SECRET
-        sync: false
+        generateValue: true
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_FAST_MODEL
@@ -183,11 +183,13 @@ services:
       - key: VITE_INFERENCE_BROWSER_WASM_ENABLED
         value: "true"
       - key: VITE_INFERENCE_NATIVE_BRIDGE_ENABLED
-        value: "false"
+        value: "true"
       - key: VITE_INFERENCE_OWNER_NODE_ENABLED
-        value: "false"
+        value: "true"
       - key: VITE_INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "false"
+        value: "true"
+      - key: VITE_INFERENCE_MAX_FALLBACKS
+        value: "3"
 
   - type: web
     name: soko-market-web-staging
@@ -258,11 +260,13 @@ services:
       - key: VITE_INFERENCE_BROWSER_WASM_ENABLED
         value: "true"
       - key: VITE_INFERENCE_NATIVE_BRIDGE_ENABLED
-        value: "false"
+        value: "true"
       - key: VITE_INFERENCE_OWNER_NODE_ENABLED
-        value: "false"
+        value: "true"
       - key: VITE_INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "false"
+        value: "true"
+      - key: VITE_INFERENCE_MAX_FALLBACKS
+        value: "3"
 
   - type: cron
     name: soko-market-db-backup

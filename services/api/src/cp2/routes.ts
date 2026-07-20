@@ -179,6 +179,12 @@ interface AiModelSearchQuery {
   search?: string;
 }
 
+interface OwnerNodePresenceQuery {
+  tenantId?: string;
+  agentId?: string;
+  modelId?: string;
+}
+
 interface InstalledModelQuery {
   deviceId?: string;
 }
@@ -1861,6 +1867,33 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   if (options.ownerNodeBroker !== undefined) {
     const ownerNodeBroker = options.ownerNodeBroker;
+    app.get(
+      "/v1/inference/owner-node/presence",
+      async (request: FastifyRequest<{ Querystring: OwnerNodePresenceQuery }>, reply) => {
+        const session = store.getSession(readSessionCookie(request.headers.cookie));
+        if (session === null) {
+          return reply.code(401).send({ code: "session_required" });
+        }
+        try {
+          const tenantId = parseString(request.query.tenantId, "tenantId");
+          const agentId = parseString(request.query.agentId, "agentId");
+          const modelId = parseString(request.query.modelId, "modelId");
+          if (
+            !store
+              .listAccountShops({ sessionId: session.session.id })
+              .some((shop) => shop.business.id === tenantId)
+          ) {
+            return reply.code(403).send({ code: "inference_tenant_forbidden" });
+          }
+          return {
+            reachable: ownerNodeBroker.isReachable({ tenantId, agentId, modelId })
+          };
+        } catch (error) {
+          return sendCp2Error(reply, error);
+        }
+      }
+    );
+
     app.get(
       "/v1/inference/owner-node",
       {

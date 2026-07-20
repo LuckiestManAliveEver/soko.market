@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   DeviceInferenceCapabilities,
   InferenceProvider,
+  InferenceRequest,
   InferenceRoutingPolicy
 } from "../packages/shared-types/src/index";
+import { executeInferenceRoute } from "../apps/web/src/inference/executor";
 import { readClientInferenceFeatureFlags } from "../apps/web/src/inference/feature-flags";
 import { mapInferenceError } from "../apps/web/src/inference/error-mapping";
 import {
@@ -165,5 +167,69 @@ describe("client-first inference", () => {
     expect(mapInferenceError({ code: "STORAGE_QUOTA_EXCEEDED" })).toBe("not-enough-storage");
     expect(mapInferenceError(new Error("private prompt contents"))).toBe("inference-unavailable");
     vi.restoreAllMocks();
+  });
+
+  it("executes the selected provider and then its bounded fallback", async () => {
+    const request: InferenceRequest = {
+      requestId: "request-1",
+      tenantId: "tenant-1",
+      conversationId: "conversation-1",
+      agentId: "agent-1",
+      modelId: "model",
+      messages: [{ role: "user", content: "Hello" }]
+    };
+    const attempts: string[] = [];
+    const failing: InferenceProvider = {
+      id: "native",
+      runtime: "native-llama-cpp",
+      isAvailable: async () => true,
+      supports: async () => true,
+      async *generate() {
+        yield {
+          requestId: request.requestId,
+          text: "Partial native response",
+          done: false,
+          runtime: "native-llama-cpp",
+          modelId: request.modelId
+        };
+        throw new Error("private native bridge error");
+      }
+    };
+    const browser: InferenceProvider = {
+      id: "browser",
+      runtime: "browser-webgpu",
+      isAvailable: async () => true,
+      supports: async () => true,
+      async *generate() {
+        yield {
+          requestId: request.requestId,
+          text: "Fallback response",
+          done: true,
+          runtime: "browser-webgpu",
+          modelId: request.modelId
+        };
+      }
+    };
+
+    await expect(
+      executeInferenceRoute({
+        decision: {
+          providerId: "native",
+          runtime: "native-llama-cpp",
+          modelId: request.modelId,
+          reason: "Native is preferred.",
+          fallbackProviderIds: ["browser"]
+        },
+        providers: [browser, failing],
+        request,
+        onAttempt: (candidate) => attempts.push(candidate.id)
+      })
+    ).resolves.toMatchObject({
+      providerId: "browser",
+      runtime: "browser-webgpu",
+      text: "Fallback response",
+      fallbackCount: 1
+    });
+    expect(attempts).toEqual(["native", "browser"]);
   });
 });

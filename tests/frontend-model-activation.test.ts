@@ -19,6 +19,7 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("await validateInstalledModelOnBackend(verified)");
     expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified)");
     expect(activation).toContain("/businesses/${business.id}/agent-model");
+    expect(activation).toContain("inferencePreferences.nativePermission");
 
     expect(activation.indexOf("await validateInstalledModelOnBackend(verified)")).toBeLessThan(
       activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)")
@@ -38,9 +39,25 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("/businesses/${business.id}/ai-model");
     expect(activation).toContain("if (activated.modelId !== model.id)");
     expect(activation).toContain("setActiveAiModelId(activated.modelId)");
+    expect(activation).toContain("inferencePreferences.cloudConsent");
     expect(application).toContain('aria-label="Backend models"');
     expect(application).toContain('"Use model"');
     expect(application).toContain('"Model in use"');
+  });
+
+  it("uses the provider-neutral route in the actual chat send path", () => {
+    const chat = sourceBetween(
+      "async function sendChatDraft",
+      "async function confirmRuntimeAction"
+    );
+
+    expect(chat).toContain("decideClientInferenceRoute");
+    expect(chat).toContain("executeInferenceRoute");
+    expect(chat).toContain('id: "native-llama-cpp"');
+    expect(chat).toContain("generateBrowserAgentResponse");
+    expect(chat).toContain("createRemoteInferenceProvider");
+    expect(chat).toContain('runtime: "cloud-fallback"');
+    expect(chat).toContain("readClientInferencePreferences");
   });
 });
 

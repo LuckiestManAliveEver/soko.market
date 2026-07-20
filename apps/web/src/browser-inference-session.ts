@@ -245,6 +245,10 @@ export async function browserInferenceEnabled(
   return settings?.enabled === true && settings.selectedModelId !== null;
 }
 
+export async function listCachedBrowserModelIds(accountId: string): Promise<string[]> {
+  return (await getRepository()).listCachedModelIds(accountId);
+}
+
 export async function generateBrowserAgentResponse(input: BrowserChatInput): Promise<{
   result: BrowserGenerationResult;
   context: BuiltModelContext;

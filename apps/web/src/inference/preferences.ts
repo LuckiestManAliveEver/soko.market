@@ -1,0 +1,84 @@
+export interface ClientInferencePreferences {
+  nativePermission: boolean;
+  ownerNodeAllowed: boolean;
+  cloudConsent: boolean;
+}
+
+const storageKey = "soko.client-inference-preferences.v1";
+
+export function readClientInferencePreferences(
+  accountId: string,
+  businessId: string
+): ClientInferencePreferences {
+  try {
+    const records = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as unknown;
+    if (!Array.isArray(records)) return defaultPreferences();
+    const match = records.find(
+      (record) =>
+        typeof record === "object" &&
+        record !== null &&
+        (record as { accountId?: unknown }).accountId === accountId &&
+        (record as { businessId?: unknown }).businessId === businessId
+    );
+    return normalizePreferences(match);
+  } catch {
+    return defaultPreferences();
+  }
+}
+
+export function saveClientInferencePreferences(
+  accountId: string,
+  businessId: string,
+  preferences: ClientInferencePreferences
+): ClientInferencePreferences {
+  const normalized = normalizePreferences(preferences);
+  let records: unknown[] = [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as unknown;
+    if (Array.isArray(stored)) records = stored;
+  } catch {
+    records = [];
+  }
+  const retained = records.filter(
+    (record) =>
+      !(
+        typeof record === "object" &&
+        record !== null &&
+        (record as { accountId?: unknown }).accountId === accountId &&
+        (record as { businessId?: unknown }).businessId === businessId
+      )
+  );
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify([
+      ...retained,
+      {
+        accountId,
+        businessId,
+        ...normalized,
+        updatedAt: new Date().toISOString()
+      }
+    ])
+  );
+  return normalized;
+}
+
+function normalizePreferences(value: unknown): ClientInferencePreferences {
+  const record =
+    typeof value === "object" && value !== null
+      ? (value as Partial<ClientInferencePreferences>)
+      : {};
+  return {
+    nativePermission: record.nativePermission === true,
+    ownerNodeAllowed: record.ownerNodeAllowed === true,
+    cloudConsent: record.cloudConsent === true
+  };
+}
+
+function defaultPreferences(): ClientInferencePreferences {
+  return {
+    nativePermission: false,
+    ownerNodeAllowed: false,
+    cloudConsent: false
+  };
+}

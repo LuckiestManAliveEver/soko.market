@@ -19,7 +19,7 @@ export function readClientInferenceFeatureFlags(
     nativeBridge: clientFirst && environment.VITE_INFERENCE_NATIVE_BRIDGE_ENABLED === "true",
     ownerNode: clientFirst && environment.VITE_INFERENCE_OWNER_NODE_ENABLED === "true",
     cloudFallback: clientFirst && environment.VITE_INFERENCE_CLOUD_FALLBACK_ENABLED === "true",
-    maximumFallbacks: positiveInteger(environment.VITE_INFERENCE_MAX_FALLBACKS, 2)
+    maximumFallbacks: positiveInteger(environment.VITE_INFERENCE_MAX_FALLBACKS, 3)
   };
 }
 
