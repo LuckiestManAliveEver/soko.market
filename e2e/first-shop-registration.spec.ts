@@ -9,7 +9,7 @@ test("a signed-in account registers its first shop without OTP", async ({ page }
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
-    if (path === "/session") {
+    if (path === "/session" || path === "/auth/bootstrap") {
       return json({
         account: { id: "first-shop-account" },
         user: {
@@ -108,7 +108,7 @@ test("captures and normalizes the compulsory owner phone without SMS", async ({ 
       return json({ message: "OTP must not be used for shop phone capture." }, 500);
     }
     if (path === "/auth/oauth/providers") return json({ providers: [] });
-    if (path === "/session") {
+    if (path === "/session" || path === "/auth/bootstrap") {
       return json({
         account: {
           id: "phone-capture-account",

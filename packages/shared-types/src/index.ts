@@ -32,12 +32,19 @@ export interface InferenceMessage {
 
 export interface InferenceRequest {
   requestId: string;
+  runtimeSessionId?: string;
   tenantId: string;
   conversationId: string;
   agentId: string;
   modelId: string;
+  modelVersion?: string;
   messages: InferenceMessage[];
   systemPrompt?: string;
+  availableTools?: string[];
+  generationParameters?: {
+    maxTokens?: number;
+    temperature?: number;
+  };
   maxTokens?: number;
   temperature?: number;
   taskType?: "conversation" | "reasoning" | "coding" | "verification";
@@ -182,6 +189,40 @@ export interface MembershipSummary {
 export interface SessionSummary {
   id: string;
   expiresAt: string;
+}
+
+export type AuthBootstrapState =
+  | "initializing"
+  | "restoring-session"
+  | "refreshing-session"
+  | "authenticated"
+  | "offline-authenticated"
+  | "unauthenticated"
+  | "reauthentication-required"
+  | "failed";
+
+export type DeviceSessionStatus = "active" | "expired" | "revoked";
+
+export interface DeviceSessionSummary {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  platform: string;
+  browserOrApp: string;
+  sessionFamilyId: string;
+  status: DeviceSessionStatus;
+  createdAt: string;
+  lastUsedAt: string;
+  rotatedAt: string | null;
+  expiresAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  current: boolean;
+}
+
+export interface AuthBootstrapResponse extends AuthSessionView {
+  authenticated: true;
+  deviceSession: DeviceSessionSummary;
 }
 
 export interface AuthSessionView {

@@ -31,12 +31,29 @@ export function buildApi(options: BuildApiOptions = {}) {
 
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
+    const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method);
 
     if (origin !== undefined && allowedCorsOrigins.has(origin)) {
       reply.header("access-control-allow-origin", origin);
       reply.header("access-control-allow-credentials", "true");
       reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      reply.header("access-control-allow-headers", "content-type");
+      reply.header(
+        "access-control-allow-headers",
+        "content-type,x-request-id,idempotency-key,x-soko-device-id,x-soko-device-name,x-soko-platform,x-soko-client"
+      );
+    }
+
+    const hasRouteSpecificOriginValidation = request.url.startsWith("/auth/passkeys/");
+    if (
+      origin !== undefined &&
+      !allowedCorsOrigins.has(origin) &&
+      isMutation &&
+      !hasRouteSpecificOriginValidation
+    ) {
+      return reply.code(403).send({
+        code: "origin_not_allowed",
+        message: "This request origin is not allowed."
+      });
     }
 
     if (request.method === "OPTIONS") {

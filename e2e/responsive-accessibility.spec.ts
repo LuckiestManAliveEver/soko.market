@@ -405,6 +405,8 @@ async function openModelLibrary(
   await page.goto("/");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
+  await page.getByRole("button", { name: "Open model library" }).click();
+  await expect(page.getByRole("button", { name: "Predownload & install" }).first()).toBeVisible();
 }
 
 async function expectNoViewportOverflow(page: Page): Promise<void> {
@@ -454,7 +456,7 @@ async function installApiMocks(page: Page): Promise<void> {
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (path === "/auth/oauth/providers") return json({ providers: [] });
-    if (path === "/session") {
+    if (path === "/session" || path === "/auth/bootstrap") {
       return json({
         account: { id: "responsive-account" },
         user: { id: "responsive-user", displayName: "Jane Owner", language: "en" },
@@ -482,6 +484,18 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path.endsWith("/typing")) return json({ typing: [] });
     if (path === "/v1/messages") return json(mockMessage);
+    if (path.endsWith("/runtime/sessions") && method === "GET") return json([]);
+    if (path.endsWith("/runtime/sessions") && method === "POST") {
+      return json({
+        id: "responsive-runtime-session",
+        businessId: "responsive-certification-shop",
+        userId: "responsive-user",
+        status: "active",
+        turnCount: 0,
+        createdAt: "2026-07-15T12:00:00.000Z",
+        updatedAt: "2026-07-15T12:00:00.000Z"
+      });
+    }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
     if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });

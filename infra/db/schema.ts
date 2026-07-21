@@ -172,6 +172,17 @@ export const sessions = pgTable("sessions", {
   userId: uuid("user_id")
     .notNull()
     .references(() => users.id),
+  deviceId: text("device_id").notNull(),
+  deviceName: text("device_name").notNull(),
+  platform: text("platform").notNull(),
+  browserOrApp: text("browser_or_app").notNull(),
+  userAgentHash: text("user_agent_hash").notNull(),
+  refreshTokenHash: text("refresh_token_hash").notNull(),
+  sessionFamilyId: uuid("session_family_id").notNull(),
+  refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }).notNull(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull(),
+  rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+  revocationReason: text("revocation_reason"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   pinVerifiedAt: timestamp("pin_verified_at", { withTimezone: true }),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),

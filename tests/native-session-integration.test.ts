@@ -1,0 +1,151 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildApi } from "../services/api/src/app";
+import { createCp2Store } from "../services/api/src/cp2/store";
+import {
+  clearCachedAuthSession,
+  isAuthBootstrapPending,
+  readCachedAuthSession,
+  saveCachedAuthSession
+} from "../apps/web/src/auth-bootstrap";
+import { modelActivationMessage } from "../apps/web/src/model-activation-state";
+
+describe("native-style account session lifecycle", () => {
+  it("bootstraps a device session, rotates refresh credentials, and rejects reuse", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("device-one"),
+      payload: { method: "phone", contact: "+254700003001", pin: "1234" }
+    });
+    const originalCookies = cookieHeader(signup.headers["set-cookie"]);
+
+    const bootstrap = await app.inject({
+      method: "GET",
+      url: "/auth/bootstrap",
+      headers: { cookie: originalCookies }
+    });
+    expect(bootstrap.statusCode).toBe(200);
+    expect(bootstrap.json()).toMatchObject({
+      authenticated: true,
+      deviceSession: { deviceId: "device-one", status: "active", current: true }
+    });
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
+    });
+    expect(refresh.statusCode).toBe(200);
+    const rotatedCookies = cookieHeader(refresh.headers["set-cookie"]);
+    expect(rotatedCookies).not.toBe(originalCookies);
+
+    const reused = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
+    });
+    expect(reused.statusCode).toBe(401);
+    expect(reused.json()).toMatchObject({ code: "auth_refresh_reuse_detected" });
+
+    const revokedFamily = await app.inject({
+      method: "GET",
+      url: "/auth/bootstrap",
+      headers: { cookie: rotatedCookies }
+    });
+    expect(revokedFamily.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("logs out one device family without revoking another device", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("phone-one"),
+      payload: { method: "phone", contact: "+254700003002", pin: "1234" }
+    });
+    const firstCookies = cookieHeader(signup.headers["set-cookie"]);
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: deviceHeaders("phone-two"),
+      payload: { method: "phone", contact: "+254700003002", pin: "1234" }
+    });
+    const secondCookies = cookieHeader(login.headers["set-cookie"]);
+
+    await app.inject({ method: "POST", url: "/auth/logout", headers: { cookie: firstCookies } });
+    const first = await app.inject({
+      method: "GET",
+      url: "/auth/bootstrap",
+      headers: { cookie: firstCookies }
+    });
+    const second = await app.inject({
+      method: "GET",
+      url: "/auth/bootstrap",
+      headers: { cookie: secondCookies }
+    });
+    expect(first.statusCode).toBe(401);
+    expect(second.statusCode).toBe(200);
+    await app.close();
+  });
+});
+
+describe("frontend lifecycle state", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("persists only the non-secret bootstrap view for offline restoration", () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
+    });
+    saveCachedAuthSession({
+      account: {
+        id: "account-1",
+        primaryAuthChannel: "phone",
+        primaryAuthDestination: "+254700003003"
+      },
+      user: { id: "user-1", accountId: "account-1", displayName: "Jane", language: "en" },
+      session: { id: "session-view", expiresAt: "2030-01-01T00:00:00.000Z" }
+    });
+    expect(readCachedAuthSession()).toMatchObject({
+      account: { id: "account-1" },
+      user: { id: "user-1" }
+    });
+    expect([...values.values()].join(" ")).not.toMatch(/refresh|password|1234/i);
+    clearCachedAuthSession();
+    expect(readCachedAuthSession()).toBeNull();
+  });
+
+  it("classifies pending bootstrap states and exposes every activation progress label", () => {
+    expect(isAuthBootstrapPending("initializing")).toBe(true);
+    expect(isAuthBootstrapPending("restoring-session")).toBe(true);
+    expect(isAuthBootstrapPending("authenticated")).toBe(false);
+    expect(modelActivationMessage("validating-installation")).toBe("Checking installation…");
+    expect(modelActivationMessage("creating-runtime-session")).toBe("Starting model runtime…");
+    expect(modelActivationMessage("health-checking")).toBe("Testing model…");
+    expect(modelActivationMessage("failed")).toBe("Retry activation");
+  });
+});
+
+function deviceHeaders(deviceId: string, includeContentType = true): Record<string, string> {
+  return {
+    ...(includeContentType ? { "content-type": "application/json" } : {}),
+    "x-soko-device-id": deviceId,
+    "x-soko-device-name": `${deviceId} name`,
+    "x-soko-platform": "android",
+    "x-soko-client": "pwa",
+    "user-agent": "Soko test device"
+  };
+}
+
+function cookieHeader(header: string | string[] | undefined): string {
+  const values = Array.isArray(header) ? header : header === undefined ? [] : [header];
+  const cookies = values.flatMap((value) => value.split(/,(?=\s*[^;,]+=)/u));
+  if (cookies.length < 2) throw new Error("Expected access and refresh cookies.");
+  return cookies.map((cookie) => cookie.trim().split(";")[0]).join("; ");
+}

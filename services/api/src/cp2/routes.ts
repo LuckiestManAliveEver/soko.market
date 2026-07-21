@@ -52,14 +52,18 @@ import type {
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
 import {
+  clearRefreshCookie,
   clearSessionCookie,
   Cp2Error,
   createCp2Store,
   isSupportedLanguage,
+  readRefreshCookie,
   readSessionCookie,
+  serializeRefreshCookie,
   serializeSessionCookie,
   type BusinessAgentProfileInput,
   type Cp2Store,
+  type DeviceSessionMetadata,
   type PhoneContactNetworkInput,
   type RuntimeAgentProfile,
   type SocialProfileNetworkInput
@@ -1124,7 +1128,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   app.post("/auth/otp/verify", async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
     try {
       const result = await verifyOtpForBody(request.body);
-      reply.header("set-cookie", serializeSessionCookie(result.session.id));
+      setAuthSessionCookies(reply, request, store, result.session.id);
       return result;
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -1136,7 +1140,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1149,7 +1153,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody(request.body);
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1162,7 +1166,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "email" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1175,7 +1179,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1188,7 +1192,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1201,7 +1205,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "email" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1214,7 +1218,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1276,7 +1280,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           rpId: relyingParty.rpId,
           response: parsePasskeyResponse<AuthenticationResponseJSON>(request.body.response)
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1389,7 +1393,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           tokens: request.body.tokens,
           profile: request.body.profile
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1409,7 +1413,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           tokens: request.body.tokens,
           profile: request.body.profile
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1447,7 +1451,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           csrfToken: request.query.csrfToken,
           code: request.query.code
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1485,7 +1489,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           csrfToken: request.query.csrfToken,
           code: request.query.code
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1607,7 +1611,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         destination: parseString(request.body.contact ?? request.body.destination, "contact"),
         pin: parseString(request.body.pin, "pin")
       });
-      reply.header("set-cookie", serializeSessionCookie(result.session.id));
+      setAuthSessionCookies(reply, request, store, result.session.id);
       return result;
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -1660,7 +1664,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         },
         "Owner session created."
       );
-      reply.header("set-cookie", serializeSessionCookie(result.session.id));
+      setAuthSessionCookies(reply, request, store, result.session.id);
       return result;
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -1688,7 +1692,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           recoveryCode: parseString(request.body.recoveryCode, "recoveryCode"),
           pin: parseString(request.body.pin, "pin")
         });
-        reply.header("set-cookie", serializeSessionCookie(result.session.id));
+        setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1717,6 +1721,77 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     );
     return session;
   });
+
+  app.get("/auth/bootstrap", async (request, reply) => {
+    const session = store.getSession(readSessionCookie(request.headers.cookie));
+    if (session === null) {
+      return reply.code(401).send({
+        code: "auth_session_expired",
+        message: "The access session must be refreshed."
+      });
+    }
+    const deviceSession = store
+      .listDeviceSessions(session.session.id)
+      .find((candidate) => candidate.current);
+    if (deviceSession === undefined) {
+      return reply.code(401).send({
+        code: "auth_session_expired",
+        message: "The device session is no longer active."
+      });
+    }
+    return { authenticated: true, ...session, deviceSession };
+  });
+
+  app.post("/auth/session/refresh", async (request, reply) => {
+    try {
+      const refreshed = store.refreshSessionCredential({
+        refreshToken: readRefreshCookie(request.headers.cookie),
+        metadata: readDeviceSessionMetadata(request)
+      });
+      reply.header("set-cookie", [
+        serializeSessionCookie(refreshed.session.id),
+        serializeRefreshCookie(refreshed.refreshToken)
+      ]);
+      return {
+        authenticated: true,
+        account: refreshed.account,
+        user: refreshed.user,
+        session: refreshed.session,
+        deviceSession: refreshed.deviceSession
+      };
+    } catch (error) {
+      if (error instanceof Cp2Error && error.statusCode === 401) {
+        reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+      }
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/auth/sessions", async (request, reply) => {
+    try {
+      return { sessions: store.listDeviceSessions(readSessionCookie(request.headers.cookie)) };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.delete(
+    "/auth/sessions/:sessionId",
+    async (request: FastifyRequest<{ Params: { sessionId: string } }>, reply) => {
+      try {
+        const revoked = store.revokeDeviceSession({
+          sessionId: readSessionCookie(request.headers.cookie),
+          targetSessionId: parseString(request.params.sessionId, "sessionId")
+        });
+        if (revoked.current) {
+          reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+        }
+        return revoked;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get("/auth/session", async (request, reply) => {
     const session = store.getSession(readSessionCookie(request.headers.cookie));
@@ -2601,7 +2676,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/logout", async (request, reply) => {
     const revoked = store.logout(readSessionCookie(request.headers.cookie));
-    reply.header("set-cookie", clearSessionCookie());
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
     return {
       revoked
     };
@@ -2609,7 +2684,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/api/auth/logout", async (request, reply) => {
     const revoked = store.logout(readSessionCookie(request.headers.cookie));
-    reply.header("set-cookie", clearSessionCookie());
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
     return {
       revoked
     };
@@ -2617,13 +2692,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/logout-all", async (request, reply) => {
     const result = store.logoutAll(readSessionCookie(request.headers.cookie));
-    reply.header("set-cookie", clearSessionCookie());
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
     return result;
   });
 
   app.post("/api/auth/logout-all", async (request, reply) => {
     const result = store.logoutAll(readSessionCookie(request.headers.cookie));
-    reply.header("set-cookie", clearSessionCookie());
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
     return result;
   });
 
@@ -6468,6 +6543,35 @@ const businessPermissions: BusinessPermission[] = [
   "launch:write",
   "launch:support"
 ];
+
+function setAuthSessionCookies(
+  reply: FastifyReply,
+  request: FastifyRequest,
+  store: Cp2Store,
+  sessionId: string
+): void {
+  store.prepareDeviceSession(sessionId, readDeviceSessionMetadata(request));
+  reply.header("set-cookie", [
+    serializeSessionCookie(sessionId),
+    serializeRefreshCookie(store.consumeSessionRefreshToken(sessionId))
+  ]);
+}
+
+function readDeviceSessionMetadata(request: FastifyRequest): DeviceSessionMetadata {
+  return {
+    deviceId: readHeader(request, "x-soko-device-id") ?? "unknown-device",
+    deviceName: readHeader(request, "x-soko-device-name") ?? "This device",
+    platform: readHeader(request, "x-soko-platform") ?? "unknown",
+    browserOrApp: readHeader(request, "x-soko-client") ?? "web",
+    userAgent: request.headers["user-agent"] ?? ""
+  };
+}
+
+function readHeader(request: FastifyRequest, name: string): string | null {
+  const value = request.headers[name];
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {
   if (error instanceof Cp2Error) {

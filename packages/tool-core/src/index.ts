@@ -64,6 +64,25 @@ export interface ParseResult {
 
 export type RuntimeToolRisk = "low" | "medium" | "high" | "critical";
 
+export interface ToolExecutionContext {
+  accountId: string;
+  userId: string;
+  businessId: string;
+  runtimeSessionId: string;
+  permissions: string[];
+  idempotencyKey: string;
+  confirmed: boolean;
+}
+
+export interface AgentTool<TInput extends Record<string, unknown>, TOutput> {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  requiredPermission: string;
+  riskLevel: "read" | "write" | "destructive";
+  execute(context: ToolExecutionContext, input: TInput): Promise<TOutput>;
+}
+
 export type RuntimeToolName =
   | "products.list"
   | "invoices.list"

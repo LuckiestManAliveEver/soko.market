@@ -107,7 +107,9 @@ describe("API persistence acknowledgement barrier", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.headers["set-cookie"]).toContain("soko_session=");
+    expect(response.cookies.map((cookie) => cookie.name)).toEqual(
+      expect.arrayContaining(["soko_session", "soko_refresh"])
+    );
     expect(response.json()).toMatchObject({
       account: { primaryAuthDestination: phone },
       session: { id: expect.any(String) }
@@ -116,7 +118,9 @@ describe("API persistence acknowledgement barrier", () => {
     const authenticated = await app.inject({
       method: "GET",
       url: "/session",
-      headers: { cookie: response.headers["set-cookie"] as string }
+      headers: {
+        cookie: response.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+      }
     });
     expect(authenticated.statusCode).toBe(200);
     expect(authenticated.json()).toMatchObject({

@@ -152,7 +152,7 @@ describe("compulsory owner phone identity", () => {
     ).toThrowError(
       expect.objectContaining({
         statusCode: 401,
-        code: "recent_authentication_required"
+        code: "auth_required"
       })
     );
   });

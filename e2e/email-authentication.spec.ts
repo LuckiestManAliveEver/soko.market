@@ -14,7 +14,7 @@ test("signs up and later logs in with the same email and PIN", async ({ page }) 
       primaryAuthDestination: email
     },
     user: { id: "email-browser-user", displayName: email, language: "en" },
-    session: { expiresAt: "2099-01-01T00:00:00.000Z" }
+    session: { id: "email-browser-session", expiresAt: "2099-01-01T00:00:00.000Z" }
   };
 
   await page.route("http://127.0.0.1:4000/**", async (route) => {
@@ -24,10 +24,10 @@ test("signs up and later logs in with the same email and PIN", async ({ page }) 
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (path === "/auth/oauth/providers") return json({ providers: [] });
-    if (path === "/session") {
+    if (path === "/session" || path === "/auth/bootstrap") {
       return sessionActive
         ? json(session)
-        : json({ code: "auth_required", message: "Authentication is required." }, 401);
+        : json({ code: "auth_session_expired", message: "Authentication is required." }, 401);
     }
     if (path === "/v1/marketplace-intro") return json({ completedAt: null });
     if (path === "/auth/otp/request" && request.method() === "POST") {

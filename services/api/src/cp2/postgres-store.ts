@@ -153,6 +153,9 @@ const mutatingMethodNames = new Set([
   "recordBetaDeviceTest",
   "recordBetaTelemetry",
   "recordPayment",
+  "prepareDeviceSession",
+  "refreshSessionCredential",
+  "revokeDeviceSession",
   "rejectAgentRoute",
   "replaySyncQueue",
   "replaySyncQueueItem",
@@ -1439,6 +1442,17 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: string;
     account_id: string;
     user_id: string;
+    device_id: string;
+    device_name: string;
+    platform: string;
+    browser_or_app: string;
+    user_agent_hash: string;
+    refresh_token_hash: string;
+    session_family_id: string;
+    refresh_expires_at: Date;
+    last_used_at: Date;
+    rotated_at: Date | null;
+    revocation_reason: string | null;
     expires_at: Date;
     pin_verified_at: Date | null;
     revoked_at: Date | null;
@@ -1446,12 +1460,27 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
   }>(
     pool,
     "load sessions",
-    "select id, account_id, user_id, expires_at, pin_verified_at, revoked_at, created_at from sessions order by created_at, id"
+    `select id, account_id, user_id, device_id, device_name, platform, browser_or_app,
+            user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
+            last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
+            revoked_at, created_at
+       from sessions order by created_at, id`
   );
   snapshot.sessions = sessionsResult.rows.map((row) => ({
     id: row.id,
     accountId: row.account_id,
     userId: row.user_id,
+    deviceId: row.device_id,
+    deviceName: row.device_name,
+    platform: row.platform,
+    browserOrApp: row.browser_or_app,
+    userAgentHash: row.user_agent_hash,
+    refreshTokenHash: row.refresh_token_hash,
+    sessionFamilyId: row.session_family_id,
+    refreshExpiresAt: timestampToIso(row.refresh_expires_at),
+    lastUsedAt: timestampToIso(row.last_used_at),
+    rotatedAt: row.rotated_at === null ? null : timestampToIso(row.rotated_at),
+    revocationReason: row.revocation_reason,
     expiresAt: timestampToIso(row.expires_at),
     pinVerifiedAt: row.pin_verified_at === null ? null : timestampToIso(row.pin_verified_at),
     revokedAt: row.revoked_at === null ? null : timestampToIso(row.revoked_at),
@@ -2243,9 +2272,25 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.sessions)) {
     await client.query(
       `
-        insert into sessions (id, account_id, user_id, expires_at, pin_verified_at, revoked_at, created_at)
-        values ($1, $2, $3, $4, $5, $6, $7)
+        insert into sessions (
+          id, account_id, user_id, device_id, device_name, platform, browser_or_app,
+          user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
+          last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
+          revoked_at, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         on conflict (id) do update set
+          device_id = excluded.device_id,
+          device_name = excluded.device_name,
+          platform = excluded.platform,
+          browser_or_app = excluded.browser_or_app,
+          user_agent_hash = excluded.user_agent_hash,
+          refresh_token_hash = excluded.refresh_token_hash,
+          session_family_id = excluded.session_family_id,
+          refresh_expires_at = excluded.refresh_expires_at,
+          last_used_at = excluded.last_used_at,
+          rotated_at = excluded.rotated_at,
+          revocation_reason = excluded.revocation_reason,
           expires_at = excluded.expires_at,
           pin_verified_at = excluded.pin_verified_at,
           revoked_at = excluded.revoked_at
@@ -2254,6 +2299,17 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "id"),
         requiredText(record, "accountId"),
         requiredText(record, "userId"),
+        requiredText(record, "deviceId"),
+        requiredText(record, "deviceName"),
+        requiredText(record, "platform"),
+        requiredText(record, "browserOrApp"),
+        requiredText(record, "userAgentHash"),
+        requiredText(record, "refreshTokenHash"),
+        requiredText(record, "sessionFamilyId"),
+        requiredText(record, "refreshExpiresAt"),
+        requiredText(record, "lastUsedAt"),
+        firstText(record, ["rotatedAt"]),
+        firstText(record, ["revocationReason"]),
         requiredText(record, "expiresAt"),
         firstText(record, ["pinVerifiedAt"]),
         firstText(record, ["revokedAt"]),
