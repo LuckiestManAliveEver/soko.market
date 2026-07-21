@@ -2835,7 +2835,9 @@ export class Cp2Store {
     );
     if (existing !== undefined) return { ...existing };
 
-    const modelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const preferredModelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const modelId = resolveDefaultDeviceModelId(preferredModelId);
+    const usingDeviceFallback = modelId !== preferredModelId;
     return {
       agentId: input.businessId,
       businessId: input.businessId,
@@ -2849,7 +2851,7 @@ export class Cp2Store {
       readinessStatus: "READY",
       runtimeBackend: modelId.startsWith("openai") ? "CLOUD" : "OLLAMA",
       lastSuccessfulInferenceAt: null,
-      lastErrorCode: null,
+      lastErrorCode: usingDeviceFallback ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null,
       updatedAt: now.toISOString(),
       updatedBy: session.user.id
     };
@@ -15360,6 +15362,7 @@ function marketplaceIntroStateKey(accountId: string, businessId: string | null):
 }
 
 const defaultAiModelId = "qwen2.5-0.5b-android";
+const defaultCloudAiModelId = process.env.INFERENCE_DEFAULT_CLOUD_MODEL_ID?.trim() || "openai-fast";
 const downloadableAiModelIdPattern =
   /^(?:custom:[a-z0-9][a-z0-9._-]{0,79}|github:[a-z0-9][a-z0-9._-]{0,149}|huggingface:[a-z0-9][a-z0-9._-]{0,167})$/;
 const documentUploadContextScript = [
@@ -15608,6 +15611,32 @@ const aiModelRegistry: AiModelSummary[] = [
     recommended: false
   }
 ];
+
+function resolveDefaultDeviceModelId(preferredModelId: string): string {
+  const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);
+  if (
+    preferredModel?.provider === "openai" &&
+    preferredModel.source === "hosted" &&
+    preferredModel.available
+  ) {
+    return preferredModel.id;
+  }
+
+  const configuredDefault = aiModelRegistry.find(
+    (model) =>
+      model.id === defaultCloudAiModelId &&
+      model.provider === "openai" &&
+      model.source === "hosted" &&
+      model.available
+  );
+  if (configuredDefault !== undefined) return configuredDefault.id;
+
+  return (
+    aiModelRegistry.find(
+      (model) => model.provider === "openai" && model.source === "hosted" && model.available
+    )?.id ?? "sokoclaw-local"
+  );
+}
 
 function validateConversationMessageContent(content: ConversationMessageContent): void {
   switch (content.type) {

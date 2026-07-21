@@ -100,6 +100,34 @@ export function assignmentFromServer(
   };
 }
 
+export function isDeviceCloudFallbackAssignment(assignment: DeviceAgentModelAssignment): boolean {
+  return (
+    assignment.activeModelInstallationId === null &&
+    assignment.preferredExecutionMode === "CLOUD_ONLY" &&
+    assignment.runtimeBackend === "CLOUD" &&
+    assignment.modelId?.startsWith("openai-") === true
+  );
+}
+
+export function assignmentWithCloudFallback(
+  assignment: DeviceAgentModelAssignment,
+  cloudModelId: string,
+  updatedAt = new Date().toISOString()
+): DeviceAgentModelAssignment {
+  return {
+    ...assignment,
+    activeModelInstallationId: null,
+    modelId: cloudModelId,
+    preferredExecutionMode: "CLOUD_ONLY",
+    fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+    readinessStatus: "READY",
+    runtimeBackend: "CLOUD",
+    lastSuccessfulInferenceAt: null,
+    lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
+    updatedAt
+  };
+}
+
 export function clearDeviceAgentModelAssignment(businessId: string, deviceId: string): void {
   localStorage.setItem(
     assignmentStorageKey,

@@ -95,6 +95,36 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
   await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
 });
 
+test("a switched device offers the hosted default without silently granting consent", async ({
+  page
+}) => {
+  await page.setExtraHTTPHeaders({ "x-soko-test-device-switch": "true" });
+  await page.goto("/sell");
+
+  const fallback = page.getByRole("region", { name: "Use the cloud model here?" });
+  await expect(fallback).toBeVisible({ timeout: 15_000 });
+  const beforeConsent = await page.evaluate(() =>
+    localStorage.getItem("soko.client-inference-preferences.v1")
+  );
+  expect(beforeConsent).toBeNull();
+
+  await fallback.getByRole("button", { name: "Use cloud on this device" }).click();
+  await expect(fallback).toBeHidden();
+  await expect(
+    page.getByText("Hosted cloud inference is enabled for this shop on this device.")
+  ).toBeVisible();
+  const preferences = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("soko.client-inference-preferences.v1") ?? "[]")
+  );
+  expect(preferences).toEqual([
+    expect.objectContaining({
+      accountId: "responsive-account",
+      businessId: "responsive-certification-shop",
+      cloudConsent: true
+    })
+  ]);
+});
+
 test("SMS handoff confirms cost, normalizes the recipient, and preserves the draft", async ({
   page
 }) => {
@@ -498,6 +528,26 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
+    if (path.endsWith("/agent-model")) {
+      const switchedDevice = route.request().headers()["x-soko-test-device-switch"] === "true";
+      return json({
+        agentId: "responsive-certification-shop",
+        businessId: "responsive-certification-shop",
+        accountId: "responsive-account",
+        userId: "responsive-user",
+        deviceId: "responsive-model-device",
+        activeModelInstallationId: null,
+        modelId: switchedDevice ? "openai-fast" : "sokoclaw-local",
+        preferredExecutionMode: "CLOUD_ONLY",
+        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+        readinessStatus: "READY",
+        runtimeBackend: switchedDevice ? "CLOUD" : "OLLAMA",
+        lastSuccessfulInferenceAt: null,
+        lastErrorCode: switchedDevice ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null,
+        updatedAt: "2026-07-21T00:00:00.000Z",
+        updatedBy: "responsive-user"
+      });
+    }
     if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });
     if (path.endsWith("/social-accounts")) return json({ accounts: [] });
     if (path.endsWith("/shop-deletion/preview")) {

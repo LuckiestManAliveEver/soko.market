@@ -94,8 +94,10 @@ import {
 import {
   assignmentAfterReadiness,
   assignmentFromServer,
+  assignmentWithCloudFallback,
   clearDeviceAgentModelAssignment,
   createPendingDeviceAssignment,
+  isDeviceCloudFallbackAssignment,
   readDeviceAgentModelAssignment,
   saveDeviceAgentModelAssignment,
   type DeviceAgentModelAssignment
@@ -2093,6 +2095,7 @@ export function OwnerApp() {
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
+  const [deviceCloudFallbackModelId, setDeviceCloudFallbackModelId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
@@ -2577,6 +2580,37 @@ export function OwnerApp() {
             "Your shop is open, but its agent session could not start. Retry from chat."
           );
         });
+
+      void restoreDeviceModelForLaunch(businessId)
+        .then((restoredAssignment) => {
+          const modelId = restoredAssignment.modelId;
+          if (cancelled || modelId === null) return;
+          setAgentSettings((current) => ({ ...current, model: modelId }));
+          if (!isDeviceCloudFallbackAssignment(restoredAssignment)) return;
+
+          const preferences = readClientInferencePreferences(accountId, businessId);
+          if (preferences.cloudConsent) {
+            setStatusMessage(
+              "This device is using the hosted cloud model because no ready local model is available."
+            );
+            return;
+          }
+          setDeviceCloudFallbackModelId(modelId);
+          setStatusMessage(
+            "Your local model stays on the other device. Choose whether to use the hosted model here."
+          );
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          console.info(
+            JSON.stringify({
+              event: "model.device_fallback_restore_failed",
+              accountId,
+              businessId,
+              errorCode: getErrorMessage(error)
+            })
+          );
+        });
     }
 
     const deviceId = getOrCreateDeviceModelScopeId();
@@ -2621,6 +2655,15 @@ export function OwnerApp() {
         );
         if (!result.success) {
           setStatusMessage(`${result.message} Your account remains signed in.`);
+          void switchDeviceToCloudFallback(assignment).then((fallbackAssignment) => {
+            const modelId = fallbackAssignment?.modelId ?? null;
+            if (cancelled || fallbackAssignment === null || modelId === null) return;
+            setAgentSettings((current) => ({ ...current, model: modelId }));
+            const preferences = readClientInferencePreferences(accountId, businessId);
+            if (!preferences.cloudConsent) {
+              setDeviceCloudFallbackModelId(modelId);
+            }
+          });
         }
       });
     }
@@ -4326,6 +4369,67 @@ export function OwnerApp() {
     });
     runtimeRestoreInFlightRef.current = restore;
     return restore;
+  }
+
+  async function restoreDeviceModelForLaunch(
+    businessId: string
+  ): Promise<DeviceAgentModelAssignment> {
+    const deviceId = getOrCreateDeviceModelScopeId();
+    const serverAssignment = assignmentFromServer(
+      await getJson<AgentModelAssignmentSummary>(
+        `/businesses/${businessId}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+      )
+    );
+    const installationAvailable =
+      serverAssignment.activeModelInstallationId === null ||
+      listLocalAiModels().some((model) => model.id === serverAssignment.activeModelInstallationId);
+    const restoredAssignment = installationAvailable
+      ? serverAssignment
+      : ((await switchDeviceToCloudFallback(serverAssignment)) ?? serverAssignment);
+    saveDeviceAgentModelAssignment(restoredAssignment);
+    return restoredAssignment;
+  }
+
+  async function switchDeviceToCloudFallback(
+    assignment: DeviceAgentModelAssignment
+  ): Promise<DeviceAgentModelAssignment | null> {
+    if (!navigator.onLine || !clientInferenceFeatureFlags.cloudFallback) return null;
+    const registry = await getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({
+      models: []
+    }));
+    const cloudModel =
+      registry.models.find(
+        (model) =>
+          model.id === "openai-fast" &&
+          model.available &&
+          model.provider === "openai" &&
+          model.source === "hosted"
+      ) ??
+      registry.models.find(
+        (model) => model.available && model.provider === "openai" && model.source === "hosted"
+      );
+    if (cloudModel === undefined) return null;
+    const fallbackAssignment = assignmentWithCloudFallback(assignment, cloudModel.id);
+    saveDeviceAgentModelAssignment(fallbackAssignment);
+    return fallbackAssignment;
+  }
+
+  function enableDeviceCloudFallback() {
+    if (session === null || business === null || deviceCloudFallbackModelId === null) return;
+    const preferences = readClientInferencePreferences(session.account.id, business.id);
+    saveClientInferencePreferences(session.account.id, business.id, {
+      ...preferences,
+      cloudConsent: true
+    });
+    setAgentSettings((current) => ({ ...current, model: deviceCloudFallbackModelId }));
+    setDeviceCloudFallbackModelId(null);
+    setStatusMessage("Hosted cloud inference is enabled for this shop on this device.");
+  }
+
+  function declineDeviceCloudFallback() {
+    setDeviceCloudFallbackModelId(null);
+    setAgentSettings((current) => ({ ...current, model: "sokoclaw-local" }));
+    setStatusMessage("Hosted inference remains off. Compatibility mode is active on this device.");
   }
 
   async function loadRuntimeTurns(businessId: string, sessionId: string) {
@@ -7552,6 +7656,32 @@ export function OwnerApp() {
                 notificationCount={notificationInbox.summary.unread}
                 onNavigate={navigateToView}
               />
+            ) : null}
+            {deviceCloudFallbackModelId !== null ? (
+              <section
+                className="device-model-fallback-notice"
+                aria-labelledby="device-model-fallback-title"
+              >
+                <div>
+                  <strong id="device-model-fallback-title">Use the cloud model here?</strong>
+                  <p>
+                    This device does not have a ready copy of your preferred local model. Soko can
+                    use its configured hosted model while leaving the other device unchanged.
+                  </p>
+                </div>
+                <div className="device-model-fallback-actions">
+                  <button type="button" onClick={enableDeviceCloudFallback}>
+                    Use cloud on this device
+                  </button>
+                  <button className="secondary" type="button" onClick={declineDeviceCloudFallback}>
+                    Keep hosted inference off
+                  </button>
+                </div>
+                <small>
+                  The first option sends chat context to the configured hosted provider. You can
+                  turn it off later in Agent settings.
+                </small>
+              </section>
             ) : null}
             <ChatSurface
               activeView={view}
@@ -13233,13 +13363,15 @@ function AgentProfileSurface({
           )
         )
       );
+      const deviceSelection = readDeviceAgentModelAssignment(business.id, deviceId);
+      const effectiveModelId = deviceSelection?.modelId ?? active.modelId;
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
-      setActiveAiModelId(active.modelId);
+      setActiveAiModelId(effectiveModelId);
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
-      if (!isEditing && isAgentModel(active.modelId)) {
-        setDraftAgent((current) => ({ ...current, model: active.modelId }));
+      if (!isEditing && isAgentModel(effectiveModelId)) {
+        setDraftAgent((current) => ({ ...current, model: effectiveModelId }));
       }
     } catch (error) {
       const matchingDefaults = offlineDefaults.filter((model) =>
@@ -13417,7 +13549,19 @@ function AgentProfileSurface({
         `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
       );
       if (server.activeModelInstallationId === null) {
-        if (local === null) setAgentModelAssignment(null);
+        const restored = assignmentFromServer(server);
+        saveDeviceAgentModelAssignment(restored);
+        setAgentModelAssignment(restored);
+        if (restored.modelId !== null) {
+          setActiveAiModelId(restored.modelId);
+          updateAgent({ model: restored.modelId });
+          onAgentChange({ ...agent, model: restored.modelId });
+        }
+        if (isDeviceCloudFallbackAssignment(restored) && !inferencePreferences.cloudConsent) {
+          setProfileMessage(
+            "This device defaults to the hosted model because the preferred local model is not installed here. Enable hosted cloud fallback before sending business context."
+          );
+        }
         return;
       }
       const restored = assignmentFromServer(server);
@@ -14251,6 +14395,10 @@ function AgentProfileSurface({
           (model) => model.id === agentModelAssignment.activeModelInstallationId
         ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
+  const cloudFallbackConsentRequired =
+    agentModelAssignment !== null &&
+    isDeviceCloudFallbackAssignment(agentModelAssignment) &&
+    !inferencePreferences.cloudConsent;
   const backendModels = visibleAiModels.filter(
     (model) => model.format === "remote" && model.id !== "sokoclaw-local"
   );
@@ -14365,7 +14513,11 @@ function AgentProfileSurface({
                 <span className="model-badge">
                   {activeAiModelId === "sokoclaw-local" ? "Compatibility fallback" : "Backend"}
                 </span>
-                <span className="model-badge status-ready">Active</span>
+                <span
+                  className={`model-badge ${cloudFallbackConsentRequired ? "status-loading" : "status-ready"}`}
+                >
+                  {cloudFallbackConsentRequired ? "Consent required" : "Active"}
+                </span>
               </div>
               <h4>{activeAiModel?.label ?? activeAiModelId}</h4>
               <p>
@@ -14375,9 +14527,11 @@ function AgentProfileSurface({
                     : "This model is managed by the backend inference runtime.")}
               </p>
               <small>
-                {activeAiModelId === "sokoclaw-local"
-                  ? "This compatibility profile is not a general-purpose language model."
-                  : `Backend model ID: ${activeAiModelId}`}
+                {cloudFallbackConsentRequired
+                  ? "Hosted inference remains off until you explicitly enable it on this device."
+                  : activeAiModelId === "sokoclaw-local"
+                    ? "This compatibility profile is not a general-purpose language model."
+                    : `Backend model ID: ${activeAiModelId}`}
               </small>
             </article>
           ) : (

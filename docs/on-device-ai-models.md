@@ -64,6 +64,24 @@ Hosted OpenAI profiles are enabled when the API has `OPENAI_API_KEY`. They are p
 the OpenAI Responses API and can be configured with `OPENAI_FAST_MODEL` and
 `OPENAI_REASONING_MODEL`.
 
+## Device-switch and resource fallback
+
+A local installation belongs to one device; selecting it must not imply that its GGUF file exists
+on another phone. When a signed-in device has no runnable copy of the business's preferred local
+model, the API returns a device-only assignment for the configured hosted default
+(`INFERENCE_DEFAULT_CLOUD_MODEL_ID`, normally `openai-fast`). This does not replace the original
+device's local assignment or the business's preferred model.
+
+Before any chat context is sent to the hosted provider, the new device displays a consent prompt.
+Declining keeps hosted inference off and uses Soko's deterministic compatibility mode. Accepting
+stores consent only for that account and shop on the current device. The existing inference ladder
+then works around local constraints in this order: healthy native model, supported browser model,
+trusted owner device, consented hosted model, and deterministic server behavior.
+
+If no allow-listed hosted provider is healthy, the device assignment resolves to the deterministic
+compatibility model rather than advertising an unavailable cloud model. The API key remains
+server-only, and token budgets, timeouts, retry limits, and the cloud circuit breaker still apply.
+
 The phone ranks compatible Hugging Face and GitHub candidates using reported RAM, free private
 storage, model size, useful capabilities, and catalog recommendations. An install remains a
 merchant-initiated action. Before a downloaded file is retained, the browser checks the GGUF magic
