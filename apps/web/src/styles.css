@@ -3487,7 +3487,8 @@ details.nested-form-section summary {
   justify-items: stretch;
 }
 
-.sms-send-button {
+.sms-send-button,
+.share-send-button {
   background: #eef7f1;
   border: 1px solid #b9d9c6;
   border-radius: 8px;
@@ -3499,11 +3500,27 @@ details.nested-form-section summary {
   white-space: nowrap;
 }
 
+.share-send-button {
+  background: #eef3fa;
+  border-color: #bfd0e5;
+  color: #25486f;
+}
+
+.external-share-notice {
+  background: #fff8e8;
+  border: 1px solid #ead49b;
+  border-radius: 8px;
+  color: #5e4611;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  padding: 8px 10px;
+}
+
 .new-conversation-actions,
 .sms-handoff-actions {
   display: grid;
   gap: 8px;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 .sms-handoff-backdrop {

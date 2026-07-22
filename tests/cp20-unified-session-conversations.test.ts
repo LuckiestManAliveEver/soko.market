@@ -329,6 +329,25 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       normalizedErrorCode: null
     });
 
+    const platformHandoff = await postJson<MessageHandoffSummary>(
+      app,
+      "/v1/message-handoffs",
+      {
+        businessId: shop.business.id,
+        conversationId: conversation.conversation.id,
+        channel: "platform_share_sheet",
+        status: "share_completed",
+        normalizedErrorCode: null
+      },
+      ownerCookie
+    );
+    expect(platformHandoff).toMatchObject({
+      accountId: context.accountId,
+      channel: "platform_share_sheet",
+      status: "share_completed",
+      normalizedErrorCode: null
+    });
+
     const ownerControlsOutsideSellerMode = await postResponse(
       app,
       "/v1/messages",

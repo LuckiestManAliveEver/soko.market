@@ -162,6 +162,7 @@ import {
 } from "./messaging/outbox";
 import { SmsHandoffDialog, type SmsHandoffRequest } from "./messaging/SmsHandoffDialog";
 import { normalizeSmsRecipient } from "./messaging/sms-handoff";
+import { shareMessageExternally } from "./messaging/platform-handoff";
 import {
   AccountRestorationPanel,
   type AccountRestorationResult
@@ -5902,17 +5903,29 @@ export function OwnerApp() {
     }).catch(() => undefined);
   }
 
-  function recordSmsHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+  function recordMessageHandoff(
+    channel: "sms_external_app" | "platform_share_sheet",
+    status: MessageHandoffStatus,
+    normalizedErrorCode: string | null
+  ) {
     if (session === null) return;
     void postJson("/v1/message-handoffs", {
       businessId: business?.id ?? null,
       conversationId: activeConversationId,
-      channel: "sms_external_app",
+      channel,
       status,
       normalizedErrorCode
     }).catch(() => {
-      // SMS composer use must not be blocked by optional telemetry.
+      // External handoffs must not be blocked by optional telemetry.
     });
+  }
+
+  function recordSmsHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+    recordMessageHandoff("sms_external_app", status, normalizedErrorCode);
+  }
+
+  function recordPlatformHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+    recordMessageHandoff("platform_share_sheet", status, normalizedErrorCode);
   }
 
   async function retryQueuedMessages() {
@@ -7846,6 +7859,7 @@ export function OwnerApp() {
               onSend={() => void runAction("chat-send", sendChatDraft)}
               onCancelGeneration={() => void cancelBrowserGeneration()}
               onSmsHandoff={recordSmsHandoff}
+              onPlatformHandoff={recordPlatformHandoff}
             >
               {renderActiveWorkspace()}
             </ChatSurface>
@@ -16356,6 +16370,7 @@ interface ChatSurfaceProps {
   onSend: () => void;
   onCancelGeneration: () => void;
   onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
+  onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
 }
 
 function ChatSurface({
@@ -16437,7 +16452,8 @@ function ChatSurface({
   onConfirm,
   onSend,
   onCancelGeneration,
-  onSmsHandoff
+  onSmsHandoff,
+  onPlatformHandoff
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -16451,6 +16467,7 @@ function ChatSurface({
   const [editingMessageText, setEditingMessageText] = useState("");
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
+  const [externalShareNotice, setExternalShareNotice] = useState<string | null>(null);
   const workspaceDialogRef = useRef<HTMLElement | null>(null);
   const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
@@ -16490,6 +16507,23 @@ function ChatSurface({
       label: label.trim() || "SMS recipient",
       recipient: normalizedCandidate || recipient
     });
+  }
+
+  async function openPlatformHandoff(label: string) {
+    const result = await shareMessageExternally({
+      text: chatDraft,
+      title: label.trim() ? `Message for ${label.trim()}` : "Message from Soko"
+    });
+    onPlatformHandoff(result.status, result.errorCode);
+    setExternalShareNotice(
+      result.status === "share_completed"
+        ? "Handed to your selected app. Delivery status stays with that app."
+        : result.status === "copied_to_clipboard"
+          ? "Message copied. Paste it into any messaging app or connected-device service."
+          : result.status === "share_unavailable"
+            ? "External sharing is not available on this device. Use SMS or copy the message manually."
+            : null
+    );
   }
 
   useEffect(() => {
@@ -16629,7 +16663,8 @@ function ChatSurface({
               />
             </label>
             <small>
-              Only registered Soko users can be messaged. Human chats are end-to-end encrypted.
+              Soko chats require a registered user and are end-to-end encrypted. SMS and external
+              apps use their own privacy and delivery rules.
             </small>
             <div className="new-conversation-actions">
               <button type="submit">Start encrypted chat</button>
@@ -16640,6 +16675,14 @@ function ChatSurface({
                 onClick={() => openSmsHandoff(newRecipient, newConversationTitle)}
               >
                 Send as SMS
+              </button>
+              <button
+                className="secondary"
+                type="button"
+                disabled={chatDraft.trim().length === 0}
+                onClick={() => void openPlatformHandoff(newConversationTitle)}
+              >
+                Share to apps
               </button>
             </div>
           </form>
@@ -17242,6 +17285,15 @@ function ChatSurface({
                 Send as SMS
               </button>
               <button
+                className="share-send-button"
+                type="button"
+                disabled={chatDraft.trim().length === 0}
+                title="Share outside Soko using an installed app or connected-device service"
+                onClick={() => void openPlatformHandoff(selectedConversation?.title ?? "")}
+              >
+                Share to apps
+              </button>
+              <button
                 className="send-button"
                 type="button"
                 onClick={onSend}
@@ -17254,6 +17306,14 @@ function ChatSurface({
                 <span className="visually-hidden">Send</span>
               </button>
             </div>
+            {externalShareNotice !== null ? (
+              <small className="external-share-notice" role="status">
+                {externalShareNotice}
+                {pendingAttachments.length > 0
+                  ? " Attachments remain in Soko and were not shared."
+                  : " External messages are not covered by Soko end-to-end encryption."}
+              </small>
+            ) : null}
           </div>
         )}
         {smsHandoffRequest !== null ? (

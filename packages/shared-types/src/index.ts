@@ -263,7 +263,10 @@ export type MessageChannel =
   | "instagram_messaging"
   | "email";
 
-export type MessageComposerChannel = "soko" | "sms_external_app" | "sms_native" | "unsupported";
+export type MessageComposerChannel =
+  "soko" | "sms_external_app" | "platform_share_sheet" | "sms_native" | "unsupported";
+
+export type MessageHandoffChannel = "sms_external_app" | "platform_share_sheet";
 
 export type MessageHandoffStatus =
   | "preparing"
@@ -272,6 +275,10 @@ export type MessageHandoffStatus =
   | "invalid_recipient"
   | "cancelled_before_handoff"
   | "native_bridge_unavailable"
+  | "share_completed"
+  | "share_cancelled"
+  | "copied_to_clipboard"
+  | "share_unavailable"
   | "unsupported";
 
 export interface MessageHandoffSummary {
@@ -279,7 +286,7 @@ export interface MessageHandoffSummary {
   accountId: string;
   businessId: string | null;
   conversationId: string | null;
-  channel: "sms_external_app";
+  channel: MessageHandoffChannel;
   status: MessageHandoffStatus;
   normalizedErrorCode: string | null;
   createdAt: string;

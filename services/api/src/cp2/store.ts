@@ -47,6 +47,7 @@ import type {
   ConversationMessageSummary,
   MessageChannel,
   MessageDeliveryAttemptSummary,
+  MessageHandoffChannel,
   MessageHandoffStatus,
   MessageHandoffSummary,
   ConversationParticipantSummary,
@@ -3253,7 +3254,7 @@ export class Cp2Store {
     sessionId: string | null;
     businessId: string | null;
     conversationId: string | null;
-    channel: "sms_external_app";
+    channel: MessageHandoffChannel;
     status: MessageHandoffStatus;
     normalizedErrorCode: string | null;
     now?: Date;

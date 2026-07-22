@@ -28,6 +28,7 @@ import type {
   LaunchIncidentCategory,
   LaunchIncidentSeverity,
   LaunchIncidentStatus,
+  MessageHandoffChannel,
   MessageHandoffStatus,
   ProductFieldDefinition,
   ProductFieldInputType,
@@ -2559,7 +2560,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: MessageHandoffBody }>, reply) => {
       try {
         const channel = parseString(request.body.channel, "channel");
-        if (channel !== "sms_external_app") {
+        if (!isMessageHandoffChannel(channel)) {
           throw new Cp2Error(
             400,
             "message_handoff_channel_invalid",
@@ -4935,8 +4936,16 @@ function isMessageHandoffStatus(value: string): value is MessageHandoffStatus {
     "invalid_recipient",
     "cancelled_before_handoff",
     "native_bridge_unavailable",
+    "share_completed",
+    "share_cancelled",
+    "copied_to_clipboard",
+    "share_unavailable",
     "unsupported"
   ].includes(value);
+}
+
+function isMessageHandoffChannel(value: string): value is MessageHandoffChannel {
+  return value === "sms_external_app" || value === "platform_share_sheet";
 }
 
 function parsePasskeyResponse<T>(value: unknown): T {
