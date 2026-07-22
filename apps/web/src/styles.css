@@ -4413,6 +4413,40 @@ details.nested-form-section summary {
   min-height: 24px;
 }
 
+.model-use-button {
+  background: #b42318;
+  border: 1px solid #8f1d14;
+  color: #ffffff;
+  font-weight: 900;
+  min-height: 44px;
+}
+
+.record-form .model-use-button.not-in-use {
+  background: #b42318;
+  border-color: #8f1d14;
+}
+
+.model-use-button.in-use {
+  background: #117a4f;
+  border-color: #0b603d;
+  box-shadow: 0 0 0 3px rgb(17 122 79 / 18%);
+}
+
+.model-use-button.activating {
+  background: #a66300;
+  border-color: #7b4a00;
+}
+
+.model-use-button.in-use:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.model-use-button:focus-visible {
+  outline: 3px solid #113f67;
+  outline-offset: 2px;
+}
+
 .ai-model-card button:disabled,
 .custom-model-import button:disabled {
   cursor: not-allowed;

@@ -345,6 +345,34 @@ for (const viewport of viewportMatrix) {
   });
 }
 
+test("downloaded models show green when active and red when inactive", async ({ page }) => {
+  await page.setExtraHTTPHeaders({ "x-soko-test-local-model-buttons": "true" });
+  await page.addInitScript((models) => {
+    localStorage.setItem("soko.device-model-scope.v1", "responsive-model-device");
+    localStorage.setItem("soko.local-ai-models.v2", JSON.stringify(models));
+  }, installedModels);
+
+  await openModelLibrary(page, { width: 390, height: 844 });
+
+  const activeButton = page.getByRole("button", { name: "In use", exact: true }).first();
+  const inactiveButton = page
+    .getByRole("button", { name: "Not in use · Use model", exact: true })
+    .first();
+
+  await expect(activeButton).toBeVisible();
+  await expect(activeButton).toBeDisabled();
+  await expect(activeButton).toHaveAttribute("aria-pressed", "true");
+  await expect(inactiveButton).toBeVisible();
+  await expect(inactiveButton).toBeEnabled();
+  await expect(inactiveButton).toHaveAttribute("aria-pressed", "false");
+  expect(await activeButton.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
+    "rgb(17, 122, 79)"
+  );
+  expect(
+    await inactiveButton.evaluate((element) => getComputedStyle(element).backgroundColor)
+  ).toBe("rgb(180, 35, 24)");
+});
+
 test("WCAG 2.2 A/AA automated accessibility scan", async ({ page }) => {
   test.setTimeout(120_000);
   for (const viewport of [
@@ -436,7 +464,13 @@ async function openModelLibrary(
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByRole("button", { name: "Predownload & install" }).first()).toBeVisible();
+  await expect(
+    page
+      .getByRole("button", {
+        name: /^(?:Predownload & install|In use|Not in use · Use model)$/u
+      })
+      .first()
+  ).toBeVisible();
 }
 
 async function expectNoViewportOverflow(page: Page): Promise<void> {
@@ -530,19 +564,29 @@ async function installApiMocks(page: Page): Promise<void> {
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
     if (path.endsWith("/agent-model")) {
       const switchedDevice = route.request().headers()["x-soko-test-device-switch"] === "true";
+      const localModelButtons =
+        route.request().headers()["x-soko-test-local-model-buttons"] === "true";
       return json({
         agentId: "responsive-certification-shop",
         businessId: "responsive-certification-shop",
         accountId: "responsive-account",
         userId: "responsive-user",
         deviceId: "responsive-model-device",
-        activeModelInstallationId: null,
-        modelId: switchedDevice ? "openai-fast" : "sokoclaw-local",
-        preferredExecutionMode: "CLOUD_ONLY",
+        activeModelInstallationId: localModelButtons ? "responsive-qwen-installation" : null,
+        modelId: localModelButtons
+          ? "qwen2.5-0.5b-android"
+          : switchedDevice
+            ? "openai-fast"
+            : "sokoclaw-local",
+        preferredExecutionMode: localModelButtons ? "LOCAL_FIRST" : "CLOUD_ONLY",
         fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: "READY",
-        runtimeBackend: switchedDevice ? "CLOUD" : "OLLAMA",
-        lastSuccessfulInferenceAt: null,
+        runtimeBackend: localModelButtons
+          ? "LLAMA_CPP_ANDROID"
+          : switchedDevice
+            ? "CLOUD"
+            : "OLLAMA",
+        lastSuccessfulInferenceAt: localModelButtons ? "2026-07-21T23:59:00.000Z" : null,
         lastErrorCode: switchedDevice ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null,
         updatedAt: "2026-07-21T00:00:00.000Z",
         updatedBy: "responsive-user"
@@ -671,6 +715,61 @@ const modelCatalog = [
   mockModel("qwen2.5-0.5b-android", "Qwen2.5 0.5B (Android recommended)", 491_000_000, 3, true),
   mockModel("qwen2.5-1.5b-android", "Qwen2.5 1.5B (high-end Android)", 1_120_000_000, 6)
 ];
+
+const installedModels = [
+  installedModel(
+    "responsive-qwen-installation",
+    "qwen2.5-0.5b-android",
+    "Qwen2.5 0.5B (Android recommended)",
+    "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    491_000_000
+  ),
+  installedModel(
+    "responsive-smollm-installation",
+    "smollm2-360m-android",
+    "SmolLM2 360M (Android saver)",
+    "smollm2-360m-instruct-q8_0.gguf",
+    386_000_000
+  )
+];
+
+function installedModel(
+  id: string,
+  modelId: string,
+  label: string,
+  fileName: string,
+  fileSizeBytes: number
+) {
+  return {
+    id,
+    modelId,
+    label,
+    displayName: label,
+    provider: "huggingface",
+    repositoryId: modelId.startsWith("qwen")
+      ? "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+      : "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
+    fileName,
+    storageKey: fileName,
+    format: "GGUF",
+    quantization: modelId.startsWith("qwen") ? "Q4_K_M" : "Q8_0",
+    architecture: modelId.startsWith("qwen") ? "qwen2" : "llama",
+    parameterCount: modelId.startsWith("qwen") ? 500_000_000 : 360_000_000,
+    contextLength: 2048,
+    fileSizeBytes,
+    checksum: null,
+    license: "Apache-2.0",
+    commercialUseAllowed: true,
+    runtimeBackend: "LLAMA_CPP_ANDROID",
+    installationStatus: "INSTALLED",
+    compatibilityStatus: "COMPATIBLE",
+    deviceId: "responsive-model-device",
+    storedAt: "2026-07-21T23:50:00.000Z",
+    installedAt: "2026-07-21T23:50:00.000Z",
+    lastVerifiedAt: "2026-07-21T23:51:00.000Z",
+    validationError: null
+  };
+}
 
 function mockModel(
   id: string,

@@ -14773,6 +14773,10 @@ function AgentProfileSurface({
                   (model.compatibilityStatus === "COMPATIBLE" ||
                     model.compatibilityStatus === "UNKNOWN") &&
                   model.commercialUseAllowed;
+                const modelInUse =
+                  agentModelAssignment?.activeModelInstallationId === model.id &&
+                  agentModelAssignment.readinessStatus === "READY";
+                const modelActivating = activatingModelId === model.modelId;
                 return (
                   <article className="agent-model-choice" key={model.id}>
                     <div>
@@ -14797,20 +14801,24 @@ function AgentProfileSurface({
                       </small>
                     </div>
                     <button
+                      className={`model-use-button ${
+                        modelInUse ? "in-use" : modelActivating ? "activating" : "not-in-use"
+                      }`}
                       type="button"
-                      disabled={!usable || modelRuntimeBusy || activeAiModelId === model.modelId}
+                      aria-pressed={modelInUse}
+                      disabled={!usable || modelRuntimeBusy || modelInUse}
                       title={
                         usable ? undefined : (model.validationError ?? "Model is not compatible")
                       }
                       onClick={() => void useModelWithAgent(model)}
                     >
-                      {activeAiModelId === model.modelId
-                        ? "Model in use"
-                        : activatingModelId === model.modelId
+                      {modelInUse
+                        ? "In use"
+                        : modelActivating
                           ? modelActivationMessage(modelActivationState)
                           : failedActivationModelId === model.modelId
-                            ? "Retry activation"
-                            : "Use model"}
+                            ? "Not in use · Retry activation"
+                            : "Not in use · Use model"}
                     </button>
                   </article>
                 );
@@ -15052,6 +15060,11 @@ function AgentProfileSurface({
                       (candidate) => candidate.modelId === model.id
                     );
                     const transfer = modelTransfers[model.id];
+                    const localModelInUse =
+                      localModel !== undefined &&
+                      agentModelAssignment?.activeModelInstallationId === localModel.id &&
+                      agentModelAssignment.readinessStatus === "READY";
+                    const localModelActivating = activatingModelId === localModel?.modelId;
                     const compatible =
                       deviceCapability === null ||
                       canRunCatalogModel(
@@ -15094,17 +15107,25 @@ function AgentProfileSurface({
                           ) : (
                             <>
                               <button
+                                className={`model-use-button ${
+                                  localModelInUse
+                                    ? "in-use"
+                                    : localModelActivating
+                                      ? "activating"
+                                      : "not-in-use"
+                                }`}
                                 type="button"
-                                disabled={
-                                  modelRuntimeBusy || activeAiModelId === localModel.modelId
-                                }
+                                aria-pressed={localModelInUse}
+                                disabled={modelRuntimeBusy || localModelInUse}
                                 onClick={() => void useModelWithAgent(localModel)}
                               >
-                                {activeAiModelId === localModel.modelId
-                                  ? "Model in use"
-                                  : activatingModelId === localModel.modelId
+                                {localModelInUse
+                                  ? "In use"
+                                  : localModelActivating
                                     ? "Activating…"
-                                    : "Use model"}
+                                    : failedActivationModelId === localModel.modelId
+                                      ? "Not in use · Retry activation"
+                                      : "Not in use · Use model"}
                               </button>
                               <button
                                 className="secondary"
@@ -15166,34 +15187,46 @@ function AgentProfileSurface({
                 </button>
                 {localAiModels
                   .filter((model) => model.provider === "custom")
-                  .map((model) => (
-                    <div className="custom-model-row" key={model.id}>
-                      <span>
-                        <strong>{model.label}</strong>
-                        <small>
-                          {formatModelBytes(model.fileSizeBytes)} · stored on this device
-                        </small>
-                      </span>
-                      <button
-                        type="button"
-                        disabled={modelRuntimeBusy || activeAiModelId === model.modelId}
-                        onClick={() => void useModelWithAgent(model)}
-                      >
-                        {activeAiModelId === model.modelId
-                          ? "Model in use"
-                          : activatingModelId === model.modelId
-                            ? "Activating…"
-                            : "Use model"}
-                      </button>
-                      <button
-                        className="secondary"
-                        type="button"
-                        onClick={() => void deleteDeviceModel(model)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+                  .map((model) => {
+                    const modelInUse =
+                      agentModelAssignment?.activeModelInstallationId === model.id &&
+                      agentModelAssignment.readinessStatus === "READY";
+                    const modelActivating = activatingModelId === model.modelId;
+                    return (
+                      <div className="custom-model-row" key={model.id}>
+                        <span>
+                          <strong>{model.label}</strong>
+                          <small>
+                            {formatModelBytes(model.fileSizeBytes)} · stored on this device
+                          </small>
+                        </span>
+                        <button
+                          className={`model-use-button ${
+                            modelInUse ? "in-use" : modelActivating ? "activating" : "not-in-use"
+                          }`}
+                          type="button"
+                          aria-pressed={modelInUse}
+                          disabled={modelRuntimeBusy || modelInUse}
+                          onClick={() => void useModelWithAgent(model)}
+                        >
+                          {modelInUse
+                            ? "In use"
+                            : modelActivating
+                              ? "Activating…"
+                              : failedActivationModelId === model.modelId
+                                ? "Not in use · Retry activation"
+                                : "Not in use · Use model"}
+                        </button>
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={() => void deleteDeviceModel(model)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    );
+                  })}
               </div>
             </>
           )}

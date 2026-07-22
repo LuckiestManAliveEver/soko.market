@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
 describe("frontend model activation contracts", () => {
   it("validates and tests a local model before assigning it through the backend", () => {
@@ -58,6 +59,16 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("createRemoteInferenceProvider");
     expect(chat).toContain('runtime: "cloud-fallback"');
     expect(chat).toContain("readClientInferencePreferences");
+  });
+
+  it("shows installation-scoped red and green model usage controls", () => {
+    expect(application).toContain("agentModelAssignment?.activeModelInstallationId === model.id");
+    expect(application).toContain("className={`model-use-button ${");
+    expect(application).toContain("aria-pressed={modelInUse}");
+    expect(application).toContain('"Not in use · Use model"');
+    expect(application).toContain('"In use"');
+    expect(styles).toContain(".model-use-button.in-use");
+    expect(styles).toContain(".model-use-button {");
   });
 });
 
