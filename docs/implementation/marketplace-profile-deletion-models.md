@@ -46,9 +46,11 @@ selection uses:
 - `GET /businesses/:businessId/ai-model`
 - `PUT /businesses/:businessId/ai-model`
 
-Selection requires `membership:manage`, accepts only available hosted models, records an audit
-event, and persists in snapshots without replacing a device-bound downloaded model. Hosted
-profiles remain unavailable until `OPENAI_API_KEY` is configured.
+Selection requires `membership:manage`, a downloaded model that has passed local test inference,
+and an available hosted OpenAI profile. It records an audit event and persists separately without
+replacing the device-bound model. There is no implicit OpenAI default, `CLOUD_ONLY` inputs are
+normalized to `LOCAL_FIRST`, and hosted profiles remain unavailable until the server has an
+allow-listed model and `OPENAI_API_KEY` configuration. Users never provide API keys.
 
 ## Deletion and restore
 

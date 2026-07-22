@@ -79,8 +79,6 @@ services:
         value: openai
       - key: INFERENCE_CLOUD_MODEL_ALLOWLIST
         value: openai-fast,openai-reasoning
-      - key: INFERENCE_DEFAULT_CLOUD_MODEL_ID
-        value: openai-fast
       - key: INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET
         value: "100000"
       - key: INFERENCE_MAX_FALLBACKS

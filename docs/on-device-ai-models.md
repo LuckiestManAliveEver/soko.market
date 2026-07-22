@@ -62,26 +62,30 @@ enabled only when `LOCAL_MODEL_ENABLED=true`, so it never advertises an unavaila
 
 Hosted OpenAI profiles are enabled when the API has `OPENAI_API_KEY`. They are processed through
 the OpenAI Responses API and can be configured with `OPENAI_FAST_MODEL` and
-`OPENAI_REASONING_MODEL`. Selecting a hosted profile sets the business's default cloud fallback;
-it does not detach or replace a downloaded model bound to the current device.
+`OPENAI_REASONING_MODEL`. OpenAI has no implicit default and cannot be the agent's primary model.
+The merchant must first connect and successfully test a downloaded GGUF model, enable explicit
+OpenAI fallback consent, and select an available hosted profile. That selection is stored
+separately and never detaches, replaces, or rewrites the downloaded model assignment.
 
 ## Device-switch and resource fallback
 
 A local installation belongs to one device; selecting it must not imply that its GGUF file exists
-on another phone. When a signed-in device has no runnable copy of its bound local model, the API
-returns a device-only assignment for the user-selected hosted fallback. If the user has not
-selected one, the configured hosted default (`INFERENCE_DEFAULT_CLOUD_MODEL_ID`, normally
-`openai-fast`) is used. This does not replace the original device's local assignment.
+on another phone. When a signed-in device has no runnable copy, the API still returns a
+`LOCAL_FIRST` assignment for the preferred downloaded model and marks that the installation is
+missing on this device. It never converts the assignment into `CLOUD_ONLY` and never selects an
+OpenAI model from environment defaults.
 
-Before any chat context is sent to the hosted provider, the new device displays a consent prompt.
-Declining keeps hosted inference off and uses Soko's deterministic compatibility mode. Accepting
-stores consent only for that account and shop on the current device. The existing inference ladder
-then works around local constraints in this order: healthy native model, supported browser model,
-trusted owner device, consented hosted model, and deterministic server behavior.
+If the merchant previously selected an OpenAI fallback, a new device can display a separate
+consent prompt before any chat context is sent to it. Declining keeps OpenAI off and preserves the
+downloaded-model preference. Accepting stores consent only for that account and shop on the current
+device. The inference ladder remains: healthy downloaded model through the llama.cpp-compatible
+native harness, supported browser model, trusted owner device, explicitly selected and consented
+OpenAI fallback, then deterministic server behavior.
 
-If no allow-listed hosted provider is healthy, the device assignment resolves to the deterministic
-compatibility model rather than advertising an unavailable cloud model. The API key remains
-server-only, and token budgets, timeouts, retry limits, and the cloud circuit breaker still apply.
+If no explicitly selected, allow-listed OpenAI provider is healthy, the local assignment remains
+unchanged and routing continues to deterministic compatibility behavior. API keys remain
+server-only; users never enter or handle an OpenAI API key. Token budgets, timeouts, retry limits,
+and the cloud circuit breaker still apply.
 
 The phone ranks compatible Hugging Face and GitHub candidates using reported RAM, free private
 storage, model size, useful capabilities, and catalog recommendations. An install remains a

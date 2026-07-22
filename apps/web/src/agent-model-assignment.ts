@@ -58,7 +58,8 @@ export function createPendingDeviceAssignment(input: {
     deviceId: input.deviceId,
     activeModelInstallationId: input.installation.id,
     modelId: input.installation.modelId,
-    preferredExecutionMode: input.preferredExecutionMode,
+    preferredExecutionMode:
+      input.preferredExecutionMode === "CLOUD_ONLY" ? "LOCAL_FIRST" : input.preferredExecutionMode,
     fallbackPolicy: input.fallbackPolicy,
     readinessStatus: "LOADING",
     runtimeBackend: input.installation.runtimeBackend,
@@ -84,47 +85,26 @@ export function assignmentAfterReadiness(
 export function assignmentFromServer(
   assignment: AgentModelAssignmentSummary
 ): DeviceAgentModelAssignment {
+  const legacyCloudPrimary =
+    assignment.activeModelInstallationId === null && assignment.runtimeBackend === "CLOUD";
   return {
     agentId: assignment.agentId,
     businessId: assignment.businessId,
     deviceId: assignment.deviceId,
-    activeModelInstallationId: assignment.activeModelInstallationId,
-    modelId: assignment.modelId,
-    preferredExecutionMode: assignment.preferredExecutionMode,
+    activeModelInstallationId: legacyCloudPrimary ? null : assignment.activeModelInstallationId,
+    modelId: legacyCloudPrimary ? null : assignment.modelId,
+    preferredExecutionMode:
+      legacyCloudPrimary || assignment.preferredExecutionMode === "CLOUD_ONLY"
+        ? "LOCAL_FIRST"
+        : assignment.preferredExecutionMode,
     fallbackPolicy: assignment.fallbackPolicy,
-    readinessStatus: assignment.readinessStatus,
-    runtimeBackend: assignment.runtimeBackend,
-    lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
-    lastErrorCode: assignment.lastErrorCode,
+    readinessStatus: legacyCloudPrimary ? "ATTACHED" : assignment.readinessStatus,
+    runtimeBackend: legacyCloudPrimary ? null : assignment.runtimeBackend,
+    lastSuccessfulInferenceAt: legacyCloudPrimary ? null : assignment.lastSuccessfulInferenceAt,
+    lastErrorCode: legacyCloudPrimary
+      ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
+      : assignment.lastErrorCode,
     updatedAt: assignment.updatedAt
-  };
-}
-
-export function isDeviceCloudFallbackAssignment(assignment: DeviceAgentModelAssignment): boolean {
-  return (
-    assignment.activeModelInstallationId === null &&
-    assignment.preferredExecutionMode === "CLOUD_ONLY" &&
-    assignment.runtimeBackend === "CLOUD" &&
-    assignment.modelId?.startsWith("openai-") === true
-  );
-}
-
-export function assignmentWithCloudFallback(
-  assignment: DeviceAgentModelAssignment,
-  cloudModelId: string,
-  updatedAt = new Date().toISOString()
-): DeviceAgentModelAssignment {
-  return {
-    ...assignment,
-    activeModelInstallationId: null,
-    modelId: cloudModelId,
-    preferredExecutionMode: "CLOUD_ONLY",
-    fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
-    readinessStatus: "READY",
-    runtimeBackend: "CLOUD",
-    lastSuccessfulInferenceAt: null,
-    lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
-    updatedAt
   };
 }
 

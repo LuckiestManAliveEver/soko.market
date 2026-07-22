@@ -25,6 +25,7 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified)");
     expect(binding).toContain("/businesses/${business.id}/agent-model");
     expect(activation).toContain("inferencePreferences.nativePermission");
+    expect(activation).toContain("saveClientInferencePreferences");
     expect(activation).toContain(
       "boundAssignment = await synchronizeAgentModelAssignment(pending)"
     );
@@ -50,12 +51,16 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("if (activated.modelId !== model.id)");
     expect(activation).toContain("setCloudFallbackModelId(activated.modelId)");
     expect(activation).toContain("hasReadyLocalModel");
+    expect(activation).toContain("lastSuccessfulInferenceAt !== null");
     expect(activation).not.toContain("await deleteJson");
     expect(activation).not.toContain("getModelRuntime().unload");
+    expect(activation).not.toContain("updateAgent({ model: activated.modelId })");
+    expect(activation).not.toContain("onAgentChange({ ...agent, model: activated.modelId })");
     expect(activation).toContain("inferencePreferences.cloudConsent");
     expect(application).toContain('aria-label="Backend models"');
     expect(application).toContain('"Set as fallback"');
     expect(application).toContain('"Default fallback"');
+    expect(application).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');
   });
 
   it("uses the provider-neutral route in the actual chat send path", () => {

@@ -2675,7 +2675,7 @@ export class Cp2Store {
       now
     );
     const stored = this.activeAiModels.get(input.businessId);
-    const modelId = resolveDefaultDeviceModelId(stored?.modelId ?? defaultAiModelId);
+    const modelId = resolveDefaultDeviceModelId(stored?.modelId ?? "sokoclaw-local");
     return {
       businessId: input.businessId,
       modelId,
@@ -2708,6 +2708,21 @@ export class Cp2Store {
         400,
         "cloud_model_unavailable",
         "The selected cloud fallback model is unavailable."
+      );
+    }
+    const hasReadyLocalModel = [...this.agentModelAssignments.values()].some(
+      (assignment) =>
+        assignment.businessId === input.businessId &&
+        assignment.activeModelInstallationId !== null &&
+        assignment.readinessStatus === "READY" &&
+        assignment.lastSuccessfulInferenceAt !== null &&
+        assignment.runtimeBackend !== "CLOUD"
+    );
+    if (!hasReadyLocalModel) {
+      throw new Cp2Error(
+        409,
+        "local_model_required",
+        "Connect and test a downloaded model before selecting an OpenAI fallback."
       );
     }
     const selection: ActiveAiModelSummary = {
@@ -2832,11 +2847,28 @@ export class Cp2Store {
     const existing = this.agentModelAssignments.get(
       agentModelAssignmentKey(input.businessId, input.deviceId)
     );
-    if (existing !== undefined) return { ...existing };
+    if (
+      existing !== undefined &&
+      existing.activeModelInstallationId !== null &&
+      existing.runtimeBackend !== "CLOUD"
+    ) {
+      return {
+        ...existing,
+        preferredExecutionMode:
+          existing.preferredExecutionMode === "CLOUD_ONLY"
+            ? "LOCAL_FIRST"
+            : existing.preferredExecutionMode
+      };
+    }
 
-    const preferredModelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
-    const modelId = resolveDefaultDeviceModelId(preferredModelId);
-    const usingDeviceFallback = modelId !== preferredModelId;
+    const preferredModelId = this.agentProfiles.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);
+    const modelId =
+      preferredModel?.provider === "local" && preferredModel.available
+        ? preferredModel.id
+        : downloadableAiModelIdPattern.test(preferredModelId)
+          ? preferredModelId
+          : defaultAiModelId;
     return {
       agentId: input.businessId,
       businessId: input.businessId,
@@ -2845,12 +2877,12 @@ export class Cp2Store {
       deviceId: input.deviceId,
       activeModelInstallationId: null,
       modelId,
-      preferredExecutionMode: "CLOUD_ONLY",
+      preferredExecutionMode: "LOCAL_FIRST",
       fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
-      readinessStatus: "READY",
-      runtimeBackend: modelId.startsWith("openai") ? "CLOUD" : "OLLAMA",
+      readinessStatus: "ATTACHED",
+      runtimeBackend: null,
       lastSuccessfulInferenceAt: null,
-      lastErrorCode: usingDeviceFallback ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null,
+      lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
       updatedAt: now.toISOString(),
       updatedBy: session.user.id
     };
@@ -3017,6 +3049,13 @@ export class Cp2Store {
     const deviceModel = downloadableAiModelIdPattern.test(profile.modelId);
     if ((!deviceModel && model === undefined) || model?.available === false) {
       throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
+    }
+    if (model?.provider === "openai" || model?.source === "hosted") {
+      throw new Cp2Error(
+        400,
+        "cloud_model_cannot_be_primary",
+        "OpenAI can only be selected explicitly as a fallback after a local model is ready."
+      );
     }
 
     const updated: BusinessAgentProfileSummary = {
@@ -15296,7 +15335,6 @@ function marketplaceIntroStateKey(accountId: string, businessId: string | null):
 }
 
 const defaultAiModelId = "qwen2.5-0.5b-android";
-const defaultCloudAiModelId = process.env.INFERENCE_DEFAULT_CLOUD_MODEL_ID?.trim() || "openai-fast";
 const downloadableAiModelIdPattern =
   /^(?:custom:[a-z0-9][a-z0-9._-]{0,79}|github:[a-z0-9][a-z0-9._-]{0,149}|huggingface:[a-z0-9][a-z0-9._-]{0,167})$/;
 const documentUploadContextScript = [
@@ -15555,21 +15593,7 @@ function resolveDefaultDeviceModelId(preferredModelId: string): string {
   ) {
     return preferredModel.id;
   }
-
-  const configuredDefault = aiModelRegistry.find(
-    (model) =>
-      model.id === defaultCloudAiModelId &&
-      model.provider === "openai" &&
-      model.source === "hosted" &&
-      model.available
-  );
-  if (configuredDefault !== undefined) return configuredDefault.id;
-
-  return (
-    aiModelRegistry.find(
-      (model) => model.provider === "openai" && model.source === "hosted" && model.available
-    )?.id ?? "sokoclaw-local"
-  );
+  return "sokoclaw-local";
 }
 
 function validateConversationMessageContent(content: ConversationMessageContent): void {
@@ -16105,7 +16129,8 @@ function assertModelCanBeAssigned(model: InstalledAgentModelSummary): void {
 }
 
 function normalizeExecutionMode(mode: PreferredExecutionMode): PreferredExecutionMode {
-  if (mode === "LOCAL_ONLY" || mode === "LOCAL_FIRST" || mode === "CLOUD_ONLY") return mode;
+  if (mode === "LOCAL_ONLY" || mode === "LOCAL_FIRST") return mode;
+  if (mode === "CLOUD_ONLY") return "LOCAL_FIRST";
   throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
 }
 

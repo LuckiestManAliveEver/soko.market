@@ -94,10 +94,8 @@ import {
 import {
   assignmentAfterReadiness,
   assignmentFromServer,
-  assignmentWithCloudFallback,
   clearDeviceAgentModelAssignment,
   createPendingDeviceAssignment,
-  isDeviceCloudFallbackAssignment,
   readDeviceAgentModelAssignment,
   saveDeviceAgentModelAssignment,
   type DeviceAgentModelAssignment
@@ -2582,22 +2580,30 @@ export function OwnerApp() {
         });
 
       void restoreDeviceModelForLaunch(businessId)
-        .then((restoredAssignment) => {
+        .then(async (restoredAssignment) => {
           const modelId = restoredAssignment.modelId;
           if (cancelled || modelId === null) return;
           setAgentSettings((current) => ({ ...current, model: modelId }));
-          if (!isDeviceCloudFallbackAssignment(restoredAssignment)) return;
+          if (
+            restoredAssignment.activeModelInstallationId !== null &&
+            restoredAssignment.readinessStatus === "READY"
+          ) {
+            return;
+          }
 
+          const fallbackModelId = await findSelectedCloudFallback(businessId);
+          if (cancelled || fallbackModelId === null) return;
           const preferences = readClientInferencePreferences(accountId, businessId);
           if (preferences.cloudConsent) {
+            setAgentSettings((current) => ({ ...current, model: fallbackModelId }));
             setStatusMessage(
-              "This device is using the hosted cloud model because no ready local model is available."
+              "This device has no ready downloaded model, so your explicitly selected OpenAI fallback is available."
             );
             return;
           }
-          setDeviceCloudFallbackModelId(modelId);
+          setDeviceCloudFallbackModelId(fallbackModelId);
           setStatusMessage(
-            "Your local model stays on the other device. Choose whether to use the hosted model here."
+            "No downloaded model is ready on this device. Download one, or explicitly allow your selected OpenAI fallback."
           );
         })
         .catch((error) => {
@@ -2655,13 +2661,13 @@ export function OwnerApp() {
         );
         if (!result.success) {
           setStatusMessage(`${result.message} Your account remains signed in.`);
-          void switchDeviceToCloudFallback(assignment).then((fallbackAssignment) => {
-            const modelId = fallbackAssignment?.modelId ?? null;
-            if (cancelled || fallbackAssignment === null || modelId === null) return;
-            setAgentSettings((current) => ({ ...current, model: modelId }));
+          void findSelectedCloudFallback(businessId).then((fallbackModelId) => {
+            if (cancelled || fallbackModelId === null) return;
             const preferences = readClientInferencePreferences(accountId, businessId);
-            if (!preferences.cloudConsent) {
-              setDeviceCloudFallbackModelId(modelId);
+            if (preferences.cloudConsent) {
+              setAgentSettings((current) => ({ ...current, model: fallbackModelId }));
+            } else {
+              setDeviceCloudFallbackModelId(fallbackModelId);
             }
           });
         }
@@ -4385,20 +4391,25 @@ export function OwnerApp() {
       listLocalAiModels().some((model) => model.id === serverAssignment.activeModelInstallationId);
     const restoredAssignment = installationAvailable
       ? serverAssignment
-      : ((await switchDeviceToCloudFallback(serverAssignment)) ?? serverAssignment);
+      : {
+          ...serverAssignment,
+          activeModelInstallationId: null,
+          preferredExecutionMode: "LOCAL_FIRST" as const,
+          readinessStatus: "FAILED" as const,
+          runtimeBackend: null,
+          lastSuccessfulInferenceAt: null,
+          lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
+          updatedAt: new Date().toISOString()
+        };
     saveDeviceAgentModelAssignment(restoredAssignment);
     return restoredAssignment;
   }
 
-  async function switchDeviceToCloudFallback(
-    assignment: DeviceAgentModelAssignment
-  ): Promise<DeviceAgentModelAssignment | null> {
+  async function findSelectedCloudFallback(businessId: string): Promise<string | null> {
     if (!navigator.onLine || !clientInferenceFeatureFlags.cloudFallback) return null;
     const [registry, selectedFallback] = await Promise.all([
       getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] })),
-      getJson<ActiveAiModelSummary>(`/businesses/${assignment.businessId}/ai-model`).catch(
-        () => null
-      )
+      getJson<ActiveAiModelSummary>(`/businesses/${businessId}/ai-model`).catch(() => null)
     ]);
     const cloudModel = registry.models.find(
       (model) =>
@@ -4407,10 +4418,7 @@ export function OwnerApp() {
         model.provider === "openai" &&
         model.source === "hosted"
     );
-    if (cloudModel === undefined) return null;
-    const fallbackAssignment = assignmentWithCloudFallback(assignment, cloudModel.id);
-    saveDeviceAgentModelAssignment(fallbackAssignment);
-    return fallbackAssignment;
+    return cloudModel?.id ?? null;
   }
 
   function enableDeviceCloudFallback() {
@@ -4422,13 +4430,20 @@ export function OwnerApp() {
     });
     setAgentSettings((current) => ({ ...current, model: deviceCloudFallbackModelId }));
     setDeviceCloudFallbackModelId(null);
-    setStatusMessage("Hosted cloud inference is enabled for this shop on this device.");
+    setStatusMessage(
+      "The explicitly selected OpenAI model is enabled only as a fallback on this device."
+    );
   }
 
   function declineDeviceCloudFallback() {
     setDeviceCloudFallbackModelId(null);
-    setAgentSettings((current) => ({ ...current, model: "sokoclaw-local" }));
-    setStatusMessage("Hosted inference remains off. Compatibility mode is active on this device.");
+    const localModelId =
+      business === null
+        ? "sokoclaw-local"
+        : (readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId())?.modelId ??
+          "sokoclaw-local");
+    setAgentSettings((current) => ({ ...current, model: localModelId }));
+    setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
   }
 
   async function loadRuntimeTurns(businessId: string, sessionId: string) {
@@ -7673,23 +7688,26 @@ export function OwnerApp() {
                 aria-labelledby="device-model-fallback-title"
               >
                 <div>
-                  <strong id="device-model-fallback-title">Use the cloud model here?</strong>
+                  <strong id="device-model-fallback-title">
+                    Use your selected OpenAI fallback here?
+                  </strong>
                   <p>
                     This device does not have a ready copy of your preferred local model. Soko can
-                    use its configured hosted model while leaving the other device unchanged.
+                    use the OpenAI model you explicitly selected while leaving the downloaded model
+                    on the other device unchanged.
                   </p>
                 </div>
                 <div className="device-model-fallback-actions">
                   <button type="button" onClick={enableDeviceCloudFallback}>
-                    Use cloud on this device
+                    Allow OpenAI fallback here
                   </button>
                   <button className="secondary" type="button" onClick={declineDeviceCloudFallback}>
-                    Keep hosted inference off
+                    Keep OpenAI off
                   </button>
                 </div>
                 <small>
-                  The first option sends chat context to the configured hosted provider. You can
-                  turn it off later in Agent settings.
+                  OpenAI receives chat context only after this explicit approval and only when no
+                  downloaded model is ready on this device. You can turn it off in Agent settings.
                 </small>
               </section>
             ) : null}
@@ -13579,11 +13597,9 @@ function AgentProfileSurface({
           updateAgent({ model: restored.modelId });
           onAgentChange({ ...agent, model: restored.modelId });
         }
-        if (isDeviceCloudFallbackAssignment(restored) && !inferencePreferences.cloudConsent) {
-          setProfileMessage(
-            "This device defaults to the hosted model because the preferred local model is not installed here. Enable hosted cloud fallback before sending business context."
-          );
-        }
+        setProfileMessage(
+          "No downloaded model is connected on this device. Download and test a GGUF model to make it the agent default."
+        );
         return;
       }
       const restored = assignmentFromServer(server);
@@ -13691,7 +13707,11 @@ function AgentProfileSurface({
       );
 
       if (clientInferenceFeatureFlags.nativeBridge && !inferencePreferences.nativePermission) {
-        throw new Error("Allow the installed-app model runtime to start this GGUF model.");
+        const nextPreferences = saveClientInferencePreferences(accountId, business.id, {
+          ...inferencePreferences,
+          nativePermission: true
+        });
+        setInferencePreferences(nextPreferences);
       }
       if (window.SokoAgentModelRuntime === undefined) {
         throw new Error(
@@ -13791,7 +13811,19 @@ function AgentProfileSurface({
     }
     if (!inferencePreferences.cloudConsent) {
       setProfileMessage(
-        "Enable explicit cloud inference consent before activating a hosted model."
+        "Enable explicit OpenAI fallback consent before selecting an OpenAI model."
+      );
+      return;
+    }
+    const hasReadyLocalModel =
+      agentModelAssignment?.activeModelInstallationId !== null &&
+      agentModelAssignment?.activeModelInstallationId !== undefined &&
+      agentModelAssignment.readinessStatus === "READY" &&
+      agentModelAssignment.lastSuccessfulInferenceAt !== null &&
+      agentModelAssignment.runtimeBackend !== "CLOUD";
+    if (!hasReadyLocalModel) {
+      setProfileMessage(
+        "Download, connect, and test a GGUF model before selecting an OpenAI fallback."
       );
       return;
     }
@@ -13814,26 +13846,8 @@ function AgentProfileSurface({
       }
 
       setCloudFallbackModelId(activated.modelId);
-      const hasReadyLocalModel =
-        agentModelAssignment?.activeModelInstallationId !== null &&
-        agentModelAssignment?.activeModelInstallationId !== undefined &&
-        agentModelAssignment.readinessStatus === "READY";
-      if (!hasReadyLocalModel) {
-        const fallbackAssignment = assignmentFromServer(
-          await getJson<AgentModelAssignmentSummary>(
-            `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-          )
-        );
-        saveDeviceAgentModelAssignment(fallbackAssignment);
-        setAgentModelAssignment(fallbackAssignment);
-        setActiveAiModelId(activated.modelId);
-        updateAgent({ model: activated.modelId });
-        onAgentChange({ ...agent, model: activated.modelId });
-      }
       setProfileMessage(
-        hasReadyLocalModel
-          ? `${model.label} is the cloud fallback. The downloaded model remains connected and runs first.`
-          : `${model.label} is the default cloud model for this agent.`
+        `${model.label} is the explicit cloud fallback. The downloaded llama.cpp model remains connected and always runs first.`
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -13891,9 +13905,7 @@ function AgentProfileSurface({
     updateAgent({ model: fallbackModelId });
     onAgentChange({ ...agent, model: fallbackModelId });
     setProfileMessage(
-      fallbackModelId.startsWith("openai-")
-        ? "The downloaded model was removed. The selected cloud fallback is now active."
-        : "The downloaded model was removed. Deterministic compatibility mode is active."
+      "The downloaded model was removed. Download and test another GGUF model to reconnect the agent; the cloud selection remains fallback-only."
     );
   }
 
@@ -14435,12 +14447,14 @@ function AgentProfileSurface({
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
   const cloudFallbackModel = aiModels.find((model) => model.id === cloudFallbackModelId);
   const cloudFallbackConsentRequired =
-    agentModelAssignment !== null &&
-    isDeviceCloudFallbackAssignment(agentModelAssignment) &&
-    !inferencePreferences.cloudConsent;
+    cloudFallbackModel !== undefined && !inferencePreferences.cloudConsent;
   const backendModels = visibleAiModels.filter(
-    (model) => model.format === "remote" && model.id !== "sokoclaw-local"
+    (model) => model.provider === "openai" && model.source === "hosted" && model.format === "remote"
   );
+  const hasReadyLocalModel =
+    activeInstalledModel !== null &&
+    agentModelAssignment?.readinessStatus === "READY" &&
+    agentModelAssignment.lastSuccessfulInferenceAt !== null;
   const orderedInstalledModels = [...localAiModels].sort((left, right) => {
     const leftCompatible = left.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
     const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
@@ -14682,8 +14696,9 @@ function AgentProfileSurface({
             <div>
               <strong>Client-first route permissions</strong>
               <p>
-                Soko tries an allowed installed-app model, this browser, another online shop-owner
-                device, then a consented hosted model. Server tools remain confirmation-gated.
+                Soko uses the downloaded GGUF model through its llama.cpp-compatible harness first.
+                Another owner device or OpenAI can only be used as an allowed fallback. Server tools
+                remain confirmation-gated.
               </p>
             </div>
             <label className="browser-model-toggle">
@@ -14725,17 +14740,17 @@ function AgentProfileSurface({
                   updateInferencePreferences({ cloudConsent: event.target.checked })
                 }
               />
-              Allow hosted cloud fallback
+              Allow explicitly selected OpenAI fallback
             </label>
             <small>
-              Explicit consent is required. The route remains unavailable until the backend has an
-              allow-listed provider and server-only API key.
+              Off by default. OpenAI is used only after you select an available fallback model and
+              the downloaded model cannot process the request. API credentials remain server-only.
             </small>
           </section>
           <label>
             Execution mode
             <select
-              value={agentModelAssignment?.preferredExecutionMode ?? "CLOUD_ONLY"}
+              value={agentModelAssignment?.preferredExecutionMode ?? "LOCAL_FIRST"}
               disabled={agentModelAssignment === null || modelRuntimeBusy}
               onChange={(event) =>
                 void updateAgentModelPolicy({
@@ -14745,7 +14760,6 @@ function AgentProfileSurface({
             >
               <option value="LOCAL_ONLY">Local only</option>
               <option value="LOCAL_FIRST">Local first</option>
-              <option value="CLOUD_ONLY">Cloud only</option>
             </select>
           </label>
           <label>
@@ -14906,8 +14920,9 @@ function AgentProfileSurface({
                 <div className="section-subheading">
                   <h4>Cloud fallback models</h4>
                   <p>
-                    Select the hosted model used only when the downloaded device model cannot run
-                    and your fallback policy permits cloud inference.
+                    OpenAI is optional and off by default. It can be selected only after a
+                    downloaded GGUF model is connected and tested, and is used only when local
+                    inference cannot run under your fallback policy.
                   </p>
                 </div>
                 <div className="ai-model-catalog">
@@ -14928,6 +14943,8 @@ function AgentProfileSurface({
                           disabled={
                             !model.available ||
                             modelRuntimeBusy ||
+                            !hasReadyLocalModel ||
+                            !inferencePreferences.cloudConsent ||
                             cloudFallbackModelId === model.id
                           }
                           title={

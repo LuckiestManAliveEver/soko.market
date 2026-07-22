@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeModelProvider } from "../packages/shared-types/src";
-import {
-  assignmentWithCloudFallback,
-  isDeviceCloudFallbackAssignment,
-  type DeviceAgentModelAssignment
-} from "../apps/web/src/agent-model-assignment";
+import { assignmentFromServer } from "../apps/web/src/agent-model-assignment";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -12,41 +8,40 @@ afterEach(() => {
 });
 
 describe("device model fallback", () => {
-  it("converts a missing local installation into a device-only cloud assignment", () => {
-    const local: DeviceAgentModelAssignment = {
+  it("upgrades legacy cloud-only assignments back to local-first model selection", () => {
+    const local = assignmentFromServer({
       agentId: "shop-a",
       businessId: "shop-a",
+      accountId: "account-a",
+      userId: "user-a",
       deviceId: "device-b",
-      activeModelInstallationId: "qwen-device-a",
-      modelId: "qwen2.5-0.5b-android",
-      preferredExecutionMode: "LOCAL_FIRST",
-      fallbackPolicy: "WHEN_LOCAL_FAILS",
-      readinessStatus: "FAILED",
-      runtimeBackend: "LLAMA_CPP_ANDROID",
-      lastSuccessfulInferenceAt: null,
-      lastErrorCode: "MODEL_FILE_MISSING",
-      updatedAt: "2026-07-21T00:00:00.000Z"
-    };
-
-    const fallback = assignmentWithCloudFallback(local, "openai-fast", "2026-07-21T01:00:00.000Z");
-
-    expect(fallback).toMatchObject({
       activeModelInstallationId: null,
       modelId: "openai-fast",
       preferredExecutionMode: "CLOUD_ONLY",
       fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "READY",
       runtimeBackend: "CLOUD",
+      lastSuccessfulInferenceAt: null,
+      lastErrorCode: null,
+      updatedAt: "2026-07-21T00:00:00.000Z",
+      updatedBy: "user-a"
+    });
+
+    expect(local).toMatchObject({
+      activeModelInstallationId: null,
+      modelId: null,
+      preferredExecutionMode: "LOCAL_FIRST",
+      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+      readinessStatus: "ATTACHED",
+      runtimeBackend: null,
       lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
     });
-    expect(isDeviceCloudFallbackAssignment(fallback)).toBe(true);
   });
 
-  it("selects the configured cloud default on another device without changing the local preference", async () => {
+  it("keeps the downloaded model primary and uses OpenAI only after explicit fallback selection", async () => {
     vi.stubEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", "true");
     vi.stubEnv("INFERENCE_CLOUD_PROVIDER", "openai");
     vi.stubEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", "openai-fast,openai-reasoning");
-    vi.stubEnv("INFERENCE_DEFAULT_CLOUD_MODEL_ID", "openai-fast");
     vi.stubEnv("OPENAI_API_KEY", "test-server-key");
 
     const { createCp2Store } = await import("../services/api/src/cp2/store");
@@ -79,6 +74,13 @@ describe("device model fallback", () => {
       name: "Cross Device Shop",
       language: "en"
     });
+    expect(() =>
+      store.activateAiModel({
+        sessionId: auth.session.id,
+        businessId: created.business.id,
+        modelId: "openai-fast"
+      })
+    ).toThrowError(expect.objectContaining({ code: "local_model_required" }));
     store.registerInstalledAgentModel({
       sessionId: auth.session.id,
       model: {
@@ -118,6 +120,31 @@ describe("device model fallback", () => {
       lastSuccessfulInferenceAt: "2026-07-21T00:01:00.000Z",
       lastErrorCode: null
     });
+    store.activateAiModel({
+      sessionId: auth.session.id,
+      businessId: created.business.id,
+      modelId: "openai-fast"
+    });
+    expect(() =>
+      store.updateAgentProfile({
+        sessionId: auth.session.id,
+        businessId: created.business.id,
+        profile: {
+          name: "Cross Device Agent",
+          description: "Local-first shop agent",
+          modelId: "openai-fast",
+          role: "Business assistant",
+          language: "en",
+          personality: "Careful",
+          instructions: "Use the downloaded model first.",
+          knowledge: "Use saved shop records.",
+          tools: [],
+          integrations: [],
+          contextScripts: [],
+          status: "active"
+        }
+      })
+    ).toThrowError(expect.objectContaining({ code: "cloud_model_cannot_be_primary" }));
 
     const deviceB = store.getAgentModelAssignment({
       sessionId: auth.session.id,
@@ -128,9 +155,10 @@ describe("device model fallback", () => {
     expect(deviceB).toMatchObject({
       deviceId: "device-b",
       activeModelInstallationId: null,
-      modelId: "openai-fast",
-      preferredExecutionMode: "CLOUD_ONLY",
-      runtimeBackend: "CLOUD",
+      modelId: "qwen2.5-0.5b-android",
+      preferredExecutionMode: "LOCAL_FIRST",
+      readinessStatus: "ATTACHED",
+      runtimeBackend: null,
       lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
     });
     expect(
