@@ -3865,7 +3865,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: request.params.businessId,
           deletion: parseAccountDeletionBody(request.body)
         });
-        reply.header("set-cookie", clearSessionCookie());
+        reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
         return result;
       } catch (error) {
         return sendCp2Error(reply, error);

@@ -378,9 +378,9 @@ describe("frontend user guidance", () => {
     expect(settingsSurface).toContain("Delete account and associated data");
     expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
     expect(application).toContain('accountDeletionIntent ? "agent"');
-    expect(application).toContain("setIsSignupOpen(true)");
+    expect(application).toContain("await resetClientToStartup(");
     expect(application).toContain(
-      "Account deactivated and anonymization scheduled. Create a new account to continue."
+      "Account deactivated and deletion scheduled. You have been returned to startup."
     );
     expect(application).toContain("Continue with phone");
     expect(application).toContain("Use phone and PIN");
@@ -391,6 +391,13 @@ describe("frontend user guidance", () => {
     const routes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
     expect(application).toContain('"/auth/logout-all"');
+    expect(application).toContain("onClick={onLogoutAll}");
+    expect(application).toContain("Signing out all devices…");
+    expect(application).toContain(
+      'window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.home)'
+    );
+    expect(application).toContain("setBusiness(null)");
+    expect(application).toContain("setOwnerAuth(null)");
     expect(application).toContain('deleteJson("/v1/push/subscriptions"');
     expect(application).toContain('getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")');
     expect(application).toContain("MCP access tokens");

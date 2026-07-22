@@ -91,6 +91,44 @@ describe("native-style account session lifecycle", () => {
     expect(second.statusCode).toBe(200);
     await app.close();
   });
+
+  it("logs out every device and clears both browser authentication cookies", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("all-devices-one"),
+      payload: { method: "phone", contact: "+254700003004", pin: "1234" }
+    });
+    const firstCookies = cookieHeader(signup.headers["set-cookie"]);
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: deviceHeaders("all-devices-two"),
+      payload: { method: "phone", contact: "+254700003004", pin: "1234" }
+    });
+    const secondCookies = cookieHeader(login.headers["set-cookie"]);
+
+    const logoutAll = await app.inject({
+      method: "POST",
+      url: "/auth/logout-all",
+      headers: { cookie: firstCookies }
+    });
+    const clearedCookies = JSON.stringify(logoutAll.headers["set-cookie"]);
+    const [first, second] = await Promise.all([
+      app.inject({ method: "GET", url: "/auth/bootstrap", headers: { cookie: firstCookies } }),
+      app.inject({ method: "GET", url: "/auth/bootstrap", headers: { cookie: secondCookies } })
+    ]);
+
+    expect(logoutAll.statusCode).toBe(200);
+    expect(logoutAll.json()).toMatchObject({ revoked: 2 });
+    expect(clearedCookies).toContain("soko_session=");
+    expect(clearedCookies).toContain("soko_refresh=");
+    expect(first.statusCode).toBe(401);
+    expect(second.statusCode).toBe(401);
+    await app.close();
+  });
 });
 
 describe("frontend lifecycle state", () => {

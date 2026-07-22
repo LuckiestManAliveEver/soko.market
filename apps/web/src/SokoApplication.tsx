@@ -152,10 +152,15 @@ import {
   isRetryableApiRequestError,
   readApiBaseUrl
 } from "./lib/api";
-import { getCachedJson, invalidateApiCacheForMutation } from "./api-request-cache";
+import {
+  clearApiRequestCache,
+  getCachedJson,
+  invalidateApiCacheForMutation
+} from "./api-request-cache";
 import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
 import { RuntimeManager } from "./runtime-manager";
 import {
+  clearMessagingOutbox,
   queueMessagingOutbox,
   readMessagingOutbox,
   removeMessagingOutboxEntry
@@ -2351,8 +2356,12 @@ export function OwnerApp() {
   }, []);
 
   useEffect(() => {
+    if (session === null && business === null) {
+      localStorage.removeItem(activeAgentStorageKey);
+      return;
+    }
     localStorage.setItem(activeAgentStorageKey, JSON.stringify(agentSettings));
-  }, [agentSettings]);
+  }, [agentSettings, business, session]);
 
   useEffect(() => {
     localStorage.setItem(activeModeStorageKey, mode);
@@ -2494,6 +2503,10 @@ export function OwnerApp() {
 
   useEffect(() => {
     if (business !== null) {
+      localStorage.removeItem(setupDraftStorageKey);
+      return;
+    }
+    if (session === null && destination.trim().length === 0 && businessName.trim().length === 0) {
       localStorage.removeItem(setupDraftStorageKey);
       return;
     }
@@ -4821,6 +4834,7 @@ export function OwnerApp() {
     }
 
     try {
+      const accountId = session?.account.id ?? null;
       await postJson<{ verified: boolean }>("/auth/pin/verify", { pin: input.pin });
       await postJson<AccountDeletionRequestSummary>(
         `/businesses/${business.id}/compliance/account-deletion`,
@@ -4829,23 +4843,9 @@ export function OwnerApp() {
           reason: input.reason
         }
       );
-      setSession(null);
-      setBusiness(null);
-      setOwnerAuth(null);
-      setIsWorkspaceUnlocked(false);
-      setIsBusinessSetupOpen(false);
-      setIsSignupOpen(true);
-      setIsLoginOpen(false);
-      setIsAccountRestorationOpen(false);
-      localStorage.removeItem(activeBusinessStorageKey);
-      localStorage.removeItem(legacyActiveBusinessStorageKey);
-      localStorage.removeItem(activeAgentStorageKey);
-      localStorage.removeItem(ownerAuthStorageKey);
-      window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
-      setMode("marketplace");
-      setView("chat");
-      setStatusMessage(
-        "Account deactivated and anonymization scheduled. Create a new account to continue."
+      await resetClientToStartup(
+        accountId,
+        "Account deactivated and deletion scheduled. You have been returned to startup."
       );
       return true;
     } catch (error) {
@@ -5974,19 +5974,32 @@ export function OwnerApp() {
     }
   }
 
-  async function logout(allSessions = false) {
-    try {
-      await postJson(allSessions ? "/auth/logout-all" : "/auth/logout", {});
-    } catch {
-      // Local state still needs to lock immediately if the API is unavailable.
+  async function resetClientToStartup(accountId: string | null, message: string) {
+    if (accountId !== null) {
+      await Promise.all([
+        clearBrowserInferenceAccountData(accountId).catch(() => undefined),
+        syncRepositoryRef.current?.clearAllAccountData(accountId).catch(() => undefined)
+      ]);
+      clearMessagingOutbox(accountId);
     }
-
-    if (session !== null) {
-      await clearBrowserInferenceAccountData(session.account.id).catch(() => undefined);
-    }
+    clearApiRequestCache();
     clearCachedAuthSession();
+    localStorage.removeItem(activeBusinessStorageKey);
+    localStorage.removeItem(legacyActiveBusinessStorageKey);
+    localStorage.removeItem(activeAgentStorageKey);
+    localStorage.removeItem(activeModeStorageKey);
+    localStorage.removeItem(ownerAuthStorageKey);
+    localStorage.removeItem(setupDraftStorageKey);
+    localStorage.removeItem(contextScriptsPasswordStorageKey);
+    sessionStorage.removeItem(pendingOAuthStorageKey);
     setSession(null);
+    setBusiness(null);
+    setOwnerAuth(null);
+    setAgentSettings(createDefaultAgent(null));
     setAuthBootstrapState("unauthenticated");
+    setBusinessName("");
+    setDestination("");
+    setShopPhoneNumber("");
     setProducts([]);
     setProductFields(createDefaultProductFieldDefinitions());
     setSuppliers([]);
@@ -5998,12 +6011,18 @@ export function OwnerApp() {
     setCustomerDebts([]);
     setImportJobs([]);
     setSelectedImportJobId(null);
+    setSyncQueue([]);
+    setSyncSummary(emptySyncSummary);
     setSecurityReview(null);
     setOfflineCache(null);
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
+    setNetworkGraph(null);
     setNetworkInvites([]);
+    setReportSummary(null);
+    setKnowledgeSummary(null);
+    setNotificationInbox({ summary: emptyNotificationSummary, notifications: [] });
     setStorefrontCareRequests([]);
     setStorefrontMessages([]);
     setStorefrontOrders([]);
@@ -6028,6 +6047,8 @@ export function OwnerApp() {
     setLaunchForm(emptyLaunchForm);
     setInvoicePreview(null);
     setPendingAttachments([]);
+    setChatDraft("");
+    setChatMessages(createInitialChatMessages("Soko.market"));
     setConversationInbox([]);
     setActiveConversationId(null);
     setActiveConversation(null);
@@ -6046,18 +6067,28 @@ export function OwnerApp() {
     setGeneratedPhoneRecoveryCode("");
     setView("chat");
     setMode("marketplace");
-    window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.marketplace);
+    window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.home);
+    setIsWorkspacePanelOpen(false);
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(false);
-    setStatusMessage(
-      allSessions
-        ? "Signed out on every device. Enter your PIN to start a new session."
-        : ownerAuth === null
-          ? "Signed out"
-          : "Signed out. Enter PIN to continue."
+    setIsAccountRestorationOpen(false);
+    setStatusMessage(message);
+    setIsWorkspaceUnlocked(true);
+  }
+
+  async function logout(allSessions = false) {
+    const accountId = session?.account.id ?? null;
+    try {
+      await postJson(allSessions ? "/auth/logout-all" : "/auth/logout", {});
+    } catch {
+      // Local state still needs to return to startup if the API is unavailable.
+    }
+
+    await resetClientToStartup(
+      accountId,
+      allSessions ? "Signed out on every device." : "Signed out."
     );
-    setIsWorkspaceUnlocked(ownerAuth === null);
   }
 
   async function sendChatDraft() {
@@ -15607,17 +15638,10 @@ function AgentProfileSurface({
               className="destructive-button"
               type="button"
               disabled={pendingProfileAction !== null || isLoggingOut}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    "Sign out every Soko session on all devices? You will need to sign in again."
-                  )
-                ) {
-                  onLogoutAll();
-                }
-              }}
+              onClick={onLogoutAll}
+              aria-busy={isLoggingOut}
             >
-              Sign out all devices
+              {isLoggingOut ? "Signing out all devices…" : "Sign out all devices"}
             </button>
           </div>
         </div>

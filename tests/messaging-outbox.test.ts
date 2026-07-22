@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiRequestError, isRetryableApiRequestError } from "../apps/web/src/lib/api";
 import {
+  clearMessagingOutbox,
   queueMessagingOutbox,
   readMessagingOutbox,
   removeMessagingOutboxEntry,
@@ -59,6 +60,9 @@ describe("messaging outbox", () => {
     removeMessagingOutboxEntry("account-a", "message-a", storage);
     expect(readMessagingOutbox("account-a", storage)).toEqual([]);
     expect(readMessagingOutbox("account-b", storage)).toHaveLength(1);
+
+    clearMessagingOutbox("account-b", storage);
+    expect(readMessagingOutbox("account-b", storage)).toEqual([]);
   });
 
   it("classifies only network, throttling, and server failures as retryable", () => {

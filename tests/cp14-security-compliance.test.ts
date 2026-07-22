@@ -346,15 +346,16 @@ describe("CP14 security compliance", () => {
         reason: "Wrong confirmation"
       })
     });
-    const deletion = await postJson<DeletionResponse>(
-      app,
-      `/businesses/${businessId}/compliance/account-deletion`,
-      {
+    const deletionResponse = await app.inject({
+      method: "POST",
+      url: `/businesses/${businessId}/compliance/account-deletion`,
+      headers: { ...jsonHeaders(), cookie: sessionCookie },
+      payload: JSON.stringify({
         confirmation: "DELETE",
         reason: "Owner requested deletion"
-      },
-      sessionCookie
-    );
+      })
+    });
+    const deletion = deletionResponse.json<DeletionResponse>();
     const sessionAfterDeletion = await app.inject({
       method: "GET",
       url: "/session",
@@ -371,6 +372,9 @@ describe("CP14 security compliance", () => {
     const snapshot = store.snapshot();
 
     expect(invalidDeletion.statusCode).toBe(400);
+    expect(deletionResponse.statusCode).toBe(200);
+    expect(JSON.stringify(deletionResponse.headers["set-cookie"])).toContain("soko_session=");
+    expect(JSON.stringify(deletionResponse.headers["set-cookie"])).toContain("soko_refresh=");
     expect(deletion.status).toBe("scheduled");
     expect(deletion.deactivatedAt).toBeTruthy();
     expect(Date.parse(deletion.anonymizeAfter)).toBeGreaterThan(Date.parse(deletion.deactivatedAt));

@@ -61,6 +61,14 @@ export function removeMessagingOutboxEntry(
   );
 }
 
+export function clearMessagingOutbox(
+  accountId: string,
+  storage: MessagingOutboxStorage = localStorage
+): void {
+  storage.removeItem(storageKey(accountId));
+  discardUnsafeLegacyOutbox(storage);
+}
+
 function storageKey(accountId: string): string {
   return `${messagingOutboxStoragePrefix}:${accountId}`;
 }
