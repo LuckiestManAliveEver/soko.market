@@ -83,7 +83,7 @@ describe("business agent settings", () => {
       ])
     );
     expect(store.snapshot().agentProfiles).toHaveLength(1);
-    expect(store.snapshot().activeAiModels?.[0]?.modelId).toBe("smollm2-360m-android");
+    expect(store.snapshot().activeAiModels).toEqual([]);
 
     const reloadResponse = await app.inject({
       method: "GET",

@@ -71,14 +71,14 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       expect.arrayContaining(["qwen2.5-0.5b-android", "qwen2.5-1.5b-android"])
     );
 
-    const activated = await app.inject({
+    const localFallbackSelection = await app.inject({
       method: "PUT",
       url: `/businesses/${shop.business.id}/ai-model`,
       headers: { "content-type": "application/json", cookie: sessionCookie },
       payload: JSON.stringify({ modelId: "sokoclaw-local" })
     });
-    expect(activated.statusCode).toBe(200);
-    expect(activated.json()).toMatchObject({ modelId: "sokoclaw-local" });
+    expect(localFallbackSelection.statusCode).toBe(400);
+    expect(localFallbackSelection.json().code).toBe("cloud_model_unavailable");
 
     const invalid = await app.inject({
       method: "PUT",
@@ -87,7 +87,7 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       payload: JSON.stringify({ modelId: "invented-client-model" })
     });
     expect(invalid.statusCode).toBe(400);
-    expect(invalid.json().code).toBe("ai_model_unavailable");
+    expect(invalid.json().code).toBe("cloud_model_unavailable");
 
     const custom = await app.inject({
       method: "PUT",
@@ -95,8 +95,8 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       headers: { "content-type": "application/json", cookie: sessionCookie },
       payload: JSON.stringify({ modelId: "custom:merchant-model-abc123" })
     });
-    expect(custom.statusCode).toBe(200);
-    expect(custom.json()).toMatchObject({ modelId: "custom:merchant-model-abc123" });
+    expect(custom.statusCode).toBe(400);
+    expect(custom.json().code).toBe("cloud_model_unavailable");
 
     const github = await app.inject({
       method: "PUT",
@@ -104,10 +104,8 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       headers: { "content-type": "application/json", cookie: sessionCookie },
       payload: JSON.stringify({ modelId: "github:example.android-gguf.qwen-mini-q4-k-m" })
     });
-    expect(github.statusCode).toBe(200);
-    expect(github.json()).toMatchObject({
-      modelId: "github:example.android-gguf.qwen-mini-q4-k-m"
-    });
+    expect(github.statusCode).toBe(400);
+    expect(github.json().code).toBe("cloud_model_unavailable");
 
     const huggingFace = await app.inject({
       method: "PUT",
@@ -117,19 +115,12 @@ describe("CP20 unified account, conversation, and session foundation", () => {
         modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
       })
     });
-    expect(huggingFace.statusCode).toBe(200);
-    expect(huggingFace.json()).toMatchObject({
-      modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
-    });
+    expect(huggingFace.statusCode).toBe(400);
+    expect(huggingFace.json().code).toBe("cloud_model_unavailable");
 
     const snapshot = store.snapshot();
     expect(snapshot.marketplaceIntroStates).toHaveLength(1);
-    expect(snapshot.activeAiModels).toContainEqual(
-      expect.objectContaining({
-        businessId: shop.business.id,
-        modelId: "huggingface:example.mobile-gguf.qwen-mini-q4-k-m"
-      })
-    );
+    expect(snapshot.activeAiModels).toEqual([]);
     await app.close();
   });
 

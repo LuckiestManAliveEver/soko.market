@@ -48,6 +48,10 @@ function model(
 describe("agent model assignments", () => {
   it("attaches a verified compatible installation and survives restart", () => {
     const { store, auth, businessId } = seedOwner("+254700700001");
+    const cloudFallbackBeforeBinding = store.getActiveAiModel({
+      sessionId: auth.session.id,
+      businessId
+    });
     store.registerInstalledAgentModel({
       sessionId: auth.session.id,
       model: model("valid-model")
@@ -71,6 +75,9 @@ describe("agent model assignments", () => {
       preferredExecutionMode: "LOCAL_ONLY",
       fallbackPolicy: "NEVER"
     });
+    expect(store.getActiveAiModel({ sessionId: auth.session.id, businessId }).modelId).toBe(
+      cloudFallbackBeforeBinding.modelId
+    );
     expect(
       restored.getAgentModelAssignment({
         sessionId: auth.session.id,

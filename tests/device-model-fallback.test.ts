@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeModelProvider } from "../packages/shared-types/src";
 import {
   assignmentWithCloudFallback,
   isDeviceCloudFallbackAssignment,
@@ -49,7 +50,29 @@ describe("device model fallback", () => {
     vi.stubEnv("OPENAI_API_KEY", "test-server-key");
 
     const { createCp2Store } = await import("../services/api/src/cp2/store");
-    const store = createCp2Store();
+    const resolvedModelIds: string[] = [];
+    const cloudProvider: RuntimeModelProvider = {
+      name: "openai",
+      async complete() {
+        return {
+          provider: "openai",
+          status: "available",
+          outputText: JSON.stringify({
+            type: "response",
+            message: "Cloud fallback handled the request."
+          }),
+          durationMs: 1,
+          errorCode: null,
+          metadata: {}
+        };
+      }
+    };
+    const store = createCp2Store({
+      runtimeModelProviderResolver(modelId) {
+        resolvedModelIds.push(modelId);
+        return modelId === "openai-fast" ? cloudProvider : undefined;
+      }
+    });
     const auth = store.signupWithPhonePin({ destination: "+254700799991", pin: "2468" });
     const created = store.createBusiness({
       sessionId: auth.session.id,
@@ -115,6 +138,50 @@ describe("device model fallback", () => {
         sessionId: auth.session.id,
         businessId: created.business.id
       }).modelId
-    ).toBe("qwen2.5-0.5b-android");
+    ).toBe("openai-fast");
+
+    const turn = await store.createRuntimeTurn({
+      sessionId: auth.session.id,
+      businessId: created.business.id,
+      message: "Summarize my shop.",
+      agentProfile: {
+        behavior: "Concise",
+        contextScripts: [],
+        integrations: [],
+        knowledge: "Use saved shop records.",
+        model: "openai-fast",
+        role: "Business assistant",
+        instructions: "Help with shop operations.",
+        tools: []
+      }
+    });
+    expect(resolvedModelIds).toContain("openai-fast");
+    expect(turn.turn).toMatchObject({
+      model: { provider: "openai", status: "available", fallbackUsed: false },
+      response: "Cloud fallback handled the request."
+    });
+
+    resolvedModelIds.length = 0;
+    const withoutConsent = await store.createRuntimeTurn({
+      sessionId: auth.session.id,
+      businessId: created.business.id,
+      message: "Keep this request on Soko.",
+      agentProfile: {
+        behavior: "Concise",
+        contextScripts: [],
+        integrations: [],
+        knowledge: "Use saved shop records.",
+        model: "sokoclaw-local",
+        role: "Business assistant",
+        instructions: "Help with shop operations.",
+        tools: []
+      }
+    });
+    expect(resolvedModelIds).toContain("sokoclaw-local");
+    expect(withoutConsent.turn.model).toMatchObject({
+      provider: null,
+      status: "disabled",
+      fallbackUsed: true
+    });
   }, 15_000);
 });

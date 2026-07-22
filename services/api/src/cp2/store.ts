@@ -2674,14 +2674,14 @@ export class Cp2Store {
       "business:read",
       now
     );
-    return (
-      this.activeAiModels.get(input.businessId) ?? {
-        businessId: input.businessId,
-        modelId: defaultAiModelId,
-        activatedAt: now.toISOString(),
-        activatedBy: session.user.id
-      }
-    );
+    const stored = this.activeAiModels.get(input.businessId);
+    const modelId = resolveDefaultDeviceModelId(stored?.modelId ?? defaultAiModelId);
+    return {
+      businessId: input.businessId,
+      modelId,
+      activatedAt: stored?.activatedAt ?? now.toISOString(),
+      activatedBy: stored?.activatedBy ?? session.user.id
+    };
   }
 
   activateAiModel(input: {
@@ -2698,9 +2698,17 @@ export class Cp2Store {
       now
     );
     const model = aiModelRegistry.find((candidate) => candidate.id === input.modelId);
-    const deviceModel = downloadableAiModelIdPattern.test(input.modelId);
-    if ((!deviceModel && model === undefined) || model?.available === false) {
-      throw new Cp2Error(400, "ai_model_unavailable", "The selected AI model is unavailable.");
+    if (
+      model === undefined ||
+      model.provider !== "openai" ||
+      model.source !== "hosted" ||
+      !model.available
+    ) {
+      throw new Cp2Error(
+        400,
+        "cloud_model_unavailable",
+        "The selected cloud fallback model is unavailable."
+      );
     }
     const selection: ActiveAiModelSummary = {
       businessId: input.businessId,
@@ -2709,17 +2717,8 @@ export class Cp2Store {
       activatedBy: session.user.id
     };
     this.activeAiModels.set(input.businessId, selection);
-    const agentProfile = this.agentProfiles.get(input.businessId);
-    if (agentProfile !== undefined) {
-      this.agentProfiles.set(input.businessId, {
-        ...agentProfile,
-        modelId: selection.modelId,
-        updatedAt: selection.activatedAt,
-        updatedBy: session.user.id
-      });
-    }
     this.recordAuditEvent({
-      type: "ai_model.activated",
+      type: "cloud_fallback_model.selected",
       aggregateType: "business",
       aggregateId: input.businessId,
       actorId: session.user.id,
@@ -2915,24 +2914,6 @@ export class Cp2Store {
       agentModelAssignmentKey(input.businessId, input.deviceId),
       assignment
     );
-    if (assignment.readinessStatus === "READY") {
-      const selection: ActiveAiModelSummary = {
-        businessId: input.businessId,
-        modelId: installation.modelId,
-        activatedAt: assignment.updatedAt,
-        activatedBy: session.user.id
-      };
-      this.activeAiModels.set(input.businessId, selection);
-      const profile = this.agentProfiles.get(input.businessId);
-      if (profile !== undefined) {
-        this.agentProfiles.set(input.businessId, {
-          ...profile,
-          modelId: installation.modelId,
-          updatedAt: assignment.updatedAt,
-          updatedBy: session.user.id
-        });
-      }
-    }
     this.recordAuditEvent({
       type:
         assignment.readinessStatus === "READY" ? "agent_model.assigned" : "agent_model.attached",
@@ -2975,28 +2956,12 @@ export class Cp2Store {
       throw new Cp2Error(403, "agent_model_owner_mismatch", "Agent model access was denied.");
     }
     this.agentModelAssignments.delete(key);
-    const selection: ActiveAiModelSummary = {
-      businessId: input.businessId,
-      modelId: defaultAiModelId,
-      activatedAt: now.toISOString(),
-      activatedBy: session.user.id
-    };
-    this.activeAiModels.set(input.businessId, selection);
-    const profile = this.agentProfiles.get(input.businessId);
-    if (profile !== undefined) {
-      this.agentProfiles.set(input.businessId, {
-        ...profile,
-        modelId: defaultAiModelId,
-        updatedAt: selection.activatedAt,
-        updatedBy: session.user.id
-      });
-    }
     this.recordAuditEvent({
       type: "agent_model.removed",
       aggregateType: "business",
       aggregateId: input.businessId,
       actorId: session.user.id,
-      occurredAt: selection.activatedAt,
+      occurredAt: now.toISOString(),
       payload: {
         installationId: existing?.activeModelInstallationId ?? null,
         deviceId: input.deviceId
@@ -3062,15 +3027,7 @@ export class Cp2Store {
       updatedAt: now.toISOString(),
       updatedBy: session.user.id
     };
-    const selection: ActiveAiModelSummary = {
-      businessId: input.businessId,
-      modelId: updated.modelId,
-      activatedAt: updated.updatedAt,
-      activatedBy: session.user.id
-    };
-
     this.agentProfiles.set(input.businessId, updated);
-    this.activeAiModels.set(input.businessId, selection);
     this.recordAuditEvent({
       type: "agent_profile.updated",
       aggregateType: "business",
@@ -3571,35 +3528,6 @@ export class Cp2Store {
       ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
       now
     });
-    const modelFailure = runtime.turn.model;
-    if (modelFailure !== null && modelFailure.status !== "available") {
-      const failedMessage: ConversationMessageSummary = {
-        ...message,
-        status: "failed",
-        failureCode: modelFailure.errorCode ?? modelFailureCode(modelFailure.status),
-        retryCount: (message.retryCount ?? 0) + 1,
-        nextRetryAt: new Date(now.getTime() + 2_000).toISOString()
-      };
-      this.conversationMessages.set(message.id, failedMessage);
-      this.recordConversationSyncForParticipants(
-        conversation.id,
-        "conversation_messages",
-        failedMessage.id,
-        failedMessage,
-        now
-      );
-      return {
-        message: failedMessage,
-        agentMessage: null,
-        runtime,
-        processing: {
-          correlationId: message.id,
-          status: "failed",
-          errorCode: failedMessage.failureCode ?? "MODEL_PROVIDER_UNAVAILABLE",
-          retryable: true
-        }
-      };
-    }
     const confirmationToken = runtime.turn.plan.confirmationToken;
     const agentMessage = this.createConversationMessage({
       sessionId: input.sessionId,
@@ -8486,7 +8414,15 @@ export class Cp2Store {
       "business:read",
       now
     );
-    const activeModelId = this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId;
+    const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
+      this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
+    );
+    const requestedModelId = input.agentProfile?.model;
+    const activeModelId =
+      this.options.runtimeModelProviderResolver === undefined ||
+      requestedModelId === selectedCloudFallbackModelId
+        ? selectedCloudFallbackModelId
+        : "sokoclaw-local";
     const storedAgentProfile = this.agentProfiles.get(input.businessId);
     const agentProfile =
       input.agentProfile !== undefined
@@ -14966,13 +14902,6 @@ function buildRuntimeModelPrompt(
     allowedTools: Object.keys(runtimeToolRegistry) as RuntimeToolName[],
     schemaVersion: "cp11-runtime-model-v1"
   };
-}
-
-function modelFailureCode(status: RuntimeModelTrace["status"]): string {
-  if (status === "disabled") return "MODEL_PROVIDER_UNCONFIGURED";
-  if (status === "timeout") return "MODEL_PROVIDER_TIMEOUT";
-  if (status === "malformed") return "MODEL_RESPONSE_PARSE_FAILED";
-  return "MODEL_PROVIDER_UNREACHABLE";
 }
 
 function modelTraceFromCompletion(

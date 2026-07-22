@@ -40,15 +40,15 @@ a native button and routes to the existing `AgentProfileSurface`.
 
 The curated server registry is exposed by `GET /v1/ai-models`. Public GitHub release discovery is
 exposed separately by `GET /v1/ai-models/github`; it filters for Apache-2.0 repositories and
-Android-sized GGUF release assets before the frontend applies device-fit ranking. Business
+Android-sized GGUF release assets before the frontend applies device-fit ranking. Cloud fallback
 selection uses:
 
 - `GET /businesses/:businessId/ai-model`
 - `PUT /businesses/:businessId/ai-model`
 
-Activation requires `membership:manage`, validates availability, records an audit event, persists
-in snapshots, and overrides the browser-supplied runtime profile model for subsequent turns.
-Hosted profiles remain unavailable until `OPENAI_API_KEY` is configured.
+Selection requires `membership:manage`, accepts only available hosted models, records an audit
+event, and persists in snapshots without replacing a device-bound downloaded model. Hosted
+profiles remain unavailable until `OPENAI_API_KEY` is configured.
 
 ## Deletion and restore
 

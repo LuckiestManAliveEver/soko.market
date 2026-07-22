@@ -39,7 +39,7 @@ describe("frontend model activation contracts", () => {
     ).toBeLessThan(activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)"));
   });
 
-  it("activates configured backend models and reflects only confirmed selections", () => {
+  it("sets a cloud fallback without detaching the downloaded model", () => {
     const activation = sourceBetween(
       "async function useBackendModelWithAgent",
       "async function testAssignedModel"
@@ -48,11 +48,14 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("await onEnsureRuntimeSession()");
     expect(activation).toContain("/businesses/${business.id}/ai-model");
     expect(activation).toContain("if (activated.modelId !== model.id)");
-    expect(activation).toContain("setActiveAiModelId(activated.modelId)");
+    expect(activation).toContain("setCloudFallbackModelId(activated.modelId)");
+    expect(activation).toContain("hasReadyLocalModel");
+    expect(activation).not.toContain("await deleteJson");
+    expect(activation).not.toContain("getModelRuntime().unload");
     expect(activation).toContain("inferencePreferences.cloudConsent");
     expect(application).toContain('aria-label="Backend models"');
-    expect(application).toContain('"Use model"');
-    expect(application).toContain('"Model in use"');
+    expect(application).toContain('"Set as fallback"');
+    expect(application).toContain('"Default fallback"');
   });
 
   it("uses the provider-neutral route in the actual chat send path", () => {
@@ -68,6 +71,8 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("createRemoteInferenceProvider");
     expect(chat).toContain('runtime: "cloud-fallback"');
     expect(chat).toContain("readClientInferencePreferences");
+    expect(chat).toContain("localInstallation?.modelId");
+    expect(chat).toContain("selectedCloudFallback?.modelId");
   });
 
   it("shows installation-scoped red and green model usage controls", () => {

@@ -115,6 +115,7 @@ async function requestOpenAi(input: {
     });
     const body = (await response.json().catch(() => ({}))) as {
       output_text?: unknown;
+      output?: unknown;
       error?: { code?: unknown };
     };
     if (!response.ok) {
@@ -128,7 +129,7 @@ async function requestOpenAi(input: {
         input.model
       );
     }
-    const text = typeof body.output_text === "string" ? body.output_text.trim() : "";
+    const text = readOutputText(body);
     return result(
       text.length > 0 ? "available" : "error",
       text.length > 0 ? text : null,
@@ -148,6 +149,26 @@ async function requestOpenAi(input: {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function readOutputText(body: { output_text?: unknown; output?: unknown }): string {
+  if (typeof body.output_text === "string") return body.output_text.trim();
+  if (!Array.isArray(body.output)) return "";
+
+  const text: string[] = [];
+  for (const item of body.output) {
+    if (!isRecord(item) || !Array.isArray(item.content)) continue;
+    for (const content of item.content) {
+      if (isRecord(content) && content.type === "output_text" && typeof content.text === "string") {
+        text.push(content.text);
+      }
+    }
+  }
+  return text.join("").trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function buildCloudPrompt(prompt: RuntimeModelPrompt): string {

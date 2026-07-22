@@ -4394,20 +4394,19 @@ export function OwnerApp() {
     assignment: DeviceAgentModelAssignment
   ): Promise<DeviceAgentModelAssignment | null> {
     if (!navigator.onLine || !clientInferenceFeatureFlags.cloudFallback) return null;
-    const registry = await getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({
-      models: []
-    }));
-    const cloudModel =
-      registry.models.find(
-        (model) =>
-          model.id === "openai-fast" &&
-          model.available &&
-          model.provider === "openai" &&
-          model.source === "hosted"
-      ) ??
-      registry.models.find(
-        (model) => model.available && model.provider === "openai" && model.source === "hosted"
-      );
+    const [registry, selectedFallback] = await Promise.all([
+      getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] })),
+      getJson<ActiveAiModelSummary>(`/businesses/${assignment.businessId}/ai-model`).catch(
+        () => null
+      )
+    ]);
+    const cloudModel = registry.models.find(
+      (model) =>
+        model.id === selectedFallback?.modelId &&
+        model.available &&
+        model.provider === "openai" &&
+        model.source === "hosted"
+    );
     if (cloudModel === undefined) return null;
     const fallbackAssignment = assignmentWithCloudFallback(assignment, cloudModel.id);
     saveDeviceAgentModelAssignment(fallbackAssignment);
@@ -6071,11 +6070,16 @@ export function OwnerApp() {
       business === null
         ? null
         : readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId());
+    const readyLocalAssignment =
+      localAssignment?.readinessStatus === "READY" &&
+      localAssignment.lastSuccessfulInferenceAt !== null
+        ? localAssignment
+        : null;
     const localInstallation =
-      localAssignment?.activeModelInstallationId !== null &&
-      localAssignment?.activeModelInstallationId !== undefined
+      readyLocalAssignment?.activeModelInstallationId !== null &&
+      readyLocalAssignment?.activeModelInstallationId !== undefined
         ? (listLocalAiModels().find(
-            (model) => model.id === localAssignment.activeModelInstallationId
+            (model) => model.id === readyLocalAssignment.activeModelInstallationId
           ) ?? null)
         : null;
     let resolvedInferenceRuntimeSessionId = runtimeSessionId;
@@ -6111,30 +6115,36 @@ export function OwnerApp() {
       business !== null &&
       clientInferenceFeatureFlags.clientFirst &&
       (await browserInferenceEnabled(session.account.id, business.id).catch(() => false));
-    const [browserState, cachedBrowserModelIds, cloudRegistry] = await Promise.all([
-      browserPreference && business !== null
-        ? loadBrowserInferenceState(session.account.id, business.id).catch(() => null)
-        : Promise.resolve(null),
-      browserPreference
-        ? listCachedBrowserModelIds(session.account.id).catch(() => [])
-        : Promise.resolve([]),
-      inferencePreferences.cloudConsent && clientInferenceFeatureFlags.cloudFallback
-        ? getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] }))
-        : Promise.resolve({ models: [] })
-    ]);
-    const inferenceModelId = agentSettings.model;
+    const [browserState, cachedBrowserModelIds, cloudRegistry, selectedCloudFallback] =
+      await Promise.all([
+        browserPreference && business !== null
+          ? loadBrowserInferenceState(session.account.id, business.id).catch(() => null)
+          : Promise.resolve(null),
+        browserPreference
+          ? listCachedBrowserModelIds(session.account.id).catch(() => [])
+          : Promise.resolve([]),
+        inferencePreferences.cloudConsent && clientInferenceFeatureFlags.cloudFallback
+          ? getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] }))
+          : Promise.resolve({ models: [] }),
+        inferencePreferences.cloudConsent &&
+        clientInferenceFeatureFlags.cloudFallback &&
+        business !== null
+          ? getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`).catch(() => null)
+          : Promise.resolve(null)
+      ]);
     const cloudModel =
       cloudRegistry.models.find(
         (model) =>
-          model.id === inferenceModelId &&
+          model.id === selectedCloudFallback?.modelId &&
           model.available &&
           model.source === "hosted" &&
           model.provider === "openai"
-      ) ??
-      cloudRegistry.models.find(
-        (model) => model.available && model.source === "hosted" && model.provider === "openai"
-      ) ??
-      null;
+      ) ?? null;
+    const inferenceModelId =
+      localInstallation?.modelId ??
+      browserState?.settings?.selectedModelId ??
+      cloudModel?.id ??
+      agentSettings.model;
     const ownerNodeReachable =
       !hasHumanRecipient &&
       business !== null &&
@@ -6275,9 +6285,9 @@ export function OwnerApp() {
 
     if (
       inferenceRequest !== null &&
-      localAssignment !== null &&
+      readyLocalAssignment !== null &&
       localInstallation !== null &&
-      localAssignment.preferredExecutionMode !== "CLOUD_ONLY" &&
+      readyLocalAssignment.preferredExecutionMode !== "CLOUD_ONLY" &&
       !requiresServerTool
     ) {
       inferenceProviders.push({
@@ -6313,7 +6323,7 @@ export function OwnerApp() {
           });
           const usedAt = new Date().toISOString();
           saveDeviceAgentModelAssignment({
-            ...localAssignment,
+            ...readyLocalAssignment,
             readinessStatus: "READY",
             lastSuccessfulInferenceAt: usedAt,
             lastErrorCode: null,
@@ -6382,8 +6392,8 @@ export function OwnerApp() {
       });
     }
 
-    const localOnly = localAssignment?.preferredExecutionMode === "LOCAL_ONLY";
-    const neverFallback = localAssignment?.fallbackPolicy === "NEVER";
+    const localOnly = readyLocalAssignment?.preferredExecutionMode === "LOCAL_ONLY";
+    const neverFallback = readyLocalAssignment?.fallbackPolicy === "NEVER";
     const routingPolicy = {
       priority: defaultInferencePriority,
       maximumFallbacks: neverFallback ? 0 : clientInferenceFeatureFlags.maximumFallbacks,
@@ -6428,9 +6438,9 @@ export function OwnerApp() {
     }
     let localFallbackStatus: string | null = null;
     const consentSafeAgentSettings =
-      agentSettings.model.startsWith("openai-") && !inferencePreferences.cloudConsent
-        ? { ...agentSettings, model: "sokoclaw-local" }
-        : agentSettings;
+      inferencePreferences.cloudConsent && cloudModel !== null
+        ? { ...agentSettings, model: cloudModel.id }
+        : { ...agentSettings, model: "sokoclaw-local" };
     let messageContent: ConversationMessageContent = {
       type: "text",
       text: message,
@@ -13110,6 +13120,7 @@ function AgentProfileSurface({
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
+  const [cloudFallbackModelId, setCloudFallbackModelId] = useState<string | null>(null);
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
   const [modelActivationState, setModelActivationState] = useState<ModelActivationState>("idle");
@@ -13368,6 +13379,17 @@ function AgentProfileSurface({
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
       setActiveAiModelId(effectiveModelId);
+      setCloudFallbackModelId(
+        allModels.some(
+          (model) =>
+            model.id === active.modelId &&
+            model.available &&
+            model.provider === "openai" &&
+            model.source === "hosted"
+        )
+          ? active.modelId
+          : null
+      );
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
       if (!isEditing && isAgentModel(effectiveModelId)) {
@@ -13763,7 +13785,11 @@ function AgentProfileSurface({
 
   async function useBackendModelWithAgent(model: AiModelSummary) {
     if (modelRuntimeBusyRef.current || !model.available) return;
-    if (model.provider === "openai" && !inferencePreferences.cloudConsent) {
+    if (model.provider !== "openai" || model.source !== "hosted") {
+      setProfileMessage("Only configured hosted models can be selected as cloud fallbacks.");
+      return;
+    }
+    if (!inferencePreferences.cloudConsent) {
       setProfileMessage(
         "Enable explicit cloud inference consent before activating a hosted model."
       );
@@ -13774,22 +13800,12 @@ function AgentProfileSurface({
       return;
     }
 
-    const previous = agentModelAssignment;
-    let detachedLocalAssignment = false;
     modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
     setActivatingModelId(model.id);
     try {
-      setProfileMessage(`Starting ${model.label}…`);
+      setProfileMessage(`Setting ${model.label} as the cloud fallback…`);
       await onEnsureRuntimeSession();
-
-      if (previous !== null && previous.activeModelInstallationId !== null) {
-        await deleteJson(
-          `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-        );
-        detachedLocalAssignment = true;
-      }
-
       const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
         modelId: model.id
       });
@@ -13797,41 +13813,29 @@ function AgentProfileSurface({
         throw new Error("The backend did not activate the selected model.");
       }
 
-      if (previous !== null && previous.activeModelInstallationId !== null) {
-        await getModelRuntime().unload(previous.activeModelInstallationId);
+      setCloudFallbackModelId(activated.modelId);
+      const hasReadyLocalModel =
+        agentModelAssignment?.activeModelInstallationId !== null &&
+        agentModelAssignment?.activeModelInstallationId !== undefined &&
+        agentModelAssignment.readinessStatus === "READY";
+      if (!hasReadyLocalModel) {
+        const fallbackAssignment = assignmentFromServer(
+          await getJson<AgentModelAssignmentSummary>(
+            `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+          )
+        );
+        saveDeviceAgentModelAssignment(fallbackAssignment);
+        setAgentModelAssignment(fallbackAssignment);
+        setActiveAiModelId(activated.modelId);
+        updateAgent({ model: activated.modelId });
+        onAgentChange({ ...agent, model: activated.modelId });
       }
-      clearDeviceAgentModelAssignment(business.id, deviceId);
-      setAgentModelAssignment(null);
-      setActiveAiModelId(activated.modelId);
-      updateAgent({ model: activated.modelId });
-      onAgentChange({ ...agent, model: activated.modelId });
-      setProfileMessage(`${model.label} is active for this agent.`);
+      setProfileMessage(
+        hasReadyLocalModel
+          ? `${model.label} is the cloud fallback. The downloaded model remains connected and runs first.`
+          : `${model.label} is the default cloud model for this agent.`
+      );
     } catch (error) {
-      if (
-        detachedLocalAssignment &&
-        previous !== null &&
-        previous.activeModelInstallationId !== null
-      ) {
-        try {
-          const restored = await putJson<AgentModelAssignmentSummary>(
-            `/businesses/${business.id}/agent-model`,
-            {
-              deviceId,
-              installationId: previous.activeModelInstallationId,
-              preferredExecutionMode: previous.preferredExecutionMode,
-              fallbackPolicy: previous.fallbackPolicy,
-              readinessStatus: previous.readinessStatus,
-              lastSuccessfulInferenceAt: previous.lastSuccessfulInferenceAt,
-              lastErrorCode: previous.lastErrorCode
-            }
-          );
-          const synchronized = assignmentFromServer(restored);
-          saveDeviceAgentModelAssignment(synchronized);
-          setAgentModelAssignment(synchronized);
-        } catch {
-          // Preserve the original activation error; a refresh will reconcile backend state.
-        }
-      }
       setProfileMessage(getErrorMessage(error));
     } finally {
       modelRuntimeBusyRef.current = false;
@@ -13874,17 +13878,22 @@ function AgentProfileSurface({
     await deleteJson(
       `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
     );
-    const fallback = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
-      modelId: "sokoclaw-local"
-    });
+    const fallback = assignmentFromServer(
+      await getJson<AgentModelAssignmentSummary>(
+        `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+      )
+    );
     await getModelRuntime().unload(installationId);
-    clearDeviceAgentModelAssignment(business.id, deviceId);
-    setAgentModelAssignment(null);
-    setActiveAiModelId(fallback.modelId);
-    updateAgent({ model: fallback.modelId });
-    onAgentChange({ ...agent, model: fallback.modelId });
+    saveDeviceAgentModelAssignment(fallback);
+    setAgentModelAssignment(fallback);
+    const fallbackModelId = fallback.modelId ?? "sokoclaw-local";
+    setActiveAiModelId(fallbackModelId);
+    updateAgent({ model: fallbackModelId });
+    onAgentChange({ ...agent, model: fallbackModelId });
     setProfileMessage(
-      "The local model was removed. The deterministic compatibility fallback is active."
+      fallbackModelId.startsWith("openai-")
+        ? "The downloaded model was removed. The selected cloud fallback is now active."
+        : "The downloaded model was removed. Deterministic compatibility mode is active."
     );
   }
 
@@ -14424,6 +14433,7 @@ function AgentProfileSurface({
           (model) => model.id === agentModelAssignment.activeModelInstallationId
         ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
+  const cloudFallbackModel = aiModels.find((model) => model.id === cloudFallbackModelId);
   const cloudFallbackConsentRequired =
     agentModelAssignment !== null &&
     isDeviceCloudFallbackAssignment(agentModelAssignment) &&
@@ -14532,7 +14542,7 @@ function AgentProfileSurface({
 
         <div className="record-form agent-model-panel">
           <div className="section-heading">
-            <p className="eyebrow">One agent · one active model</p>
+            <p className="eyebrow">Device model first · cloud fallback second</p>
             <h3>Agent model</h3>
             <p>Choose, verify, and connect an installed model to this business agent.</p>
           </div>
@@ -14602,6 +14612,7 @@ function AgentProfileSurface({
                   ? "Not yet"
                   : formatDate(agentModelAssignment.lastSuccessfulInferenceAt)}
               </small>
+              <small>Cloud fallback: {cloudFallbackModel?.label ?? "Not configured"}</small>
             </article>
           )}
           <section className="browser-model-control" aria-label="Browser-local inference">
@@ -14893,10 +14904,10 @@ function AgentProfileSurface({
             <>
               <section aria-label="Backend models">
                 <div className="section-subheading">
-                  <h4>Backend models</h4>
+                  <h4>Cloud fallback models</h4>
                   <p>
-                    Select a configured server or hosted model. Activation updates the business
-                    backend before the UI marks the model as active.
+                    Select the hosted model used only when the downloaded device model cannot run
+                    and your fallback policy permits cloud inference.
                   </p>
                 </div>
                 <div className="ai-model-catalog">
@@ -14915,7 +14926,9 @@ function AgentProfileSurface({
                         <button
                           type="button"
                           disabled={
-                            !model.available || modelRuntimeBusy || activeAiModelId === model.id
+                            !model.available ||
+                            modelRuntimeBusy ||
+                            cloudFallbackModelId === model.id
                           }
                           title={
                             model.available
@@ -14924,12 +14937,12 @@ function AgentProfileSurface({
                           }
                           onClick={() => void useBackendModelWithAgent(model)}
                         >
-                          {activeAiModelId === model.id
-                            ? "Model in use"
+                          {cloudFallbackModelId === model.id
+                            ? "Default fallback"
                             : activatingModelId === model.id
                               ? "Activating…"
                               : model.available
-                                ? "Use model"
+                                ? "Set as fallback"
                                 : "Unavailable"}
                         </button>
                       </div>

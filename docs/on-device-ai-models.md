@@ -62,15 +62,16 @@ enabled only when `LOCAL_MODEL_ENABLED=true`, so it never advertises an unavaila
 
 Hosted OpenAI profiles are enabled when the API has `OPENAI_API_KEY`. They are processed through
 the OpenAI Responses API and can be configured with `OPENAI_FAST_MODEL` and
-`OPENAI_REASONING_MODEL`.
+`OPENAI_REASONING_MODEL`. Selecting a hosted profile sets the business's default cloud fallback;
+it does not detach or replace a downloaded model bound to the current device.
 
 ## Device-switch and resource fallback
 
 A local installation belongs to one device; selecting it must not imply that its GGUF file exists
-on another phone. When a signed-in device has no runnable copy of the business's preferred local
-model, the API returns a device-only assignment for the configured hosted default
-(`INFERENCE_DEFAULT_CLOUD_MODEL_ID`, normally `openai-fast`). This does not replace the original
-device's local assignment or the business's preferred model.
+on another phone. When a signed-in device has no runnable copy of its bound local model, the API
+returns a device-only assignment for the user-selected hosted fallback. If the user has not
+selected one, the configured hosted default (`INFERENCE_DEFAULT_CLOUD_MODEL_ID`, normally
+`openai-fast`) is used. This does not replace the original device's local assignment.
 
 Before any chat context is sent to the hosted provider, the new device displays a consent prompt.
 Declining keeps hosted inference off and uses Soko's deterministic compatibility mode. Accepting

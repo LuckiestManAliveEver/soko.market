@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type {
-  ConversationMessageSummary,
   RuntimeModelCompletionResult,
   RuntimeModelPrompt,
   RuntimeModelProvider
@@ -397,7 +396,7 @@ describe("CP11 local model adapter", () => {
       sessionCookie
     );
 
-    expect(selectedModelId).toBe("qwen2.5-0.5b-android");
+    expect(selectedModelId).toBe("sokoclaw-local");
     expect(turn.turn).toMatchObject({
       status: "completed",
       model: {
@@ -494,7 +493,7 @@ describe("CP11 local model adapter", () => {
     await app.close();
   });
 
-  it("keeps a failed agent message persisted and retries processing without duplicates", async () => {
+  it("persists a deterministic agent reply when the model provider is unavailable", async () => {
     let completionCount = 0;
     const provider = createTestModelProvider(async () => {
       completionCount += 1;
@@ -532,45 +531,49 @@ describe("CP11 local model adapter", () => {
       }
     };
 
-    const failed = await postJson<
-      ConversationMessageSummary & {
-        processing: { status: "failed"; errorCode: string; retryable: boolean };
-        agentMessage?: never;
-      }
-    >(app, "/v1/messages", payload, sessionCookie);
-    expect(failed).toMatchObject({
-      status: "failed",
-      failureCode: "MODEL_PROVIDER_UNREACHABLE",
-      retryCount: 1,
-      processing: {
-        status: "failed",
-        errorCode: "MODEL_PROVIDER_UNREACHABLE",
-        retryable: true
-      }
-    });
-    expect(failed.agentMessage).toBeUndefined();
-    expect(store.snapshot().conversationMessages).toHaveLength(1);
-
-    const recovered = await postJson<ProcessedConversationMessageResponse>(
+    const completed = await postJson<ProcessedConversationMessageResponse>(
       app,
       "/v1/messages",
       payload,
       sessionCookie
     );
-    expect(completionCount).toBe(2);
-    expect(recovered).toMatchObject({
-      id: failed.id,
+    expect(completed).toMatchObject({
       status: "delivered",
       failureCode: null,
-      agentMessage: {
-        author: "agent",
-        replyToMessageId: failed.id,
-        content: {
-          type: "text",
-          text: "Recovered local response."
+      processing: {
+        status: "completed",
+        errorCode: null,
+        retryable: false
+      },
+      runtime: {
+        turn: {
+          model: {
+            status: "unavailable",
+            fallbackUsed: true,
+            errorCode: "MODEL_PROVIDER_UNREACHABLE"
+          }
         }
+      },
+      agentMessage: {
+        author: "agent"
       }
     });
+    expect(completed.agentMessage.content).toMatchObject({
+      type: "text",
+      text: completed.runtime?.turn.response
+    });
+    expect(store.snapshot().conversationMessages).toHaveLength(2);
+
+    const retried = await postJson<ProcessedConversationMessageResponse>(
+      app,
+      "/v1/messages",
+      payload,
+      sessionCookie
+    );
+    expect(completionCount).toBe(1);
+    expect(retried.id).toBe(completed.id);
+    expect(retried.agentMessage.id).toBe(completed.agentMessage.id);
+    expect(retried.runtime).toBeNull();
     expect(store.snapshot().conversationMessages).toHaveLength(2);
 
     await app.close();
