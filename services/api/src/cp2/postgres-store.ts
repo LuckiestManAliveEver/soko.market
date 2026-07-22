@@ -283,7 +283,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "035_agent_model_assignments.sql";
+const requiredMigrationFilename = "038_auth_retention_policy.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
