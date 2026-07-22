@@ -13590,19 +13590,29 @@ function AgentProfileSurface({
     );
   }
 
+  async function synchronizeAgentModelAssignment(
+    assignment: DeviceAgentModelAssignment
+  ): Promise<DeviceAgentModelAssignment> {
+    if (!navigator.onLine) return assignment;
+    const saved = await putJson<AgentModelAssignmentSummary>(
+      `/businesses/${business.id}/agent-model`,
+      {
+        deviceId,
+        installationId: assignment.activeModelInstallationId,
+        preferredExecutionMode: assignment.preferredExecutionMode,
+        fallbackPolicy: assignment.fallbackPolicy,
+        readinessStatus: assignment.readinessStatus,
+        lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
+        lastErrorCode: assignment.lastErrorCode
+      }
+    );
+    return assignmentFromServer(saved);
+  }
+
   async function useModelWithAgent(model: LocalAiModel) {
     if (modelRuntimeBusyRef.current) return;
-    if (clientInferenceFeatureFlags.nativeBridge && !inferencePreferences.nativePermission) {
-      setProfileMessage("Allow the installed-app model runtime before activating a GGUF model.");
-      return;
-    }
-    if (clientInferenceFeatureFlags.nativeBridge && window.SokoAgentModelRuntime === undefined) {
-      setProfileMessage(
-        "This browser cannot activate GGUF models. Open Soko in the supported installed app with its trusted model runtime."
-      );
-      return;
-    }
     const previous = agentModelAssignment;
+    let boundAssignment: DeviceAgentModelAssignment | null = null;
     modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
     setActivatingModelId(model.modelId);
@@ -13642,6 +13652,31 @@ function AgentProfileSurface({
         }
       }
 
+      const pending = createPendingDeviceAssignment({
+        businessId: business.id,
+        deviceId,
+        installation: verified,
+        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"
+      });
+      setModelActivationState("binding-agent");
+      setProfileMessage(`Binding ${verified.displayName} to ${business.name}…`);
+      boundAssignment = await synchronizeAgentModelAssignment(pending);
+      saveDeviceAgentModelAssignment(boundAssignment);
+      setAgentModelAssignment(boundAssignment);
+      setProfileMessage(
+        `${verified.displayName} is bound to ${business.name}. Checking its runtime…`
+      );
+
+      if (clientInferenceFeatureFlags.nativeBridge && !inferencePreferences.nativePermission) {
+        throw new Error("Allow the installed-app model runtime to start this GGUF model.");
+      }
+      if (window.SokoAgentModelRuntime === undefined) {
+        throw new Error(
+          "This browser does not provide the trusted GGUF runtime. Open Soko in the supported installed app to start this model."
+        );
+      }
+
       setModelActivationState("resolving-agent");
       setProfileMessage("Restoring your agent…");
       if (navigator.onLine) {
@@ -13650,15 +13685,6 @@ function AgentProfileSurface({
         await onEnsureRuntimeSession();
       }
 
-      const pending = createPendingDeviceAssignment({
-        businessId: business.id,
-        deviceId,
-        installation: verified,
-        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"
-      });
-      saveDeviceAgentModelAssignment(pending);
-      setAgentModelAssignment(pending);
       setModelActivationState("initializing-backend");
       setProfileMessage("Preparing model backend…");
       setModelActivationState("loading-model");
@@ -13668,34 +13694,16 @@ function AgentProfileSurface({
       setModelActivationState("health-checking");
       setProfileMessage("Testing model…");
       const result = await testAgentModelRuntime(getModelRuntime(), verified);
-      const tested = assignmentAfterReadiness(pending, result);
+      const tested = assignmentAfterReadiness(boundAssignment, result);
+      boundAssignment = await synchronizeAgentModelAssignment(tested);
+      saveDeviceAgentModelAssignment(boundAssignment);
+      setAgentModelAssignment(boundAssignment);
       if (!result.success) {
         throw new Error(result.message);
       }
       setModelActivationState("binding-agent");
       setProfileMessage("Connecting to agent…");
-      if (navigator.onLine) {
-        const saved = await putJson<AgentModelAssignmentSummary>(
-          `/businesses/${business.id}/agent-model`,
-          {
-            deviceId,
-            installationId: verified.id,
-            preferredExecutionMode: tested.preferredExecutionMode,
-            fallbackPolicy: tested.fallbackPolicy,
-            readinessStatus: tested.readinessStatus,
-            lastSuccessfulInferenceAt: tested.lastSuccessfulInferenceAt,
-            lastErrorCode: tested.lastErrorCode
-          }
-        );
-        const synchronized = assignmentFromServer(saved);
-        saveDeviceAgentModelAssignment(synchronized);
-        setAgentModelAssignment(synchronized);
-        setActiveAiModelId(synchronized.modelId ?? verified.modelId);
-      } else {
-        saveDeviceAgentModelAssignment(tested);
-        setAgentModelAssignment(tested);
-        setActiveAiModelId(tested.modelId ?? verified.modelId);
-      }
+      setActiveAiModelId(boundAssignment.modelId ?? verified.modelId);
       if (
         previous?.activeModelInstallationId !== null &&
         previous?.activeModelInstallationId !== undefined &&
@@ -13712,19 +13720,40 @@ function AgentProfileSurface({
       setModelActivationState("failed");
       setFailedActivationModelId(model.modelId);
       await getModelRuntime().unload(model.id);
-      if (previous === null) {
-        clearDeviceAgentModelAssignment(business.id, deviceId);
-        setAgentModelAssignment(null);
-      } else {
-        saveDeviceAgentModelAssignment(previous);
-        setAgentModelAssignment(previous);
-      }
       const message = getErrorMessage(error);
-      setProfileMessage(
-        `${
-          /runtime|session/i.test(message) ? "The AI runtime could not start. Try again." : message
-        } The previous working model was left unchanged.`
-      );
+      if (boundAssignment !== null) {
+        const failedAssignment: DeviceAgentModelAssignment =
+          boundAssignment.readinessStatus === "READY"
+            ? boundAssignment
+            : {
+                ...boundAssignment,
+                readinessStatus: "FAILED",
+                lastSuccessfulInferenceAt: null,
+                lastErrorCode: boundAssignment.lastErrorCode ?? "MODEL_RUNTIME_UNAVAILABLE",
+                updatedAt: new Date().toISOString()
+              };
+        try {
+          boundAssignment = await synchronizeAgentModelAssignment(failedAssignment);
+        } catch {
+          boundAssignment = failedAssignment;
+        }
+        saveDeviceAgentModelAssignment(boundAssignment);
+        setAgentModelAssignment(boundAssignment);
+        setProfileMessage(
+          boundAssignment.readinessStatus === "READY"
+            ? `${model.displayName} passed its local test, but synchronization failed: ${message}`
+            : `${model.displayName} is bound to ${business.name}, but it is not running yet: ${message} Fix the runtime issue, then retry activation.`
+        );
+      } else {
+        if (previous === null) {
+          clearDeviceAgentModelAssignment(business.id, deviceId);
+          setAgentModelAssignment(null);
+        } else {
+          saveDeviceAgentModelAssignment(previous);
+          setAgentModelAssignment(previous);
+        }
+        setProfileMessage(`${message} The previous working model was left unchanged.`);
+      }
     } finally {
       modelRuntimeBusyRef.current = false;
       setActivatingModelId(null);
@@ -14507,6 +14536,11 @@ function AgentProfileSurface({
             <h3>Agent model</h3>
             <p>Choose, verify, and connect an installed model to this business agent.</p>
           </div>
+          {modelActivationState !== "idle" && profileMessage.length > 0 ? (
+            <p className="shell-note" role="status" aria-live="polite">
+              {profileMessage}
+            </p>
+          ) : null}
           {activeInstalledModel === null ? (
             <article className="agent-model-current">
               <div>

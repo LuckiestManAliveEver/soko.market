@@ -155,15 +155,48 @@ describe("agent model assignments", () => {
       model: model("untested-model")
     });
 
+    const previousActiveModel = store.getActiveAiModel({
+      sessionId: auth.session.id,
+      businessId
+    });
+    const assignment = store.assignAgentModel({
+      sessionId: auth.session.id,
+      businessId,
+      deviceId: "device-a",
+      installationId: "untested-model",
+      preferredExecutionMode: "LOCAL_FIRST",
+      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+      readinessStatus: "LOADING",
+      lastSuccessfulInferenceAt: null,
+      lastErrorCode: null
+    });
+
+    expect(assignment).toMatchObject({
+      activeModelInstallationId: "untested-model",
+      modelId: "custom:untested-model",
+      readinessStatus: "LOADING"
+    });
+    expect(store.getActiveAiModel({ sessionId: auth.session.id, businessId }).modelId).toBe(
+      previousActiveModel.modelId
+    );
+  });
+
+  it("still requires a successful inference timestamp to promote a binding", () => {
+    const { store, auth, businessId } = seedOwner("+254700700021");
+    store.registerInstalledAgentModel({
+      sessionId: auth.session.id,
+      model: model("untested-ready-model")
+    });
+
     expect(() =>
       store.assignAgentModel({
         sessionId: auth.session.id,
         businessId,
         deviceId: "device-a",
-        installationId: "untested-model",
+        installationId: "untested-ready-model",
         preferredExecutionMode: "LOCAL_FIRST",
         fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
-        readinessStatus: "LOADING",
+        readinessStatus: "READY",
         lastSuccessfulInferenceAt: null,
         lastErrorCode: null
       })

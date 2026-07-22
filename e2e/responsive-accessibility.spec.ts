@@ -373,6 +373,46 @@ test("downloaded models show green when active and red when inactive", async ({ 
   ).toBe("rgb(180, 35, 24)");
 });
 
+test("Use model binds the installation even when the GGUF runtime is unavailable", async ({
+  page
+}) => {
+  const readinessUpdates: string[] = [];
+  await page.setExtraHTTPHeaders({ "x-soko-test-model-binding": "true" });
+  await page.addInitScript((model) => {
+    localStorage.setItem("soko.device-model-scope.v1", "responsive-model-device");
+    localStorage.setItem("soko.local-ai-models.v2", JSON.stringify([model]));
+  }, bindableInstalledModel);
+  page.on("request", (request) => {
+    if (request.method() === "PUT" && new URL(request.url()).pathname.endsWith("/agent-model")) {
+      const body = request.postDataJSON() as { readinessStatus?: string };
+      if (body.readinessStatus !== undefined) readinessUpdates.push(body.readinessStatus);
+    }
+  });
+
+  await page.goto("/");
+  await page.evaluate(async (fileName) => {
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle("soko-ai-models", { create: true });
+    const file = await directory.getFileHandle(fileName, { create: true });
+    const writable = await file.createWritable();
+    await writable.write(new TextEncoder().encode("GGUF"));
+    await writable.close();
+  }, bindableInstalledModel.fileName);
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await page.getByRole("button", { name: "Open model library" }).click();
+  await page.getByRole("button", { name: "Not in use · Use model", exact: true }).click();
+
+  const modelPanel = page.locator(".agent-model-panel");
+  await expect(
+    modelPanel.getByRole("heading", { name: bindableInstalledModel.label })
+  ).toBeVisible();
+  await expect(modelPanel.getByText(/is bound to .* but it is not running yet/u)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Not in use · Retry activation", exact: true })
+  ).toBeVisible();
+  await expect.poll(() => readinessUpdates).toEqual(["LOADING", "FAILED"]);
+});
+
 test("WCAG 2.2 A/AA automated accessibility scan", async ({ page }) => {
   test.setTimeout(120_000);
   for (const viewport of [
@@ -562,32 +602,62 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
+    if (path === "/v1/models/installed" && method === "POST") return json({ registered: true });
+    if (path.startsWith("/v1/models/") && path.endsWith("/validate") && method === "POST") {
+      return json({
+        installationStatus: "INSTALLED",
+        compatibilityStatus: "COMPATIBLE",
+        validationError: null
+      });
+    }
     if (path.endsWith("/agent-model")) {
       const switchedDevice = route.request().headers()["x-soko-test-device-switch"] === "true";
       const localModelButtons =
         route.request().headers()["x-soko-test-local-model-buttons"] === "true";
+      const modelBinding = route.request().headers()["x-soko-test-model-binding"] === "true";
+      const bindingBody =
+        modelBinding && method === "PUT"
+          ? (route.request().postDataJSON() as {
+              installationId: string;
+              preferredExecutionMode: string;
+              fallbackPolicy: string;
+              readinessStatus: string;
+              lastSuccessfulInferenceAt: string | null;
+              lastErrorCode: string | null;
+            })
+          : null;
       return json({
         agentId: "responsive-certification-shop",
         businessId: "responsive-certification-shop",
         accountId: "responsive-account",
         userId: "responsive-user",
         deviceId: "responsive-model-device",
-        activeModelInstallationId: localModelButtons ? "responsive-qwen-installation" : null,
-        modelId: localModelButtons
+        activeModelInstallationId:
+          bindingBody?.installationId ??
+          (localModelButtons ? "responsive-qwen-installation" : null),
+        modelId: bindingBody
           ? "qwen2.5-0.5b-android"
-          : switchedDevice
-            ? "openai-fast"
-            : "sokoclaw-local",
-        preferredExecutionMode: localModelButtons ? "LOCAL_FIRST" : "CLOUD_ONLY",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
-        readinessStatus: "READY",
-        runtimeBackend: localModelButtons
-          ? "LLAMA_CPP_ANDROID"
-          : switchedDevice
-            ? "CLOUD"
-            : "OLLAMA",
-        lastSuccessfulInferenceAt: localModelButtons ? "2026-07-21T23:59:00.000Z" : null,
-        lastErrorCode: switchedDevice ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null,
+          : localModelButtons
+            ? "qwen2.5-0.5b-android"
+            : switchedDevice
+              ? "openai-fast"
+              : "sokoclaw-local",
+        preferredExecutionMode:
+          bindingBody?.preferredExecutionMode ?? (localModelButtons ? "LOCAL_FIRST" : "CLOUD_ONLY"),
+        fallbackPolicy: bindingBody?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        readinessStatus: bindingBody?.readinessStatus ?? "READY",
+        runtimeBackend:
+          bindingBody || localModelButtons
+            ? "LLAMA_CPP_ANDROID"
+            : switchedDevice
+              ? "CLOUD"
+              : "OLLAMA",
+        lastSuccessfulInferenceAt:
+          bindingBody?.lastSuccessfulInferenceAt ??
+          (localModelButtons ? "2026-07-21T23:59:00.000Z" : null),
+        lastErrorCode:
+          bindingBody?.lastErrorCode ??
+          (switchedDevice ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null),
         updatedAt: "2026-07-21T00:00:00.000Z",
         updatedBy: "responsive-user"
       });
@@ -732,6 +802,11 @@ const installedModels = [
     386_000_000
   )
 ];
+
+const bindableInstalledModel = {
+  ...installedModels[0],
+  fileSizeBytes: 4
+};
 
 function installedModel(
   id: string,

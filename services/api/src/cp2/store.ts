@@ -2883,7 +2883,7 @@ export class Cp2Store {
       input.installationId
     );
     assertModelCanBeAssigned(installation);
-    if (input.readinessStatus !== "READY" || input.lastSuccessfulInferenceAt === null) {
+    if (input.readinessStatus === "READY" && input.lastSuccessfulInferenceAt === null) {
       throw new Cp2Error(
         409,
         "agent_model_not_ready",
@@ -2900,9 +2900,10 @@ export class Cp2Store {
       modelId: installation.modelId,
       preferredExecutionMode: normalizeExecutionMode(input.preferredExecutionMode),
       fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
-      readinessStatus: "READY",
+      readinessStatus: input.readinessStatus,
       runtimeBackend: installation.runtimeBackend,
-      lastSuccessfulInferenceAt: input.lastSuccessfulInferenceAt,
+      lastSuccessfulInferenceAt:
+        input.readinessStatus === "READY" ? input.lastSuccessfulInferenceAt : null,
       lastErrorCode:
         input.lastErrorCode === null
           ? null
@@ -2914,24 +2915,27 @@ export class Cp2Store {
       agentModelAssignmentKey(input.businessId, input.deviceId),
       assignment
     );
-    const selection: ActiveAiModelSummary = {
-      businessId: input.businessId,
-      modelId: installation.modelId,
-      activatedAt: assignment.updatedAt,
-      activatedBy: session.user.id
-    };
-    this.activeAiModels.set(input.businessId, selection);
-    const profile = this.agentProfiles.get(input.businessId);
-    if (profile !== undefined) {
-      this.agentProfiles.set(input.businessId, {
-        ...profile,
+    if (assignment.readinessStatus === "READY") {
+      const selection: ActiveAiModelSummary = {
+        businessId: input.businessId,
         modelId: installation.modelId,
-        updatedAt: assignment.updatedAt,
-        updatedBy: session.user.id
-      });
+        activatedAt: assignment.updatedAt,
+        activatedBy: session.user.id
+      };
+      this.activeAiModels.set(input.businessId, selection);
+      const profile = this.agentProfiles.get(input.businessId);
+      if (profile !== undefined) {
+        this.agentProfiles.set(input.businessId, {
+          ...profile,
+          modelId: installation.modelId,
+          updatedAt: assignment.updatedAt,
+          updatedBy: session.user.id
+        });
+      }
     }
     this.recordAuditEvent({
-      type: "agent_model.assigned",
+      type:
+        assignment.readinessStatus === "READY" ? "agent_model.assigned" : "agent_model.attached",
       aggregateType: "business",
       aggregateId: input.businessId,
       actorId: session.user.id,
@@ -2941,6 +2945,7 @@ export class Cp2Store {
         modelId: installation.modelId,
         deviceId: installation.deviceId,
         runtimeBackend: installation.runtimeBackend,
+        readinessStatus: assignment.readinessStatus,
         preferredExecutionMode: assignment.preferredExecutionMode,
         fallbackPolicy: assignment.fallbackPolicy
       }

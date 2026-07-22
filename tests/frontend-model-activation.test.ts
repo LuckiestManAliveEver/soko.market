@@ -14,20 +14,29 @@ describe("frontend model activation contracts", () => {
       "async function useModelWithAgent",
       "async function useBackendModelWithAgent"
     );
+    const binding = sourceBetween(
+      "async function synchronizeAgentModelAssignment",
+      "async function useModelWithAgent"
+    );
 
     expect(backendValidation).toContain("/v1/models/${encodeURIComponent(model.id)}/validate");
     expect(activation).toContain("await registerInstalledModel(verified)");
     expect(activation).toContain("await validateInstalledModelOnBackend(verified)");
     expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified)");
-    expect(activation).toContain("/businesses/${business.id}/agent-model");
+    expect(binding).toContain("/businesses/${business.id}/agent-model");
     expect(activation).toContain("inferencePreferences.nativePermission");
+    expect(activation).toContain(
+      "boundAssignment = await synchronizeAgentModelAssignment(pending)"
+    );
+    expect(activation).toContain("boundAssignment = await synchronizeAgentModelAssignment(tested)");
+    expect(activation).toContain("is bound to ${business.name}, but it is not running yet");
 
     expect(activation.indexOf("await validateInstalledModelOnBackend(verified)")).toBeLessThan(
-      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)")
+      activation.indexOf("boundAssignment = await synchronizeAgentModelAssignment(pending)")
     );
     expect(
-      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)")
-    ).toBeLessThan(activation.indexOf("/businesses/${business.id}/agent-model"));
+      activation.indexOf("boundAssignment = await synchronizeAgentModelAssignment(pending)")
+    ).toBeLessThan(activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)"));
   });
 
   it("activates configured backend models and reflects only confirmed selections", () => {
