@@ -20,6 +20,9 @@ describe("Render Blueprint", () => {
 
   it("enables secured client inference without enabling Render-local inference", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+    const rootManifest = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8")
+    ) as { scripts: Record<string, string> };
     const staging = blueprint.slice(blueprint.indexOf("name: soko-market-web-staging"));
     const production = blueprint.slice(
       blueprint.indexOf("name: soko-market-web"),
@@ -39,8 +42,9 @@ describe("Render Blueprint", () => {
     expect(production).toContain("Content-Security-Policy");
     expect(production).toContain("https://*.huggingface.co");
     expect(blueprint).not.toContain("LOCAL_MODEL_");
-    expect(blueprint).not.toContain("services/ai-runtime/**");
-    expect(blueprint).toContain("check:render-inference-boundaries");
+    expect(blueprint).toContain("corepack pnpm build:production");
+    expect(blueprint).toContain("services/ai-runtime/**");
+    expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");

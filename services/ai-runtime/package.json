@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",

@@ -162,6 +162,9 @@ importers:
       '@simplewebauthn/server':
         specifier: ^13.0.0
         version: 13.3.2
+      '@soko/ai-runtime':
+        specifier: workspace:*
+        version: link:../ai-runtime
       '@soko/business-core':
         specifier: workspace:*
         version: link:../../packages/business-core
@@ -3249,7 +3252,7 @@ packages:
         optional: true
 
   xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
-    resolution: {tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+    resolution: {integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==, tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
     version: 0.20.3
     engines: {node: '>=0.8'}
     hasBin: true

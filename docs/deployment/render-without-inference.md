@@ -7,8 +7,9 @@ business APIs, message routing, metadata, ephemeral owner-node coordination, and
 backend-only cloud proxy. It does not import llama.cpp/Ollama adapters, load GGUF/ONNX models,
 start a model worker, spawn a local model server, or download model weights.
 
-`pnpm check:render-inference-boundaries` enforces this against the API manifest, API source/build
-imports, and the API section of `render.yaml`.
+`pnpm check:render-inference-boundaries` enforces this against API source/build imports and the
+API section of `render.yaml`. The API declares `@soko/ai-runtime` so pnpm builds and validates its
+public package boundary, but the API does not import its local-model or Ollama adapters.
 
 ## Build and start
 
@@ -16,9 +17,7 @@ Build:
 
 ```bash
 COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile
-COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build
-COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports
-COREPACK_HOME=/tmp/corepack corepack pnpm check:render-inference-boundaries
+COREPACK_HOME=/tmp/corepack corepack pnpm build:production
 ```
 
 Start:
@@ -28,8 +27,9 @@ COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate
 COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
 ```
 
-`services/ai-runtime` is intentionally outside the API dependency and build-filter graph. It
-remains available for installed applications, owner-node development, and legacy local testing.
+`services/ai-runtime` is an explicit API workspace dependency so dependency builds cannot omit its
+compiled package entry point. It remains a build-time contract for Render: the API does not start
+the runtime server, import local model adapters, or provision inference resources.
 
 ## Required API variables
 
@@ -67,13 +67,13 @@ Face HTTPS/WebSocket origins and enables the isolation headers used by threaded 
 Run:
 
 ```bash
-pnpm --filter @soko/api... build
+pnpm build:production
 pnpm check:render-inference-boundaries
-grep -R "@soko/ai-runtime" services/api/dist services/api/package.json
+grep -R "ai-runtime/src" services/api/dist services/ai-runtime/dist
 curl https://api.soko.market/health
 ```
 
-The boundary command must pass, grep must return no match, and health must boot without
+The build and boundary commands must pass, grep must return no match, and health must boot without
 llama.cpp, Ollama, GPU libraries, or model files. Expected idle inference CPU is zero; memory is
 normal Fastify/PostgreSQL application memory. Cloud or owner-node routing adds network I/O, not
 local model compute.

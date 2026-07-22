@@ -15,7 +15,7 @@ services:
     autoDeployTrigger: commit
     plan: free
     region: oregon
-    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api... build && COREPACK_HOME=/tmp/corepack corepack pnpm check:production-imports && COREPACK_HOME=/tmp/corepack corepack pnpm check:render-inference-boundaries
+    buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm build:production
     startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
     healthCheckPath: /health
     buildFilter:
@@ -26,6 +26,7 @@ services:
         - render.yaml
         - infra/db/**
         - packages/**
+        - services/ai-runtime/**
         - services/api/**
     domains:
       - api.soko.market

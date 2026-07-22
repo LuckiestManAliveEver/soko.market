@@ -4,7 +4,6 @@ import { extname, join, relative } from "node:path";
 const apiManifest = JSON.parse(readFileSync("services/api/package.json", "utf8"));
 const dependencyNames = Object.keys(apiManifest.dependencies ?? {});
 const blockedDependencies = [
-  "@soko/ai-runtime",
   "node-llama-cpp",
   "llama-node",
   "@huggingface/transformers",
@@ -12,7 +11,7 @@ const blockedDependencies = [
   "onnxruntime-web"
 ];
 const blockedImportPatterns = [
-  /^@soko\/ai-runtime(?:\/|$)/u,
+  /^@soko\/ai-runtime\/(?:src|local-model|ollama-model)(?:\/|$)/u,
   /(?:^|\/)(?:local-model|ollama-model|browser-model\.worker)(?:\.js)?$/u,
   /(?:llama|gguf).*(?:loader|worker|binding)/iu
 ];
@@ -48,7 +47,7 @@ const apiService = blueprint.slice(
   blueprint.indexOf("name: soko-market-api"),
   blueprint.indexOf("name: soko-market-web")
 );
-for (const forbidden of ["LOCAL_MODEL_", "services/ai-runtime", "llama.cpp", "ollama", ".gguf"]) {
+for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", "ollama", ".gguf"]) {
   if (apiService.toLowerCase().includes(forbidden.toLowerCase())) {
     violations.push(`Render API service contains forbidden local-inference marker ${forbidden}`);
   }

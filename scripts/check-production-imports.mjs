@@ -1,24 +1,17 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { dirname, extname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const roots = [
-  "packages/shared-types/dist",
-  "packages/event-core/dist",
-  "packages/tool-core/dist",
-  "packages/sync-core/dist",
-  "packages/business-core/dist",
-  "services/ai-runtime/dist",
-  "services/api/dist"
+export const productionPackages = [
+  packageDefinition("@soko/shared-types", "packages/shared-types/package.json"),
+  packageDefinition("@soko/event-core", "packages/event-core/package.json"),
+  packageDefinition("@soko/tool-core", "packages/tool-core/package.json"),
+  packageDefinition("@soko/sync-core", "packages/sync-core/package.json"),
+  packageDefinition("@soko/business-core", "packages/business-core/package.json"),
+  packageDefinition("@soko/ai-runtime", "services/ai-runtime/package.json", ["./dist/server.js"]),
+  packageDefinition("@soko/api", "services/api/package.json")
 ];
-const packageManifests = [
-  "packages/shared-types/package.json",
-  "packages/event-core/package.json",
-  "packages/tool-core/package.json",
-  "packages/sync-core/package.json",
-  "packages/business-core/package.json",
-  "services/ai-runtime/package.json",
-  "services/api/package.json"
-];
+
 const importPatterns = [
   /\bimport\s+(?:[^'"()]+?\s+from\s+)?["']([^"']+)["']/g,
   /\bexport\s+(?:[^"']+?\s+from\s+)?["']([^"']+)["']/g,
@@ -26,95 +19,147 @@ const importPatterns = [
   /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g
 ];
 const blockedSpecifiers = [
-  /(?<!\.d)\.tsx?$/u,
-  /\/src\//u,
-  /^@soko\/ai-runtime\/src(?:\/|$)/u,
-  /ai-runtime\/src/u
+  /(?<!\.d)\.tsx?(?:$|[?#])/u,
+  /(?:^|\/)src(?:\/|$)/u,
+  /(?:^|\/)services\/[^/]+\/src(?:\/|$)/u
 ];
-const violations = [];
 
-for (const manifestPath of packageManifests) {
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const specifiers = collectManifestSpecifiers(manifest.exports);
+export function checkProductionImports({
+  rootDirectory = process.cwd(),
+  packages = productionPackages
+} = {}) {
+  const violations = [];
 
-  for (const fieldName of ["main", "types"]) {
-    if (typeof manifest[fieldName] === "string") {
-      specifiers.push(manifest[fieldName]);
+  for (const definition of packages) {
+    const manifestPath = resolve(rootDirectory, definition.manifestPath);
+    if (!existsSync(manifestPath)) {
+      violations.push(missingOutput(definition, definition.manifestPath));
+      continue;
     }
-  }
 
-  for (const specifier of specifiers) {
-    if (blockedSpecifiers.some((blockedSpecifier) => blockedSpecifier.test(specifier))) {
-      violations.push(`${manifestPath} exposes ${specifier}`);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const packageRoot = dirname(manifestPath);
+    const entrySpecifiers = new Set([
+      ...collectManifestSpecifiers(manifest.exports),
+      ...[manifest.main, manifest.module, manifest.types].filter(
+        (specifier) => typeof specifier === "string"
+      ),
+      ...definition.additionalOutputs
+    ]);
+
+    for (const specifier of entrySpecifiers) {
+      if (blockedSpecifiers.some((blockedSpecifier) => blockedSpecifier.test(specifier))) {
+        violations.push({
+          type: "invalid-manifest-entry",
+          packageName: definition.packageName,
+          location: definition.manifestPath,
+          specifier
+        });
+      }
+      const expectedPath = resolve(packageRoot, specifier);
+      if (!existsSync(expectedPath)) {
+        violations.push(
+          missingOutput(definition, relative(rootDirectory, expectedPath).replaceAll("\\", "/"))
+        );
+      }
     }
-  }
-}
 
-for (const root of roots) {
-  if (!existsSync(root)) {
-    violations.push(`${root}: build output is missing`);
-    continue;
-  }
+    const distDirectory = resolve(packageRoot, "dist");
+    if (!existsSync(distDirectory)) continue;
 
-  for (const filePath of listJavaScriptFiles(root)) {
-    const source = readFileSync(filePath, "utf8");
-
-    for (const pattern of importPatterns) {
-      for (const match of source.matchAll(pattern)) {
-        const specifier = match[1] ?? "";
-
-        if (blockedSpecifiers.some((blockedSpecifier) => blockedSpecifier.test(specifier))) {
-          violations.push(`${relative(process.cwd(), filePath)} imports ${specifier}`);
+    for (const filePath of listJavaScriptFiles(distDirectory)) {
+      const source = readFileSync(filePath, "utf8");
+      for (const pattern of importPatterns) {
+        for (const match of source.matchAll(pattern)) {
+          const specifier = match[1] ?? "";
+          if (blockedSpecifiers.some((blockedSpecifier) => blockedSpecifier.test(specifier))) {
+            violations.push({
+              type: "invalid-runtime-import",
+              location: relative(rootDirectory, filePath).replaceAll("\\", "/"),
+              specifier
+            });
+          }
         }
       }
     }
   }
+
+  return violations;
 }
 
-if (violations.length > 0) {
-  console.error("Production build contains invalid runtime imports:");
-
-  for (const violation of violations) {
-    console.error(`- ${violation}`);
-  }
-
-  process.exit(1);
+export function formatProductionImportViolations(violations) {
+  return violations.map((violation) => {
+    if (violation.type === "missing-output") {
+      return [
+        "Missing production build output:",
+        `Package: ${violation.packageName}`,
+        `Expected: ${violation.expected}`,
+        `Run: ${violation.command}`
+      ].join("\n");
+    }
+    if (violation.type === "invalid-manifest-entry") {
+      return [
+        "Invalid production package entry:",
+        `Package: ${violation.packageName}`,
+        `Manifest: ${violation.location}`,
+        `Entry: ${violation.specifier}`
+      ].join("\n");
+    }
+    return [
+      "Invalid production runtime import:",
+      `File: ${violation.location}`,
+      `Import: ${violation.specifier}`
+    ].join("\n");
+  });
 }
 
-console.log("Production build imports are clean.");
+function packageDefinition(packageName, manifestPath, additionalOutputs = []) {
+  return {
+    packageName,
+    manifestPath,
+    additionalOutputs,
+    command: `pnpm --filter ${packageName} build`
+  };
+}
+
+function missingOutput(definition, expected) {
+  return {
+    type: "missing-output",
+    packageName: definition.packageName,
+    expected,
+    command: definition.command
+  };
+}
 
 function listJavaScriptFiles(directory) {
   const entries = readdirSync(directory, { withFileTypes: true });
-  const files = [];
-
-  for (const entry of entries) {
+  return entries.flatMap((entry) => {
     const entryPath = join(directory, entry.name);
-
-    if (entry.isDirectory()) {
-      files.push(...listJavaScriptFiles(entryPath));
-      continue;
-    }
-
-    if (entry.isFile() && [".js", ".mjs", ".cjs"].includes(extname(entry.name))) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
+    if (entry.isDirectory()) return listJavaScriptFiles(entryPath);
+    return entry.isFile() && [".js", ".mjs", ".cjs"].includes(extname(entry.name))
+      ? [entryPath]
+      : [];
+  });
 }
 
 function collectManifestSpecifiers(value) {
-  if (typeof value === "string") {
-    return [value];
-  }
-
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => collectManifestSpecifiers(item));
-  }
-
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectManifestSpecifiers(item));
   if (value !== null && typeof value === "object") {
     return Object.values(value).flatMap((item) => collectManifestSpecifiers(item));
   }
-
   return [];
+}
+
+const isMainModule =
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  const violations = checkProductionImports();
+  if (violations.length > 0) {
+    console.error(formatProductionImportViolations(violations).join("\n\n"));
+    process.exit(1);
+  }
+  console.log("Production build imports are clean.");
 }

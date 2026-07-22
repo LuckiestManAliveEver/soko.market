@@ -14,6 +14,7 @@
     "android:legal:gate": "node scripts/verify-play-legal-readiness.mjs --require-approved",
     "android:legal:verify": "node scripts/verify-play-legal-readiness.mjs",
     "build": "pnpm -r --if-present build",
+    "build:production": "pnpm --filter @soko/api^... build && pnpm --filter @soko/api build && pnpm check:production-imports && pnpm check:render-inference-boundaries",
     "benchmark:browser-inference": "node scripts/benchmark-browser-inference.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:production-imports": "node scripts/check-production-imports.mjs",
