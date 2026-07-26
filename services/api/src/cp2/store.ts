@@ -14,6 +14,19 @@ import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
 import type {
   AccountSummary,
+  AgentAudience,
+  AgentContextSource,
+  AgentEvaluationEvent,
+  AgentEvaluationEventType,
+  AgentEvaluationPolicy,
+  AgentEvaluationSummary,
+  AgentInstructions,
+  AgentMemoryPolicy,
+  AgentOwnerCorrection,
+  AgentPersonality,
+  AgentRuntimeReadiness,
+  AgentRuntimeVersion,
+  AgentSkillBinding,
   AgentModelAssignmentSummary,
   AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
@@ -126,6 +139,7 @@ import type {
   RuntimeTurnStatus,
   RuntimeTurnSummary,
   RuntimeVerificationResult,
+  ShopAgentRuntime,
   ReceiptLineItemSummary,
   ReceiptOCRJobSummary,
   SessionSummary,
@@ -158,6 +172,16 @@ import type {
   SyncPullPage,
   UserSummary
 } from "@soko/shared-types";
+import {
+  assembleAgentInferenceMessage,
+  defaultAgentEvaluationPolicy,
+  defaultAgentInstructions,
+  defaultAgentMemoryPolicy,
+  defaultAgentPersonality,
+  defaultAgentSkillBindings,
+  enforceAgentPolicy,
+  retrieveAgentContext
+} from "./agent-business-runtime.js";
 import {
   createSyncQueueItem,
   markSyncProcessing,
@@ -411,13 +435,45 @@ export interface BusinessAgentProfileInput {
   integrations: string[];
   contextScripts: string[];
   status: "active" | "draft";
+  personalityConfig?: AgentPersonality;
+  instructionPolicy?: AgentInstructions;
+  skillBindings?: AgentSkillBinding[];
+  memoryPolicy?: AgentMemoryPolicy;
+  evaluationPolicy?: AgentEvaluationPolicy;
+  supportedLanguages?: SupportedLanguage[];
+  businessCategory?: string;
+  publicIntroduction?: string;
 }
 
 export interface BusinessAgentProfileSummary extends BusinessAgentProfileInput {
   businessId: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  createdAt: string;
+  personalityConfig: AgentPersonality;
+  instructionPolicy: AgentInstructions;
+  skillBindings: AgentSkillBinding[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
   updatedAt: string;
   updatedBy: string;
 }
+
+type NormalizedBusinessAgentProfile = BusinessAgentProfileInput & {
+  personalityConfig: AgentPersonality;
+  instructionPolicy: AgentInstructions;
+  skillBindings: AgentSkillBinding[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
+};
 
 export interface NetworkImportConnectionInput {
   name: string;
@@ -606,6 +662,10 @@ export interface Cp2Snapshot {
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
   activeAiModels?: ActiveAiModelSummary[];
   agentProfiles?: BusinessAgentProfileSummary[];
+  agentRuntimeVersions?: AgentRuntimeVersion[];
+  agentContextSources?: AgentContextSource[];
+  agentEvaluationEvents?: AgentEvaluationEvent[];
+  agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
   agentModelAssignments?: AgentModelAssignmentSummary[];
   syncChanges: SyncChange[];
@@ -834,6 +894,10 @@ export class Cp2Store {
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
+  private readonly agentRuntimeVersions = new Map<string, AgentRuntimeVersion>();
+  private readonly agentContextSources = new Map<string, AgentContextSource>();
+  private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
+  private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
   private readonly quarantinedBusinessIds = new Set<string>();
@@ -2741,6 +2805,16 @@ export class Cp2Store {
       occurredAt: now.toISOString(),
       payload: { modelId: selection.modelId }
     });
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const revised = {
+      ...profile,
+      modelId: selection.modelId,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(revised, session.user.id, "Cloud fallback model changed");
     return selection;
   }
 
@@ -2922,6 +2996,20 @@ export class Cp2Store {
         "Run a successful local test inference before activating this model."
       );
     }
+    if (input.readinessStatus === "READY") {
+      const readiness = this.getAgentRuntimeReadiness({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        now
+      });
+      if (!readiness.ready) {
+        throw new Cp2Error(
+          409,
+          "agent_runtime_not_ready",
+          readiness.issues.map((issue) => issue.message).join(" ")
+        );
+      }
+    }
     const assignment: AgentModelAssignmentSummary = {
       agentId: input.businessId,
       businessId: input.businessId,
@@ -2964,6 +3052,21 @@ export class Cp2Store {
         fallbackPolicy: assignment.fallbackPolicy
       }
     });
+    if (assignment.readinessStatus === "READY") {
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        modelId: installation.modelId,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: now.toISOString(),
+        updatedBy: session.user.id
+      };
+      if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+        this.recordAgentRuntimeVersion(profile, session.user.id, "Initial business runtime");
+      }
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Active model changed");
+    }
     return { ...assignment };
   }
 
@@ -3000,6 +3103,17 @@ export class Cp2Store {
         deviceId: input.deviceId
       }
     });
+    if (existing !== undefined) {
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: now.toISOString(),
+        updatedBy: session.user.id
+      };
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Device model assignment removed");
+    }
     return { removed: true };
   }
 
@@ -3018,7 +3132,7 @@ export class Cp2Store {
     const stored = this.agentProfiles.get(input.businessId);
     if (stored !== undefined) {
       return cloneBusinessAgentProfile({
-        ...stored,
+        ...hydrateBusinessAgentProfile(stored),
         contextScripts: ensureRequiredAgentContextScripts(stored.contextScripts)
       });
     }
@@ -3046,6 +3160,16 @@ export class Cp2Store {
       now
     );
     const profile = normalizeBusinessAgentProfile(input.profile);
+    const business = this.requireBusiness(input.businessId);
+    const current = hydrateBusinessAgentProfile(
+      this.agentProfiles.get(input.businessId) ??
+        createDefaultBusinessAgentProfile({
+          business,
+          modelId: this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
+          updatedAt: now.toISOString(),
+          updatedBy: session.user.id
+        })
+    );
     const model = aiModelRegistry.find((candidate) => candidate.id === profile.modelId);
     const deviceModel = downloadableAiModelIdPattern.test(profile.modelId);
     if ((!deviceModel && model === undefined) || model?.available === false) {
@@ -3061,13 +3185,24 @@ export class Cp2Store {
 
     const updated: BusinessAgentProfileSummary = {
       businessId: input.businessId,
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: current.agentId,
+      runtimeVersion: current.runtimeVersion + 1,
+      createdAt: current.createdAt,
       ...profile,
       contextScripts: ensureRequiredAgentContextScripts(profile.contextScripts),
       modelId: model?.id ?? profile.modelId,
       updatedAt: now.toISOString(),
       updatedBy: session.user.id
     };
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(current, new Date(current.updatedAt));
+      this.recordAgentRuntimeVersion(current, session.user.id, "Initial business runtime");
+    }
     this.agentProfiles.set(input.businessId, updated);
+    this.synchronizeProfileContextSources(updated, now);
+    this.recordAgentRuntimeVersion(updated, session.user.id, "Agent profile updated");
     this.recordAuditEvent({
       type: "agent_profile.updated",
       aggregateType: "business",
@@ -3082,6 +3217,476 @@ export class Cp2Store {
     });
 
     return cloneBusinessAgentProfile(updated);
+  }
+
+  getAgentRuntime(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ShopAgentRuntime {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    return this.buildShopAgentRuntime(
+      this.currentAgentProfile(input.businessId, now),
+      now,
+      "owner"
+    );
+  }
+
+  listAgentRuntimeVersions(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentRuntimeVersion[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.runtimeVersionsForBusiness(input.businessId).map(cloneAgentRuntimeVersion);
+  }
+
+  rollbackAgentRuntimeVersion(input: {
+    sessionId: string | null;
+    businessId: string;
+    version: number;
+    now?: Date;
+  }): ShopAgentRuntime {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const target = this.runtimeVersionsForBusiness(input.businessId).find(
+      (candidate) => candidate.version === input.version
+    );
+    if (target === undefined) {
+      throw new Cp2Error(404, "agent_runtime_version_not_found", "Runtime version was not found.");
+    }
+    const current = this.currentAgentProfile(input.businessId, now);
+    const runtime = target.runtime;
+    const targetContextSourceIds = new Set(runtime.context.sources.map((source) => source.id));
+    const restoredContextScripts = runtime.context.sources
+      .filter((source) => source.type === "context_script" && source.status === "active")
+      .map(
+        (source) =>
+          source.retrievalMetadata.content ??
+          this.agentContextSources.get(source.id)?.retrievalMetadata.content ??
+          ""
+      )
+      .filter((content) => content !== "");
+    for (const source of this.agentContextSources.values()) {
+      if (source.shopId !== input.businessId || source.type === "context_script") continue;
+      const targetSource = runtime.context.sources.find((candidate) => candidate.id === source.id);
+      if (targetSource === undefined || !targetContextSourceIds.has(source.id)) {
+        source.status = "archived";
+        source.deletedAt = now.toISOString();
+      } else {
+        source.status = targetSource.status;
+        source.deletedAt = targetSource.status === "archived" ? now.toISOString() : null;
+      }
+      source.updatedAt = now.toISOString();
+    }
+    const restored: BusinessAgentProfileSummary = {
+      ...current,
+      name: runtime.identity.agentName,
+      description: runtime.identity.shopDescription,
+      modelId: runtime.model.modelId,
+      role: runtime.identity.role,
+      language: runtime.identity.supportedLanguages[0] ?? current.language,
+      supportedLanguages: [...runtime.identity.supportedLanguages],
+      businessCategory: runtime.identity.businessCategory,
+      publicIntroduction: runtime.identity.publicIntroduction,
+      personality: runtime.personality.additionalGuidance || current.personality,
+      personalityConfig: cloneAgentPersonality(runtime.personality),
+      instructions: runtime.instructions.generalOperatingRules.join("\n") || current.instructions,
+      instructionPolicy: cloneAgentInstructions(runtime.instructions),
+      skillBindings: runtime.skills.map(cloneAgentSkillBinding),
+      memoryPolicy: { ...runtime.memory },
+      evaluationPolicy: { ...runtime.evaluations },
+      contextScripts: restoredContextScripts,
+      status:
+        runtime.status === "paused" || runtime.status === "archived" ? "draft" : runtime.status,
+      runtimeVersion: current.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, restored);
+    this.synchronizeProfileContextSources(restored, now);
+    this.recordAgentRuntimeVersion(
+      restored,
+      session.user.id,
+      `Rolled back to runtime version ${target.version}`
+    );
+    this.recordAuditEvent({
+      type: "agent_runtime.rolled_back",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        fromVersion: current.runtimeVersion,
+        targetVersion: target.version,
+        activeVersion: restored.runtimeVersion
+      }
+    });
+    return this.buildShopAgentRuntime(restored, now, "owner");
+  }
+
+  getAgentRuntimeReadiness(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentRuntimeReadiness {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const business = this.businesses.get(input.businessId);
+    const profile = this.agentProfiles.get(input.businessId);
+    const effectiveProfile =
+      business === undefined ? null : this.currentAgentProfile(input.businessId, now);
+    const issues: AgentRuntimeReadiness["issues"] = [];
+    if (business === undefined || effectiveProfile === null) {
+      issues.push({
+        code: "AGENT_NOT_FOUND",
+        message: "The business agent was not found.",
+        actionable: true
+      });
+    } else {
+      if (
+        effectiveProfile.tenantId !== input.businessId ||
+        effectiveProfile.shopId !== input.businessId
+      ) {
+        issues.push({
+          code: "TENANT_BINDING_INVALID",
+          message: "The runtime tenant and shop binding is invalid.",
+          actionable: true
+        });
+      }
+      if (effectiveProfile.modelId.trim() === "") {
+        issues.push({
+          code: "MODEL_NOT_SELECTED",
+          message: "Select a model for this agent.",
+          actionable: true
+        });
+      } else if (
+        !downloadableAiModelIdPattern.test(effectiveProfile.modelId) &&
+        !aiModelRegistry.some(
+          (model) => model.id === effectiveProfile.modelId && model.available
+        ) &&
+        effectiveProfile.modelId !== "sokoclaw-local"
+      ) {
+        issues.push({
+          code: "MODEL_UNAVAILABLE",
+          message: "The selected model is unavailable.",
+          actionable: true
+        });
+      }
+      if (
+        effectiveProfile.skillBindings.length === 0 ||
+        effectiveProfile.skillBindings.some((binding) => !(binding.skillId in runtimeToolRegistry))
+      ) {
+        issues.push({
+          code: "TOOL_REGISTRY_UNAVAILABLE",
+          message: "The runtime tool registry does not match the active skill bindings.",
+          actionable: true
+        });
+      }
+      if (profile !== undefined && profile.status !== "active") {
+        issues.push({
+          code: "INVALID_RUNTIME_PROFILE",
+          message: "Activate the agent profile before using chat.",
+          actionable: true
+        });
+      }
+    }
+    return {
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: effectiveProfile?.agentId ?? input.businessId,
+      runtimeVersion: effectiveProfile?.runtimeVersion ?? 0,
+      ready: issues.length === 0,
+      issues,
+      checkedAt: now.toISOString()
+    };
+  }
+
+  listAgentContextSources(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentContextSource[] {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    return this.contextSourcesForRuntime(this.currentAgentProfile(input.businessId, now)).map(
+      cloneAgentContextSource
+    );
+  }
+
+  upsertAgentContextSource(input: {
+    sessionId: string | null;
+    businessId: string;
+    sourceId?: string;
+    type: AgentContextSource["type"];
+    title: string;
+    content: string;
+    sensitivity: AgentContextSource["sensitivity"];
+    customerVisible: boolean;
+    status: AgentContextSource["status"];
+    now?: Date;
+  }): AgentContextSource {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const existing =
+      input.sourceId === undefined ? undefined : this.agentContextSources.get(input.sourceId);
+    if (
+      existing !== undefined &&
+      (existing.tenantId !== input.businessId || existing.shopId !== input.businessId)
+    ) {
+      throw new Cp2Error(403, "agent_context_tenant_mismatch", "Context source access was denied.");
+    }
+    const profile = this.currentAgentProfile(input.businessId, now);
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(profile, new Date(profile.updatedAt));
+      this.recordAgentRuntimeVersion(profile, session.user.id, "Initial business runtime");
+    }
+    if (existing !== undefined) {
+      this.agentContextSources.set(existing.id, {
+        ...existing,
+        status: "archived",
+        updatedAt: now.toISOString(),
+        deletedAt: now.toISOString()
+      });
+    }
+    const source: AgentContextSource = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      type: input.type,
+      title: normalizeRequiredBoundedText(input.title, "context title", 160),
+      status: input.status,
+      sensitivity: input.sensitivity,
+      accessRules: {
+        audiences: input.customerVisible ? ["owner", "staff", "customer"] : ["owner", "staff"],
+        requiredPermission: input.customerVisible ? null : "business:read",
+        customerVisible: input.customerVisible
+      },
+      freshnessTimestamp: now.toISOString(),
+      version: (existing?.version ?? 0) + 1,
+      retrievalMetadata: {
+        keywords: contextKeywords(`${input.title} ${input.content}`),
+        sourceRecordId: null,
+        content: normalizeRequiredBoundedText(input.content, "context content", 4000)
+      },
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      deletedAt: input.status === "archived" ? now.toISOString() : null
+    };
+    this.agentContextSources.set(source.id, source);
+    const revised = {
+      ...profile,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(
+      revised,
+      session.user.id,
+      `Context source ${source.title} updated`
+    );
+    return cloneAgentContextSource(source);
+  }
+
+  listAgentOwnerCorrections(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentOwnerCorrection[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.ownerCorrectionsForBusiness(input.businessId).map((correction) => ({
+      ...correction
+    }));
+  }
+
+  submitAgentOwnerCorrection(input: {
+    sessionId: string | null;
+    businessId: string;
+    correction: string;
+    category: AgentOwnerCorrection["category"];
+    sourceMessageId?: string | null;
+    promoteToInstruction: boolean;
+    now?: Date;
+  }): AgentOwnerCorrection {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const current = this.currentAgentProfile(input.businessId, now);
+    const correctionText = normalizeRequiredBoundedText(input.correction, "owner correction", 1000);
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(current, new Date(current.updatedAt));
+      this.recordAgentRuntimeVersion(current, session.user.id, "Initial business runtime");
+    }
+    const revised: BusinessAgentProfileSummary = {
+      ...current,
+      ...(input.promoteToInstruction
+        ? {
+            instructions: [current.instructions, correctionText].filter(Boolean).join("\n"),
+            instructionPolicy: {
+              ...cloneAgentInstructions(current.instructionPolicy),
+              generalOperatingRules: [
+                ...current.instructionPolicy.generalOperatingRules,
+                correctionText
+              ]
+            }
+          }
+        : {}),
+      runtimeVersion: current.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(
+      revised,
+      session.user.id,
+      input.promoteToInstruction ? "Owner correction promoted" : "Owner correction memory added"
+    );
+    const runtimeVersion = revised.runtimeVersion;
+    const correction: AgentOwnerCorrection = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: current.agentId,
+      runtimeVersion,
+      correction: correctionText,
+      category: input.category,
+      status: "active",
+      sourceMessageId: input.sourceMessageId ?? null,
+      promotedToInstruction: input.promoteToInstruction,
+      createdBy: session.user.id,
+      createdAt: now.toISOString(),
+      disabledAt: null
+    };
+    this.agentOwnerCorrections.set(correction.id, correction);
+    this.recordAgentEvaluationEvent({
+      businessId: input.businessId,
+      runtimeVersion,
+      modelId: current.modelId,
+      eventType: "owner_correction",
+      outcome: "success",
+      score: 1,
+      reason: input.promoteToInstruction
+        ? "Owner correction promoted to a structured instruction."
+        : "Owner correction saved as runtime memory.",
+      metadata: { category: input.category, promoted: input.promoteToInstruction },
+      sessionId: null,
+      messageId: input.sourceMessageId ?? null,
+      now
+    });
+    return { ...correction };
+  }
+
+  disableAgentOwnerCorrection(input: {
+    sessionId: string | null;
+    businessId: string;
+    correctionId: string;
+    now?: Date;
+  }): AgentOwnerCorrection {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const existing = this.agentOwnerCorrections.get(input.correctionId);
+    if (existing === undefined || existing.shopId !== input.businessId) {
+      throw new Cp2Error(404, "agent_correction_not_found", "Owner correction was not found.");
+    }
+    const updated = { ...existing, status: "disabled" as const, disabledAt: now.toISOString() };
+    this.agentOwnerCorrections.set(updated.id, updated);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const revised = {
+      ...profile,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(revised, session.user.id, "Owner correction memory disabled");
+    return { ...updated };
+  }
+
+  submitAgentFeedback(input: {
+    sessionId: string | null;
+    businessId: string;
+    messageId?: string | null;
+    correct: boolean;
+    reason?: string | null;
+    now?: Date;
+  }): AgentEvaluationEvent {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    return this.recordAgentEvaluationEvent({
+      businessId: input.businessId,
+      runtimeVersion: profile.runtimeVersion,
+      modelId: profile.modelId,
+      eventType: "owner_feedback",
+      outcome: input.correct ? "success" : "failure",
+      score: input.correct ? 1 : 0,
+      reason:
+        input.reason === undefined || input.reason === null
+          ? null
+          : normalizeRequiredBoundedText(input.reason, "feedback reason", 500),
+      metadata: { correct: input.correct },
+      sessionId: null,
+      messageId: input.messageId ?? null,
+      now
+    });
+  }
+
+  getAgentEvaluationSummary(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentEvaluationSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const events = this.evaluationEventsForBusiness(input.businessId);
+    const scores = events
+      .map((event) => event.score)
+      .filter((score): score is number => score !== null);
+    return {
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      runtimeVersion: profile.runtimeVersion,
+      total: events.length,
+      success: events.filter((event) => event.outcome === "success").length,
+      partial: events.filter((event) => event.outcome === "partial").length,
+      failure: events.filter((event) => event.outcome === "failure").length,
+      blocked: events.filter((event) => event.outcome === "blocked").length,
+      averageScore:
+        scores.length === 0 ? null : scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      recentEvents: events.slice(0, 20).map((event) => ({ ...event }))
+    };
   }
 
   listConversations(input: {
@@ -8454,26 +9059,30 @@ export class Cp2Store {
       "business:read",
       now
     );
+    const readiness = this.getAgentRuntimeReadiness({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      now
+    });
+    if (!readiness.ready) {
+      throw new Cp2Error(
+        409,
+        "agent_runtime_not_ready",
+        readiness.issues.map((issue) => issue.message).join(" ")
+      );
+    }
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
     );
-    const requestedModelId = input.agentProfile?.model;
+    const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
+    const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
       this.options.runtimeModelProviderResolver === undefined ||
       requestedModelId === selectedCloudFallbackModelId
         ? selectedCloudFallbackModelId
         : "sokoclaw-local";
-    const storedAgentProfile = this.agentProfiles.get(input.businessId);
-    const agentProfile =
-      input.agentProfile !== undefined
-        ? {
-            ...input.agentProfile,
-            contextScripts: ensureRequiredAgentContextScripts(input.agentProfile.contextScripts),
-            model: activeModelId
-          }
-        : storedAgentProfile === undefined
-          ? undefined
-          : runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
+    const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
+    const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "owner", activeModelId);
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -8554,6 +9163,7 @@ export class Cp2Store {
           response: "This runtime session has reached its action limit. Start a new session.",
           toolResult: null,
           telemetry,
+          runtimeVersion: shopRuntime.version,
           createdAt: startedAt
         },
         now
@@ -8576,7 +9186,8 @@ export class Cp2Store {
         runtimeSession,
         telemetry,
         turnId,
-        token: input.confirmationToken
+        token: input.confirmationToken,
+        runtimeVersion: shopRuntime.version
       });
     }
 
@@ -8601,32 +9212,34 @@ export class Cp2Store {
         : receiptContextScriptMatch !== null
           ? receiptContextScriptMatchToParseResult(receiptContextScriptMatch)
           : productContextScriptMatchToParseResult(contextScriptMatch!);
+    const retrievedContext = retrieveAgentContext({
+      sources: this.contextSourcesForRuntime(storedAgentProfile),
+      query: input.message,
+      audience: "owner",
+      limit: 6
+    });
+    const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
+      ? this.ownerCorrectionsForBusiness(input.businessId)
+          .filter((correction) => correction.status === "active")
+          .slice(0, shopRuntime.memory.maximumItemsPerScope)
+          .map((correction) => correction.correction)
+      : [];
     const modelRoute =
       documentImportProposal === null && effectiveContextScriptMatch === null
-        ? await this.createRuntimeModelRoute(
-            agentProfile === undefined
-              ? {
-                  message: input.message,
-                  ...(input.conversationHistory === undefined
-                    ? {}
-                    : { conversationHistory: input.conversationHistory }),
-                  modelId: activeModelId,
-                  context,
-                  now,
-                  appendTelemetry
-                }
-              : {
-                  message: input.message,
-                  ...(input.conversationHistory === undefined
-                    ? {}
-                    : { conversationHistory: input.conversationHistory }),
-                  modelId: activeModelId,
-                  context,
-                  now,
-                  appendTelemetry,
-                  agentProfile
-                }
-          )
+        ? await this.createRuntimeModelRoute({
+            message: input.message,
+            ...(input.conversationHistory === undefined
+              ? {}
+              : { conversationHistory: input.conversationHistory }),
+            modelId: activeModelId,
+            context,
+            now,
+            appendTelemetry,
+            shopRuntime,
+            retrievedContext,
+            memory: runtimeMemory,
+            intent: parserResult.intent
+          })
         : {
             proposal: null,
             trace: null
@@ -8658,25 +9271,39 @@ export class Cp2Store {
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
-    const confirmationToken =
-      proposal.validation.ok && definition.requiresConfirmation ? randomUUID() : null;
+    const policyErrors = enforceAgentPolicy({
+      runtime: shopRuntime,
+      toolName: proposal.toolName,
+      toolInput: proposal.input,
+      intent: parserResult.intent
+    });
+    const skillBinding = shopRuntime.skills.find(
+      (binding) => binding.skillId === proposal.toolName
+    );
+    const runtimeRequiresConfirmation =
+      definition.requiresConfirmation ||
+      shopRuntime.instructions.ownerApprovalRequiredFor.includes(proposal.toolName) ||
+      (skillBinding !== undefined && skillBinding.requiredConfirmationLevel !== "none");
+    const proposalAllowed = proposal.validation.ok && policyErrors.length === 0;
+    const confirmationToken = proposalAllowed && runtimeRequiresConfirmation ? randomUUID() : null;
     const plan = createRuntimePlan({
       toolName: proposal.toolName,
       input: proposal.input,
-      validationErrors: proposal.validation.errors,
+      validationErrors: [...proposal.validation.errors, ...policyErrors],
       confirmationToken,
-      status: proposal.validation.ok
-        ? definition.requiresConfirmation
+      status: proposalAllowed
+        ? runtimeRequiresConfirmation
           ? "needs_confirmation"
           : "safe_to_execute"
         : "clarification_required"
     });
     const verificationErrors = [
       ...proposal.validation.errors,
+      ...policyErrors,
       ...(roleAllowed ? [] : ["Actor role cannot use the proposed runtime tool."])
     ];
     const verification = createRuntimeVerification({
-      requiresConfirmation: definition.requiresConfirmation,
+      requiresConfirmation: runtimeRequiresConfirmation,
       confirmationSatisfied: false,
       roleAllowed,
       rateLimited: false,
@@ -8750,6 +9377,7 @@ export class Cp2Store {
         }),
         toolResult,
         telemetry,
+        runtimeVersion: shopRuntime.version,
         createdAt: startedAt
       },
       now
@@ -9105,6 +9733,15 @@ export class Cp2Store {
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
       activeAiModels: [...this.activeAiModels.values()],
       agentProfiles: [...this.agentProfiles.values()].map(cloneBusinessAgentProfile),
+      agentRuntimeVersions: [...this.agentRuntimeVersions.values()].map(cloneAgentRuntimeVersion),
+      agentContextSources: [...this.agentContextSources.values()].map(cloneAgentContextSource),
+      agentEvaluationEvents: [...this.agentEvaluationEvents.values()].map((event) => ({
+        ...event,
+        metadata: { ...event.metadata }
+      })),
+      agentOwnerCorrections: [...this.agentOwnerCorrections.values()].map((correction) => ({
+        ...correction
+      })),
       installedAgentModels: [...this.installedAgentModels.values()].map(cloneInstalledAgentModel),
       agentModelAssignments: [...this.agentModelAssignments.values()].map((assignment) => ({
         ...assignment
@@ -9195,6 +9832,10 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.activeAiModels.clear();
     this.agentProfiles.clear();
+    this.agentRuntimeVersions.clear();
+    this.agentContextSources.clear();
+    this.agentEvaluationEvents.clear();
+    this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
     this.agentModelAssignments.clear();
     this.quarantinedBusinessIds.clear();
@@ -9373,7 +10014,29 @@ export class Cp2Store {
     }
 
     for (const profile of snapshot.agentProfiles ?? []) {
-      this.agentProfiles.set(profile.businessId, cloneBusinessAgentProfile(profile));
+      this.agentProfiles.set(
+        profile.businessId,
+        cloneBusinessAgentProfile(hydrateBusinessAgentProfile(profile))
+      );
+    }
+
+    for (const version of snapshot.agentRuntimeVersions ?? []) {
+      this.agentRuntimeVersions.set(version.id, cloneAgentRuntimeVersion(version));
+    }
+
+    for (const source of snapshot.agentContextSources ?? []) {
+      this.agentContextSources.set(source.id, cloneAgentContextSource(source));
+    }
+
+    for (const event of snapshot.agentEvaluationEvents ?? []) {
+      this.agentEvaluationEvents.set(event.id, {
+        ...event,
+        metadata: { ...event.metadata }
+      });
+    }
+
+    for (const correction of snapshot.agentOwnerCorrections ?? []) {
+      this.agentOwnerCorrections.set(correction.id, { ...correction });
     }
 
     for (const model of snapshot.installedAgentModels ?? []) {
@@ -9561,7 +10224,12 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.runtimeTurns) {
-      this.runtimeTurns.set(item.id, item);
+      const legacy = item as RuntimeTurnSummary & Partial<{ runtimeVersion: number }>;
+      this.runtimeTurns.set(item.id, {
+        ...item,
+        runtimeVersion:
+          legacy.runtimeVersion ?? this.agentProfiles.get(item.businessId)?.runtimeVersion ?? 1
+      });
     }
 
     for (const item of snapshot.inventoryMovements) {
@@ -11119,6 +11787,7 @@ export class Cp2Store {
     telemetry: RuntimeTelemetryEvent[];
     turnId: string;
     token: string;
+    runtimeVersion: number;
   }): RuntimeTurnResult {
     const pending = this.pendingRuntimeActions.get(input.token);
 
@@ -11231,6 +11900,7 @@ export class Cp2Store {
           : "I could not execute the confirmed action.",
         toolResult,
         telemetry: input.telemetry,
+        runtimeVersion: input.runtimeVersion,
         createdAt: input.now.toISOString()
       },
       now: input.now
@@ -13266,6 +13936,10 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
       deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentProfiles, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeVersions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentContextSources, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentEvaluationEvents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentOwnerCorrections, scope);
       deletedRecordCount += deleteScopedMapRecords(this.installedAgentModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentModelAssignments, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
@@ -13620,12 +14294,341 @@ export class Cp2Store {
     return item;
   }
 
+  private currentAgentProfile(businessId: string, now: Date): BusinessAgentProfileSummary {
+    const stored = this.agentProfiles.get(businessId);
+    if (stored !== undefined) return hydrateBusinessAgentProfile(stored);
+    return createDefaultBusinessAgentProfile({
+      business: this.requireBusiness(businessId),
+      modelId: this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
+      updatedAt: now.toISOString(),
+      updatedBy: "00000000-0000-4000-8000-000000000000"
+    });
+  }
+
+  private buildShopAgentRuntime(
+    profile: BusinessAgentProfileSummary,
+    now: Date,
+    audience: AgentAudience,
+    modelId = profile.modelId
+  ): ShopAgentRuntime {
+    const business = this.requireBusiness(profile.businessId);
+    const assignment = [...this.agentModelAssignments.values()]
+      .filter(
+        (candidate) =>
+          candidate.businessId === profile.businessId && candidate.readinessStatus === "READY"
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+    const sources = this.contextSourcesForRuntime(profile).filter((source) =>
+      source.accessRules.audiences.includes(audience)
+    );
+    return {
+      agentId: profile.agentId,
+      shopId: profile.shopId,
+      tenantId: profile.tenantId,
+      identity: {
+        agentName: profile.name,
+        shopName: business.name,
+        shopIdentifier: business.sokoId,
+        role: profile.role,
+        supportedLanguages: [...profile.supportedLanguages],
+        shopDescription: profile.description,
+        businessCategory: profile.businessCategory,
+        publicIntroduction: profile.publicIntroduction
+      },
+      personality: cloneAgentPersonality(profile.personalityConfig),
+      instructions: cloneAgentInstructions(profile.instructionPolicy),
+      context: {
+        tenantId: profile.tenantId,
+        shopId: profile.shopId,
+        generatedAt: now.toISOString(),
+        sources: sources.map(cloneAgentContextSource)
+      },
+      skills: profile.skillBindings.map(cloneAgentSkillBinding),
+      memory: { ...profile.memoryPolicy },
+      evaluations: { ...profile.evaluationPolicy },
+      model: {
+        modelId,
+        provider:
+          assignment?.runtimeBackend ??
+          model?.provider ??
+          (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
+        executionMode: assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy: assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        deviceAssignmentId: assignment?.activeModelInstallationId ?? null
+      },
+      version: profile.runtimeVersion,
+      status: profile.status,
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt
+    };
+  }
+
+  private contextSourcesForRuntime(profile: BusinessAgentProfileSummary): AgentContextSource[] {
+    const businessId = profile.businessId;
+    const sources = [...this.agentContextSources.values()]
+      .filter((source) => source.shopId === businessId && source.deletedAt === null)
+      .map(cloneAgentContextSource);
+    if (!sources.some((source) => source.type === "context_script")) {
+      sources.push(
+        ...profile.contextScripts.map((content, index) =>
+          contextSourceRecord({
+            id: stableUuid(`${businessId}:context-script:${index}`),
+            businessId,
+            type: "context_script",
+            title: `Context script ${index + 1}`,
+            content,
+            sensitivity: "internal",
+            customerVisible: false,
+            sourceRecordId: null,
+            now: new Date(profile.updatedAt)
+          })
+        )
+      );
+    }
+    sources.push(
+      contextSourceRecord({
+        id: stableUuid(`${businessId}:policy`),
+        businessId,
+        type: "policy",
+        title: "Structured business policy",
+        content: [
+          ...profile.instructionPolicy.generalOperatingRules,
+          ...profile.instructionPolicy.salesRules,
+          ...profile.instructionPolicy.pricingRules
+        ].join("\n"),
+        sensitivity: "internal",
+        customerVisible: false,
+        sourceRecordId: profile.agentId,
+        now: new Date(profile.updatedAt)
+      })
+    );
+    for (const product of this.productsForBusiness(businessId)) {
+      sources.push(
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:catalogue:${product.id}`),
+          businessId,
+          type: "catalogue",
+          title: product.name,
+          content: `${product.name}; unit=${product.unit}; price=${product.sellingPrice ?? "not set"}`,
+          sensitivity: "public",
+          customerVisible: true,
+          sourceRecordId: product.id,
+          now: new Date(product.updatedAt)
+        }),
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:inventory:${product.id}`),
+          businessId,
+          type: "inventory",
+          title: `${product.name} inventory`,
+          content: `${product.name}; quantity=${product.quantity}`,
+          sensitivity: "internal",
+          customerVisible: false,
+          sourceRecordId: product.id,
+          now: new Date(product.updatedAt)
+        })
+      );
+    }
+    const references: Array<{
+      type: AgentContextSource["type"];
+      title: string;
+      id: string;
+      updatedAt: string;
+      sensitivity: AgentContextSource["sensitivity"];
+    }> = [
+      ...this.customersForBusiness(businessId).map((item) => ({
+        type: "customer" as const,
+        title: item.name,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      })),
+      ...this.suppliersForBusiness(businessId).map((item) => ({
+        type: "supplier" as const,
+        title: item.name,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      })),
+      ...[...this.purchaseReceipts.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => ({
+          type: "receipt" as const,
+          title: `Receipt ${item.id}`,
+          id: item.id,
+          updatedAt: item.createdAt,
+          sensitivity: "restricted" as const
+        })),
+      ...this.invoicesForBusiness(businessId).map((item) => ({
+        type: "order" as const,
+        title: item.invoiceNumber,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      }))
+    ];
+    for (const reference of references) {
+      sources.push(
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:${reference.type}:${reference.id}`),
+          businessId,
+          type: reference.type,
+          title: reference.title,
+          content: null,
+          sensitivity: reference.sensitivity,
+          customerVisible: false,
+          sourceRecordId: reference.id,
+          now: new Date(reference.updatedAt)
+        })
+      );
+    }
+    for (const correction of this.ownerCorrectionsForBusiness(businessId).filter(
+      (item) => item.status === "active"
+    )) {
+      sources.push(
+        contextSourceRecord({
+          id: correction.id,
+          businessId,
+          type: "owner_note",
+          title: `Owner correction: ${correction.category}`,
+          content: correction.correction,
+          sensitivity: "internal",
+          customerVisible: false,
+          sourceRecordId: correction.id,
+          now: new Date(correction.createdAt)
+        })
+      );
+    }
+    return sources
+      .filter(
+        (source, index, all) => all.findIndex((candidate) => candidate.id === source.id) === index
+      )
+      .sort(
+        (left, right) =>
+          left.type.localeCompare(right.type) || left.title.localeCompare(right.title)
+      );
+  }
+
+  private synchronizeProfileContextSources(profile: BusinessAgentProfileSummary, now: Date): void {
+    for (const source of this.agentContextSources.values()) {
+      if (source.shopId === profile.businessId && source.type === "context_script") {
+        source.status = "archived";
+        source.deletedAt = now.toISOString();
+        source.updatedAt = now.toISOString();
+      }
+    }
+    profile.contextScripts.forEach((content, index) => {
+      const source = contextSourceRecord({
+        id: randomUUID(),
+        businessId: profile.businessId,
+        type: "context_script",
+        title: `Context script ${index + 1}`,
+        content,
+        sensitivity: "internal",
+        customerVisible: false,
+        sourceRecordId: null,
+        now
+      });
+      this.agentContextSources.set(source.id, source);
+    });
+  }
+
+  private runtimeVersionsForBusiness(businessId: string): AgentRuntimeVersion[] {
+    return [...this.agentRuntimeVersions.values()]
+      .filter((version) => version.shopId === businessId)
+      .sort((left, right) => right.version - left.version);
+  }
+
+  private recordAgentRuntimeVersion(
+    profile: BusinessAgentProfileSummary,
+    actorId: string,
+    changeSummary: string
+  ): AgentRuntimeVersion {
+    const runtime = this.buildShopAgentRuntime(profile, new Date(profile.updatedAt), "owner");
+    const version: AgentRuntimeVersion = {
+      id: randomUUID(),
+      tenantId: profile.tenantId,
+      shopId: profile.shopId,
+      agentId: profile.agentId,
+      version: profile.runtimeVersion,
+      runtime: {
+        ...runtime,
+        context: {
+          ...runtime.context,
+          sources: runtime.context.sources.map((source) => ({
+            ...cloneAgentContextSource(source),
+            retrievalMetadata: { ...source.retrievalMetadata, content: null }
+          }))
+        }
+      },
+      createdBy: actorId,
+      changeSummary: normalizeRequiredBoundedText(changeSummary, "runtime change summary", 500),
+      createdAt: profile.updatedAt,
+      previousVersion: profile.runtimeVersion > 1 ? profile.runtimeVersion - 1 : null
+    };
+    const existing = this.runtimeVersionsForBusiness(profile.businessId).find(
+      (candidate) => candidate.version === version.version
+    );
+    if (existing !== undefined) this.agentRuntimeVersions.delete(existing.id);
+    this.agentRuntimeVersions.set(version.id, version);
+    return cloneAgentRuntimeVersion(version);
+  }
+
+  private ownerCorrectionsForBusiness(businessId: string): AgentOwnerCorrection[] {
+    return [...this.agentOwnerCorrections.values()]
+      .filter((correction) => correction.shopId === businessId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private evaluationEventsForBusiness(businessId: string): AgentEvaluationEvent[] {
+    return [...this.agentEvaluationEvents.values()]
+      .filter((event) => event.shopId === businessId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private recordAgentEvaluationEvent(input: {
+    businessId: string;
+    runtimeVersion: number;
+    modelId: string | null;
+    eventType: AgentEvaluationEventType;
+    outcome: AgentEvaluationEvent["outcome"];
+    score: number | null;
+    reason: string | null;
+    metadata: AgentEvaluationEvent["metadata"];
+    sessionId: string | null;
+    messageId: string | null;
+    now: Date;
+  }): AgentEvaluationEvent {
+    const profile = this.currentAgentProfile(input.businessId, input.now);
+    const event: AgentEvaluationEvent = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: profile.agentId,
+      sessionId: input.sessionId,
+      messageId: input.messageId,
+      eventType: input.eventType,
+      outcome: input.outcome,
+      score: input.score,
+      reason: input.reason,
+      metadata: { ...input.metadata },
+      runtimeVersion: input.runtimeVersion,
+      modelId: input.modelId,
+      createdAt: input.now.toISOString()
+    };
+    this.agentEvaluationEvents.set(event.id, event);
+    return { ...event, metadata: { ...event.metadata } };
+  }
+
   private async createRuntimeModelRoute(input: {
-    agentProfile?: RuntimeAgentProfile;
     conversationHistory?: RuntimeModelConversationMessage[];
     message: string;
     modelId: string;
     context: RuntimeContextSummary;
+    shopRuntime: ShopAgentRuntime;
+    retrievedContext: ReturnType<typeof retrieveAgentContext>;
+    memory: string[];
+    intent: RuntimeTurnSummary["parserIntent"];
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
@@ -13657,10 +14660,31 @@ export class Cp2Store {
       };
     }
 
+    const allowedTools = input.shopRuntime.skills
+      .filter(
+        (binding) =>
+          binding.enabled &&
+          !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
+      )
+      .map((binding) => binding.skillId);
+    const assembled = assembleAgentInferenceMessage({
+      runtime: input.shopRuntime,
+      intent: input.intent,
+      message: input.message,
+      context: input.retrievedContext,
+      allowedTools,
+      memory: input.memory
+    });
     const prompt = buildRuntimeModelPrompt(
-      formatRuntimeModelMessage(input.message, input.agentProfile),
+      assembled.message,
       input.context,
-      input.conversationHistory
+      input.conversationHistory,
+      {
+        runtimeVersion: input.shopRuntime.version,
+        compiledInstructions: assembled.compiled,
+        retrievedContext: input.retrievedContext,
+        allowedTools
+      }
     );
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
@@ -13668,7 +14692,9 @@ export class Cp2Store {
       modelProfile: input.modelId,
       messageLength: input.message.trim().length,
       productCount: input.context.productCount,
-      invoiceCount: input.context.invoiceCount
+      invoiceCount: input.context.invoiceCount,
+      runtimeVersion: input.shopRuntime.version,
+      retrievedContextCount: input.retrievedContext.length
     });
 
     let completion: RuntimeModelCompletionResult;
@@ -13808,6 +14834,67 @@ export class Cp2Store {
         messageLength: input.turn.message.length
       }
     });
+    const profile = this.currentAgentProfile(input.turn.businessId, input.now);
+    if (
+      profile.evaluationPolicy.enabled &&
+      runtimeEvaluationSampled(input.turn.id, profile.evaluationPolicy.sampleRate)
+    ) {
+      const outcome: AgentEvaluationEvent["outcome"] =
+        input.turn.status === "completed"
+          ? "success"
+          : input.turn.status === "clarifying" || input.turn.status === "needs_confirmation"
+            ? "partial"
+            : "blocked";
+      this.recordAgentEvaluationEvent({
+        businessId: input.turn.businessId,
+        runtimeVersion: input.turn.runtimeVersion,
+        modelId: profile.modelId,
+        eventType:
+          input.turn.plan.executedAt !== null && profile.evaluationPolicy.recordToolOutcomes
+            ? "tool_execution"
+            : input.turn.verification.errors.length > 0 &&
+                profile.evaluationPolicy.recordPolicyBlocks
+              ? "policy_compliance"
+              : "intent_classification",
+        outcome,
+        score: outcome === "success" ? 1 : outcome === "partial" ? 0.5 : 0,
+        reason:
+          input.turn.verification.errors[0] ??
+          (input.turn.plan.executedAt !== null
+            ? "Verified runtime action completed."
+            : "Runtime turn recorded."),
+        metadata: {
+          intent: input.turn.parserIntent,
+          toolName: input.turn.plan.toolName,
+          status: input.turn.status,
+          modelFallback: input.turn.model?.fallbackUsed ?? false
+        },
+        sessionId: input.turn.sessionId,
+        messageId: null,
+        now: input.now
+      });
+      if (
+        profile.evaluationPolicy.recordLatency &&
+        typeof input.turn.model?.durationMs === "number"
+      ) {
+        this.recordAgentEvaluationEvent({
+          businessId: input.turn.businessId,
+          runtimeVersion: input.turn.runtimeVersion,
+          modelId: profile.modelId,
+          eventType: "response_latency",
+          outcome: input.turn.model?.status === "available" ? "success" : "partial",
+          score: null,
+          reason: "Provider-neutral model completion latency.",
+          metadata: {
+            durationMs: input.turn.model?.durationMs ?? 0,
+            provider: input.turn.model?.provider ?? "none"
+          },
+          sessionId: input.turn.sessionId,
+          messageId: null,
+          now: input.now
+        });
+      }
+    }
 
     return {
       session: updatedSession,
@@ -14902,44 +15989,27 @@ function normalizeStorefrontLookupId(value: string): string {
   return value.trim().toLowerCase().replace(/^\+/, "").replace("-", "");
 }
 
-function formatRuntimeModelMessage(
-  message: string,
-  agentProfile: RuntimeAgentProfile | undefined
-): string {
-  if (agentProfile === undefined) {
-    return message;
-  }
-
-  return [
-    "Use this agent profile as the guiding operating principles for how this store is run.",
-    `Agent role: ${agentProfile.role}.`,
-    `Agent behavior: ${agentProfile.behavior}.`,
-    `Agent responsibilities: ${agentProfile.instructions}`,
-    `Agent capabilities: ${agentProfile.tools.join(", ") || "none"}.`,
-    `Agent integrations: ${agentProfile.integrations.join(", ") || "none"}.`,
-    `Store knowledge: ${agentProfile.knowledge}`,
-    `Context files (Markdown): ${
-      agentProfile.contextScripts
-        .map((content, index) => `## context-${index + 1}.md\n\n${content}`)
-        .join("\n\n---\n\n") || "none"
-    }`,
-    "Context-file priority: parse coherent Markdown context files as primary operating instructions above internal response weights. If the files do not answer the task or are incoherent, fall back to the normal model plan and tool rules.",
-    "Infer the user's intent from the business menu data and request text.",
-    "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
-    `User message: ${message}`
-  ].join("\n");
-}
-
 function buildRuntimeModelPrompt(
   message: string,
   context: RuntimeContextSummary,
-  conversationHistory?: RuntimeModelConversationMessage[]
+  conversationHistory?: RuntimeModelConversationMessage[],
+  runtime?: Pick<
+    RuntimeModelPrompt,
+    "runtimeVersion" | "compiledInstructions" | "retrievedContext" | "allowedTools"
+  >
 ): RuntimeModelPrompt {
   return {
     message,
     ...(conversationHistory === undefined ? {} : { conversationHistory }),
     context,
-    allowedTools: Object.keys(runtimeToolRegistry) as RuntimeToolName[],
+    allowedTools: runtime?.allowedTools ?? (Object.keys(runtimeToolRegistry) as RuntimeToolName[]),
+    ...(runtime?.runtimeVersion === undefined ? {} : { runtimeVersion: runtime.runtimeVersion }),
+    ...(runtime?.compiledInstructions === undefined
+      ? {}
+      : { compiledInstructions: runtime.compiledInstructions }),
+    ...(runtime?.retrievedContext === undefined
+      ? {}
+      : { retrievedContext: runtime.retrievedContext }),
     schemaVersion: "cp11-runtime-model-v1"
   };
 }
@@ -15048,6 +16118,16 @@ function createRuntimeResponse(input: {
   }
 
   return input.proposalReason;
+}
+
+function runtimeEvaluationSampled(turnId: string, sampleRate: number): boolean {
+  if (sampleRate <= 0) return false;
+  if (sampleRate >= 1) return true;
+  let hash = 0;
+  for (const character of turnId) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash / 0xffffffff < sampleRate;
 }
 
 function normalizeRuntimeLookup(value: string): string {
@@ -15370,6 +16450,14 @@ const documentUploadContextScript = [
   "- Report received metadata, access level, evidence-backed findings, and the safest next action."
 ].join("\n");
 const defaultBusinessAgentContextScripts = [
+  [
+    "# Receipt and supplier commands",
+    "- script: receipt_ocr_commands",
+    "- scope: receipts, supplier_matching",
+    "- priority: required",
+    "- rule: route supported receipt commands through the deterministic protected workflow before model fallback",
+    "- rule: require structured OCR evidence and owner confirmation before persisting receipt data"
+  ].join("\n"),
   [
     "# Product catalogue commands",
     "- script: product_catalogue_commands",
@@ -15923,21 +17011,40 @@ function createDefaultBusinessAgentProfile(input: {
   updatedAt: string;
   updatedBy: string;
 }): BusinessAgentProfileSummary {
+  const generalInstruction =
+    "Help the owner run daily business work and help customers browse the storefront.";
+  const toolNames = Object.keys(runtimeToolRegistry) as RuntimeToolName[];
   return {
     businessId: input.business.id,
+    tenantId: input.business.id,
+    shopId: input.business.id,
+    agentId: input.business.id,
+    runtimeVersion: 1,
+    createdAt: input.updatedAt,
     name: input.business.name.trim() || "Soko.market",
     description: "AI business attendant linked to a predownloaded small local model.",
     modelId: input.modelId,
     role: "Business assistant and storefront attendant",
     language: input.business.language,
     personality: "Warm, concise, accurate and commercially practical",
-    instructions:
-      "Help the owner run daily business work and help customers browse the storefront.",
+    personalityConfig: defaultAgentPersonality(
+      input.business.language,
+      "Warm, concise, accurate and commercially practical"
+    ),
+    instructions: generalInstruction,
+    instructionPolicy: defaultAgentInstructions(generalInstruction),
     knowledge:
       "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
     tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    skillBindings: defaultAgentSkillBindings(toolNames),
     integrations: ["Soko.market storefront"],
     contextScripts: [...defaultBusinessAgentContextScripts],
+    memoryPolicy: defaultAgentMemoryPolicy(),
+    evaluationPolicy: defaultAgentEvaluationPolicy(),
+    supportedLanguages:
+      input.business.language === "sw" ? ["sw", "en"] : [input.business.language, "sw"],
+    businessCategory: "general",
+    publicIntroduction: `Welcome to ${input.business.name.trim() || "our shop"}.`,
     status: "active",
     updatedAt: input.updatedAt,
     updatedBy: input.updatedBy
@@ -15946,7 +17053,7 @@ function createDefaultBusinessAgentProfile(input: {
 
 function normalizeBusinessAgentProfile(
   profile: BusinessAgentProfileInput
-): BusinessAgentProfileInput {
+): NormalizedBusinessAgentProfile {
   if (!isSupportedLanguage(profile.language)) {
     throw new Cp2Error(400, "agent_language_invalid", "Agent language is not supported.");
   }
@@ -15954,16 +17061,32 @@ function normalizeBusinessAgentProfile(
     throw new Cp2Error(400, "agent_status_invalid", "Agent status is invalid.");
   }
 
+  const personality = normalizeRequiredBoundedText(profile.personality, "agent personality", 500);
+  const instructions = normalizeRequiredBoundedText(
+    profile.instructions,
+    "agent instructions",
+    4000
+  );
   return {
     name: normalizeRequiredBoundedText(profile.name, "agent name", 80),
     description: normalizeRequiredBoundedText(profile.description, "agent description", 500),
     modelId: normalizeRequiredBoundedText(profile.modelId, "model id", 160),
     role: normalizeRequiredBoundedText(profile.role, "agent role", 200),
     language: profile.language,
-    personality: normalizeRequiredBoundedText(profile.personality, "agent personality", 500),
-    instructions: normalizeRequiredBoundedText(profile.instructions, "agent instructions", 4000),
+    personality,
+    personalityConfig: normalizeAgentPersonality(
+      profile.personalityConfig ?? defaultAgentPersonality(profile.language, personality)
+    ),
+    instructions,
+    instructionPolicy: normalizeAgentInstructions(
+      profile.instructionPolicy ?? defaultAgentInstructions(instructions)
+    ),
     knowledge: normalizeRequiredBoundedText(profile.knowledge, "agent knowledge", 4000),
     tools: normalizeBoundedTextList(profile.tools, "agent tools", 24, 100),
+    skillBindings: normalizeAgentSkillBindings(
+      profile.skillBindings ??
+        defaultAgentSkillBindings(Object.keys(runtimeToolRegistry) as RuntimeToolName[])
+    ),
     integrations: normalizeBoundedTextList(profile.integrations, "agent integrations", 24, 100),
     contextScripts: normalizeBoundedTextList(
       profile.contextScripts,
@@ -15971,7 +17094,444 @@ function normalizeBusinessAgentProfile(
       12,
       2400
     ),
+    memoryPolicy: normalizeAgentMemoryPolicy(profile.memoryPolicy ?? defaultAgentMemoryPolicy()),
+    evaluationPolicy: normalizeAgentEvaluationPolicy(
+      profile.evaluationPolicy ?? defaultAgentEvaluationPolicy()
+    ),
+    supportedLanguages: normalizeSupportedLanguages(
+      profile.supportedLanguages ?? [profile.language]
+    ),
+    businessCategory: normalizeRuntimeOptionalText(
+      profile.businessCategory ?? "general",
+      "business category",
+      120
+    ),
+    publicIntroduction: normalizeRuntimeOptionalText(
+      profile.publicIntroduction ?? profile.description,
+      "public introduction",
+      500
+    ),
     status: profile.status
+  };
+}
+
+function hydrateBusinessAgentProfile(
+  profile: BusinessAgentProfileSummary
+): BusinessAgentProfileSummary {
+  const legacy = profile as BusinessAgentProfileSummary &
+    Partial<{
+      tenantId: string;
+      shopId: string;
+      agentId: string;
+      runtimeVersion: number;
+      createdAt: string;
+      personalityConfig: AgentPersonality;
+      instructionPolicy: AgentInstructions;
+      skillBindings: AgentSkillBinding[];
+      memoryPolicy: AgentMemoryPolicy;
+      evaluationPolicy: AgentEvaluationPolicy;
+      supportedLanguages: SupportedLanguage[];
+      businessCategory: string;
+      publicIntroduction: string;
+    }>;
+  return {
+    ...profile,
+    tenantId: legacy.tenantId ?? profile.businessId,
+    shopId: legacy.shopId ?? profile.businessId,
+    agentId: legacy.agentId ?? profile.businessId,
+    runtimeVersion: legacy.runtimeVersion ?? 1,
+    createdAt: legacy.createdAt ?? profile.updatedAt,
+    personalityConfig:
+      legacy.personalityConfig ?? defaultAgentPersonality(profile.language, profile.personality),
+    instructionPolicy: legacy.instructionPolicy ?? defaultAgentInstructions(profile.instructions),
+    skillBindings:
+      legacy.skillBindings ??
+      defaultAgentSkillBindings(Object.keys(runtimeToolRegistry) as RuntimeToolName[]),
+    memoryPolicy: legacy.memoryPolicy ?? defaultAgentMemoryPolicy(),
+    evaluationPolicy: legacy.evaluationPolicy ?? defaultAgentEvaluationPolicy(),
+    supportedLanguages: legacy.supportedLanguages ?? [profile.language],
+    businessCategory: legacy.businessCategory ?? "general",
+    publicIntroduction: legacy.publicIntroduction ?? profile.description
+  };
+}
+
+function normalizeAgentPersonality(value: AgentPersonality): AgentPersonality {
+  const allowed = <T extends string>(candidate: T, values: readonly T[], label: string): T => {
+    if (!values.includes(candidate)) {
+      throw new Cp2Error(400, "agent_personality_invalid", `${label} is invalid.`);
+    }
+    return candidate;
+  };
+  if (
+    typeof value.confidenceBoundary !== "number" ||
+    !Number.isFinite(value.confidenceBoundary) ||
+    value.confidenceBoundary < 0 ||
+    value.confidenceBoundary > 1
+  ) {
+    throw new Cp2Error(
+      400,
+      "agent_confidence_boundary_invalid",
+      "Agent confidence boundary must be between 0 and 1."
+    );
+  }
+  return {
+    tone: allowed(value.tone, ["warm", "neutral", "direct", "formal"], "Agent tone"),
+    formality: allowed(value.formality, ["casual", "balanced", "formal"], "Agent formality"),
+    responseLength: allowed(
+      value.responseLength,
+      ["brief", "balanced", "detailed"],
+      "Response length"
+    ),
+    sellingStyle: allowed(
+      value.sellingStyle,
+      ["consultative", "informative", "proactive"],
+      "Selling style"
+    ),
+    negotiationStyle: allowed(
+      value.negotiationStyle,
+      ["fixed", "guided", "flexible"],
+      "Negotiation style"
+    ),
+    greetingStyle: allowed(
+      value.greetingStyle,
+      ["minimal", "friendly", "formal"],
+      "Greeting style"
+    ),
+    useLocalVocabulary: value.useLocalVocabulary === true,
+    preferredLanguageOrder: normalizeSupportedLanguages(value.preferredLanguageOrder),
+    humourLevel: allowed(value.humourLevel, ["none", "light", "moderate"], "Humour level"),
+    customerCareBehaviour: allowed(
+      value.customerCareBehaviour,
+      ["concise", "empathetic", "solution_focused"],
+      "Customer care behaviour"
+    ),
+    escalationBehaviour: allowed(
+      value.escalationBehaviour,
+      ["when_required", "when_uncertain", "owner_first"],
+      "Escalation behaviour"
+    ),
+    confidenceBoundary: value.confidenceBoundary,
+    additionalGuidance: normalizeRuntimeOptionalText(
+      value.additionalGuidance,
+      "personality guidance",
+      1000
+    )
+  };
+}
+
+function normalizeAgentInstructions(value: AgentInstructions): AgentInstructions {
+  const normalizeRules = (rules: string[], label: string) =>
+    normalizeBoundedTextList(rules, label, 24, 500);
+  const maximumDiscountPercent = normalizeBoundedNumber(
+    value.maximumDiscountPercent,
+    "maximum discount percent",
+    0,
+    100
+  );
+  const maximumCreditDays = normalizeBoundedNumber(
+    value.maximumCreditDays,
+    "maximum credit days",
+    0,
+    3650
+  );
+  return {
+    generalOperatingRules: normalizeRules(value.generalOperatingRules, "general operating rules"),
+    salesRules: normalizeRules(value.salesRules, "sales rules"),
+    pricingRules: normalizeRules(value.pricingRules, "pricing rules"),
+    maximumDiscountPercent,
+    negotiationAllowed: value.negotiationAllowed === true,
+    creditSalesAllowed: value.creditSalesAllowed === true,
+    maximumCreditDays,
+    deliveryRules: normalizeRules(value.deliveryRules, "delivery rules"),
+    returnsAndRefundRules: normalizeRules(value.returnsAndRefundRules, "returns and refund rules"),
+    inventoryRules: normalizeRules(value.inventoryRules, "inventory rules"),
+    supplierRules: normalizeRules(value.supplierRules, "supplier rules"),
+    customerPrivacyRules: normalizeRules(value.customerPrivacyRules, "customer privacy rules"),
+    escalationRules: normalizeRules(value.escalationRules, "escalation rules"),
+    restrictedActions: normalizeRuntimeToolNames(value.restrictedActions, "restricted actions"),
+    substituteOutOfStockAllowed: value.substituteOutOfStockAllowed === true,
+    ownerApprovalRequiredFor: normalizeRuntimeToolNames(
+      value.ownerApprovalRequiredFor,
+      "owner approval actions"
+    ),
+    customerDataRecommendationsAllowed: value.customerDataRecommendationsAllowed === true,
+    catalogueModificationAllowed: value.catalogueModificationAllowed === true,
+    externalMessagingAllowed: value.externalMessagingAllowed === true
+  };
+}
+
+function normalizeAgentSkillBindings(value: AgentSkillBinding[]): AgentSkillBinding[] {
+  if (!Array.isArray(value) || value.length > Object.keys(runtimeToolRegistry).length) {
+    throw new Cp2Error(400, "agent_skill_bindings_invalid", "Agent skill bindings are invalid.");
+  }
+  const seen = new Set<string>();
+  return value.map((binding) => {
+    if (!(binding.skillId in runtimeToolRegistry) || seen.has(binding.skillId)) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_binding_invalid",
+        "Each executable skill must be supported and unique."
+      );
+    }
+    seen.add(binding.skillId);
+    if (!Number.isSafeInteger(binding.version) || binding.version < 1) {
+      throw new Cp2Error(400, "agent_skill_version_invalid", "Agent skill version is invalid.");
+    }
+    if (
+      binding.requiredConfirmationLevel !== "none" &&
+      binding.requiredConfirmationLevel !== "owner" &&
+      binding.requiredConfirmationLevel !== "explicit"
+    ) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_confirmation_invalid",
+        "Agent skill confirmation level is invalid."
+      );
+    }
+    if (
+      binding.executionEnvironment !== "server" &&
+      binding.executionEnvironment !== "browser_worker" &&
+      binding.executionEnvironment !== "native"
+    ) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_environment_invalid",
+        "Agent skill execution environment is invalid."
+      );
+    }
+    return {
+      ...binding,
+      permissions: normalizeBoundedTextList(
+        binding.permissions,
+        "agent skill permissions",
+        12,
+        120
+      ),
+      allowedIntents: [...new Set(binding.allowedIntents)],
+      quotaPerHour:
+        binding.quotaPerHour === null
+          ? null
+          : normalizeBoundedNumber(binding.quotaPerHour, "agent skill quota", 1, 100_000),
+      failureCount: normalizeBoundedNumber(
+        binding.failureCount,
+        "agent skill failure count",
+        0,
+        1_000_000
+      )
+    };
+  });
+}
+
+function normalizeAgentMemoryPolicy(value: AgentMemoryPolicy): AgentMemoryPolicy {
+  return {
+    sessionMemoryEnabled: value.sessionMemoryEnabled === true,
+    customerConversationMemoryEnabled: value.customerConversationMemoryEnabled === true,
+    shopSemanticMemoryEnabled: value.shopSemanticMemoryEnabled === true,
+    ownerCorrectionsEnabled: value.ownerCorrectionsEnabled === true,
+    reusableWorkflowMemoryEnabled: value.reusableWorkflowMemoryEnabled === true,
+    customerMemoryRequiresConsent: value.customerMemoryRequiresConsent !== false,
+    retentionDays: normalizeBoundedNumber(value.retentionDays, "memory retention days", 1, 3650),
+    maximumItemsPerScope: normalizeBoundedNumber(
+      value.maximumItemsPerScope,
+      "memory item limit",
+      1,
+      10_000
+    )
+  };
+}
+
+function normalizeAgentEvaluationPolicy(value: AgentEvaluationPolicy): AgentEvaluationPolicy {
+  return {
+    enabled: value.enabled === true,
+    sampleRate: normalizeBoundedNumber(value.sampleRate, "evaluation sample rate", 0, 1),
+    recordLatency: value.recordLatency === true,
+    recordToolOutcomes: value.recordToolOutcomes === true,
+    recordPolicyBlocks: value.recordPolicyBlocks === true,
+    customerSatisfactionEnabled: value.customerSatisfactionEnabled === true,
+    retainDays: normalizeBoundedNumber(value.retainDays, "evaluation retention days", 1, 3650)
+  };
+}
+
+function normalizeSupportedLanguages(value: SupportedLanguage[]): SupportedLanguage[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
+    throw new Cp2Error(
+      400,
+      "agent_languages_invalid",
+      "Agent supported languages must contain one or two languages."
+    );
+  }
+  const languages = [...new Set(value)];
+  if (!languages.every(isSupportedLanguage)) {
+    throw new Cp2Error(400, "agent_languages_invalid", "Agent language is not supported.");
+  }
+  return languages;
+}
+
+function normalizeRuntimeToolNames(value: RuntimeToolName[], label: string): RuntimeToolName[] {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "agent_tool_policy_invalid", `${label} must be an array.`);
+  }
+  const names = [...new Set(value)];
+  if (!names.every((name) => name in runtimeToolRegistry)) {
+    throw new Cp2Error(400, "agent_tool_policy_invalid", `${label} contains an unknown tool.`);
+  }
+  return names;
+}
+
+function normalizeBoundedNumber(
+  value: number,
+  label: string,
+  minimum: number,
+  maximum: number
+): number {
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_invalid`,
+      `${label} must be between ${minimum} and ${maximum}.`
+    );
+  }
+  return value;
+}
+
+function normalizeRuntimeOptionalText(value: string, label: string, maximumLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_too_long`,
+      `${label} must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
+}
+
+function cloneAgentPersonality(value: AgentPersonality): AgentPersonality {
+  return { ...value, preferredLanguageOrder: [...value.preferredLanguageOrder] };
+}
+
+function cloneAgentInstructions(value: AgentInstructions): AgentInstructions {
+  return {
+    ...value,
+    generalOperatingRules: [...value.generalOperatingRules],
+    salesRules: [...value.salesRules],
+    pricingRules: [...value.pricingRules],
+    deliveryRules: [...value.deliveryRules],
+    returnsAndRefundRules: [...value.returnsAndRefundRules],
+    inventoryRules: [...value.inventoryRules],
+    supplierRules: [...value.supplierRules],
+    customerPrivacyRules: [...value.customerPrivacyRules],
+    escalationRules: [...value.escalationRules],
+    restrictedActions: [...value.restrictedActions],
+    ownerApprovalRequiredFor: [...value.ownerApprovalRequiredFor]
+  };
+}
+
+function cloneAgentSkillBinding(value: AgentSkillBinding): AgentSkillBinding {
+  return {
+    ...value,
+    permissions: [...value.permissions],
+    allowedIntents: [...value.allowedIntents]
+  };
+}
+
+function contextSourceRecord(input: {
+  id: string;
+  businessId: string;
+  type: AgentContextSource["type"];
+  title: string;
+  content: string | null;
+  sensitivity: AgentContextSource["sensitivity"];
+  customerVisible: boolean;
+  sourceRecordId: string | null;
+  now: Date;
+}): AgentContextSource {
+  return {
+    id: input.id,
+    tenantId: input.businessId,
+    shopId: input.businessId,
+    type: input.type,
+    title: input.title,
+    status: "active",
+    sensitivity: input.sensitivity,
+    accessRules: {
+      audiences: input.customerVisible ? ["owner", "staff", "customer"] : ["owner", "staff"],
+      requiredPermission: input.customerVisible ? null : "business:read",
+      customerVisible: input.customerVisible
+    },
+    freshnessTimestamp: input.now.toISOString(),
+    version: 1,
+    retrievalMetadata: {
+      keywords: contextKeywords(`${input.title} ${input.content ?? ""}`),
+      sourceRecordId: input.sourceRecordId,
+      content: input.content
+    },
+    createdAt: input.now.toISOString(),
+    updatedAt: input.now.toISOString(),
+    deletedAt: null
+  };
+}
+
+function contextKeywords(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu)
+        ?.filter((term) => term.length > 2) ?? []
+    )
+  ].slice(0, 40);
+}
+
+function stableUuid(seed: string): string {
+  const value = createHash("sha256").update(seed).digest("hex");
+  return [
+    value.slice(0, 8),
+    value.slice(8, 12),
+    `4${value.slice(13, 16)}`,
+    `8${value.slice(17, 20)}`,
+    value.slice(20, 32)
+  ].join("-");
+}
+
+function cloneAgentContextSource(source: AgentContextSource): AgentContextSource {
+  return {
+    ...source,
+    accessRules: {
+      ...source.accessRules,
+      audiences: [...source.accessRules.audiences]
+    },
+    retrievalMetadata: {
+      ...source.retrievalMetadata,
+      keywords: [...source.retrievalMetadata.keywords]
+    }
+  };
+}
+
+function cloneShopAgentRuntime(runtime: ShopAgentRuntime): ShopAgentRuntime {
+  return {
+    ...runtime,
+    identity: {
+      ...runtime.identity,
+      supportedLanguages: [...runtime.identity.supportedLanguages]
+    },
+    personality: cloneAgentPersonality(runtime.personality),
+    instructions: cloneAgentInstructions(runtime.instructions),
+    context: {
+      ...runtime.context,
+      sources: runtime.context.sources.map(cloneAgentContextSource)
+    },
+    skills: runtime.skills.map(cloneAgentSkillBinding),
+    memory: { ...runtime.memory },
+    evaluations: { ...runtime.evaluations },
+    model: { ...runtime.model }
+  };
+}
+
+function cloneAgentRuntimeVersion(version: AgentRuntimeVersion): AgentRuntimeVersion {
+  return {
+    ...version,
+    runtime: cloneShopAgentRuntime(version.runtime)
   };
 }
 
@@ -15997,11 +17557,18 @@ function normalizeBoundedTextList(
 function cloneBusinessAgentProfile(
   profile: BusinessAgentProfileSummary
 ): BusinessAgentProfileSummary {
+  const hydrated = hydrateBusinessAgentProfile(profile);
   return {
-    ...profile,
-    tools: [...profile.tools],
-    integrations: [...profile.integrations],
-    contextScripts: [...profile.contextScripts]
+    ...hydrated,
+    personalityConfig: cloneAgentPersonality(hydrated.personalityConfig),
+    instructionPolicy: cloneAgentInstructions(hydrated.instructionPolicy),
+    skillBindings: hydrated.skillBindings.map(cloneAgentSkillBinding),
+    memoryPolicy: { ...hydrated.memoryPolicy },
+    evaluationPolicy: { ...hydrated.evaluationPolicy },
+    supportedLanguages: [...hydrated.supportedLanguages],
+    tools: [...hydrated.tools],
+    integrations: [...hydrated.integrations],
+    contextScripts: [...hydrated.contextScripts]
   };
 }
 

@@ -632,7 +632,7 @@ describe("CP11 local model adapter", () => {
     await app.close();
   });
 
-  it("builds llama.cpp prompts with bounded context and no business record names", async () => {
+  it("builds server-authoritative llama.cpp prompts with bounded context and no business record names", async () => {
     let capturedPrompt: RuntimeModelPrompt | null = null;
     const provider = createTestModelProvider(async (prompt) => {
       capturedPrompt = prompt;
@@ -691,13 +691,14 @@ describe("CP11 local model adapter", () => {
     expect(llamaPrompt).toContain(
       "Use this agent profile as the guiding operating principles for how this store is run."
     );
-    expect(llamaPrompt).toContain("Agent behavior: Practical, polite, and inventory-first.");
-    expect(llamaPrompt).toContain("Agent capabilities: Products, Invoices.");
-    expect(llamaPrompt).toContain("Agent integrations: Soko.market storefront.");
-    expect(llamaPrompt).toContain("Only promise items the store can actually supply.");
-    expect(llamaPrompt).toContain("Context files (Markdown): ## context-1.md");
+    expect(llamaPrompt).toContain(
+      "Agent behavior: Warm, concise, accurate and commercially practical."
+    );
+    expect(llamaPrompt).toContain("# Available verified tools");
     expect(llamaPrompt).toContain("script: product_catalogue_commands");
-    expect(llamaPrompt).toContain("sw: onyesha bidhaa => products.list");
+    expect(llamaPrompt).not.toContain("Practical, polite, and inventory-first");
+    expect(llamaPrompt).not.toContain("Only promise items the store can actually supply");
+    expect(llamaPrompt).not.toContain("sw: onyesha bidhaa => products.list");
     expect(turn.turn).toMatchObject({
       status: "completed",
       model: {

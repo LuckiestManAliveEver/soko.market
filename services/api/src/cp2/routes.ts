@@ -3,6 +3,13 @@ import { createHash } from "node:crypto";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
+  AgentContextSource,
+  AgentEvaluationPolicy,
+  AgentInstructions,
+  AgentMemoryPolicy,
+  AgentOwnerCorrection,
+  AgentPersonality,
+  AgentSkillBinding,
   AuthChannel,
   BusinessNotificationStatus,
   BetaAccessStatus,
@@ -66,7 +73,6 @@ import {
   type Cp2Store,
   type DeviceSessionMetadata,
   type PhoneContactNetworkInput,
-  type RuntimeAgentProfile,
   type SocialProfileNetworkInput
 } from "./store.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
@@ -325,6 +331,45 @@ interface AgentProfileBody {
   integrations?: unknown;
   contextScripts?: unknown;
   status?: string;
+  personalityConfig?: unknown;
+  instructionPolicy?: unknown;
+  skillBindings?: unknown;
+  memoryPolicy?: unknown;
+  evaluationPolicy?: unknown;
+  supportedLanguages?: unknown;
+  businessCategory?: string;
+  publicIntroduction?: string;
+}
+
+interface AgentContextSourceBody {
+  id?: string;
+  type?: string;
+  title?: string;
+  content?: string;
+  sensitivity?: string;
+  customerVisible?: boolean;
+  status?: string;
+}
+
+interface AgentCorrectionBody {
+  correction?: string;
+  category?: string;
+  sourceMessageId?: string | null;
+  promoteToInstruction?: boolean;
+}
+
+interface AgentFeedbackBody {
+  messageId?: string | null;
+  correct?: boolean;
+  reason?: string | null;
+}
+
+interface RuntimeVersionParams extends BusinessParams {
+  version: string;
+}
+
+interface AgentCorrectionParams extends BusinessParams {
+  correctionId: string;
 }
 
 interface ConversationParams {
@@ -2339,6 +2384,174 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.get(
+    "/businesses/:businessId/agent-runtime",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getAgentRuntime({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-runtime/readiness",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getAgentRuntimeReadiness({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-runtime/versions",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listAgentRuntimeVersions({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/versions/:version/rollback",
+    async (request: FastifyRequest<{ Params: RuntimeVersionParams }>, reply) => {
+      try {
+        return store.rollbackAgentRuntimeVersion({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          version: parseIntegerString(request.params.version, "version")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-runtime/context-sources",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listAgentContextSources({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/context-sources",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: AgentContextSourceBody }>,
+      reply
+    ) => {
+      try {
+        const body = parseAgentContextSourceBody(request.body);
+        return store.upsertAgentContextSource({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...body
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-runtime/corrections",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listAgentOwnerCorrections({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/corrections",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: AgentCorrectionBody }>,
+      reply
+    ) => {
+      try {
+        const body = parseAgentCorrectionBody(request.body);
+        return store.submitAgentOwnerCorrection({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...body
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/corrections/:correctionId/disable",
+    async (request: FastifyRequest<{ Params: AgentCorrectionParams }>, reply) => {
+      try {
+        return store.disableAgentOwnerCorrection({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          correctionId: parseString(request.params.correctionId, "correctionId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/agent-runtime/evaluations",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getAgentEvaluationSummary({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/feedback",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: AgentFeedbackBody }>, reply) => {
+      try {
+        const body = parseAgentFeedbackBody(request.body);
+        return store.submitAgentFeedback({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...body
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/v1/conversations",
     async (request: FastifyRequest<{ Body: CreateConversationBody }>, reply) => {
@@ -2511,8 +2724,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           message: runtime.message,
           ...(runtime.runtimeSessionId === undefined
             ? {}
-            : { runtimeSessionId: runtime.runtimeSessionId }),
-          ...(runtime.agentProfile === undefined ? {} : { agentProfile: runtime.agentProfile })
+            : { runtimeSessionId: runtime.runtimeSessionId })
         });
         const modelPromptEvent = processed.runtime?.turn.telemetry.find(
           (event) => event.state === "model.prompt_built"
@@ -4885,6 +5097,35 @@ function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInpu
     throw new Cp2Error(400, "agent_status_invalid", "Agent status is invalid.");
   }
 
+  const personalityConfig =
+    body.personalityConfig === undefined
+      ? undefined
+      : (parseRequestBody(body.personalityConfig) as unknown as AgentPersonality);
+  const instructionPolicy =
+    body.instructionPolicy === undefined
+      ? undefined
+      : (parseRequestBody(body.instructionPolicy) as unknown as AgentInstructions);
+  const skillBindings =
+    body.skillBindings === undefined
+      ? undefined
+      : parseStructuredArray<AgentSkillBinding>(body.skillBindings, "skillBindings", 32);
+  const memoryPolicy =
+    body.memoryPolicy === undefined
+      ? undefined
+      : (parseRequestBody(body.memoryPolicy) as unknown as AgentMemoryPolicy);
+  const evaluationPolicy =
+    body.evaluationPolicy === undefined
+      ? undefined
+      : (parseRequestBody(body.evaluationPolicy) as unknown as AgentEvaluationPolicy);
+  const supportedLanguages =
+    body.supportedLanguages === undefined
+      ? undefined
+      : parseStringArray(body.supportedLanguages, "supportedLanguages", 2).map((item) => {
+          if (!isSupportedLanguage(item)) {
+            throw new Cp2Error(400, "language_invalid", "language is not supported.");
+          }
+          return item;
+        });
   return {
     name: parseString(body.name, "name"),
     description: parseString(body.description, "description"),
@@ -4897,8 +5138,115 @@ function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInpu
     tools: parseStringArray(body.tools, "tools", 24),
     integrations: parseStringArray(body.integrations, "integrations", 24),
     contextScripts: parseStringArray(body.contextScripts, "contextScripts", 12),
+    ...(personalityConfig === undefined ? {} : { personalityConfig }),
+    ...(instructionPolicy === undefined ? {} : { instructionPolicy }),
+    ...(skillBindings === undefined ? {} : { skillBindings }),
+    ...(memoryPolicy === undefined ? {} : { memoryPolicy }),
+    ...(evaluationPolicy === undefined ? {} : { evaluationPolicy }),
+    ...(supportedLanguages === undefined ? {} : { supportedLanguages }),
+    ...(body.businessCategory === undefined
+      ? {}
+      : { businessCategory: parseString(body.businessCategory, "businessCategory") }),
+    ...(body.publicIntroduction === undefined
+      ? {}
+      : { publicIntroduction: parseString(body.publicIntroduction, "publicIntroduction") }),
     status
   };
+}
+
+function parseAgentContextSourceBody(body: AgentContextSourceBody | null | undefined): {
+  sourceId?: string;
+  type: AgentContextSource["type"];
+  title: string;
+  content: string;
+  sensitivity: AgentContextSource["sensitivity"];
+  customerVisible: boolean;
+  status: AgentContextSource["status"];
+} {
+  const record = parseRequestBody(body);
+  const type = parseString(record.type, "type");
+  const sensitivity = parseString(record.sensitivity, "sensitivity");
+  const status = parseString(record.status, "status");
+  const types: AgentContextSource["type"][] = [
+    "catalogue",
+    "inventory",
+    "customer",
+    "supplier",
+    "receipt",
+    "order",
+    "policy",
+    "document",
+    "conversation",
+    "context_script",
+    "owner_note"
+  ];
+  if (!types.includes(type as AgentContextSource["type"])) {
+    throw new Cp2Error(400, "context_source_type_invalid", "Context source type is invalid.");
+  }
+  if (!["public", "internal", "confidential", "restricted"].includes(sensitivity)) {
+    throw new Cp2Error(
+      400,
+      "context_source_sensitivity_invalid",
+      "Context source sensitivity is invalid."
+    );
+  }
+  if (!["active", "disabled", "archived"].includes(status)) {
+    throw new Cp2Error(400, "context_source_status_invalid", "Context source status is invalid.");
+  }
+  return {
+    ...(record.id === undefined ? {} : { sourceId: parseString(record.id, "id") }),
+    type: type as AgentContextSource["type"],
+    title: parseString(record.title, "title"),
+    content: parseString(record.content, "content"),
+    sensitivity: sensitivity as AgentContextSource["sensitivity"],
+    customerVisible: parseBoolean(record.customerVisible, "customerVisible"),
+    status: status as AgentContextSource["status"]
+  };
+}
+
+function parseAgentCorrectionBody(body: AgentCorrectionBody | null | undefined): {
+  correction: string;
+  category: AgentOwnerCorrection["category"];
+  sourceMessageId?: string | null;
+  promoteToInstruction: boolean;
+} {
+  const record = parseRequestBody(body);
+  const category = parseString(record.category, "category");
+  if (!["instruction", "business_fact", "memory", "response"].includes(category)) {
+    throw new Cp2Error(400, "agent_correction_category_invalid", "Correction category is invalid.");
+  }
+  return {
+    correction: parseString(record.correction, "correction"),
+    category: category as AgentOwnerCorrection["category"],
+    ...(record.sourceMessageId === undefined
+      ? {}
+      : { sourceMessageId: parseNullableString(record.sourceMessageId) }),
+    promoteToInstruction: parseBoolean(record.promoteToInstruction, "promoteToInstruction")
+  };
+}
+
+function parseAgentFeedbackBody(body: AgentFeedbackBody | null | undefined): {
+  messageId?: string | null;
+  correct: boolean;
+  reason?: string | null;
+} {
+  const record = parseRequestBody(body);
+  return {
+    ...(record.messageId === undefined ? {} : { messageId: parseNullableString(record.messageId) }),
+    correct: parseBoolean(record.correct, "correct"),
+    ...(record.reason === undefined ? {} : { reason: parseNullableString(record.reason) })
+  };
+}
+
+function parseStructuredArray<T>(value: unknown, name: string, maximumItems: number): T[] {
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new Cp2Error(
+      400,
+      `${name}_invalid`,
+      `${name} must be an array with ${maximumItems} items or fewer.`
+    );
+  }
+  return value.map((item) => parseRequestBody(item) as unknown as T);
 }
 
 function parseOptionalString(value: unknown): string | undefined {
@@ -5420,7 +5768,6 @@ function parseOptionalRowNumbers(value: unknown): number[] | undefined {
 }
 
 function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
-  agentProfile?: RuntimeAgentProfile;
   runtimeSessionId?: string;
   message: string;
   confirmationToken?: string;
@@ -5437,54 +5784,10 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   const parsed = {
     message: parseString(record.message, "message")
   };
-  const agentProfile =
-    record.agentProfile === undefined ? undefined : parseRuntimeAgentProfile(record.agentProfile);
-
   return {
     ...parsed,
-    ...(agentProfile === undefined ? {} : { agentProfile }),
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
     ...(confirmationToken === undefined ? {} : { confirmationToken })
-  };
-}
-
-function parseRuntimeAgentProfile(value: unknown): RuntimeAgentProfile {
-  const record = parseRequestBody(value);
-  const tools = record.tools;
-  const contextScripts = record.contextScripts;
-  const integrations = record.integrations;
-
-  if (tools !== undefined && !Array.isArray(tools)) {
-    throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.tools must be an array.");
-  }
-
-  if (contextScripts !== undefined && !Array.isArray(contextScripts)) {
-    throw new Cp2Error(
-      400,
-      "agent_profile_invalid",
-      "agentProfile.contextScripts must be an array."
-    );
-  }
-
-  if (integrations !== undefined && !Array.isArray(integrations)) {
-    throw new Cp2Error(400, "agent_profile_invalid", "agentProfile.integrations must be an array.");
-  }
-
-  const instructions = parseString(record.instructions, "agentProfile.instructions");
-
-  return {
-    behavior: parseOptionalString(record.behavior) ?? instructions,
-    contextScripts: (contextScripts ?? []).map((script, index) =>
-      parseString(script, `agentProfile.contextScripts.${index}`)
-    ),
-    integrations: (integrations ?? []).map((integration, index) =>
-      parseString(integration, `agentProfile.integrations.${index}`)
-    ),
-    knowledge: parseString(record.knowledge, "agentProfile.knowledge"),
-    model: parseString(record.model, "agentProfile.model"),
-    role: parseString(record.role, "agentProfile.role"),
-    instructions,
-    tools: (tools ?? []).map((tool, index) => parseString(tool, `agentProfile.tools.${index}`))
   };
 }
 

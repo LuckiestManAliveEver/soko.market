@@ -17,9 +17,7 @@ describe("message delivery state migration", () => {
     expect(sql).toContain("provider_response_reference");
     expect(schema).toContain('idempotencyKey: text("idempotency_key")');
     expect(schema).toContain("export const messageDeliveryAttempts = pgTable(");
-    expect(postgresStore).toContain(
-      'requiredMigrationFilename = "038_auth_retention_policy.sql"'
-    );
+    expect(postgresStore).toContain('requiredMigrationFilename = "039_agent_business_runtime.sql"');
     expect(postgresStore).toContain('tableName: "cp2_message_delivery_attempts"');
   });
 

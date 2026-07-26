@@ -4072,6 +4072,97 @@ details.nested-form-section summary {
   min-width: 0;
 }
 
+.agent-runtime-panel {
+  background: #f8fbf8;
+  border-color: #bfd7c6;
+}
+
+.runtime-status-grid,
+.runtime-evaluation-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-unsaved {
+  background: #fff1c7;
+  border-radius: 999px;
+  color: #765600;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 9px;
+}
+
+.runtime-field-grid,
+.runtime-policy-toggles {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.runtime-version-list,
+.runtime-context-list,
+.runtime-correction-list,
+.runtime-skill-list {
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-version-list article,
+.runtime-context-list article,
+.runtime-correction-list article {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d6e4d9;
+  border-radius: 9px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px;
+}
+
+.runtime-version-list article > div,
+.runtime-context-list article > div,
+.runtime-correction-list article > div,
+.runtime-skill-list label > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.runtime-version-list small,
+.runtime-context-list small,
+.runtime-correction-list small,
+.runtime-skill-list small {
+  color: #64736a;
+}
+
+.runtime-correction-list p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-skill-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.runtime-skill-list .checkbox-row {
+  align-items: start;
+  background: #fff;
+  border: 1px solid #d6e4d9;
+  border-radius: 9px;
+  margin: 0;
+  padding: 9px;
+}
+
+.runtime-evaluation-summary span {
+  background: #edf5f0;
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
 .ai-model-library {
   background: #f2f7f3;
 }
@@ -4627,6 +4718,19 @@ details.nested-form-section summary {
 }
 
 @media (max-width: 759px) {
+  .runtime-field-grid,
+  .runtime-policy-toggles,
+  .runtime-skill-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .runtime-version-list article,
+  .runtime-context-list article,
+  .runtime-correction-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .agent-model-panel > .ai-model-card-actions > button {
     width: 100%;
   }

@@ -38,7 +38,7 @@ describe("device model fallback", () => {
     });
   });
 
-  it("keeps the downloaded model primary and uses OpenAI only after explicit fallback selection", async () => {
+  it("uses OpenAI only after explicit server-side fallback selection and ignores per-turn model spoofing", async () => {
     vi.stubEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", "true");
     vi.stubEnv("INFERENCE_CLOUD_PROVIDER", "openai");
     vi.stubEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", "openai-fast,openai-reasoning");
@@ -190,7 +190,7 @@ describe("device model fallback", () => {
     });
 
     resolvedModelIds.length = 0;
-    const withoutConsent = await store.createRuntimeTurn({
+    const spoofedLocalSelection = await store.createRuntimeTurn({
       sessionId: auth.session.id,
       businessId: created.business.id,
       message: "Keep this request on Soko.",
@@ -205,11 +205,11 @@ describe("device model fallback", () => {
         tools: []
       }
     });
-    expect(resolvedModelIds).toContain("sokoclaw-local");
-    expect(withoutConsent.turn.model).toMatchObject({
-      provider: null,
-      status: "disabled",
-      fallbackUsed: true
+    expect(resolvedModelIds).toEqual(["openai-fast"]);
+    expect(spoofedLocalSelection.turn.model).toMatchObject({
+      provider: "openai",
+      status: "available",
+      fallbackUsed: false
     });
   }, 15_000);
 });

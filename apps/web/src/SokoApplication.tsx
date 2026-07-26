@@ -24,6 +24,16 @@ import {
 } from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import type {
+  AgentContextSource,
+  AgentEvaluationPolicy,
+  AgentEvaluationSummary,
+  AgentInstructions,
+  AgentMemoryPolicy,
+  AgentOwnerCorrection,
+  AgentPersonality,
+  AgentRuntimeReadiness,
+  AgentRuntimeVersion,
+  AgentSkillBinding,
   AuthBootstrapResponse,
   AuthBootstrapState,
   ConversationInboxItem,
@@ -272,17 +282,30 @@ interface CatalogAiModelSearchResponse {
 
 interface BusinessAgentProfileSummary {
   businessId: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  createdAt: string;
   name: string;
   description: string;
   modelId: string;
   role: string;
   language: SupportedLanguage;
   personality: string;
+  personalityConfig: AgentPersonality;
   instructions: string;
+  instructionPolicy: AgentInstructions;
   knowledge: string;
   tools: string[];
+  skillBindings: AgentSkillBinding[];
   integrations: string[];
   contextScripts: string[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
   status: "active" | "draft";
   updatedAt: string;
   updatedBy: string;
@@ -407,11 +430,20 @@ interface AgentSettings {
   storefrontUrl: string;
   language: SupportedLanguage;
   personality: string;
+  personalityConfig: AgentPersonality;
   instructions: string;
+  instructionPolicy: AgentInstructions;
   knowledge: string;
   tools: string[];
+  skillBindings: AgentSkillBinding[];
   integrations: string[];
   contextScripts: string[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
+  runtimeVersion: number;
   status: "active" | "draft";
 }
 
@@ -6182,6 +6214,17 @@ export function OwnerApp() {
     );
   }
 
+  async function submitAgentResponseFeedback(messageId: string, correct: boolean) {
+    if (business === null) return;
+    await postJson(`/businesses/${business.id}/agent-runtime/feedback`, {
+      messageId,
+      correct
+    });
+    setStatusMessage(
+      correct ? "Agent response marked correct." : "Agent response flagged for review."
+    );
+  }
+
   async function sendChatDraft() {
     if (session === null) {
       requireMessagingSignIn();
@@ -7943,6 +7986,11 @@ export function OwnerApp() {
               onReactMessage={(messageId, reaction) =>
                 void runAction("message-reaction", () =>
                   updateMessageAction(messageId, { reaction })
+                )
+              }
+              onAgentFeedback={(messageId, correct) =>
+                void runAction(`agent-feedback-${messageId}`, () =>
+                  submitAgentResponseFeedback(messageId, correct)
                 )
               }
               onForwardMessage={(messageId, conversationId) =>
@@ -13283,6 +13331,16 @@ function AgentProfileSurface({
   const [mcpPin, setMcpPin] = useState("");
   const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
+  const [runtimeReadiness, setRuntimeReadiness] = useState<AgentRuntimeReadiness | null>(null);
+  const [runtimeVersions, setRuntimeVersions] = useState<AgentRuntimeVersion[]>([]);
+  const [runtimeContextSources, setRuntimeContextSources] = useState<AgentContextSource[]>([]);
+  const [evaluationSummary, setEvaluationSummary] = useState<AgentEvaluationSummary | null>(null);
+  const [ownerCorrections, setOwnerCorrections] = useState<AgentOwnerCorrection[]>([]);
+  const [correctionDraft, setCorrectionDraft] = useState("");
+  const [correctionCategory, setCorrectionCategory] =
+    useState<AgentOwnerCorrection["category"]>("instruction");
+  const [promoteCorrection, setPromoteCorrection] = useState(true);
+  const [runtimeDetailsLoading, setRuntimeDetailsLoading] = useState(false);
   const [ownerPhoneCountryCode, setOwnerPhoneCountryCode] = useState<CountryDialCode>(
     inferCountryCode(ownerUser?.phoneNumberE164 ?? "") ?? "+254"
   );
@@ -13390,6 +13448,7 @@ function AgentProfileSurface({
     void loadMcpTokens();
     void loadShopDeletionPreview();
     void loadAgentProfile();
+    void loadAgentRuntimeDetails();
     void loadAgentModelAssignment();
     const params = new URLSearchParams(location.search);
     const initialSearch = params.get("ai_search") ?? "";
@@ -13635,6 +13694,75 @@ function AgentProfileSurface({
       const nextAgent = agentSettingsFromBusinessProfile(profile, business);
       setDraftAgent(nextAgent);
       onAgentChange(nextAgent);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadAgentRuntimeDetails() {
+    setRuntimeDetailsLoading(true);
+    try {
+      const [readiness, versions, contextSources, evaluations, corrections] = await Promise.all([
+        getJson<AgentRuntimeReadiness>(`/businesses/${business.id}/agent-runtime/readiness`),
+        getJson<AgentRuntimeVersion[]>(`/businesses/${business.id}/agent-runtime/versions`),
+        getJson<AgentContextSource[]>(`/businesses/${business.id}/agent-runtime/context-sources`),
+        getJson<AgentEvaluationSummary>(`/businesses/${business.id}/agent-runtime/evaluations`),
+        getJson<AgentOwnerCorrection[]>(`/businesses/${business.id}/agent-runtime/corrections`)
+      ]);
+      setRuntimeReadiness(readiness);
+      setRuntimeVersions(versions);
+      setRuntimeContextSources(contextSources);
+      setEvaluationSummary(evaluations);
+      setOwnerCorrections(corrections);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setRuntimeDetailsLoading(false);
+    }
+  }
+
+  async function rollbackAgentRuntime(version: number) {
+    try {
+      await postJson(`/businesses/${business.id}/agent-runtime/versions/${version}/rollback`, {});
+      await Promise.all([loadAgentProfile(), loadAgentRuntimeDetails()]);
+      setIsEditing(false);
+      setProfileMessage(`Runtime version ${version} restored as a new active version.`);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function submitOwnerCorrection() {
+    const correction = correctionDraft.trim();
+    if (correction.length === 0) return;
+    try {
+      await postJson<AgentOwnerCorrection>(`/businesses/${business.id}/agent-runtime/corrections`, {
+        correction,
+        category: correctionCategory,
+        promoteToInstruction: promoteCorrection
+      });
+      setCorrectionDraft("");
+      await Promise.all([loadAgentProfile(), loadAgentRuntimeDetails()]);
+      setProfileMessage(
+        promoteCorrection
+          ? "Correction saved and promoted into a new runtime version."
+          : "Correction saved as bounded agent memory."
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function disableOwnerCorrection(correctionId: string) {
+    try {
+      await postJson(
+        `/businesses/${business.id}/agent-runtime/corrections/${encodeURIComponent(
+          correctionId
+        )}/disable`,
+        {}
+      );
+      await loadAgentRuntimeDetails();
+      setProfileMessage("Correction disabled.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -14530,13 +14658,21 @@ function AgentProfileSurface({
           role: draftAgent.role,
           language: draftAgent.language,
           personality: draftAgent.personality,
+          personalityConfig: draftAgent.personalityConfig,
           instructions: draftAgent.instructions,
+          instructionPolicy: draftAgent.instructionPolicy,
           knowledge: draftAgent.knowledge,
           tools: draftAgent.tools,
+          skillBindings: draftAgent.skillBindings,
           integrations: draftAgent.integrations,
           contextScripts: ensureRequiredAgentContextScripts(
             sanitizeContextScripts(draftAgent.contextScripts)
           ),
+          memoryPolicy: draftAgent.memoryPolicy,
+          evaluationPolicy: draftAgent.evaluationPolicy,
+          supportedLanguages: draftAgent.supportedLanguages,
+          businessCategory: draftAgent.businessCategory,
+          publicIntroduction: draftAgent.publicIntroduction,
           status: draftAgent.status
         }
       );
@@ -14549,7 +14685,8 @@ function AgentProfileSurface({
       setContextUnlocked(false);
       setContextPassword("");
       setContextUnlockError("");
-      setProfileMessage("Agent settings and active AI model saved.");
+      setProfileMessage(`Business runtime version ${saved.runtimeVersion} saved.`);
+      void loadAgentRuntimeDetails();
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -14731,6 +14868,7 @@ function AgentProfileSurface({
     const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
     return leftCompatible - rightCompatible || left.displayName.localeCompare(right.displayName);
   });
+  const hasUnsavedRuntimeChanges = JSON.stringify(draftAgent) !== JSON.stringify(agent);
 
   return (
     <main className="agent-profile-surface">
@@ -14823,6 +14961,515 @@ function AgentProfileSurface({
               onChange={(event) => updateAgent({ role: event.target.value })}
             />
           </label>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Business runtime</p>
+            <h3>Readiness and versions</h3>
+            <p>
+              The server binds this agent to {business.name}, compiles policy, retrieves permitted
+              context, and records the exact runtime version used for every turn.
+            </p>
+          </div>
+          <div className="runtime-status-grid" aria-live="polite">
+            <span
+              className={`model-badge ${runtimeReadiness?.ready ? "status-ready" : "status-loading"}`}
+            >
+              {runtimeDetailsLoading
+                ? "Checking…"
+                : runtimeReadiness?.ready
+                  ? "Ready"
+                  : "Needs attention"}
+            </span>
+            <strong>
+              Active version {runtimeReadiness?.runtimeVersion ?? draftAgent.runtimeVersion}
+            </strong>
+            {hasUnsavedRuntimeChanges ? (
+              <span className="runtime-unsaved">Unsaved draft changes</span>
+            ) : null}
+          </div>
+          {runtimeReadiness?.issues.map((issue) => (
+            <p className="security-warning" key={issue.code}>
+              {issue.message}
+            </p>
+          ))}
+          <div className="runtime-version-list" aria-label="Agent runtime version history">
+            {runtimeVersions.slice(0, 5).map((version) => (
+              <article key={version.id}>
+                <div>
+                  <strong>Version {version.version}</strong>
+                  <small>
+                    {version.changeSummary} · {formatDate(version.createdAt)}
+                  </small>
+                </div>
+                {version.version !== runtimeReadiness?.runtimeVersion ? (
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={isEditing || pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction(`runtime-rollback-${version.version}`, () =>
+                        rollbackAgentRuntime(version.version)
+                      )
+                    }
+                  >
+                    Restore as new version
+                  </button>
+                ) : (
+                  <span className="model-badge status-ready">Active</span>
+                )}
+              </article>
+            ))}
+            {!runtimeDetailsLoading && runtimeVersions.length === 0 ? (
+              <p className="shell-note">Save the profile to create its first version.</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Structured personality</p>
+            <h3>Voice and customer care</h3>
+            <p>Style can shape wording, but it cannot override business or security policy.</p>
+          </div>
+          <div className="runtime-field-grid">
+            <label>
+              Tone
+              <select
+                value={draftAgent.personalityConfig.tone}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      tone: event.target.value as AgentPersonality["tone"]
+                    }
+                  })
+                }
+              >
+                <option value="warm">Warm</option>
+                <option value="neutral">Neutral</option>
+                <option value="direct">Direct</option>
+                <option value="formal">Formal</option>
+              </select>
+            </label>
+            <label>
+              Formality
+              <select
+                value={draftAgent.personalityConfig.formality}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      formality: event.target.value as AgentPersonality["formality"]
+                    }
+                  })
+                }
+              >
+                <option value="casual">Casual</option>
+                <option value="balanced">Balanced</option>
+                <option value="formal">Formal</option>
+              </select>
+            </label>
+            <label>
+              Response length
+              <select
+                value={draftAgent.personalityConfig.responseLength}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      responseLength: event.target.value as AgentPersonality["responseLength"]
+                    }
+                  })
+                }
+              >
+                <option value="brief">Brief</option>
+                <option value="balanced">Balanced</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+            <label>
+              Selling style
+              <select
+                value={draftAgent.personalityConfig.sellingStyle}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      sellingStyle: event.target.value as AgentPersonality["sellingStyle"]
+                    }
+                  })
+                }
+              >
+                <option value="consultative">Consultative</option>
+                <option value="informative">Informative</option>
+                <option value="proactive">Proactive</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Public introduction
+            <textarea
+              value={draftAgent.publicIntroduction}
+              disabled={!isEditing}
+              rows={2}
+              onChange={(event) => updateAgent({ publicIntroduction: event.target.value })}
+            />
+          </label>
+          <label>
+            Additional style guidance
+            <textarea
+              value={draftAgent.personalityConfig.additionalGuidance}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  personality: event.target.value,
+                  personalityConfig: {
+                    ...draftAgent.personalityConfig,
+                    additionalGuidance: event.target.value
+                  }
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Structured business policy</p>
+            <h3>Sales, pricing, and escalation</h3>
+            <p>These rules are enforced server-side before a tool proposal can run.</p>
+          </div>
+          <div className="runtime-field-grid">
+            <label>
+              Maximum discount (%)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={draftAgent.instructionPolicy.maximumDiscountPercent}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    instructionPolicy: {
+                      ...draftAgent.instructionPolicy,
+                      maximumDiscountPercent: Number(event.target.value)
+                    }
+                  })
+                }
+              />
+            </label>
+            <label>
+              Maximum credit days
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={draftAgent.instructionPolicy.maximumCreditDays}
+                disabled={!isEditing || !draftAgent.instructionPolicy.creditSalesAllowed}
+                onChange={(event) =>
+                  updateAgent({
+                    instructionPolicy: {
+                      ...draftAgent.instructionPolicy,
+                      maximumCreditDays: Number(event.target.value)
+                    }
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="runtime-policy-toggles">
+            {(
+              [
+                { key: "negotiationAllowed", label: "Allow negotiation" },
+                { key: "creditSalesAllowed", label: "Allow credit sales" },
+                { key: "substituteOutOfStockAllowed", label: "Allow stock substitutions" },
+                { key: "catalogueModificationAllowed", label: "Allow catalogue changes" },
+                { key: "externalMessagingAllowed", label: "Allow external messaging" }
+              ] as const
+            ).map(({ key, label }) => (
+              <label className="checkbox-row" key={key}>
+                <input
+                  type="checkbox"
+                  disabled={!isEditing}
+                  checked={Boolean(draftAgent.instructionPolicy[key as keyof AgentInstructions])}
+                  onChange={(event) =>
+                    updateAgent({
+                      instructionPolicy: {
+                        ...draftAgent.instructionPolicy,
+                        [key]: event.target.checked
+                      }
+                    })
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <label>
+            General operating rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.generalOperatingRules.join("\n")}
+              disabled={!isEditing}
+              rows={4}
+              onChange={(event) =>
+                updateAgent({
+                  instructions: event.target.value,
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    generalOperatingRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+          <label>
+            Pricing rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.pricingRules.join("\n")}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    pricingRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+          <label>
+            Escalation rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.escalationRules.join("\n")}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    escalationRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Context manifest and executable skills</p>
+            <h3>Runtime access</h3>
+            <p>
+              Context is retrieved only when relevant and authorized. Skill availability is
+              independent of the active model.
+            </p>
+          </div>
+          <div className="runtime-context-list">
+            {runtimeContextSources.map((source) => (
+              <article key={source.id}>
+                <div>
+                  <strong>{source.title}</strong>
+                  <small>
+                    {source.type} · {source.sensitivity} · version {source.version}
+                  </small>
+                </div>
+                <span className={`model-badge ${source.status === "active" ? "status-ready" : ""}`}>
+                  {source.status}
+                </span>
+              </article>
+            ))}
+            {!runtimeDetailsLoading && runtimeContextSources.length === 0 ? (
+              <p className="shell-note">No authorized context sources are available yet.</p>
+            ) : null}
+          </div>
+          <div className="runtime-skill-list">
+            {draftAgent.skillBindings.map((binding) => (
+              <label className="checkbox-row" key={binding.skillId}>
+                <input
+                  type="checkbox"
+                  checked={binding.enabled}
+                  disabled={!isEditing}
+                  onChange={(event) =>
+                    updateAgent({
+                      skillBindings: draftAgent.skillBindings.map((candidate) =>
+                        candidate.skillId === binding.skillId
+                          ? { ...candidate, enabled: event.target.checked }
+                          : candidate
+                      )
+                    })
+                  }
+                />
+                <span>
+                  <strong>{binding.skillId}</strong>
+                  <small>
+                    v{binding.version} · confirmation {binding.requiredConfirmationLevel}
+                  </small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Memory and evaluation</p>
+            <h3>Retention, feedback, and corrections</h3>
+            <p>
+              Memory is bounded by shop and policy. Evaluation records outcomes, not hidden
+              reasoning.
+            </p>
+          </div>
+          <div className="runtime-policy-toggles">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.memoryPolicy.ownerCorrectionsEnabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    memoryPolicy: {
+                      ...draftAgent.memoryPolicy,
+                      ownerCorrectionsEnabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Remember active owner corrections
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.memoryPolicy.customerConversationMemoryEnabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    memoryPolicy: {
+                      ...draftAgent.memoryPolicy,
+                      customerConversationMemoryEnabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Customer conversation memory (consent required)
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.evaluationPolicy.enabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    evaluationPolicy: {
+                      ...draftAgent.evaluationPolicy,
+                      enabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Record privacy-safe evaluation events
+            </label>
+          </div>
+          <div className="runtime-evaluation-summary">
+            <strong>{evaluationSummary?.total ?? 0} evaluated events</strong>
+            <span>{evaluationSummary?.success ?? 0} successful</span>
+            <span>{evaluationSummary?.blocked ?? 0} policy-blocked</span>
+            <span>{evaluationSummary?.failure ?? 0} failed</span>
+          </div>
+          <div className="runtime-context-list" aria-label="Recent agent issues">
+            {evaluationSummary?.recentEvents
+              .filter((event) => event.outcome === "failure" || event.outcome === "blocked")
+              .slice(0, 5)
+              .map((event) => (
+                <article key={event.id}>
+                  <div>
+                    <strong>{event.eventType.replaceAll("_", " ")}</strong>
+                    <small>
+                      Runtime {event.runtimeVersion} · {event.reason ?? "No reason recorded"} ·{" "}
+                      {formatDate(event.createdAt)}
+                    </small>
+                  </div>
+                  <span className="model-badge">{event.outcome}</span>
+                </article>
+              ))}
+          </div>
+          <label>
+            Owner correction
+            <textarea
+              value={correctionDraft}
+              rows={3}
+              placeholder="Example: Never offer free delivery outside Nairobi."
+              onChange={(event) => setCorrectionDraft(event.target.value)}
+            />
+          </label>
+          <div className="runtime-field-grid">
+            <label>
+              Correction type
+              <select
+                value={correctionCategory}
+                onChange={(event) =>
+                  setCorrectionCategory(event.target.value as AgentOwnerCorrection["category"])
+                }
+              >
+                <option value="instruction">Instruction</option>
+                <option value="business_fact">Business fact</option>
+                <option value="memory">Memory</option>
+                <option value="response">Response</option>
+              </select>
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={promoteCorrection}
+                onChange={(event) => setPromoteCorrection(event.target.checked)}
+              />
+              Promote to versioned instructions
+            </label>
+          </div>
+          <button
+            type="button"
+            disabled={correctionDraft.trim().length === 0 || pendingProfileAction !== null}
+            onClick={() => void runProfileAction("agent-owner-correction", submitOwnerCorrection)}
+          >
+            Save correction
+          </button>
+          <div className="runtime-correction-list">
+            {ownerCorrections.slice(0, 5).map((correction) => (
+              <article key={correction.id}>
+                <div>
+                  <strong>{correction.category.replace("_", " ")}</strong>
+                  <p>{correction.correction}</p>
+                  <small>
+                    Runtime {correction.runtimeVersion}
+                    {correction.promotedToInstruction ? " · promoted" : " · memory only"}
+                  </small>
+                </div>
+                {correction.status === "active" ? (
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction(`disable-correction-${correction.id}`, () =>
+                        disableOwnerCorrection(correction.id)
+                      )
+                    }
+                  >
+                    Disable
+                  </button>
+                ) : (
+                  <span className="model-badge">Disabled</span>
+                )}
+              </article>
+            ))}
+          </div>
         </div>
 
         <div className="record-form agent-model-panel">
@@ -16309,8 +16956,8 @@ function AgentProfileSurface({
 
         <div className="record-form">
           <div className="section-heading">
-            <p className="eyebrow">Behavior</p>
-            <h3>Personality and instructions</h3>
+            <p className="eyebrow">Compatibility fields</p>
+            <h3>Advanced owner guidance</h3>
           </div>
           <label>
             Personality
@@ -16333,8 +16980,8 @@ function AgentProfileSurface({
 
         <div className="record-form">
           <div className="section-heading">
-            <p className="eyebrow">Capabilities</p>
-            <h3>Knowledge, tools, integrations</h3>
+            <p className="eyebrow">Display labels</p>
+            <h3>Advanced knowledge and integration labels</h3>
           </div>
           <label>
             Knowledge
@@ -16601,6 +17248,7 @@ interface ChatSurfaceProps {
   onEditMessage: (messageId: string, text: string) => void;
   onDeleteMessage: (messageId: string) => void;
   onReactMessage: (messageId: string, reaction: string | null) => void;
+  onAgentFeedback: (messageId: string, correct: boolean) => void;
   onForwardMessage: (messageId: string, conversationId: string) => void;
   onRetryMessages: () => void;
   onNavigate: (view: ShellView) => void;
@@ -16686,6 +17334,7 @@ function ChatSurface({
   onEditMessage,
   onDeleteMessage,
   onReactMessage,
+  onAgentFeedback,
   onForwardMessage,
   onRetryMessages,
   onNavigate,
@@ -17153,6 +17802,24 @@ function ChatSurface({
                 ) : null}
                 {!message.deletedAt && !message.id.startsWith("welcome") ? (
                   <div className="message-actions">
+                    {message.author === "sokoclaw" ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Mark agent response correct"
+                          onClick={() => onAgentFeedback(message.id, true)}
+                        >
+                          Correct
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Flag agent response as incorrect"
+                          onClick={() => onAgentFeedback(message.id, false)}
+                        >
+                          Incorrect
+                        </button>
+                      </>
+                    ) : null}
                     <button type="button" onClick={() => onReply(message.id)}>
                       Reply
                     </button>
@@ -19104,8 +19771,30 @@ function readStoredAgent(): AgentSettings | null {
       Array.isArray(parsed.tools) &&
       Array.isArray(parsed.integrations)
     ) {
+      const fallbackPersonality = defaultWebAgentPersonality(parsed.language, parsed.personality);
+      const fallbackInstructions = defaultWebAgentInstructions(parsed.instructions);
       return {
         ...parsed,
+        personalityConfig: parsed.personalityConfig ?? fallbackPersonality,
+        instructionPolicy: parsed.instructionPolicy ?? fallbackInstructions,
+        skillBindings: Array.isArray(parsed.skillBindings)
+          ? parsed.skillBindings
+          : defaultWebAgentSkills(),
+        memoryPolicy: parsed.memoryPolicy ?? defaultWebAgentMemoryPolicy(),
+        evaluationPolicy: parsed.evaluationPolicy ?? defaultWebAgentEvaluationPolicy(),
+        supportedLanguages: Array.isArray(parsed.supportedLanguages)
+          ? parsed.supportedLanguages
+          : [parsed.language],
+        businessCategory:
+          typeof parsed.businessCategory === "string" ? parsed.businessCategory : "general",
+        publicIntroduction:
+          typeof parsed.publicIntroduction === "string"
+            ? parsed.publicIntroduction
+            : parsed.description,
+        runtimeVersion:
+          typeof parsed.runtimeVersion === "number" && parsed.runtimeVersion > 0
+            ? parsed.runtimeVersion
+            : 1,
         contextScripts: Array.isArray(parsed.contextScripts)
           ? ensureRequiredAgentContextScripts(sanitizeContextScripts(parsed.contextScripts))
           : defaultAgentContextScripts
@@ -19200,11 +19889,132 @@ function readSetupDraft(): SetupDraft | null {
   return null;
 }
 
+const executableAgentSkillIds: AgentSkillBinding["skillId"][] = [
+  "products.list",
+  "invoices.list",
+  "product.create",
+  "product.update",
+  "product.delete",
+  "product.stock_adjust",
+  "product.field.add",
+  "product.field.remove",
+  "customer.create",
+  "invoice.draft",
+  "payment.record",
+  "receipt.scan",
+  "receipt.review",
+  "receipt.confirm",
+  "receipt.correct",
+  "receipt.cancel",
+  "receipt.lookup",
+  "receipt.list",
+  "document_import.confirm",
+  "unknown.clarify"
+];
+
+function defaultWebAgentPersonality(
+  language: SupportedLanguage,
+  additionalGuidance: string
+): AgentPersonality {
+  return {
+    tone: "warm",
+    formality: "balanced",
+    responseLength: "brief",
+    sellingStyle: "consultative",
+    negotiationStyle: "guided",
+    greetingStyle: "friendly",
+    useLocalVocabulary: true,
+    preferredLanguageOrder: language === "sw" ? ["sw", "en"] : ["en", "sw"],
+    humourLevel: "light",
+    customerCareBehaviour: "solution_focused",
+    escalationBehaviour: "when_required",
+    confidenceBoundary: 0.7,
+    additionalGuidance
+  };
+}
+
+function defaultWebAgentInstructions(generalRule: string): AgentInstructions {
+  return {
+    generalOperatingRules: [generalRule],
+    salesRules: ["Use authoritative catalogue and inventory records."],
+    pricingRules: ["Never invent or silently change prices."],
+    maximumDiscountPercent: 0,
+    negotiationAllowed: false,
+    creditSalesAllowed: false,
+    maximumCreditDays: 0,
+    deliveryRules: ["Confirm availability before promising delivery."],
+    returnsAndRefundRules: ["Escalate returns and refunds to the owner."],
+    inventoryRules: ["Never claim unavailable stock."],
+    supplierRules: ["Keep supplier and receipt records owner-only."],
+    customerPrivacyRules: ["Use the minimum customer data required."],
+    escalationRules: ["Escalate when facts, permission, or approval are missing."],
+    restrictedActions: [],
+    substituteOutOfStockAllowed: false,
+    ownerApprovalRequiredFor: executableAgentSkillIds.filter(
+      (skill) =>
+        !["products.list", "invoices.list", "receipt.lookup", "receipt.list"].includes(skill)
+    ),
+    customerDataRecommendationsAllowed: false,
+    catalogueModificationAllowed: true,
+    externalMessagingAllowed: false
+  };
+}
+
+function defaultWebAgentSkills(): AgentSkillBinding[] {
+  return executableAgentSkillIds.map((skillId) => ({
+    skillId,
+    version: 1,
+    enabled: true,
+    permissions: [],
+    allowedIntents: [],
+    requiredConfirmationLevel: [
+      "products.list",
+      "invoices.list",
+      "receipt.lookup",
+      "receipt.list"
+    ].includes(skillId)
+      ? "none"
+      : "explicit",
+    executionEnvironment: "server",
+    quotaPerHour: null,
+    lastSuccessfulExecution: null,
+    failureCount: 0
+  }));
+}
+
+function defaultWebAgentMemoryPolicy(): AgentMemoryPolicy {
+  return {
+    sessionMemoryEnabled: true,
+    customerConversationMemoryEnabled: false,
+    shopSemanticMemoryEnabled: true,
+    ownerCorrectionsEnabled: true,
+    reusableWorkflowMemoryEnabled: false,
+    customerMemoryRequiresConsent: true,
+    retentionDays: 90,
+    maximumItemsPerScope: 100
+  };
+}
+
+function defaultWebAgentEvaluationPolicy(): AgentEvaluationPolicy {
+  return {
+    enabled: true,
+    sampleRate: 1,
+    recordLatency: true,
+    recordToolOutcomes: true,
+    recordPolicyBlocks: true,
+    customerSatisfactionEnabled: false,
+    retainDays: 180
+  };
+}
+
 function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
   const businessName = business?.name.trim() || "Soko.market";
   const globalAgentId =
     business === null ? "local-soko-market" : createPublicStorefrontAgentId(business);
 
+  const generalInstruction =
+    "Help the owner run daily business work and help customers browse the storefront.";
+  const personality = "Warm, concise, accurate and commercially practical";
   return {
     id: `agent-${globalAgentId}`,
     name: businessName,
@@ -19214,14 +20024,23 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
     globalAgentId,
     storefrontUrl: createStorefrontUrl(globalAgentId),
     language: business?.language ?? "en",
-    personality: "Warm, concise, accurate and commercially practical",
-    instructions:
-      "Help the owner run daily business work and help customers browse the storefront.",
+    personality,
+    personalityConfig: defaultWebAgentPersonality(business?.language ?? "en", personality),
+    instructions: generalInstruction,
+    instructionPolicy: defaultWebAgentInstructions(generalInstruction),
     knowledge:
       "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
     tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    skillBindings: defaultWebAgentSkills(),
     integrations: ["Soko.market storefront"],
     contextScripts: defaultAgentContextScripts,
+    memoryPolicy: defaultWebAgentMemoryPolicy(),
+    evaluationPolicy: defaultWebAgentEvaluationPolicy(),
+    supportedLanguages:
+      business?.language === "sw" ? ["sw", "en"] : [business?.language ?? "en", "sw"],
+    businessCategory: "general",
+    publicIntroduction: `Welcome to ${businessName}.`,
+    runtimeVersion: 1,
     status: "active"
   };
 }
@@ -19241,13 +20060,30 @@ function agentSettingsFromBusinessProfile(
     storefrontUrl: createStorefrontUrl(globalAgentId),
     language: profile.language,
     personality: profile.personality,
+    personalityConfig:
+      profile.personalityConfig ??
+      defaultWebAgentPersonality(profile.language, profile.personality),
     instructions: profile.instructions,
+    instructionPolicy:
+      profile.instructionPolicy ?? defaultWebAgentInstructions(profile.instructions),
     knowledge: profile.knowledge,
     tools: [...profile.tools],
+    skillBindings:
+      profile.skillBindings?.map((binding) => ({
+        ...binding,
+        permissions: [...binding.permissions],
+        allowedIntents: [...binding.allowedIntents]
+      })) ?? defaultWebAgentSkills(),
     integrations: [...profile.integrations],
     contextScripts: ensureRequiredAgentContextScripts(
       sanitizeContextScripts(profile.contextScripts)
     ),
+    memoryPolicy: profile.memoryPolicy ?? defaultWebAgentMemoryPolicy(),
+    evaluationPolicy: profile.evaluationPolicy ?? defaultWebAgentEvaluationPolicy(),
+    supportedLanguages: profile.supportedLanguages ?? [profile.language],
+    businessCategory: profile.businessCategory ?? "general",
+    publicIntroduction: profile.publicIntroduction ?? profile.description,
+    runtimeVersion: profile.runtimeVersion ?? 1,
     status: profile.status
   };
 }
@@ -19317,6 +20153,13 @@ async function copyTextToClipboard(value: string): Promise<void> {
 function splitListInput(value: string): string[] {
   return value
     .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function splitMultilineInput(value: string): string[] {
+  return value
+    .split(/\r?\n/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 }

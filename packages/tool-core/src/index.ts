@@ -858,7 +858,7 @@ export function parseReceiptContextScriptCommand(input: {
   const enabled =
     input.contextScripts === undefined ||
     input.contextScripts.length === 0 ||
-    input.contextScripts.includes("receipt_ocr_commands");
+    input.contextScripts.some((script) => script.includes("receipt_ocr_commands"));
 
   if (!enabled) {
     return null;

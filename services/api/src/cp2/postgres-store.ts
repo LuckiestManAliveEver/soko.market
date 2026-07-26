@@ -35,6 +35,10 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "agentProfiles", tableName: "cp2_agent_profiles" },
+  { key: "agentRuntimeVersions", tableName: "cp2_agent_runtime_versions" },
+  { key: "agentContextSources", tableName: "cp2_agent_context_sources" },
+  { key: "agentEvaluationEvents", tableName: "cp2_agent_evaluation_events" },
+  { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
@@ -198,6 +202,11 @@ const mutatingMethodNames = new Set([
   "assignAgentModel",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
+  "rollbackAgentRuntimeVersion",
+  "upsertAgentContextSource",
+  "submitAgentOwnerCorrection",
+  "disableAgentOwnerCorrection",
+  "submitAgentFeedback",
   "confirmInvoice",
   "disconnectSocialAccount",
   "restoreShopDeletion",
@@ -283,7 +292,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "038_auth_retention_policy.sql";
+const requiredMigrationFilename = "039_agent_business_runtime.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -1832,7 +1841,7 @@ async function saveCollectionRecords(
       `,
       [
         recordEntityId(collection.key, record),
-        firstText(record, ["businessId"]),
+        firstText(record, ["businessId", "shopId", "tenantId"]),
         firstText(record, ["accountId"]),
         firstText(record, ["userId", "ownerUserId", "actorId"]),
         firstText(record, ["invoiceId", "importJobId", "sourceId", "eventId", "permissionId"]),
@@ -3044,6 +3053,10 @@ function emptySnapshot(): Cp2Snapshot {
     marketplaceIntroStates: [],
     activeAiModels: [],
     agentProfiles: [],
+    agentRuntimeVersions: [],
+    agentContextSources: [],
+    agentEvaluationEvents: [],
+    agentOwnerCorrections: [],
     installedAgentModels: [],
     agentModelAssignments: [],
     syncChanges: [],
@@ -3153,6 +3166,15 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
 
   if (key === "activeAiModels" || key === "agentProfiles" || key === "productFieldSchemas") {
     return requiredText(record, "businessId");
+  }
+
+  if (
+    key === "agentRuntimeVersions" ||
+    key === "agentContextSources" ||
+    key === "agentEvaluationEvents" ||
+    key === "agentOwnerCorrections"
+  ) {
+    return requiredText(record, "id");
   }
 
   if (key === "agentModelAssignments") {
