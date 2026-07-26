@@ -49,6 +49,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     build: {
+      manifest: true,
       rollupOptions: {
         output: {
           assetFileNames: "assets/[name]-[hash][extname]",

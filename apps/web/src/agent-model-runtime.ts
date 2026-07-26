@@ -25,6 +25,17 @@ export interface LoadedModelHandle {
   backend: AgentModelRuntimeBackend;
 }
 
+export type AgentModelRuntimeEvent =
+  | { type: "MODEL_LOAD_STARTED"; installationId: string }
+  | {
+      type: "MODEL_LOAD_PROGRESS";
+      installationId: string;
+      progress: number | null;
+      elapsedMs: number;
+    }
+  | { type: "MODEL_READY"; installationId: string }
+  | { type: "MODEL_LOAD_FAILED"; installationId: string; errorCode: AgentModelRuntimeErrorCode };
+
 export interface GenerationRequest {
   installationId: string;
   prompt: string;
@@ -48,7 +59,10 @@ export interface ModelRuntimeHealth {
 
 export interface AgentModelRuntime {
   inspect(model: LocalAiModel): Promise<ModelInspection>;
-  load(model: LocalAiModel, options?: { signal?: AbortSignal }): Promise<LoadedModelHandle>;
+  load(
+    model: LocalAiModel,
+    options?: { signal?: AbortSignal; onEvent?: (event: AgentModelRuntimeEvent) => void }
+  ): Promise<LoadedModelHandle>;
   generate(request: GenerationRequest): Promise<GenerationResult>;
   unload(installationId: string): Promise<void>;
   health(installationId: string): Promise<ModelRuntimeHealth>;
@@ -149,23 +163,58 @@ export function createAgentModelRuntime(
       const pending = loadPromises.get(model.id);
       if (pending !== undefined) return pending;
 
+      const startedAt = Date.now();
+      options?.onEvent?.({ type: "MODEL_LOAD_STARTED", installationId: model.id });
+      const heartbeat = setInterval(() => {
+        options?.onEvent?.({
+          type: "MODEL_LOAD_PROGRESS",
+          installationId: model.id,
+          progress: null,
+          elapsedMs: Date.now() - startedAt
+        });
+      }, 5_000);
       const load = withTimeout(
         bridge.load(runtimeDescriptor(model)),
         defaultTimeoutMs,
         options?.signal
       )
-        .then(() => {
+        .then(async () => {
+          const health = await withTimeout(
+            bridge.health({ installationId: model.id }),
+            10_000,
+            options?.signal
+          );
+          if (health.status !== "READY" && health.status !== "LOADED") {
+            throw new AgentModelRuntimeError(
+              health.errorCode ?? "MODEL_LOAD_FAILED",
+              "The runtime did not acknowledge that the model is ready."
+            );
+          }
           const handle = {
             installationId: model.id,
             backend: model.runtimeBackend
           };
           loadedModels.set(model.id, handle);
+          options?.onEvent?.({
+            type: "MODEL_LOAD_PROGRESS",
+            installationId: model.id,
+            progress: 100,
+            elapsedMs: Date.now() - startedAt
+          });
+          options?.onEvent?.({ type: "MODEL_READY", installationId: model.id });
           return handle;
         })
         .catch((error: unknown) => {
-          throw normalizeRuntimeError(error, "MODEL_LOAD_FAILED");
+          const normalized = normalizeRuntimeError(error, "MODEL_LOAD_FAILED");
+          options?.onEvent?.({
+            type: "MODEL_LOAD_FAILED",
+            installationId: model.id,
+            errorCode: normalized.code
+          });
+          throw normalized;
         })
         .finally(() => {
+          clearInterval(heartbeat);
           loadPromises.delete(model.id);
         });
       loadPromises.set(model.id, load);
@@ -214,7 +263,7 @@ export function createAgentModelRuntime(
       loadPromises.delete(installationId);
       loadedModels.delete(installationId);
       if (bridge !== undefined) {
-        await bridge.unload({ installationId }).catch(() => undefined);
+        await withTimeout(bridge.unload({ installationId }), 10_000).catch(() => undefined);
       }
     },
 
@@ -235,7 +284,7 @@ export function createAgentModelRuntime(
 export async function testAgentModelRuntime(
   runtime: AgentModelRuntime,
   model: LocalAiModel,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; onEvent?: (event: AgentModelRuntimeEvent) => void } = {}
 ): Promise<AgentModelReadinessResult> {
   const checkedAt = new Date().toISOString();
   const loadStartedAt = Date.now();

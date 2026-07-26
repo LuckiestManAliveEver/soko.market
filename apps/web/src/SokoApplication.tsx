@@ -153,11 +153,19 @@ import {
   readApiBaseUrl
 } from "./lib/api";
 import {
-  clearApiRequestCache,
+  clearPersistentApiRequestCache,
   getCachedJson,
   invalidateApiCacheForMutation
 } from "./api-request-cache";
-import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
+import { detectCapabilitySettings } from "./capability-profile";
+import {
+  markNavigationCommitted,
+  recordReadiness,
+  startNavigationMeasurement
+} from "./performance";
+import { prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
+import { createScreenStateCache, restoreScreenScroll } from "./screen-state-cache";
+import { setConnectivityAuthentication } from "./connectivity";
 import { RuntimeManager } from "./runtime-manager";
 import {
   clearMessagingOutbox,
@@ -174,7 +182,13 @@ import {
 } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
-import { modelActivationMessage, type ModelActivationState } from "./model-activation-state";
+import {
+  ModelActivationCoordinator,
+  ModelActivationError,
+  modelActivationMessage,
+  withActivationTimeout,
+  type ModelActivationState
+} from "./model-activation-state";
 import {
   bootstrapProgressMessage,
   clearCachedAuthSession,
@@ -2041,6 +2055,15 @@ function formatShortCommit(commitSha: string): string {
 
 export function OwnerApp() {
   const installPrompt = useInstallPrompt();
+  const capabilitySettingsRef = useRef(detectCapabilitySettings());
+  const screenStateCacheRef = useRef(
+    createScreenStateCache(capabilitySettingsRef.current.preservedScreenLimit)
+  );
+  const shellInstanceIdRef = useRef(
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `shell-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
   const accountDeletionIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const accountRestorationIntent =
@@ -2049,6 +2072,7 @@ export function OwnerApp() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
+  const initialCachedSession = readCachedAuthSession();
   const initialOwnerRoute = readOwnerRoute(window.location.pathname);
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null ? "email" : initialOwnerAuth.contact.includes("@") ? "email" : "phone"
@@ -2080,8 +2104,10 @@ export function OwnerApp() {
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [phoneRecoveryCodeInput, setPhoneRecoveryCodeInput] = useState("");
   const [generatedPhoneRecoveryCode, setGeneratedPhoneRecoveryCode] = useState("");
-  const [session, setSession] = useState<SessionResponse | null>(null);
-  const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>("initializing");
+  const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
+  const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
+    initialCachedSession === null ? "initializing" : "offline-authenticated"
+  );
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
@@ -2104,6 +2130,8 @@ export function OwnerApp() {
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
   );
+  const activeViewRef = useRef(view);
+  activeViewRef.current = view;
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
   const { hasPending, isPending, runAction } = useAsyncActions();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -2198,6 +2226,7 @@ export function OwnerApp() {
   const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
+  const sessionRefreshInFlightRef = useRef(false);
   const restoredModelInstallationRef = useRef<string | null>(null);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
 
@@ -2218,6 +2247,10 @@ export function OwnerApp() {
   function navigateToView(nextView: ShellView, options?: { replace?: boolean }) {
     const nextPath = pathForOwnerView(nextView, mode);
     const measurement = startNavigationMeasurement(nextPath);
+    screenStateCacheRef.current.write(activeViewRef.current, {
+      scrollX: window.scrollX,
+      scrollY: window.scrollY
+    });
     runViewTransition(() => {
       setView(nextView);
       if (window.location.pathname !== nextPath) {
@@ -2225,7 +2258,8 @@ export function OwnerApp() {
         window.history[method]({ mode, view: nextView }, "", nextPath);
       }
       markNavigationCommitted(measurement);
-    });
+      restoreScreenScroll(screenStateCacheRef.current, nextView);
+    }, nextView === "chat");
   }
 
   function returnToChat() {
@@ -2295,6 +2329,10 @@ export function OwnerApp() {
       void refreshSession();
     }
   }, [isOnline, authBootstrapState]);
+
+  useEffect(() => {
+    setConnectivityAuthentication(session !== null);
+  }, [session]);
 
   useEffect(() => {
     void loadOAuthProviders();
@@ -2377,6 +2415,11 @@ export function OwnerApp() {
     let closeRealtime: (() => void) | undefined;
     let openedRepository: IndexedDbSyncRepository | null = null;
     let catchUpPromise: Promise<void> | null = null;
+    let synchronize: (() => Promise<void>) | null = null;
+    const synchronizeWhenOnline = () => {
+      if (navigator.onLine) void synchronize?.();
+    };
+    window.addEventListener("online", synchronizeWhenOnline);
     void openIndexedDbSyncRepository()
       .then(async (repository) => {
         if (cancelled) {
@@ -2386,10 +2429,6 @@ export function OwnerApp() {
         closeRepository = () => repository.close();
         openedRepository = repository;
         syncRepositoryRef.current = repository;
-        if (!navigator.onLine) {
-          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
-          return;
-        }
         const catchUp = () => {
           if (catchUpPromise === null) {
             catchUpPromise = catchUpAccountSync({
@@ -2404,20 +2443,8 @@ export function OwnerApp() {
           }
           return catchUpPromise;
         };
-        const transferred = await flushLocalSyncMutations({
-          accountId: session.account.id,
-          repository,
-          apiBaseUrl
-        });
-        await catchUp();
-        if (transferred.transferred > 0) {
-          setStatusMessage(
-            `${transferred.transferred} offline change${
-              transferred.transferred === 1 ? "" : "s"
-            } synced`
-          );
-        }
-        if (!cancelled) {
+        const startRealtime = () => {
+          if (cancelled || closeRealtime !== undefined || !navigator.onLine) return;
           const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
           realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
           closeRealtime = subscribeToAccountRealtime({
@@ -2425,6 +2452,28 @@ export function OwnerApp() {
             endpoint: realtimeUrl.toString(),
             onChangesAvailable: catchUp
           });
+        };
+        synchronize = async () => {
+          if (cancelled || !navigator.onLine) return;
+          const transferred = await flushLocalSyncMutations({
+            accountId: session.account.id,
+            repository,
+            apiBaseUrl
+          });
+          await catchUp();
+          if (!cancelled && transferred.transferred > 0) {
+            setStatusMessage(
+              `${transferred.transferred} offline change${
+                transferred.transferred === 1 ? "" : "s"
+              } synced`
+            );
+          }
+          startRealtime();
+        };
+        if (navigator.onLine) {
+          await synchronize();
+        } else {
+          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
         }
       })
       .catch(() => {
@@ -2435,13 +2484,14 @@ export function OwnerApp() {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("online", synchronizeWhenOnline);
       closeRealtime?.();
       if (syncRepositoryRef.current === openedRepository) {
         syncRepositoryRef.current = null;
       }
       closeRepository?.();
     };
-  }, [session?.account.id, isOnline]);
+  }, [session?.account.id]);
 
   useEffect(() => {
     if (session === null) return;
@@ -2824,6 +2874,11 @@ export function OwnerApp() {
     };
   }, [business?.id, session?.account.id, setupComplete, view]);
 
+  useEffect(() => {
+    if (!setupComplete || view !== "chat") return;
+    return scheduleIdleOwnerPrefetch("products", business?.id ?? null);
+  }, [business?.id, setupComplete, view]);
+
   async function handleOAuthCallback(): Promise<boolean> {
     if (window.location.pathname !== routes.oauthCallback) {
       return false;
@@ -2942,7 +2997,11 @@ export function OwnerApp() {
   }
 
   async function refreshSession() {
-    setAuthBootstrapState("restoring-session");
+    if (sessionRefreshInFlightRef.current) return;
+    sessionRefreshInFlightRef.current = true;
+    setAuthBootstrapState((current) =>
+      current === "offline-authenticated" ? current : "restoring-session"
+    );
     try {
       const nextSession = await apiFetch<AuthBootstrapResponse>("/auth/bootstrap");
       logAuthenticationLifecycle("authenticated_user_loaded", nextSession);
@@ -2983,6 +3042,8 @@ export function OwnerApp() {
       if (storedBusiness !== null) setBusiness(storedBusiness);
       setAuthBootstrapState("failed");
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
+    } finally {
+      sessionRefreshInFlightRef.current = false;
     }
   }
 
@@ -3764,7 +3825,10 @@ export function OwnerApp() {
 
   async function loadProducts(businessId: string) {
     try {
-      const response = await getJson<ProductSummary[]>(`/businesses/${businessId}/products`);
+      const response = await getJson<ProductSummary[]>(
+        `/businesses/${businessId}/products`,
+        setProducts
+      );
       setProducts(response);
       if (stockProductId.length === 0 && response[0] !== undefined) {
         setStockProductId(response[0].id);
@@ -3778,7 +3842,8 @@ export function OwnerApp() {
   async function loadProductFields(businessId: string) {
     try {
       const schema = await getJson<ProductFieldSchemaSummary>(
-        `/businesses/${businessId}/products/fields`
+        `/businesses/${businessId}/products/fields`,
+        (refreshed) => setProductFields(refreshed.fields)
       );
       setProductFields(schema.fields);
     } catch (error) {
@@ -3971,7 +4036,9 @@ export function OwnerApp() {
 
   async function loadCustomers(businessId: string) {
     try {
-      setCustomers(await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`));
+      setCustomers(
+        await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`, setCustomers)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3980,7 +4047,10 @@ export function OwnerApp() {
   async function loadSuppliers(businessId: string) {
     try {
       setSuppliers(
-        await getJson<SupplierBusinessCardSummary[]>(`/businesses/${businessId}/suppliers`)
+        await getJson<SupplierBusinessCardSummary[]>(
+          `/businesses/${businessId}/suppliers`,
+          setSuppliers
+        )
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -4274,7 +4344,9 @@ export function OwnerApp() {
 
   async function loadInvoices(businessId: string) {
     try {
-      setInvoices(await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`));
+      setInvoices(
+        await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`, setInvoices)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4635,9 +4707,12 @@ export function OwnerApp() {
   async function loadPaymentData(businessId: string) {
     try {
       const [nextPayments, nextSummaries, nextDebts] = await Promise.all([
-        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`),
-        getJson<InvoicePaymentSummary[]>(`/businesses/${businessId}/payment-summaries`),
-        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`)
+        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`, setPayments),
+        getJson<InvoicePaymentSummary[]>(
+          `/businesses/${businessId}/payment-summaries`,
+          setInvoicePayments
+        ),
+        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`, setCustomerDebts)
       ]);
       setPayments(nextPayments);
       setInvoicePayments(nextSummaries);
@@ -4650,7 +4725,8 @@ export function OwnerApp() {
   async function loadLogistics(businessId: string) {
     try {
       const nextLogistics = await getJson<LogisticsSummary[]>(
-        `/businesses/${businessId}/logistics`
+        `/businesses/${businessId}/logistics`,
+        setLogistics
       );
       setLogistics(nextLogistics);
       if (logisticsForm.invoiceId.length === 0) {
@@ -4670,8 +4746,14 @@ export function OwnerApp() {
   async function loadReports(businessId: string) {
     try {
       const [report, knowledge] = await Promise.all([
-        getJson<BusinessReportSummary>(`/businesses/${businessId}/reports/summary`),
-        getJson<BusinessKnowledgeSummary>(`/businesses/${businessId}/knowledge`)
+        getJson<BusinessReportSummary>(
+          `/businesses/${businessId}/reports/summary`,
+          setReportSummary
+        ),
+        getJson<BusinessKnowledgeSummary>(
+          `/businesses/${businessId}/knowledge`,
+          setKnowledgeSummary
+        )
       ]);
       setReportSummary(report);
       setKnowledgeSummary(knowledge);
@@ -4683,7 +4765,10 @@ export function OwnerApp() {
   async function loadNotifications(businessId: string) {
     try {
       setNotificationInbox(
-        await getJson<NotificationInbox>(`/businesses/${businessId}/notifications`)
+        await getJson<NotificationInbox>(
+          `/businesses/${businessId}/notifications`,
+          setNotificationInbox
+        )
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -5670,14 +5755,20 @@ export function OwnerApp() {
   async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
     if (session === null) return;
     try {
-      let response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+      let response = await getJson<{ conversations: ConversationInboxItem[] }>(
+        "/v1/conversations",
+        (refreshed) => setConversationInbox(refreshed.conversations)
+      );
       if (response.conversations.length === 0) {
         const created = await postJson<ConversationView>("/v1/conversations", {
           kind: "personal",
           activeShopId: business?.id ?? null,
           title: "Soko agent"
         });
-        response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+        response = await getJson<{ conversations: ConversationInboxItem[] }>(
+          "/v1/conversations",
+          (refreshed) => setConversationInbox(refreshed.conversations)
+        );
         preferredConversationId = created.conversation.id;
       }
       setConversationInbox(response.conversations);
@@ -5982,7 +6073,7 @@ export function OwnerApp() {
       ]);
       clearMessagingOutbox(accountId);
     }
-    clearApiRequestCache();
+    await clearPersistentApiRequestCache();
     clearCachedAuthSession();
     localStorage.removeItem(activeBusinessStorageKey);
     localStorage.removeItem(legacyActiveBusinessStorageKey);
@@ -6683,6 +6774,8 @@ export function OwnerApp() {
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
+      let pendingStreamText = "";
+      let streamingFrame: number | null = null;
       setIsBrowserGenerating(true);
       setChatMessages((messages) => [
         ...messages,
@@ -6696,16 +6789,18 @@ export function OwnerApp() {
       ]);
       const updateStreamingMessage = (text: string) => {
         streamedText = text;
-        setChatMessages((messages) =>
-          messages.map((item) =>
-            item.id === streamingMessageId
-              ? { ...item, body: streamedText.trimStart() || "…" }
-              : item
-          )
-        );
+        pendingStreamText = text;
+        if (streamingFrame !== null) return;
+        streamingFrame = window.requestAnimationFrame(() => {
+          streamingFrame = null;
+          const body = pendingStreamText.trimStart() || "…";
+          setChatMessages((messages) =>
+            messages.map((item) => (item.id === streamingMessageId ? { ...item, body } : item))
+          );
+        });
       };
+      setStatusMessage("Browser model · Generating");
       browserTokenListener = (token) => {
-        setStatusMessage("Browser model · Generating");
         updateStreamingMessage(streamedText + token);
       };
       try {
@@ -6726,6 +6821,10 @@ export function OwnerApp() {
             }
           }
         });
+        if (streamingFrame !== null) {
+          window.cancelAnimationFrame(streamingFrame);
+          streamingFrame = null;
+        }
         setChatMessages((messages) => messages.filter((item) => item.id !== streamingMessageId));
         await appendAgentMessage(execution.text);
         if (routedRuntimeResult !== null) {
@@ -6762,6 +6861,7 @@ export function OwnerApp() {
         });
         setStatusMessage("Client inference unavailable · Using safe server fallback");
       } finally {
+        if (streamingFrame !== null) window.cancelAnimationFrame(streamingFrame);
         setIsBrowserGenerating(false);
       }
     }
@@ -7432,7 +7532,11 @@ export function OwnerApp() {
 
   return (
     <Surface title="Soko.market">
-      <div className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}>
+      <div
+        className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
+        data-shell-instance={shellInstanceIdRef.current}
+        data-capability-profile={capabilitySettingsRef.current.profile}
+      >
         <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
           {business === null ? (
             <div className="auth-brand-title">
@@ -7724,6 +7828,7 @@ export function OwnerApp() {
                 activeView={view}
                 notificationCount={notificationInbox.summary.unread}
                 onNavigate={navigateToView}
+                onPrefetch={(nextView) => prefetchOwnerView(nextView, business.id)}
               />
             ) : null}
             {deviceCloudFallbackModelId !== null ? (
@@ -7921,11 +8026,13 @@ const primaryNavigationItems: Array<{
 function PrimaryNavigation({
   activeView,
   notificationCount,
-  onNavigate
+  onNavigate,
+  onPrefetch
 }: {
   activeView: ShellView;
   notificationCount: number;
   onNavigate: (view: ShellView) => void;
+  onPrefetch: (view: ShellView) => void;
 }) {
   return (
     <nav className="primary-navigation" aria-label="Business navigation">
@@ -7938,6 +8045,8 @@ function PrimaryNavigation({
           aria-label={item.label}
           title={item.label}
           onClick={() => onNavigate(item.view)}
+          onPointerDown={() => onPrefetch(item.view)}
+          onPointerEnter={() => onPrefetch(item.view)}
         >
           <span className="primary-navigation-icon" aria-hidden="true">
             {item.shortLabel.slice(0, 1)}
@@ -13200,6 +13309,8 @@ function AgentProfileSurface({
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [modelRuntimeBusy, setModelRuntimeBusy] = useState(false);
   const modelRuntimeBusyRef = useRef(false);
+  const modelActivationCoordinator = useRef(new ModelActivationCoordinator());
+  const activatingInstallationIdRef = useRef<string | null>(null);
   const modelRuntime = useRef<AgentModelRuntime | null>(null);
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
@@ -13252,6 +13363,16 @@ function AgentProfileSurface({
       setDraftAgent(agent);
     }
   }, [agent, isEditing]);
+
+  useEffect(
+    () => () => {
+      modelActivationCoordinator.current.cancel();
+      modelRuntimeBusyRef.current = false;
+      const installationId = activatingInstallationIdRef.current;
+      if (installationId !== null) void getModelRuntime().unload(installationId);
+    },
+    []
+  );
 
   useEffect(() => {
     const savedPhone = ownerUser?.phoneNumberE164;
@@ -13655,12 +13776,17 @@ function AgentProfileSurface({
     }
   }
 
-  async function registerInstalledModel(model: LocalAiModel): Promise<void> {
-    await postJson("/v1/models/installed", installedModelRequest(model));
+  async function registerInstalledModel(model: LocalAiModel, signal?: AbortSignal): Promise<void> {
+    await postJson(
+      "/v1/models/installed",
+      installedModelRequest(model),
+      signal === undefined ? {} : { signal }
+    );
   }
 
   async function validateInstalledModelOnBackend(
-    model: LocalAiModel
+    model: LocalAiModel,
+    signal?: AbortSignal
   ): Promise<InstalledAgentModelSummary> {
     return postJson<InstalledAgentModelSummary>(
       `/v1/models/${encodeURIComponent(model.id)}/validate`,
@@ -13669,12 +13795,14 @@ function AgentProfileSurface({
         installationStatus: model.installationStatus,
         compatibilityStatus: model.compatibilityStatus,
         validationError: model.validationError
-      }
+      },
+      signal === undefined ? {} : { signal }
     );
   }
 
   async function synchronizeAgentModelAssignment(
-    assignment: DeviceAgentModelAssignment
+    assignment: DeviceAgentModelAssignment,
+    signal?: AbortSignal
   ): Promise<DeviceAgentModelAssignment> {
     if (!navigator.onLine) return assignment;
     const saved = await putJson<AgentModelAssignmentSummary>(
@@ -13687,32 +13815,83 @@ function AgentProfileSurface({
         readinessStatus: assignment.readinessStatus,
         lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
         lastErrorCode: assignment.lastErrorCode
-      }
+      },
+      signal === undefined ? {} : { signal }
     );
     return assignmentFromServer(saved);
   }
 
+  async function activationApiReachable(signal?: AbortSignal): Promise<boolean> {
+    if (!navigator.onLine) return false;
+    try {
+      await withActivationTimeout(
+        (timeoutSignal) => apiFetch<SessionResponse>("/session", { signal: timeoutSignal }),
+        8_000,
+        signal
+      );
+      return true;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof TypeError) return false;
+      if (error instanceof ModelActivationError && error.code === "ACTIVATION_TIMEOUT") {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  function cancelModelActivation() {
+    modelActivationCoordinator.current.cancel();
+    setProfileMessage("Cancelling model activation…");
+  }
+
   async function useModelWithAgent(model: LocalAiModel) {
-    if (modelRuntimeBusyRef.current) return;
+    const activation = modelActivationCoordinator.current.begin(model.id);
+    if (activation === null) return;
     const previous = agentModelAssignment;
-    let boundAssignment: DeviceAgentModelAssignment | null = null;
+    const phaseDurations: Partial<Record<ModelActivationState, number>> = {};
+    let phase: ModelActivationState = "idle";
+    let phaseStartedAt = performance.now();
+    let runtimeSessionId: string | null = null;
+    let apiReachable = false;
+    const transition = (next: ModelActivationState, message: string) => {
+      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation))
+        return;
+      phaseDurations[phase] = Math.round(performance.now() - phaseStartedAt);
+      phase = next;
+      phaseStartedAt = performance.now();
+      setModelActivationState(next);
+      setProfileMessage(message);
+    };
+    const assertCurrent = () => {
+      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation)) {
+        throw new ModelActivationError("ACTIVATION_ABORTED", "Model activation was cancelled.");
+      }
+    };
     modelRuntimeBusyRef.current = true;
+    activatingInstallationIdRef.current = model.id;
     setModelRuntimeBusy(true);
     setActivatingModelId(model.modelId);
     setFailedActivationModelId(null);
-    setModelActivationState("validating-installation");
+    setModelActivationState("validating");
     setModelChooserOpen(false);
     try {
-      setProfileMessage("Checking installation…");
+      transition("validating", "Checking model…");
       const verified = await validateLocalAiModel(model, deviceCapability);
+      assertCurrent();
       setLocalAiModels(listLocalAiModels());
       if (
         verified.installationStatus !== "INSTALLED" ||
         verified.compatibilityStatus !== "COMPATIBLE"
       ) {
-        throw new Error(
-          verified.validationError === "MODEL_FILE_MISSING"
-            ? "The model file is missing from this device."
+        throw new ModelActivationError(
+          verified.validationError === "MODEL_FILE_MISSING" ||
+            verified.installationStatus === "CORRUPT"
+            ? "MODEL_FILES_MISSING"
+            : "MODEL_RUNTIME_FAILED",
+          verified.validationError === "MODEL_FILE_MISSING" ||
+            verified.installationStatus === "CORRUPT"
+            ? "The model files are missing or incomplete. Download the model again."
             : verified.compatibilityStatus === "INSUFFICIENT_MEMORY"
               ? "This device does not have enough memory for the model."
               : "The installed model is not compatible with this device."
@@ -13721,9 +13900,27 @@ function AgentProfileSurface({
       if (!verified.commercialUseAllowed) {
         throw new Error("This model is not approved for commercial use.");
       }
-      if (navigator.onLine) {
-        await registerInstalledModel(verified);
-        const backendValidation = await validateInstalledModelOnBackend(verified);
+      if (window.SokoAgentModelRuntime === undefined) {
+        throw new ModelActivationError(
+          "MODEL_RUNTIME_FAILED",
+          "This browser does not provide the trusted GGUF runtime. Open Soko in the supported installed app to start this model."
+        );
+      }
+
+      apiReachable = await activationApiReachable(activation.signal);
+      assertCurrent();
+      if (apiReachable) {
+        await withActivationTimeout(
+          (signal) => registerInstalledModel(verified, signal),
+          45_000,
+          activation.signal
+        );
+        const backendValidation = await withActivationTimeout(
+          (signal) => validateInstalledModelOnBackend(verified, signal),
+          45_000,
+          activation.signal
+        );
+        assertCurrent();
         if (
           backendValidation.installationStatus !== "INSTALLED" ||
           backendValidation.compatibilityStatus !== "COMPATIBLE"
@@ -13735,22 +13932,6 @@ function AgentProfileSurface({
         }
       }
 
-      const pending = createPendingDeviceAssignment({
-        businessId: business.id,
-        deviceId,
-        installation: verified,
-        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"
-      });
-      setModelActivationState("binding-agent");
-      setProfileMessage(`Binding ${verified.displayName} to ${business.name}…`);
-      boundAssignment = await synchronizeAgentModelAssignment(pending);
-      saveDeviceAgentModelAssignment(boundAssignment);
-      setAgentModelAssignment(boundAssignment);
-      setProfileMessage(
-        `${verified.displayName} is bound to ${business.name}. Checking its runtime…`
-      );
-
       if (clientInferenceFeatureFlags.nativeBridge && !inferencePreferences.nativePermission) {
         const nextPreferences = saveClientInferencePreferences(accountId, business.id, {
           ...inferencePreferences,
@@ -13758,39 +13939,66 @@ function AgentProfileSurface({
         });
         setInferencePreferences(nextPreferences);
       }
-      if (window.SokoAgentModelRuntime === undefined) {
-        throw new Error(
-          "This browser does not provide the trusted GGUF runtime. Open Soko in the supported installed app to start this model."
+      transition("creating_runtime", "Starting runtime…");
+      if (apiReachable) {
+        runtimeSessionId = await withActivationTimeout(
+          () => onEnsureRuntimeSession(),
+          45_000,
+          activation.signal
+        );
+        if (runtimeSessionId.trim().length === 0) {
+          throw new ModelActivationError(
+            "RUNTIME_SESSION_INVALID",
+            "The runtime session could not be created."
+          );
+        }
+      } else {
+        runtimeSessionId = `local:${business.id}:${deviceId}:${activation.id}`;
+      }
+      assertCurrent();
+
+      transition("loading_model", `Loading ${verified.displayName}…`);
+      const result = await testAgentModelRuntime(getModelRuntime(), verified, {
+        signal: activation.signal,
+        onEvent: (event) => {
+          if (event.type === "MODEL_LOAD_PROGRESS" && event.progress !== null) {
+            transition("loading_model", `Loading ${verified.displayName}… ${event.progress}%`);
+          }
+        }
+      });
+      assertCurrent();
+      if (!result.success) {
+        throw new ModelActivationError(
+          result.errorCode === "MODEL_FILE_MISSING"
+            ? "MODEL_FILES_MISSING"
+            : "MODEL_RUNTIME_FAILED",
+          result.errorCode === "MODEL_FILE_MISSING"
+            ? "The model files are missing or incomplete. Download the model again."
+            : result.message
         );
       }
-
-      setModelActivationState("resolving-agent");
-      setProfileMessage("Restoring your agent…");
-      if (navigator.onLine) {
-        setModelActivationState("creating-runtime-session");
-        setProfileMessage("Starting model runtime…");
-        await onEnsureRuntimeSession();
+      transition("binding_agent", "Connecting model to agent…");
+      const pending = createPendingDeviceAssignment({
+        businessId: business.id,
+        deviceId,
+        installation: verified,
+        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        runtimeSessionId
+      });
+      let readyAssignment = assignmentAfterReadiness(pending, result);
+      if (apiReachable) {
+        readyAssignment = await withActivationTimeout(
+          (signal) => synchronizeAgentModelAssignment(readyAssignment, signal),
+          45_000,
+          activation.signal
+        );
+        readyAssignment.runtimeSessionId = runtimeSessionId;
       }
-
-      setModelActivationState("initializing-backend");
-      setProfileMessage("Preparing model backend…");
-      setModelActivationState("loading-model");
-      setProfileMessage(`Loading ${verified.displayName}…`);
-      setModelActivationState("warming-model");
-      setProfileMessage("Preparing model…");
-      setModelActivationState("health-checking");
-      setProfileMessage("Testing model…");
-      const result = await testAgentModelRuntime(getModelRuntime(), verified);
-      const tested = assignmentAfterReadiness(boundAssignment, result);
-      boundAssignment = await synchronizeAgentModelAssignment(tested);
-      saveDeviceAgentModelAssignment(boundAssignment);
-      setAgentModelAssignment(boundAssignment);
-      if (!result.success) {
-        throw new Error(result.message);
-      }
-      setModelActivationState("binding-agent");
-      setProfileMessage("Connecting to agent…");
-      setActiveAiModelId(boundAssignment.modelId ?? verified.modelId);
+      assertCurrent();
+      saveDeviceAgentModelAssignment(readyAssignment);
+      setAgentModelAssignment(readyAssignment);
+      setActiveAiModelId(readyAssignment.modelId ?? verified.modelId);
       if (
         previous?.activeModelInstallationId !== null &&
         previous?.activeModelInstallationId !== undefined &&
@@ -13803,48 +14011,60 @@ function AgentProfileSurface({
       setModelActivationState("active");
       setFailedActivationModelId(null);
       setProfileMessage(`${verified.displayName} is now connected to ${business.name}.`);
+      recordModelActivationDiagnostic({
+        activationRequestId: activation.id,
+        userId: ownerUser?.id ?? accountId,
+        shopId: business.id,
+        agentId: readyAssignment.agentId,
+        modelId: model.modelId,
+        modelSource: model.provider,
+        runtimeType: model.runtimeBackend,
+        runtimeSessionId,
+        online: apiReachable,
+        phaseDurations: {
+          ...phaseDurations,
+          [phase]: Math.round(performance.now() - phaseStartedAt)
+        },
+        failureCode: null
+      });
     } catch (error) {
+      void getModelRuntime().unload(model.id);
+      if (!modelActivationCoordinator.current.isCurrent(activation)) return;
       setModelActivationState("failed");
       setFailedActivationModelId(model.modelId);
-      await getModelRuntime().unload(model.id);
       const message = getErrorMessage(error);
-      if (boundAssignment !== null) {
-        const failedAssignment: DeviceAgentModelAssignment =
-          boundAssignment.readinessStatus === "READY"
-            ? boundAssignment
-            : {
-                ...boundAssignment,
-                readinessStatus: "FAILED",
-                lastSuccessfulInferenceAt: null,
-                lastErrorCode: boundAssignment.lastErrorCode ?? "MODEL_RUNTIME_UNAVAILABLE",
-                updatedAt: new Date().toISOString()
-              };
-        try {
-          boundAssignment = await synchronizeAgentModelAssignment(failedAssignment);
-        } catch {
-          boundAssignment = failedAssignment;
-        }
-        saveDeviceAgentModelAssignment(boundAssignment);
-        setAgentModelAssignment(boundAssignment);
-        setProfileMessage(
-          boundAssignment.readinessStatus === "READY"
-            ? `${model.displayName} passed its local test, but synchronization failed: ${message}`
-            : `${model.displayName} is bound to ${business.name}, but it is not running yet: ${message} Fix the runtime issue, then retry activation.`
-        );
+      if (previous === null) {
+        clearDeviceAgentModelAssignment(business.id, deviceId);
+        setAgentModelAssignment(null);
       } else {
-        if (previous === null) {
-          clearDeviceAgentModelAssignment(business.id, deviceId);
-          setAgentModelAssignment(null);
-        } else {
-          saveDeviceAgentModelAssignment(previous);
-          setAgentModelAssignment(previous);
-        }
-        setProfileMessage(`${message} The previous working model was left unchanged.`);
+        saveDeviceAgentModelAssignment(previous);
+        setAgentModelAssignment(previous);
       }
+      setProfileMessage(`${message} The previous working model was left unchanged.`);
+      recordModelActivationDiagnostic({
+        activationRequestId: activation.id,
+        userId: ownerUser?.id ?? accountId,
+        shopId: business.id,
+        agentId: previous?.agentId ?? business.id,
+        modelId: model.modelId,
+        modelSource: model.provider,
+        runtimeType: model.runtimeBackend,
+        runtimeSessionId,
+        online: apiReachable,
+        phaseDurations: {
+          ...phaseDurations,
+          [phase]: Math.round(performance.now() - phaseStartedAt)
+        },
+        failureCode: error instanceof ModelActivationError ? error.code : "MODEL_RUNTIME_FAILED"
+      });
     } finally {
-      modelRuntimeBusyRef.current = false;
-      setActivatingModelId(null);
-      setModelRuntimeBusy(false);
+      if (modelActivationCoordinator.current.isCurrent(activation)) {
+        modelActivationCoordinator.current.finish(activation);
+        modelRuntimeBusyRef.current = false;
+        activatingInstallationIdRef.current = null;
+        setActivatingModelId(null);
+        setModelRuntimeBusy(false);
+      }
     }
   }
 
@@ -13873,7 +14093,8 @@ function AgentProfileSurface({
       return;
     }
     if (!navigator.onLine) {
-      setProfileMessage("Connect to the internet to activate this backend model.");
+      setModelActivationState("offline_blocked");
+      setProfileMessage("Connect to the internet to activate this model.");
       return;
     }
 
@@ -13881,6 +14102,11 @@ function AgentProfileSurface({
     setModelRuntimeBusy(true);
     setActivatingModelId(model.id);
     try {
+      if (!(await activationApiReachable())) {
+        setModelActivationState("offline_blocked");
+        setProfileMessage("Connect to the internet to activate this model.");
+        return;
+      }
       setProfileMessage(`Setting ${model.label} as the cloud fallback…`);
       await onEnsureRuntimeSession();
       const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
@@ -14610,6 +14836,11 @@ function AgentProfileSurface({
               {profileMessage}
             </p>
           ) : null}
+          {modelRuntimeBusy && activatingModelId !== null ? (
+            <button className="secondary" type="button" onClick={cancelModelActivation}>
+              Cancel activation
+            </button>
+          ) : null}
           {activeInstalledModel === null ? (
             <article className="agent-model-current">
               <div>
@@ -15239,6 +15470,7 @@ function AgentProfileSurface({
                               <button
                                 className="secondary"
                                 type="button"
+                                disabled={modelRuntimeBusy}
                                 onClick={() => void deleteDeviceModel(localModel)}
                               >
                                 Remove
@@ -15329,6 +15561,7 @@ function AgentProfileSurface({
                         <button
                           className="secondary"
                           type="button"
+                          disabled={modelRuntimeBusy}
                           onClick={() => void deleteDeviceModel(model)}
                         >
                           Remove
@@ -16481,6 +16714,8 @@ function ChatSurface({
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const defaultMessageWindow = useRef(detectCapabilitySettings().messageWindowSize).current;
+  const [messageWindowSize, setMessageWindowSize] = useState(defaultMessageWindow);
   const [inboxSearch, setInboxSearch] = useState("");
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
@@ -16518,6 +16753,8 @@ function ChatSurface({
     );
   });
   const visibleMessages = messages.filter((message) => !isRedundantAgentErrorMessage(message.body));
+  const hiddenMessageCount = Math.max(0, visibleMessages.length - messageWindowSize);
+  const windowedMessages = visibleMessages.slice(hiddenMessageCount);
 
   function openSmsHandoff(recipient: string, label: string) {
     let normalizedCandidate = "";
@@ -16603,6 +16840,18 @@ function ChatSurface({
   }, [workspaceOpen, onCloseWorkspace]);
 
   useEffect(() => {
+    setMessageWindowSize(defaultMessageWindow);
+  }, [activeConversationId, defaultMessageWindow]);
+
+  useEffect(() => {
+    recordReadiness("composer");
+  }, []);
+
+  useEffect(() => {
+    if (messages.length > 0) recordReadiness("chat-first-message");
+  }, [messages.length]);
+
+  useEffect(() => {
     function closeMessageMenu(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setActiveMessageMenuId(null);
@@ -16624,7 +16873,7 @@ function ChatSurface({
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeView, messages.length, mode, workspaceCardView]);
+  }, [activeConversationId, messages.length, workspaceCardView]);
 
   return (
     <div className={`chat-surface ${isInboxOpen ? "inbox-open" : ""}`}>
@@ -16775,7 +17024,16 @@ function ChatSurface({
           </button>
         </header>
         <div className="message-list" aria-live="polite" ref={messageListRef}>
-          {visibleMessages.map((message, index) => (
+          {hiddenMessageCount > 0 ? (
+            <button
+              className="load-older-messages"
+              type="button"
+              onClick={() => setMessageWindowSize((size) => size + defaultMessageWindow)}
+            >
+              Load {Math.min(hiddenMessageCount, defaultMessageWindow)} older messages
+            </button>
+          ) : null}
+          {windowedMessages.map((message, index) => (
             <Fragment key={message.id}>
               <article
                 className={`message ${message.author}`}
@@ -16862,6 +17120,8 @@ function ChatSurface({
                           <img
                             src={attachment.dataUrl}
                             alt={attachment.name}
+                            width={160}
+                            height={120}
                             loading="lazy"
                             decoding="async"
                           />
@@ -18641,11 +18901,30 @@ function EmptyStateSurface({
   );
 }
 
+interface ModelActivationDiagnostic {
+  activationRequestId: string;
+  userId: string;
+  shopId: string;
+  agentId: string;
+  modelId: string;
+  modelSource: string;
+  runtimeType: string;
+  runtimeSessionId: string | null;
+  online: boolean;
+  phaseDurations: Partial<Record<ModelActivationState, number>>;
+  failureCode: string | null;
+}
+
+function recordModelActivationDiagnostic(diagnostic: ModelActivationDiagnostic): void {
+  console.info("model_activation", diagnostic);
+}
+
 async function postJson<TResponse>(
   path: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {}
 ): Promise<TResponse> {
-  const response = await apiFetch<TResponse>(path, { method: "POST", body });
+  const response = await apiFetch<TResponse>(path, { method: "POST", body, ...options });
   invalidateApiCacheForMutation(path);
   return response;
 }
@@ -18659,8 +18938,12 @@ async function patchJson<TResponse>(
   return response;
 }
 
-async function putJson<TResponse>(path: string, body: Record<string, unknown>): Promise<TResponse> {
-  const response = await apiFetch<TResponse>(path, { method: "PUT", body });
+async function putJson<TResponse>(
+  path: string,
+  body: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {}
+): Promise<TResponse> {
+  const response = await apiFetch<TResponse>(path, { method: "PUT", body, ...options });
   invalidateApiCacheForMutation(path);
   return response;
 }
@@ -18674,8 +18957,14 @@ async function deleteJson<TResponse>(
   return response;
 }
 
-async function getJson<TResponse>(path: string): Promise<TResponse> {
-  return getCachedJson<TResponse>(path);
+async function getJson<TResponse>(
+  path: string,
+  onBackgroundUpdate?: (value: TResponse) => void
+): Promise<TResponse> {
+  return getCachedJson<TResponse>(
+    path,
+    onBackgroundUpdate === undefined ? {} : { onBackgroundUpdate }
+  );
 }
 
 function useInstallPrompt() {
@@ -19852,13 +20141,13 @@ function dataUrlPayload(dataUrl: string): string {
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
 }
 
-function runViewTransition(update: () => void): void {
+function runViewTransition(update: () => void, allowSnapshot = true): void {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const transitionDocument = document as Document & {
     startViewTransition?: (callback: () => void) => unknown;
   };
 
-  if (!reducedMotion && transitionDocument.startViewTransition !== undefined) {
+  if (allowSnapshot && !reducedMotion && transitionDocument.startViewTransition !== undefined) {
     transitionDocument.startViewTransition(update);
     return;
   }

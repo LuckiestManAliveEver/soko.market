@@ -34,12 +34,17 @@ class FakeWorker extends EventTarget {
       });
     } else if (request.type === "LOAD_MODEL") {
       this.message({
-        type: "MODEL_PROGRESS",
+        type: "MODEL_LOAD_STARTED",
+        requestId: request.requestId,
+        modelId: request.model.id
+      });
+      this.message({
+        type: "MODEL_LOAD_PROGRESS",
         requestId: request.requestId,
         progress: { status: "downloading", percent: 50 }
       });
       this.message({
-        type: "MODEL_LOADED",
+        type: "MODEL_READY",
         requestId: request.requestId,
         modelId: request.model.id
       });
@@ -161,5 +166,25 @@ describe("browser model engine worker integration", () => {
     engine.terminate();
     await expect(loading).rejects.toMatchObject({ code: "GENERATION_CANCELLED" });
     expect(worker.terminated).toBe(true);
+  });
+
+  it("rejects an in-flight load when the worker emits an invalid message", async () => {
+    class InvalidWorker extends FakeWorker {
+      override postMessage(request: BrowserModelWorkerRequest) {
+        this.requests.push(request);
+        queueMicrotask(() =>
+          this.dispatchEvent(new MessageEvent("message", { data: { type: "BROKEN" } }))
+        );
+      }
+    }
+    const worker = new InvalidWorker();
+    const engine = createBrowserModelEngine(() => worker);
+    await expect(
+      engine.initialize({
+        backend: "wasm",
+        approvedModelOrigins: ["https://huggingface.co"],
+        maxContextTokens: 1_024
+      })
+    ).rejects.toMatchObject({ code: "WORKER_CRASHED" });
   });
 });

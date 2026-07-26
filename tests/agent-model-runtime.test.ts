@@ -108,6 +108,36 @@ describe("agent model runtime", () => {
     expect(native.load).toHaveBeenCalledOnce();
   });
 
+  it("emits explicit load lifecycle events and waits for runtime readiness", async () => {
+    const native = bridge();
+    const events: string[] = [];
+    const result = await testAgentModelRuntime(
+      createAgentModelRuntime(native),
+      installedModel("event-model"),
+      { onEvent: (event) => events.push(event.type) }
+    );
+
+    expect(result.success).toBe(true);
+    expect(events).toEqual(
+      expect.arrayContaining(["MODEL_LOAD_STARTED", "MODEL_LOAD_PROGRESS", "MODEL_READY"])
+    );
+    expect(native.health).toHaveBeenCalledWith({ installationId: "event-model" });
+  });
+
+  it("emits MODEL_LOAD_FAILED and rejects readiness after bridge load failure", async () => {
+    const native = bridge();
+    native.load.mockRejectedValue(new Error("load failed"));
+    const events: string[] = [];
+    const result = await testAgentModelRuntime(
+      createAgentModelRuntime(native),
+      installedModel("failed-event-model"),
+      { onEvent: (event) => events.push(event.type) }
+    );
+
+    expect(result).toMatchObject({ success: false, errorCode: "MODEL_LOAD_FAILED" });
+    expect(events).toContain("MODEL_LOAD_FAILED");
+  });
+
   it("applies explicit fallback policies", () => {
     expect(fallbackAllowed("NEVER", "RUNTIME_UNAVAILABLE")).toBe(false);
     expect(fallbackAllowed("WHEN_LOCAL_UNAVAILABLE", "RUNTIME_UNAVAILABLE")).toBe(true);

@@ -79,6 +79,16 @@ describe("PWA installability", () => {
     expect(serviceWorker).toContain("caches.delete(cacheName)");
   });
 
+  it("never queues or caches interactive model activation requests", () => {
+    const serviceWorker = readFileSync("apps/web/public/sw.js", "utf8");
+
+    expect(serviceWorker).toContain("isInteractiveModelRequest(request, url)");
+    expect(serviceWorker).toContain('code: "interactive_model_offline"');
+    expect(serviceWorker).toContain('"Connect to the internet to activate this model."');
+    expect(serviceWorker).toContain('"cache-control": "no-store"');
+    expect(serviceWorker).not.toContain('addEventListener("sync"');
+  });
+
   it("uses the canonical kiondo icon throughout branded application surfaces", () => {
     const icon = readFileSync(`${publicDirectory}/icons/soko-icon.svg`, "utf8");
     const iconComponent = readFileSync("apps/web/src/AppIcon.tsx", "utf8");

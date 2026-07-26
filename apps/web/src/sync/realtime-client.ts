@@ -1,4 +1,5 @@
 import type { SyncRealtimeEvent } from "@soko/shared-types";
+import { recordRealtimeConnection } from "../performance";
 
 export interface AccountRealtimeOptions {
   accountId: string;
@@ -47,6 +48,7 @@ export function subscribeToAccountRealtime(options: AccountRealtimeOptions): () 
     }
 
     try {
+      recordRealtimeConnection("connecting");
       socket = options.createSocket?.(options.endpoint) ?? new WebSocket(options.endpoint);
     } catch (error) {
       options.onError?.(error);
@@ -59,14 +61,17 @@ export function subscribeToAccountRealtime(options: AccountRealtimeOptions): () 
         return;
       }
       if (event.type === "realtime.ready" || event.type === "sync.changes_available") {
+        if (event.type === "realtime.ready") recordRealtimeConnection("ready");
         triggerCatchUp();
       }
     });
     socket.addEventListener("error", () => {
+      recordRealtimeConnection("failed");
       options.onError?.(new Error("Realtime synchronization connection failed."));
       socket?.close(1011, "Realtime connection failed");
     });
     socket.addEventListener("close", () => {
+      recordRealtimeConnection("closed");
       socket = null;
       scheduleReconnect();
     });

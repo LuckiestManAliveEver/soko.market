@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assessDeviceModelCapability,
   canRunCatalogModel,
-  rankCatalogModelsForDevice
+  rankCatalogModelsForDevice,
+  validateLocalAiModel,
+  type LocalAiModel
 } from "../apps/web/src/ai-model-manager";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("Android AI model capability checks", () => {
   it("allows custom GGUF models only on high-capability devices with free storage", () => {
@@ -109,5 +113,57 @@ describe("Android AI model capability checks", () => {
         "verified GitHub release asset"
       ])
     );
+  });
+
+  it("marks a missing GGUF blob as repair-required metadata", async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value)
+    });
+    vi.stubGlobal("navigator", {
+      storage: {
+        getDirectory: async () => ({
+          getDirectoryHandle: async () => ({
+            getFileHandle: async () => {
+              throw new DOMException("missing", "NotFoundError");
+            }
+          })
+        })
+      }
+    });
+
+    const missing: LocalAiModel = {
+      id: "missing-installation",
+      modelId: "qwen2.5-0.5b-android",
+      label: "Qwen",
+      displayName: "Qwen",
+      provider: "huggingface",
+      repositoryId: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+      fileName: "qwen.gguf",
+      storageKey: "qwen.gguf",
+      format: "GGUF",
+      quantization: "Q4_K_M",
+      architecture: "qwen2",
+      parameterCount: 500_000_000,
+      contextLength: 2_048,
+      fileSizeBytes: 491_000_000,
+      checksum: null,
+      license: "Apache-2.0",
+      commercialUseAllowed: true,
+      runtimeBackend: "LLAMA_CPP_ANDROID",
+      installationStatus: "INSTALLED",
+      compatibilityStatus: "COMPATIBLE",
+      deviceId: "device-a",
+      storedAt: "2026-07-22T00:00:00.000Z",
+      installedAt: "2026-07-22T00:00:00.000Z",
+      lastVerifiedAt: null,
+      validationError: null
+    };
+
+    await expect(validateLocalAiModel(missing)).resolves.toMatchObject({
+      installationStatus: "FAILED",
+      validationError: "MODEL_FILE_MISSING"
+    });
   });
 });

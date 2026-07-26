@@ -373,7 +373,7 @@ test("downloaded models show green when active and red when inactive", async ({ 
   ).toBe("rgb(180, 35, 24)");
 });
 
-test("Use model binds the installation even when the GGUF runtime is unavailable", async ({
+test("Use model preserves the previous assignment when the GGUF runtime is unavailable", async ({
   page
 }) => {
   const readinessUpdates: string[] = [];
@@ -402,15 +402,15 @@ test("Use model binds the installation even when the GGUF runtime is unavailable
   await page.getByRole("button", { name: "Open model library" }).click();
   await page.getByRole("button", { name: "Not in use · Use model", exact: true }).click();
 
-  const modelPanel = page.locator(".agent-model-panel");
   await expect(
-    modelPanel.getByRole("heading", { name: bindableInstalledModel.label })
+    page.getByText(
+      /This browser does not provide the trusted GGUF runtime.*previous working model was left unchanged/u
+    )
   ).toBeVisible();
-  await expect(modelPanel.getByText(/is bound to .* but it is not running yet/u)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Not in use · Retry activation", exact: true })
   ).toBeVisible();
-  await expect.poll(() => readinessUpdates).toEqual(["LOADING", "FAILED"]);
+  await expect.poll(() => readinessUpdates).toEqual([]);
 });
 
 test("WCAG 2.2 A/AA automated accessibility scan", async ({ page }) => {

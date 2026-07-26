@@ -18,6 +18,7 @@ export interface DeviceAgentModelAssignment {
   fallbackPolicy: AgentModelFallbackPolicy;
   readinessStatus: "ATTACHED" | "LOADING" | "READY" | "FAILED";
   runtimeBackend: LocalAiModel["runtimeBackend"] | null;
+  runtimeSessionId: string | null;
   lastSuccessfulInferenceAt: string | null;
   lastErrorCode: string | null;
   updatedAt: string;
@@ -51,6 +52,7 @@ export function createPendingDeviceAssignment(input: {
   installation: LocalAiModel;
   preferredExecutionMode: PreferredExecutionMode;
   fallbackPolicy: AgentModelFallbackPolicy;
+  runtimeSessionId?: string | null;
 }): DeviceAgentModelAssignment {
   return {
     agentId: input.businessId,
@@ -63,6 +65,7 @@ export function createPendingDeviceAssignment(input: {
     fallbackPolicy: input.fallbackPolicy,
     readinessStatus: "LOADING",
     runtimeBackend: input.installation.runtimeBackend,
+    runtimeSessionId: input.runtimeSessionId ?? null,
     lastSuccessfulInferenceAt: null,
     lastErrorCode: null,
     updatedAt: new Date().toISOString()
@@ -100,6 +103,7 @@ export function assignmentFromServer(
     fallbackPolicy: assignment.fallbackPolicy,
     readinessStatus: legacyCloudPrimary ? "ATTACHED" : assignment.readinessStatus,
     runtimeBackend: legacyCloudPrimary ? null : assignment.runtimeBackend,
+    runtimeSessionId: null,
     lastSuccessfulInferenceAt: legacyCloudPrimary ? null : assignment.lastSuccessfulInferenceAt,
     lastErrorCode: legacyCloudPrimary
       ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
@@ -149,6 +153,9 @@ function isDeviceAgentModelAssignment(value: unknown): value is DeviceAgentModel
       assignment.readinessStatus === "LOADING" ||
       assignment.readinessStatus === "READY" ||
       assignment.readinessStatus === "FAILED") &&
+    (assignment.runtimeSessionId === undefined ||
+      assignment.runtimeSessionId === null ||
+      typeof assignment.runtimeSessionId === "string") &&
     typeof assignment.updatedAt === "string"
   );
 }

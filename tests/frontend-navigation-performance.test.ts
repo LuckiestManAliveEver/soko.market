@@ -64,6 +64,19 @@ describe("frontend navigation performance contracts", () => {
     expect(performanceSource).toContain('"longtask"');
   });
 
+  it("batches streamed model tokens to animation frames", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const start = application.indexOf("const updateStreamingMessage");
+    const end = application.indexOf("async function runRoutedRuntimeTurn", start);
+    const streamingBlock = application.slice(start, end);
+
+    expect(streamingBlock).toContain("window.requestAnimationFrame");
+    expect(streamingBlock).toContain("if (streamingFrame !== null) return");
+    expect(streamingBlock).not.toContain(
+      "browserTokenListener = (token) => {\n        setStatusMessage"
+    );
+  });
+
   it("invalidates related active-model reads after either model selection changes", async () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL) =>

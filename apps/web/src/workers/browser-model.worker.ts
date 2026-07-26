@@ -55,6 +55,16 @@ worker.addEventListener("message", (event: MessageEvent<unknown>) => {
       );
     }
     status = "error";
+    if (request.type === "LOAD_MODEL") {
+      const code = workerErrorCode(error);
+      post({
+        type: "MODEL_LOAD_FAILED",
+        requestId: request.requestId,
+        code,
+        message: safeWorkerErrorMessage(code)
+      });
+      return;
+    }
     post({
       type: "ERROR",
       requestId: request.requestId,
@@ -125,9 +135,10 @@ async function loadModel(requestId: string, model: BrowserModelDescriptor): Prom
     throw new Error("Model origin is not approved.");
   }
   if (activeModel?.id === model.id && generator !== null) {
-    post({ type: "MODEL_LOADED", requestId, modelId: model.id });
+    post({ type: "MODEL_READY", requestId, modelId: model.id });
     return;
   }
+  post({ type: "MODEL_LOAD_STARTED", requestId, modelId: model.id });
   await generator?.dispose();
   generator = null;
   status = "idle";
@@ -136,13 +147,13 @@ async function loadModel(requestId: string, model: BrowserModelDescriptor): Prom
     dtype: "q4",
     progress_callback: (progress: unknown) => {
       const parsed = parseProgress(progress);
-      if (parsed !== null) post({ type: "MODEL_PROGRESS", requestId, progress: parsed });
+      if (parsed !== null) post({ type: "MODEL_LOAD_PROGRESS", requestId, progress: parsed });
     }
   });
   generator = loaded;
   activeModel = model;
   status = "ready";
-  post({ type: "MODEL_LOADED", requestId, modelId: model.id });
+  post({ type: "MODEL_READY", requestId, modelId: model.id });
 }
 
 function countTokens(messages: ModelMessage[]): number {

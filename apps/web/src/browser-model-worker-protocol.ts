@@ -19,8 +19,15 @@ export type BrowserModelWorkerRequest =
 
 export type BrowserModelWorkerResponse =
   | { type: "READY"; requestId: string; capabilities: BrowserEngineCapabilities }
-  | { type: "MODEL_PROGRESS"; requestId: string; progress: BrowserModelProgress }
-  | { type: "MODEL_LOADED"; requestId: string; modelId: string }
+  | { type: "MODEL_LOAD_STARTED"; requestId: string; modelId: string }
+  | { type: "MODEL_LOAD_PROGRESS"; requestId: string; progress: BrowserModelProgress }
+  | { type: "MODEL_READY"; requestId: string; modelId: string }
+  | {
+      type: "MODEL_LOAD_FAILED";
+      requestId: string;
+      code: BrowserInferenceErrorCode;
+      message: string;
+    }
   | { type: "TOKEN_COUNT"; requestId: string; tokenCount: number }
   | { type: "TOKEN"; requestId: string; token: string; tokenCount: number }
   | { type: "GENERATION_COMPLETE"; requestId: string; result: BrowserGenerationResult }
@@ -59,8 +66,10 @@ export function isBrowserModelWorkerResponse(value: unknown): value is BrowserMo
   if (typeof message.requestId !== "string") return false;
   return [
     "READY",
-    "MODEL_PROGRESS",
-    "MODEL_LOADED",
+    "MODEL_LOAD_STARTED",
+    "MODEL_LOAD_PROGRESS",
+    "MODEL_READY",
+    "MODEL_LOAD_FAILED",
     "TOKEN_COUNT",
     "TOKEN",
     "GENERATION_COMPLETE",
