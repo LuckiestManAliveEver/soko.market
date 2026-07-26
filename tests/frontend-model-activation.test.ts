@@ -90,6 +90,18 @@ describe("frontend model activation contracts", () => {
     expect(styles).toContain(".model-use-button.in-use");
     expect(styles).toContain(".model-use-button {");
   });
+
+  it("loads canonical agent binding state and uses server test and activation APIs", () => {
+    expect(application).toContain("/api/agents/${encodeURIComponent(");
+    expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
+    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");
+    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
+    expect(application).toContain("setActiveAgentModelBinding(result.binding)");
+    expect(application).toContain('executionTarget: "backend"');
+    expect(application).toContain("Active for ${agent.name}");
+    expect(application).toContain("Browser-local inference is unavailable in this deployment");
+    expect(application).toContain("<summary>Advanced routing</summary>");
+  });
 });
 
 function sourceBetween(startMarker: string, endMarker: string): string {

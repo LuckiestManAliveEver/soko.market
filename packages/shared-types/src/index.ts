@@ -11,6 +11,11 @@ export interface EnvironmentConfig {
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
+  backendInferenceEnabled: boolean;
+  backendInferenceBaseUrl: string;
+  backendInferenceTimeoutMs: number;
+  backendInferenceModelId: string;
+  backendInferenceProviderModel: string;
   inferenceClientFirst: boolean;
   inferenceOwnerNodeEnabled: boolean;
   inferenceCloudFallbackEnabled: boolean;
@@ -523,6 +528,58 @@ export type AgentModelFallbackPolicy =
 
 export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAILED";
 
+export type AgentModelBindingStatus =
+  "inactive" | "verifying" | "active" | "failed" | "unavailable";
+
+export type ModelExecutionTarget =
+  "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+
+export interface AgentModelBindingPermissions {
+  allowInstalledApp: boolean;
+  allowRemoteShopDevice: boolean;
+  allowOpenAIFallback: boolean;
+}
+
+export interface AgentModelBindingSummary {
+  id: string;
+  agentId: string;
+  shopId: string;
+  accountId: string;
+  modelId: string;
+  status: AgentModelBindingStatus;
+  executionMode: PreferredExecutionMode;
+  fallbackPolicy: AgentModelFallbackPolicy;
+  executionTarget: ModelExecutionTarget;
+  permissions: AgentModelBindingPermissions;
+  fallbackModelId: string | null;
+  activatedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationStatus: "passed" | "failed" | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface ModelRuntimeHealthSummary {
+  ok: boolean;
+  modelId: string;
+  provider: string;
+  executionTarget: ModelExecutionTarget;
+  latencyMs: number;
+  responsePreview: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  retryable: boolean;
+  checkedAt: string;
+}
+
+export interface AgentModelActivationResult {
+  binding: AgentModelBindingSummary;
+  healthCheck: ModelRuntimeHealthSummary;
+}
+
 export interface InstalledAgentModelSummary {
   id: string;
   accountId: string;
@@ -540,6 +597,9 @@ export interface InstalledAgentModelSummary {
   contextLength: number | null;
   fileSizeBytes: number;
   checksum: string | null;
+  packageManifestVersion?: string | null;
+  packageSignature?: string | null;
+  packageSigningKeyId?: string | null;
   license: string;
   commercialUseAllowed: boolean;
   storageKey: string;
@@ -2217,8 +2277,10 @@ export type RuntimeTelemetryState =
   | "turn.received"
   | "context.built"
   | "model.prompt_built"
+  | "model.inference_started"
   | "model.completed"
   | "model.fallback"
+  | "model.fallback_completed"
   | "intent.routed"
   | "plan.created"
   | "verification.completed"
@@ -2311,6 +2373,10 @@ export interface RuntimeModelTrace {
   fallbackUsed: boolean;
   outputKind: "tool" | "clarification" | "response" | null;
   errorCode: string | null;
+  bindingId?: string;
+  modelId?: string;
+  executionTarget?: ModelExecutionTarget;
+  fallbackReason?: string | null;
 }
 
 export interface RuntimePlannedAction {

@@ -155,6 +155,45 @@ describe("agent model assignments", () => {
     ).toThrowError(expect.objectContaining({ code: "membership_required" }));
   });
 
+  it("normalizes signed package metadata and rejects incomplete or malformed integrity data", () => {
+    const { store, auth } = seedOwner("+254700700012");
+    const signed = store.registerInstalledAgentModel({
+      sessionId: auth.session.id,
+      model: model("signed-model", {
+        checksum: `sha256:${"A".repeat(64)}`,
+        packageManifestVersion: "1.0",
+        packageSignature: "base64-ed25519-signature",
+        packageSigningKeyId: "soko-model-key-1"
+      })
+    });
+    expect(signed).toMatchObject({
+      checksum: "a".repeat(64),
+      packageManifestVersion: "1.0",
+      packageSigningKeyId: "soko-model-key-1"
+    });
+
+    for (const [overrides, code] of [
+      [{ checksum: "not-a-sha256" }, "model_checksum_invalid"],
+      [{ checksum: "a".repeat(64), packageManifestVersion: "1.0" }, "model_package_incomplete"],
+      [
+        {
+          checksum: "a".repeat(64),
+          packageManifestVersion: "2.0",
+          packageSignature: "signature",
+          packageSigningKeyId: "key"
+        },
+        "model_package_version_unsupported"
+      ]
+    ] as const) {
+      expect(() =>
+        store.registerInstalledAgentModel({
+          sessionId: auth.session.id,
+          model: model(`invalid-${code}`, overrides)
+        })
+      ).toThrowError(expect.objectContaining({ code }));
+    }
+  });
+
   it("does not activate an attached model before a successful inference", () => {
     const { store, auth, businessId } = seedOwner("+254700700020");
     store.registerInstalledAgentModel({

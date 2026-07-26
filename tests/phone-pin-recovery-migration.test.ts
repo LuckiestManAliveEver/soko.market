@@ -13,6 +13,8 @@ describe("phone PIN recovery migration", () => {
     expect(sql).not.toContain("recovery_code text");
     expect(schema).toContain('recoveryCodeHash: text("recovery_code_hash")');
     expect(postgresStore).toContain("recovery_code_hash");
-    expect(postgresStore).toContain('requiredMigrationFilename = "039_agent_business_runtime.sql"');
+    expect(postgresStore).toContain(
+      'requiredMigrationFilename = "040_agent_model_runtime_bindings.sql"'
+    );
   });
 });

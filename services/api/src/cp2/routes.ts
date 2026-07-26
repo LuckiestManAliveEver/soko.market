@@ -23,11 +23,13 @@ import type {
   FulfillmentMethod,
   FulfillmentStatus,
   AgentModelFallbackPolicy,
+  AgentModelBindingPermissions,
   AgentModelReadinessStatus,
   AgentModelRuntimeBackend,
   InstalledAgentModelSummary,
   ModelCompatibilityStatus,
   ModelInstallationStatus,
+  ModelExecutionTarget,
   PreferredExecutionMode,
   LaunchAccessStatus,
   LaunchChecklistKey,
@@ -203,6 +205,9 @@ interface InstalledModelBody {
   contextLength?: unknown;
   fileSizeBytes?: unknown;
   checksum?: unknown;
+  packageManifestVersion?: unknown;
+  packageSignature?: unknown;
+  packageSigningKeyId?: unknown;
   license?: unknown;
   commercialUseAllowed?: unknown;
   storageKey?: unknown;
@@ -233,6 +238,31 @@ interface AgentModelAssignmentBody {
   readinessStatus?: unknown;
   lastSuccessfulInferenceAt?: unknown;
   lastErrorCode?: unknown;
+}
+
+interface AgentModelOperationParams {
+  agentId: string;
+  modelId: string;
+}
+
+interface AgentModelBindingParams {
+  agentId: string;
+}
+
+interface AgentModelBindingQuery {
+  shopId?: string;
+}
+
+interface AgentModelTestBody {
+  shopId?: unknown;
+  executionTarget?: unknown;
+}
+
+interface AgentModelActivationBody extends AgentModelTestBody {
+  executionMode?: unknown;
+  fallbackPolicy?: unknown;
+  permissions?: unknown;
+  fallbackModelId?: unknown;
 }
 
 interface PinBody {
@@ -2328,6 +2358,155 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.get(
+    "/api/agents/:agentId/model-binding",
+    async (
+      request: FastifyRequest<{
+        Params: AgentModelBindingParams;
+        Querystring: AgentModelBindingQuery;
+      }>,
+      reply
+    ) => {
+      try {
+        return {
+          binding: store.getActiveAgentModelBinding({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: parseString(request.query.shopId, "shopId"),
+            agentId: parseString(request.params.agentId, "agentId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/agents/:agentId/models/:modelId/test",
+    async (
+      request: FastifyRequest<{
+        Params: AgentModelOperationParams;
+        Body: AgentModelTestBody;
+      }>,
+      reply
+    ) => {
+      const requestId = request.id;
+      const shopId = parseString(request.body.shopId, "shopId");
+      const agentId = parseString(request.params.agentId, "agentId");
+      const modelId = parseString(request.params.modelId, "modelId");
+      const executionTarget = parseModelExecutionTarget(request.body.executionTarget);
+      request.log.info(
+        { event: "model.test_started", requestId, shopId, agentId, modelId, executionTarget },
+        "Model test started."
+      );
+      try {
+        const healthCheck = await store.testAgentModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: shopId,
+          agentId,
+          modelId,
+          executionTarget
+        });
+        request.log.info(
+          {
+            event: "model.test_succeeded",
+            requestId,
+            shopId,
+            agentId,
+            modelId: healthCheck.modelId,
+            executionTarget: healthCheck.executionTarget,
+            latencyMs: healthCheck.latencyMs
+          },
+          "Model test succeeded."
+        );
+        return { healthCheck };
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "model.test_failed",
+            requestId,
+            shopId,
+            agentId,
+            modelId,
+            executionTarget,
+            errorCode: error instanceof Cp2Error ? error.code : "MODEL_TEST_FAILED"
+          },
+          "Model test failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/api/agents/:agentId/models/:modelId/activate",
+    async (
+      request: FastifyRequest<{
+        Params: AgentModelOperationParams;
+        Body: AgentModelActivationBody;
+      }>,
+      reply
+    ) => {
+      const requestId = request.id;
+      const shopId = parseString(request.body.shopId, "shopId");
+      const agentId = parseString(request.params.agentId, "agentId");
+      const modelId = parseString(request.params.modelId, "modelId");
+      const executionTarget = parseModelExecutionTarget(request.body.executionTarget);
+      request.log.info(
+        {
+          event: "model.activation_started",
+          requestId,
+          shopId,
+          agentId,
+          modelId,
+          executionTarget
+        },
+        "Model activation started."
+      );
+      try {
+        const result = await store.activateAgentModel({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: shopId,
+          agentId,
+          modelId,
+          executionTarget,
+          executionMode: parsePreferredExecutionMode(request.body.executionMode),
+          fallbackPolicy: parseAgentModelFallbackPolicy(request.body.fallbackPolicy),
+          permissions: parseAgentModelBindingPermissions(request.body.permissions),
+          fallbackModelId: parseNullableString(request.body.fallbackModelId)
+        });
+        request.log.info(
+          {
+            event: "model.activation_succeeded",
+            requestId,
+            shopId,
+            agentId,
+            modelId: result.binding.modelId,
+            bindingId: result.binding.id,
+            executionTarget: result.binding.executionTarget,
+            latencyMs: result.healthCheck.latencyMs
+          },
+          "Model activation succeeded."
+        );
+        return result;
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "model.activation_failed",
+            requestId,
+            shopId,
+            agentId,
+            modelId,
+            executionTarget,
+            errorCode: error instanceof Cp2Error ? error.code : "MODEL_ACTIVATION_FAILED"
+          },
+          "Model activation failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
     "/businesses/:businessId/agent-profile",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
       try {
@@ -2690,26 +2869,92 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         }
         const agent = parseRequestBody(request.body.agent);
         const runtime = parseRuntimeTurnBody(agent);
-        const processed = await store.createAgentConversationMessage({
-          ...messageInput,
-          businessId: parseString(agent.businessId, "agent.businessId"),
-          message: runtime.message,
-          ...(runtime.runtimeSessionId === undefined
-            ? {}
-            : { runtimeSessionId: runtime.runtimeSessionId })
-        });
+        const businessId = parseString(agent.businessId, "agent.businessId");
+        let processed;
+        try {
+          processed = await store.createAgentConversationMessage({
+            ...messageInput,
+            businessId,
+            message: runtime.message,
+            ...(runtime.runtimeSessionId === undefined
+              ? {}
+              : { runtimeSessionId: runtime.runtimeSessionId })
+          });
+        } catch (error) {
+          request.log.warn(
+            {
+              event: "model.inference_failed",
+              requestId: request.id,
+              shopId: businessId,
+              errorCode: error instanceof Cp2Error ? error.code : "INFERENCE_FAILED"
+            },
+            "Agent inference failed."
+          );
+          throw error;
+        }
         const modelPromptEvent = processed.runtime?.turn.telemetry.find(
           (event) => event.state === "model.prompt_built"
         );
+        const modelTrace = processed.runtime?.turn.model;
+        if (modelTrace?.bindingId !== undefined) {
+          request.log.info(
+            {
+              event: "model.active_binding_resolved",
+              requestId: request.id,
+              shopId: businessId,
+              bindingId: modelTrace.bindingId,
+              modelId: modelTrace.modelId ?? null,
+              executionTarget: modelTrace.executionTarget ?? null
+            },
+            "Active agent model binding resolved."
+          );
+          request.log.info(
+            {
+              event: "model.route_selected",
+              requestId: request.id,
+              shopId: businessId,
+              bindingId: modelTrace.bindingId,
+              modelId: modelTrace.modelId ?? null,
+              executionTarget: modelTrace.executionTarget ?? null,
+              fallbackReason: modelTrace.fallbackReason ?? null
+            },
+            "Agent model route selected."
+          );
+          request.log.info(
+            {
+              event:
+                modelTrace.status === "available"
+                  ? "model.inference_completed"
+                  : "model.inference_failed",
+              requestId: request.id,
+              shopId: businessId,
+              bindingId: modelTrace.bindingId,
+              modelId: modelTrace.modelId ?? null,
+              executionTarget: modelTrace.executionTarget ?? null,
+              latencyMs: modelTrace.durationMs,
+              errorCode: modelTrace.errorCode
+            },
+            modelTrace.status === "available"
+              ? "Agent inference completed."
+              : "Agent inference failed."
+          );
+        }
         request.log.info(
           {
             correlationId: processed.processing.correlationId,
-            tenantId: parseString(agent.businessId, "agent.businessId"),
+            tenantId: businessId,
             conversationId: processed.message.conversationId,
             messageId: processed.message.id,
             agentId: processed.agentMessage?.authorId ?? null,
-            modelId: modelPromptEvent?.metadata.modelProfile ?? null,
+            bindingId: processed.runtime?.turn.model?.bindingId ?? null,
+            modelId:
+              processed.runtime?.turn.model?.modelId ??
+              modelPromptEvent?.metadata.modelProfile ??
+              null,
             provider: processed.runtime?.turn.model?.provider ?? null,
+            executionTarget: processed.runtime?.turn.model?.executionTarget ?? null,
+            fallbackUsed: processed.runtime?.turn.model?.fallbackUsed ?? false,
+            fallbackReason: processed.runtime?.turn.model?.fallbackReason ?? null,
             processingStage:
               processed.processing.status === "completed"
                 ? "assistant_persisted"
@@ -6563,6 +6808,9 @@ function parseInstalledModelBody(
     contextLength: parseNullablePositiveInteger(body.contextLength, "contextLength"),
     fileSizeBytes: parsePositiveInteger(body.fileSizeBytes, "fileSizeBytes"),
     checksum: parseNullableString(body.checksum),
+    packageManifestVersion: parseNullableString(body.packageManifestVersion),
+    packageSignature: parseNullableString(body.packageSignature),
+    packageSigningKeyId: parseNullableString(body.packageSigningKeyId),
     license: parseString(body.license, "license"),
     commercialUseAllowed: parseBoolean(body.commercialUseAllowed, "commercialUseAllowed"),
     storageKey: parseString(body.storageKey, "storageKey"),
@@ -6642,6 +6890,34 @@ function parseAgentModelFallbackPolicy(value: unknown): AgentModelFallbackPolicy
     return value;
   }
   throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
+}
+
+function parseModelExecutionTarget(value: unknown): ModelExecutionTarget {
+  if (
+    value === "backend" ||
+    value === "browser-local" ||
+    value === "installed-app" ||
+    value === "remote-shop-device" ||
+    value === "openai"
+  ) {
+    return value;
+  }
+  throw new Cp2Error(400, "execution_target_invalid", "Execution target is invalid.");
+}
+
+function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPermissions {
+  const permissions = parseRequestBody(value);
+  return {
+    allowInstalledApp: parseBoolean(permissions.allowInstalledApp, "permissions.allowInstalledApp"),
+    allowRemoteShopDevice: parseBoolean(
+      permissions.allowRemoteShopDevice,
+      "permissions.allowRemoteShopDevice"
+    ),
+    allowOpenAIFallback: parseBoolean(
+      permissions.allowOpenAIFallback,
+      "permissions.allowOpenAIFallback"
+    )
+  };
 }
 
 function parseAgentModelReadinessStatus(value: unknown): AgentModelReadinessStatus {
@@ -6806,7 +7082,9 @@ function sendCp2Error(reply: FastifyReply, error: unknown) {
   if (error instanceof Cp2Error) {
     return reply.code(error.statusCode).send({
       code: error.code,
-      message: error.message
+      message: error.message,
+      ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
+      ...(error.details === undefined ? {} : { details: error.details })
     });
   }
 

@@ -35,6 +35,9 @@ import type {
   AgentRuntimeReadiness,
   AgentRuntimeVersion,
   AgentSkillBinding,
+  AgentModelActivationResult,
+  AgentModelBindingPermissions,
+  AgentModelBindingSummary,
   AgentModelAssignmentSummary,
   AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
@@ -106,6 +109,8 @@ import type {
   McpAccessTokenSummary,
   McpPrincipal,
   MembershipSummary,
+  ModelExecutionTarget,
+  ModelRuntimeHealthSummary,
   NetworkConsentStatus,
   NetworkEdgeSourceType,
   NetworkEdgeSummary,
@@ -180,6 +185,11 @@ import type {
   SyncPullPage,
   UserSummary
 } from "@soko/shared-types";
+import {
+  asModelRuntimeError,
+  runtimeProviderFromAdapter,
+  type ModelRuntimeAdapter
+} from "../inference/model-runtime.js";
 import {
   assembleAgentInferenceMessage,
   defaultAgentEvaluationPolicy,
@@ -406,7 +416,9 @@ export class Cp2Error extends Error {
   constructor(
     readonly statusCode: number,
     readonly code: string,
-    message: string
+    message: string,
+    readonly retryable?: boolean,
+    readonly details?: Record<string, string | number | boolean | null>
   ) {
     super(message);
   }
@@ -690,6 +702,7 @@ export interface Cp2Snapshot {
   agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
   agentModelAssignments?: AgentModelAssignmentSummary[];
+  agentModelBindings?: AgentModelBindingSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -761,6 +774,12 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
+  modelRuntimeAdapterResolver?: (input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    agentId: string;
+    shopId: string;
+  }) => ModelRuntimeAdapter | undefined;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
   networkInviteSender?: NetworkInviteSender;
@@ -922,6 +941,8 @@ export class Cp2Store {
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
+  private readonly agentModelBindings = new Map<string, AgentModelBindingSummary>();
+  private readonly agentModelActivationLocks = new Set<string>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
   private readonly messageByIdempotencyKey = new Map<string, string>();
@@ -2909,6 +2930,241 @@ export class Cp2Store {
     this.agentProfiles.set(input.businessId, revised);
     this.recordAgentRuntimeVersion(revised, session.user.id, "Cloud fallback model changed");
     return selection;
+  }
+
+  getActiveAgentModelBinding(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    now?: Date;
+  }): AgentModelBindingSummary | null {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    const binding =
+      this.activeAgentModelBinding(input.agentId) ??
+      [...this.agentModelBindings.values()]
+        .filter((candidate) => candidate.agentId === input.agentId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ??
+      null;
+    return binding === null ? null : cloneAgentModelBinding(binding);
+  }
+
+  async testAgentModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    now?: Date;
+  }): Promise<ModelRuntimeHealthSummary> {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage", now);
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    this.requireCanonicalAiModel(input.modelId);
+    const adapter = this.requireModelRuntimeAdapter(input);
+    const health = await adapter.healthCheck({
+      agentId: input.agentId,
+      shopId: input.businessId,
+      modelId: input.modelId
+    });
+    const summary = healthSummary(health, now);
+    if (!summary.ok) {
+      throw modelHealthError(summary);
+    }
+    return summary;
+  }
+
+  async activateAgentModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    executionMode: PreferredExecutionMode;
+    fallbackPolicy: AgentModelFallbackPolicy;
+    permissions: AgentModelBindingPermissions;
+    fallbackModelId: string | null;
+    now?: Date;
+  }): Promise<AgentModelActivationResult> {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    const model = this.requireCanonicalAiModel(input.modelId);
+    validateAgentModelBindingConfiguration(input, model, aiModelRegistry);
+    if (this.agentModelActivationLocks.has(input.agentId)) {
+      throw new Cp2Error(
+        409,
+        "MODEL_ACTIVATION_CONFLICT",
+        "Another model activation is already running for this agent.",
+        true,
+        { agentId: input.agentId }
+      );
+    }
+
+    this.agentModelActivationLocks.add(input.agentId);
+    const createdAt = now.toISOString();
+    const pending: AgentModelBindingSummary = {
+      id: randomUUID(),
+      agentId: input.agentId,
+      shopId: input.businessId,
+      accountId: session.account.id,
+      modelId: input.modelId,
+      status: "verifying",
+      executionMode: normalizeExecutionMode(input.executionMode),
+      fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
+      executionTarget: input.executionTarget,
+      permissions: { ...input.permissions },
+      fallbackModelId: input.fallbackModelId,
+      activatedAt: null,
+      lastVerifiedAt: null,
+      lastVerificationStatus: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+      updatedBy: session.user.id
+    };
+    this.agentModelBindings.set(pending.id, pending);
+
+    try {
+      const adapter = this.requireModelRuntimeAdapter(input);
+      const health = healthSummary(
+        await adapter.healthCheck({
+          agentId: input.agentId,
+          shopId: input.businessId,
+          modelId: input.modelId
+        }),
+        now
+      );
+      if (!health.ok) {
+        const failed: AgentModelBindingSummary = {
+          ...pending,
+          status: health.errorCode === "RUNTIME_UNAVAILABLE" ? "unavailable" : "failed",
+          lastVerifiedAt: health.checkedAt,
+          lastVerificationStatus: "failed",
+          lastErrorCode: health.errorCode,
+          lastErrorMessage: health.errorMessage,
+          updatedAt: health.checkedAt
+        };
+        this.agentModelBindings.set(failed.id, failed);
+        this.recordAgentModelBindingAudit(
+          "agent_model.activation_failed",
+          failed,
+          session.user.id,
+          {
+            errorCode: health.errorCode,
+            latencyMs: health.latencyMs
+          }
+        );
+        throw modelHealthError(health);
+      }
+
+      const activatedAt = health.checkedAt;
+      for (const [bindingId, binding] of this.agentModelBindings) {
+        if (
+          binding.agentId === input.agentId &&
+          binding.status === "active" &&
+          binding.id !== pending.id
+        ) {
+          this.agentModelBindings.set(bindingId, {
+            ...binding,
+            status: "inactive",
+            updatedAt: activatedAt,
+            updatedBy: session.user.id
+          });
+        }
+      }
+      const active: AgentModelBindingSummary = {
+        ...pending,
+        status: "active",
+        activatedAt,
+        lastVerifiedAt: activatedAt,
+        lastVerificationStatus: "passed",
+        updatedAt: activatedAt
+      };
+      this.agentModelBindings.set(active.id, active);
+
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        modelId: input.modelId,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: activatedAt,
+        updatedBy: session.user.id
+      };
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Verified agent model activated");
+      this.recordAgentModelBindingAudit(
+        "agent_model.activation_succeeded",
+        active,
+        session.user.id,
+        { latencyMs: health.latencyMs }
+      );
+      return { binding: cloneAgentModelBinding(active), healthCheck: health };
+    } catch (error) {
+      if (error instanceof Cp2Error) {
+        const current = this.agentModelBindings.get(pending.id);
+        if (current?.status === "verifying") {
+          const failedAt = new Date().toISOString();
+          const failed: AgentModelBindingSummary = {
+            ...current,
+            status:
+              error.code === "RUNTIME_UNAVAILABLE" ||
+              error.code === "BRIDGE_UNAVAILABLE" ||
+              error.code === "BROWSER_RUNTIME_DISABLED"
+                ? "unavailable"
+                : "failed",
+            lastVerifiedAt: failedAt,
+            lastVerificationStatus: "failed",
+            lastErrorCode: error.code,
+            lastErrorMessage: error.message,
+            updatedAt: failedAt
+          };
+          this.agentModelBindings.set(failed.id, failed);
+          this.recordAgentModelBindingAudit(
+            "agent_model.activation_failed",
+            failed,
+            session.user.id,
+            { errorCode: error.code }
+          );
+        }
+        throw error;
+      }
+      const runtimeError = asModelRuntimeError(error);
+      const failedAt = new Date().toISOString();
+      const failed: AgentModelBindingSummary = {
+        ...pending,
+        status: "failed",
+        lastVerifiedAt: failedAt,
+        lastVerificationStatus: "failed",
+        lastErrorCode: runtimeError.code,
+        lastErrorMessage: runtimeError.message,
+        updatedAt: failedAt
+      };
+      this.agentModelBindings.set(failed.id, failed);
+      this.recordAgentModelBindingAudit("agent_model.activation_failed", failed, session.user.id, {
+        errorCode: runtimeError.code
+      });
+      throw new Cp2Error(
+        runtimeError.code === "INFERENCE_TIMEOUT" ? 504 : 503,
+        runtimeError.code,
+        runtimeError.message,
+        runtimeError.retryable,
+        {
+          agentId: input.agentId,
+          modelId: input.modelId,
+          executionTarget: input.executionTarget
+        }
+      );
+    } finally {
+      this.agentModelActivationLocks.delete(input.agentId);
+    }
   }
 
   listInstalledAgentModels(input: {
@@ -9164,16 +9420,27 @@ export class Cp2Store {
         readiness.issues.map((issue) => issue.message).join(" ")
       );
     }
+    const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
+    const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    if (this.options.modelRuntimeAdapterResolver !== undefined && activeBinding === null) {
+      throw new Cp2Error(
+        409,
+        "AGENT_MODEL_NOT_CONFIGURED",
+        "This agent does not have a working model yet. Open Agent model settings and activate one.",
+        false,
+        { agentId: storedAgentProfile.agentId, shopId: input.businessId }
+      );
+    }
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
     );
-    const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
     const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
-      this.options.runtimeModelProviderResolver === undefined ||
+      activeBinding?.modelId ??
+      (this.options.runtimeModelProviderResolver === undefined ||
       requestedModelId === selectedCloudFallbackModelId
         ? selectedCloudFallbackModelId
-        : "sokoclaw-local";
+        : "sokoclaw-local");
     const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
     const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "owner", activeModelId);
     const runtimeSession =
@@ -9337,6 +9604,24 @@ export class Cp2Store {
             proposal: null,
             trace: null
           };
+    if (
+      activeBinding !== null &&
+      modelRoute.trace !== null &&
+      modelRoute.trace.status !== "available"
+    ) {
+      throw new Cp2Error(
+        modelRoute.trace.status === "timeout" ? 504 : 503,
+        "AGENT_MODEL_UNAVAILABLE",
+        "The active agent model could not complete this message.",
+        true,
+        {
+          bindingId: activeBinding.id,
+          modelId: activeBinding.modelId,
+          executionTarget: activeBinding.executionTarget,
+          runtimeErrorCode: modelRoute.trace.errorCode
+        }
+      );
+    }
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
@@ -9839,6 +10124,7 @@ export class Cp2Store {
       agentModelAssignments: [...this.agentModelAssignments.values()].map((assignment) => ({
         ...assignment
       })),
+      agentModelBindings: [...this.agentModelBindings.values()].map(cloneAgentModelBinding),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       productFieldSchemas: [...this.productFieldSchemas.values()],
@@ -9931,6 +10217,8 @@ export class Cp2Store {
     this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
     this.agentModelAssignments.clear();
+    this.agentModelBindings.clear();
+    this.agentModelActivationLocks.clear();
     this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
     this.messageByIdempotencyKey.clear();
@@ -10141,6 +10429,10 @@ export class Cp2Store {
         agentModelAssignmentKey(assignment.businessId, assignment.deviceId),
         { ...assignment }
       );
+    }
+
+    for (const binding of snapshot.agentModelBindings ?? []) {
+      this.agentModelBindings.set(binding.id, cloneAgentModelBinding(binding));
     }
 
     for (const request of snapshot.accountDeletionRequests ?? []) {
@@ -14445,6 +14737,104 @@ export class Cp2Store {
     return item;
   }
 
+  private requireBusinessAgent(
+    businessId: string,
+    agentId: string,
+    now: Date
+  ): BusinessAgentProfileSummary {
+    const profile = this.currentAgentProfile(businessId, now);
+    if (profile.agentId !== agentId || profile.businessId !== businessId) {
+      throw new Cp2Error(404, "AGENT_NOT_FOUND", "The requested business agent was not found.");
+    }
+    return profile;
+  }
+
+  private requireCanonicalAiModel(modelId: string): AiModelSummary {
+    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+    if (model === undefined) {
+      throw new Cp2Error(404, "MODEL_NOT_FOUND", "The requested model was not found.");
+    }
+    return model;
+  }
+
+  private requireModelRuntimeAdapter(input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    agentId: string;
+    businessId: string;
+  }): ModelRuntimeAdapter {
+    if (input.executionTarget === "browser-local") {
+      throw new Cp2Error(
+        409,
+        "BROWSER_RUNTIME_DISABLED",
+        "Browser-local activation must be verified on a deployment where browser inference is enabled.",
+        false,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    if (input.executionTarget === "installed-app") {
+      throw new Cp2Error(
+        503,
+        "BRIDGE_UNAVAILABLE",
+        "A trusted installed Soko app bridge is required for this model.",
+        true,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    const adapter = this.options.modelRuntimeAdapterResolver?.({
+      modelId: input.modelId,
+      executionTarget: input.executionTarget,
+      agentId: input.agentId,
+      shopId: input.businessId
+    });
+    if (adapter === undefined) {
+      throw new Cp2Error(
+        503,
+        "RUNTIME_UNAVAILABLE",
+        "The selected model runtime is not configured or currently available.",
+        true,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    return adapter;
+  }
+
+  private activeAgentModelBinding(agentId: string): AgentModelBindingSummary | null {
+    return (
+      [...this.agentModelBindings.values()]
+        .filter(
+          (binding) =>
+            binding.agentId === agentId &&
+            binding.status === "active" &&
+            binding.lastVerificationStatus === "passed"
+        )
+        .sort((left, right) => right.activatedAt!.localeCompare(left.activatedAt!))[0] ?? null
+    );
+  }
+
+  private recordAgentModelBindingAudit(
+    type: string,
+    binding: AgentModelBindingSummary,
+    actorId: string,
+    extra: Record<string, string | number | boolean | null>
+  ): void {
+    this.recordAuditEvent({
+      type,
+      aggregateType: "agent_model_binding",
+      aggregateId: binding.id,
+      actorId,
+      occurredAt: binding.updatedAt,
+      payload: {
+        shopId: binding.shopId,
+        agentId: binding.agentId,
+        modelId: binding.modelId,
+        executionTarget: binding.executionTarget,
+        status: binding.status,
+        ...extra
+      }
+    });
+  }
+
   private currentAgentProfile(businessId: string, now: Date): BusinessAgentProfileSummary {
     const stored = this.agentProfiles.get(businessId);
     if (stored !== undefined) return hydrateBusinessAgentProfile(stored);
@@ -14469,6 +14859,7 @@ export class Cp2Store {
           candidate.businessId === profile.businessId && candidate.readinessStatus === "READY"
       )
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    const activeBinding = this.activeAgentModelBinding(profile.agentId);
     const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
     const sources = this.contextSourcesForRuntime(profile).filter((source) =>
       source.accessRules.audiences.includes(audience)
@@ -14499,13 +14890,16 @@ export class Cp2Store {
       memory: { ...profile.memoryPolicy },
       evaluations: { ...profile.evaluationPolicy },
       model: {
-        modelId,
+        modelId: activeBinding?.modelId ?? modelId,
         provider:
+          activeBinding?.executionTarget ??
           assignment?.runtimeBackend ??
           model?.provider ??
           (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
-        executionMode: assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy: assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        executionMode:
+          activeBinding?.executionMode ?? assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy:
+          activeBinding?.fallbackPolicy ?? assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
         deviceAssignmentId: assignment?.activeModelInstallationId ?? null
       },
       version: profile.runtimeVersion,
@@ -14792,12 +15186,44 @@ export class Cp2Store {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
+    const binding = this.activeAgentModelBinding(input.shopRuntime.agentId);
+    const adapter =
+      binding === null || this.options.modelRuntimeAdapterResolver === undefined
+        ? undefined
+        : this.requireModelRuntimeAdapter({
+            modelId: binding.modelId,
+            executionTarget: binding.executionTarget,
+            agentId: binding.agentId,
+            businessId: binding.shopId
+          });
     const provider =
-      this.options.runtimeModelProviderResolver === undefined
-        ? this.options.runtimeModelProvider
-        : this.options.runtimeModelProviderResolver(input.modelId);
+      adapter !== undefined && binding !== null
+        ? runtimeProviderFromAdapter({
+            adapter,
+            context: {
+              modelId: binding.modelId,
+              agentId: binding.agentId,
+              shopId: binding.shopId
+            }
+          })
+        : this.options.runtimeModelProviderResolver === undefined
+          ? this.options.runtimeModelProvider
+          : this.options.runtimeModelProviderResolver(input.modelId);
 
     if (provider === undefined) {
+      if (binding !== null) {
+        throw new Cp2Error(
+          503,
+          "AGENT_MODEL_UNAVAILABLE",
+          "The active agent model runtime is unavailable.",
+          true,
+          {
+            bindingId: binding.id,
+            modelId: binding.modelId,
+            executionTarget: binding.executionTarget
+          }
+        );
+      }
       return {
         proposal: null,
         trace: {
@@ -14839,6 +15265,8 @@ export class Cp2Store {
     );
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
+      bindingId: binding?.id ?? null,
+      executionTarget: binding?.executionTarget ?? null,
       allowedToolCount: prompt.allowedTools.length,
       modelProfile: input.modelId,
       messageLength: input.message.trim().length,
@@ -14849,8 +15277,18 @@ export class Cp2Store {
     });
 
     let completion: RuntimeModelCompletionResult;
+    let fallbackUsed = false;
+    let fallbackReason: string | null = null;
+    let resolvedModelId = binding?.modelId ?? input.modelId;
+    let resolvedExecutionTarget = binding?.executionTarget;
 
     try {
+      input.appendTelemetry("model.inference_started", "completed", null, null, {
+        provider: provider.name,
+        bindingId: binding?.id ?? null,
+        modelId: input.modelId,
+        executionTarget: binding?.executionTarget ?? null
+      });
       completion = await provider.complete(prompt);
     } catch {
       input.appendTelemetry("model.completed", "blocked", null, null, {
@@ -14873,7 +15311,14 @@ export class Cp2Store {
           durationMs: 0,
           fallbackUsed: true,
           outputKind: null,
-          errorCode: "provider_exception"
+          errorCode: "provider_exception",
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: binding.modelId,
+                executionTarget: binding.executionTarget
+              })
         }
       };
     }
@@ -14891,6 +15336,59 @@ export class Cp2Store {
       }
     );
 
+    if (
+      binding !== null &&
+      completion.status !== "available" &&
+      binding.permissions.allowOpenAIFallback &&
+      binding.fallbackModelId !== null &&
+      qualifiesForModelFallback(binding.fallbackPolicy, completion.errorCode)
+    ) {
+      const fallbackAdapter = this.options.modelRuntimeAdapterResolver?.({
+        modelId: binding.fallbackModelId,
+        executionTarget: "openai",
+        agentId: binding.agentId,
+        shopId: binding.shopId
+      });
+      if (fallbackAdapter !== undefined) {
+        fallbackReason = completion.errorCode ?? "RUNTIME_UNAVAILABLE";
+        input.appendTelemetry("model.fallback", "completed", null, null, {
+          provider: fallbackAdapter.provider,
+          bindingId: binding.id,
+          fallbackReason,
+          modelId: binding.fallbackModelId,
+          executionTarget: "openai"
+        });
+        const fallbackProvider = runtimeProviderFromAdapter({
+          adapter: fallbackAdapter,
+          context: {
+            modelId: binding.fallbackModelId,
+            agentId: binding.agentId,
+            shopId: binding.shopId
+          }
+        });
+        const fallbackCompletion = await fallbackProvider.complete(prompt);
+        input.appendTelemetry(
+          "model.fallback_completed",
+          fallbackCompletion.status === "available" ? "completed" : "blocked",
+          null,
+          null,
+          {
+            provider: fallbackCompletion.provider,
+            bindingId: binding.id,
+            fallbackReason,
+            adapterStatus: fallbackCompletion.status,
+            errorCode: fallbackCompletion.errorCode
+          }
+        );
+        if (fallbackCompletion.status === "available") {
+          completion = fallbackCompletion;
+          fallbackUsed = true;
+          resolvedModelId = binding.fallbackModelId;
+          resolvedExecutionTarget = "openai";
+        }
+      }
+    }
+
     if (completion.status !== "available" || completion.outputText === null) {
       input.appendTelemetry("model.fallback", "completed", null, null, {
         provider: completion.provider,
@@ -14900,7 +15398,18 @@ export class Cp2Store {
 
       return {
         proposal: null,
-        trace: modelTraceFromCompletion(completion, true, null)
+        trace: {
+          ...modelTraceFromCompletion(completion, true, null),
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: resolvedModelId,
+                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+                fallbackReason
+              }),
+          fallbackUsed: binding === null ? true : fallbackUsed
+        }
       };
     }
 
@@ -14919,16 +15428,34 @@ export class Cp2Store {
           provider: completion.provider,
           status: "malformed",
           durationMs: completion.durationMs,
-          fallbackUsed: true,
+          fallbackUsed: binding === null ? true : fallbackUsed,
           outputKind: null,
-          errorCode: "MODEL_RESPONSE_PARSE_FAILED"
+          errorCode: "MODEL_RESPONSE_PARSE_FAILED",
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: resolvedModelId,
+                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+                fallbackReason
+              })
         }
       };
     }
 
     return {
       proposal: parsed.output.proposal,
-      trace: modelTraceFromCompletion(completion, false, parsed.output.kind)
+      trace: {
+        ...modelTraceFromCompletion(completion, fallbackUsed, parsed.output.kind),
+        ...(binding === null
+          ? {}
+          : {
+              bindingId: binding.id,
+              modelId: resolvedModelId,
+              executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+              fallbackReason
+            })
+      }
     };
   }
 
@@ -17836,6 +18363,159 @@ function cloneInstalledAgentModel(model: InstalledAgentModelSummary): InstalledA
   return { ...model };
 }
 
+function cloneAgentModelBinding(binding: AgentModelBindingSummary): AgentModelBindingSummary {
+  return {
+    ...binding,
+    permissions: { ...binding.permissions }
+  };
+}
+
+function validateAgentModelBindingConfiguration(
+  input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    executionMode: PreferredExecutionMode;
+    permissions: AgentModelBindingPermissions;
+    fallbackModelId: string | null;
+  },
+  model: AiModelSummary,
+  registry: AiModelSummary[]
+): void {
+  if (model.provider === "openai" && input.executionTarget !== "openai") {
+    throw new Cp2Error(
+      409,
+      "MODEL_RUNTIME_INCOMPATIBLE",
+      "The selected hosted model must use the OpenAI execution target."
+    );
+  }
+  if (model.provider !== "openai" && input.executionTarget === "openai") {
+    throw new Cp2Error(
+      409,
+      "MODEL_RUNTIME_INCOMPATIBLE",
+      "The selected model is not an OpenAI-hosted model."
+    );
+  }
+  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "openai") {
+    throw new Cp2Error(
+      400,
+      "MODEL_CONFIGURATION_INVALID",
+      "Cloud-only execution requires a hosted primary model."
+    );
+  }
+  if (input.executionTarget === "installed-app" && !input.permissions.allowInstalledApp) {
+    throw new Cp2Error(
+      403,
+      "POLICY_DENIED",
+      "Installed-app inference is not permitted by this binding."
+    );
+  }
+  if (input.executionTarget === "remote-shop-device" && !input.permissions.allowRemoteShopDevice) {
+    throw new Cp2Error(
+      403,
+      "POLICY_DENIED",
+      "Remote shop-device inference is not permitted by this binding."
+    );
+  }
+  if (input.permissions.allowOpenAIFallback) {
+    const fallback = registry.find((candidate) => candidate.id === input.fallbackModelId);
+    if (
+      fallback === undefined ||
+      fallback.provider !== "openai" ||
+      fallback.source !== "hosted" ||
+      !fallback.available
+    ) {
+      throw new Cp2Error(
+        400,
+        "OPENAI_FALLBACK_MODEL_REQUIRED",
+        "Select an available OpenAI model before enabling OpenAI fallback."
+      );
+    }
+  } else if (input.fallbackModelId !== null) {
+    throw new Cp2Error(
+      400,
+      "MODEL_CONFIGURATION_INVALID",
+      "A fallback model cannot be saved while OpenAI fallback is disabled."
+    );
+  }
+}
+
+function healthSummary(
+  health: Awaited<ReturnType<ModelRuntimeAdapter["healthCheck"]>>,
+  now: Date
+): ModelRuntimeHealthSummary {
+  return {
+    ok: health.available,
+    modelId: health.modelId,
+    provider: health.provider,
+    executionTarget: health.executionTarget,
+    latencyMs: health.latencyMs,
+    responsePreview: health.responsePreview,
+    errorCode: health.errorCode,
+    errorMessage: health.message,
+    retryable: health.retryable,
+    checkedAt: now.toISOString()
+  };
+}
+
+function modelHealthError(health: ModelRuntimeHealthSummary): Cp2Error {
+  const code = health.errorCode ?? "MODEL_HEALTH_CHECK_FAILED";
+  const statusCode =
+    code === "INFERENCE_TIMEOUT"
+      ? 504
+      : code === "RUNTIME_UNAVAILABLE" || code === "MODEL_NOT_LOADED"
+        ? 503
+        : code === "MODEL_IDENTITY_MISMATCH"
+          ? 422
+          : 422;
+  return new Cp2Error(
+    statusCode,
+    code,
+    health.errorMessage ?? "The selected model did not pass its inference health check.",
+    health.retryable,
+    {
+      modelId: health.modelId,
+      executionTarget: health.executionTarget,
+      latencyMs: health.latencyMs
+    }
+  );
+}
+
+function qualifiesForModelFallback(
+  policy: AgentModelFallbackPolicy,
+  errorCode: string | null
+): boolean {
+  if (policy === "NEVER" || errorCode === null) return false;
+  if (
+    [
+      "UNAUTHENTICATED",
+      "UNAUTHORISED",
+      "CROSS_TENANT_ACCESS",
+      "INVALID_REQUEST",
+      "POLICY_DENIED",
+      "TOOL_CONFIRMATION_REQUIRED",
+      "MALFORMED_MODEL_OUTPUT",
+      "MODEL_RESPONSE_PARSE_FAILED"
+    ].includes(errorCode)
+  ) {
+    return false;
+  }
+  if (policy === "WHEN_CONTEXT_EXCEEDED") {
+    return ["UNSUPPORTED_CONTEXT_LENGTH", "CONTEXT_LIMIT_EXCEEDED"].includes(errorCode);
+  }
+  if (policy === "WHEN_LOCAL_UNAVAILABLE") {
+    return ["RUNTIME_UNAVAILABLE", "MODEL_NOT_LOADED", "DEVICE_OFFLINE"].includes(errorCode);
+  }
+  return [
+    "RUNTIME_UNAVAILABLE",
+    "MODEL_NOT_LOADED",
+    "DEVICE_OFFLINE",
+    "INFERENCE_TIMEOUT",
+    "OUT_OF_MEMORY",
+    "UNSUPPORTED_CONTEXT_LENGTH",
+    "CONTEXT_LIMIT_EXCEEDED"
+  ].includes(errorCode);
+}
+
 function normalizeInstalledAgentModel(
   input: Omit<InstalledAgentModelSummary, "accountId" | "userId">,
   accountId: string,
@@ -17900,6 +18580,56 @@ function normalizeInstalledAgentModel(
     }
     return value;
   };
+  const rawChecksum = normalizeNullable(input.checksum, "model checksum", 160);
+  const checksum =
+    rawChecksum === null
+      ? null
+      : rawChecksum
+          .trim()
+          .toLowerCase()
+          .replace(/^sha256:/, "");
+  if (checksum !== null && !/^[a-f0-9]{64}$/u.test(checksum)) {
+    throw new Cp2Error(400, "model_checksum_invalid", "Model checksum must be a SHA-256 digest.");
+  }
+  const packageManifestVersion = normalizeNullable(
+    input.packageManifestVersion ?? null,
+    "model package manifest version",
+    40
+  );
+  const packageSignature = normalizeNullable(
+    input.packageSignature ?? null,
+    "model package signature",
+    240
+  );
+  const packageSigningKeyId = normalizeNullable(
+    input.packageSigningKeyId ?? null,
+    "model package signing key id",
+    160
+  );
+  const packageFieldCount = [packageManifestVersion, packageSignature, packageSigningKeyId].filter(
+    (value) => value !== null
+  ).length;
+  if (packageFieldCount !== 0 && packageFieldCount !== 3) {
+    throw new Cp2Error(
+      400,
+      "model_package_incomplete",
+      "Signed model packages require a manifest version, signature, and signing key ID."
+    );
+  }
+  if (packageFieldCount === 3 && packageManifestVersion !== "1.0") {
+    throw new Cp2Error(
+      409,
+      "model_package_version_unsupported",
+      "The model package manifest version is unsupported."
+    );
+  }
+  if (packageFieldCount === 3 && checksum === null) {
+    throw new Cp2Error(
+      400,
+      "model_package_checksum_required",
+      "Signed model packages require a pinned SHA-256 checksum."
+    );
+  }
   return {
     id: normalizeRequiredBoundedText(input.id, "model installation id", 160),
     accountId,
@@ -17916,7 +18646,10 @@ function normalizeInstalledAgentModel(
     parameterCount: normalizeNullableCount(input.parameterCount, "model parameter count"),
     contextLength: normalizeNullableCount(input.contextLength, "model context length"),
     fileSizeBytes: input.fileSizeBytes,
-    checksum: normalizeNullable(input.checksum, "model checksum", 160),
+    checksum,
+    packageManifestVersion,
+    packageSignature,
+    packageSigningKeyId,
     license: normalizeRequiredBoundedText(input.license, "model license", 160),
     commercialUseAllowed: input.commercialUseAllowed === true,
     storageKey: normalizeRequiredBoundedText(input.storageKey, "private storage key", 240),

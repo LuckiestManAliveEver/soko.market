@@ -15,6 +15,10 @@ installation can still complete, but attach/test reports `RUNTIME_UNAVAILABLE`.
 The bridge should:
 
 - resolve the opaque storage key through app-private storage;
+- expose bridge API version `1.0.0` or newer;
+- hash the actual GGUF bytes with SHA-256 and compare them with the package checksum;
+- verify optional Ed25519 package signatures using an app-pinned trusted key;
+- report supported architectures, quantizations, and currently available memory during inspect;
 - limit context to the descriptor/context request and use conservative thread counts;
 - inspect available memory before allocating model buffers;
 - keep one loaded conversational model and single-flight duplicate loads;

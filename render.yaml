@@ -75,6 +75,16 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
+      - key: BACKEND_INFERENCE_ENABLED
+        value: "false"
+      - key: BACKEND_INFERENCE_BASE_URL
+        sync: false
+      - key: BACKEND_INFERENCE_TIMEOUT_MS
+        value: "120000"
+      - key: BACKEND_INFERENCE_MODEL_ID
+        value: qwen2.5-0.5b-android
+      - key: BACKEND_INFERENCE_MODEL
+        value: qwen2.5:0.5b
       - key: INFERENCE_CLIENT_FIRST
         value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED

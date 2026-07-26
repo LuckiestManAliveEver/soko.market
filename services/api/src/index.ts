@@ -2,6 +2,11 @@ import type { RuntimeModelProvider } from "@soko/shared-types";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { createCloudFallbackProvider } from "./inference/cloud-fallback.js";
+import {
+  createBackendModelAdapter,
+  createProviderModelAdapter,
+  type ModelRuntimeAdapter
+} from "./inference/model-runtime.js";
 import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import {
   startAccountDeletionRunner,
@@ -45,6 +50,28 @@ for (const [modelId, model, maxOutputTokens, timeoutMs] of [
 const runtimeModelProviderResolver = (modelId: string) => {
   return cloudProviders.get(modelId);
 };
+const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
+if (config.backendInferenceEnabled) {
+  const adapter = createBackendModelAdapter({
+    baseUrl: config.backendInferenceBaseUrl,
+    modelId: config.backendInferenceModelId,
+    providerModel: config.backendInferenceProviderModel,
+    timeoutMs: config.backendInferenceTimeoutMs
+  });
+  modelRuntimeAdapters.set(`${adapter.executionTarget}:${config.backendInferenceModelId}`, adapter);
+}
+for (const [modelId, provider] of cloudProviders) {
+  const adapter = createProviderModelAdapter({
+    modelId,
+    provider,
+    executionTarget: "openai"
+  });
+  modelRuntimeAdapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
+}
+const modelRuntimeAdapterResolver = (input: {
+  modelId: string;
+  executionTarget: ModelRuntimeAdapter["executionTarget"];
+}) => modelRuntimeAdapters.get(`${input.executionTarget}:${input.modelId}`);
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
 const webPushConfiguration = readWebPushConfiguration();
@@ -78,6 +105,7 @@ const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
   runtimeModelProviderResolver,
+  modelRuntimeAdapterResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),

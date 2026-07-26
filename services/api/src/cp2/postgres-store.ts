@@ -41,6 +41,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
+  { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
@@ -199,6 +200,7 @@ const mutatingMethodNames = new Set([
   "verifyOtp",
   "finalizeShopDeletion",
   "activateAiModel",
+  "activateAgentModel",
   "assignAgentModel",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
@@ -292,7 +294,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "039_agent_business_runtime.sql";
+const requiredMigrationFilename = "040_agent_model_runtime_bindings.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -315,6 +317,9 @@ export async function createPostgresCp2Store(
       ...(options.runtimeModelProviderResolver === undefined
         ? {}
         : { runtimeModelProviderResolver: options.runtimeModelProviderResolver }),
+      ...(options.modelRuntimeAdapterResolver === undefined
+        ? {}
+        : { modelRuntimeAdapterResolver: options.modelRuntimeAdapterResolver }),
       ...(options.pushNotificationSender === undefined
         ? {}
         : { pushNotificationSender: options.pushNotificationSender }),

@@ -69,6 +69,18 @@ function stringListFromEnv(name: string, fallback: string[]): string[] {
 }
 
 export function readEnvironment(): EnvironmentConfig {
+  const backendInferenceEnabled = booleanFromEnv("BACKEND_INFERENCE_ENABLED", false);
+  const backendInferenceBaseUrl = stringFromEnv("BACKEND_INFERENCE_BASE_URL", "").trim();
+  if (backendInferenceEnabled && backendInferenceBaseUrl.length === 0) {
+    throw new Error("BACKEND_INFERENCE_BASE_URL is required when BACKEND_INFERENCE_ENABLED=true.");
+  }
+  if (backendInferenceBaseUrl.length > 0) {
+    const url = new URL(backendInferenceBaseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("BACKEND_INFERENCE_BASE_URL must use http or https.");
+    }
+  }
+
   return {
     apiHost: stringFromEnv("API_HOST", "127.0.0.1"),
     apiPort: numberFromEnvList(["API_PORT", "PORT"], 4000),
@@ -80,6 +92,11 @@ export function readEnvironment(): EnvironmentConfig {
       "DATABASE_URL",
       "postgres://soko:soko_dev_password@127.0.0.1:5432/soko_market"
     ),
+    backendInferenceEnabled,
+    backendInferenceBaseUrl,
+    backendInferenceTimeoutMs: numberFromEnv("BACKEND_INFERENCE_TIMEOUT_MS", 120_000),
+    backendInferenceModelId: stringFromEnv("BACKEND_INFERENCE_MODEL_ID", "qwen2.5-0.5b-android"),
+    backendInferenceProviderModel: stringFromEnv("BACKEND_INFERENCE_MODEL", "qwen2.5:0.5b"),
     inferenceClientFirst: booleanFromEnv("INFERENCE_CLIENT_FIRST", true),
     inferenceOwnerNodeEnabled: booleanFromEnv("INFERENCE_OWNER_NODE_ENABLED", false),
     inferenceCloudFallbackEnabled: booleanFromEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", false),
