@@ -62,6 +62,14 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
+    if (request.url.startsWith("/auth/") || request.url === "/session") {
+      reply.header("cache-control", "no-store");
+    }
+
     if (
       options.mutationPersistenceFlush === undefined ||
       request.method === "GET" ||

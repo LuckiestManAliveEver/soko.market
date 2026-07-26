@@ -168,7 +168,7 @@ describe("account sync collection compatibility", () => {
 
     expect(() =>
       store.loginWithAccountPin({ channel: "phone", destination: phone, pin: "9999" })
-    ).toThrowError(expect.objectContaining({ code: "pin_invalid" }));
+    ).toThrowError(expect.objectContaining({ code: "auth_credentials_invalid" }));
     expect(store.snapshot().syncChanges).toHaveLength(beforeRejectedLogin);
 
     store.loginWithAccountPin({ channel: "phone", destination: phone, pin: "1234" });

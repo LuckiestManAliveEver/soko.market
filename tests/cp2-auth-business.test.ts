@@ -599,7 +599,7 @@ describe("CP2 auth and business creation", () => {
 
     expect(badPinLogin.statusCode).toBe(401);
     expect(badPinLogin.json()).toMatchObject({
-      code: "pin_invalid"
+      code: "auth_credentials_invalid"
     });
 
     const login = await app.inject({

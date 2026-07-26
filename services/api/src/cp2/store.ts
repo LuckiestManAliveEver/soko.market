@@ -1,4 +1,12 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  scryptSync,
+  timingSafeEqual
+} from "node:crypto";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -339,6 +347,20 @@ const accessSessionTtlMs = 15 * 60 * 1000;
 const refreshSessionTtlMs = 30 * 24 * 60 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
+const pinAttemptWindowMs = 15 * 60 * 1000;
+const pinMaximumFailedAttempts = 5;
+const pinAttemptTrackerMaximumEntries = 10_000;
+const pinScryptCost = 16_384;
+const pinScryptBlockSize = 8;
+const pinScryptParallelization = 1;
+const pinScryptKeyLength = 32;
+const pinScryptMaximumMemory = 64 * 1024 * 1024;
+const dummyPinHash = createScryptPinHash(
+  "unknown-account",
+  "0000",
+  "soko-market-dummy-pin-hash-secret"
+);
+const maxPendingOtpChallenges = 10_000;
 const maxRuntimeTurnsPerSession = 20;
 const sellerOnlySurfaces = new Set<SokoChatSurface>(["catalogue", "owner-controls", "receipt"]);
 const marketplacePermissions = [
@@ -955,6 +977,7 @@ export class Cp2Store {
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
+  private readonly otpRequestHistory = new Map<string, number[]>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingRefreshTokens = new Map<string, string>();
   private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
@@ -964,6 +987,7 @@ export class Cp2Store {
   private readonly identityByEmail = new Map<string, string>();
   private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
+  private readonly failedPinAttempts = new Map<string, number[]>();
   private readonly accountRecoveryCodeHashes = new Map<string, string>();
   private readonly networkNodes = new Map<string, NetworkNodeSummary>();
   private readonly networkEdges = new Map<string, NetworkEdgeSummary>();
@@ -992,6 +1016,17 @@ export class Cp2Store {
     }
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
+    const purpose = input.purpose ?? "signup";
+    const requestKey = `${purpose}:${input.channel}:${destination}`;
+    this.requireOtpRequestAllowed(requestKey, now);
+    this.pruneOtpChallenges(now);
+    if (this.otpChallenges.size >= maxPendingOtpChallenges) {
+      throw new Cp2Error(
+        503,
+        "otp_capacity_exceeded",
+        "Verification codes are temporarily unavailable."
+      );
+    }
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
     const challengeId = randomUUID();
     const expiresAt = new Date(now.getTime() + otpTtlMs).toISOString();
@@ -1001,7 +1036,7 @@ export class Cp2Store {
       id: challengeId,
       channel: input.channel,
       destination,
-      purpose: input.purpose ?? "signup",
+      purpose,
       codeHash: hashOtp(challengeId, code),
       attempts: 0,
       maxAttempts: maxOtpAttempts,
@@ -1009,6 +1044,7 @@ export class Cp2Store {
       verifiedAt: null,
       createdAt
     });
+    this.recordOtpRequest(requestKey, now);
 
     return {
       challengeId,
@@ -1016,6 +1052,56 @@ export class Cp2Store {
       expiresAt,
       devOtp: code
     };
+  }
+
+  private requireOtpRequestAllowed(key: string, now: Date): void {
+    const windowMs =
+      readBoundedSecurityInteger("OTP_RATE_LIMIT_WINDOW_SECONDS", 300, 60, 3_600) * 1000;
+    const maximumRequests = readBoundedSecurityInteger("OTP_RATE_LIMIT_MAX_REQUESTS", 5, 1, 20);
+    const cooldownMs = readBoundedSecurityInteger("OTP_COOLDOWN_SECONDS", 60, 0, 600) * 1000;
+    const cutoff = now.getTime() - windowMs;
+    const requests = (this.otpRequestHistory.get(key) ?? []).filter(
+      (requestedAt) => requestedAt > cutoff
+    );
+
+    if (requests.length === 0) {
+      this.otpRequestHistory.delete(key);
+      return;
+    }
+
+    this.otpRequestHistory.set(key, requests);
+    const lastRequestAt = requests.at(-1) ?? 0;
+    if (
+      requests.length >= maximumRequests ||
+      (cooldownMs > 0 && now.getTime() - lastRequestAt < cooldownMs)
+    ) {
+      throw new Cp2Error(
+        429,
+        "otp_rate_limited",
+        "Please wait before requesting another verification code."
+      );
+    }
+  }
+
+  private recordOtpRequest(key: string, now: Date): void {
+    if (
+      !this.otpRequestHistory.has(key) &&
+      this.otpRequestHistory.size >= pinAttemptTrackerMaximumEntries
+    ) {
+      const oldestKey = this.otpRequestHistory.keys().next().value as string | undefined;
+      if (oldestKey !== undefined) this.otpRequestHistory.delete(oldestKey);
+    }
+    const requests = this.otpRequestHistory.get(key) ?? [];
+    requests.push(now.getTime());
+    this.otpRequestHistory.set(key, requests);
+  }
+
+  private pruneOtpChallenges(now: Date): void {
+    for (const [challengeId, challenge] of this.otpChallenges) {
+      if (Date.parse(challenge.expiresAt) <= now.getTime()) {
+        this.otpChallenges.delete(challengeId);
+      }
+    }
   }
 
   verifyOtp(input: { challengeId: string; code: string; now?: Date }): VerifyOtpResult {
@@ -1111,7 +1197,9 @@ export class Cp2Store {
   }): OAuthStartResult {
     const now = input.now ?? new Date();
     const accountSession =
-      input.accountSessionId === null ? null : this.getSession(input.accountSessionId, now);
+      input.accountSessionId === null
+        ? null
+        : this.requirePinVerifiedSession(input.accountSessionId, now);
     const oauthSession: OAuthSessionRecord = {
       id: randomUUID(),
       provider: input.provider,
@@ -1551,10 +1639,7 @@ export class Cp2Store {
   }
 
   listDeviceSessions(sessionId: string | null, now = new Date()): DeviceSessionSummary[] {
-    const current = this.getSession(sessionId, now);
-    if (current === null) {
-      throw new Cp2Error(401, "auth_session_expired", "Authentication is required.");
-    }
+    const current = this.requirePinVerifiedSession(sessionId, now);
     return [...this.sessions.values()]
       .filter((session) => session.accountId === current.account.id)
       .map((session) => deviceSessionView(session, current.session.id, now))
@@ -1567,10 +1652,7 @@ export class Cp2Store {
     now?: Date;
   }): DeviceSessionSummary {
     const now = input.now ?? new Date();
-    const current = this.getSession(input.sessionId, now);
-    if (current === null) {
-      throw new Cp2Error(401, "auth_session_expired", "Authentication is required.");
-    }
+    const current = this.requirePinVerifiedSession(input.sessionId, now);
     const target = this.sessions.get(input.targetSessionId);
     if (target === undefined || target.accountId !== current.account.id) {
       throw new Cp2Error(404, "auth_device_session_not_found", "Device session was not found.");
@@ -1677,6 +1759,7 @@ export class Cp2Store {
     }
 
     const pin = normalizePin(input.pin);
+    pinHashSecret();
     const account = this.createAccount("phone", destination, now);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const session = this.createSession(account, user, now);
@@ -1815,15 +1898,19 @@ export class Cp2Store {
     const session = this.requireAnySession(input.sessionId, now);
     const pin = normalizePin(input.pin);
     const pinHash = this.accountPinHashes.get(session.account.id);
+    const attemptKey = `verify:${session.account.id}`;
 
     if (pinHash === undefined) {
       throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
     }
 
-    if (!hashMatches(hashPin(session.account.id, pin), pinHash)) {
+    this.requirePinAttemptAllowed(attemptKey, now);
+    if (!this.verifyStoredPin(session.account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
       throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     this.markSessionPinVerified(session.session.id, now);
     this.recordAuditEvent({
       type: "auth.pin_verified",
@@ -1845,27 +1932,35 @@ export class Cp2Store {
   }): AuthSessionView {
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
+    const pin = normalizePin(input.pin);
+    const attemptKey = `login:${input.channel}:${destination}`;
+    this.requirePinAttemptAllowed(attemptKey, now);
     const accountId = this.accountByDestination.get(
       destinationAccountKey(input.channel, destination)
     );
 
     if (accountId === undefined) {
-      throw new Cp2Error(401, "account_not_found", "Owner account was not found.");
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
     const account = this.requireAccount(accountId);
     const user = this.requireUser(this.userByAccount.get(account.id));
-    const pin = normalizePin(input.pin);
     const pinHash = this.accountPinHashes.get(account.id);
 
     if (pinHash === undefined) {
-      throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
-    if (!hashMatches(hashPin(account.id, pin), pinHash)) {
-      throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
+    if (!this.verifyStoredPin(account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     const session = this.createSession(account, user, now);
     this.markSessionPinVerified(session.id, now);
     this.recordAuditEvent({
@@ -1892,7 +1987,7 @@ export class Cp2Store {
     options: PublicKeyCredentialCreationOptionsJSON;
   }> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.prunePasskeyCeremonies(now);
     const accountPasskeys = [...this.passkeys.values()].filter(
       (passkey) => passkey.accountId === session.account.id
@@ -1943,7 +2038,7 @@ export class Cp2Store {
     now?: Date;
   }): Promise<PasskeySummary> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const ceremony = this.takePasskeyCeremony(input.ceremonyId, "registration", now);
 
     if (ceremony.accountId !== session.account.id || ceremony.webauthnUserId === null) {
@@ -2101,7 +2196,7 @@ export class Cp2Store {
 
   listPasskeys(input: { sessionId: string | null; now?: Date }): PasskeySummary[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     return [...this.passkeys.values()]
       .filter((passkey) => passkey.accountId === session.account.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -2112,7 +2207,7 @@ export class Cp2Store {
     revoked: true;
   } {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const passkey = this.passkeys.get(input.credentialId);
 
     if (passkey === undefined || passkey.accountId !== session.account.id) {
@@ -2143,7 +2238,7 @@ export class Cp2Store {
     now?: Date;
   }): CreateBusinessResult {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     const name = input.name.trim();
 
@@ -2281,7 +2376,7 @@ export class Cp2Store {
     sessionId: string | null;
     now?: Date;
   }): Array<{ business: BusinessSummary; membership: MembershipSummary }> {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
 
     return [...this.memberships.values()]
       .filter(
@@ -2307,7 +2402,7 @@ export class Cp2Store {
     now?: Date;
   }): SyncPullPage {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.pruneExpiredSyncTombstones(now);
     const accountId = session.account.id;
     const limit = Math.min(100, Math.max(1, input.limit ?? 50));
@@ -2351,9 +2446,7 @@ export class Cp2Store {
     now?: Date;
   }): McpAccessTokenCreated {
     const now = input.now ?? new Date();
-    const session = input.scopes.includes("mcp:act")
-      ? this.requirePinVerifiedSession(input.sessionId, now)
-      : this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const name = input.name.trim();
     if (name.length < 3 || name.length > 80) {
       throw new Cp2Error(400, "mcp_token_name_invalid", "Token name must be 3 to 80 characters.");
@@ -2414,7 +2507,7 @@ export class Cp2Store {
   }
 
   listMcpAccessTokens(input: { sessionId: string | null; now?: Date }): McpAccessTokenSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.mcpAccessTokens.values()]
       .filter((token) => token.accountId === session.account.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -2427,7 +2520,7 @@ export class Cp2Store {
     now?: Date;
   }): McpAccessTokenSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const token = this.mcpAccessTokens.get(input.tokenId);
     if (token === undefined || token.accountId !== session.account.id) {
       throw new Cp2Error(404, "mcp_token_not_found", "MCP token was not found.");
@@ -2481,7 +2574,7 @@ export class Cp2Store {
     listener: (event: SyncRealtimeChangesAvailableEvent) => void;
     now?: Date;
   }): () => void {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const accountId = session.account.id;
     const listeners = this.syncChangeListeners.get(accountId) ?? new Set();
     listeners.add(input.listener);
@@ -2507,7 +2600,7 @@ export class Cp2Store {
 
   getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const context = this.ensureSokoSessionContext(session, now);
     return this.sokoSessionContextView(session, context, now);
   }
@@ -2601,7 +2694,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     if (input.activeShopId !== null) {
       if (!this.businesses.has(input.activeShopId)) {
@@ -2656,7 +2749,7 @@ export class Cp2Store {
     now?: Date;
   }): MarketplaceIntroStateSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const businessId = input.businessId ?? null;
 
     if (businessId !== null) {
@@ -2823,7 +2916,7 @@ export class Cp2Store {
     deviceId?: string;
     now?: Date;
   }): InstalledAgentModelSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.installedAgentModels.values()]
       .filter(
         (model) =>
@@ -2842,7 +2935,7 @@ export class Cp2Store {
     now?: Date;
   }): InstalledAgentModelSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const model = normalizeInstalledAgentModel(input.model, session.account.id, session.user.id);
     const existing = this.installedAgentModels.get(model.id);
     if (
@@ -2885,7 +2978,7 @@ export class Cp2Store {
     now?: Date;
   }): InstalledAgentModelSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const existing = this.requireOwnedModelInstallation(
       session.account.id,
       session.user.id,
@@ -3695,7 +3788,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationInboxItem[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     return [...this.conversations.values()]
       .map((conversation) => {
         const participant = this.accountConversationParticipant(
@@ -3734,7 +3827,7 @@ export class Cp2Store {
     conversationId: string;
     now?: Date;
   }): ConversationView {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return this.conversationView(
       this.requireAccountConversation(input.conversationId, session.account.id)
     );
@@ -3748,7 +3841,7 @@ export class Cp2Store {
     now?: Date;
   }): E2eeDeviceSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const deviceId = input.deviceId.trim();
     const label = input.label.trim();
     if (deviceId.length < 8 || deviceId.length > 120 || label.length < 1 || label.length > 120) {
@@ -3773,7 +3866,7 @@ export class Cp2Store {
   }
 
   listE2eeDevices(input: { sessionId: string | null; now?: Date }): E2eeDeviceSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.e2eeDevices.values()].filter(
       (device) => device.accountId === session.account.id && device.revokedAt === null
     );
@@ -3785,7 +3878,7 @@ export class Cp2Store {
     now?: Date;
   }): E2eeDeviceSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const current = this.e2eeDevices.get(input.deviceId);
     if (!current || current.accountId !== session.account.id) {
       throw new Cp2Error(404, "e2ee_device_not_found", "Encryption device was not found.");
@@ -3800,7 +3893,7 @@ export class Cp2Store {
     conversationId: string;
     now?: Date;
   }): E2eeDeviceSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     this.requireAccountConversation(input.conversationId, session.account.id);
     const accountIds = new Set(this.humanConversationAccountIds(input.conversationId));
     return [...this.e2eeDevices.values()].filter(
@@ -3816,7 +3909,7 @@ export class Cp2Store {
     now?: Date;
   }): PushSubscriptionSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const endpoint = input.endpoint.trim();
     if (!endpoint.startsWith("https://") || endpoint.length > 2_048) {
       throw new Cp2Error(400, "push_subscription_invalid", "Push endpoint is invalid.");
@@ -3846,7 +3939,7 @@ export class Cp2Store {
   removePushSubscription(input: { sessionId: string | null; endpoint: string; now?: Date }): {
     removed: boolean;
   } {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const id = this.pushSubscriptionIdByEndpoint.get(input.endpoint);
     const subscription = id ? this.pushSubscriptions.get(id) : undefined;
     if (!subscription || subscription.accountId !== session.account.id) return { removed: false };
@@ -3865,7 +3958,7 @@ export class Cp2Store {
     now?: Date;
   }): MessageHandoffSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     if (input.businessId !== null) {
       this.requireMembership(input.businessId, session.user.id);
     }
@@ -3926,7 +4019,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationMessageSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const clientMessageId = input.clientMessageId.trim();
 
@@ -4110,7 +4203,7 @@ export class Cp2Store {
     now?: Date;
   }): Promise<AgentConversationMessageResult> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const hasHumanRecipient = [...this.conversationParticipants.values()].some(
       (participant) =>
@@ -4264,7 +4357,7 @@ export class Cp2Store {
     messageId: string;
     now?: Date;
   }): MessageDeliveryAttemptSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     this.requireConversationMessage(input.messageId, conversation.id);
     return [...this.messageDeliveryAttempts.values()]
@@ -4327,7 +4420,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const participant = this.accountConversationParticipant(conversation.id, session.account.id);
     if (participant === null)
@@ -4381,7 +4474,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationMessageSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountConversation(input.conversationId, session.account.id);
     const current = this.requireConversationMessage(input.messageId, input.conversationId);
     let next = current;
@@ -4457,7 +4550,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationTypingSummary[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountConversation(input.conversationId, session.account.id);
     const key = `${input.conversationId}:${session.user.id}`;
     if (input.typing) {
@@ -7087,7 +7180,7 @@ export class Cp2Store {
     sessionId: string | null;
     now?: Date;
   }): ConnectedSocialAccountSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
 
     return [...this.userIdentities.values()]
       .filter((identity) => identity.accountId === session.account.id)
@@ -7109,7 +7202,7 @@ export class Cp2Store {
     identityId: string;
   } {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const identity = this.userIdentities.get(input.identityId);
 
     if (identity === undefined || identity.accountId !== session.account.id) {
@@ -7363,7 +7456,7 @@ export class Cp2Store {
     now?: Date;
   }): OtpChallengeDelivery {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
 
     if (request === undefined || request.businessId !== input.businessId) {
@@ -7398,7 +7491,7 @@ export class Cp2Store {
     now?: Date;
   }): AccountDeletionRequestSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
 
     if (request === undefined || request.businessId !== input.businessId) {
@@ -7517,7 +7610,7 @@ export class Cp2Store {
     now?: Date;
   }): AccountDeletionRequestSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
     if (
       request === undefined ||
@@ -9391,7 +9484,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const importedContacts = input.contacts.map((contact, index) =>
       normalizeNetworkConnectionInput(contact, `contacts.${index}`)
     );
@@ -9475,7 +9568,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const profiles = input.profiles.map((profile, index) =>
       normalizeNetworkConnectionInput(profile, `profiles.${index}`)
     );
@@ -9565,7 +9658,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const identity = [...this.userIdentities.values()].find(
       (candidate) =>
         candidate.accountId === session.account.id && candidate.provider === input.provider
@@ -9590,7 +9683,7 @@ export class Cp2Store {
 
   getNetworkGraph(input: { sessionId: string | null; now?: Date }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.ensureOwnerNetworkNode(session.user, now);
     return this.networkGraphForUser(session.user.id, now);
   }
@@ -9610,7 +9703,7 @@ export class Cp2Store {
     now?: Date;
   }): AgentRouteSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const targetNode = this.findAgentRouteTarget({
       ownerUserId: session.user.id,
       requestText: input.requestText,
@@ -9672,7 +9765,7 @@ export class Cp2Store {
     now?: Date;
   }): AgentRouteSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const route = this.networkRoutes.get(input.routeId);
 
     if (route === undefined || route.ownerUserId !== session.user.id) {
@@ -9704,7 +9797,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const source = this.networkSources.get(input.sourceId);
 
     if (source === undefined || source.ownerUserId !== session.user.id) {
@@ -11469,16 +11562,74 @@ export class Cp2Store {
   private verifyAccountPinForSession(session: AuthSessionView, pin: string, now: Date): void {
     const normalizedPin = normalizePin(pin);
     const pinHash = this.accountPinHashes.get(session.account.id);
+    const attemptKey = `verify:${session.account.id}`;
 
     if (pinHash === undefined) {
       throw new Cp2Error(409, "pin_not_set", "Set a login PIN before deleting this shop.");
     }
 
-    if (!hashMatches(hashPin(session.account.id, normalizedPin), pinHash)) {
+    this.requirePinAttemptAllowed(attemptKey, now);
+    if (!this.verifyStoredPin(session.account.id, normalizedPin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
       throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     this.markSessionPinVerified(session.session.id, now);
+  }
+
+  private verifyStoredPin(accountId: string, pin: string, storedHash: string): boolean {
+    const result = verifyPinHash(accountId, pin, storedHash);
+    if (result === "legacy") {
+      this.accountPinHashes.set(accountId, hashPin(accountId, pin));
+    }
+    return result !== "invalid";
+  }
+
+  private requirePinAttemptAllowed(key: string, now: Date): void {
+    const cutoff = now.getTime() - pinAttemptWindowMs;
+    const attempts = (this.failedPinAttempts.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+
+    if (attempts.length === 0) {
+      this.failedPinAttempts.delete(key);
+      return;
+    }
+
+    this.failedPinAttempts.set(key, attempts);
+    if (attempts.length >= pinMaximumFailedAttempts) {
+      throw new Cp2Error(
+        429,
+        "pin_rate_limited",
+        "Too many invalid PIN attempts. Try again later."
+      );
+    }
+  }
+
+  private recordFailedPinAttempt(key: string, now: Date): void {
+    if (
+      !this.failedPinAttempts.has(key) &&
+      this.failedPinAttempts.size >= pinAttemptTrackerMaximumEntries
+    ) {
+      const cutoff = now.getTime() - pinAttemptWindowMs;
+      for (const [candidateKey, attempts] of this.failedPinAttempts) {
+        if ((attempts.at(-1) ?? 0) <= cutoff) {
+          this.failedPinAttempts.delete(candidateKey);
+        }
+      }
+      if (this.failedPinAttempts.size >= pinAttemptTrackerMaximumEntries) {
+        const oldestKey = this.failedPinAttempts.keys().next().value as string | undefined;
+        if (oldestKey !== undefined) this.failedPinAttempts.delete(oldestKey);
+      }
+    }
+
+    const cutoff = now.getTime() - pinAttemptWindowMs;
+    const attempts = (this.failedPinAttempts.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+    attempts.push(now.getTime());
+    this.failedPinAttempts.set(key, attempts);
   }
 
   private verifyOtpCodeOnly(input: { challengeId: string; code: string; now: Date }): void {
@@ -16408,7 +16559,33 @@ function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSumma
 }
 
 function hashOtp(challengeId: string, code: string): string {
-  return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
+  return createHmac("sha256", otpHmacSecret()).update(`${challengeId}:${code}`).digest("hex");
+}
+
+function otpHmacSecret(): string {
+  const configured = process.env.OTP_HMAC_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Cp2Error(
+      503,
+      "otp_secret_unconfigured",
+      "Verification codes are temporarily unavailable."
+    );
+  }
+  return "soko-market-local-otp-hmac-secret";
+}
+
+function readBoundedSecurityInteger(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const configured = process.env[name]?.trim();
+  if (configured === undefined || configured.length === 0) return fallback;
+  const parsed = Number(configured);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
+  return parsed;
 }
 
 function marketplaceIntroStateKey(accountId: string, businessId: string | null): string {
@@ -16806,7 +16983,82 @@ function secureCookieSuffix(): string {
 }
 
 function hashPin(accountId: string, pin: string): string {
-  return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+  return createScryptPinHash(accountId, pin, pinHashSecret());
+}
+
+function createScryptPinHash(accountId: string, pin: string, secret: string): string {
+  const salt = randomBytes(16);
+  const hash = scryptSync(`${accountId}:${pin}:${secret}`, salt, pinScryptKeyLength, {
+    N: pinScryptCost,
+    r: pinScryptBlockSize,
+    p: pinScryptParallelization,
+    maxmem: pinScryptMaximumMemory
+  });
+  return [
+    "scrypt",
+    "v2",
+    pinScryptCost,
+    pinScryptBlockSize,
+    pinScryptParallelization,
+    salt.toString("base64url"),
+    hash.toString("base64url")
+  ].join("$");
+}
+
+function verifyPinHash(
+  accountId: string,
+  pin: string,
+  storedHash: string
+): "current" | "legacy" | "invalid" {
+  const parts = storedHash.split("$");
+  if (
+    parts.length === 7 &&
+    parts[0] === "scrypt" &&
+    parts[1] === "v2" &&
+    parts[2] === String(pinScryptCost) &&
+    parts[3] === String(pinScryptBlockSize) &&
+    parts[4] === String(pinScryptParallelization)
+  ) {
+    const pinMaterial = `${accountId}:${pin}:${pinHashSecret()}`;
+    try {
+      const salt = Buffer.from(parts[5] ?? "", "base64url");
+      const expected = Buffer.from(parts[6] ?? "", "base64url");
+      if (salt.length !== 16 || expected.length !== pinScryptKeyLength) return "invalid";
+      const candidate = scryptSync(pinMaterial, salt, pinScryptKeyLength, {
+        N: pinScryptCost,
+        r: pinScryptBlockSize,
+        p: pinScryptParallelization,
+        maxmem: pinScryptMaximumMemory
+      });
+      return timingSafeEqual(candidate, expected) ? "current" : "invalid";
+    } catch {
+      return "invalid";
+    }
+  }
+
+  if (/^[a-f0-9]{64}$/u.test(storedHash)) {
+    const legacyHash = createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+    return hashMatches(legacyHash, storedHash) ? "legacy" : "invalid";
+  }
+
+  return "invalid";
+}
+
+function pinHashSecret(): string {
+  const configured = process.env.PIN_HASH_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Cp2Error(
+      503,
+      "pin_hash_secret_unconfigured",
+      "PIN authentication is temporarily unavailable."
+    );
+  }
+  return "soko-market-local-pin-hash-secret";
+}
+
+function invalidLoginCredentialsError(): Cp2Error {
+  return new Cp2Error(401, "auth_credentials_invalid", "The account credentials are invalid.");
 }
 
 function hashPhoneRecoveryCode(accountId: string, recoveryCode: string): string {

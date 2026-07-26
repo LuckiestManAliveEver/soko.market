@@ -91,9 +91,7 @@ import {
   getOAuthProviderConfig,
   isOAuthProviderConfigured,
   listOAuthProviders,
-  parseOAuthProvider,
-  type OAuthProfile,
-  type OAuthTokenResponse
+  parseOAuthProvider
 } from "./oauth.js";
 import {
   extractDocumentImportSource,
@@ -152,22 +150,8 @@ interface AuthIdentityParams {
 interface OAuthCallbackBody {
   code?: string;
   csrfToken?: string;
-  profile?: {
-    providerSubject?: string;
-    email?: string | null;
-    emailVerified?: boolean;
-    displayName?: string | null;
-  };
   provider?: string;
   state?: string;
-  tokens?: {
-    accessToken?: string;
-    refreshToken?: string;
-    idToken?: string;
-    tokenType?: string;
-    expiresIn?: number;
-    scope?: string;
-  };
 }
 
 interface OAuthCallbackParams {
@@ -1028,8 +1012,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     state: unknown;
     csrfToken: unknown;
     code?: unknown;
-    tokens?: OAuthCallbackBody["tokens"];
-    profile?: OAuthCallbackBody["profile"];
   }) {
     const provider = parseOAuthProvider(input.provider);
     const state = parseString(input.state, "state");
@@ -1053,19 +1035,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       state,
       csrfToken
     });
-    const bodyTokens = parseOptionalOAuthTokens(input.tokens);
-    const tokens =
-      bodyTokens ??
-      (await exchangeOAuthCode({
-        provider: providerConfig,
-        code: parseString(input.code, "code"),
-        codeVerifier: exchangeData.codeVerifier,
-        redirectUri: exchangeData.redirectUri
-      }));
-    const profile =
-      input.profile === undefined
-        ? await fetchOAuthProfile({ provider: providerConfig, tokens })
-        : parseOAuthProfileBody(input.profile);
+    const tokens = await exchangeOAuthCode({
+      provider: providerConfig,
+      code: parseString(input.code, "code"),
+      codeVerifier: exchangeData.codeVerifier,
+      redirectUri: exchangeData.redirectUri
+    });
+    const profile = await fetchOAuthProfile({ provider: providerConfig, tokens });
     return store.completeOAuthCallback({
       provider,
       state,
@@ -1435,9 +1411,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           provider: request.body.provider,
           state: request.body.state,
           csrfToken: request.body.csrfToken,
-          code: request.body.code,
-          tokens: request.body.tokens,
-          profile: request.body.profile
+          code: request.body.code
         });
         setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
@@ -1455,9 +1429,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           provider: request.body.provider,
           state: request.body.state,
           csrfToken: request.body.csrfToken,
-          code: request.body.code,
-          tokens: request.body.tokens,
-          profile: request.body.profile
+          code: request.body.code
         });
         setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
@@ -5304,48 +5276,6 @@ function parsePasskeyResponse<T>(value: unknown): T {
   return value as T;
 }
 
-function parseOAuthProfileBody(value: OAuthCallbackBody["profile"]): OAuthProfile {
-  if (value === undefined || value === null || typeof value !== "object") {
-    throw new Cp2Error(400, "oauth_profile_required", "OAuth profile is required.");
-  }
-
-  const email = value.email;
-  const displayName = value.displayName;
-
-  return {
-    providerSubject: parseString(value.providerSubject, "providerSubject"),
-    email: email === undefined || email === null ? null : parseString(email, "email"),
-    emailVerified:
-      typeof value.emailVerified === "boolean"
-        ? value.emailVerified
-        : email !== undefined && email !== null,
-    displayName:
-      displayName === undefined || displayName === null
-        ? null
-        : parseString(displayName, "displayName")
-  };
-}
-
-function parseOptionalOAuthTokens(value: OAuthCallbackBody["tokens"]): OAuthTokenResponse | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  if (typeof value !== "object") {
-    throw new Cp2Error(400, "oauth_tokens_invalid", "OAuth tokens must be an object.");
-  }
-
-  return compactOAuthTokenResponse({
-    accessToken: parseOptionalString(value.accessToken),
-    refreshToken: parseOptionalString(value.refreshToken),
-    idToken: parseOptionalString(value.idToken),
-    tokenType: parseOptionalString(value.tokenType),
-    expiresIn:
-      value.expiresIn === undefined ? undefined : parseNumber(value.expiresIn, "expiresIn"),
-    scope: parseOptionalString(value.scope)
-  });
-}
-
 function defaultOAuthRedirectUri(request: FastifyRequest): string {
   const origin = request.headers.origin ?? process.env.APP_URL?.trim() ?? "http://127.0.0.1:5173";
   let url: URL;
@@ -5357,19 +5287,6 @@ function defaultOAuthRedirectUri(request: FastifyRequest): string {
   }
 
   return url.toString();
-}
-
-function compactOAuthTokenResponse(input: {
-  accessToken?: string | undefined;
-  refreshToken?: string | undefined;
-  idToken?: string | undefined;
-  tokenType?: string | undefined;
-  expiresIn?: number | undefined;
-  scope?: string | undefined;
-}): OAuthTokenResponse {
-  return Object.fromEntries(
-    Object.entries(input).filter(([, value]) => value !== undefined)
-  ) as OAuthTokenResponse;
 }
 
 function parseAuthChannel(value: string | undefined): AuthChannel {

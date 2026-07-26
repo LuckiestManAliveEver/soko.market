@@ -1717,7 +1717,6 @@ const activeModeStorageKey = "soko.chatFirst.mode";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
-const contextScriptsPasswordStorageKey = "soko.chatFirst.contextScriptsPassword";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -6113,7 +6112,6 @@ export function OwnerApp() {
     localStorage.removeItem(activeModeStorageKey);
     localStorage.removeItem(ownerAuthStorageKey);
     localStorage.removeItem(setupDraftStorageKey);
-    localStorage.removeItem(contextScriptsPasswordStorageKey);
     sessionStorage.removeItem(pendingOAuthStorageKey);
     setSession(null);
     setBusiness(null);
@@ -14703,29 +14701,21 @@ function AgentProfileSurface({
     }
   }
 
-  function unlockContextScripts() {
-    const password = contextPassword.trim();
-    const savedPassword = localStorage.getItem(contextScriptsPasswordStorageKey);
-
-    if (password.length < 6) {
-      setContextUnlockError("Use at least 6 characters.");
+  async function unlockContextScripts() {
+    const pin = contextPassword.trim();
+    if (!/^\d{4}$/u.test(pin)) {
+      setContextUnlockError("Enter your 4-digit owner PIN.");
       return;
     }
 
-    if (savedPassword === null) {
-      localStorage.setItem(contextScriptsPasswordStorageKey, password);
+    try {
+      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin });
       setContextUnlocked(true);
+      setContextPassword("");
       setContextUnlockError("");
-      return;
+    } catch (error) {
+      setContextUnlockError(getErrorMessage(error));
     }
-
-    if (savedPassword !== password) {
-      setContextUnlockError("Password did not match.");
-      return;
-    }
-
-    setContextUnlocked(true);
-    setContextUnlockError("");
   }
 
   function updateContextScript(index: number, value: string) {
@@ -17025,16 +17015,23 @@ function AgentProfileSurface({
           {!contextUnlocked ? (
             <div className="context-unlock-panel">
               <label>
-                Advanced password
+                Owner PIN
                 <input
                   value={contextPassword}
                   disabled={!isEditing}
                   type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  autoComplete="current-password"
                   onChange={(event) => setContextPassword(event.target.value)}
-                  placeholder="Enter or set password"
+                  placeholder="4-digit PIN"
                 />
               </label>
-              <button type="button" onClick={unlockContextScripts} disabled={!isEditing}>
+              <button
+                type="button"
+                onClick={() => void unlockContextScripts()}
+                disabled={!isEditing}
+              >
                 Unlock context files
               </button>
               {contextUnlockError.length > 0 ? (

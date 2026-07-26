@@ -161,7 +161,7 @@ describePostgres("CP2 Postgres store", () => {
       payload: JSON.stringify({ method: "phone", contact: uniquePhone, pin: "0000" })
     });
     expect(wrongPin.statusCode).toBe(401);
-    expect(wrongPin.json()).toMatchObject({ code: "pin_invalid" });
+    expect(wrongPin.json()).toMatchObject({ code: "auth_credentials_invalid" });
     await store.flush();
     expect(await syncCount(pool, accountId)).toBe(countBeforeWrongPin);
 

@@ -1,11 +1,9 @@
-import { useEffect, useState } from "react";
 import { Surface } from "@soko/ui";
 import { LegalMarkdownBody, parseNumberedSections, type LegalSection } from "./LegalMarkdown";
 import partOneMarkdown from "./terms-v1-draft-part-i.md?raw";
 import partTwoMarkdown from "./terms-v1-draft-part-ii.md?raw";
 import partThreeMarkdown from "./terms-v1-draft-part-iii.md?raw";
 import partFourMarkdown from "./terms-v1-draft-part-iv.md?raw";
-import { readApiBaseUrl } from "../lib/api";
 import { AppIcon } from "../AppIcon";
 
 interface TermsPart {
@@ -45,44 +43,7 @@ const termsParts: TermsPart[] = [
   }
 ];
 
-function useFetchedLegal(path: string) {
-  const [html, setHtml] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    const base = readApiBaseUrl();
-    if (!base) return;
-    void fetch(`${base}/legal/${path}`, { credentials: "include" })
-      .then((r) => {
-        if (!active) return null;
-        if (!r.ok) return null;
-        return r.text();
-      })
-      .then((text) => {
-        if (active && text) setHtml(text);
-      })
-      .catch(() => {
-        /* ignore and keep local drafts */
-      });
-    return () => {
-      active = false;
-    };
-  }, [path]);
-  return html;
-}
-
 export default function TermsOfServicePage() {
-  const fetched = useFetchedLegal("terms");
-
-  if (fetched !== null) {
-    return (
-      <Surface title="Soko.market Terms — remote">
-        <main className="legal-document-shell">
-          <article className="legal-document" dangerouslySetInnerHTML={{ __html: fetched }} />
-        </main>
-      </Surface>
-    );
-  }
-
   return (
     <Surface title="Soko.market Terms of Service — Version 1.0 Draft">
       <a className="legal-skip-link" href="#terms-content">

@@ -45,6 +45,12 @@ services:
         value: https://soko.market,https://www.soko.market
       - key: WEBAUTHN_RP_ID
         value: soko.market
+      - key: OTP_HMAC_SECRET
+        generateValue: true
+      - key: PIN_HASH_SECRET
+        generateValue: true
+      - key: AUTH_TOKEN_ENCRYPTION_KEY
+        generateValue: true
       - key: CP2_STORE
         value: postgres
       - key: DATABASE_URL
