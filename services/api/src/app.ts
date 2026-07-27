@@ -11,6 +11,7 @@ export interface BuildApiOptions {
   cp2?: Cp2RouteOptions;
   agentRuntimeDiagnostic?: (runInference: boolean) => Promise<RuntimeModelDiagnostic>;
   databaseHealth?: () => Promise<Record<string, unknown>>;
+  inferenceRequired?: boolean;
   mutationPersistenceFlush?: () => Promise<void>;
 }
 
@@ -178,19 +179,44 @@ export function buildApi(options: BuildApiOptions = {}) {
       }
     );
 
-    if (options.agentRuntimeDiagnostic !== undefined) {
-      routes.get("/health/ready", async (_request, reply) => {
-        const model = await options.agentRuntimeDiagnostic?.(false);
-        if (model?.status !== "ready") reply.code(503);
-        return {
-          service: "api",
-          status: model?.status === "ready" ? "ready" : "unavailable",
-          timestamp: new Date().toISOString(),
-          dispatch: { mode: "synchronous" },
-          model
-        };
-      });
+    routes.get("/health/live", async () => ({
+      service: "api",
+      status: "ok",
+      timestamp: new Date().toISOString()
+    }));
 
+    routes.get("/health/ready", async (_request, reply) => {
+      const [database, model] = await Promise.all([
+        options.databaseHealth?.(),
+        options.agentRuntimeDiagnostic?.(false)
+      ]);
+      const databaseOk = database === undefined || database.status === "ok";
+      const inferenceEnabled = options.agentRuntimeDiagnostic !== undefined;
+      const inferenceOk = model?.status === "ready";
+      const ready =
+        databaseOk && (options.inferenceRequired !== true || (inferenceEnabled && inferenceOk));
+      if (!ready) reply.code(503);
+      return {
+        service: "api",
+        status: ready ? "ready" : "unavailable",
+        timestamp: new Date().toISOString(),
+        dispatch: { mode: "synchronous" },
+        database: {
+          configured: options.databaseHealth !== undefined,
+          ok: databaseOk,
+          detail: database ?? null
+        },
+        inference: {
+          enabled: inferenceEnabled,
+          required: options.inferenceRequired === true,
+          ok: inferenceEnabled ? inferenceOk : null,
+          model: model ?? null
+        },
+        model: model ?? null
+      };
+    });
+
+    if (options.agentRuntimeDiagnostic !== undefined) {
       routes.get("/health/ai", async (_request, reply) => {
         const model = await options.agentRuntimeDiagnostic?.(true);
         if (model?.status !== "ready") reply.code(503);

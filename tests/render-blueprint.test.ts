@@ -2,23 +2,29 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("Render Blueprint", () => {
-  it("provisions and wires the Postgres database into every database consumer", async () => {
+  it("wires external Neon URLs into every database consumer and migrates before deploy", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
 
-    expect(blueprint).toContain("databases:\n  - name: soko-market-db");
+    expect(blueprint).not.toContain("\ndatabases:");
+    expect(blueprint).not.toContain("fromDatabase:");
     expect(blueprint).toContain("CP2_STORE\n        value: postgres");
-    expect(blueprint).toContain("corepack pnpm db:migrate &&");
-    expect(blueprint).not.toMatch(/key: (?:DIRECT_)?DATABASE_URL\n\s+sync: false/);
-    expect(blueprint.match(/name: soko-market-db\n\s+property: connectionString/g)).toHaveLength(
-      10
+    expect(blueprint).toContain("name: soko-market-api\n    runtime: node");
+    expect(blueprint).toContain("plan: starter");
+    expect(blueprint).toContain(
+      "preDeployCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate"
     );
+    expect(blueprint).not.toContain("db:migrate &&");
+    expect(blueprint.match(/key: DATABASE_URL\n\s+sync: false/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(
+      blueprint.match(/key: DIRECT_DATABASE_URL\n\s+sync: false/g)?.length
+    ).toBeGreaterThanOrEqual(4);
     expect(blueprint).toContain("name: soko-market-account-purge");
     expect(blueprint).toContain("corepack pnpm db:purge-accounts");
     expect(blueprint).toContain("key: ACCOUNT_DELETION_PROCESSORS_JSON\n        sync: false");
     expect(blueprint).toContain("key: ACCOUNT_DELETION_WEBHOOK_SECRET\n        sync: false");
   });
 
-  it("enables secured client inference without enabling Render-local inference", async () => {
+  it("provisions authenticated private inference with durable storage and disabled cloud fallback", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8")
@@ -45,12 +51,25 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(blueprint).toContain("services/ai-runtime/**");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
+    expect(blueprint).toContain("type: pserv\n    name: soko-market-inference");
+    expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
+    expect(blueprint).toContain("mountPath: /var/lib/soko-models");
+    expect(blueprint).toContain("property: hostport");
+    expect(blueprint).toContain("envVarKey: INFERENCE_SERVICE_TOKEN");
+    expect(blueprint).toContain("INFERENCE_SERVICE_TOKEN\n        generateValue: true");
+    expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
+    const inference = blueprint.slice(
+      blueprint.indexOf("name: soko-market-inference"),
+      blueprint.indexOf("name: soko-market-web")
+    );
+    expect(inference).not.toContain("healthCheckPath:");
+    expect(inference).toContain('OLLAMA_NO_CLOUD\n        value: "true"');
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
-    expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
+    expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "false"');
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
     expect(production).toContain('VITE_INFERENCE_NATIVE_BRIDGE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
-    expect(production).toContain('VITE_INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
+    expect(production).toContain('VITE_INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "false"');
     expect(production).toContain('VITE_INFERENCE_MAX_FALLBACKS\n        value: "3"');
   });
 });

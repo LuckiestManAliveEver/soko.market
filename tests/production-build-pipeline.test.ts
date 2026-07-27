@@ -19,10 +19,11 @@ describe("production workspace build pipeline", () => {
       scripts: Record<string, string>;
     };
 
-    expect(apiManifest.dependencies["@soko/ai-runtime"]).toBe("workspace:*");
+    expect(apiManifest.dependencies).not.toHaveProperty("@soko/ai-runtime");
     expect(rootManifest.scripts["build:production"]).toContain("pnpm --filter @soko/api^... build");
     expect(rootManifest.scripts["build:production"]).toContain("pnpm --filter @soko/api build");
     expect(rootManifest.scripts["build:production"]).toContain("pnpm check:production-imports");
+    expect(rootManifest.scripts["inference:build"]).toBe("pnpm --filter @soko/ai-runtime build");
     expect(runtimeManifest.main).toBe("./dist/index.js");
     expect(runtimeManifest.types).toBe("./dist/index.d.ts");
     expect(runtimeManifest.exports).toHaveProperty(".");
@@ -32,14 +33,13 @@ describe("production workspace build pipeline", () => {
 
   it("uses the same production command in the Render API service", async () => {
     const blueprint = await readFile("render.yaml", "utf8");
-    const apiService = blueprint.slice(
-      blueprint.indexOf("name: soko-market-api"),
-      blueprint.indexOf("name: soko-market-web")
-    );
+    const apiStart = blueprint.indexOf("name: soko-market-api");
+    const apiEnd = blueprint.indexOf("\n  - type:", apiStart);
+    const apiService = blueprint.slice(apiStart, apiEnd);
 
     expect(apiService).toContain("corepack pnpm install --frozen-lockfile");
     expect(apiService).toContain("corepack pnpm build:production");
-    expect(apiService).toContain("services/ai-runtime/**");
+    expect(apiService).not.toContain("services/ai-runtime/**");
     expect(apiService).toContain("corepack pnpm db:migrate");
     expect(apiService).toContain("corepack pnpm --filter @soko/api start");
   });

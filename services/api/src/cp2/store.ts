@@ -2997,6 +2997,46 @@ export class Cp2Store {
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     const model = this.requireCanonicalAiModel(input.modelId);
     validateAgentModelBindingConfiguration(input, model, aiModelRegistry);
+    const existingActive = this.activeAgentModelBinding(input.agentId);
+    if (
+      existingActive !== null &&
+      existingActive.modelId === input.modelId &&
+      existingActive.executionTarget === input.executionTarget &&
+      existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
+      existingActive.fallbackPolicy === normalizeFallbackPolicy(input.fallbackPolicy) &&
+      existingActive.fallbackModelId === input.fallbackModelId &&
+      existingActive.permissions.allowInstalledApp === input.permissions.allowInstalledApp &&
+      existingActive.permissions.allowRemoteShopDevice ===
+        input.permissions.allowRemoteShopDevice &&
+      existingActive.permissions.allowOpenAIFallback === input.permissions.allowOpenAIFallback
+    ) {
+      const health = healthSummary(
+        await this.requireModelRuntimeAdapter(input).healthCheck({
+          agentId: input.agentId,
+          shopId: input.businessId,
+          modelId: input.modelId
+        }),
+        now
+      );
+      if (!health.ok) throw modelHealthError(health);
+      const verified = {
+        ...existingActive,
+        lastVerifiedAt: health.checkedAt,
+        lastVerificationStatus: "passed" as const,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        updatedAt: health.checkedAt,
+        updatedBy: session.user.id
+      };
+      this.agentModelBindings.set(verified.id, verified);
+      this.recordAgentModelBindingAudit(
+        "agent_model.activation_reverified",
+        verified,
+        session.user.id,
+        { latencyMs: health.latencyMs }
+      );
+      return { binding: cloneAgentModelBinding(verified), healthCheck: health };
+    }
     if (this.agentModelActivationLocks.has(input.agentId)) {
       throw new Cp2Error(
         409,
@@ -3045,7 +3085,7 @@ export class Cp2Store {
       if (!health.ok) {
         const failed: AgentModelBindingSummary = {
           ...pending,
-          status: health.errorCode === "RUNTIME_UNAVAILABLE" ? "unavailable" : "failed",
+          status: isUnavailableRuntimeCode(health.errorCode) ? "unavailable" : "failed",
           lastVerifiedAt: health.checkedAt,
           lastVerificationStatus: "failed",
           lastErrorCode: health.errorCode,
@@ -3115,7 +3155,7 @@ export class Cp2Store {
           const failed: AgentModelBindingSummary = {
             ...current,
             status:
-              error.code === "RUNTIME_UNAVAILABLE" ||
+              isUnavailableRuntimeCode(error.code) ||
               error.code === "BRIDGE_UNAVAILABLE" ||
               error.code === "BROWSER_RUNTIME_DISABLED"
                 ? "unavailable"
@@ -16703,7 +16743,19 @@ function modelTraceFromCompletion(
     durationMs: completion.durationMs,
     fallbackUsed,
     outputKind,
-    errorCode: completion.errorCode
+    errorCode: completion.errorCode,
+    ...(typeof completion.metadata.providerModelId === "string"
+      ? { providerModelId: completion.metadata.providerModelId }
+      : {}),
+    ...(typeof completion.metadata.inferenceRequestId === "string"
+      ? { inferenceRequestId: completion.metadata.inferenceRequestId }
+      : {}),
+    ...(typeof completion.metadata.promptTokens === "number"
+      ? { promptTokens: completion.metadata.promptTokens }
+      : {}),
+    ...(typeof completion.metadata.completionTokens === "number"
+      ? { completionTokens: completion.metadata.completionTokens }
+      : {})
   };
 }
 
@@ -18462,7 +18514,7 @@ function modelHealthError(health: ModelRuntimeHealthSummary): Cp2Error {
   const statusCode =
     code === "INFERENCE_TIMEOUT"
       ? 504
-      : code === "RUNTIME_UNAVAILABLE" || code === "MODEL_NOT_LOADED"
+      : isUnavailableRuntimeCode(code)
         ? 503
         : code === "MODEL_IDENTITY_MISMATCH"
           ? 422
@@ -18477,6 +18529,23 @@ function modelHealthError(health: ModelRuntimeHealthSummary): Cp2Error {
       executionTarget: health.executionTarget,
       latencyMs: health.latencyMs
     }
+  );
+}
+
+function isUnavailableRuntimeCode(code: string | null): boolean {
+  return (
+    code !== null &&
+    [
+      "RUNTIME_UNAVAILABLE",
+      "INFERENCE_DISABLED",
+      "INFERENCE_SERVICE_UNREACHABLE",
+      "INFERENCE_ENGINE_UNREACHABLE",
+      "INFERENCE_AUTHENTICATION_FAILED",
+      "MODEL_NOT_INSTALLED",
+      "MODEL_LOADING",
+      "MODEL_NOT_LOADED",
+      "MODEL_STORAGE_NOT_DURABLE"
+    ].includes(code)
   );
 }
 

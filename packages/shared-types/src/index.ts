@@ -13,9 +13,11 @@ export interface EnvironmentConfig {
   databaseUrl: string;
   backendInferenceEnabled: boolean;
   backendInferenceBaseUrl: string;
+  backendInferenceConnectTimeoutMs: number;
   backendInferenceTimeoutMs: number;
   backendInferenceModelId: string;
-  backendInferenceProviderModel: string;
+  backendInferenceRequired: boolean;
+  inferenceServiceToken: string;
   inferenceClientFirst: boolean;
   inferenceOwnerNodeEnabled: boolean;
   inferenceCloudFallbackEnabled: boolean;
@@ -533,6 +535,58 @@ export type AgentModelBindingStatus =
 
 export type ModelExecutionTarget =
   "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+
+export interface RuntimeModelDefinition {
+  id: string;
+  displayName: string;
+  provider: "ollama";
+  providerModelId: string;
+  executionTarget: "backend";
+  deploymentTarget: "render-private-inference";
+  contextWindow: number;
+  enabled: boolean;
+}
+
+export const runtimeModels = {
+  "qwen2.5-0.5b-android": {
+    id: "qwen2.5-0.5b-android",
+    displayName: "Qwen2.5 0.5B",
+    provider: "ollama",
+    providerModelId: "qwen2.5:0.5b",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 32_768,
+    enabled: true
+  },
+  "qwen2.5-1.5b-android": {
+    id: "qwen2.5-1.5b-android",
+    displayName: "Qwen2.5 1.5B",
+    provider: "ollama",
+    providerModelId: "qwen2.5:1.5b",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 32_768,
+    enabled: false
+  },
+  "smollm2-360m-android": {
+    id: "smollm2-360m-android",
+    displayName: "SmolLM2 360M",
+    provider: "ollama",
+    providerModelId: "smollm2:360m",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 8_192,
+    enabled: false
+  }
+} as const satisfies Record<string, RuntimeModelDefinition>;
+
+export type RuntimeModelId = keyof typeof runtimeModels;
+
+export function resolveRuntimeModel(modelId: string): RuntimeModelDefinition | null {
+  return Object.prototype.hasOwnProperty.call(runtimeModels, modelId)
+    ? runtimeModels[modelId as RuntimeModelId]
+    : null;
+}
 
 export interface AgentModelBindingPermissions {
   allowInstalledApp: boolean;
@@ -2375,6 +2429,10 @@ export interface RuntimeModelTrace {
   errorCode: string | null;
   bindingId?: string;
   modelId?: string;
+  providerModelId?: string;
+  inferenceRequestId?: string;
+  promptTokens?: number;
+  completionTokens?: number;
   executionTarget?: ModelExecutionTarget;
   fallbackReason?: string | null;
 }

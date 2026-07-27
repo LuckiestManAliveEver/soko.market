@@ -40,12 +40,18 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "health:api": "node scripts/health-check.mjs",
+    "inference:build": "pnpm --filter @soko/ai-runtime build",
+    "inference:health": "node scripts/inference-health.mjs",
+    "inference:probe": "node scripts/inference-probe.mjs",
+    "inference:start": "pnpm --filter @soko/ai-runtime start",
     "lint": "eslint . --max-warnings=0",
     "restart:dev": "pnpm clean:dev && pnpm dev",
     "start": "pnpm --filter @soko/api start",
     "test": "vitest run",
+    "test:live-model-runtime": "RUN_LIVE_MODEL_RUNTIME_TEST=true vitest run tests/live-render-model-runtime.test.ts",
     "test:ui-cert": "playwright test e2e/responsive-accessibility.spec.ts",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --if-present typecheck",
+    "verify:production-runtime": "node scripts/verify-production-runtime.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",

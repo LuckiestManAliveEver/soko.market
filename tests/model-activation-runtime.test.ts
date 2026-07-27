@@ -302,23 +302,12 @@ describe("agent model activation runtime", () => {
 
 describe("backend model adapter", () => {
   it("validates provider identity and captures usage and latency", async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            model: "qwen2.5:0.5b",
-            response: "SOKO_MODEL_OK",
-            prompt_eval_count: 7,
-            eval_count: 3,
-            done_reason: "stop"
-          }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-    );
+    const fetchMock = gatewayFetch();
     const adapter = createBackendModelAdapter({
-      baseUrl: "http://127.0.0.1:11434",
+      baseUrl: "soko-market-inference:4002",
       modelId: primaryModelId,
-      providerModel: "qwen2.5:0.5b",
+      serviceToken: "test-inference-token",
+      connectTimeoutMs: 500,
       timeoutMs: 1_000,
       fetch: fetchMock
     });
@@ -334,22 +323,29 @@ describe("backend model adapter", () => {
       executionTarget: "backend"
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      new URL("http://127.0.0.1:11434/api/generate"),
-      expect.objectContaining({ method: "POST" })
+      new URL("http://soko-market-inference:4002/v1/models/qwen2.5-0.5b-android/probe"),
+      expect.objectContaining({
+        method: "POST",
+        credentials: "omit",
+        headers: expect.objectContaining({
+          authorization: "Bearer test-inference-token"
+        })
+      })
     );
   });
 
   it("rejects empty and mismatched backend responses", async () => {
-    for (const body of [
-      { model: "other:1b", response: "SOKO_MODEL_OK" },
-      { model: "qwen2.5:0.5b", response: "" }
+    for (const [gatewayOptions, expectedCode] of [
+      [{ providerModelId: "other:1b" }, "MODEL_IDENTITY_MISMATCH"],
+      [{ text: "" }, "INVALID_INFERENCE_RESPONSE"]
     ]) {
       const adapter = createBackendModelAdapter({
-        baseUrl: "http://127.0.0.1:11434",
+        baseUrl: "http://soko-market-inference:4002",
         modelId: primaryModelId,
-        providerModel: "qwen2.5:0.5b",
+        serviceToken: "test-inference-token",
+        connectTimeoutMs: 500,
         timeoutMs: 1_000,
-        fetch: vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }))
+        fetch: gatewayFetch(gatewayOptions)
       });
       await expect(
         adapter.generate({
@@ -357,26 +353,18 @@ describe("backend model adapter", () => {
           prompt: runtimePrompt("hello")
         })
       ).rejects.toMatchObject({
-        code: body.model === "other:1b" ? "MODEL_IDENTITY_MISMATCH" : "MALFORMED_MODEL_OUTPUT"
+        code: expectedCode
       });
     }
   });
 
   it("requests the runtime JSON contract and normalizes a plain model response", async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            model: "qwen2.5:0.5b",
-            response: "market"
-          }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-    );
+    const fetchMock = gatewayFetch({ text: "market" });
     const adapter = createBackendModelAdapter({
-      baseUrl: "http://127.0.0.1:11434",
+      baseUrl: "http://soko-market-inference:4002",
       modelId: primaryModelId,
-      providerModel: "qwen2.5:0.5b",
+      serviceToken: "test-inference-token",
+      connectTimeoutMs: 500,
       timeoutMs: 1_000,
       fetch: fetchMock
     });
@@ -387,12 +375,108 @@ describe("backend model adapter", () => {
     });
 
     expect(JSON.parse(completion.text)).toEqual({ type: "response", message: "market" });
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      model: "qwen2.5:0.5b",
-      format: "json"
+    expect(completion).toMatchObject({
+      providerModelId: "qwen2.5:0.5b",
+      inferenceRequestId: "inference-request-1",
+      promptTokens: 7,
+      completionTokens: 3
+    });
+    const generationCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/v1/chat/completions")
+    );
+    expect(JSON.parse(String(generationCall?.[1]?.body))).toMatchObject({
+      modelId: primaryModelId,
+      jsonOutput: true
     });
   });
+
+  it("performs one successful readiness check and never retries generation", async () => {
+    const fetchMock = gatewayFetch({ generationStatus: 503 });
+    const adapter = createBackendModelAdapter({
+      baseUrl: "http://soko-market-inference:4002",
+      modelId: primaryModelId,
+      serviceToken: "test-inference-token",
+      connectTimeoutMs: 500,
+      timeoutMs: 1_000,
+      fetch: fetchMock
+    });
+
+    await expect(
+      adapter.generate({
+        context: { agentId: "agent", shopId: "shop", modelId: primaryModelId },
+        prompt: runtimePrompt("hello")
+      })
+    ).rejects.toMatchObject({ code: "MODEL_GENERATION_FAILED" });
+
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/health/ready"))
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/chat/completions"))
+    ).toHaveLength(1);
+  });
 });
+
+function gatewayFetch(
+  overrides: { providerModelId?: string; text?: string; generationStatus?: number } = {}
+): ReturnType<typeof vi.fn> {
+  const providerModelId = overrides.providerModelId ?? "qwen2.5:0.5b";
+  return vi.fn(async (input: URL | RequestInfo) => {
+    const url = String(input);
+    const body = url.endsWith("/health/ready")
+      ? {
+          ok: true,
+          engine: "ollama",
+          models: [
+            {
+              id: primaryModelId,
+              providerModelId: "qwen2.5:0.5b",
+              available: true,
+              digest: "sha256:model"
+            }
+          ]
+        }
+      : url.endsWith("/probe")
+        ? {
+            ok: true,
+            modelId: primaryModelId,
+            providerModelId,
+            engine: "ollama",
+            latencyMs: 4
+          }
+        : {
+            ok: true,
+            id: "inference-request-1",
+            modelId: primaryModelId,
+            providerModelId,
+            engine: "ollama",
+            text: overrides.text ?? "SOKO_MODEL_OK",
+            latencyMs: 8,
+            usage: { promptTokens: 7, completionTokens: 3 },
+            finishReason: "stop"
+          };
+    const generationFailure =
+      url.endsWith("/v1/chat/completions") && overrides.generationStatus !== undefined;
+    return new Response(
+      JSON.stringify(
+        generationFailure
+          ? {
+              ok: false,
+              error: {
+                code: "MODEL_GENERATION_FAILED",
+                message: "generation failed",
+                retryable: true
+              }
+            }
+          : body
+      ),
+      {
+        status: generationFailure ? overrides.generationStatus : 200,
+        headers: { "content-type": "application/json" }
+      }
+    );
+  });
+}
 
 function healthyAdapter(
   modelId: string,

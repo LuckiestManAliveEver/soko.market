@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ModelExecutionTarget,
   RuntimeModelCompletionResult,
@@ -5,6 +6,7 @@ import type {
   RuntimeModelPrompt,
   RuntimeModelProvider
 } from "@soko/shared-types";
+import { resolveRuntimeModel } from "@soko/shared-types";
 
 export interface ModelRuntimeContext {
   agentId: string;
@@ -37,6 +39,8 @@ export interface ModelRuntimeGenerationResult {
   completionTokens?: number;
   latencyMs: number;
   finishReason?: string;
+  providerModelId?: string;
+  inferenceRequestId?: string;
 }
 
 export interface ModelRuntimeAdapter {
@@ -65,105 +69,30 @@ export class ModelRuntimeError extends Error {
 export interface BackendModelAdapterOptions {
   baseUrl: string;
   modelId: string;
-  providerModel: string;
+  serviceToken: string;
+  connectTimeoutMs: number;
   timeoutMs: number;
   fetch?: typeof fetch;
+  requestId?: () => string;
 }
 
 export function createBackendModelAdapter(
   options: BackendModelAdapterOptions
 ): ModelRuntimeAdapter {
   const baseUrl = normalizeBackendBaseUrl(options.baseUrl);
+  const runtimeModel = resolveRuntimeModel(options.modelId);
+  if (runtimeModel === null) {
+    throw new Error(`No canonical runtime mapping exists for model ${options.modelId}.`);
+  }
   const request = options.fetch ?? fetch;
-
-  const invoke = async (
-    prompt: string,
-    signal?: AbortSignal,
-    generation?: { maxTokens?: number; temperature?: number; runtimeOutput?: boolean }
-  ): Promise<ModelRuntimeGenerationResult> => {
-    const startedAt = Date.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
-    const abort = () => controller.abort();
-    signal?.addEventListener("abort", abort, { once: true });
-    try {
-      const response = await request(new URL("/api/generate", baseUrl), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: options.providerModel,
-          prompt,
-          stream: false,
-          ...(generation?.runtimeOutput ? { format: "json" } : {}),
-          options: {
-            temperature: generation?.temperature ?? 0.2,
-            num_predict: generation?.maxTokens ?? 256
-          }
-        }),
-        signal: controller.signal
-      });
-      const body = (await response.json().catch(() => null)) as {
-        model?: unknown;
-        response?: unknown;
-        prompt_eval_count?: unknown;
-        eval_count?: unknown;
-        done_reason?: unknown;
-        error?: unknown;
-      } | null;
-      if (!response.ok) {
-        const detail =
-          typeof body?.error === "string" ? body.error.slice(0, 240) : `HTTP ${response.status}`;
-        throw new ModelRuntimeError(
-          response.status === 404 ? "MODEL_NOT_LOADED" : "RUNTIME_UNAVAILABLE",
-          `Backend inference failed: ${detail}`,
-          response.status === 404 || response.status === 408 || response.status >= 500
-        );
-      }
-      const rawText = typeof body?.response === "string" ? body.response.trim() : "";
-      const text = generation?.runtimeOutput ? normalizeBackendModelText(rawText) : rawText;
-      if (text.length === 0) {
-        throw new ModelRuntimeError(
-          "MALFORMED_MODEL_OUTPUT",
-          "The backend model returned an empty or malformed response.",
-          true
-        );
-      }
-      if (
-        typeof body?.model === "string" &&
-        !providerModelMatches(body.model, options.providerModel)
-      ) {
-        throw new ModelRuntimeError(
-          "MODEL_IDENTITY_MISMATCH",
-          "The backend returned a response from a different model.",
-          false
-        );
-      }
-      return {
-        text,
-        modelId: options.modelId,
-        provider: "ollama",
-        executionTarget: "backend",
-        ...(typeof body?.prompt_eval_count === "number"
-          ? { promptTokens: body.prompt_eval_count }
-          : {}),
-        ...(typeof body?.eval_count === "number" ? { completionTokens: body.eval_count } : {}),
-        latencyMs: Date.now() - startedAt,
-        ...(typeof body?.done_reason === "string" ? { finishReason: body.done_reason } : {})
-      };
-    } catch (error) {
-      if (error instanceof ModelRuntimeError) throw error;
-      const aborted = controller.signal.aborted;
-      throw new ModelRuntimeError(
-        aborted ? "INFERENCE_TIMEOUT" : "RUNTIME_UNAVAILABLE",
-        aborted ? "Backend inference timed out." : "The backend inference service is unavailable.",
-        true,
-        { cause: error }
-      );
-    } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-    }
-  };
+  const client = createBackendInferenceClient({
+    baseUrl,
+    serviceToken: options.serviceToken,
+    connectTimeoutMs: options.connectTimeoutMs,
+    timeoutMs: options.timeoutMs,
+    request,
+    ...(options.requestId === undefined ? {} : { requestId: options.requestId })
+  });
 
   return {
     provider: "ollama",
@@ -176,7 +105,31 @@ export function createBackendModelAdapter(
           message: "This adapter does not serve the requested model."
         };
       }
-      return { available: true, errorCode: null, message: null };
+      try {
+        const readiness = await client.getReadiness(context.signal);
+        const model = readiness.models.find((candidate) => candidate.id === context.modelId);
+        if (model !== undefined && model.providerModelId !== runtimeModel.providerModelId) {
+          return {
+            available: false,
+            errorCode: "MODEL_IDENTITY_MISMATCH",
+            message: "The inference service reported an unexpected provider model."
+          };
+        }
+        return model?.available === true
+          ? { available: true, errorCode: null, message: null }
+          : {
+              available: false,
+              errorCode: "MODEL_NOT_INSTALLED",
+              message: "The model is not installed on the inference service."
+            };
+      } catch (error) {
+        const runtimeError = asModelRuntimeError(error);
+        return {
+          available: false,
+          errorCode: runtimeError.code,
+          message: runtimeError.message
+        };
+      }
     },
     async healthCheck(context) {
       const startedAt = Date.now();
@@ -193,21 +146,24 @@ export function createBackendModelAdapter(
         };
       }
       try {
-        const result = await invoke("Reply with exactly: SOKO_MODEL_OK", context.signal, {
-          maxTokens: 16,
-          temperature: 0
-        });
-        const ok = normalizeHealthResponse(result.text).includes("SOKO_MODEL_OK");
+        const result = await client.probeModel(context.modelId, context.signal);
+        if (result.providerModelId !== runtimeModel.providerModelId) {
+          throw new ModelRuntimeError(
+            "MODEL_IDENTITY_MISMATCH",
+            "The inference service probed an unexpected provider model.",
+            false
+          );
+        }
         return {
-          available: ok,
-          modelId: result.modelId,
-          provider: result.provider,
-          executionTarget: result.executionTarget,
+          available: true,
+          modelId: context.modelId,
+          provider: result.engine,
+          executionTarget: "backend",
           latencyMs: result.latencyMs,
-          responsePreview: result.text.slice(0, 120),
-          errorCode: ok ? null : "MODEL_HEALTH_CHECK_FAILED",
-          message: ok ? null : "The selected model did not return the readiness marker.",
-          retryable: !ok
+          responsePreview: "SOKO_MODEL_OK",
+          errorCode: null,
+          message: null,
+          retryable: false
         };
       } catch (error) {
         const runtimeError = asModelRuntimeError(error);
@@ -228,12 +184,209 @@ export function createBackendModelAdapter(
       const availability = await this.canRun(context);
       if (!availability.available) {
         throw new ModelRuntimeError(
-          availability.errorCode ?? "RUNTIME_UNAVAILABLE",
+          availability.errorCode ?? "INFERENCE_SERVICE_UNREACHABLE",
           availability.message ?? "The model runtime is unavailable.",
+          true
+        );
+      }
+      const result = await client.generate(
+        {
+          modelId: context.modelId,
+          prompt: buildBackendPrompt(prompt),
+          maxTokens: 256,
+          temperature: 0.2,
+          jsonOutput: true
+        },
+        context.signal
+      );
+      if (result.providerModelId !== runtimeModel.providerModelId) {
+        throw new ModelRuntimeError(
+          "MODEL_IDENTITY_MISMATCH",
+          "The inference service generated with an unexpected provider model.",
           false
         );
       }
-      return invoke(buildBackendPrompt(prompt), context.signal, { runtimeOutput: true });
+      const text = normalizeBackendModelText(result.text);
+      if (text.length === 0) {
+        throw new ModelRuntimeError(
+          "INVALID_INFERENCE_RESPONSE",
+          "The inference service returned malformed model output.",
+          true
+        );
+      }
+      return {
+        text,
+        modelId: result.modelId,
+        provider: result.engine,
+        executionTarget: "backend",
+        ...(result.usage.promptTokens === null ? {} : { promptTokens: result.usage.promptTokens }),
+        ...(result.usage.completionTokens === null
+          ? {}
+          : { completionTokens: result.usage.completionTokens }),
+        latencyMs: result.latencyMs,
+        ...(result.finishReason === null ? {} : { finishReason: result.finishReason }),
+        providerModelId: result.providerModelId,
+        inferenceRequestId: result.id
+      };
+    }
+  };
+}
+
+export interface BackendInferenceReadiness {
+  ok: true;
+  engine: string;
+  models: BackendInferenceModel[];
+}
+
+export interface BackendInferenceModel {
+  id: string;
+  providerModelId: string;
+  available: boolean;
+  digest: string | null;
+}
+
+export interface BackendInferenceClient {
+  getReadiness(signal?: AbortSignal): Promise<BackendInferenceReadiness>;
+  listModels(signal?: AbortSignal): Promise<BackendInferenceModel[]>;
+  probeModel(
+    modelId: string,
+    signal?: AbortSignal
+  ): Promise<{
+    ok: true;
+    modelId: string;
+    providerModelId: string;
+    engine: string;
+    latencyMs: number;
+  }>;
+  generate(
+    input: {
+      modelId: string;
+      prompt: string;
+      maxTokens: number;
+      temperature: number;
+      jsonOutput: boolean;
+    },
+    signal?: AbortSignal
+  ): Promise<{
+    ok: true;
+    id: string;
+    modelId: string;
+    providerModelId: string;
+    engine: string;
+    text: string;
+    latencyMs: number;
+    usage: { promptTokens: number | null; completionTokens: number | null };
+    finishReason: string | null;
+  }>;
+}
+
+export function createBackendInferenceClient(options: {
+  baseUrl: URL;
+  serviceToken: string;
+  connectTimeoutMs: number;
+  timeoutMs: number;
+  request: typeof fetch;
+  requestId?: () => string;
+}): BackendInferenceClient {
+  const invoke = async (input: {
+    path: string;
+    method?: "GET" | "POST";
+    body?: unknown;
+    signal?: AbortSignal;
+    retryReadiness?: boolean;
+  }): Promise<unknown> => {
+    const attempts = input.retryReadiness === true ? 2 : 1;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await inferenceRequest(options, input);
+      } catch (error) {
+        lastError = error;
+        if (attempt + 1 >= attempts || !(error instanceof ModelRuntimeError) || !error.retryable) {
+          throw error;
+        }
+      }
+    }
+    throw lastError;
+  };
+
+  return {
+    async getReadiness(signal) {
+      const body = await invoke({
+        path: "/health/ready",
+        ...(signal === undefined ? {} : { signal }),
+        retryReadiness: true
+      });
+      return parseModelListResponse(body);
+    },
+    async listModels(signal) {
+      const body = await invoke({
+        path: "/v1/models",
+        ...(signal === undefined ? {} : { signal })
+      });
+      return parseModelListResponse(body).models;
+    },
+    async probeModel(modelId, signal) {
+      const body = await invoke({
+        path: `/v1/models/${encodeURIComponent(modelId)}/probe`,
+        method: "POST",
+        ...(signal === undefined ? {} : { signal })
+      });
+      if (
+        !isRecord(body) ||
+        body.ok !== true ||
+        body.modelId !== modelId ||
+        typeof body.providerModelId !== "string" ||
+        typeof body.engine !== "string" ||
+        typeof body.latencyMs !== "number"
+      ) {
+        throw invalidInferenceResponse();
+      }
+      return {
+        ok: true,
+        modelId,
+        providerModelId: body.providerModelId,
+        engine: body.engine,
+        latencyMs: body.latencyMs
+      };
+    },
+    async generate(input, signal) {
+      const body = await invoke({
+        path: "/v1/chat/completions",
+        method: "POST",
+        body: input,
+        ...(signal === undefined ? {} : { signal })
+      });
+      if (
+        !isRecord(body) ||
+        body.ok !== true ||
+        typeof body.id !== "string" ||
+        body.modelId !== input.modelId ||
+        typeof body.providerModelId !== "string" ||
+        typeof body.engine !== "string" ||
+        typeof body.text !== "string" ||
+        body.text.trim() === "" ||
+        typeof body.latencyMs !== "number" ||
+        !isRecord(body.usage)
+      ) {
+        throw invalidInferenceResponse();
+      }
+      const promptTokens = nullableNumber(body.usage.promptTokens);
+      const completionTokens = nullableNumber(body.usage.completionTokens);
+      if (promptTokens === undefined || completionTokens === undefined) {
+        throw invalidInferenceResponse();
+      }
+      return {
+        ok: true,
+        id: body.id,
+        modelId: input.modelId,
+        providerModelId: body.providerModelId,
+        engine: body.engine,
+        text: body.text,
+        latencyMs: body.latencyMs,
+        usage: { promptTokens, completionTokens },
+        finishReason: typeof body.finishReason === "string" ? body.finishReason : null
+      };
     }
   };
 }
@@ -338,7 +491,13 @@ export function runtimeProviderFromAdapter(input: {
             ...(result.completionTokens === undefined
               ? {}
               : { completionTokens: result.completionTokens }),
-            ...(result.finishReason === undefined ? {} : { finishReason: result.finishReason })
+            ...(result.finishReason === undefined ? {} : { finishReason: result.finishReason }),
+            ...(result.providerModelId === undefined
+              ? {}
+              : { providerModelId: result.providerModelId }),
+            ...(result.inferenceRequestId === undefined
+              ? {}
+              : { inferenceRequestId: result.inferenceRequestId })
           }
         };
       } catch (error) {
@@ -425,30 +584,174 @@ function buildBackendPrompt(prompt: RuntimeModelPrompt): string {
 }
 
 function normalizeBackendBaseUrl(value: string): URL {
-  const url = new URL(value);
+  const normalized = /^[a-z][a-z0-9+.-]*:\/\//iu.test(value.trim())
+    ? value.trim()
+    : `http://${value.trim()}`;
+  const url = new URL(normalized);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("BACKEND_INFERENCE_BASE_URL must use http or https.");
   }
-  url.username = "";
-  url.password = "";
+  if (url.username !== "" || url.password !== "") {
+    throw new Error("BACKEND_INFERENCE_BASE_URL must not include credentials.");
+  }
   return url;
 }
 
-function providerModelMatches(actual: string, expected: string): boolean {
-  const normalize = (value: string) =>
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/:latest$/, "");
-  return normalize(actual) === normalize(expected);
+async function inferenceRequest(
+  options: {
+    baseUrl: URL;
+    serviceToken: string;
+    connectTimeoutMs: number;
+    timeoutMs: number;
+    request: typeof fetch;
+    requestId?: () => string;
+  },
+  input: {
+    path: string;
+    method?: "GET" | "POST";
+    body?: unknown;
+    signal?: AbortSignal;
+  }
+): Promise<unknown> {
+  const controller = new AbortController();
+  let timeoutKind: "connect" | "request" | null = null;
+  const requestTimeout = setTimeout(() => {
+    timeoutKind = "request";
+    controller.abort();
+  }, options.timeoutMs);
+  const connectTimeout = setTimeout(() => {
+    timeoutKind = "connect";
+    controller.abort();
+  }, options.connectTimeoutMs);
+  const abort = () => controller.abort();
+  input.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await options.request(new URL(input.path, options.baseUrl), {
+      method: input.method ?? "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${options.serviceToken}`,
+        "content-type": "application/json",
+        "x-request-id": options.requestId?.() ?? randomUUID()
+      },
+      ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+      signal: controller.signal,
+      credentials: "omit"
+    });
+    clearTimeout(connectTimeout);
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = isRecord(body) && isRecord(body.error) ? body.error : null;
+      const serviceCode = typeof error?.code === "string" ? error.code : null;
+      const code =
+        response.status === 401
+          ? "INFERENCE_AUTHENTICATION_FAILED"
+          : normalizeServiceErrorCode(serviceCode);
+      const message =
+        typeof error?.message === "string"
+          ? error.message.slice(0, 240)
+          : "The inference service rejected the request.";
+      throw new ModelRuntimeError(
+        code,
+        message,
+        typeof error?.retryable === "boolean"
+          ? error.retryable
+          : response.status === 408 || response.status === 429 || response.status >= 500
+      );
+    }
+    if (body === null) throw invalidInferenceResponse();
+    return body;
+  } catch (error) {
+    if (error instanceof ModelRuntimeError) throw error;
+    if (controller.signal.aborted) {
+      throw new ModelRuntimeError(
+        "INFERENCE_TIMEOUT",
+        timeoutKind === "connect"
+          ? "The inference service connection timed out."
+          : "The inference request timed out.",
+        true,
+        { cause: error }
+      );
+    }
+    throw new ModelRuntimeError(
+      "INFERENCE_SERVICE_UNREACHABLE",
+      "The inference service is unreachable.",
+      true,
+      { cause: error }
+    );
+  } finally {
+    clearTimeout(connectTimeout);
+    clearTimeout(requestTimeout);
+    input.signal?.removeEventListener("abort", abort);
+  }
 }
 
-function normalizeHealthResponse(value: string): string {
-  return value
-    .replace(/[`"'.,!?]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+function normalizeServiceErrorCode(code: string | null): string {
+  return code !== null &&
+    new Set([
+      "INFERENCE_TIMEOUT",
+      "INFERENCE_ENGINE_UNREACHABLE",
+      "MODEL_NOT_INSTALLED",
+      "MODEL_LOADING",
+      "MODEL_PROBE_FAILED",
+      "MODEL_GENERATION_FAILED",
+      "INVALID_INFERENCE_RESPONSE",
+      "MODEL_STORAGE_NOT_DURABLE",
+      "MODEL_NOT_CONFIGURED"
+    ]).has(code)
+    ? code
+    : "MODEL_GENERATION_FAILED";
+}
+
+function invalidInferenceResponse(): ModelRuntimeError {
+  return new ModelRuntimeError(
+    "INVALID_INFERENCE_RESPONSE",
+    "The inference service returned an invalid response.",
+    true
+  );
+}
+
+function parseModelListResponse(body: unknown): BackendInferenceReadiness {
+  if (
+    !isRecord(body) ||
+    body.ok !== true ||
+    typeof body.engine !== "string" ||
+    !Array.isArray(body.models)
+  ) {
+    throw invalidInferenceResponse();
+  }
+  const models = body.models.flatMap((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      typeof candidate.id !== "string" ||
+      typeof candidate.providerModelId !== "string" ||
+      typeof candidate.available !== "boolean"
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: candidate.id,
+        providerModelId: candidate.providerModelId,
+        available: candidate.available,
+        digest: typeof candidate.digest === "string" ? candidate.digest : null
+      }
+    ];
+  });
+  if (models.length !== body.models.length) throw invalidInferenceResponse();
+  return { ok: true, engine: body.engine, models };
+}
+
+function nullableNumber(value: unknown): number | null | undefined {
+  return value === null
+    ? null
+    : typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeBackendModelText(content: string): string {

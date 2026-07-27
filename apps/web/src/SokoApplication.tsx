@@ -160,6 +160,7 @@ import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes }
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import {
+  ApiRequestError,
   apiFetch,
   isDefinitiveAuthenticationError,
   isRetryableApiRequestError,
@@ -13369,6 +13370,16 @@ function AgentProfileSurface({
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
   const [activeAgentModelBinding, setActiveAgentModelBinding] =
     useState<AgentModelBindingSummary | null>(null);
+  const [serverBackendRuntime, setServerBackendRuntime] = useState<
+    Record<
+      string,
+      {
+        status: "available" | "unavailable";
+        latencyMs: number | null;
+        errorCode: string | null;
+      }
+    >
+  >({});
   const [cloudFallbackModelId, setCloudFallbackModelId] = useState<string | null>(null);
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
@@ -14323,12 +14334,28 @@ function AgentProfileSurface({
           executionTarget: "backend"
         }
       );
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "available",
+          latencyMs: result.healthCheck.latencyMs,
+          errorCode: null
+        }
+      }));
       setProfileMessage(
-        `${model.label} responded from ${result.healthCheck.executionTarget} in ${formatLatency(
-          result.healthCheck.latencyMs
-        )}.`
+        `Model verified. ${model.label} responded from ${
+          result.healthCheck.executionTarget
+        } in ${formatLatency(result.healthCheck.latencyMs)}.`
       );
     } catch (error) {
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "unavailable",
+          latencyMs: null,
+          errorCode: error instanceof ApiRequestError ? error.code : null
+        }
+      }));
       setProfileMessage(getErrorMessage(error));
     } finally {
       modelRuntimeBusyRef.current = false;
@@ -14368,6 +14395,14 @@ function AgentProfileSurface({
         }
       );
       setActiveAgentModelBinding(result.binding);
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "available",
+          latencyMs: result.healthCheck.latencyMs,
+          errorCode: null
+        }
+      }));
       setActiveAiModelId(result.binding.modelId);
       updateAgent({ model: result.binding.modelId });
       onAgentChange({ ...agent, model: result.binding.modelId });
@@ -15997,8 +16032,8 @@ function AgentProfileSurface({
                 <div className="section-subheading">
                   <h4>Soko backend models</h4>
                   <p>
-                    Available means the model exists in the registry. Active means this agent has a
-                    persisted binding that passed real backend inference.
+                    Available means the deployed runtime passed a real model probe. Active means
+                    this agent has a persisted binding that passed real backend inference.
                   </p>
                 </div>
                 <div className="ai-model-catalog">
@@ -16007,15 +16042,33 @@ function AgentProfileSurface({
                       activeAgentModelBinding?.status === "active" &&
                       activeAgentModelBinding.modelId === model.id &&
                       activeAgentModelBinding.executionTarget === "backend";
+                    const runtime = serverBackendRuntime[model.id];
+                    const runtimeLabel =
+                      runtime?.status === "available"
+                        ? "Available"
+                        : runtime?.status === "unavailable"
+                          ? "Unavailable"
+                          : "Not verified";
                     return (
                       <article className="ai-model-card" key={`backend:${model.id}`}>
                         <div>
                           <p className="eyebrow">
-                            Backend · {activeForAgent ? `Active for ${agent.name}` : "Available"}
+                            Backend · {activeForAgent ? `Active for ${agent.name}` : runtimeLabel}
                           </p>
                           <h4>{model.label}</h4>
                           <p>{model.description}</p>
                           <small>{model.capabilities.join(" · ")}</small>
+                          {runtime?.status === "unavailable" ? (
+                            <small role="status">
+                              {runtime.errorCode === "MODEL_NOT_INSTALLED"
+                                ? "Model not installed on the inference service."
+                                : "Backend model unavailable. The Soko inference service cannot currently be reached."}
+                            </small>
+                          ) : runtime?.status === "available" ? (
+                            <small>
+                              Model verified in {formatLatency(runtime.latencyMs ?? 0)}.
+                            </small>
+                          ) : null}
                         </div>
                         <div className="ai-model-card-actions">
                           <button

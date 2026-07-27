@@ -18,6 +18,8 @@
     "build": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/server.ts",
+    "health": "node ../../scripts/inference-health.mjs",
+    "probe": "node ../../scripts/inference-probe.mjs",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

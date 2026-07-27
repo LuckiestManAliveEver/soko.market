@@ -97,9 +97,10 @@ route permissions, runs real inference, and only then changes the active binding
 - `generate({ context, prompt })` for inference with model, provider, target, token and latency
   metadata.
 
-The backend adapter uses an Ollama-compatible `/api/generate` endpoint. It applies a bounded timeout,
-supports caller cancellation, rejects HTTP failures, empty output, malformed output, and provider
-model identity mismatches.
+The backend adapter uses the authenticated Soko private-inference gateway, not Ollama directly. It
+calls `/health/ready`, `/v1/models/:modelId/probe`, and `/v1/chat/completions`, applies separate
+connect and generation timeouts, supports caller cancellation, retries only readiness, and rejects
+HTTP failures, empty output, malformed output, and provider-model identity mismatches.
 
 The existing OpenAI provider is adapted without exposing its credential to the browser.
 
@@ -155,8 +156,10 @@ Server runtime:
 - `BACKEND_INFERENCE_ENABLED`
 - `BACKEND_INFERENCE_BASE_URL`
 - `BACKEND_INFERENCE_TIMEOUT_MS`
+- `BACKEND_INFERENCE_CONNECT_TIMEOUT_MS`
+- `BACKEND_INFERENCE_REQUIRED`
 - `BACKEND_INFERENCE_MODEL_ID`
-- `BACKEND_INFERENCE_MODEL`
+- `INFERENCE_SERVICE_TOKEN`
 - existing `INFERENCE_OWNER_NODE_*` and `INFERENCE_CLOUD_*` settings
 - `OPENAI_API_KEY` only when explicitly enabling allowlisted OpenAI fallback
 
@@ -177,15 +180,15 @@ enabled by these binding changes.
 
 ## Render verification
 
-Render leaves backend inference disabled until `BACKEND_INFERENCE_BASE_URL` points to a reachable
-inference service. Configure the service, enable the flag, deploy migration 040, then call the model
-test endpoint before activation. Keep OpenAI fallback disabled unless the API key, allowlist,
-selected fallback model, and owner permission are all intentionally configured.
+Render configures backend inference through the private `soko-market-inference` service reference.
+Deploy migration 040 and the private service, run the real probe, then call the model test endpoint
+before activation. Keep OpenAI fallback disabled unless the API key, allowlist, selected fallback
+model, and owner permission are all intentionally configured.
 
 ## Troubleshooting
 
 - `RUNTIME_UNAVAILABLE`: endpoint disabled, unreachable, or model adapter absent.
-- `MODEL_NOT_LOADED`: configured provider model is not installed on the backend.
+- `MODEL_NOT_INSTALLED`: configured provider model is not installed on the backend.
 - `MODEL_IDENTITY_MISMATCH`: the backend responded using a different model.
 - `MODEL_HEALTH_CHECK_FAILED`: inference completed without the readiness marker.
 - `INFERENCE_TIMEOUT`: increase the timeout only after checking load time and host capacity.

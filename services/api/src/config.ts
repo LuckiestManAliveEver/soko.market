@@ -1,4 +1,4 @@
-import type { EnvironmentConfig } from "@soko/shared-types";
+import { resolveRuntimeModel, type EnvironmentConfig } from "@soko/shared-types";
 
 function numberFromEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -70,15 +70,54 @@ function stringListFromEnv(name: string, fallback: string[]): string[] {
 
 export function readEnvironment(): EnvironmentConfig {
   const backendInferenceEnabled = booleanFromEnv("BACKEND_INFERENCE_ENABLED", false);
-  const backendInferenceBaseUrl = stringFromEnv("BACKEND_INFERENCE_BASE_URL", "").trim();
+  const configuredInferenceBaseUrl = stringFromEnv("BACKEND_INFERENCE_BASE_URL", "").trim();
+  const backendInferenceBaseUrl =
+    configuredInferenceBaseUrl !== "" &&
+    !/^[a-z][a-z0-9+.-]*:\/\//iu.test(configuredInferenceBaseUrl)
+      ? `http://${configuredInferenceBaseUrl}`
+      : configuredInferenceBaseUrl;
+  const inferenceServiceToken = stringFromEnv("INFERENCE_SERVICE_TOKEN", "").trim();
   if (backendInferenceEnabled && backendInferenceBaseUrl.length === 0) {
     throw new Error("BACKEND_INFERENCE_BASE_URL is required when BACKEND_INFERENCE_ENABLED=true.");
+  }
+  if (backendInferenceEnabled && inferenceServiceToken.length < 32) {
+    throw new Error(
+      "INFERENCE_SERVICE_TOKEN must contain at least 32 characters when backend inference is enabled."
+    );
   }
   if (backendInferenceBaseUrl.length > 0) {
     const url = new URL(backendInferenceBaseUrl);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("BACKEND_INFERENCE_BASE_URL must use http or https.");
     }
+    if (url.username !== "" || url.password !== "") {
+      throw new Error("BACKEND_INFERENCE_BASE_URL must not include credentials.");
+    }
+    if (
+      process.env.NODE_ENV === "production" &&
+      process.env.RENDER_SERVICE_ID !== undefined &&
+      ["127.0.0.1", "localhost", "::1"].includes(url.hostname)
+    ) {
+      throw new Error(
+        "BACKEND_INFERENCE_BASE_URL cannot use loopback from the Render API service."
+      );
+    }
+  }
+  const backendInferenceModelId = stringFromEnv(
+    "BACKEND_INFERENCE_MODEL_ID",
+    "qwen2.5-0.5b-android"
+  );
+  const runtimeModel = resolveRuntimeModel(backendInferenceModelId);
+  if (backendInferenceEnabled && (runtimeModel === null || !runtimeModel.enabled)) {
+    throw new Error("BACKEND_INFERENCE_MODEL_ID must identify an enabled runtime model.");
+  }
+  const legacyProviderModel = stringFromEnv("BACKEND_INFERENCE_MODEL", "").trim();
+  if (
+    legacyProviderModel !== "" &&
+    runtimeModel !== null &&
+    legacyProviderModel !== runtimeModel.providerModelId
+  ) {
+    throw new Error("BACKEND_INFERENCE_MODEL must match the canonical runtime model mapping.");
   }
 
   return {
@@ -94,9 +133,11 @@ export function readEnvironment(): EnvironmentConfig {
     ),
     backendInferenceEnabled,
     backendInferenceBaseUrl,
-    backendInferenceTimeoutMs: numberFromEnv("BACKEND_INFERENCE_TIMEOUT_MS", 120_000),
-    backendInferenceModelId: stringFromEnv("BACKEND_INFERENCE_MODEL_ID", "qwen2.5-0.5b-android"),
-    backendInferenceProviderModel: stringFromEnv("BACKEND_INFERENCE_MODEL", "qwen2.5:0.5b"),
+    backendInferenceConnectTimeoutMs: numberFromEnv("BACKEND_INFERENCE_CONNECT_TIMEOUT_MS", 5_000),
+    backendInferenceTimeoutMs: numberFromEnv("BACKEND_INFERENCE_TIMEOUT_MS", 90_000),
+    backendInferenceModelId,
+    backendInferenceRequired: booleanFromEnv("BACKEND_INFERENCE_REQUIRED", false),
+    inferenceServiceToken,
     inferenceClientFirst: booleanFromEnv("INFERENCE_CLIENT_FIRST", true),
     inferenceOwnerNodeEnabled: booleanFromEnv("INFERENCE_OWNER_NODE_ENABLED", false),
     inferenceCloudFallbackEnabled: booleanFromEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", false),
@@ -127,12 +168,8 @@ export function resolveOllamaModelName(
   configuredModelId: string,
   configuredProviderModel: string
 ): string {
+  const runtimeModel = resolveRuntimeModel(modelId);
+  if (runtimeModel !== null) return runtimeModel.providerModelId;
   if (modelId === configuredModelId) return configuredProviderModel;
-  return (
-    {
-      "qwen2.5-0.5b-android": "qwen2.5:0.5b",
-      "qwen2.5-1.5b-android": "qwen2.5:1.5b",
-      "smollm2-360m-android": "smollm2:360m"
-    }[modelId] ?? modelId
-  );
+  return modelId;
 }

@@ -162,9 +162,6 @@ importers:
       '@simplewebauthn/server':
         specifier: ^13.0.0
         version: 13.3.2
-      '@soko/ai-runtime':
-        specifier: workspace:*
-        version: link:../ai-runtime
       '@soko/business-core':
         specifier: workspace:*
         version: link:../../packages/business-core
