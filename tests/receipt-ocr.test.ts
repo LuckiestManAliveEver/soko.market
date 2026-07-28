@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createRuntimeToolProposalFromReceiptContextScript,
   parseReceiptContextScriptCommand
 } from "../packages/tool-core/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 interface VerifyOtpResponse {
   session: {
@@ -130,6 +134,11 @@ interface RuntimeTurnResponse {
 
 describe("Receipt OCR", () => {
   it("sends binary receipt content through the configured OCR processor", async () => {
+    vi.stubEnv("OCR_RETAIN_SOURCE_OBJECTS", "true");
+    const upload = vi.fn().mockResolvedValue({
+      checksum: "a".repeat(64),
+      storageKey: "uploads/receipt-images/shop/2026/07/id-receipt.jpg"
+    });
     const process = vi.fn().mockResolvedValue({
       engine: "tesseract" as const,
       engineVersion: "tesseract-5",
@@ -153,7 +162,8 @@ describe("Receipt OCR", () => {
     const app = buildApi({
       cp2: {
         store,
-        receiptOCRProcessor: { process }
+        receiptOCRProcessor: { process },
+        binaryUploadPipeline: { process: upload }
       }
     });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
@@ -180,8 +190,18 @@ describe("Receipt OCR", () => {
       engine: "tesseract",
       fallbackUsed: true,
       averageConfidence: 0.77,
-      fullText: "Supplier: Binary Depot\nMaize,1,100,100\nTotal: 100"
+      fullText: "Supplier: Binary Depot\nMaize,1,100,100\nTotal: 100",
+      imageStorageKey: "uploads/receipt-images/shop/2026/07/id-receipt.jpg",
+      imageRetained: true
     });
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        businessId,
+        uploadClass: "receipt-images",
+        bytes: binary
+      }),
+      { retain: true }
+    );
     expect(job.blocks).toEqual([expect.objectContaining({ id: "p1-b1", confidence: 0.77 })]);
     expect(job.warnings).toContain("PaddleOCR failed; Tesseract completed the scan.");
 

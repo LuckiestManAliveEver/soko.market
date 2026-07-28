@@ -60,4 +60,21 @@ describe("api health", () => {
 
     await app.close();
   });
+
+  it("fails readiness when required Redis is unavailable", async () => {
+    const app = buildApi({
+      redisHealth: async () => ({ status: "failed", error: "connection refused" })
+    });
+    const readiness = await app.inject({ method: "GET", url: "/health/ready" });
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({
+      status: "unavailable",
+      redis: {
+        configured: true,
+        ok: false,
+        detail: { status: "failed", error: "connection refused" }
+      }
+    });
+    await app.close();
+  });
 });

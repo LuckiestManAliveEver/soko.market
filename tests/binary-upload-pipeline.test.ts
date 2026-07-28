@@ -136,7 +136,7 @@ describe("binary upload security pipeline", () => {
           businessId: "business-1",
           fileName: "unsafe.pdf",
           contentType: "application/pdf",
-          bytes: Buffer.from("%PDF unsafe")
+          bytes: Buffer.from("%PDF-1.7 unsafe")
         },
         { retain: false }
       )

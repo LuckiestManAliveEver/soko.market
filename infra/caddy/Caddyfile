@@ -1,0 +1,55 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+	log {
+		output stdout
+		format json
+	}
+	servers {
+		grace_period 30s
+		timeouts {
+			read_body 2m
+			read_header 15s
+			write 5m
+			idle 5m
+		}
+	}
+}
+
+http://127.0.0.1:2019 {
+	respond /healthz 200
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 15MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy api:4000 {
+		health_uri /health/live
+		health_interval 30s
+		health_timeout 5s
+		fail_duration 30s
+		max_fails 3
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 3m
+		}
+		stream_close_delay 5m
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

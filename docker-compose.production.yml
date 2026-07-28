@@ -1,0 +1,391 @@
+name: soko-market-production
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  CP2_STORE: postgres
+  API_HOST: 0.0.0.0
+  API_PORT: "4000"
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:?DIRECT_DATABASE_URL is required}
+  DB_POOL_MAX: ${DB_POOL_MAX:-20}
+  DB_CONNECTION_TIMEOUT_MS: ${DB_CONNECTION_TIMEOUT_MS:-5000}
+  DB_IDLE_TIMEOUT_MS: ${DB_IDLE_TIMEOUT_MS:-30000}
+  DB_QUERY_TIMEOUT_MS: ${DB_QUERY_TIMEOUT_MS:-15000}
+  DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-15000}
+  DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-1000}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+  REDIS_REQUIRED: "true"
+  WEB_ORIGINS: ${FRONTEND_ORIGIN:?FRONTEND_ORIGIN is required}
+  WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:?WEB_PUBLIC_URL is required}
+  APP_URL: ${WEB_PUBLIC_URL:?WEB_PUBLIC_URL is required}
+  AUTH_ALLOWED_REDIRECT_ORIGINS: ${AUTH_ALLOWED_REDIRECT_ORIGINS:?AUTH_ALLOWED_REDIRECT_ORIGINS is required}
+  SESSION_COOKIE_SECURE: "true"
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID is required}
+  OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET is required}
+  PIN_HASH_SECRET: ${PIN_HASH_SECRET:?PIN_HASH_SECRET is required}
+  AUTH_TOKEN_ENCRYPTION_KEY: ${AUTH_TOKEN_ENCRYPTION_KEY:?AUTH_TOKEN_ENCRYPTION_KEY is required}
+  OAUTH_TOKEN_ENCRYPTION_KEY: ${OAUTH_TOKEN_ENCRYPTION_KEY:?OAUTH_TOKEN_ENCRYPTION_KEY is required}
+  BACKEND_INFERENCE_ENABLED: ${BACKEND_INFERENCE_ENABLED:-true}
+  BACKEND_INFERENCE_BASE_URL: http://ai-runtime:4002
+  BACKEND_INFERENCE_MODEL_ID: ${SOKO_PRIMARY_MODEL_ID:-qwen2.5-0.5b-android}
+  BACKEND_INFERENCE_REQUIRED: ${BACKEND_INFERENCE_REQUIRED:-false}
+  INFERENCE_SERVICE_TOKEN: ${INFERENCE_SERVICE_TOKEN:?INFERENCE_SERVICE_TOKEN is required}
+  INFERENCE_CLIENT_FIRST: ${INFERENCE_CLIENT_FIRST:-true}
+  INFERENCE_OWNER_NODE_ENABLED: ${INFERENCE_OWNER_NODE_ENABLED:-true}
+  INFERENCE_CLOUD_FALLBACK_ENABLED: ${INFERENCE_CLOUD_FALLBACK_ENABLED:-false}
+  INFERENCE_CLOUD_PROVIDER: ${INFERENCE_CLOUD_PROVIDER:-}
+  INFERENCE_CLOUD_MODEL_ALLOWLIST: ${INFERENCE_CLOUD_MODEL_ALLOWLIST:-}
+  INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET: ${INFERENCE_CLOUD_MONTHLY_TOKEN_BUDGET:-100000}
+  INFERENCE_MAX_FALLBACKS: ${INFERENCE_MAX_FALLBACKS:-2}
+  INFERENCE_JOB_SIGNING_SECRET: ${INFERENCE_JOB_SIGNING_SECRET:?INFERENCE_JOB_SIGNING_SECRET is required}
+  OCR_WORKER_URL: http://receipt-ocr:8090
+  OCR_CONCURRENCY: ${OCR_CONCURRENCY:-1}
+  OCR_JOB_TIMEOUT_SECONDS: ${OCR_JOB_TIMEOUT_SECONDS:-120}
+  OCR_RETAIN_SOURCE_OBJECTS: ${OCR_RETAIN_SOURCE_OBJECTS:-false}
+  MALWARE_SCANNER_ENABLED: ${MALWARE_SCANNER_ENABLED:-false}
+  MALWARE_SCANNER_URL: ${MALWARE_SCANNER_URL:-}
+  MALWARE_SCANNER_SECRET: ${MALWARE_SCANNER_SECRET:-}
+  REQUIRE_OBJECT_STORAGE: ${REQUIRE_OBJECT_STORAGE:-true}
+  R2_ENDPOINT: ${R2_ENDPOINT:?R2_ENDPOINT is required}
+  R2_REGION: ${R2_REGION:-auto}
+  R2_BUCKET_NAME: ${R2_BUCKET_NAME:?R2_BUCKET_NAME is required}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  SOKO_EMAIL_FROM: ${SOKO_EMAIL_FROM:-}
+  NETWORK_INVITE_WEBHOOK_URL: ${NETWORK_INVITE_WEBHOOK_URL:-}
+  NETWORK_INVITE_WEBHOOK_SECRET: ${NETWORK_INVITE_WEBHOOK_SECRET:-}
+  OAUTH_GOOGLE_ENABLED: ${OAUTH_GOOGLE_ENABLED:-false}
+  OAUTH_GOOGLE_CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
+  OAUTH_GOOGLE_CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
+  OAUTH_FACEBOOK_ENABLED: ${OAUTH_FACEBOOK_ENABLED:-false}
+  OAUTH_FACEBOOK_CLIENT_ID: ${OAUTH_FACEBOOK_CLIENT_ID:-}
+  OAUTH_FACEBOOK_CLIENT_SECRET: ${OAUTH_FACEBOOK_CLIENT_SECRET:-}
+  OAUTH_TIKTOK_ENABLED: ${OAUTH_TIKTOK_ENABLED:-false}
+  OAUTH_TIKTOK_CLIENT_ID: ${OAUTH_TIKTOK_CLIENT_ID:-}
+  OAUTH_TIKTOK_CLIENT_SECRET: ${OAUTH_TIKTOK_CLIENT_SECRET:-}
+  OAUTH_MICROSOFT_ENABLED: ${OAUTH_MICROSOFT_ENABLED:-false}
+  OAUTH_MICROSOFT_CLIENT_ID: ${OAUTH_MICROSOFT_CLIENT_ID:-}
+  OAUTH_MICROSOFT_CLIENT_SECRET: ${OAUTH_MICROSOFT_CLIENT_SECRET:-}
+  ACCOUNT_DELETION_PROCESSORS_JSON: ${ACCOUNT_DELETION_PROCESSORS_JSON:-}
+  ACCOUNT_DELETION_WEBHOOK_SECRET: ${ACCOUNT_DELETION_WEBHOOK_SECRET:-}
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    networks:
+      - edge
+      - backend
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:2019/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  api:
+    image: ${API_IMAGE:-soko-market-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      ai-runtime:
+        condition: service_healthy
+      receipt-ocr:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      ENABLE_NOTIFICATION_DELIVERY_RUNNER: "false"
+      ENABLE_ACCOUNT_DELETION_RUNNER: "false"
+    expose:
+      - "4000"
+    networks:
+      - edge
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  worker:
+    image: ${API_IMAGE:-soko-market-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: ["node", "services/api/dist/worker.js"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+    networks:
+      - edge
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('node:fs').stat('/tmp/soko-worker-heartbeat',(e,s)=>{if(e||Date.now()-s.mtimeMs>90000)process.exit(1)})"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  migrate:
+    image: ${API_IMAGE:-soko-market-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: ["node", "services/api/scripts/migrate-db.mjs"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:?DIRECT_DATABASE_URL is required}
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      disable: true
+
+  ai-runtime:
+    image: ${AI_RUNTIME_IMAGE:-soko-market-ai-runtime}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/ai-runtime/Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    environment:
+      NODE_ENV: production
+      AI_RUNTIME_HOST: 0.0.0.0
+      AI_RUNTIME_PORT: "4002"
+      INFERENCE_SERVICE_TOKEN: ${INFERENCE_SERVICE_TOKEN:?INFERENCE_SERVICE_TOKEN is required}
+      SOKO_PRIMARY_MODEL_ID: ${SOKO_PRIMARY_MODEL_ID:-qwen2.5-0.5b-android}
+      SOKO_PRIMARY_PROVIDER_MODEL_ID: ${SOKO_PRIMARY_PROVIDER_MODEL_ID:-qwen2.5:0.5b}
+      MODEL_STORAGE_DURABLE: "true"
+      MODEL_AUTO_INSTALL: ${MODEL_AUTO_INSTALL:-false}
+      MODEL_MIN_FREE_BYTES: ${MODEL_MIN_FREE_BYTES:-2147483648}
+      HF_TOKEN: ${HF_TOKEN:-}
+    expose:
+      - "4002"
+    networks:
+      - edge
+      - backend
+    volumes:
+      - model_data:/var/lib/soko-models
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4002/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  receipt-ocr:
+    image: ${OCR_IMAGE:-soko-market-receipt-ocr}:${IMAGE_TAG:-local}
+    build:
+      context: services/receipt-ocr-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      OCR_WORKER_HOST: 0.0.0.0
+      OCR_WORKER_PORT: "8090"
+      OCR_PROFILE: ${OCR_PROFILE:-balanced}
+      OCR_ENGINE_PRIMARY: ${OCR_ENGINE_PRIMARY:-paddleocr}
+      OCR_ENGINE_FALLBACK: ${OCR_ENGINE_FALLBACK:-tesseract}
+    expose:
+      - "8090"
+    networks:
+      - edge
+      - backend
+    volumes:
+      - ocr_models:/models
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  postgres:
+    image: postgres:16.9-alpine
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    expose:
+      - "5432"
+    networks:
+      - backend
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  redis:
+    image: redis:7.4.5-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--requirepass",
+        "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+      ]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    expose:
+      - "6379"
+    networks:
+      - backend
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  postgres-backup:
+    image: ${BACKUP_IMAGE:-soko-market-postgres-backup}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: infra/backup/Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      R2_ENDPOINT: ${R2_ENDPOINT:?R2_ENDPOINT is required}
+      R2_REGION: ${R2_REGION:-auto}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:?R2_BUCKET_NAME is required}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+      BACKUP_ENCRYPTION_PASSWORD: ${BACKUP_ENCRYPTION_PASSWORD:?BACKUP_ENCRYPTION_PASSWORD is required}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_R2_PREFIX: ${BACKUP_R2_PREFIX:-database-backups}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-17 2 * * *}
+    networks:
+      - edge
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp/soko-backups:size=2g,mode=0700,uid=1000,gid=1000
+    logging:
+      options:
+        max-size: 20m
+        max-file: "5"
+
+networks:
+  edge:
+  backend:
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  model_data:
+  ocr_models:

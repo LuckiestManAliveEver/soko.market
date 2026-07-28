@@ -1,4 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
+import {
+  buildObjectKey,
+  createObjectStorageFromEnvironment,
+  validateUpload,
+  type ObjectStorage,
+  type UploadClass
+} from "../storage/object-storage.js";
 import { Cp2Error } from "./store.js";
 
 export interface BinaryUploadInput {
@@ -6,6 +13,7 @@ export interface BinaryUploadInput {
   fileName: string;
   contentType: string;
   bytes: Buffer;
+  uploadClass?: UploadClass;
 }
 
 export interface BinaryUploadPipelineResult {
@@ -29,28 +37,34 @@ export function createBinaryUploadPipelineFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env
 ): BinaryUploadPipeline {
   const scannerEnabled = environment.MALWARE_SCANNER_ENABLED?.trim().toLowerCase() === "true";
-  if (!scannerEnabled) {
-    console.info("[BinaryUpload] Malware scanning disabled.");
-    return createPassthroughBinaryUploadPipeline();
-  }
-
-  const scanner = readSignedEndpoint(environment, "MALWARE_SCANNER_URL", "MALWARE_SCANNER_SECRET");
-  if (scanner === undefined) {
+  const scanner = scannerEnabled
+    ? readSignedEndpoint(environment, "MALWARE_SCANNER_URL", "MALWARE_SCANNER_SECRET")
+    : undefined;
+  if (scannerEnabled && scanner === undefined) {
     throw new Error(
       "MALWARE_SCANNER_URL and MALWARE_SCANNER_SECRET are required when malware scanning is enabled."
     );
   }
+  if (!scannerEnabled) console.info("[BinaryUpload] Malware scanning disabled.");
 
-  const storage = readSignedEndpoint(environment, "OBJECT_STORAGE_URL", "OBJECT_STORAGE_SECRET");
+  const objectStorage = createObjectStorageFromEnvironment(environment);
+  const storage =
+    objectStorage === undefined
+      ? readSignedEndpoint(environment, "OBJECT_STORAGE_URL", "OBJECT_STORAGE_SECRET")
+      : undefined;
   const storageRequired = environment.REQUIRE_OBJECT_STORAGE === "true";
-  if (storage === undefined && storageRequired) {
+  if (storage === undefined && objectStorage === undefined && storageRequired) {
     throw new Error(
-      "OBJECT_STORAGE_URL and OBJECT_STORAGE_SECRET are required when object storage is enabled."
+      "R2 or signed HTTP object storage is required when REQUIRE_OBJECT_STORAGE=true."
     );
   }
+  if (scanner === undefined && storage === undefined && objectStorage === undefined) {
+    return createPassthroughBinaryUploadPipeline();
+  }
   return createHttpBinaryUploadPipeline({
-    scanner,
-    ...(storage === undefined ? {} : { storage })
+    ...(scanner === undefined ? {} : { scanner }),
+    ...(storage === undefined ? {} : { storage }),
+    ...(objectStorage === undefined ? {} : { objectStorage })
   });
 }
 
@@ -68,11 +82,22 @@ export function createPassthroughBinaryUploadPipeline(): BinaryUploadPipeline {
 export function createHttpBinaryUploadPipeline(options: {
   scanner?: SignedEndpoint;
   storage?: SignedEndpoint;
+  objectStorage?: ObjectStorage;
   fetcher?: typeof fetch;
 }): BinaryUploadPipeline {
   const fetcher = options.fetcher ?? fetch;
   return {
     async process(input, processOptions) {
+      const uploadClass = input.uploadClass ?? "context-documents";
+      try {
+        validateUpload({ uploadClass, contentType: input.contentType, bytes: input.bytes });
+      } catch (error) {
+        throw new Cp2Error(
+          error instanceof Error && error.message.includes("10 MB") ? 413 : 415,
+          "upload_validation_failed",
+          error instanceof Error ? error.message : "The uploaded file is invalid."
+        );
+      }
       const checksum = calculateChecksum(input.bytes);
       const payload = {
         schemaVersion: 1,
@@ -108,9 +133,28 @@ export function createHttpBinaryUploadPipeline(options: {
         }
       }
 
-      if (!processOptions.retain || options.storage === undefined) {
+      if (!processOptions.retain) {
         return { checksum, storageKey: null };
       }
+      if (options.objectStorage !== undefined) {
+        const storageKey = buildObjectKey({
+          uploadClass,
+          tenantId: input.businessId,
+          fileName: input.fileName
+        });
+        try {
+          await options.objectStorage.putObject({
+            key: storageKey,
+            bytes: input.bytes,
+            contentType: input.contentType,
+            checksum
+          });
+        } catch {
+          throw new Cp2Error(503, "object_storage_unavailable", "Upload storage is unavailable.");
+        }
+        return { checksum, storageKey };
+      }
+      if (options.storage === undefined) return { checksum, storageKey: null };
       const response = await signedRequest(fetcher, options.storage, payload, checksum);
       if (!response.ok) {
         throw new Cp2Error(503, "object_storage_unavailable", "Upload storage is unavailable.");

@@ -5966,6 +5966,7 @@ export class Cp2Store {
     fileSizeBytes?: number | null;
     fileSignature?: string | null;
     sourceChecksum?: string;
+    imageStorageKey?: string | null;
     extraction?: Pick<
       ReceiptOCRJobSummary,
       | "engine"
@@ -6029,7 +6030,7 @@ export class Cp2Store {
       matchedSupplier,
       matchedAgent
     });
-    const imageStorageKey = null;
+    const imageStorageKey = input.imageStorageKey ?? null;
     const imageHash =
       input.sourceChecksum ??
       createHash("sha256")
@@ -6080,7 +6081,7 @@ export class Cp2Store {
       failureCode: hasContent ? null : "ocr_empty_text",
       imageStorageKey,
       imageHash,
-      imageRetained: false,
+      imageRetained: imageStorageKey !== null,
       imageDeletedAt: null,
       cleanupPending: false,
       retryCount: 0,

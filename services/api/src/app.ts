@@ -11,6 +11,7 @@ export interface BuildApiOptions {
   cp2?: Cp2RouteOptions;
   agentRuntimeDiagnostic?: (runInference: boolean) => Promise<RuntimeModelDiagnostic>;
   databaseHealth?: () => Promise<Record<string, unknown>>;
+  redisHealth?: () => Promise<Record<string, unknown>>;
   inferenceRequired?: boolean;
   mutationPersistenceFlush?: () => Promise<void>;
 }
@@ -186,15 +187,19 @@ export function buildApi(options: BuildApiOptions = {}) {
     }));
 
     routes.get("/health/ready", async (_request, reply) => {
-      const [database, model] = await Promise.all([
+      const [database, redis, model] = await Promise.all([
         options.databaseHealth?.(),
+        options.redisHealth?.(),
         options.agentRuntimeDiagnostic?.(false)
       ]);
       const databaseOk = database === undefined || database.status === "ok";
+      const redisOk = redis === undefined || redis.status === "ok";
       const inferenceEnabled = options.agentRuntimeDiagnostic !== undefined;
       const inferenceOk = model?.status === "ready";
       const ready =
-        databaseOk && (options.inferenceRequired !== true || (inferenceEnabled && inferenceOk));
+        databaseOk &&
+        redisOk &&
+        (options.inferenceRequired !== true || (inferenceEnabled && inferenceOk));
       if (!ready) reply.code(503);
       return {
         service: "api",
@@ -205,6 +210,11 @@ export function buildApi(options: BuildApiOptions = {}) {
           configured: options.databaseHealth !== undefined,
           ok: databaseOk,
           detail: database ?? null
+        },
+        redis: {
+          configured: options.redisHealth !== undefined,
+          ok: redisOk,
+          detail: redis ?? null
         },
         inference: {
           enabled: inferenceEnabled,

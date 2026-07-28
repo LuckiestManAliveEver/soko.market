@@ -24,6 +24,7 @@ import {
   type NotificationDeliveryRunner
 } from "./cp2/notification-delivery-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
+import { createRedisHealthCheck } from "./health/redis-health.js";
 
 const config = readEnvironment();
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
@@ -86,6 +87,8 @@ const accountDeletionProcessors = readAccountDeletionProcessors();
 const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
+const redisHealth =
+  process.env.REDIS_REQUIRED === "true" ? createRedisHealthCheck(config.redisUrl) : undefined;
 const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
 if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
   throw new Error(
@@ -126,6 +129,7 @@ const cp2Store = shouldUsePostgresStore
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   inferenceRequired: config.backendInferenceRequired,
+  ...(redisHealth === undefined ? {} : { redisHealth }),
   cp2: {
     store: cp2Store,
     emailProvider,
@@ -185,6 +189,25 @@ try {
   app.log.error(error);
   process.exit(1);
 }
+
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, "API graceful shutdown started.");
+  const forceExit = setTimeout(() => process.exit(1), 25_000);
+  forceExit.unref();
+  try {
+    await app.close();
+    clearTimeout(forceExit);
+    process.exit(0);
+  } catch (error) {
+    app.log.error({ error }, "API graceful shutdown failed.");
+    process.exit(1);
+  }
+};
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
 
 if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
   accountDeletionRunner = startAccountDeletionRunner({
