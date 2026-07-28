@@ -18,13 +18,11 @@ export default defineConfig(({ mode }) => {
   const gitCommitSha =
     process.env.VITE_GIT_COMMIT_SHA ??
     env.VITE_GIT_COMMIT_SHA ??
-    process.env.VERCEL_GIT_COMMIT_SHA ??
     process.env.RENDER_GIT_COMMIT ??
     "local";
   const deploymentEnvironment =
     process.env.VITE_DEPLOYMENT_ENV ??
     env.VITE_DEPLOYMENT_ENV ??
-    process.env.VERCEL_ENV ??
     (process.env.RENDER === "true" ? "render" : mode);
   const stagingSecurityHeaders =
     deploymentEnvironment === "staging"

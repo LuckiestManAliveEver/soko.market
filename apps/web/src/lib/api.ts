@@ -54,12 +54,6 @@ export function readApiBaseUrl(): string {
   return "http://127.0.0.1:4000";
 }
 
-export function buildRealtimeUrl(apiBaseUrl: string): string {
-  const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
-  realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
-  return realtimeUrl.toString();
-}
-
 export async function apiFetch<T>(
   pathOrUrl: string,
   options?: {

@@ -17,12 +17,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY worker.py .
 
-RUN groupadd --system --gid 10001 ocr \
-  && useradd --system --uid 10001 --gid ocr --home-dir /nonexistent --shell /usr/sbin/nologin ocr \
-  && mkdir -p /models \
-  && chown -R ocr:ocr /app /models
-
-USER ocr
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import json,urllib.request; json.load(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3))"
 CMD ["python", "worker.py", "worker"]

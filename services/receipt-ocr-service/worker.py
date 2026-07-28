@@ -14,7 +14,6 @@ import binascii
 import io
 import json
 import os
-import signal
 import sys
 import tempfile
 import threading
@@ -151,13 +150,6 @@ def worker_loop() -> None:
     host = os.getenv("OCR_WORKER_HOST", "0.0.0.0")
     port = positive_integer_env("OCR_WORKER_PORT", 8090)
     server = ThreadingHTTPServer((host, port), ReceiptOCRRequestHandler)
-    server.daemon_threads = False
-
-    def shutdown(_signal_number: int, _frame: Any) -> None:
-        threading.Thread(target=server.shutdown, name="ocr-shutdown", daemon=True).start()
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
     print(
         json.dumps(
             {
@@ -170,10 +162,7 @@ def worker_loop() -> None:
         ),
         flush=True,
     )
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
+    server.serve_forever()
 
 
 class ReceiptOCRRequestHandler(BaseHTTPRequestHandler):

@@ -162,7 +162,6 @@ import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-f
 import {
   ApiRequestError,
   apiFetch,
-  buildRealtimeUrl,
   isDefinitiveAuthenticationError,
   isRetryableApiRequestError,
   readApiBaseUrl
@@ -2487,9 +2486,11 @@ export function OwnerApp() {
         };
         const startRealtime = () => {
           if (cancelled || closeRealtime !== undefined || !navigator.onLine) return;
+          const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
+          realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
           closeRealtime = subscribeToAccountRealtime({
             accountId: session.account.id,
-            endpoint: buildRealtimeUrl(apiBaseUrl),
+            endpoint: realtimeUrl.toString(),
             onChangesAvailable: catchUp
           });
         };

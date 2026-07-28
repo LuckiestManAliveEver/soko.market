@@ -95,11 +95,11 @@ export function readEnvironment(): EnvironmentConfig {
     }
     if (
       process.env.NODE_ENV === "production" &&
-      process.env.ALLOW_LOOPBACK_INFERENCE !== "true" &&
+      process.env.RENDER_SERVICE_ID !== undefined &&
       ["127.0.0.1", "localhost", "::1"].includes(url.hostname)
     ) {
       throw new Error(
-        "BACKEND_INFERENCE_BASE_URL cannot use loopback in production unless ALLOW_LOOPBACK_INFERENCE=true."
+        "BACKEND_INFERENCE_BASE_URL cannot use loopback from the Render API service."
       );
     }
   }
@@ -162,7 +162,7 @@ function readCloudProvider(): EnvironmentConfig["inferenceCloudProvider"] {
 }
 
 // Kept as a pure compatibility helper for installed-app and owner-node configuration tooling.
-// The production API does not call it or construct an Ollama provider.
+// The Render API does not call it or construct an Ollama provider.
 export function resolveOllamaModelName(
   modelId: string,
   configuredModelId: string,

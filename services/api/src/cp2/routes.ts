@@ -3900,7 +3900,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         let fileSizeBytes = body.fileSizeBytes;
         let fileSignature = body.fileSignature;
         let sourceChecksum: string | undefined;
-        let imageStorageKey: string | null | undefined;
 
         if (body.extractedText.trim().length === 0 && body.contentBase64 !== null) {
           if (receiptOCRProcessor === undefined) {
@@ -3914,17 +3913,15 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           fileSizeBytes = binary.byteLength;
           fileSignature = binary.subarray(0, 16).toString("hex");
           sourceChecksum = createHash("sha256").update(binary).digest("hex");
-          const securedUpload = await binaryUploadPipeline?.process(
+          await binaryUploadPipeline?.process(
             {
               businessId: request.params.businessId,
               fileName: body.fileName,
               contentType: body.contentType,
-              bytes: binary,
-              uploadClass: "receipt-images"
+              bytes: binary
             },
-            { retain: process.env.OCR_RETAIN_SOURCE_OBJECTS === "true" }
+            { retain: false }
           );
-          imageStorageKey = securedUpload?.storageKey;
           extraction = await receiptOCRProcessor.process({
             fileName: body.fileName,
             contentType: body.contentType,
@@ -3941,7 +3938,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           fileSizeBytes,
           fileSignature,
           ...(sourceChecksum === undefined ? {} : { sourceChecksum }),
-          ...(imageStorageKey === undefined ? {} : { imageStorageKey }),
           ...(extraction === undefined ? {} : { extraction })
         });
       } catch (error) {
@@ -4923,8 +4919,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
             businessId: request.params.businessId,
             fileName: upload.fileName,
             contentType,
-            bytes: binary,
-            uploadClass: "context-documents"
+            bytes: binary
           },
           { retain: false }
         );
@@ -4970,8 +4965,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         businessId,
         fileName: input.fileName,
         contentType: input.contentType?.trim() || "application/octet-stream",
-        bytes,
-        uploadClass: "context-documents"
+        bytes
       },
       { retain }
     );
