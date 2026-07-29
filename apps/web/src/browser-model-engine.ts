@@ -247,7 +247,7 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
 export function normalizeBrowserInferenceError(error: unknown): BrowserInferenceError {
   if (error instanceof BrowserInferenceError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  if (/memory|allocation|buffer/i.test(message)) {
+  if (/memory|allocation|buffer|device lost|gpu device.*lost/i.test(message)) {
     return new BrowserInferenceError("OUT_OF_MEMORY", "The device ran out of model memory.");
   }
   if (/quota|storage/i.test(message)) {
@@ -264,6 +264,9 @@ export function normalizeBrowserInferenceError(error: unknown): BrowserInference
       "MODEL_CACHE_CORRUPT",
       "The cached model is incomplete or corrupt."
     );
+  }
+  if (/download|fetch|network/i.test(message)) {
+    return new BrowserInferenceError("MODEL_DOWNLOAD_FAILED", "The browser model download failed.");
   }
   return new BrowserInferenceError("UNKNOWN", "Browser inference failed safely.");
 }

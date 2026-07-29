@@ -62,6 +62,17 @@ or consent gate in the shop's Agent profile. Model files are fetched by the user
 not held in Render's Node process. The Blueprint CSP allows only the approved Soko and Hugging
 Face HTTPS/WebSocket origins and enables the isolation headers used by threaded WASM.
 
+The browser model catalogue and structured task-state checkpoints are local to the user's browser.
+They do not require a persistent Render disk or model process. Disabling or removing the private
+inference service therefore leaves approved browser WebGPU/WASM models available while the Render
+API continues to provide authentication, application data, synchronization, and optional
+ephemeral owner-node coordination. See
+[`docs/inference/soko-web-inference-engine.md`](../inference/soko-web-inference-engine.md).
+
+The optional WebLLM adapter follows the same boundary: its pinned MLC weights and model library
+download directly into the browser cache and execute in a dedicated Web Worker. Neither WebLLM nor
+its model artifacts are imported by the Render API.
+
 ## Verification
 
 Run:

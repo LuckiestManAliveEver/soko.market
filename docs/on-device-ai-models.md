@@ -25,11 +25,23 @@ Browser storage is not itself an inference runtime. The PWA does not execute a G
 from OPFS; GGUF inference still requires the Android `SokoAgentModelRuntime` bridge or a configured
 llama.cpp-compatible server.
 
-An optional browser-local backend uses the approved
-`onnx-community/SmolLM2-360M-Instruct-ONNX` model through Transformers.js and ONNX Runtime Web. It
-uses WebGPU when available and a conservative WASM fallback. This backend is disabled by default
-with `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=false`, requires an explicit per-user download action,
-and shares the existing Soko agent/chat router rather than treating a cached model as active.
+An optional browser-local backend uses approved Transformers.js/ONNX and WebLLM/MLC profiles. The
+Transformers.js adapter uses WebGPU when available and a conservative WASM fallback. WebLLM runs
+only through WebGPU in its own dedicated worker. This backend is disabled by default with
+`VITE_BROWSER_LOCAL_INFERENCE_ENABLED`, requires an explicit per-user download action, and shares
+the existing Soko agent/chat router rather than treating a cached model as active.
+
+The browser engine now exposes a reviewed multi-model profile registry. SmolLM2 135M is the
+low-memory default, SmolLM2 360M remains the balanced option, and Qwen2.5 0.5B is restricted to
+high-tier WebGPU profiles. Each combination must pass a tokenizer/allocation/readiness
+generation before it is marked ready. See
+[`docs/inference/soko-web-inference-engine.md`](inference/soko-web-inference-engine.md) for model
+admission, resource budgets, device outcome history, and logical checkpoint behavior.
+
+Compatible WebGPU devices prefer the pinned WebLLM profiles. Their immutable weight/library
+mapping and cross-adapter task-state contract are documented in
+[`docs/inference/webllm-runtime-contract.md`](inference/webllm-runtime-contract.md). WebLLM does
+not make raw KV state portable and is never used on WASM-only devices.
 
 SmolLM2 360M and Qwen2.5 0.5B are also embedded as catalog metadata in the web client, so a
 temporary API/catalog outage does not make the default choices disappear. The “Install offline

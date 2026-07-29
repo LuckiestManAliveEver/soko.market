@@ -10,8 +10,11 @@ describe("browser inference frontend integration", () => {
     expect(application).toContain("Use the browser model on this device");
     expect(application).toContain("Cancel download");
     expect(application).toContain("Downloading ${model.displayName} after your consent");
-    expect(application).toContain("about 400 MB download");
+    expect(application).toContain("Browser model");
+    expect(application).toContain("selectedBrowserModelId");
     expect(registry).toContain('import.meta.env.VITE_BROWSER_LOCAL_INFERENCE_ENABLED === "true"');
+    expect(registry).toContain("smollm2-135m-instruct-browser");
+    expect(registry).toContain("qwen2.5-0.5b-instruct-browser");
     expect(registry).toContain("approximateDownloadBytes: 400_000_000");
   });
 
@@ -42,6 +45,8 @@ describe("browser inference frontend integration", () => {
     expect(worker).toContain("Browser model staging diagnostic:");
     expect(worker).toContain("ort-wasm-simd-threaded.jsep.wasm");
     expect(worker).toContain("env.backends.onnx.wasm.wasmPaths");
+    expect(worker).toContain("revision: model.modelRevision");
+    expect(worker).toContain("TASK_BUDGET_EXCEEDED");
     expect(worker).not.toContain("cdn.jsdelivr.net");
     expect(serviceWorker).not.toContain("soko-browser-inference");
     expect(serviceWorker).not.toContain("transformers-cache");

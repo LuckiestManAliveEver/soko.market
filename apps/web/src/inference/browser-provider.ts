@@ -38,7 +38,11 @@ export function createBrowserInferenceProvider(input: {
               : [{ role: "system" as const, content: request.systemPrompt }]),
             ...request.messages
           ],
-          maxNewTokens: request.maxTokens ?? 128,
+          maxNewTokens: Math.min(
+            request.maxTokens ?? 128,
+            input.model.recommendedOutputTokens.high
+          ),
+          maxWallTimeMs: input.model.maximumGenerationTimeMs.high,
           temperature: request.temperature ?? 0.2
         },
         {}

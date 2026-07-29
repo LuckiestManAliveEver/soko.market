@@ -1,11 +1,13 @@
 import type {
   BrowserInferenceSettings,
   BrowserModelDescriptor,
+  BrowserModelExecutionOutcome,
+  BrowserTaskStateCheckpoint,
   ConversationSummary
 } from "./browser-inference-types";
 
 export const browserInferenceDatabaseName = "soko-browser-inference";
-export const browserInferenceDatabaseVersion = 1;
+export const browserInferenceDatabaseVersion = 2;
 export const browserInferenceStoreNames = [
   "browserModels",
   "modelAssets",
@@ -14,7 +16,9 @@ export const browserInferenceStoreNames = [
   "localChatCache",
   "retrievalIndexes",
   "offlineInferenceQueue",
-  "browserInferenceSettings"
+  "browserInferenceSettings",
+  "deviceInferenceProfiles",
+  "taskStateCheckpoints"
 ] as const;
 
 type BrowserInferenceStoreName = (typeof browserInferenceStoreNames)[number];
@@ -135,6 +139,73 @@ export class BrowserInferenceRepository {
     });
   }
 
+  async putModelExecutionOutcome(
+    accountId: string,
+    outcome: BrowserModelExecutionOutcome
+  ): Promise<void> {
+    await this.put("deviceInferenceProfiles", {
+      accountId,
+      id: modelExecutionOutcomeId(outcome),
+      outcome,
+      updatedAt: outcome.updatedAt
+    });
+  }
+
+  async listModelExecutionOutcomes(accountId: string): Promise<BrowserModelExecutionOutcome[]> {
+    const transaction = this.database.transaction("deviceInferenceProfiles", "readonly");
+    const completion = transactionCompletion(transaction);
+    const records = await requestResult<Array<{ outcome?: BrowserModelExecutionOutcome }>>(
+      transaction.objectStore("deviceInferenceProfiles").index("by_account").getAll(accountId)
+    );
+    await completion;
+    return records
+      .map((record) => record.outcome)
+      .filter((outcome): outcome is BrowserModelExecutionOutcome => outcome !== undefined);
+  }
+
+  async putTaskCheckpoint(checkpoint: BrowserTaskStateCheckpoint): Promise<void> {
+    await this.put("taskStateCheckpoints", {
+      ...checkpoint,
+      id: checkpoint.id
+    });
+  }
+
+  async getTaskCheckpoint(
+    accountId: string,
+    checkpointId: string
+  ): Promise<BrowserTaskStateCheckpoint | null> {
+    return (
+      (await this.get<BrowserTaskStateCheckpoint>(
+        "taskStateCheckpoints",
+        accountId,
+        checkpointId
+      )) ?? null
+    );
+  }
+
+  async deleteTaskCheckpoint(accountId: string, checkpointId: string): Promise<void> {
+    const transaction = this.database.transaction("taskStateCheckpoints", "readwrite");
+    const completion = transactionCompletion(transaction);
+    transaction.objectStore("taskStateCheckpoints").delete([accountId, checkpointId]);
+    await completion;
+  }
+
+  async pruneExpiredTaskCheckpoints(accountId: string, now = new Date()): Promise<number> {
+    const transaction = this.database.transaction("taskStateCheckpoints", "readwrite");
+    const completion = transactionCompletion(transaction);
+    const store = transaction.objectStore("taskStateCheckpoints");
+    const records = await requestResult<
+      Array<{ accountId: string; id: string; expiresAt?: string }>
+    >(store.index("by_account").getAll(accountId));
+    const expired = records.filter(
+      (record) =>
+        typeof record.expiresAt !== "string" || Date.parse(record.expiresAt) <= now.getTime()
+    );
+    for (const record of expired) store.delete([record.accountId, record.id]);
+    await completion;
+    return expired.length;
+  }
+
   async clearAccountData(accountId: string): Promise<void> {
     for (const storeName of browserInferenceStoreNames) {
       await this.deleteAccountRecords(storeName, accountId);
@@ -183,6 +254,10 @@ export class BrowserInferenceRepository {
     for (const key of keys) store.delete(key);
     await completion;
   }
+}
+
+function modelExecutionOutcomeId(outcome: BrowserModelExecutionOutcome): string {
+  return `${outcome.deviceProfileId}:${outcome.modelId}:${outcome.backend}`;
 }
 
 export async function openBrowserInferenceRepository(input?: {

@@ -13403,12 +13403,20 @@ function AgentProfileSurface({
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
   );
+  const [selectedBrowserModelId, setSelectedBrowserModelId] = useState(
+    () => listBrowserModels()[0]?.id ?? ""
+  );
   const [inferencePreferences, setInferencePreferences] = useState<ClientInferencePreferences>(() =>
     readClientInferencePreferences(accountId, business.id)
   );
   const [browserModelProgress, setBrowserModelProgress] = useState<BrowserModelProgress | null>(
     null
   );
+  const browserModelOptions = browserInferenceState?.modelOptions ?? [];
+  const selectedBrowserModel =
+    browserModelOptions.find((option) => option.model.id === selectedBrowserModelId)?.model ??
+    listBrowserModels().find((model) => model.id === selectedBrowserModelId) ??
+    null;
   const [githubModelDiscovery, setGitHubModelDiscovery] = useState<CatalogAiModelSearchResponse>({
     models: [],
     status: "unavailable",
@@ -13515,6 +13523,11 @@ function AgentProfileSurface({
         loadAiModels(initialSearch)
       ]);
       setBrowserInferenceState(browserState);
+      setSelectedBrowserModelId(
+        browserState.settings?.selectedModelId ??
+          browserState.modelOptions.find((option) => option.compatible)?.model.id ??
+          ""
+      );
       setDeviceCapability(capability);
       setModelLibraryLoaded(true);
       setProfileMessage("Model settings ready.");
@@ -13538,8 +13551,16 @@ function AgentProfileSurface({
         );
         return;
       }
-      const model = listBrowserModels()[0];
+      const model = listBrowserModels().find(
+        (candidate) => candidate.id === selectedBrowserModelId
+      );
       if (model === undefined) throw new Error("No approved browser model is configured.");
+      const option = browserInferenceState?.modelOptions.find(
+        (candidate) => candidate.model.id === model.id
+      );
+      if (option?.compatible === false) {
+        throw new Error(option.reason ?? "This browser model is incompatible with this device.");
+      }
       setProfileMessage(
         `Downloading ${model.displayName} after your consent. Keep Soko open until it is ready.`
       );
@@ -15740,11 +15761,32 @@ function AgentProfileSurface({
               <div>
                 <strong>Browser-local inference</strong>
                 <p>
-                  Run supported short chats on this device. The starter model downloads only after
+                  Run supported short chats on this device. A compatible model downloads only after
                   you turn this on; requests that need server tools stay on the confirmation-gated
                   server route.
                 </p>
               </div>
+              {browserLocalInferenceDeploymentEnabled ? (
+                <label>
+                  Browser model
+                  <select
+                    value={selectedBrowserModelId}
+                    disabled={modelRuntimeBusy || browserInferenceState?.settings?.enabled === true}
+                    onChange={(event) => setSelectedBrowserModelId(event.target.value)}
+                  >
+                    {browserModelOptions.map((option) => (
+                      <option
+                        key={option.model.id}
+                        value={option.model.id}
+                        disabled={!option.compatible}
+                      >
+                        {option.model.displayName}
+                        {option.compatible ? "" : ` — ${option.reason ?? "incompatible"}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               {browserLocalInferenceDeploymentEnabled ? (
                 <label className="browser-model-toggle">
                   <input
@@ -15771,7 +15813,13 @@ function AgentProfileSurface({
                 {browserModelProgress === null
                   ? (browserInferenceState?.settings?.status ?? "Not downloaded")
                   : `${browserModelProgress.status} ${Math.round(browserModelProgress.percent)}%`}
-                {" · "}SmolLM2 360M · about 400 MB download · about 850 MB working memory
+                {selectedBrowserModel === null
+                  ? ""
+                  : ` · ${selectedBrowserModel.displayName} · about ${Math.round(
+                      selectedBrowserModel.approximateDownloadBytes / 1_000_000
+                    )} MB download · about ${Math.round(
+                      selectedBrowserModel.approximateRuntimeMemoryBytes / 1_000_000
+                    )} MB working memory`}
               </small>
               <div className="ai-model-card-actions">
                 {browserModelProgress !== null ? (

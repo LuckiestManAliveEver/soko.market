@@ -27,7 +27,7 @@ describe("browser inference capability", () => {
       backend: "webgpu",
       deviceTier: "high",
       maxRecommendedContextTokens: 2_048,
-      recommendedModelId: "smollm2-360m-instruct-browser"
+      recommendedModelId: "qwen2.5-0.5b-instruct-browser"
     });
   });
 
@@ -45,20 +45,20 @@ describe("browser inference capability", () => {
     expect(capability.reasons.join(" ")).toContain("WebGPU is unavailable");
   });
 
-  it("reserves enough storage for the measured 400 MB browser model", () => {
+  it("reserves enough storage for the 135M low-memory browser model", () => {
     const tooSmall = classifyBrowserInferenceCapability({
       ...base,
       webGpu: true,
-      availableStorageBytes: 450_000_000
+      availableStorageBytes: 220_000_000
     });
     const sufficient = classifyBrowserInferenceCapability({
       ...base,
       webGpu: true,
-      availableStorageBytes: 500_000_000
+      availableStorageBytes: 230_000_000
     });
 
     expect(tooSmall.supported).toBe(false);
-    expect(tooSmall.reasons.join(" ")).toContain("475 MB");
+    expect(tooSmall.reasons.join(" ")).toContain("225 MB");
     expect(sufficient.supported).toBe(true);
   });
 

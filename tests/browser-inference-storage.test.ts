@@ -4,6 +4,11 @@ import {
   browserInferenceStoreNames,
   openBrowserInferenceRepository
 } from "../apps/web/src/browser-inference-storage";
+import {
+  browserCheckpointCompatibilityContract,
+  browserRuntimeContractForModel
+} from "../apps/web/src/browser-inference-contracts";
+import { getBrowserModel } from "../apps/web/src/browser-model-registry";
 import type { BrowserInferenceSettings } from "../apps/web/src/browser-inference-types";
 
 function settings(accountId: string, businessId: string): BrowserInferenceSettings {
@@ -83,6 +88,60 @@ describe("browser inference IndexedDB", () => {
     expect(await repository.getSummary("account-a", "conversation")).toMatchObject({
       summaryText: "Keep me"
     });
+    repository.close();
+  });
+
+  it("stores device outcomes and prunes expired task-state checkpoints", async () => {
+    const model = getBrowserModel("smollm2-135m-instruct-browser")!;
+    const repository = await openBrowserInferenceRepository({
+      factory: indexedDB,
+      databaseName: `browser-inference-${crypto.randomUUID()}`
+    });
+    await repository.putModelExecutionOutcome("account-a", {
+      deviceProfileId: "chrome:130:mobile:low:wasm:2",
+      modelId: "smollm2-135m-instruct-browser",
+      backend: "wasm",
+      successful: true,
+      loadTimeMs: 2_000,
+      readinessTimeMs: 500,
+      readinessTokensPerSecond: 2,
+      failureCode: null,
+      updatedAt: "2026-07-29T00:00:00.000Z"
+    });
+    await repository.putTaskCheckpoint({
+      version: 2,
+      id: "expired",
+      accountId: "account-a",
+      businessId: "shop",
+      conversationId: "conversation",
+      requestId: "expired",
+      modelId: model.id,
+      runtimeContract: browserRuntimeContractForModel(model, "wasm"),
+      compatibilityContract: browserCheckpointCompatibilityContract(model),
+      objective: "Task",
+      relevantMessages: [],
+      partialOutput: "",
+      continuationInstruction: "Continue.",
+      reason: "task-start",
+      status: "running",
+      createdAt: "2026-07-27T00:00:00.000Z",
+      updatedAt: "2026-07-27T00:00:00.000Z",
+      expiresAt: "2026-07-28T00:00:00.000Z"
+    });
+
+    expect(await repository.listModelExecutionOutcomes("account-a")).toEqual([
+      expect.objectContaining({
+        modelId: "smollm2-135m-instruct-browser",
+        successful: true
+      })
+    ]);
+    expect(
+      await repository.pruneExpiredTaskCheckpoints(
+        "account-a",
+        new Date("2026-07-29T00:00:00.000Z")
+      )
+    ).toBe(1);
+    expect(await repository.getTaskCheckpoint("account-a", "expired")).toBeNull();
     repository.close();
   });
 });

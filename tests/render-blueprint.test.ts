@@ -40,6 +40,7 @@ describe("Render Blueprint", () => {
     expect(staging).toContain("Content-Security-Policy");
     expect(staging).toContain("script-src 'self' 'wasm-unsafe-eval'");
     expect(staging).toContain("https://*.huggingface.co");
+    expect(staging).toContain("https://raw.githubusercontent.com");
     expect(staging).toContain("https://*.hf.co");
     expect(staging).toContain("Cross-Origin-Embedder-Policy");
     expect(staging).toContain("Cross-Origin-Opener-Policy");
@@ -47,6 +48,7 @@ describe("Render Blueprint", () => {
     expect(production).toContain('VITE_INFERENCE_CLIENT_FIRST\n        value: "true"');
     expect(production).toContain("Content-Security-Policy");
     expect(production).toContain("https://*.huggingface.co");
+    expect(production).toContain("https://raw.githubusercontent.com");
     expect(blueprint).not.toContain("LOCAL_MODEL_");
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(blueprint).toContain("services/ai-runtime/**");
