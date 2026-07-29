@@ -44,6 +44,35 @@ The initial `qwen2.5:0.5b` pull can take several minutes. It is a deployment pol
 an owner-UI side effect. Ollama records the model digest and downloads its layers atomically; the
 gateway reports the model only after `/api/tags` lists the completed model.
 
+### Deterministic production build graph
+
+Render runs the root `pnpm build:production` command. Its workspace phase selects:
+
+- every package under `packages/**`;
+- `@soko/ai-runtime`;
+- `@soko/api`.
+
+Pnpm recursively builds that selection in dependency order before the production import and Render
+boundary checks run. The API intentionally does not declare `@soko/ai-runtime` as a dependency:
+backend inference is reached through the authenticated private-service protocol, and importing the
+engine into the public API would violate the deployment boundary.
+
+The previous `@soko/api^...` filter selected only the API's declared shared-package dependencies.
+Because the runtime is an independent service, a clean Render checkout skipped its build while a
+developer checkout with a stale `services/ai-runtime/dist` could pass validation. The explicit
+workspace selection now emits and validates:
+
+```text
+services/ai-runtime/dist/index.js
+services/ai-runtime/dist/index.d.ts
+services/ai-runtime/dist/server.js
+services/api/dist/index.js
+```
+
+The `packages/**` selector means a new shared workspace package with a build script participates
+without adding another manually ordered command. Package manifests remain the source of dependency
+ordering.
+
 ## Required configuration
 
 The Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API.

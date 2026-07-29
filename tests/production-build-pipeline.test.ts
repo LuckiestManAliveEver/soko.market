@@ -20,9 +20,18 @@ describe("production workspace build pipeline", () => {
     };
 
     expect(apiManifest.dependencies).not.toHaveProperty("@soko/ai-runtime");
-    expect(rootManifest.scripts["build:production"]).toContain("pnpm --filter @soko/api^... build");
-    expect(rootManifest.scripts["build:production"]).toContain("pnpm --filter @soko/api build");
+    expect(rootManifest.scripts["build:production"]).toContain("pnpm build:production:workspace");
     expect(rootManifest.scripts["build:production"]).toContain("pnpm check:production-imports");
+    expect(rootManifest.scripts["build:production"]).not.toContain("@soko/api^...");
+    expect(rootManifest.scripts["build:production:workspace"]).toContain("pnpm -r");
+    expect(rootManifest.scripts["build:production:workspace"]).toContain(
+      '--filter "./packages/**"'
+    );
+    expect(rootManifest.scripts["build:production:workspace"]).toContain(
+      "--filter @soko/ai-runtime"
+    );
+    expect(rootManifest.scripts["build:production:workspace"]).toContain("--filter @soko/api");
+    expect(rootManifest.scripts["build:production:workspace"]).toContain("--if-present build");
     expect(rootManifest.scripts["inference:build"]).toBe("pnpm --filter @soko/ai-runtime build");
     expect(runtimeManifest.main).toBe("./dist/index.js");
     expect(runtimeManifest.types).toBe("./dist/index.d.ts");
