@@ -19,6 +19,9 @@ import type {
   BetaSupportSeverity,
   BetaSupportTicketStatus,
   BetaTelemetryKind,
+  BrowserCheckpointCompatibilityContract,
+  BrowserDeviceTier,
+  BrowserRuntimeContract,
   DeviceTrustLevel,
   FulfillmentMethod,
   FulfillmentStatus,
@@ -238,6 +241,28 @@ interface AgentModelAssignmentBody {
   readinessStatus?: unknown;
   lastSuccessfulInferenceAt?: unknown;
   lastErrorCode?: unknown;
+}
+
+interface BrowserInferenceAssignmentBody {
+  deviceId?: unknown;
+  enabled?: unknown;
+  selectedModelId?: unknown;
+  modelFamilyId?: unknown;
+  modelRevision?: unknown;
+  runtimeContract?: unknown;
+  checkpointCompatibilityContract?: unknown;
+  deviceTier?: unknown;
+  readinessStatus?: unknown;
+  lastSuccessfulInferenceAt?: unknown;
+  lastErrorCode?: unknown;
+}
+
+interface BrowserInferenceExecutionBody {
+  deviceId?: unknown;
+  modelId?: unknown;
+  successful?: unknown;
+  errorCode?: unknown;
+  occurredAt?: unknown;
 }
 
 interface AgentModelOperationParams {
@@ -2347,6 +2372,102 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     ) => {
       try {
         return store.removeAgentModelAssignment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.query.deviceId, "deviceId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/browser-inference",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
+      reply
+    ) => {
+      try {
+        return {
+          assignment: store.getBrowserInferenceAssignment({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId,
+            deviceId: parseString(request.query.deviceId, "deviceId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/browser-inference",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Body: BrowserInferenceAssignmentBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.upsertBrowserInferenceAssignment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.body.deviceId, "deviceId"),
+          enabled: parseBoolean(request.body.enabled, "enabled"),
+          selectedModelId: parseNullableString(request.body.selectedModelId),
+          modelFamilyId: parseNullableString(request.body.modelFamilyId),
+          modelRevision: parseNullableString(request.body.modelRevision),
+          runtimeContract: parseBrowserRuntimeContract(request.body.runtimeContract),
+          checkpointCompatibilityContract: parseBrowserCheckpointContract(
+            request.body.checkpointCompatibilityContract
+          ),
+          deviceTier: parseBrowserDeviceTier(request.body.deviceTier),
+          readinessStatus: parseAgentModelReadinessStatus(request.body.readinessStatus),
+          lastSuccessfulInferenceAt: parseNullableString(request.body.lastSuccessfulInferenceAt),
+          lastErrorCode: parseNullableString(request.body.lastErrorCode)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/browser-inference/executions",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Body: BrowserInferenceExecutionBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.recordBrowserInferenceExecution({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          deviceId: parseString(request.body.deviceId, "deviceId"),
+          modelId: parseString(request.body.modelId, "modelId"),
+          successful: parseBoolean(request.body.successful, "successful"),
+          errorCode: parseNullableString(request.body.errorCode),
+          occurredAt: parseString(request.body.occurredAt, "occurredAt")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/browser-inference",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Querystring: AgentModelQuery }>,
+      reply
+    ) => {
+      try {
+        return store.removeBrowserInferenceAssignment({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           deviceId: parseString(request.query.deviceId, "deviceId")
@@ -6925,6 +7046,85 @@ function parseAgentModelReadinessStatus(value: unknown): AgentModelReadinessStat
     return value;
   }
   throw new Cp2Error(400, "model_readiness_status_invalid", "Readiness status is invalid.");
+}
+
+function parseBrowserDeviceTier(value: unknown): BrowserDeviceTier | null {
+  if (value === null || value === undefined) return null;
+  if (value === "low" || value === "medium" || value === "high") return value;
+  throw new Cp2Error(400, "browser_device_tier_invalid", "Browser device tier is invalid.");
+}
+
+function parseBrowserRuntimeContract(value: unknown): BrowserRuntimeContract | null {
+  if (value === null || value === undefined) return null;
+  const contract = parseRequestBody(value);
+  if (
+    contract.schemaVersion !== 1 ||
+    (contract.adapterId !== "transformers-js" && contract.adapterId !== "webllm") ||
+    (contract.runtime !== "browser-webgpu" && contract.runtime !== "browser-wasm") ||
+    (contract.backend !== "webgpu" && contract.backend !== "wasm") ||
+    contract.streaming !== true ||
+    contract.cancellation !== true ||
+    (contract.tokenCounting !== "exact" && contract.tokenCounting !== "estimated") ||
+    !Array.isArray(contract.checkpointKinds) ||
+    contract.checkpointKinds.some(
+      (kind) => kind !== "task-state" && kind !== "token-replay" && kind !== "native-kv"
+    ) ||
+    (contract.nativeStateFormat !== null && typeof contract.nativeStateFormat !== "string")
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_runtime_contract_invalid",
+      "Browser runtime contract is invalid."
+    );
+  }
+  return {
+    schemaVersion: 1,
+    adapterId: contract.adapterId,
+    adapterVersion: parseString(contract.adapterVersion, "runtimeContract.adapterVersion"),
+    libraryRevision: parseNullableString(contract.libraryRevision),
+    runtime: contract.runtime,
+    backend: contract.backend,
+    streaming: true,
+    cancellation: true,
+    tokenCounting: contract.tokenCounting,
+    checkpointKinds: [...contract.checkpointKinds] as BrowserRuntimeContract["checkpointKinds"],
+    nativeStateFormat: parseNullableString(contract.nativeStateFormat)
+  };
+}
+
+function parseBrowserCheckpointContract(
+  value: unknown
+): BrowserCheckpointCompatibilityContract | null {
+  if (value === null || value === undefined) return null;
+  const contract = parseRequestBody(value);
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.checkpointKind !== "task-state" ||
+    contract.taskStateSchema !== "soko.browser-task-state.v2" ||
+    (contract.sourceAdapterId !== "transformers-js" && contract.sourceAdapterId !== "webllm") ||
+    contract.promptRepresentation !== "role-content-messages" ||
+    contract.portableAcrossAdapters !== true
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_checkpoint_contract_invalid",
+      "Browser checkpoint compatibility contract is invalid."
+    );
+  }
+  return {
+    schemaVersion: 1,
+    checkpointKind: "task-state",
+    taskStateSchema: "soko.browser-task-state.v2",
+    modelFamilyId: parseString(contract.modelFamilyId, "checkpointContract.modelFamilyId"),
+    sourceModelId: parseString(contract.sourceModelId, "checkpointContract.sourceModelId"),
+    sourceModelRevision: parseString(
+      contract.sourceModelRevision,
+      "checkpointContract.sourceModelRevision"
+    ),
+    sourceAdapterId: contract.sourceAdapterId,
+    promptRepresentation: "role-content-messages",
+    portableAcrossAdapters: true
+  };
 }
 
 function parseNullablePositiveInteger(value: unknown, name: string): number | null {

@@ -47,6 +47,7 @@ import type {
   AgentModelAssignmentSummary,
   AgentModelBindingSummary,
   AgentModelFallbackPolicy,
+  BrowserInferenceAssignmentSummary,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   E2eeDeviceSummary,
@@ -133,6 +134,12 @@ import {
   type BrowserInferenceState
 } from "./browser-inference-session";
 import { recordBrowserInferenceDiagnostic } from "./browser-inference-diagnostics";
+import {
+  loadSyncedBrowserInferenceAssignment,
+  recordSyncedBrowserInferenceExecution,
+  removeSyncedBrowserInferenceAssignment,
+  synchronizeBrowserInferenceAssignment
+} from "./browser-inference-sync";
 import { browserLocalInferenceDeploymentEnabled } from "./browser-model-registry";
 import {
   requestNeedsComplexReasoning,
@@ -6438,47 +6445,73 @@ export function OwnerApp() {
         },
         async *generate(request) {
           if (business === null) throw new Error("A shop is required for browser inference.");
-          const response = await generateBrowserAgentResponse({
-            requestId: request.requestId,
-            accountId: session.account.id,
-            businessId: business.id,
-            conversationId: request.conversationId,
-            agentIdentity: `${agentSettings.name}; role=${agentSettings.role}`,
-            shopIdentity: `${business.name}; Soko ID=${business.sokoId}`,
-            systemPrompt: request.systemPrompt ?? "",
-            message: runtimeMessage,
-            recentMessages: chatMessages
-              .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
-              .map((item) => ({
-                id: item.id,
-                role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
-                content: item.body
+          const selectedModelId = browserState.settings!.selectedModelId!;
+          try {
+            const response = await generateBrowserAgentResponse({
+              requestId: request.requestId,
+              accountId: session.account.id,
+              businessId: business.id,
+              conversationId: request.conversationId,
+              agentIdentity: `${agentSettings.name}; role=${agentSettings.role}`,
+              shopIdentity: `${business.name}; Soko ID=${business.sokoId}`,
+              systemPrompt: request.systemPrompt ?? "",
+              message: runtimeMessage,
+              recentMessages: chatMessages
+                .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
+                .map((item) => ({
+                  id: item.id,
+                  role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
+                  content: item.body
+                })),
+              catalogueRecords: products.map((product) => ({
+                id: product.id,
+                name: product.name,
+                price: product.sellingPrice,
+                quantity: product.quantity,
+                updatedAt: product.updatedAt
               })),
-            catalogueRecords: products.map((product) => ({
-              id: product.id,
-              name: product.name,
-              price: product.sellingPrice,
-              quantity: product.quantity,
-              updatedAt: product.updatedAt
-            })),
-            nativeReady: false,
-            onToken: (token) => browserTokenListener(token)
-          });
-          yield {
-            requestId: request.requestId,
-            text: response.result.text,
-            done: true,
-            runtime: browserRuntime,
-            modelId: request.modelId,
-            usage: {
-              ...(response.result.promptTokenCount === null
-                ? {}
-                : { promptTokens: response.result.promptTokenCount }),
-              ...(response.result.generatedTokenCount === null
-                ? {}
-                : { completionTokens: response.result.generatedTokenCount })
+              nativeReady: false,
+              onToken: (token) => browserTokenListener(token)
+            });
+            if (navigator.onLine) {
+              void recordSyncedBrowserInferenceExecution({
+                businessId: business.id,
+                modelId: selectedModelId,
+                successful: true
+              }).catch(() => undefined);
             }
-          };
+            yield {
+              requestId: request.requestId,
+              text: response.result.text,
+              done: true,
+              runtime: browserRuntime,
+              modelId: selectedModelId,
+              usage: {
+                ...(response.result.promptTokenCount === null
+                  ? {}
+                  : { promptTokens: response.result.promptTokenCount }),
+                ...(response.result.generatedTokenCount === null
+                  ? {}
+                  : { completionTokens: response.result.generatedTokenCount })
+              }
+            };
+          } catch (error) {
+            if (navigator.onLine) {
+              void recordSyncedBrowserInferenceExecution({
+                businessId: business.id,
+                modelId: selectedModelId,
+                successful: false,
+                errorCode:
+                  typeof error === "object" &&
+                  error !== null &&
+                  "code" in error &&
+                  typeof error.code === "string"
+                    ? error.code
+                    : "BROWSER_INFERENCE_FAILED"
+              }).catch(() => undefined);
+            }
+            throw error;
+          }
         },
         cancel: () => cancelBrowserGeneration()
       });
@@ -13403,6 +13436,8 @@ function AgentProfileSurface({
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
   );
+  const [syncedBrowserInference, setSyncedBrowserInference] =
+    useState<BrowserInferenceAssignmentSummary | null>(null);
   const [selectedBrowserModelId, setSelectedBrowserModelId] = useState(
     () => listBrowserModels()[0]?.id ?? ""
   );
@@ -13517,20 +13552,31 @@ function AgentProfileSurface({
     setProfileMessage("Opening model settings…");
     try {
       const initialSearch = new URLSearchParams(location.search).get("ai_search") ?? "";
-      const [browserState, capability] = await Promise.all([
+      const [browserState, capability, syncedAssignment] = await Promise.all([
         loadBrowserInferenceState(accountId, business.id),
         inspectDeviceModelCapability(),
+        loadSyncedBrowserInferenceAssignment(business.id).catch(() => null),
         loadAiModels(initialSearch)
       ]);
       setBrowserInferenceState(browserState);
+      setSyncedBrowserInference(syncedAssignment);
       setSelectedBrowserModelId(
         browserState.settings?.selectedModelId ??
+          syncedAssignment?.selectedModelId ??
           browserState.modelOptions.find((option) => option.compatible)?.model.id ??
           ""
       );
       setDeviceCapability(capability);
       setModelLibraryLoaded(true);
       setProfileMessage("Model settings ready.");
+      if (navigator.onLine && browserState.settings !== null) {
+        void synchronizeBrowserInferenceAssignment({
+          businessId: business.id,
+          state: browserState
+        })
+          .then(setSyncedBrowserInference)
+          .catch(() => undefined);
+      }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -13546,6 +13592,14 @@ function AgentProfileSurface({
       if (!enabled) {
         const state = await disableBrowserInference(accountId, business.id);
         setBrowserInferenceState(state);
+        if (navigator.onLine) {
+          setSyncedBrowserInference(
+            await synchronizeBrowserInferenceAssignment({
+              businessId: business.id,
+              state
+            })
+          );
+        }
         setProfileMessage(
           "Browser-local inference is off. Allowed native, owner-device, or cloud routing remains."
         );
@@ -13571,7 +13625,19 @@ function AgentProfileSurface({
         onProgress: setBrowserModelProgress
       });
       setBrowserInferenceState(state);
-      setProfileMessage(`${model.displayName} is ready for supported on-device chat.`);
+      if (navigator.onLine) {
+        setSyncedBrowserInference(
+          await synchronizeBrowserInferenceAssignment({
+            businessId: business.id,
+            state
+          })
+        );
+      }
+      setProfileMessage(
+        navigator.onLine
+          ? `${model.displayName} is ready and connected to this shop's browser inference workflow.`
+          : `${model.displayName} is ready locally. Reconnect to synchronize its database assignment.`
+      );
     } catch (error) {
       setBrowserInferenceState(await loadBrowserInferenceState(accountId, business.id));
       setProfileMessage(getErrorMessage(error));
@@ -13594,8 +13660,17 @@ function AgentProfileSurface({
     if (modelRuntimeBusy) return;
     setModelRuntimeBusy(true);
     try {
-      setBrowserInferenceState(await removeBrowserModel(accountId, business.id));
-      setProfileMessage("The cached browser model was removed. Chat history was left unchanged.");
+      const state = await removeBrowserModel(accountId, business.id);
+      setBrowserInferenceState(state);
+      if (navigator.onLine) {
+        await removeSyncedBrowserInferenceAssignment(business.id);
+        setSyncedBrowserInference(null);
+      }
+      setProfileMessage(
+        navigator.onLine
+          ? "The cached browser model and its database assignment were removed. Chat history was left unchanged."
+          : "The cached browser model was removed locally. Reconnect to clear its database assignment."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -15820,6 +15895,20 @@ function AgentProfileSurface({
                     )} MB download · about ${Math.round(
                       selectedBrowserModel.approximateRuntimeMemoryBytes / 1_000_000
                     )} MB working memory`}
+              </small>
+              <small>
+                Database workflow:{" "}
+                {syncedBrowserInference === null
+                  ? "Not synchronized"
+                  : `${syncedBrowserInference.enabled ? "Enabled" : "Disabled"} · ${
+                      syncedBrowserInference.readinessStatus
+                    } · ${syncedBrowserInference.runtimeContract?.adapterId ?? "no adapter"} ${
+                      syncedBrowserInference.runtimeContract?.adapterVersion ?? ""
+                    }`}
+              </small>
+              <small>
+                Only device, model, runtime-contract, readiness, and failure metadata are
+                synchronized. Prompts and generated replies remain outside this record.
               </small>
               <div className="ai-model-card-actions">
                 {browserModelProgress !== null ? (

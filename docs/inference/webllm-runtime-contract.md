@@ -100,6 +100,34 @@ be advertised.
 8. Page lifecycle and failure checkpoints use the common structured task-state store.
 9. Model removal unloads the worker and deletes both Transformers.js and WebLLM caches.
 
+## Database and workflow connection
+
+The browser cache remains device-local, while the authenticated API persists the portable
+assignment in `cp2_browser_inference_assignments`. The record is scoped by account, owner, shop,
+and device. It contains:
+
+- the selected model, family, and immutable model revision;
+- the runtime and checkpoint compatibility contracts;
+- the device tier, enabled state, and readiness state;
+- the latest successful local execution time or bounded failure code.
+
+It never contains prompts, retrieved shop context, generated replies, KV caches, or model bytes.
+The database record is therefore an assignment and health attestation, not a remote inference
+payload.
+
+The frontend workflow is:
+
+1. Load IndexedDB state and the matching server assignment when model settings open.
+2. Download and verify the model locally.
+3. Persist the exact portable contracts only after the readiness completion succeeds.
+4. Route eligible short chat through the browser provider.
+5. Record success or a bounded error code asynchronously; chat does not wait on telemetry.
+6. Disable the database assignment when browser inference is switched off.
+7. Remove both cached model state and the database assignment when the owner deletes the model.
+
+Migration `041_browser_inference_assignments.sql` creates the Neon table and contract constraints.
+Apply it before deploying API code that requires this workflow.
+
 ## References
 
 - [WebLLM documentation](https://webllm.mlc.ai/docs/)

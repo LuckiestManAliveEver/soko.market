@@ -1,38 +1,22 @@
-import type { InferenceRuntime } from "@soko/shared-types";
+import type {
+  BrowserCheckpointCompatibilityContract,
+  BrowserRuntimeAdapterId,
+  BrowserRuntimeContract,
+  InferenceRuntime
+} from "@soko/shared-types";
+
+export type {
+  BrowserCheckpointCompatibilityContract,
+  BrowserRuntimeAdapterId,
+  BrowserRuntimeContract
+} from "@soko/shared-types";
 
 export type BrowserInferenceBackend = "webgpu" | "wasm" | "none";
 export type BrowserDeviceTier = "low" | "medium" | "high";
 export type BrowserModelDtype = "q4" | "q8" | "fp16";
-export type BrowserRuntimeAdapterId = "transformers-js" | "webllm";
 export type BrowserCheckpointKind = "task-state" | "token-replay" | "native-kv";
 export type BrowserModelTaskClass =
   "short-chat" | "classification" | "field-extraction" | "summarization";
-
-export interface BrowserRuntimeContract {
-  schemaVersion: 1;
-  adapterId: BrowserRuntimeAdapterId;
-  adapterVersion: string;
-  libraryRevision: string | null;
-  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm">;
-  backend: Exclude<BrowserInferenceBackend, "none">;
-  streaming: true;
-  cancellation: true;
-  tokenCounting: "exact" | "estimated";
-  checkpointKinds: BrowserCheckpointKind[];
-  nativeStateFormat: string | null;
-}
-
-export interface BrowserCheckpointCompatibilityContract {
-  schemaVersion: 1;
-  checkpointKind: "task-state";
-  taskStateSchema: "soko.browser-task-state.v2";
-  modelFamilyId: string;
-  sourceModelId: string;
-  sourceModelRevision: string;
-  sourceAdapterId: BrowserRuntimeAdapterId;
-  promptRepresentation: "role-content-messages";
-  portableAcrossAdapters: true;
-}
 
 export interface BrowserTaskBudget {
   maxInputTokens: number;

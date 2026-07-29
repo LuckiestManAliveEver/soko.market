@@ -54,6 +54,10 @@ import type {
   BetaReadinessReportSummary,
   BetaSupportTicketSummary,
   BetaTelemetryEventSummary,
+  BrowserCheckpointCompatibilityContract,
+  BrowserDeviceTier,
+  BrowserInferenceAssignmentSummary,
+  BrowserRuntimeContract,
   BusinessKnowledgeSummary,
   BusinessNotificationStatus,
   BusinessNotificationSummary,
@@ -702,6 +706,7 @@ export interface Cp2Snapshot {
   agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
   agentModelAssignments?: AgentModelAssignmentSummary[];
+  browserInferenceAssignments?: BrowserInferenceAssignmentSummary[];
   agentModelBindings?: AgentModelBindingSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
@@ -941,6 +946,10 @@ export class Cp2Store {
   private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
+  private readonly browserInferenceAssignments = new Map<
+    string,
+    BrowserInferenceAssignmentSummary
+  >();
   private readonly agentModelBindings = new Map<string, AgentModelBindingSummary>();
   private readonly agentModelActivationLocks = new Set<string>();
   private readonly quarantinedBusinessIds = new Set<string>();
@@ -3503,6 +3512,270 @@ export class Cp2Store {
       this.agentProfiles.set(input.businessId, revised);
       this.recordAgentRuntimeVersion(revised, session.user.id, "Device model assignment removed");
     }
+    return { removed: true };
+  }
+
+  getBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary | null {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const assignment = this.browserInferenceAssignments.get(
+      browserInferenceAssignmentKey(input.businessId, deviceId)
+    );
+    if (
+      assignment === undefined ||
+      assignment.accountId !== session.account.id ||
+      assignment.userId !== session.user.id
+    ) {
+      return null;
+    }
+    return cloneBrowserInferenceAssignment(assignment);
+  }
+
+  upsertBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    enabled: boolean;
+    selectedModelId: string | null;
+    modelFamilyId: string | null;
+    modelRevision: string | null;
+    runtimeContract: BrowserRuntimeContract | null;
+    checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+    deviceTier: BrowserDeviceTier | null;
+    readinessStatus: AgentModelReadinessStatus;
+    lastSuccessfulInferenceAt: string | null;
+    lastErrorCode: string | null;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
+    ) {
+      throw new Cp2Error(
+        403,
+        "browser_inference_owner_mismatch",
+        "Browser inference access was denied."
+      );
+    }
+    const runtimeContract =
+      input.runtimeContract === null
+        ? null
+        : normalizeBrowserRuntimeContract(input.runtimeContract);
+    const checkpointCompatibilityContract =
+      input.checkpointCompatibilityContract === null
+        ? null
+        : normalizeBrowserCheckpointContract(input.checkpointCompatibilityContract);
+    const selectedModelId =
+      input.selectedModelId === null
+        ? null
+        : normalizeRequiredBoundedText(input.selectedModelId, "browser model ID", 180);
+    const modelFamilyId =
+      input.modelFamilyId === null
+        ? null
+        : normalizeRequiredBoundedText(input.modelFamilyId, "browser model family ID", 180);
+    const modelRevision =
+      input.modelRevision === null
+        ? null
+        : normalizeRequiredBoundedText(input.modelRevision, "browser model revision", 180);
+
+    validateBrowserInferenceAssignment({
+      enabled: input.enabled,
+      selectedModelId,
+      modelFamilyId,
+      modelRevision,
+      runtimeContract,
+      checkpointCompatibilityContract,
+      readinessStatus: input.readinessStatus,
+      lastSuccessfulInferenceAt: input.lastSuccessfulInferenceAt
+    });
+    const occurredAt = now.toISOString();
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const assignment: BrowserInferenceAssignmentSummary = {
+      id: existing?.id ?? randomUUID(),
+      agentId: profile.agentId,
+      businessId: input.businessId,
+      accountId: session.account.id,
+      userId: session.user.id,
+      deviceId,
+      enabled: input.enabled,
+      selectedModelId,
+      modelFamilyId,
+      modelRevision,
+      runtimeContract,
+      checkpointCompatibilityContract,
+      deviceTier: input.deviceTier,
+      readinessStatus: input.readinessStatus,
+      lastSuccessfulInferenceAt:
+        input.lastSuccessfulInferenceAt === null
+          ? null
+          : normalizeBrowserInferenceTimestamp(input.lastSuccessfulInferenceAt),
+      lastErrorCode:
+        input.lastErrorCode === null
+          ? null
+          : normalizeRequiredBoundedText(input.lastErrorCode, "browser inference error code", 120),
+      createdAt: existing?.createdAt ?? occurredAt,
+      updatedAt: occurredAt,
+      updatedBy: session.user.id
+    };
+    this.browserInferenceAssignments.set(key, assignment);
+    this.recordAuditEvent({
+      type: input.enabled
+        ? assignment.readinessStatus === "READY"
+          ? "browser_inference.ready"
+          : "browser_inference.updated"
+        : "browser_inference.disabled",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt,
+      payload: {
+        deviceId,
+        modelId: selectedModelId,
+        modelFamilyId,
+        runtime: runtimeContract?.runtime ?? null,
+        adapterId: runtimeContract?.adapterId ?? null,
+        adapterVersion: runtimeContract?.adapterVersion ?? null,
+        readinessStatus: assignment.readinessStatus,
+        enabled: assignment.enabled
+      }
+    });
+    return cloneBrowserInferenceAssignment(assignment);
+  }
+
+  recordBrowserInferenceExecution(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    modelId: string;
+    successful: boolean;
+    errorCode: string | null;
+    occurredAt: string;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const modelId = normalizeRequiredBoundedText(input.modelId, "browser model ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing === undefined ||
+      existing.accountId !== session.account.id ||
+      existing.userId !== session.user.id ||
+      existing.selectedModelId !== modelId
+    ) {
+      throw new Cp2Error(
+        409,
+        "browser_inference_assignment_mismatch",
+        "The browser inference execution does not match the active device assignment."
+      );
+    }
+    if (!existing.enabled) {
+      throw new Cp2Error(
+        409,
+        "browser_inference_assignment_inactive",
+        "The browser inference assignment is disabled."
+      );
+    }
+    const occurredAt = normalizeBrowserInferenceTimestamp(input.occurredAt);
+    const updated: BrowserInferenceAssignmentSummary = {
+      ...existing,
+      readinessStatus: input.successful ? "READY" : existing.readinessStatus,
+      lastSuccessfulInferenceAt: input.successful ? occurredAt : existing.lastSuccessfulInferenceAt,
+      lastErrorCode:
+        input.successful || input.errorCode === null
+          ? null
+          : normalizeRequiredBoundedText(
+              input.errorCode,
+              "browser inference execution error code",
+              120
+            ),
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.browserInferenceAssignments.set(key, updated);
+    this.recordAuditEvent({
+      type: input.successful
+        ? "browser_inference.execution_succeeded"
+        : "browser_inference.execution_failed",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: updated.updatedAt,
+      payload: {
+        deviceId,
+        modelId,
+        successful: input.successful,
+        errorCode: updated.lastErrorCode
+      }
+    });
+    return cloneBrowserInferenceAssignment(updated);
+  }
+
+  removeBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): { removed: true } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
+    ) {
+      throw new Cp2Error(
+        403,
+        "browser_inference_owner_mismatch",
+        "Browser inference access was denied."
+      );
+    }
+    this.browserInferenceAssignments.delete(key);
+    this.recordAuditEvent({
+      type: "browser_inference.removed",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        deviceId,
+        modelId: existing?.selectedModelId ?? null
+      }
+    });
     return { removed: true };
   }
 
@@ -10164,6 +10437,9 @@ export class Cp2Store {
       agentModelAssignments: [...this.agentModelAssignments.values()].map((assignment) => ({
         ...assignment
       })),
+      browserInferenceAssignments: [...this.browserInferenceAssignments.values()].map(
+        cloneBrowserInferenceAssignment
+      ),
       agentModelBindings: [...this.agentModelBindings.values()].map(cloneAgentModelBinding),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
@@ -10257,6 +10533,7 @@ export class Cp2Store {
     this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
     this.agentModelAssignments.clear();
+    this.browserInferenceAssignments.clear();
     this.agentModelBindings.clear();
     this.agentModelActivationLocks.clear();
     this.quarantinedBusinessIds.clear();
@@ -10468,6 +10745,13 @@ export class Cp2Store {
       this.agentModelAssignments.set(
         agentModelAssignmentKey(assignment.businessId, assignment.deviceId),
         { ...assignment }
+      );
+    }
+
+    for (const assignment of snapshot.browserInferenceAssignments ?? []) {
+      this.browserInferenceAssignments.set(
+        browserInferenceAssignmentKey(assignment.businessId, assignment.deviceId),
+        cloneBrowserInferenceAssignment(assignment)
       );
     }
 
@@ -14224,6 +14508,12 @@ export class Cp2Store {
       }
     }
 
+    for (const [key, assignment] of this.browserInferenceAssignments.entries()) {
+      if (assignment.businessId === businessId) {
+        this.browserInferenceAssignments.delete(key);
+      }
+    }
+
     for (const [id, product] of this.products.entries()) {
       if (product.businessId === businessId) {
         this.products.delete(id);
@@ -14425,6 +14715,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.agentOwnerCorrections, scope);
       deletedRecordCount += deleteScopedMapRecords(this.installedAgentModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentModelAssignments, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.browserInferenceAssignments, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
       deletedRecordCount += deleteScopedMapRecords(this.productFieldSchemas, scope);
       deletedRecordCount += deleteScopedMapRecords(this.products, scope);
@@ -18407,6 +18698,10 @@ function agentModelAssignmentKey(businessId: string, deviceId: string): string {
   return `${businessId}:${deviceId}`;
 }
 
+function browserInferenceAssignmentKey(businessId: string, deviceId: string): string {
+  return `${businessId}:${deviceId}`;
+}
+
 function normalizeModelCatalogSearch(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -18420,6 +18715,164 @@ function cloneAgentModelBinding(binding: AgentModelBindingSummary): AgentModelBi
     ...binding,
     permissions: { ...binding.permissions }
   };
+}
+
+function cloneBrowserInferenceAssignment(
+  assignment: BrowserInferenceAssignmentSummary
+): BrowserInferenceAssignmentSummary {
+  return {
+    ...assignment,
+    runtimeContract:
+      assignment.runtimeContract === null
+        ? null
+        : {
+            ...assignment.runtimeContract,
+            checkpointKinds: [...assignment.runtimeContract.checkpointKinds]
+          },
+    checkpointCompatibilityContract:
+      assignment.checkpointCompatibilityContract === null
+        ? null
+        : { ...assignment.checkpointCompatibilityContract }
+  };
+}
+
+function normalizeBrowserRuntimeContract(contract: BrowserRuntimeContract): BrowserRuntimeContract {
+  if (
+    contract.schemaVersion !== 1 ||
+    (contract.adapterId !== "transformers-js" && contract.adapterId !== "webllm") ||
+    normalizeRequiredBoundedText(contract.adapterVersion, "browser adapter version", 80) !==
+      contract.adapterVersion ||
+    (contract.libraryRevision !== null &&
+      normalizeRequiredBoundedText(contract.libraryRevision, "browser library revision", 180) !==
+        contract.libraryRevision) ||
+    (contract.runtime !== "browser-webgpu" && contract.runtime !== "browser-wasm") ||
+    (contract.backend !== "webgpu" && contract.backend !== "wasm") ||
+    contract.streaming !== true ||
+    contract.cancellation !== true ||
+    (contract.tokenCounting !== "exact" && contract.tokenCounting !== "estimated") ||
+    !Array.isArray(contract.checkpointKinds) ||
+    contract.checkpointKinds.length !== 1 ||
+    contract.checkpointKinds[0] !== "task-state" ||
+    contract.nativeStateFormat !== null
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_runtime_contract_invalid",
+      "The browser runtime contract is invalid."
+    );
+  }
+  if (
+    (contract.backend === "webgpu" && contract.runtime !== "browser-webgpu") ||
+    (contract.backend === "wasm" && contract.runtime !== "browser-wasm") ||
+    (contract.adapterId === "webllm" &&
+      (contract.backend !== "webgpu" || contract.libraryRevision === null))
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_runtime_contract_incompatible",
+      "The browser runtime contract contains an incompatible adapter and backend."
+    );
+  }
+  return { ...contract, checkpointKinds: ["task-state"] };
+}
+
+function normalizeBrowserCheckpointContract(
+  contract: BrowserCheckpointCompatibilityContract
+): BrowserCheckpointCompatibilityContract {
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.checkpointKind !== "task-state" ||
+    contract.taskStateSchema !== "soko.browser-task-state.v2" ||
+    normalizeRequiredBoundedText(contract.modelFamilyId, "browser model family ID", 180) !==
+      contract.modelFamilyId ||
+    normalizeRequiredBoundedText(contract.sourceModelId, "browser source model ID", 180) !==
+      contract.sourceModelId ||
+    normalizeRequiredBoundedText(contract.sourceModelRevision, "browser source revision", 180) !==
+      contract.sourceModelRevision ||
+    (contract.sourceAdapterId !== "transformers-js" && contract.sourceAdapterId !== "webllm") ||
+    contract.promptRepresentation !== "role-content-messages" ||
+    contract.portableAcrossAdapters !== true
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_checkpoint_contract_invalid",
+      "The browser checkpoint compatibility contract is invalid."
+    );
+  }
+  return { ...contract };
+}
+
+function validateBrowserInferenceAssignment(input: {
+  enabled: boolean;
+  selectedModelId: string | null;
+  modelFamilyId: string | null;
+  modelRevision: string | null;
+  runtimeContract: BrowserRuntimeContract | null;
+  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+  readinessStatus: AgentModelReadinessStatus;
+  lastSuccessfulInferenceAt: string | null;
+}): void {
+  const modelContractFields = [
+    input.selectedModelId,
+    input.modelFamilyId,
+    input.modelRevision,
+    input.runtimeContract,
+    input.checkpointCompatibilityContract
+  ];
+  const populatedContractFields = modelContractFields.filter((value) => value !== null).length;
+  if (populatedContractFields !== 0 && populatedContractFields !== modelContractFields.length) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_contract_incomplete",
+      "The browser inference assignment requires a complete model and runtime contract."
+    );
+  }
+  if (input.enabled && populatedContractFields === 0) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_model_required",
+      "An enabled browser inference assignment requires a model."
+    );
+  }
+  if (
+    input.selectedModelId !== null &&
+    input.modelFamilyId !== null &&
+    input.modelRevision !== null &&
+    input.runtimeContract !== null &&
+    input.checkpointCompatibilityContract !== null &&
+    (input.checkpointCompatibilityContract.sourceModelId !== input.selectedModelId ||
+      input.checkpointCompatibilityContract.modelFamilyId !== input.modelFamilyId ||
+      input.checkpointCompatibilityContract.sourceModelRevision !== input.modelRevision ||
+      input.checkpointCompatibilityContract.sourceAdapterId !== input.runtimeContract.adapterId)
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_inference_contract_mismatch",
+      "The browser model, runtime, and checkpoint contracts do not describe the same artifact."
+    );
+  }
+  if (
+    input.readinessStatus === "READY" &&
+    (!input.enabled || input.lastSuccessfulInferenceAt === null)
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_inference_not_verified",
+      "A ready browser assignment requires a successful local readiness inference."
+    );
+  }
+}
+
+function normalizeBrowserInferenceTimestamp(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_timestamp_invalid",
+      "The browser inference timestamp is invalid."
+    );
+  }
+  return new Date(timestamp).toISOString();
 }
 
 function validateAgentModelBindingConfiguration(

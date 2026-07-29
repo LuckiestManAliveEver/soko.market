@@ -51,4 +51,18 @@ describe("browser inference frontend integration", () => {
     expect(serviceWorker).not.toContain("soko-browser-inference");
     expect(serviceWorker).not.toContain("transformers-cache");
   });
+
+  it("synchronizes activation and health metadata without sending prompts or generated text", async () => {
+    const application = await readFile("apps/web/src/SokoApplication.tsx", "utf8");
+    const synchronization = await readFile("apps/web/src/browser-inference-sync.ts", "utf8");
+    expect(application).toContain("synchronizeBrowserInferenceAssignment");
+    expect(application).toContain("recordSyncedBrowserInferenceExecution");
+    expect(application).toContain("Database workflow:");
+    expect(synchronization).toContain("/browser-inference/executions");
+    expect(synchronization).toContain("runtimeContract");
+    expect(synchronization).toContain("checkpointCompatibilityContract");
+    expect(synchronization).not.toContain("systemPrompt");
+    expect(synchronization).not.toContain("messages:");
+    expect(synchronization).not.toContain("generatedText");
+  });
 });

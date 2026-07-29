@@ -536,6 +536,59 @@ export type AgentModelBindingStatus =
 export type ModelExecutionTarget =
   "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
 
+export type BrowserInferenceBackend = "webgpu" | "wasm";
+export type BrowserDeviceTier = "low" | "medium" | "high";
+export type BrowserRuntimeAdapterId = "transformers-js" | "webllm";
+export type BrowserCheckpointKind = "task-state" | "token-replay" | "native-kv";
+
+export interface BrowserRuntimeContract {
+  schemaVersion: 1;
+  adapterId: BrowserRuntimeAdapterId;
+  adapterVersion: string;
+  libraryRevision: string | null;
+  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm">;
+  backend: BrowserInferenceBackend;
+  streaming: true;
+  cancellation: true;
+  tokenCounting: "exact" | "estimated";
+  checkpointKinds: BrowserCheckpointKind[];
+  nativeStateFormat: string | null;
+}
+
+export interface BrowserCheckpointCompatibilityContract {
+  schemaVersion: 1;
+  checkpointKind: "task-state";
+  taskStateSchema: "soko.browser-task-state.v2";
+  modelFamilyId: string;
+  sourceModelId: string;
+  sourceModelRevision: string;
+  sourceAdapterId: BrowserRuntimeAdapterId;
+  promptRepresentation: "role-content-messages";
+  portableAcrossAdapters: true;
+}
+
+export interface BrowserInferenceAssignmentSummary {
+  id: string;
+  agentId: string;
+  businessId: string;
+  accountId: string;
+  userId: string;
+  deviceId: string;
+  enabled: boolean;
+  selectedModelId: string | null;
+  modelFamilyId: string | null;
+  modelRevision: string | null;
+  runtimeContract: BrowserRuntimeContract | null;
+  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+  deviceTier: BrowserDeviceTier | null;
+  readinessStatus: AgentModelReadinessStatus;
+  lastSuccessfulInferenceAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
 export interface RuntimeModelDefinition {
   id: string;
   displayName: string;

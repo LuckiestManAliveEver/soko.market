@@ -22,7 +22,7 @@ describe("owner phone identity migration", () => {
     expect(schema).toContain('phoneNumberE164: text("phone_number_e164")');
     expect(schema).toContain('publicPhoneEnabled: boolean("public_phone_enabled")');
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "040_agent_model_runtime_bindings.sql"'
+      'requiredMigrationFilename = "041_browser_inference_assignments.sql"'
     );
     expect(postgresStore).toContain("phone_number_e164");
     expect(postgresStore).toContain('"updateOwnerPhone"');

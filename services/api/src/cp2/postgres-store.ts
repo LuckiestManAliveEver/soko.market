@@ -41,6 +41,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
+  { key: "browserInferenceAssignments", tableName: "cp2_browser_inference_assignments" },
   { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
@@ -202,6 +203,8 @@ const mutatingMethodNames = new Set([
   "activateAiModel",
   "activateAgentModel",
   "assignAgentModel",
+  "upsertBrowserInferenceAssignment",
+  "recordBrowserInferenceExecution",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
   "rollbackAgentRuntimeVersion",
@@ -236,6 +239,7 @@ const mutatingMethodNames = new Set([
   "registerPushSubscription",
   "registerInstalledAgentModel",
   "removeAgentModelAssignment",
+  "removeBrowserInferenceAssignment",
   "validateInstalledAgentModel",
   "removePushSubscription"
 ]);
@@ -294,7 +298,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "040_agent_model_runtime_bindings.sql";
+const requiredMigrationFilename = "041_browser_inference_assignments.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -3064,6 +3068,8 @@ function emptySnapshot(): Cp2Snapshot {
     agentOwnerCorrections: [],
     installedAgentModels: [],
     agentModelAssignments: [],
+    browserInferenceAssignments: [],
+    agentModelBindings: [],
     syncChanges: [],
     mcpAccessTokens: [],
     productFieldSchemas: [],
@@ -3182,7 +3188,7 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     return requiredText(record, "id");
   }
 
-  if (key === "agentModelAssignments") {
+  if (key === "agentModelAssignments" || key === "browserInferenceAssignments") {
     return [requiredText(record, "businessId"), requiredText(record, "deviceId")].join(":");
   }
 

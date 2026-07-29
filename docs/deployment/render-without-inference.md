@@ -73,6 +73,11 @@ The optional WebLLM adapter follows the same boundary: its pinned MLC weights an
 download directly into the browser cache and execute in a dedicated Web Worker. Neither WebLLM nor
 its model artifacts are imported by the Render API.
 
+The API persists only device-scoped browser assignment and readiness metadata in Neon through
+`cp2_browser_inference_assignments`. Apply migration
+`041_browser_inference_assignments.sql` before deploying this API version. Prompts, generated
+replies, model weights, and runtime caches remain outside that database record.
+
 ## Verification
 
 Run:
