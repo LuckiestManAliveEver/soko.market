@@ -20,24 +20,25 @@ describe("frontend model activation contracts", () => {
     );
 
     expect(backendValidation).toContain("/v1/models/${encodeURIComponent(model.id)}/validate");
-    expect(activation).toContain("await registerInstalledModel(verified)");
-    expect(activation).toContain("await validateInstalledModelOnBackend(verified)");
-    expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified)");
+    expect(activation).toContain("registerInstalledModel(verified, signal)");
+    expect(activation).toContain("validateInstalledModelOnBackend(verified, signal)");
+    expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified, {");
     expect(binding).toContain("/businesses/${business.id}/agent-model");
     expect(activation).toContain("inferencePreferences.nativePermission");
     expect(activation).toContain("saveClientInferencePreferences");
-    expect(activation).toContain(
-      "boundAssignment = await synchronizeAgentModelAssignment(pending)"
-    );
-    expect(activation).toContain("boundAssignment = await synchronizeAgentModelAssignment(tested)");
-    expect(activation).toContain("is bound to ${business.name}, but it is not running yet");
+    expect(activation).toContain("assignmentAfterReadiness(pending, result)");
+    expect(activation).toContain("synchronizeAgentModelAssignment(readyAssignment, signal)");
+    expect(activation).toContain("The previous working model was left unchanged");
+    expect(application).toContain("new ModelActivationCoordinator()");
+    expect(activation).toContain("withActivationTimeout");
+    expect(activation).toContain("activationApiReachable");
 
-    expect(activation.indexOf("await validateInstalledModelOnBackend(verified)")).toBeLessThan(
-      activation.indexOf("boundAssignment = await synchronizeAgentModelAssignment(pending)")
+    expect(activation.indexOf("validateInstalledModelOnBackend(verified, signal)")).toBeLessThan(
+      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified")
     );
     expect(
-      activation.indexOf("boundAssignment = await synchronizeAgentModelAssignment(pending)")
-    ).toBeLessThan(activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified)"));
+      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified")
+    ).toBeLessThan(activation.indexOf("synchronizeAgentModelAssignment(readyAssignment, signal)"));
   });
 
   it("sets a cloud fallback without detaching the downloaded model", () => {
@@ -88,6 +89,18 @@ describe("frontend model activation contracts", () => {
     expect(application).toContain('"In use"');
     expect(styles).toContain(".model-use-button.in-use");
     expect(styles).toContain(".model-use-button {");
+  });
+
+  it("loads canonical agent binding state and uses server test and activation APIs", () => {
+    expect(application).toContain("/api/agents/${encodeURIComponent(");
+    expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
+    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");
+    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
+    expect(application).toContain("setActiveAgentModelBinding(result.binding)");
+    expect(application).toContain('executionTarget: "backend"');
+    expect(application).toContain("Active for ${agent.name}");
+    expect(application).toContain("Browser-local inference is unavailable in this deployment");
+    expect(application).toContain("<summary>Advanced routing</summary>");
   });
 });
 

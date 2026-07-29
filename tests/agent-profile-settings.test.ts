@@ -163,6 +163,7 @@ describe("business agent settings", () => {
     expect(capturedPrompt?.message).toContain(
       "Never claim that you read, opened, scanned, or extracted the file body"
     );
+    expect(capturedPrompt?.message).not.toContain("Agent behavior: Careful");
 
     await app.close();
   });

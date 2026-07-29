@@ -163,9 +163,11 @@ describe("frontend lifecycle state", () => {
     expect(isAuthBootstrapPending("initializing")).toBe(true);
     expect(isAuthBootstrapPending("restoring-session")).toBe(true);
     expect(isAuthBootstrapPending("authenticated")).toBe(false);
-    expect(modelActivationMessage("validating-installation")).toBe("Checking installation…");
-    expect(modelActivationMessage("creating-runtime-session")).toBe("Starting model runtime…");
-    expect(modelActivationMessage("health-checking")).toBe("Testing model…");
+    expect(modelActivationMessage("validating")).toBe("Checking model…");
+    expect(modelActivationMessage("creating_runtime")).toBe("Starting runtime…");
+    expect(modelActivationMessage("loading_model")).toBe("Loading model…");
+    expect(modelActivationMessage("binding_agent")).toBe("Connecting model to agent…");
+    expect(modelActivationMessage("offline_blocked")).toBe("Connect to activate");
     expect(modelActivationMessage("failed")).toBe("Retry activation");
   });
 });

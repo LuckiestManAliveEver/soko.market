@@ -1,23 +1,15 @@
-databases:
-  - name: soko-market-db
-    plan: free
-    region: oregon
-    postgresMajorVersion: "16"
-    databaseName: soko_market
-    user: soko_market
-    ipAllowList: []
-
 services:
   - type: web
     name: soko-market-api
     runtime: node
     branch: main
     autoDeployTrigger: commit
-    plan: free
+    plan: starter
     region: oregon
     buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm build:production
-    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
-    healthCheckPath: /health
+    preDeployCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate
+    startCommand: COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
+    healthCheckPath: /health/ready
     buildFilter:
       paths:
         - package.json
@@ -26,7 +18,6 @@ services:
         - render.yaml
         - infra/db/**
         - packages/**
-        - services/ai-runtime/**
         - services/api/**
     domains:
       - api.soko.market
@@ -45,16 +36,18 @@ services:
         value: https://soko.market,https://www.soko.market
       - key: WEBAUTHN_RP_ID
         value: soko.market
+      - key: OTP_HMAC_SECRET
+        generateValue: true
+      - key: PIN_HASH_SECRET
+        generateValue: true
+      - key: AUTH_TOKEN_ENCRYPTION_KEY
+        generateValue: true
       - key: CP2_STORE
         value: postgres
       - key: DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DIRECT_DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DB_POOL_MAX
         value: "5"
       - key: DB_CONNECTION_TIMEOUT_MS
@@ -69,12 +62,32 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
+      - key: BACKEND_INFERENCE_ENABLED
+        value: "true"
+      - key: BACKEND_INFERENCE_BASE_URL
+        fromService:
+          type: pserv
+          name: soko-market-inference
+          property: hostport
+      - key: BACKEND_INFERENCE_CONNECT_TIMEOUT_MS
+        value: "5000"
+      - key: BACKEND_INFERENCE_TIMEOUT_MS
+        value: "90000"
+      - key: BACKEND_INFERENCE_REQUIRED
+        value: "true"
+      - key: BACKEND_INFERENCE_MODEL_ID
+        value: qwen2.5-0.5b-android
+      - key: INFERENCE_SERVICE_TOKEN
+        fromService:
+          type: pserv
+          name: soko-market-inference
+          envVarKey: INFERENCE_SERVICE_TOKEN
       - key: INFERENCE_CLIENT_FIRST
         value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       - key: INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "true"
+        value: "false"
       - key: INFERENCE_CLOUD_PROVIDER
         value: openai
       - key: INFERENCE_CLOUD_MODEL_ALLOWLIST
@@ -108,6 +121,65 @@ services:
       - key: VAPID_SUBJECT
         value: mailto:operations@soko.market
 
+  - type: pserv
+    name: soko-market-inference
+    runtime: docker
+    branch: main
+    autoDeployTrigger: commit
+    plan: standard
+    region: oregon
+    dockerfilePath: ./services/ai-runtime/Dockerfile
+    dockerContext: .
+    maxShutdownDelaySeconds: 60
+    buildFilter:
+      paths:
+        - .dockerignore
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - packages/shared-types/**
+        - services/ai-runtime/**
+    disk:
+      name: soko-inference-models
+      mountPath: /var/lib/soko-models
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4002"
+      - key: INFERENCE_ENGINE
+        value: ollama
+      - key: OLLAMA_BASE_URL
+        value: http://127.0.0.1:11434
+      - key: OLLAMA_HOST
+        value: 127.0.0.1:11434
+      - key: OLLAMA_NO_CLOUD
+        value: "true"
+      - key: MODEL_STORAGE_PATH
+        value: /var/lib/soko-models
+      - key: OLLAMA_MODELS
+        value: /var/lib/soko-models/ollama
+      - key: MODEL_STORAGE_DURABLE
+        value: "true"
+      - key: MODEL_AUTO_INSTALL
+        value: "true"
+      - key: MODEL_MIN_FREE_BYTES
+        value: "2147483648"
+      - key: SOKO_PRIMARY_MODEL_ID
+        value: qwen2.5-0.5b-android
+      - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
+        value: qwen2.5:0.5b
+      - key: INFERENCE_REQUEST_TIMEOUT_MS
+        value: "90000"
+      - key: INFERENCE_MAX_INPUT_CHARACTERS
+        value: "32000"
+      - key: INFERENCE_MAX_OUTPUT_TOKENS
+        value: "512"
+      - key: INFERENCE_SERVICE_TOKEN
+        generateValue: true
+
   - type: web
     name: soko-market-web
     runtime: static
@@ -128,7 +200,7 @@ services:
     headers:
       - path: /*
         name: Content-Security-Policy
-        value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; manifest-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://*.soko.market wss://*.soko.market https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co; upgrade-insecure-requests"
+        value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; manifest-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://*.soko.market wss://*.soko.market https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co https://raw.githubusercontent.com; upgrade-insecure-requests"
       - path: /*
         name: Cross-Origin-Embedder-Policy
         value: credentialless
@@ -188,7 +260,7 @@ services:
       - key: VITE_INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       - key: VITE_INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "true"
+        value: "false"
       - key: VITE_INFERENCE_MAX_FALLBACKS
         value: "3"
 
@@ -211,7 +283,7 @@ services:
     headers:
       - path: /*
         name: Content-Security-Policy
-        value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; manifest-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://*.soko.market wss://*.soko.market https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co; upgrade-insecure-requests"
+        value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; manifest-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://*.soko.market wss://*.soko.market https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co https://raw.githubusercontent.com; upgrade-insecure-requests"
       - path: /*
         name: Cross-Origin-Embedder-Policy
         value: credentialless
@@ -265,7 +337,7 @@ services:
       - key: VITE_INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       - key: VITE_INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "true"
+        value: "false"
       - key: VITE_INFERENCE_MAX_FALLBACKS
         value: "3"
 
@@ -289,13 +361,9 @@ services:
       - key: NODE_VERSION
         value: 20.19.0
       - key: DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DIRECT_DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: BACKUP_RETENTION_DAYS
         value: "14"
       - key: BACKUP_UPLOAD_COMMAND
@@ -323,13 +391,9 @@ services:
       - key: NODE_VERSION
         value: 20.19.0
       - key: DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DIRECT_DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
 
   - type: cron
     name: soko-market-account-purge
@@ -353,13 +417,9 @@ services:
       - key: NODE_VERSION
         value: 20.19.0
       - key: DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DIRECT_DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: ACCOUNT_DELETION_PROCESSORS_JSON
         sync: false
       - key: ACCOUNT_DELETION_WEBHOOK_SECRET
@@ -385,13 +445,9 @@ services:
       - key: NODE_VERSION
         value: 20.19.0
       - key: DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DIRECT_DATABASE_URL
-        fromDatabase:
-          name: soko-market-db
-          property: connectionString
+        sync: false
       - key: DB_POOL_MAX
         value: "2"
       - key: DB_CONNECTION_TIMEOUT_MS

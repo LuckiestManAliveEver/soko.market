@@ -1,7 +1,10 @@
-/* global URL, caches, self */
+/* global URL, Response, caches, self */
 
 const CACHE_PREFIX = "soko-market-app-";
-const CACHE_NAME = `${CACHE_PREFIX}v8`;
+const CACHE_NAME = `${CACHE_PREFIX}v10`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v10`;
+const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v10`;
+const ACTIVE_CACHES = new Set([CACHE_NAME, STATIC_CACHE, PUBLIC_READ_CACHE]);
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -25,16 +28,23 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((cacheNames) =>
-        Promise.all(
-          cacheNames
-            .filter((cacheName) => cacheName.startsWith(CACHE_PREFIX) && cacheName !== CACHE_NAME)
-            .map((cacheName) => caches.delete(cacheName))
-        )
-      )
-      .then(() => self.clients.claim())
+    Promise.all([
+      caches
+        .keys()
+        .then((cacheNames) =>
+          Promise.all(
+            cacheNames
+              .filter(
+                (cacheName) =>
+                  cacheName.startsWith(CACHE_PREFIX) &&
+                  cacheName !== CACHE_NAME &&
+                  !ACTIVE_CACHES.has(cacheName)
+              )
+              .map((cacheName) => caches.delete(cacheName))
+          )
+        ),
+      self.registration.navigationPreload?.enable()
+    ]).then(() => self.clients.claim())
   );
 });
 
@@ -42,39 +52,130 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
+  if (isInteractiveModelRequest(request, url)) {
+    event.respondWith(
+      fetch(request).catch(
+        () =>
+          new Response(
+            JSON.stringify({
+              code: "interactive_model_offline",
+              message: "Connect to the internet to activate this model.",
+              recoverable: true
+            }),
+            {
+              status: 503,
+              headers: { "content-type": "application/json", "cache-control": "no-store" }
+            }
+          )
+      )
+    );
+    return;
+  }
+
   if (request.method !== "GET" || url.origin !== self.location.origin) {
     return;
   }
 
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match("/")));
+    event.respondWith(navigationResponse(event));
     return;
   }
 
-  const shouldCache = url.pathname.startsWith("/assets/") || APP_SHELL.includes(url.pathname);
-
-  if (!shouldCache) {
+  if (isNetworkOnlyRequest(request, url)) {
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      if (cachedResponse !== undefined) {
-        return cachedResponse;
-      }
+  if (url.pathname.startsWith("/assets/")) {
+    event.respondWith(cacheFirst(request, STATIC_CACHE));
+    return;
+  }
 
-      return fetch(request).then((response) => {
-        if (!response.ok) {
-          return response;
-        }
+  if (APP_SHELL.includes(url.pathname)) {
+    event.respondWith(cacheFirst(request, CACHE_NAME));
+    return;
+  }
 
-        const responseClone = response.clone();
-        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)));
-        return response;
-      });
-    })
-  );
+  if (isPublicCatalogueRead(url)) {
+    event.respondWith(staleWhileRevalidate(event, request, PUBLIC_READ_CACHE));
+  }
 });
+
+async function navigationResponse(event) {
+  const shellCache = await caches.open(CACHE_NAME);
+  const cachedShell = await shellCache.match("/");
+  const networkResponse = Promise.resolve(event.preloadResponse)
+    .then((preloaded) => preloaded || fetch(event.request))
+    .then((response) => {
+      if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+        event.waitUntil(shellCache.put("/", response.clone()));
+      }
+      return response;
+    });
+
+  if (cachedShell !== undefined) {
+    event.waitUntil(networkResponse.catch(() => undefined));
+    return cachedShell;
+  }
+  return networkResponse.catch(
+    () =>
+      new Response("Soko.market is not available offline yet. Open it once while connected.", {
+        status: 503,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      })
+  );
+}
+
+async function cacheFirst(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  if (cached !== undefined) return cached;
+  const response = await fetch(request);
+  if (response.ok) await cache.put(request, response.clone());
+  return response;
+}
+
+async function staleWhileRevalidate(event, request, cacheName) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  const network = fetch(request).then((response) => {
+    if (response.ok && response.type !== "opaque") {
+      event.waitUntil(cache.put(request, response.clone()));
+    }
+    return response;
+  });
+  if (cached !== undefined) {
+    event.waitUntil(network.catch(() => undefined));
+    return cached;
+  }
+  return network;
+}
+
+function isNetworkOnlyRequest(request, url) {
+  return (
+    request.headers.has("authorization") ||
+    url.pathname.startsWith("/auth/") ||
+    url.pathname === "/session" ||
+    url.pathname.startsWith("/businesses/") ||
+    url.pathname.startsWith("/v1/conversations") ||
+    url.pathname.startsWith("/v1/messages") ||
+    url.pathname.startsWith("/v1/models/")
+  );
+}
+
+function isPublicCatalogueRead(url) {
+  return (
+    url.pathname.startsWith("/public/storefronts/") || url.pathname.startsWith("/public/catalogue/")
+  );
+}
+
+function isInteractiveModelRequest(request, url) {
+  if (request.method === "GET") return false;
+  return (
+    /\/businesses\/[^/]+\/(?:agent-model|ai-model)$/.test(url.pathname) ||
+    /\/businesses\/[^/]+\/runtime\/sessions(?:\/|$)/.test(url.pathname) ||
+    /\/v1\/models\/(?:installed|[^/]+\/validate)$/.test(url.pathname)
+  );
+}
 
 self.addEventListener("message", (event) => {
   if (event.data?.type !== "message.notification") return;

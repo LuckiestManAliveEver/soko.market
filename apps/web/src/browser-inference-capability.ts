@@ -1,4 +1,5 @@
 import type { BrowserDeviceTier, BrowserInferenceCapability } from "./browser-inference-types";
+import { browserRuntimeContract } from "./browser-inference-contracts";
 
 export interface BrowserCapabilitySignals {
   webGpu: boolean;
@@ -16,6 +17,7 @@ export interface BrowserCapabilitySignals {
 }
 
 let modelWorkerProbe: Promise<boolean> | null = null;
+const minimumBrowserStorageBytes = 225_000_000;
 
 export function classifyBrowserInferenceCapability(
   signals: BrowserCapabilitySignals
@@ -31,8 +33,8 @@ export function classifyBrowserInferenceCapability(
   if (!signals.worker || !signals.workerInitialized) {
     reasons.push("The dedicated model worker could not initialize.");
   }
-  if (storage !== undefined && storage < 475_000_000) {
-    reasons.push("Less than 475 MB of browser storage is available.");
+  if (storage !== undefined && storage < minimumBrowserStorageBytes) {
+    reasons.push("Less than 225 MB of browser storage is available.");
   }
 
   const deviceTier: BrowserDeviceTier =
@@ -46,7 +48,7 @@ export function classifyBrowserInferenceCapability(
     signals.indexedDb &&
     signals.worker &&
     signals.workerInitialized &&
-    (storage === undefined || storage >= 475_000_000);
+    (storage === undefined || storage >= minimumBrowserStorageBytes);
   const backend = basicSupport ? (signals.webGpu ? "webgpu" : "wasm") : "none";
 
   if (!signals.webGpu && basicSupport) {
@@ -64,7 +66,16 @@ export function classifyBrowserInferenceCapability(
     backend,
     deviceTier,
     ...(memory === undefined ? {} : { estimatedMemoryGb: memory }),
-    ...(backend === "none" ? {} : { recommendedModelId: "smollm2-360m-instruct-browser" }),
+    ...(backend === "none"
+      ? {}
+      : {
+          recommendedModelId:
+            deviceTier === "low"
+              ? "smollm2-135m-instruct-browser"
+              : deviceTier === "medium"
+                ? "smollm2-360m-instruct-browser"
+                : "qwen2.5-0.5b-instruct-browser"
+        }),
     maxRecommendedContextTokens: deviceTier === "low" ? 1_024 : 2_048,
     reasons,
     browser,
@@ -160,7 +171,12 @@ function probeBrowserModelWorker(backend: "webgpu" | "wasm"): Promise<boolean> {
       config: {
         backend,
         approvedModelOrigins: ["https://huggingface.co"],
-        maxContextTokens: 1_024
+        maxContextTokens: 1_024,
+        runtimeContract: browserRuntimeContract({
+          adapterId: "transformers-js",
+          adapterVersion: "3.8.1",
+          backend
+        })
       }
     });
   });

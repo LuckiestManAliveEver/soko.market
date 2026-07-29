@@ -10,8 +10,11 @@ describe("browser inference frontend integration", () => {
     expect(application).toContain("Use the browser model on this device");
     expect(application).toContain("Cancel download");
     expect(application).toContain("Downloading ${model.displayName} after your consent");
-    expect(application).toContain("about 400 MB download");
+    expect(application).toContain("Browser model");
+    expect(application).toContain("selectedBrowserModelId");
     expect(registry).toContain('import.meta.env.VITE_BROWSER_LOCAL_INFERENCE_ENABLED === "true"');
+    expect(registry).toContain("smollm2-135m-instruct-browser");
+    expect(registry).toContain("qwen2.5-0.5b-instruct-browser");
     expect(registry).toContain("approximateDownloadBytes: 400_000_000");
   });
 
@@ -42,8 +45,24 @@ describe("browser inference frontend integration", () => {
     expect(worker).toContain("Browser model staging diagnostic:");
     expect(worker).toContain("ort-wasm-simd-threaded.jsep.wasm");
     expect(worker).toContain("env.backends.onnx.wasm.wasmPaths");
+    expect(worker).toContain("revision: model.modelRevision");
+    expect(worker).toContain("TASK_BUDGET_EXCEEDED");
     expect(worker).not.toContain("cdn.jsdelivr.net");
     expect(serviceWorker).not.toContain("soko-browser-inference");
     expect(serviceWorker).not.toContain("transformers-cache");
+  });
+
+  it("synchronizes activation and health metadata without sending prompts or generated text", async () => {
+    const application = await readFile("apps/web/src/SokoApplication.tsx", "utf8");
+    const synchronization = await readFile("apps/web/src/browser-inference-sync.ts", "utf8");
+    expect(application).toContain("synchronizeBrowserInferenceAssignment");
+    expect(application).toContain("recordSyncedBrowserInferenceExecution");
+    expect(application).toContain("Database workflow:");
+    expect(synchronization).toContain("/browser-inference/executions");
+    expect(synchronization).toContain("runtimeContract");
+    expect(synchronization).toContain("checkpointCompatibilityContract");
+    expect(synchronization).not.toContain("systemPrompt");
+    expect(synchronization).not.toContain("messages:");
+    expect(synchronization).not.toContain("generatedText");
   });
 });

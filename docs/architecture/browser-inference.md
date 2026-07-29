@@ -8,9 +8,9 @@ ChatSurface
   → browser-inference-session
   → capability + settings + context budget
   → BrowserModelEngine
-  → browser-model.worker
-  → Transformers.js
-  → ONNX Runtime Web (WebGPU or WASM)
+  → browser-model.worker → Transformers.js → ONNX Runtime Web (WebGPU or WASM)
+    or
+  → webllm-model.worker → WebLLM/MLC (WebGPU)
   → streamed tokens in the existing agent message
 ```
 
@@ -21,11 +21,12 @@ paths.
 
 ## Engine boundary
 
-Only `browser-model.worker.ts` imports `@huggingface/transformers`. The rest of Soko uses
-`BrowserModelEngine`, typed generation requests, progress handlers, and error codes. The worker:
+Only the dedicated runtime adapters import `@huggingface/transformers` or `@mlc-ai/web-llm`. The
+rest of Soko uses `BrowserModelEngine`, versioned runtime/checkpoint contracts, typed generation
+requests, progress handlers, and error codes. The adapters:
 
 - validates the model against Soko's approved Hugging Face origin;
-- uses q4 weights and WebGPU or WASM;
+- use approved q4 ONNX or q4f16_1 MLC profiles and the declared backend;
 - owns tokenizer, live generation state and in-session caches;
 - streams decoded token text;
 - uses an interruptible stopping criterion for cancellation;
@@ -50,22 +51,24 @@ reasoning and background work route to the authenticated server.
 ## Persistence and offline behavior
 
 `soko-browser-inference` is a versioned IndexedDB database with account-scoped settings, model
-metadata, summaries, chat cache, retrieval metadata and offline queue stores. Transformers.js owns
-the binary asset cache, avoiding an extra model copy. The application service worker does not run
-inference and does not delete inference storage during shell upgrades.
+metadata, summaries, chat cache, retrieval metadata and offline queue stores. Transformers.js and
+WebLLM own their binary asset caches, avoiding an extra model copy. The application service worker
+does not run inference and does not delete inference storage during shell upgrades.
 
 Logout terminates the worker and clears account-scoped inference records. Model cache deletion is
 an explicit settings action and does not delete chat data.
 
 ## Deployment
 
-Set `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true` at frontend build time to expose the opt-in control.
-The default and production Blueprint remain false. `soko-market-web-staging` enables the flag and
-adds a strict CSP plus `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: credentialless`, allowing memory measurements and threaded WASM
-without changing production authentication or integrations.
+Set `VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true` at frontend build time to expose the opt-in
+control. The production and staging Blueprints enable it, while every user must still explicitly
+select and download a profile. Both deployments add a strict CSP plus
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless`,
+allowing memory measurements and threaded WASM without changing production authentication or
+integrations.
 
 The staging CSP permits only same-origin application assets and workers, the configured Soko API,
-and HTTPS downloads under the Hugging Face `huggingface.co`/`hf.co` host families. The latter is
-required because Hub downloads redirect to separate CDN/storage subdomains. Staging may force the
-WASM route with `?browserInferenceBackend=wasm`; production ignores this diagnostic override.
+and HTTPS downloads under the Hugging Face `huggingface.co`/`hf.co` host families. It also permits
+the exact `raw.githubusercontent.com` origin used by pinned WebLLM model libraries. Hub downloads
+redirect to separate CDN/storage subdomains. Staging may force the WASM route with
+`?browserInferenceBackend=wasm`; production ignores this diagnostic override.

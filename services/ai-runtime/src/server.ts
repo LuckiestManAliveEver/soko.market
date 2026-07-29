@@ -1,12 +1,13 @@
 import { buildAiRuntime } from "./app.js";
+import { readInferenceServiceConfig } from "./runtime-config.js";
 
-const port = Number(process.env.AI_RUNTIME_PORT ?? 4002);
-const app = buildAiRuntime();
+const config = readInferenceServiceConfig();
+const app = buildAiRuntime({ config });
 
 try {
   await app.listen({
-    host: process.env.AI_RUNTIME_HOST ?? "127.0.0.1",
-    port
+    host: config.host,
+    port: config.port
   });
 } catch (error) {
   app.log.error(error);

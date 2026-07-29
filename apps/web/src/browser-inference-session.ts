@@ -5,13 +5,24 @@ import {
   selectSokoContextScripts,
   updateRollingConversationSummary
 } from "./browser-context-manager";
+import {
+  browserCheckpointCompatibilityContract,
+  browserRuntimeContractForModel
+} from "./browser-inference-contracts";
 import { inspectBrowserInferenceCapability } from "./browser-inference-capability";
+import {
+  browserTaskCheckpointId,
+  BrowserTaskCheckpointSession,
+  taskCheckpointRecoveryContext
+} from "./browser-inference-checkpoints";
 import { recordBrowserInferenceDiagnostic } from "./browser-inference-diagnostics";
 import {
   BrowserInferenceError,
   type BrowserGenerationResult,
   type BrowserInferenceCapability,
   type BrowserInferenceSettings,
+  type BrowserModelExecutionOutcome,
+  type BrowserModelOption,
   type BrowserModelProgress,
   type BuiltModelContext,
   type ConversationSummary,
@@ -22,7 +33,11 @@ import { createBrowserModelEngine } from "./browser-model-engine";
 import {
   browserLocalInferenceDeploymentEnabled,
   browserModelSupports,
-  getBrowserModel
+  browserTaskBudget,
+  deviceInferenceProfileId,
+  getBrowserModel,
+  listBrowserModels,
+  rankBrowserModelsForDevice
 } from "./browser-model-registry";
 import {
   decideInferenceRoute,
@@ -33,17 +48,21 @@ import {
   openBrowserInferenceRepository,
   type BrowserInferenceRepository
 } from "./browser-inference-storage";
+import { clearWebLlmModelCaches, createWebLlmModelEngine } from "./webllm-model-engine";
 
 let engine = createBrowserModelEngine();
 let repositoryPromise: Promise<BrowserInferenceRepository> | null = null;
 let loadedModelId: string | null = null;
 let initializedBackend: "webgpu" | "wasm" | null = null;
+let initializedContextTokens: number | null = null;
+let initializedRuntimeAdapter: "transformers-js" | "webllm" | null = null;
 let activeRequestId: string | null = null;
 
 export interface BrowserInferenceState {
   deploymentEnabled: boolean;
   settings: BrowserInferenceSettings | null;
   capability: BrowserInferenceCapability;
+  modelOptions: BrowserModelOption[];
 }
 
 export interface BrowserChatInput {
@@ -76,12 +95,13 @@ export async function loadBrowserInferenceState(
   accountId: string,
   businessId: string
 ): Promise<BrowserInferenceState> {
-  const [settings, capability] = await Promise.all([
-    getRepository()
-      .then((repository) => repository.getSettings(accountId, businessId))
-      .catch(() => null),
-    inspectBrowserInferenceCapability().catch(() => unsupportedCapability())
+  const repository = await getRepository().catch(() => null);
+  const [settings, capability, outcomes] = await Promise.all([
+    repository?.getSettings(accountId, businessId).catch(() => null) ?? Promise.resolve(null),
+    inspectBrowserInferenceCapability().catch(() => unsupportedCapability()),
+    repository?.listModelExecutionOutcomes(accountId).catch(() => []) ?? Promise.resolve([])
   ]);
+  await repository?.pruneExpiredTaskCheckpoints(accountId).catch(() => 0);
   recordBrowserInferenceDiagnostic({
     type: "capability",
     backend: capability.backend,
@@ -93,7 +113,8 @@ export async function loadBrowserInferenceState(
   return {
     deploymentEnabled: browserLocalInferenceDeploymentEnabled,
     settings,
-    capability
+    capability,
+    modelOptions: rankBrowserModelsForDevice({ capability, outcomes })
   };
 }
 
@@ -135,13 +156,29 @@ export async function enableBrowserInference(input: {
   await navigator.storage?.persist?.().catch(() => false);
   const repository = await getRepository();
   const loadStartedAt = performance.now();
+  const deviceProfileId = deviceInferenceProfileId(capability);
   const downloading = settingsRecord(input, "downloading", false, null);
   await repository.putSettings(downloading);
   await repository.putModel(input.accountId, model, "downloading");
   try {
     await ensureModelLoaded(model.id, capability, input.onProgress);
+    const loadTimeMs = Math.round(performance.now() - loadStartedAt);
+    const readinessStartedAt = performance.now();
+    const readiness = await verifyBrowserModelReady(model.id, capability);
+    const outcome: BrowserModelExecutionOutcome = {
+      deviceProfileId,
+      modelId: model.id,
+      backend,
+      successful: true,
+      loadTimeMs,
+      readinessTimeMs: Math.round(performance.now() - readinessStartedAt),
+      readinessTokensPerSecond: readiness.tokensPerSecond,
+      failureCode: null,
+      updatedAt: new Date().toISOString()
+    };
     const ready = settingsRecord(input, "ready", true, null);
     await repository.putModel(input.accountId, model, "ready");
+    await repository.putModelExecutionOutcome(input.accountId, outcome);
     await repository.putSettings(ready);
     recordBrowserInferenceDiagnostic({
       type: "model-load",
@@ -151,15 +188,32 @@ export async function enableBrowserInference(input: {
       outcome: "ready",
       errorCode: null
     });
-    return { deploymentEnabled: true, settings: ready, capability };
+    return {
+      deploymentEnabled: true,
+      settings: ready,
+      capability,
+      modelOptions: rankBrowserModelsForDevice({ capability, outcomes: [outcome] })
+    };
   } catch (error) {
     const normalized = normalizeSessionError(error);
+    const outcome: BrowserModelExecutionOutcome = {
+      deviceProfileId,
+      modelId: model.id,
+      backend,
+      successful: false,
+      loadTimeMs: Math.round(performance.now() - loadStartedAt),
+      readinessTimeMs: null,
+      readinessTokensPerSecond: null,
+      failureCode: normalized.code,
+      updatedAt: new Date().toISOString()
+    };
     const failed = settingsRecord(
       input,
       normalized.code === "GENERATION_CANCELLED" ? "paused" : "error",
       false,
       normalized.code === "GENERATION_CANCELLED" ? null : normalized.code
     );
+    await repository.putModelExecutionOutcome(input.accountId, outcome).catch(() => undefined);
     await repository.putSettings(failed);
     recordBrowserInferenceDiagnostic({
       type: "model-load",
@@ -178,6 +232,8 @@ export function cancelBrowserModelLoad(): void {
   engine.terminate();
   engine = createBrowserModelEngine();
   initializedBackend = null;
+  initializedContextTokens = null;
+  initializedRuntimeAdapter = null;
   loadedModelId = null;
 }
 
@@ -208,11 +264,14 @@ export async function removeBrowserModel(
   engine.terminate();
   engine = createBrowserModelEngine();
   initializedBackend = null;
+  initializedContextTokens = null;
+  initializedRuntimeAdapter = null;
   loadedModelId = null;
   await (await getRepository()).clearModelAssets(accountId);
   if ("caches" in globalThis) {
     await globalThis.caches.delete("transformers-cache").catch(() => false);
   }
+  await clearWebLlmModelCaches(listBrowserModels()).catch(() => undefined);
   const capability = await inspectBrowserInferenceCapability().catch(() => unsupportedCapability());
   const settings: BrowserInferenceSettings = {
     accountId,
@@ -228,7 +287,8 @@ export async function removeBrowserModel(
   return {
     deploymentEnabled: browserLocalInferenceDeploymentEnabled,
     settings,
-    capability
+    capability,
+    modelOptions: rankBrowserModelsForDevice({ capability })
   };
 }
 
@@ -256,14 +316,35 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
   summary: ConversationSummary | null;
 }> {
   const repository = await getRepository();
+  const requestId =
+    input.requestId ??
+    globalThis.crypto?.randomUUID?.() ??
+    `browser-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const settings = await repository.getSettings(input.accountId, input.businessId);
   const capability = await inspectBrowserInferenceCapability();
-  const reservedGenerationTokens = generationTokenBudget(capability.deviceTier);
   const model =
     settings?.selectedModelId === null || settings?.selectedModelId === undefined
       ? null
       : getBrowserModel(settings.selectedModelId);
+  const budget = model === null ? null : browserTaskBudget(model, capability);
+  const reservedGenerationTokens =
+    budget === null
+      ? generationTokenBudget(capability.deviceTier)
+      : Math.min(generationTokenBudget(capability.deviceTier), budget.maxOutputTokens);
   const summary = await repository.getSummary(input.accountId, input.conversationId);
+  const recoveredCheckpoint = await repository
+    .getTaskCheckpoint(input.accountId, browserTaskCheckpointId(input.businessId, requestId))
+    .catch(() => null);
+  const recoveryMemory = taskCheckpointRecoveryContext(recoveredCheckpoint, {
+    businessId: input.businessId,
+    conversationId: input.conversationId,
+    requestId,
+    compatibilityContract:
+      model === null
+        ? unavailableCheckpointCompatibilityContract()
+        : browserCheckpointCompatibilityContract(model),
+    objective: input.message
+  });
   const scripts = selectSokoContextScripts(input.message);
   const catalogueSource = input.catalogueRecords.map((record): RetrievedContext => ({
     sourceType: "catalogue",
@@ -300,12 +381,11 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
           recentMessages: input.recentMessages,
           contextScripts,
           catalogue,
-          memory: [],
+          memory: recoveryMemory,
           summary,
-          contextWindowTokens: Math.min(
-            model.contextWindowTokens,
-            capability.maxRecommendedContextTokens
-          ),
+          contextWindowTokens:
+            budget?.maxInputTokens ??
+            Math.min(model.contextWindowTokens, capability.maxRecommendedContextTokens),
           reservedGenerationTokens
         });
   const route = decideInferenceRoute({
@@ -347,21 +427,32 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
     recentMessages: input.recentMessages,
     contextScripts,
     catalogue,
-    memory: [],
+    memory: recoveryMemory,
     summary,
-    contextWindowTokens: Math.min(
-      model.contextWindowTokens,
-      capability.maxRecommendedContextTokens
-    ),
+    contextWindowTokens:
+      budget?.maxInputTokens ??
+      Math.min(model.contextWindowTokens, capability.maxRecommendedContextTokens),
     reservedGenerationTokens,
     tokenizer: {
       countTokens: (messages) => engine.countTokens(messages)
     }
   });
-  const requestId =
-    input.requestId ??
-    globalThis.crypto?.randomUUID?.() ??
-    `browser-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const checkpoint = new BrowserTaskCheckpointSession(repository, {
+    accountId: input.accountId,
+    businessId: input.businessId,
+    conversationId: input.conversationId,
+    requestId,
+    modelId: model.id,
+    runtimeContract: browserRuntimeContractForModel(model, backend),
+    compatibilityContract: browserCheckpointCompatibilityContract(model),
+    objective: input.message,
+    relevantMessages: context.messages
+  });
+  await checkpoint.start().catch(() => undefined);
+  const detachLifecycle =
+    typeof document === "undefined" || typeof window === "undefined"
+      ? () => undefined
+      : checkpoint.attachPageLifecycle(document, window);
   activeRequestId = requestId;
   try {
     const result = await engine.generate(
@@ -369,11 +460,15 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
         requestId,
         messages: context.messages,
         maxNewTokens: context.reservedGenerationTokens,
+        maxWallTimeMs: budget?.maxWallTimeMs ?? 60_000,
         temperature: 0.2,
         ...(context.cacheKey === undefined ? {} : { cacheKey: context.cacheKey })
       },
       {
-        onToken: input.onToken,
+        onToken: (token) => {
+          checkpoint.appendOutput(token);
+          input.onToken(token);
+        },
         ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress })
       }
     );
@@ -401,8 +496,33 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
       updatedAt: new Date().toISOString(),
       lastErrorCode: null
     });
+    await checkpoint.complete().catch(() => undefined);
     return { result, context, route, summary: nextSummary };
+  } catch (error) {
+    await checkpoint.interrupt("generation-failed").catch(() => undefined);
+    const normalized = normalizeSessionError(error);
+    if (
+      normalized.code === "OUT_OF_MEMORY" ||
+      normalized.code === "WORKER_CRASHED" ||
+      normalized.code === "TASK_BUDGET_EXCEEDED"
+    ) {
+      await repository
+        .putModelExecutionOutcome(input.accountId, {
+          deviceProfileId: deviceInferenceProfileId(capability),
+          modelId: model.id,
+          backend: capability.backend,
+          successful: false,
+          loadTimeMs: 0,
+          readinessTimeMs: null,
+          readinessTokensPerSecond: null,
+          failureCode: normalized.code,
+          updatedAt: new Date().toISOString()
+        })
+        .catch(() => undefined);
+    }
+    throw normalized;
   } finally {
+    detachLifecycle();
     if (activeRequestId === requestId) activeRequestId = null;
   }
 }
@@ -427,6 +547,8 @@ export async function clearBrowserInferenceAccountData(accountId: string): Promi
   engine = createBrowserModelEngine();
   activeRequestId = null;
   initializedBackend = null;
+  initializedContextTokens = null;
+  initializedRuntimeAdapter = null;
   loadedModelId = null;
   const repository = await getRepository().catch(() => null);
   await repository?.clearAccountData(accountId).catch(() => undefined);
@@ -448,20 +570,67 @@ async function ensureModelLoaded(
       "The selected browser model is not compatible with this device."
     );
   }
-  if (initializedBackend !== capability.backend) {
+  const budget = browserTaskBudget(model, capability);
+  const runtimeContract = browserRuntimeContractForModel(model, capability.backend);
+  if (
+    initializedBackend !== capability.backend ||
+    initializedContextTokens !== budget.maxInputTokens ||
+    initializedRuntimeAdapter !== model.runtimeAdapter
+  ) {
     engine.terminate();
-    engine = createBrowserModelEngine();
+    engine =
+      model.runtimeAdapter === "webllm" ? createWebLlmModelEngine() : createBrowserModelEngine();
     await engine.initialize({
       backend: capability.backend,
       approvedModelOrigins: ["https://huggingface.co"],
-      maxContextTokens: Math.min(model.contextWindowTokens, capability.maxRecommendedContextTokens)
+      maxContextTokens: budget.maxInputTokens,
+      runtimeContract
     });
     initializedBackend = capability.backend;
+    initializedContextTokens = budget.maxInputTokens;
+    initializedRuntimeAdapter = model.runtimeAdapter;
     loadedModelId = null;
   }
   if (loadedModelId === model.id && engine.getStatus() === "ready") return;
   await engine.loadModel(model, onProgress === undefined ? {} : { onProgress });
   loadedModelId = model.id;
+}
+
+async function verifyBrowserModelReady(
+  modelId: string,
+  capability: BrowserInferenceCapability
+): Promise<BrowserGenerationResult> {
+  const model = getBrowserModel(modelId);
+  if (model === null) {
+    throw new BrowserInferenceError("MODEL_LOAD_FAILED", "The browser model profile is missing.");
+  }
+  const budget = browserTaskBudget(model, capability);
+  const tokenCount = await engine.countTokens([{ role: "user", content: model.readinessPrompt }]);
+  if (tokenCount < 1 || tokenCount >= budget.maxInputTokens) {
+    throw new BrowserInferenceError(
+      "CONTEXT_LIMIT_EXCEEDED",
+      "The browser model readiness prompt exceeds its task budget."
+    );
+  }
+  const result = await engine.generate(
+    {
+      requestId:
+        globalThis.crypto?.randomUUID?.() ??
+        `browser-readiness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+      messages: [{ role: "user", content: model.readinessPrompt }],
+      maxNewTokens: Math.min(model.readinessMaxTokens, budget.maxOutputTokens),
+      maxWallTimeMs: Math.min(30_000, budget.maxWallTimeMs),
+      temperature: 0
+    },
+    {}
+  );
+  if (result.text.trim().length === 0) {
+    throw new BrowserInferenceError(
+      "MODEL_LOAD_FAILED",
+      "The browser model failed its readiness generation."
+    );
+  }
+  return result;
 }
 
 function getRepository(): Promise<BrowserInferenceRepository> {
@@ -513,4 +682,18 @@ function unsupportedCapability(): BrowserInferenceCapability {
     installedPwa: false,
     workerAvailable: false
   };
+}
+
+function unavailableCheckpointCompatibilityContract() {
+  return {
+    schemaVersion: 1,
+    checkpointKind: "task-state",
+    taskStateSchema: "soko.browser-task-state.v2",
+    modelFamilyId: "unavailable",
+    sourceModelId: "unavailable",
+    sourceModelRevision: "unavailable",
+    sourceAdapterId: "transformers-js",
+    promptRepresentation: "role-content-messages",
+    portableAcrossAdapters: true
+  } as const;
 }

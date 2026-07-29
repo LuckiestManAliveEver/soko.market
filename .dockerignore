@@ -1,0 +1,14 @@
+.git
+.repo.git
+.agents
+.codex
+node_modules
+**/node_modules
+**/dist
+playwright-report
+test-results
+coverage
+backups
+.env
+.env.*
+!.env.example

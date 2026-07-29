@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Surface } from "@soko/ui";
 import {
   LegalMarkdownBody,
@@ -10,7 +9,6 @@ import partOneMarkdown from "./privacy-v1-draft-part-i.md?raw";
 import partTwoMarkdown from "./privacy-v1-draft-part-ii.md?raw";
 import partThreeMarkdown from "./privacy-v1-draft-part-iii.md?raw";
 import partFourMarkdown from "./privacy-v1-draft-part-iv.md?raw";
-import { readApiBaseUrl } from "../lib/api";
 import { AppIcon } from "../AppIcon";
 
 interface PrivacyPart {
@@ -51,44 +49,7 @@ const privacyParts: PrivacyPart[] = [
 
 const privacyAnnexes = parseAnnexes(partFourMarkdown);
 
-function useFetchedLegal(path: string) {
-  const [html, setHtml] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    const base = readApiBaseUrl();
-    if (!base) return;
-    void fetch(`${base}/legal/${path}`, { credentials: "include" })
-      .then((r) => {
-        if (!active) return null;
-        if (!r.ok) return null;
-        return r.text();
-      })
-      .then((text) => {
-        if (active && text) setHtml(text);
-      })
-      .catch(() => {
-        /* ignore and keep local drafts */
-      });
-    return () => {
-      active = false;
-    };
-  }, [path]);
-  return html;
-}
-
 export default function PrivacyPolicyPage() {
-  const fetched = useFetchedLegal("privacy");
-
-  if (fetched !== null) {
-    return (
-      <Surface title="Soko.market Privacy Policy — remote">
-        <main className="legal-document-shell">
-          <article className="legal-document" dangerouslySetInnerHTML={{ __html: fetched }} />
-        </main>
-      </Surface>
-    );
-  }
-
   return (
     <Surface title="Soko.market Privacy Policy — Version 1.0 Draft">
       <a className="legal-skip-link" href="#privacy-content">

@@ -14,7 +14,7 @@ describe("phone PIN recovery migration", () => {
     expect(schema).toContain('recoveryCodeHash: text("recovery_code_hash")');
     expect(postgresStore).toContain("recovery_code_hash");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "038_auth_retention_policy.sql"'
+      'requiredMigrationFilename = "041_browser_inference_assignments.sql"'
     );
   });
 });

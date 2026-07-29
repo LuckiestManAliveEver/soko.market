@@ -43,10 +43,9 @@ for (const root of ["services/api/src", "services/api/dist"]) {
 }
 
 const blueprint = readFileSync("render.yaml", "utf8");
-const apiService = blueprint.slice(
-  blueprint.indexOf("name: soko-market-api"),
-  blueprint.indexOf("name: soko-market-web")
-);
+const apiStart = blueprint.indexOf("name: soko-market-api");
+const nextService = blueprint.indexOf("\n  - type:", apiStart);
+const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);
 for (const forbidden of ["LOCAL_MODEL_", "llama.cpp", "ollama", ".gguf"]) {
   if (apiService.toLowerCase().includes(forbidden.toLowerCase())) {
     violations.push(`Render API service contains forbidden local-inference marker ${forbidden}`);

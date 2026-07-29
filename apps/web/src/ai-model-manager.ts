@@ -61,6 +61,9 @@ export interface LocalAiModel {
   contextLength: number | null;
   fileSizeBytes: number;
   checksum: string | null;
+  packageManifestVersion?: string | null;
+  packageSignature?: string | null;
+  packageSigningKeyId?: string | null;
   license: string;
   commercialUseAllowed: boolean;
   runtimeBackend: AgentModelRuntimeBackend;
@@ -671,6 +674,9 @@ function createInstalledModelRecord(input: {
     contextLength: 2_048,
     fileSizeBytes: input.fileSizeBytes,
     checksum: null,
+    packageManifestVersion: null,
+    packageSignature: null,
+    packageSigningKeyId: null,
     license: input.license,
     commercialUseAllowed:
       input.license === "Apache-2.0" || input.license === "User-confirmed commercial license",

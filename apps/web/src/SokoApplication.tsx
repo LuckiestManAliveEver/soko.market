@@ -24,6 +24,16 @@ import {
 } from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import type {
+  AgentContextSource,
+  AgentEvaluationPolicy,
+  AgentEvaluationSummary,
+  AgentInstructions,
+  AgentMemoryPolicy,
+  AgentOwnerCorrection,
+  AgentPersonality,
+  AgentRuntimeReadiness,
+  AgentRuntimeVersion,
+  AgentSkillBinding,
   AuthBootstrapResponse,
   AuthBootstrapState,
   ConversationInboxItem,
@@ -33,8 +43,12 @@ import type {
   ConversationParticipantSummary,
   ConversationView,
   DeviceSessionSummary,
+  AgentModelActivationResult,
   AgentModelAssignmentSummary,
+  AgentModelBindingSummary,
   AgentModelFallbackPolicy,
+  BrowserInferenceAssignmentSummary,
+  ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   E2eeDeviceSummary,
   InferenceProvider,
@@ -120,6 +134,12 @@ import {
   type BrowserInferenceState
 } from "./browser-inference-session";
 import { recordBrowserInferenceDiagnostic } from "./browser-inference-diagnostics";
+import {
+  loadSyncedBrowserInferenceAssignment,
+  recordSyncedBrowserInferenceExecution,
+  removeSyncedBrowserInferenceAssignment,
+  synchronizeBrowserInferenceAssignment
+} from "./browser-inference-sync";
 import { browserLocalInferenceDeploymentEnabled } from "./browser-model-registry";
 import {
   requestNeedsComplexReasoning,
@@ -147,17 +167,26 @@ import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes }
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import {
+  ApiRequestError,
   apiFetch,
   isDefinitiveAuthenticationError,
   isRetryableApiRequestError,
   readApiBaseUrl
 } from "./lib/api";
 import {
-  clearApiRequestCache,
+  clearPersistentApiRequestCache,
   getCachedJson,
   invalidateApiCacheForMutation
 } from "./api-request-cache";
-import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
+import { detectCapabilitySettings } from "./capability-profile";
+import {
+  markNavigationCommitted,
+  recordReadiness,
+  startNavigationMeasurement
+} from "./performance";
+import { prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
+import { createScreenStateCache, restoreScreenScroll } from "./screen-state-cache";
+import { setConnectivityAuthentication } from "./connectivity";
 import { RuntimeManager } from "./runtime-manager";
 import {
   clearMessagingOutbox,
@@ -174,7 +203,13 @@ import {
 } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
-import { modelActivationMessage, type ModelActivationState } from "./model-activation-state";
+import {
+  ModelActivationCoordinator,
+  ModelActivationError,
+  modelActivationMessage,
+  withActivationTimeout,
+  type ModelActivationState
+} from "./model-activation-state";
 import {
   bootstrapProgressMessage,
   clearCachedAuthSession,
@@ -258,17 +293,30 @@ interface CatalogAiModelSearchResponse {
 
 interface BusinessAgentProfileSummary {
   businessId: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  createdAt: string;
   name: string;
   description: string;
   modelId: string;
   role: string;
   language: SupportedLanguage;
   personality: string;
+  personalityConfig: AgentPersonality;
   instructions: string;
+  instructionPolicy: AgentInstructions;
   knowledge: string;
   tools: string[];
+  skillBindings: AgentSkillBinding[];
   integrations: string[];
   contextScripts: string[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
   status: "active" | "draft";
   updatedAt: string;
   updatedBy: string;
@@ -393,11 +441,20 @@ interface AgentSettings {
   storefrontUrl: string;
   language: SupportedLanguage;
   personality: string;
+  personalityConfig: AgentPersonality;
   instructions: string;
+  instructionPolicy: AgentInstructions;
   knowledge: string;
   tools: string[];
+  skillBindings: AgentSkillBinding[];
   integrations: string[];
   contextScripts: string[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
+  runtimeVersion: number;
   status: "active" | "draft";
 }
 
@@ -1217,6 +1274,12 @@ interface RuntimeTurnResult {
       status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
       fallbackUsed: boolean;
       errorCode: string | null;
+      bindingId?: string;
+      modelId?: string;
+      executionTarget?:
+        "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+      durationMs?: number | null;
+      fallbackReason?: string | null;
     } | null;
     plan: {
       toolName: string;
@@ -1671,7 +1734,6 @@ const activeModeStorageKey = "soko.chatFirst.mode";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
-const contextScriptsPasswordStorageKey = "soko.chatFirst.contextScriptsPassword";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -2041,6 +2103,15 @@ function formatShortCommit(commitSha: string): string {
 
 export function OwnerApp() {
   const installPrompt = useInstallPrompt();
+  const capabilitySettingsRef = useRef(detectCapabilitySettings());
+  const screenStateCacheRef = useRef(
+    createScreenStateCache(capabilitySettingsRef.current.preservedScreenLimit)
+  );
+  const shellInstanceIdRef = useRef(
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `shell-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
   const accountDeletionIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const accountRestorationIntent =
@@ -2049,6 +2120,7 @@ export function OwnerApp() {
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
+  const initialCachedSession = readCachedAuthSession();
   const initialOwnerRoute = readOwnerRoute(window.location.pathname);
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null ? "email" : initialOwnerAuth.contact.includes("@") ? "email" : "phone"
@@ -2080,8 +2152,10 @@ export function OwnerApp() {
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [phoneRecoveryCodeInput, setPhoneRecoveryCodeInput] = useState("");
   const [generatedPhoneRecoveryCode, setGeneratedPhoneRecoveryCode] = useState("");
-  const [session, setSession] = useState<SessionResponse | null>(null);
-  const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>("initializing");
+  const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
+  const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
+    initialCachedSession === null ? "initializing" : "offline-authenticated"
+  );
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
@@ -2104,6 +2178,8 @@ export function OwnerApp() {
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
   );
+  const activeViewRef = useRef(view);
+  activeViewRef.current = view;
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
   const { hasPending, isPending, runAction } = useAsyncActions();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
@@ -2198,6 +2274,7 @@ export function OwnerApp() {
   const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
+  const sessionRefreshInFlightRef = useRef(false);
   const restoredModelInstallationRef = useRef<string | null>(null);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
 
@@ -2218,6 +2295,10 @@ export function OwnerApp() {
   function navigateToView(nextView: ShellView, options?: { replace?: boolean }) {
     const nextPath = pathForOwnerView(nextView, mode);
     const measurement = startNavigationMeasurement(nextPath);
+    screenStateCacheRef.current.write(activeViewRef.current, {
+      scrollX: window.scrollX,
+      scrollY: window.scrollY
+    });
     runViewTransition(() => {
       setView(nextView);
       if (window.location.pathname !== nextPath) {
@@ -2225,7 +2306,8 @@ export function OwnerApp() {
         window.history[method]({ mode, view: nextView }, "", nextPath);
       }
       markNavigationCommitted(measurement);
-    });
+      restoreScreenScroll(screenStateCacheRef.current, nextView);
+    }, nextView === "chat");
   }
 
   function returnToChat() {
@@ -2295,6 +2377,10 @@ export function OwnerApp() {
       void refreshSession();
     }
   }, [isOnline, authBootstrapState]);
+
+  useEffect(() => {
+    setConnectivityAuthentication(session !== null);
+  }, [session]);
 
   useEffect(() => {
     void loadOAuthProviders();
@@ -2377,6 +2463,11 @@ export function OwnerApp() {
     let closeRealtime: (() => void) | undefined;
     let openedRepository: IndexedDbSyncRepository | null = null;
     let catchUpPromise: Promise<void> | null = null;
+    let synchronize: (() => Promise<void>) | null = null;
+    const synchronizeWhenOnline = () => {
+      if (navigator.onLine) void synchronize?.();
+    };
+    window.addEventListener("online", synchronizeWhenOnline);
     void openIndexedDbSyncRepository()
       .then(async (repository) => {
         if (cancelled) {
@@ -2386,10 +2477,6 @@ export function OwnerApp() {
         closeRepository = () => repository.close();
         openedRepository = repository;
         syncRepositoryRef.current = repository;
-        if (!navigator.onLine) {
-          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
-          return;
-        }
         const catchUp = () => {
           if (catchUpPromise === null) {
             catchUpPromise = catchUpAccountSync({
@@ -2404,20 +2491,8 @@ export function OwnerApp() {
           }
           return catchUpPromise;
         };
-        const transferred = await flushLocalSyncMutations({
-          accountId: session.account.id,
-          repository,
-          apiBaseUrl
-        });
-        await catchUp();
-        if (transferred.transferred > 0) {
-          setStatusMessage(
-            `${transferred.transferred} offline change${
-              transferred.transferred === 1 ? "" : "s"
-            } synced`
-          );
-        }
-        if (!cancelled) {
+        const startRealtime = () => {
+          if (cancelled || closeRealtime !== undefined || !navigator.onLine) return;
           const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
           realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
           closeRealtime = subscribeToAccountRealtime({
@@ -2425,6 +2500,28 @@ export function OwnerApp() {
             endpoint: realtimeUrl.toString(),
             onChangesAvailable: catchUp
           });
+        };
+        synchronize = async () => {
+          if (cancelled || !navigator.onLine) return;
+          const transferred = await flushLocalSyncMutations({
+            accountId: session.account.id,
+            repository,
+            apiBaseUrl
+          });
+          await catchUp();
+          if (!cancelled && transferred.transferred > 0) {
+            setStatusMessage(
+              `${transferred.transferred} offline change${
+                transferred.transferred === 1 ? "" : "s"
+              } synced`
+            );
+          }
+          startRealtime();
+        };
+        if (navigator.onLine) {
+          await synchronize();
+        } else {
+          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
         }
       })
       .catch(() => {
@@ -2435,13 +2532,14 @@ export function OwnerApp() {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("online", synchronizeWhenOnline);
       closeRealtime?.();
       if (syncRepositoryRef.current === openedRepository) {
         syncRepositoryRef.current = null;
       }
       closeRepository?.();
     };
-  }, [session?.account.id, isOnline]);
+  }, [session?.account.id]);
 
   useEffect(() => {
     if (session === null) return;
@@ -2824,6 +2922,11 @@ export function OwnerApp() {
     };
   }, [business?.id, session?.account.id, setupComplete, view]);
 
+  useEffect(() => {
+    if (!setupComplete || view !== "chat") return;
+    return scheduleIdleOwnerPrefetch("products", business?.id ?? null);
+  }, [business?.id, setupComplete, view]);
+
   async function handleOAuthCallback(): Promise<boolean> {
     if (window.location.pathname !== routes.oauthCallback) {
       return false;
@@ -2942,7 +3045,11 @@ export function OwnerApp() {
   }
 
   async function refreshSession() {
-    setAuthBootstrapState("restoring-session");
+    if (sessionRefreshInFlightRef.current) return;
+    sessionRefreshInFlightRef.current = true;
+    setAuthBootstrapState((current) =>
+      current === "offline-authenticated" ? current : "restoring-session"
+    );
     try {
       const nextSession = await apiFetch<AuthBootstrapResponse>("/auth/bootstrap");
       logAuthenticationLifecycle("authenticated_user_loaded", nextSession);
@@ -2983,6 +3090,8 @@ export function OwnerApp() {
       if (storedBusiness !== null) setBusiness(storedBusiness);
       setAuthBootstrapState("failed");
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
+    } finally {
+      sessionRefreshInFlightRef.current = false;
     }
   }
 
@@ -3764,7 +3873,10 @@ export function OwnerApp() {
 
   async function loadProducts(businessId: string) {
     try {
-      const response = await getJson<ProductSummary[]>(`/businesses/${businessId}/products`);
+      const response = await getJson<ProductSummary[]>(
+        `/businesses/${businessId}/products`,
+        setProducts
+      );
       setProducts(response);
       if (stockProductId.length === 0 && response[0] !== undefined) {
         setStockProductId(response[0].id);
@@ -3778,7 +3890,8 @@ export function OwnerApp() {
   async function loadProductFields(businessId: string) {
     try {
       const schema = await getJson<ProductFieldSchemaSummary>(
-        `/businesses/${businessId}/products/fields`
+        `/businesses/${businessId}/products/fields`,
+        (refreshed) => setProductFields(refreshed.fields)
       );
       setProductFields(schema.fields);
     } catch (error) {
@@ -3971,7 +4084,9 @@ export function OwnerApp() {
 
   async function loadCustomers(businessId: string) {
     try {
-      setCustomers(await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`));
+      setCustomers(
+        await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`, setCustomers)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -3980,7 +4095,10 @@ export function OwnerApp() {
   async function loadSuppliers(businessId: string) {
     try {
       setSuppliers(
-        await getJson<SupplierBusinessCardSummary[]>(`/businesses/${businessId}/suppliers`)
+        await getJson<SupplierBusinessCardSummary[]>(
+          `/businesses/${businessId}/suppliers`,
+          setSuppliers
+        )
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -4274,7 +4392,9 @@ export function OwnerApp() {
 
   async function loadInvoices(businessId: string) {
     try {
-      setInvoices(await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`));
+      setInvoices(
+        await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`, setInvoices)
+      );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4635,9 +4755,12 @@ export function OwnerApp() {
   async function loadPaymentData(businessId: string) {
     try {
       const [nextPayments, nextSummaries, nextDebts] = await Promise.all([
-        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`),
-        getJson<InvoicePaymentSummary[]>(`/businesses/${businessId}/payment-summaries`),
-        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`)
+        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`, setPayments),
+        getJson<InvoicePaymentSummary[]>(
+          `/businesses/${businessId}/payment-summaries`,
+          setInvoicePayments
+        ),
+        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`, setCustomerDebts)
       ]);
       setPayments(nextPayments);
       setInvoicePayments(nextSummaries);
@@ -4650,7 +4773,8 @@ export function OwnerApp() {
   async function loadLogistics(businessId: string) {
     try {
       const nextLogistics = await getJson<LogisticsSummary[]>(
-        `/businesses/${businessId}/logistics`
+        `/businesses/${businessId}/logistics`,
+        setLogistics
       );
       setLogistics(nextLogistics);
       if (logisticsForm.invoiceId.length === 0) {
@@ -4670,8 +4794,14 @@ export function OwnerApp() {
   async function loadReports(businessId: string) {
     try {
       const [report, knowledge] = await Promise.all([
-        getJson<BusinessReportSummary>(`/businesses/${businessId}/reports/summary`),
-        getJson<BusinessKnowledgeSummary>(`/businesses/${businessId}/knowledge`)
+        getJson<BusinessReportSummary>(
+          `/businesses/${businessId}/reports/summary`,
+          setReportSummary
+        ),
+        getJson<BusinessKnowledgeSummary>(
+          `/businesses/${businessId}/knowledge`,
+          setKnowledgeSummary
+        )
       ]);
       setReportSummary(report);
       setKnowledgeSummary(knowledge);
@@ -4683,7 +4813,10 @@ export function OwnerApp() {
   async function loadNotifications(businessId: string) {
     try {
       setNotificationInbox(
-        await getJson<NotificationInbox>(`/businesses/${businessId}/notifications`)
+        await getJson<NotificationInbox>(
+          `/businesses/${businessId}/notifications`,
+          setNotificationInbox
+        )
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -5670,14 +5803,20 @@ export function OwnerApp() {
   async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
     if (session === null) return;
     try {
-      let response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+      let response = await getJson<{ conversations: ConversationInboxItem[] }>(
+        "/v1/conversations",
+        (refreshed) => setConversationInbox(refreshed.conversations)
+      );
       if (response.conversations.length === 0) {
         const created = await postJson<ConversationView>("/v1/conversations", {
           kind: "personal",
           activeShopId: business?.id ?? null,
           title: "Soko agent"
         });
-        response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
+        response = await getJson<{ conversations: ConversationInboxItem[] }>(
+          "/v1/conversations",
+          (refreshed) => setConversationInbox(refreshed.conversations)
+        );
         preferredConversationId = created.conversation.id;
       }
       setConversationInbox(response.conversations);
@@ -5982,7 +6121,7 @@ export function OwnerApp() {
       ]);
       clearMessagingOutbox(accountId);
     }
-    clearApiRequestCache();
+    await clearPersistentApiRequestCache();
     clearCachedAuthSession();
     localStorage.removeItem(activeBusinessStorageKey);
     localStorage.removeItem(legacyActiveBusinessStorageKey);
@@ -5990,7 +6129,6 @@ export function OwnerApp() {
     localStorage.removeItem(activeModeStorageKey);
     localStorage.removeItem(ownerAuthStorageKey);
     localStorage.removeItem(setupDraftStorageKey);
-    localStorage.removeItem(contextScriptsPasswordStorageKey);
     sessionStorage.removeItem(pendingOAuthStorageKey);
     setSession(null);
     setBusiness(null);
@@ -6088,6 +6226,17 @@ export function OwnerApp() {
     await resetClientToStartup(
       accountId,
       allSessions ? "Signed out on every device." : "Signed out."
+    );
+  }
+
+  async function submitAgentResponseFeedback(messageId: string, correct: boolean) {
+    if (business === null) return;
+    await postJson(`/businesses/${business.id}/agent-runtime/feedback`, {
+      messageId,
+      correct
+    });
+    setStatusMessage(
+      correct ? "Agent response marked correct." : "Agent response flagged for review."
     );
   }
 
@@ -6296,47 +6445,73 @@ export function OwnerApp() {
         },
         async *generate(request) {
           if (business === null) throw new Error("A shop is required for browser inference.");
-          const response = await generateBrowserAgentResponse({
-            requestId: request.requestId,
-            accountId: session.account.id,
-            businessId: business.id,
-            conversationId: request.conversationId,
-            agentIdentity: `${agentSettings.name}; role=${agentSettings.role}`,
-            shopIdentity: `${business.name}; Soko ID=${business.sokoId}`,
-            systemPrompt: request.systemPrompt ?? "",
-            message: runtimeMessage,
-            recentMessages: chatMessages
-              .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
-              .map((item) => ({
-                id: item.id,
-                role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
-                content: item.body
+          const selectedModelId = browserState.settings!.selectedModelId!;
+          try {
+            const response = await generateBrowserAgentResponse({
+              requestId: request.requestId,
+              accountId: session.account.id,
+              businessId: business.id,
+              conversationId: request.conversationId,
+              agentIdentity: `${agentSettings.name}; role=${agentSettings.role}`,
+              shopIdentity: `${business.name}; Soko ID=${business.sokoId}`,
+              systemPrompt: request.systemPrompt ?? "",
+              message: runtimeMessage,
+              recentMessages: chatMessages
+                .filter((item) => item.author === "merchant" || item.author === "sokoclaw")
+                .map((item) => ({
+                  id: item.id,
+                  role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
+                  content: item.body
+                })),
+              catalogueRecords: products.map((product) => ({
+                id: product.id,
+                name: product.name,
+                price: product.sellingPrice,
+                quantity: product.quantity,
+                updatedAt: product.updatedAt
               })),
-            catalogueRecords: products.map((product) => ({
-              id: product.id,
-              name: product.name,
-              price: product.sellingPrice,
-              quantity: product.quantity,
-              updatedAt: product.updatedAt
-            })),
-            nativeReady: false,
-            onToken: (token) => browserTokenListener(token)
-          });
-          yield {
-            requestId: request.requestId,
-            text: response.result.text,
-            done: true,
-            runtime: browserRuntime,
-            modelId: request.modelId,
-            usage: {
-              ...(response.result.promptTokenCount === null
-                ? {}
-                : { promptTokens: response.result.promptTokenCount }),
-              ...(response.result.generatedTokenCount === null
-                ? {}
-                : { completionTokens: response.result.generatedTokenCount })
+              nativeReady: false,
+              onToken: (token) => browserTokenListener(token)
+            });
+            if (navigator.onLine) {
+              void recordSyncedBrowserInferenceExecution({
+                businessId: business.id,
+                modelId: selectedModelId,
+                successful: true
+              }).catch(() => undefined);
             }
-          };
+            yield {
+              requestId: request.requestId,
+              text: response.result.text,
+              done: true,
+              runtime: browserRuntime,
+              modelId: selectedModelId,
+              usage: {
+                ...(response.result.promptTokenCount === null
+                  ? {}
+                  : { promptTokens: response.result.promptTokenCount }),
+                ...(response.result.generatedTokenCount === null
+                  ? {}
+                  : { completionTokens: response.result.generatedTokenCount })
+              }
+            };
+          } catch (error) {
+            if (navigator.onLine) {
+              void recordSyncedBrowserInferenceExecution({
+                businessId: business.id,
+                modelId: selectedModelId,
+                successful: false,
+                errorCode:
+                  typeof error === "object" &&
+                  error !== null &&
+                  "code" in error &&
+                  typeof error.code === "string"
+                    ? error.code
+                    : "BROWSER_INFERENCE_FAILED"
+              }).catch(() => undefined);
+            }
+            throw error;
+          }
         },
         cancel: () => cancelBrowserGeneration()
       });
@@ -6683,6 +6858,8 @@ export function OwnerApp() {
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
+      let pendingStreamText = "";
+      let streamingFrame: number | null = null;
       setIsBrowserGenerating(true);
       setChatMessages((messages) => [
         ...messages,
@@ -6696,16 +6873,18 @@ export function OwnerApp() {
       ]);
       const updateStreamingMessage = (text: string) => {
         streamedText = text;
-        setChatMessages((messages) =>
-          messages.map((item) =>
-            item.id === streamingMessageId
-              ? { ...item, body: streamedText.trimStart() || "…" }
-              : item
-          )
-        );
+        pendingStreamText = text;
+        if (streamingFrame !== null) return;
+        streamingFrame = window.requestAnimationFrame(() => {
+          streamingFrame = null;
+          const body = pendingStreamText.trimStart() || "…";
+          setChatMessages((messages) =>
+            messages.map((item) => (item.id === streamingMessageId ? { ...item, body } : item))
+          );
+        });
       };
+      setStatusMessage("Browser model · Generating");
       browserTokenListener = (token) => {
-        setStatusMessage("Browser model · Generating");
         updateStreamingMessage(streamedText + token);
       };
       try {
@@ -6726,6 +6905,10 @@ export function OwnerApp() {
             }
           }
         });
+        if (streamingFrame !== null) {
+          window.cancelAnimationFrame(streamingFrame);
+          streamingFrame = null;
+        }
         setChatMessages((messages) => messages.filter((item) => item.id !== streamingMessageId));
         await appendAgentMessage(execution.text);
         if (routedRuntimeResult !== null) {
@@ -6762,6 +6945,7 @@ export function OwnerApp() {
         });
         setStatusMessage("Client inference unavailable · Using safe server fallback");
       } finally {
+        if (streamingFrame !== null) window.cancelAnimationFrame(streamingFrame);
         setIsBrowserGenerating(false);
       }
     }
@@ -6827,10 +7011,20 @@ export function OwnerApp() {
       if (business !== null) {
         await loadRuntimeSessions(business.id);
       }
+      const modelDiagnostic =
+        result.turn.model?.status === "available" &&
+        result.turn.model.modelId !== undefined &&
+        result.turn.model.executionTarget !== undefined
+          ? ` · Generated by ${result.turn.model.modelId} · Route: ${result.turn.model.executionTarget}${
+              result.turn.model.durationMs == null
+                ? ""
+                : ` · ${formatLatency(result.turn.model.durationMs)}`
+            }`
+          : "";
       setStatusMessage(
         localFallbackStatus === null
-          ? formatRuntimeTurnStatus(result)
-          : `${formatRuntimeTurnStatus(result)} · Fallback (${localFallbackStatus})`
+          ? `${formatRuntimeTurnStatus(result)}${modelDiagnostic}`
+          : `${formatRuntimeTurnStatus(result)} · Fallback (${localFallbackStatus})${modelDiagnostic}`
       );
     }
 
@@ -7432,7 +7626,11 @@ export function OwnerApp() {
 
   return (
     <Surface title="Soko.market">
-      <div className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}>
+      <div
+        className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
+        data-shell-instance={shellInstanceIdRef.current}
+        data-capability-profile={capabilitySettingsRef.current.profile}
+      >
         <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
           {business === null ? (
             <div className="auth-brand-title">
@@ -7724,6 +7922,7 @@ export function OwnerApp() {
                 activeView={view}
                 notificationCount={notificationInbox.summary.unread}
                 onNavigate={navigateToView}
+                onPrefetch={(nextView) => prefetchOwnerView(nextView, business.id)}
               />
             ) : null}
             {deviceCloudFallbackModelId !== null ? (
@@ -7840,6 +8039,11 @@ export function OwnerApp() {
                   updateMessageAction(messageId, { reaction })
                 )
               }
+              onAgentFeedback={(messageId, correct) =>
+                void runAction(`agent-feedback-${messageId}`, () =>
+                  submitAgentResponseFeedback(messageId, correct)
+                )
+              }
               onForwardMessage={(messageId, conversationId) =>
                 void runAction("message-forward", () => forwardMessage(messageId, conversationId))
               }
@@ -7921,11 +8125,13 @@ const primaryNavigationItems: Array<{
 function PrimaryNavigation({
   activeView,
   notificationCount,
-  onNavigate
+  onNavigate,
+  onPrefetch
 }: {
   activeView: ShellView;
   notificationCount: number;
   onNavigate: (view: ShellView) => void;
+  onPrefetch: (view: ShellView) => void;
 }) {
   return (
     <nav className="primary-navigation" aria-label="Business navigation">
@@ -7938,6 +8144,8 @@ function PrimaryNavigation({
           aria-label={item.label}
           title={item.label}
           onClick={() => onNavigate(item.view)}
+          onPointerDown={() => onPrefetch(item.view)}
+          onPointerEnter={() => onPrefetch(item.view)}
         >
           <span className="primary-navigation-icon" aria-hidden="true">
             {item.shortLabel.slice(0, 1)}
@@ -13174,6 +13382,16 @@ function AgentProfileSurface({
   const [mcpPin, setMcpPin] = useState("");
   const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
+  const [runtimeReadiness, setRuntimeReadiness] = useState<AgentRuntimeReadiness | null>(null);
+  const [runtimeVersions, setRuntimeVersions] = useState<AgentRuntimeVersion[]>([]);
+  const [runtimeContextSources, setRuntimeContextSources] = useState<AgentContextSource[]>([]);
+  const [evaluationSummary, setEvaluationSummary] = useState<AgentEvaluationSummary | null>(null);
+  const [ownerCorrections, setOwnerCorrections] = useState<AgentOwnerCorrection[]>([]);
+  const [correctionDraft, setCorrectionDraft] = useState("");
+  const [correctionCategory, setCorrectionCategory] =
+    useState<AgentOwnerCorrection["category"]>("instruction");
+  const [promoteCorrection, setPromoteCorrection] = useState(true);
+  const [runtimeDetailsLoading, setRuntimeDetailsLoading] = useState(false);
   const [ownerPhoneCountryCode, setOwnerPhoneCountryCode] = useState<CountryDialCode>(
     inferCountryCode(ownerUser?.phoneNumberE164 ?? "") ?? "+254"
   );
@@ -13183,6 +13401,18 @@ function AgentProfileSurface({
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
+  const [activeAgentModelBinding, setActiveAgentModelBinding] =
+    useState<AgentModelBindingSummary | null>(null);
+  const [serverBackendRuntime, setServerBackendRuntime] = useState<
+    Record<
+      string,
+      {
+        status: "available" | "unavailable";
+        latencyMs: number | null;
+        errorCode: string | null;
+      }
+    >
+  >({});
   const [cloudFallbackModelId, setCloudFallbackModelId] = useState<string | null>(null);
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
@@ -13200,9 +13430,16 @@ function AgentProfileSurface({
   const [modelChooserOpen, setModelChooserOpen] = useState(false);
   const [modelRuntimeBusy, setModelRuntimeBusy] = useState(false);
   const modelRuntimeBusyRef = useRef(false);
+  const modelActivationCoordinator = useRef(new ModelActivationCoordinator());
+  const activatingInstallationIdRef = useRef<string | null>(null);
   const modelRuntime = useRef<AgentModelRuntime | null>(null);
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
+  );
+  const [syncedBrowserInference, setSyncedBrowserInference] =
+    useState<BrowserInferenceAssignmentSummary | null>(null);
+  const [selectedBrowserModelId, setSelectedBrowserModelId] = useState(
+    () => listBrowserModels()[0]?.id ?? ""
   );
   const [inferencePreferences, setInferencePreferences] = useState<ClientInferencePreferences>(() =>
     readClientInferencePreferences(accountId, business.id)
@@ -13210,6 +13447,11 @@ function AgentProfileSurface({
   const [browserModelProgress, setBrowserModelProgress] = useState<BrowserModelProgress | null>(
     null
   );
+  const browserModelOptions = browserInferenceState?.modelOptions ?? [];
+  const selectedBrowserModel =
+    browserModelOptions.find((option) => option.model.id === selectedBrowserModelId)?.model ??
+    listBrowserModels().find((model) => model.id === selectedBrowserModelId) ??
+    null;
   const [githubModelDiscovery, setGitHubModelDiscovery] = useState<CatalogAiModelSearchResponse>({
     models: [],
     status: "unavailable",
@@ -13253,6 +13495,16 @@ function AgentProfileSurface({
     }
   }, [agent, isEditing]);
 
+  useEffect(
+    () => () => {
+      modelActivationCoordinator.current.cancel();
+      modelRuntimeBusyRef.current = false;
+      const installationId = activatingInstallationIdRef.current;
+      if (installationId !== null) void getModelRuntime().unload(installationId);
+    },
+    []
+  );
+
   useEffect(() => {
     const savedPhone = ownerUser?.phoneNumberE164;
     if (savedPhone === undefined || savedPhone === null) return;
@@ -13269,7 +13521,9 @@ function AgentProfileSurface({
     void loadMcpTokens();
     void loadShopDeletionPreview();
     void loadAgentProfile();
+    void loadAgentRuntimeDetails();
     void loadAgentModelAssignment();
+    void loadCanonicalAgentModelBinding();
     const params = new URLSearchParams(location.search);
     const initialSearch = params.get("ai_search") ?? "";
     setModelSearch(initialSearch);
@@ -13298,15 +13552,31 @@ function AgentProfileSurface({
     setProfileMessage("Opening model settings…");
     try {
       const initialSearch = new URLSearchParams(location.search).get("ai_search") ?? "";
-      const [browserState, capability] = await Promise.all([
+      const [browserState, capability, syncedAssignment] = await Promise.all([
         loadBrowserInferenceState(accountId, business.id),
         inspectDeviceModelCapability(),
+        loadSyncedBrowserInferenceAssignment(business.id).catch(() => null),
         loadAiModels(initialSearch)
       ]);
       setBrowserInferenceState(browserState);
+      setSyncedBrowserInference(syncedAssignment);
+      setSelectedBrowserModelId(
+        browserState.settings?.selectedModelId ??
+          syncedAssignment?.selectedModelId ??
+          browserState.modelOptions.find((option) => option.compatible)?.model.id ??
+          ""
+      );
       setDeviceCapability(capability);
       setModelLibraryLoaded(true);
       setProfileMessage("Model settings ready.");
+      if (navigator.onLine && browserState.settings !== null) {
+        void synchronizeBrowserInferenceAssignment({
+          businessId: business.id,
+          state: browserState
+        })
+          .then(setSyncedBrowserInference)
+          .catch(() => undefined);
+      }
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -13322,13 +13592,29 @@ function AgentProfileSurface({
       if (!enabled) {
         const state = await disableBrowserInference(accountId, business.id);
         setBrowserInferenceState(state);
+        if (navigator.onLine) {
+          setSyncedBrowserInference(
+            await synchronizeBrowserInferenceAssignment({
+              businessId: business.id,
+              state
+            })
+          );
+        }
         setProfileMessage(
           "Browser-local inference is off. Allowed native, owner-device, or cloud routing remains."
         );
         return;
       }
-      const model = listBrowserModels()[0];
+      const model = listBrowserModels().find(
+        (candidate) => candidate.id === selectedBrowserModelId
+      );
       if (model === undefined) throw new Error("No approved browser model is configured.");
+      const option = browserInferenceState?.modelOptions.find(
+        (candidate) => candidate.model.id === model.id
+      );
+      if (option?.compatible === false) {
+        throw new Error(option.reason ?? "This browser model is incompatible with this device.");
+      }
       setProfileMessage(
         `Downloading ${model.displayName} after your consent. Keep Soko open until it is ready.`
       );
@@ -13339,7 +13625,19 @@ function AgentProfileSurface({
         onProgress: setBrowserModelProgress
       });
       setBrowserInferenceState(state);
-      setProfileMessage(`${model.displayName} is ready for supported on-device chat.`);
+      if (navigator.onLine) {
+        setSyncedBrowserInference(
+          await synchronizeBrowserInferenceAssignment({
+            businessId: business.id,
+            state
+          })
+        );
+      }
+      setProfileMessage(
+        navigator.onLine
+          ? `${model.displayName} is ready and connected to this shop's browser inference workflow.`
+          : `${model.displayName} is ready locally. Reconnect to synchronize its database assignment.`
+      );
     } catch (error) {
       setBrowserInferenceState(await loadBrowserInferenceState(accountId, business.id));
       setProfileMessage(getErrorMessage(error));
@@ -13362,8 +13660,17 @@ function AgentProfileSurface({
     if (modelRuntimeBusy) return;
     setModelRuntimeBusy(true);
     try {
-      setBrowserInferenceState(await removeBrowserModel(accountId, business.id));
-      setProfileMessage("The cached browser model was removed. Chat history was left unchanged.");
+      const state = await removeBrowserModel(accountId, business.id);
+      setBrowserInferenceState(state);
+      if (navigator.onLine) {
+        await removeSyncedBrowserInferenceAssignment(business.id);
+        setSyncedBrowserInference(null);
+      }
+      setProfileMessage(
+        navigator.onLine
+          ? "The cached browser model and its database assignment were removed. Chat history was left unchanged."
+          : "The cached browser model was removed locally. Reconnect to clear its database assignment."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -13397,7 +13704,8 @@ function AgentProfileSurface({
         githubRegistry,
         githubSearchResults,
         huggingFaceRegistry,
-        huggingFaceSearchResults
+        huggingFaceSearchResults,
+        canonicalBinding
       ] = await Promise.all([
         getJson<{ models: AiModelSummary[] }>("/v1/ai-models"),
         getJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`),
@@ -13411,7 +13719,12 @@ function AgentProfileSurface({
         loadHuggingFaceModels(),
         normalizedSearch.length > 0
           ? loadHuggingFaceModels(normalizedSearch)
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        getJson<{ binding: AgentModelBindingSummary | null }>(
+          `/api/agents/${encodeURIComponent(
+            agent.globalAgentId
+          )}/model-binding?shopId=${encodeURIComponent(business.id)}`
+        ).catch(() => ({ binding: null }))
       ]);
       const externalRegistry = mergeAiModelCatalogs(
         githubRegistry.models,
@@ -13438,10 +13751,12 @@ function AgentProfileSurface({
         )
       );
       const deviceSelection = readDeviceAgentModelAssignment(business.id, deviceId);
-      const effectiveModelId = deviceSelection?.modelId ?? active.modelId;
+      const effectiveModelId =
+        canonicalBinding.binding?.modelId ?? deviceSelection?.modelId ?? active.modelId;
       setAiModels(allModels);
       setVisibleAiModels(visibleModels);
       setActiveAiModelId(effectiveModelId);
+      setActiveAgentModelBinding(canonicalBinding.binding);
       setCloudFallbackModelId(
         allModels.some(
           (model) =>
@@ -13514,6 +13829,75 @@ function AgentProfileSurface({
       const nextAgent = agentSettingsFromBusinessProfile(profile, business);
       setDraftAgent(nextAgent);
       onAgentChange(nextAgent);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadAgentRuntimeDetails() {
+    setRuntimeDetailsLoading(true);
+    try {
+      const [readiness, versions, contextSources, evaluations, corrections] = await Promise.all([
+        getJson<AgentRuntimeReadiness>(`/businesses/${business.id}/agent-runtime/readiness`),
+        getJson<AgentRuntimeVersion[]>(`/businesses/${business.id}/agent-runtime/versions`),
+        getJson<AgentContextSource[]>(`/businesses/${business.id}/agent-runtime/context-sources`),
+        getJson<AgentEvaluationSummary>(`/businesses/${business.id}/agent-runtime/evaluations`),
+        getJson<AgentOwnerCorrection[]>(`/businesses/${business.id}/agent-runtime/corrections`)
+      ]);
+      setRuntimeReadiness(readiness);
+      setRuntimeVersions(versions);
+      setRuntimeContextSources(contextSources);
+      setEvaluationSummary(evaluations);
+      setOwnerCorrections(corrections);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setRuntimeDetailsLoading(false);
+    }
+  }
+
+  async function rollbackAgentRuntime(version: number) {
+    try {
+      await postJson(`/businesses/${business.id}/agent-runtime/versions/${version}/rollback`, {});
+      await Promise.all([loadAgentProfile(), loadAgentRuntimeDetails()]);
+      setIsEditing(false);
+      setProfileMessage(`Runtime version ${version} restored as a new active version.`);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function submitOwnerCorrection() {
+    const correction = correctionDraft.trim();
+    if (correction.length === 0) return;
+    try {
+      await postJson<AgentOwnerCorrection>(`/businesses/${business.id}/agent-runtime/corrections`, {
+        correction,
+        category: correctionCategory,
+        promoteToInstruction: promoteCorrection
+      });
+      setCorrectionDraft("");
+      await Promise.all([loadAgentProfile(), loadAgentRuntimeDetails()]);
+      setProfileMessage(
+        promoteCorrection
+          ? "Correction saved and promoted into a new runtime version."
+          : "Correction saved as bounded agent memory."
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function disableOwnerCorrection(correctionId: string) {
+    try {
+      await postJson(
+        `/businesses/${business.id}/agent-runtime/corrections/${encodeURIComponent(
+          correctionId
+        )}/disable`,
+        {}
+      );
+      await loadAgentRuntimeDetails();
+      setProfileMessage("Correction disabled.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -13655,12 +14039,36 @@ function AgentProfileSurface({
     }
   }
 
-  async function registerInstalledModel(model: LocalAiModel): Promise<void> {
-    await postJson("/v1/models/installed", installedModelRequest(model));
+  async function loadCanonicalAgentModelBinding(): Promise<AgentModelBindingSummary | null> {
+    if (!navigator.onLine) return activeAgentModelBinding;
+    try {
+      const response = await getJson<{ binding: AgentModelBindingSummary | null }>(
+        `/api/agents/${encodeURIComponent(agent.globalAgentId)}/model-binding?shopId=${encodeURIComponent(
+          business.id
+        )}`
+      );
+      setActiveAgentModelBinding(response.binding);
+      if (response.binding !== null) {
+        setActiveAiModelId(response.binding.modelId);
+      }
+      return response.binding;
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+      return null;
+    }
+  }
+
+  async function registerInstalledModel(model: LocalAiModel, signal?: AbortSignal): Promise<void> {
+    await postJson(
+      "/v1/models/installed",
+      installedModelRequest(model),
+      signal === undefined ? {} : { signal }
+    );
   }
 
   async function validateInstalledModelOnBackend(
-    model: LocalAiModel
+    model: LocalAiModel,
+    signal?: AbortSignal
   ): Promise<InstalledAgentModelSummary> {
     return postJson<InstalledAgentModelSummary>(
       `/v1/models/${encodeURIComponent(model.id)}/validate`,
@@ -13669,12 +14077,14 @@ function AgentProfileSurface({
         installationStatus: model.installationStatus,
         compatibilityStatus: model.compatibilityStatus,
         validationError: model.validationError
-      }
+      },
+      signal === undefined ? {} : { signal }
     );
   }
 
   async function synchronizeAgentModelAssignment(
-    assignment: DeviceAgentModelAssignment
+    assignment: DeviceAgentModelAssignment,
+    signal?: AbortSignal
   ): Promise<DeviceAgentModelAssignment> {
     if (!navigator.onLine) return assignment;
     const saved = await putJson<AgentModelAssignmentSummary>(
@@ -13687,32 +14097,83 @@ function AgentProfileSurface({
         readinessStatus: assignment.readinessStatus,
         lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
         lastErrorCode: assignment.lastErrorCode
-      }
+      },
+      signal === undefined ? {} : { signal }
     );
     return assignmentFromServer(saved);
   }
 
+  async function activationApiReachable(signal?: AbortSignal): Promise<boolean> {
+    if (!navigator.onLine) return false;
+    try {
+      await withActivationTimeout(
+        (timeoutSignal) => apiFetch<SessionResponse>("/session", { signal: timeoutSignal }),
+        8_000,
+        signal
+      );
+      return true;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof TypeError) return false;
+      if (error instanceof ModelActivationError && error.code === "ACTIVATION_TIMEOUT") {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  function cancelModelActivation() {
+    modelActivationCoordinator.current.cancel();
+    setProfileMessage("Cancelling model activation…");
+  }
+
   async function useModelWithAgent(model: LocalAiModel) {
-    if (modelRuntimeBusyRef.current) return;
+    const activation = modelActivationCoordinator.current.begin(model.id);
+    if (activation === null) return;
     const previous = agentModelAssignment;
-    let boundAssignment: DeviceAgentModelAssignment | null = null;
+    const phaseDurations: Partial<Record<ModelActivationState, number>> = {};
+    let phase: ModelActivationState = "idle";
+    let phaseStartedAt = performance.now();
+    let runtimeSessionId: string | null = null;
+    let apiReachable = false;
+    const transition = (next: ModelActivationState, message: string) => {
+      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation))
+        return;
+      phaseDurations[phase] = Math.round(performance.now() - phaseStartedAt);
+      phase = next;
+      phaseStartedAt = performance.now();
+      setModelActivationState(next);
+      setProfileMessage(message);
+    };
+    const assertCurrent = () => {
+      if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation)) {
+        throw new ModelActivationError("ACTIVATION_ABORTED", "Model activation was cancelled.");
+      }
+    };
     modelRuntimeBusyRef.current = true;
+    activatingInstallationIdRef.current = model.id;
     setModelRuntimeBusy(true);
     setActivatingModelId(model.modelId);
     setFailedActivationModelId(null);
-    setModelActivationState("validating-installation");
+    setModelActivationState("validating");
     setModelChooserOpen(false);
     try {
-      setProfileMessage("Checking installation…");
+      transition("validating", "Checking model…");
       const verified = await validateLocalAiModel(model, deviceCapability);
+      assertCurrent();
       setLocalAiModels(listLocalAiModels());
       if (
         verified.installationStatus !== "INSTALLED" ||
         verified.compatibilityStatus !== "COMPATIBLE"
       ) {
-        throw new Error(
-          verified.validationError === "MODEL_FILE_MISSING"
-            ? "The model file is missing from this device."
+        throw new ModelActivationError(
+          verified.validationError === "MODEL_FILE_MISSING" ||
+            verified.installationStatus === "CORRUPT"
+            ? "MODEL_FILES_MISSING"
+            : "MODEL_RUNTIME_FAILED",
+          verified.validationError === "MODEL_FILE_MISSING" ||
+            verified.installationStatus === "CORRUPT"
+            ? "The model files are missing or incomplete. Download the model again."
             : verified.compatibilityStatus === "INSUFFICIENT_MEMORY"
               ? "This device does not have enough memory for the model."
               : "The installed model is not compatible with this device."
@@ -13721,9 +14182,27 @@ function AgentProfileSurface({
       if (!verified.commercialUseAllowed) {
         throw new Error("This model is not approved for commercial use.");
       }
-      if (navigator.onLine) {
-        await registerInstalledModel(verified);
-        const backendValidation = await validateInstalledModelOnBackend(verified);
+      if (window.SokoAgentModelRuntime === undefined) {
+        throw new ModelActivationError(
+          "MODEL_RUNTIME_FAILED",
+          "This browser does not provide the trusted GGUF runtime. Open Soko in the supported installed app to start this model."
+        );
+      }
+
+      apiReachable = await activationApiReachable(activation.signal);
+      assertCurrent();
+      if (apiReachable) {
+        await withActivationTimeout(
+          (signal) => registerInstalledModel(verified, signal),
+          45_000,
+          activation.signal
+        );
+        const backendValidation = await withActivationTimeout(
+          (signal) => validateInstalledModelOnBackend(verified, signal),
+          45_000,
+          activation.signal
+        );
+        assertCurrent();
         if (
           backendValidation.installationStatus !== "INSTALLED" ||
           backendValidation.compatibilityStatus !== "COMPATIBLE"
@@ -13735,22 +14214,6 @@ function AgentProfileSurface({
         }
       }
 
-      const pending = createPendingDeviceAssignment({
-        businessId: business.id,
-        deviceId,
-        installation: verified,
-        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"
-      });
-      setModelActivationState("binding-agent");
-      setProfileMessage(`Binding ${verified.displayName} to ${business.name}…`);
-      boundAssignment = await synchronizeAgentModelAssignment(pending);
-      saveDeviceAgentModelAssignment(boundAssignment);
-      setAgentModelAssignment(boundAssignment);
-      setProfileMessage(
-        `${verified.displayName} is bound to ${business.name}. Checking its runtime…`
-      );
-
       if (clientInferenceFeatureFlags.nativeBridge && !inferencePreferences.nativePermission) {
         const nextPreferences = saveClientInferencePreferences(accountId, business.id, {
           ...inferencePreferences,
@@ -13758,39 +14221,66 @@ function AgentProfileSurface({
         });
         setInferencePreferences(nextPreferences);
       }
-      if (window.SokoAgentModelRuntime === undefined) {
-        throw new Error(
-          "This browser does not provide the trusted GGUF runtime. Open Soko in the supported installed app to start this model."
+      transition("creating_runtime", "Starting runtime…");
+      if (apiReachable) {
+        runtimeSessionId = await withActivationTimeout(
+          () => onEnsureRuntimeSession(),
+          45_000,
+          activation.signal
+        );
+        if (runtimeSessionId.trim().length === 0) {
+          throw new ModelActivationError(
+            "RUNTIME_SESSION_INVALID",
+            "The runtime session could not be created."
+          );
+        }
+      } else {
+        runtimeSessionId = `local:${business.id}:${deviceId}:${activation.id}`;
+      }
+      assertCurrent();
+
+      transition("loading_model", `Loading ${verified.displayName}…`);
+      const result = await testAgentModelRuntime(getModelRuntime(), verified, {
+        signal: activation.signal,
+        onEvent: (event) => {
+          if (event.type === "MODEL_LOAD_PROGRESS" && event.progress !== null) {
+            transition("loading_model", `Loading ${verified.displayName}… ${event.progress}%`);
+          }
+        }
+      });
+      assertCurrent();
+      if (!result.success) {
+        throw new ModelActivationError(
+          result.errorCode === "MODEL_FILE_MISSING"
+            ? "MODEL_FILES_MISSING"
+            : "MODEL_RUNTIME_FAILED",
+          result.errorCode === "MODEL_FILE_MISSING"
+            ? "The model files are missing or incomplete. Download the model again."
+            : result.message
         );
       }
-
-      setModelActivationState("resolving-agent");
-      setProfileMessage("Restoring your agent…");
-      if (navigator.onLine) {
-        setModelActivationState("creating-runtime-session");
-        setProfileMessage("Starting model runtime…");
-        await onEnsureRuntimeSession();
+      transition("binding_agent", "Connecting model to agent…");
+      const pending = createPendingDeviceAssignment({
+        businessId: business.id,
+        deviceId,
+        installation: verified,
+        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        runtimeSessionId
+      });
+      let readyAssignment = assignmentAfterReadiness(pending, result);
+      if (apiReachable) {
+        readyAssignment = await withActivationTimeout(
+          (signal) => synchronizeAgentModelAssignment(readyAssignment, signal),
+          45_000,
+          activation.signal
+        );
+        readyAssignment.runtimeSessionId = runtimeSessionId;
       }
-
-      setModelActivationState("initializing-backend");
-      setProfileMessage("Preparing model backend…");
-      setModelActivationState("loading-model");
-      setProfileMessage(`Loading ${verified.displayName}…`);
-      setModelActivationState("warming-model");
-      setProfileMessage("Preparing model…");
-      setModelActivationState("health-checking");
-      setProfileMessage("Testing model…");
-      const result = await testAgentModelRuntime(getModelRuntime(), verified);
-      const tested = assignmentAfterReadiness(boundAssignment, result);
-      boundAssignment = await synchronizeAgentModelAssignment(tested);
-      saveDeviceAgentModelAssignment(boundAssignment);
-      setAgentModelAssignment(boundAssignment);
-      if (!result.success) {
-        throw new Error(result.message);
-      }
-      setModelActivationState("binding-agent");
-      setProfileMessage("Connecting to agent…");
-      setActiveAiModelId(boundAssignment.modelId ?? verified.modelId);
+      assertCurrent();
+      saveDeviceAgentModelAssignment(readyAssignment);
+      setAgentModelAssignment(readyAssignment);
+      setActiveAiModelId(readyAssignment.modelId ?? verified.modelId);
       if (
         previous?.activeModelInstallationId !== null &&
         previous?.activeModelInstallationId !== undefined &&
@@ -13803,48 +14293,60 @@ function AgentProfileSurface({
       setModelActivationState("active");
       setFailedActivationModelId(null);
       setProfileMessage(`${verified.displayName} is now connected to ${business.name}.`);
+      recordModelActivationDiagnostic({
+        activationRequestId: activation.id,
+        userId: ownerUser?.id ?? accountId,
+        shopId: business.id,
+        agentId: readyAssignment.agentId,
+        modelId: model.modelId,
+        modelSource: model.provider,
+        runtimeType: model.runtimeBackend,
+        runtimeSessionId,
+        online: apiReachable,
+        phaseDurations: {
+          ...phaseDurations,
+          [phase]: Math.round(performance.now() - phaseStartedAt)
+        },
+        failureCode: null
+      });
     } catch (error) {
+      void getModelRuntime().unload(model.id);
+      if (!modelActivationCoordinator.current.isCurrent(activation)) return;
       setModelActivationState("failed");
       setFailedActivationModelId(model.modelId);
-      await getModelRuntime().unload(model.id);
       const message = getErrorMessage(error);
-      if (boundAssignment !== null) {
-        const failedAssignment: DeviceAgentModelAssignment =
-          boundAssignment.readinessStatus === "READY"
-            ? boundAssignment
-            : {
-                ...boundAssignment,
-                readinessStatus: "FAILED",
-                lastSuccessfulInferenceAt: null,
-                lastErrorCode: boundAssignment.lastErrorCode ?? "MODEL_RUNTIME_UNAVAILABLE",
-                updatedAt: new Date().toISOString()
-              };
-        try {
-          boundAssignment = await synchronizeAgentModelAssignment(failedAssignment);
-        } catch {
-          boundAssignment = failedAssignment;
-        }
-        saveDeviceAgentModelAssignment(boundAssignment);
-        setAgentModelAssignment(boundAssignment);
-        setProfileMessage(
-          boundAssignment.readinessStatus === "READY"
-            ? `${model.displayName} passed its local test, but synchronization failed: ${message}`
-            : `${model.displayName} is bound to ${business.name}, but it is not running yet: ${message} Fix the runtime issue, then retry activation.`
-        );
+      if (previous === null) {
+        clearDeviceAgentModelAssignment(business.id, deviceId);
+        setAgentModelAssignment(null);
       } else {
-        if (previous === null) {
-          clearDeviceAgentModelAssignment(business.id, deviceId);
-          setAgentModelAssignment(null);
-        } else {
-          saveDeviceAgentModelAssignment(previous);
-          setAgentModelAssignment(previous);
-        }
-        setProfileMessage(`${message} The previous working model was left unchanged.`);
+        saveDeviceAgentModelAssignment(previous);
+        setAgentModelAssignment(previous);
       }
+      setProfileMessage(`${message} The previous working model was left unchanged.`);
+      recordModelActivationDiagnostic({
+        activationRequestId: activation.id,
+        userId: ownerUser?.id ?? accountId,
+        shopId: business.id,
+        agentId: previous?.agentId ?? business.id,
+        modelId: model.modelId,
+        modelSource: model.provider,
+        runtimeType: model.runtimeBackend,
+        runtimeSessionId,
+        online: apiReachable,
+        phaseDurations: {
+          ...phaseDurations,
+          [phase]: Math.round(performance.now() - phaseStartedAt)
+        },
+        failureCode: error instanceof ModelActivationError ? error.code : "MODEL_RUNTIME_FAILED"
+      });
     } finally {
-      modelRuntimeBusyRef.current = false;
-      setActivatingModelId(null);
-      setModelRuntimeBusy(false);
+      if (modelActivationCoordinator.current.isCurrent(activation)) {
+        modelActivationCoordinator.current.finish(activation);
+        modelRuntimeBusyRef.current = false;
+        activatingInstallationIdRef.current = null;
+        setActivatingModelId(null);
+        setModelRuntimeBusy(false);
+      }
     }
   }
 
@@ -13873,7 +14375,8 @@ function AgentProfileSurface({
       return;
     }
     if (!navigator.onLine) {
-      setProfileMessage("Connect to the internet to activate this backend model.");
+      setModelActivationState("offline_blocked");
+      setProfileMessage("Connect to the internet to activate this model.");
       return;
     }
 
@@ -13881,6 +14384,11 @@ function AgentProfileSurface({
     setModelRuntimeBusy(true);
     setActivatingModelId(model.id);
     try {
+      if (!(await activationApiReachable())) {
+        setModelActivationState("offline_blocked");
+        setProfileMessage("Connect to the internet to activate this model.");
+        return;
+      }
       setProfileMessage(`Setting ${model.label} as the cloud fallback…`);
       await onEnsureRuntimeSession();
       const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
@@ -13900,6 +14408,116 @@ function AgentProfileSurface({
       modelRuntimeBusyRef.current = false;
       setActivatingModelId(null);
       setModelRuntimeBusy(false);
+    }
+  }
+
+  async function testServerBackendModel(model: AiModelSummary) {
+    if (modelRuntimeBusyRef.current || !navigator.onLine) {
+      setProfileMessage("Connect to the internet to test the backend model.");
+      return;
+    }
+    modelRuntimeBusyRef.current = true;
+    setModelRuntimeBusy(true);
+    setActivatingModelId(model.id);
+    try {
+      setProfileMessage(`Testing ${model.label} through real backend inference…`);
+      const result = await postJson<{ healthCheck: ModelRuntimeHealthSummary }>(
+        `/api/agents/${encodeURIComponent(
+          agent.globalAgentId
+        )}/models/${encodeURIComponent(model.id)}/test`,
+        {
+          shopId: business.id,
+          executionTarget: "backend"
+        }
+      );
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "available",
+          latencyMs: result.healthCheck.latencyMs,
+          errorCode: null
+        }
+      }));
+      setProfileMessage(
+        `Model verified. ${model.label} responded from ${
+          result.healthCheck.executionTarget
+        } in ${formatLatency(result.healthCheck.latencyMs)}.`
+      );
+    } catch (error) {
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "unavailable",
+          latencyMs: null,
+          errorCode: error instanceof ApiRequestError ? error.code : null
+        }
+      }));
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      modelRuntimeBusyRef.current = false;
+      setModelRuntimeBusy(false);
+      setActivatingModelId(null);
+    }
+  }
+
+  async function activateServerBackendModel(model: AiModelSummary) {
+    if (modelRuntimeBusyRef.current || !navigator.onLine) {
+      setProfileMessage("Connect to the internet to activate the backend model.");
+      return;
+    }
+    modelRuntimeBusyRef.current = true;
+    setModelRuntimeBusy(true);
+    setActivatingModelId(model.id);
+    setModelActivationState("validating");
+    try {
+      setProfileMessage(`Verifying and activating ${model.label} for ${agent.name}…`);
+      const allowOpenAIFallback =
+        inferencePreferences.cloudConsent && cloudFallbackModelId !== null;
+      const result = await postJson<AgentModelActivationResult>(
+        `/api/agents/${encodeURIComponent(
+          agent.globalAgentId
+        )}/models/${encodeURIComponent(model.id)}/activate`,
+        {
+          shopId: business.id,
+          executionTarget: "backend",
+          executionMode: "LOCAL_FIRST",
+          fallbackPolicy: agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+          permissions: {
+            allowInstalledApp: inferencePreferences.nativePermission,
+            allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed,
+            allowOpenAIFallback
+          },
+          fallbackModelId: allowOpenAIFallback ? cloudFallbackModelId : null
+        }
+      );
+      setActiveAgentModelBinding(result.binding);
+      setServerBackendRuntime((current) => ({
+        ...current,
+        [model.id]: {
+          status: "available",
+          latencyMs: result.healthCheck.latencyMs,
+          errorCode: null
+        }
+      }));
+      setActiveAiModelId(result.binding.modelId);
+      updateAgent({ model: result.binding.modelId });
+      onAgentChange({ ...agent, model: result.binding.modelId });
+      setModelActivationState("active");
+      setFailedActivationModelId(null);
+      setProfileMessage(
+        `${model.label} is active for ${agent.name}. Verified in ${formatLatency(
+          result.healthCheck.latencyMs
+        )}.`
+      );
+    } catch (error) {
+      setModelActivationState("failed");
+      setFailedActivationModelId(model.id);
+      setProfileMessage(`${getErrorMessage(error)} The previous working model remains active.`);
+      await loadCanonicalAgentModelBinding();
+    } finally {
+      modelRuntimeBusyRef.current = false;
+      setModelRuntimeBusy(false);
+      setActivatingModelId(null);
     }
   }
 
@@ -14304,13 +14922,21 @@ function AgentProfileSurface({
           role: draftAgent.role,
           language: draftAgent.language,
           personality: draftAgent.personality,
+          personalityConfig: draftAgent.personalityConfig,
           instructions: draftAgent.instructions,
+          instructionPolicy: draftAgent.instructionPolicy,
           knowledge: draftAgent.knowledge,
           tools: draftAgent.tools,
+          skillBindings: draftAgent.skillBindings,
           integrations: draftAgent.integrations,
           contextScripts: ensureRequiredAgentContextScripts(
             sanitizeContextScripts(draftAgent.contextScripts)
           ),
+          memoryPolicy: draftAgent.memoryPolicy,
+          evaluationPolicy: draftAgent.evaluationPolicy,
+          supportedLanguages: draftAgent.supportedLanguages,
+          businessCategory: draftAgent.businessCategory,
+          publicIntroduction: draftAgent.publicIntroduction,
           status: draftAgent.status
         }
       );
@@ -14323,7 +14949,8 @@ function AgentProfileSurface({
       setContextUnlocked(false);
       setContextPassword("");
       setContextUnlockError("");
-      setProfileMessage("Agent settings and active AI model saved.");
+      setProfileMessage(`Business runtime version ${saved.runtimeVersion} saved.`);
+      void loadAgentRuntimeDetails();
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -14340,29 +14967,21 @@ function AgentProfileSurface({
     }
   }
 
-  function unlockContextScripts() {
-    const password = contextPassword.trim();
-    const savedPassword = localStorage.getItem(contextScriptsPasswordStorageKey);
-
-    if (password.length < 6) {
-      setContextUnlockError("Use at least 6 characters.");
+  async function unlockContextScripts() {
+    const pin = contextPassword.trim();
+    if (!/^\d{4}$/u.test(pin)) {
+      setContextUnlockError("Enter your 4-digit owner PIN.");
       return;
     }
 
-    if (savedPassword === null) {
-      localStorage.setItem(contextScriptsPasswordStorageKey, password);
+    try {
+      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin });
       setContextUnlocked(true);
+      setContextPassword("");
       setContextUnlockError("");
-      return;
+    } catch (error) {
+      setContextUnlockError(getErrorMessage(error));
     }
-
-    if (savedPassword !== password) {
-      setContextUnlockError("Password did not match.");
-      return;
-    }
-
-    setContextUnlocked(true);
-    setContextUnlockError("");
   }
 
   function updateContextScript(index: number, value: string) {
@@ -14491,10 +15110,12 @@ function AgentProfileSurface({
         ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
   const cloudFallbackModel = aiModels.find((model) => model.id === cloudFallbackModelId);
-  const cloudFallbackConsentRequired =
-    cloudFallbackModel !== undefined && !inferencePreferences.cloudConsent;
   const backendModels = visibleAiModels.filter(
     (model) => model.provider === "openai" && model.source === "hosted" && model.format === "remote"
+  );
+  const serverBackendModels = visibleAiModels.filter(
+    (model) =>
+      model.id === "qwen2.5-0.5b-android" || model.capabilities.includes("backend-inference")
   );
   const hasReadyLocalModel =
     activeInstalledModel !== null &&
@@ -14505,6 +15126,7 @@ function AgentProfileSurface({
     const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
     return leftCompatible - rightCompatible || left.displayName.localeCompare(right.displayName);
   });
+  const hasUnsavedRuntimeChanges = JSON.stringify(draftAgent) !== JSON.stringify(agent);
 
   return (
     <main className="agent-profile-surface">
@@ -14599,6 +15221,515 @@ function AgentProfileSurface({
           </label>
         </div>
 
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Business runtime</p>
+            <h3>Readiness and versions</h3>
+            <p>
+              The server binds this agent to {business.name}, compiles policy, retrieves permitted
+              context, and records the exact runtime version used for every turn.
+            </p>
+          </div>
+          <div className="runtime-status-grid" aria-live="polite">
+            <span
+              className={`model-badge ${runtimeReadiness?.ready ? "status-ready" : "status-loading"}`}
+            >
+              {runtimeDetailsLoading
+                ? "Checking…"
+                : runtimeReadiness?.ready
+                  ? "Ready"
+                  : "Needs attention"}
+            </span>
+            <strong>
+              Active version {runtimeReadiness?.runtimeVersion ?? draftAgent.runtimeVersion}
+            </strong>
+            {hasUnsavedRuntimeChanges ? (
+              <span className="runtime-unsaved">Unsaved draft changes</span>
+            ) : null}
+          </div>
+          {runtimeReadiness?.issues.map((issue) => (
+            <p className="security-warning" key={issue.code}>
+              {issue.message}
+            </p>
+          ))}
+          <div className="runtime-version-list" aria-label="Agent runtime version history">
+            {runtimeVersions.slice(0, 5).map((version) => (
+              <article key={version.id}>
+                <div>
+                  <strong>Version {version.version}</strong>
+                  <small>
+                    {version.changeSummary} · {formatDate(version.createdAt)}
+                  </small>
+                </div>
+                {version.version !== runtimeReadiness?.runtimeVersion ? (
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={isEditing || pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction(`runtime-rollback-${version.version}`, () =>
+                        rollbackAgentRuntime(version.version)
+                      )
+                    }
+                  >
+                    Restore as new version
+                  </button>
+                ) : (
+                  <span className="model-badge status-ready">Active</span>
+                )}
+              </article>
+            ))}
+            {!runtimeDetailsLoading && runtimeVersions.length === 0 ? (
+              <p className="shell-note">Save the profile to create its first version.</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Structured personality</p>
+            <h3>Voice and customer care</h3>
+            <p>Style can shape wording, but it cannot override business or security policy.</p>
+          </div>
+          <div className="runtime-field-grid">
+            <label>
+              Tone
+              <select
+                value={draftAgent.personalityConfig.tone}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      tone: event.target.value as AgentPersonality["tone"]
+                    }
+                  })
+                }
+              >
+                <option value="warm">Warm</option>
+                <option value="neutral">Neutral</option>
+                <option value="direct">Direct</option>
+                <option value="formal">Formal</option>
+              </select>
+            </label>
+            <label>
+              Formality
+              <select
+                value={draftAgent.personalityConfig.formality}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      formality: event.target.value as AgentPersonality["formality"]
+                    }
+                  })
+                }
+              >
+                <option value="casual">Casual</option>
+                <option value="balanced">Balanced</option>
+                <option value="formal">Formal</option>
+              </select>
+            </label>
+            <label>
+              Response length
+              <select
+                value={draftAgent.personalityConfig.responseLength}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      responseLength: event.target.value as AgentPersonality["responseLength"]
+                    }
+                  })
+                }
+              >
+                <option value="brief">Brief</option>
+                <option value="balanced">Balanced</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+            <label>
+              Selling style
+              <select
+                value={draftAgent.personalityConfig.sellingStyle}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    personalityConfig: {
+                      ...draftAgent.personalityConfig,
+                      sellingStyle: event.target.value as AgentPersonality["sellingStyle"]
+                    }
+                  })
+                }
+              >
+                <option value="consultative">Consultative</option>
+                <option value="informative">Informative</option>
+                <option value="proactive">Proactive</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Public introduction
+            <textarea
+              value={draftAgent.publicIntroduction}
+              disabled={!isEditing}
+              rows={2}
+              onChange={(event) => updateAgent({ publicIntroduction: event.target.value })}
+            />
+          </label>
+          <label>
+            Additional style guidance
+            <textarea
+              value={draftAgent.personalityConfig.additionalGuidance}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  personality: event.target.value,
+                  personalityConfig: {
+                    ...draftAgent.personalityConfig,
+                    additionalGuidance: event.target.value
+                  }
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Structured business policy</p>
+            <h3>Sales, pricing, and escalation</h3>
+            <p>These rules are enforced server-side before a tool proposal can run.</p>
+          </div>
+          <div className="runtime-field-grid">
+            <label>
+              Maximum discount (%)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={draftAgent.instructionPolicy.maximumDiscountPercent}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    instructionPolicy: {
+                      ...draftAgent.instructionPolicy,
+                      maximumDiscountPercent: Number(event.target.value)
+                    }
+                  })
+                }
+              />
+            </label>
+            <label>
+              Maximum credit days
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={draftAgent.instructionPolicy.maximumCreditDays}
+                disabled={!isEditing || !draftAgent.instructionPolicy.creditSalesAllowed}
+                onChange={(event) =>
+                  updateAgent({
+                    instructionPolicy: {
+                      ...draftAgent.instructionPolicy,
+                      maximumCreditDays: Number(event.target.value)
+                    }
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="runtime-policy-toggles">
+            {(
+              [
+                { key: "negotiationAllowed", label: "Allow negotiation" },
+                { key: "creditSalesAllowed", label: "Allow credit sales" },
+                { key: "substituteOutOfStockAllowed", label: "Allow stock substitutions" },
+                { key: "catalogueModificationAllowed", label: "Allow catalogue changes" },
+                { key: "externalMessagingAllowed", label: "Allow external messaging" }
+              ] as const
+            ).map(({ key, label }) => (
+              <label className="checkbox-row" key={key}>
+                <input
+                  type="checkbox"
+                  disabled={!isEditing}
+                  checked={Boolean(draftAgent.instructionPolicy[key as keyof AgentInstructions])}
+                  onChange={(event) =>
+                    updateAgent({
+                      instructionPolicy: {
+                        ...draftAgent.instructionPolicy,
+                        [key]: event.target.checked
+                      }
+                    })
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <label>
+            General operating rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.generalOperatingRules.join("\n")}
+              disabled={!isEditing}
+              rows={4}
+              onChange={(event) =>
+                updateAgent({
+                  instructions: event.target.value,
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    generalOperatingRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+          <label>
+            Pricing rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.pricingRules.join("\n")}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    pricingRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+          <label>
+            Escalation rules (one per line)
+            <textarea
+              value={draftAgent.instructionPolicy.escalationRules.join("\n")}
+              disabled={!isEditing}
+              rows={3}
+              onChange={(event) =>
+                updateAgent({
+                  instructionPolicy: {
+                    ...draftAgent.instructionPolicy,
+                    escalationRules: splitMultilineInput(event.target.value)
+                  }
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Context manifest and executable skills</p>
+            <h3>Runtime access</h3>
+            <p>
+              Context is retrieved only when relevant and authorized. Skill availability is
+              independent of the active model.
+            </p>
+          </div>
+          <div className="runtime-context-list">
+            {runtimeContextSources.map((source) => (
+              <article key={source.id}>
+                <div>
+                  <strong>{source.title}</strong>
+                  <small>
+                    {source.type} · {source.sensitivity} · version {source.version}
+                  </small>
+                </div>
+                <span className={`model-badge ${source.status === "active" ? "status-ready" : ""}`}>
+                  {source.status}
+                </span>
+              </article>
+            ))}
+            {!runtimeDetailsLoading && runtimeContextSources.length === 0 ? (
+              <p className="shell-note">No authorized context sources are available yet.</p>
+            ) : null}
+          </div>
+          <div className="runtime-skill-list">
+            {draftAgent.skillBindings.map((binding) => (
+              <label className="checkbox-row" key={binding.skillId}>
+                <input
+                  type="checkbox"
+                  checked={binding.enabled}
+                  disabled={!isEditing}
+                  onChange={(event) =>
+                    updateAgent({
+                      skillBindings: draftAgent.skillBindings.map((candidate) =>
+                        candidate.skillId === binding.skillId
+                          ? { ...candidate, enabled: event.target.checked }
+                          : candidate
+                      )
+                    })
+                  }
+                />
+                <span>
+                  <strong>{binding.skillId}</strong>
+                  <small>
+                    v{binding.version} · confirmation {binding.requiredConfirmationLevel}
+                  </small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="record-form agent-runtime-panel">
+          <div className="section-heading">
+            <p className="eyebrow">Memory and evaluation</p>
+            <h3>Retention, feedback, and corrections</h3>
+            <p>
+              Memory is bounded by shop and policy. Evaluation records outcomes, not hidden
+              reasoning.
+            </p>
+          </div>
+          <div className="runtime-policy-toggles">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.memoryPolicy.ownerCorrectionsEnabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    memoryPolicy: {
+                      ...draftAgent.memoryPolicy,
+                      ownerCorrectionsEnabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Remember active owner corrections
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.memoryPolicy.customerConversationMemoryEnabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    memoryPolicy: {
+                      ...draftAgent.memoryPolicy,
+                      customerConversationMemoryEnabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Customer conversation memory (consent required)
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draftAgent.evaluationPolicy.enabled}
+                disabled={!isEditing}
+                onChange={(event) =>
+                  updateAgent({
+                    evaluationPolicy: {
+                      ...draftAgent.evaluationPolicy,
+                      enabled: event.target.checked
+                    }
+                  })
+                }
+              />
+              Record privacy-safe evaluation events
+            </label>
+          </div>
+          <div className="runtime-evaluation-summary">
+            <strong>{evaluationSummary?.total ?? 0} evaluated events</strong>
+            <span>{evaluationSummary?.success ?? 0} successful</span>
+            <span>{evaluationSummary?.blocked ?? 0} policy-blocked</span>
+            <span>{evaluationSummary?.failure ?? 0} failed</span>
+          </div>
+          <div className="runtime-context-list" aria-label="Recent agent issues">
+            {evaluationSummary?.recentEvents
+              .filter((event) => event.outcome === "failure" || event.outcome === "blocked")
+              .slice(0, 5)
+              .map((event) => (
+                <article key={event.id}>
+                  <div>
+                    <strong>{event.eventType.replaceAll("_", " ")}</strong>
+                    <small>
+                      Runtime {event.runtimeVersion} · {event.reason ?? "No reason recorded"} ·{" "}
+                      {formatDate(event.createdAt)}
+                    </small>
+                  </div>
+                  <span className="model-badge">{event.outcome}</span>
+                </article>
+              ))}
+          </div>
+          <label>
+            Owner correction
+            <textarea
+              value={correctionDraft}
+              rows={3}
+              placeholder="Example: Never offer free delivery outside Nairobi."
+              onChange={(event) => setCorrectionDraft(event.target.value)}
+            />
+          </label>
+          <div className="runtime-field-grid">
+            <label>
+              Correction type
+              <select
+                value={correctionCategory}
+                onChange={(event) =>
+                  setCorrectionCategory(event.target.value as AgentOwnerCorrection["category"])
+                }
+              >
+                <option value="instruction">Instruction</option>
+                <option value="business_fact">Business fact</option>
+                <option value="memory">Memory</option>
+                <option value="response">Response</option>
+              </select>
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={promoteCorrection}
+                onChange={(event) => setPromoteCorrection(event.target.checked)}
+              />
+              Promote to versioned instructions
+            </label>
+          </div>
+          <button
+            type="button"
+            disabled={correctionDraft.trim().length === 0 || pendingProfileAction !== null}
+            onClick={() => void runProfileAction("agent-owner-correction", submitOwnerCorrection)}
+          >
+            Save correction
+          </button>
+          <div className="runtime-correction-list">
+            {ownerCorrections.slice(0, 5).map((correction) => (
+              <article key={correction.id}>
+                <div>
+                  <strong>{correction.category.replace("_", " ")}</strong>
+                  <p>{correction.correction}</p>
+                  <small>
+                    Runtime {correction.runtimeVersion}
+                    {correction.promotedToInstruction ? " · promoted" : " · memory only"}
+                  </small>
+                </div>
+                {correction.status === "active" ? (
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction(`disable-correction-${correction.id}`, () =>
+                        disableOwnerCorrection(correction.id)
+                      )
+                    }
+                  >
+                    Disable
+                  </button>
+                ) : (
+                  <span className="model-badge">Disabled</span>
+                )}
+              </article>
+            ))}
+          </div>
+        </div>
+
         <div className="record-form agent-model-panel">
           <div className="section-heading">
             <p className="eyebrow">Device model first · cloud fallback second</p>
@@ -14610,32 +15741,57 @@ function AgentProfileSurface({
               {profileMessage}
             </p>
           ) : null}
+          {modelRuntimeBusy && activatingModelId !== null ? (
+            <button className="secondary" type="button" onClick={cancelModelActivation}>
+              Cancel activation
+            </button>
+          ) : null}
           {activeInstalledModel === null ? (
             <article className="agent-model-current">
               <div>
-                <span className="model-badge">
-                  {activeAiModelId === "sokoclaw-local" ? "Compatibility fallback" : "Backend"}
-                </span>
+                <span className="model-badge">Current model</span>
                 <span
-                  className={`model-badge ${cloudFallbackConsentRequired ? "status-loading" : "status-ready"}`}
+                  className={`model-badge status-${activeAgentModelBinding?.status ?? "failed"}`}
                 >
-                  {cloudFallbackConsentRequired ? "Consent required" : "Active"}
+                  {activeAgentModelBinding?.status === "active"
+                    ? `Active for ${agent.name}`
+                    : "Not configured"}
                 </span>
               </div>
-              <h4>{activeAiModel?.label ?? activeAiModelId}</h4>
+              <h4>
+                {activeAgentModelBinding === null
+                  ? "No verified model"
+                  : (activeAiModel?.label ?? activeAgentModelBinding.modelId)}
+              </h4>
               <p>
-                {activeAiModel?.description ??
-                  (activeAiModelId === "sokoclaw-local"
-                    ? "Deterministic agent behavior is active until a real inference provider is selected."
-                    : "This model is managed by the backend inference runtime.")}
+                {activeAgentModelBinding === null
+                  ? "This agent does not have a working model yet. Test and activate one below."
+                  : `Running on: ${formatExecutionTarget(activeAgentModelBinding.executionTarget)}`}
               </p>
               <small>
-                {cloudFallbackConsentRequired
-                  ? "Hosted inference remains off until you explicitly enable it on this device."
-                  : activeAiModelId === "sokoclaw-local"
-                    ? "This compatibility profile is not a general-purpose language model."
-                    : `Backend model ID: ${activeAiModelId}`}
+                {activeAgentModelBinding?.lastVerifiedAt === null ||
+                activeAgentModelBinding?.lastVerifiedAt === undefined
+                  ? "Not verified"
+                  : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
               </small>
+              <div className="ai-model-card-actions">
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={activeAgentModelBinding === null || modelRuntimeBusy}
+                  onClick={() => {
+                    const model = aiModels.find(
+                      (candidate) => candidate.id === activeAgentModelBinding?.modelId
+                    );
+                    if (model !== undefined) void testServerBackendModel(model);
+                  }}
+                >
+                  Test model
+                </button>
+                <button type="button" onClick={() => void openModelLibrary()}>
+                  Switch model
+                </button>
+              </div>
             </article>
           ) : (
             <article className="agent-model-current">
@@ -14674,156 +15830,204 @@ function AgentProfileSurface({
               <small>Cloud fallback: {cloudFallbackModel?.label ?? "Not configured"}</small>
             </article>
           )}
-          <section className="browser-model-control" aria-label="Browser-local inference">
-            <div>
-              <strong>Browser-local inference</strong>
-              <p>
-                Run supported short chats on this device. The starter model downloads only after you
-                turn this on; requests that need server tools stay on the confirmation-gated server
-                route.
-              </p>
-            </div>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={browserInferenceState?.settings?.enabled === true}
-                disabled={!browserLocalInferenceDeploymentEnabled || modelRuntimeBusy}
-                onChange={(event) => void setBrowserInferenceEnabled(event.target.checked)}
-              />
-              Use the browser model on this device
-            </label>
-            <small>
-              {browserLocalInferenceDeploymentEnabled
-                ? browserInferenceState?.capability.supported === true
-                  ? `${browserInferenceState.capability.browser.name} · ${browserInferenceState.capability.backend.toUpperCase()} · ${browserInferenceState.capability.deviceTier} device`
-                  : (browserInferenceState?.capability.reasons[0] ??
-                    "Checking device compatibility…")
-                : "Disabled for this deployment. Set VITE_BROWSER_LOCAL_INFERENCE_ENABLED=true to test it."}
-            </small>
-            <small>
-              Status:{" "}
-              {browserModelProgress === null
-                ? (browserInferenceState?.settings?.status ?? "Not downloaded")
-                : `${browserModelProgress.status} ${Math.round(browserModelProgress.percent)}%`}
-              {" · "}SmolLM2 360M · about 400 MB download · about 850 MB working memory
-            </small>
-            <div className="ai-model-card-actions">
-              {browserModelProgress !== null ? (
+          <details className="agent-model-advanced">
+            <summary>Advanced routing</summary>
+            <section className="browser-model-control" aria-label="Browser-local inference">
+              <div>
+                <strong>Browser-local inference</strong>
+                <p>
+                  Run supported short chats on this device. A compatible model downloads only after
+                  you turn this on; requests that need server tools stay on the confirmation-gated
+                  server route.
+                </p>
+              </div>
+              {browserLocalInferenceDeploymentEnabled ? (
+                <label>
+                  Browser model
+                  <select
+                    value={selectedBrowserModelId}
+                    disabled={modelRuntimeBusy || browserInferenceState?.settings?.enabled === true}
+                    onChange={(event) => setSelectedBrowserModelId(event.target.value)}
+                  >
+                    {browserModelOptions.map((option) => (
+                      <option
+                        key={option.model.id}
+                        value={option.model.id}
+                        disabled={!option.compatible}
+                      >
+                        {option.model.displayName}
+                        {option.compatible ? "" : ` — ${option.reason ?? "incompatible"}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {browserLocalInferenceDeploymentEnabled ? (
+                <label className="browser-model-toggle">
+                  <input
+                    type="checkbox"
+                    checked={browserInferenceState?.settings?.enabled === true}
+                    disabled={modelRuntimeBusy}
+                    onChange={(event) => void setBrowserInferenceEnabled(event.target.checked)}
+                  />
+                  Use the browser model on this device
+                </label>
+              ) : (
+                <p>Browser-local inference is unavailable in this deployment</p>
+              )}
+              <small>
+                {browserLocalInferenceDeploymentEnabled
+                  ? browserInferenceState?.capability.supported === true
+                    ? `${browserInferenceState.capability.browser.name} · ${browserInferenceState.capability.backend.toUpperCase()} · ${browserInferenceState.capability.deviceTier} device`
+                    : (browserInferenceState?.capability.reasons[0] ??
+                      "Checking device compatibility…")
+                  : "Disabled by deployment"}
+              </small>
+              <small>
+                Status:{" "}
+                {browserModelProgress === null
+                  ? (browserInferenceState?.settings?.status ?? "Not downloaded")
+                  : `${browserModelProgress.status} ${Math.round(browserModelProgress.percent)}%`}
+                {selectedBrowserModel === null
+                  ? ""
+                  : ` · ${selectedBrowserModel.displayName} · about ${Math.round(
+                      selectedBrowserModel.approximateDownloadBytes / 1_000_000
+                    )} MB download · about ${Math.round(
+                      selectedBrowserModel.approximateRuntimeMemoryBytes / 1_000_000
+                    )} MB working memory`}
+              </small>
+              <small>
+                Database workflow:{" "}
+                {syncedBrowserInference === null
+                  ? "Not synchronized"
+                  : `${syncedBrowserInference.enabled ? "Enabled" : "Disabled"} · ${
+                      syncedBrowserInference.readinessStatus
+                    } · ${syncedBrowserInference.runtimeContract?.adapterId ?? "no adapter"} ${
+                      syncedBrowserInference.runtimeContract?.adapterVersion ?? ""
+                    }`}
+              </small>
+              <small>
+                Only device, model, runtime-contract, readiness, and failure metadata are
+                synchronized. Prompts and generated replies remain outside this record.
+              </small>
+              <div className="ai-model-card-actions">
+                {browserModelProgress !== null ? (
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => {
+                      cancelBrowserModelLoad();
+                      setProfileMessage(
+                        "Browser model download cancelled. Partial engine cache can be removed below."
+                      );
+                    }}
+                  >
+                    Cancel download
+                  </button>
+                ) : null}
                 <button
                   className="secondary"
                   type="button"
-                  onClick={() => {
-                    cancelBrowserModelLoad();
-                    setProfileMessage(
-                      "Browser model download cancelled. Partial engine cache can be removed below."
-                    );
-                  }}
+                  disabled={
+                    modelRuntimeBusy ||
+                    browserInferenceState?.settings?.selectedModelId === null ||
+                    browserInferenceState?.settings === null ||
+                    browserInferenceState === null
+                  }
+                  onClick={() => void deleteBrowserModel()}
                 >
-                  Cancel download
+                  Delete browser model
                 </button>
-              ) : null}
-              <button
-                className="secondary"
-                type="button"
-                disabled={
-                  modelRuntimeBusy ||
-                  browserInferenceState?.settings?.selectedModelId === null ||
-                  browserInferenceState?.settings === null ||
-                  browserInferenceState === null
+              </div>
+            </section>
+            <section className="browser-model-control" aria-label="Client-first inference routing">
+              <div>
+                <strong>Client-first route permissions</strong>
+                <p>
+                  Soko uses the downloaded GGUF model through its llama.cpp-compatible harness
+                  first. Another owner device or OpenAI can only be used as an allowed fallback.
+                  Server tools remain confirmation-gated.
+                </p>
+              </div>
+              <label className="browser-model-toggle">
+                <input
+                  type="checkbox"
+                  checked={inferencePreferences.nativePermission}
+                  disabled={!clientInferenceFeatureFlags.nativeBridge || modelRuntimeBusy}
+                  onChange={(event) =>
+                    updateInferencePreferences({ nativePermission: event.target.checked })
+                  }
+                />
+                Allow installed-app GGUF inference
+              </label>
+              <small>
+                Requires the trusted Soko installed-app bridge. Ordinary browsers reject GGUF
+                activation without loading the model.
+              </small>
+              <label className="browser-model-toggle">
+                <input
+                  type="checkbox"
+                  checked={inferencePreferences.ownerNodeAllowed}
+                  disabled={!clientInferenceFeatureFlags.ownerNode || modelRuntimeBusy}
+                  onChange={(event) =>
+                    updateInferencePreferences({ ownerNodeAllowed: event.target.checked })
+                  }
+                />
+                Allow another signed-in shop device
+              </label>
+              <small>
+                Prompts may be relayed only to an authenticated device registered for this shop and
+                model.
+              </small>
+              <label className="browser-model-toggle">
+                <input
+                  type="checkbox"
+                  checked={inferencePreferences.cloudConsent}
+                  disabled={!clientInferenceFeatureFlags.cloudFallback || modelRuntimeBusy}
+                  onChange={(event) =>
+                    updateInferencePreferences({ cloudConsent: event.target.checked })
+                  }
+                />
+                Allow explicitly selected OpenAI fallback
+              </label>
+              <small>
+                Off by default. OpenAI is used only after you select an available fallback model and
+                the downloaded model cannot process the request. API credentials remain server-only.
+              </small>
+            </section>
+            <label>
+              Execution mode
+              <select
+                value={agentModelAssignment?.preferredExecutionMode ?? "LOCAL_FIRST"}
+                disabled={agentModelAssignment === null || modelRuntimeBusy}
+                onChange={(event) =>
+                  void updateAgentModelPolicy({
+                    preferredExecutionMode: event.target.value as PreferredExecutionMode
+                  }).catch((error) => setProfileMessage(getErrorMessage(error)))
                 }
-                onClick={() => void deleteBrowserModel()}
               >
-                Delete browser model
-              </button>
-            </div>
-          </section>
-          <section className="browser-model-control" aria-label="Client-first inference routing">
-            <div>
-              <strong>Client-first route permissions</strong>
-              <p>
-                Soko uses the downloaded GGUF model through its llama.cpp-compatible harness first.
-                Another owner device or OpenAI can only be used as an allowed fallback. Server tools
-                remain confirmation-gated.
-              </p>
-            </div>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={inferencePreferences.nativePermission}
-                disabled={!clientInferenceFeatureFlags.nativeBridge || modelRuntimeBusy}
-                onChange={(event) =>
-                  updateInferencePreferences({ nativePermission: event.target.checked })
-                }
-              />
-              Allow installed-app GGUF inference
+                <option value="LOCAL_ONLY">Local only</option>
+                <option value="LOCAL_FIRST">Local first</option>
+              </select>
             </label>
-            <small>
-              Requires the trusted Soko installed-app bridge. Ordinary browsers reject GGUF
-              activation without loading the model.
-            </small>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={inferencePreferences.ownerNodeAllowed}
-                disabled={!clientInferenceFeatureFlags.ownerNode || modelRuntimeBusy}
+            <label>
+              Fallback policy
+              <select
+                value={agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"}
+                disabled={agentModelAssignment === null || modelRuntimeBusy}
                 onChange={(event) =>
-                  updateInferencePreferences({ ownerNodeAllowed: event.target.checked })
+                  void updateAgentModelPolicy({
+                    fallbackPolicy: event.target.value as AgentModelFallbackPolicy
+                  }).catch((error) => setProfileMessage(getErrorMessage(error)))
                 }
-              />
-              Allow another signed-in shop device
+              >
+                <option value="NEVER">Never</option>
+                <option value="WHEN_LOCAL_UNAVAILABLE">When local is unavailable</option>
+                <option value="WHEN_LOCAL_FAILS">When local fails</option>
+                <option value="WHEN_CONTEXT_EXCEEDED">When context is exceeded</option>
+              </select>
             </label>
-            <small>
-              Prompts may be relayed only to an authenticated device registered for this shop and
-              model.
-            </small>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={inferencePreferences.cloudConsent}
-                disabled={!clientInferenceFeatureFlags.cloudFallback || modelRuntimeBusy}
-                onChange={(event) =>
-                  updateInferencePreferences({ cloudConsent: event.target.checked })
-                }
-              />
-              Allow explicitly selected OpenAI fallback
-            </label>
-            <small>
-              Off by default. OpenAI is used only after you select an available fallback model and
-              the downloaded model cannot process the request. API credentials remain server-only.
-            </small>
-          </section>
-          <label>
-            Execution mode
-            <select
-              value={agentModelAssignment?.preferredExecutionMode ?? "LOCAL_FIRST"}
-              disabled={agentModelAssignment === null || modelRuntimeBusy}
-              onChange={(event) =>
-                void updateAgentModelPolicy({
-                  preferredExecutionMode: event.target.value as PreferredExecutionMode
-                }).catch((error) => setProfileMessage(getErrorMessage(error)))
-              }
-            >
-              <option value="LOCAL_ONLY">Local only</option>
-              <option value="LOCAL_FIRST">Local first</option>
-            </select>
-          </label>
-          <label>
-            Fallback policy
-            <select
-              value={agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"}
-              disabled={agentModelAssignment === null || modelRuntimeBusy}
-              onChange={(event) =>
-                void updateAgentModelPolicy({
-                  fallbackPolicy: event.target.value as AgentModelFallbackPolicy
-                }).catch((error) => setProfileMessage(getErrorMessage(error)))
-              }
-            >
-              <option value="NEVER">Never</option>
-              <option value="WHEN_LOCAL_UNAVAILABLE">When local is unavailable</option>
-              <option value="WHEN_LOCAL_FAILS">When local fails</option>
-              <option value="WHEN_CONTEXT_EXCEEDED">When context is exceeded</option>
-            </select>
-          </label>
+          </details>
           <div className="ai-model-card-actions">
             <button
               type="button"
@@ -14961,6 +16165,77 @@ function AgentProfileSurface({
             </div>
           ) : (
             <>
+              <section aria-label="Soko backend models">
+                <div className="section-subheading">
+                  <h4>Soko backend models</h4>
+                  <p>
+                    Available means the deployed runtime passed a real model probe. Active means
+                    this agent has a persisted binding that passed real backend inference.
+                  </p>
+                </div>
+                <div className="ai-model-catalog">
+                  {serverBackendModels.map((model) => {
+                    const activeForAgent =
+                      activeAgentModelBinding?.status === "active" &&
+                      activeAgentModelBinding.modelId === model.id &&
+                      activeAgentModelBinding.executionTarget === "backend";
+                    const runtime = serverBackendRuntime[model.id];
+                    const runtimeLabel =
+                      runtime?.status === "available"
+                        ? "Available"
+                        : runtime?.status === "unavailable"
+                          ? "Unavailable"
+                          : "Not verified";
+                    return (
+                      <article className="ai-model-card" key={`backend:${model.id}`}>
+                        <div>
+                          <p className="eyebrow">
+                            Backend · {activeForAgent ? `Active for ${agent.name}` : runtimeLabel}
+                          </p>
+                          <h4>{model.label}</h4>
+                          <p>{model.description}</p>
+                          <small>{model.capabilities.join(" · ")}</small>
+                          {runtime?.status === "unavailable" ? (
+                            <small role="status">
+                              {runtime.errorCode === "MODEL_NOT_INSTALLED"
+                                ? "Model not installed on the inference service."
+                                : "Backend model unavailable. The Soko inference service cannot currently be reached."}
+                            </small>
+                          ) : runtime?.status === "available" ? (
+                            <small>
+                              Model verified in {formatLatency(runtime.latencyMs ?? 0)}.
+                            </small>
+                          ) : null}
+                        </div>
+                        <div className="ai-model-card-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            disabled={modelRuntimeBusy}
+                            onClick={() => void testServerBackendModel(model)}
+                          >
+                            {activatingModelId === model.id ? "Testing…" : "Test model"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={modelRuntimeBusy || activeForAgent}
+                            onClick={() => void activateServerBackendModel(model)}
+                          >
+                            {activeForAgent
+                              ? `Active for ${agent.name}`
+                              : activatingModelId === model.id
+                                ? "Activating…"
+                                : "Use with agent"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {serverBackendModels.length === 0 ? (
+                    <p>No server-managed backend model matches this search.</p>
+                  ) : null}
+                </div>
+              </section>
               <section aria-label="Backend models">
                 <div className="section-subheading">
                   <h4>Cloud fallback models</h4>
@@ -15239,6 +16514,7 @@ function AgentProfileSurface({
                               <button
                                 className="secondary"
                                 type="button"
+                                disabled={modelRuntimeBusy}
                                 onClick={() => void deleteDeviceModel(localModel)}
                               >
                                 Remove
@@ -15329,6 +16605,7 @@ function AgentProfileSurface({
                         <button
                           className="secondary"
                           type="button"
+                          disabled={modelRuntimeBusy}
                           onClick={() => void deleteDeviceModel(model)}
                         >
                           Remove
@@ -16076,8 +17353,8 @@ function AgentProfileSurface({
 
         <div className="record-form">
           <div className="section-heading">
-            <p className="eyebrow">Behavior</p>
-            <h3>Personality and instructions</h3>
+            <p className="eyebrow">Compatibility fields</p>
+            <h3>Advanced owner guidance</h3>
           </div>
           <label>
             Personality
@@ -16100,8 +17377,8 @@ function AgentProfileSurface({
 
         <div className="record-form">
           <div className="section-heading">
-            <p className="eyebrow">Capabilities</p>
-            <h3>Knowledge, tools, integrations</h3>
+            <p className="eyebrow">Display labels</p>
+            <h3>Advanced knowledge and integration labels</h3>
           </div>
           <label>
             Knowledge
@@ -16145,16 +17422,23 @@ function AgentProfileSurface({
           {!contextUnlocked ? (
             <div className="context-unlock-panel">
               <label>
-                Advanced password
+                Owner PIN
                 <input
                   value={contextPassword}
                   disabled={!isEditing}
                   type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  autoComplete="current-password"
                   onChange={(event) => setContextPassword(event.target.value)}
-                  placeholder="Enter or set password"
+                  placeholder="4-digit PIN"
                 />
               </label>
-              <button type="button" onClick={unlockContextScripts} disabled={!isEditing}>
+              <button
+                type="button"
+                onClick={() => void unlockContextScripts()}
+                disabled={!isEditing}
+              >
                 Unlock context files
               </button>
               {contextUnlockError.length > 0 ? (
@@ -16368,6 +17652,7 @@ interface ChatSurfaceProps {
   onEditMessage: (messageId: string, text: string) => void;
   onDeleteMessage: (messageId: string) => void;
   onReactMessage: (messageId: string, reaction: string | null) => void;
+  onAgentFeedback: (messageId: string, correct: boolean) => void;
   onForwardMessage: (messageId: string, conversationId: string) => void;
   onRetryMessages: () => void;
   onNavigate: (view: ShellView) => void;
@@ -16453,6 +17738,7 @@ function ChatSurface({
   onEditMessage,
   onDeleteMessage,
   onReactMessage,
+  onAgentFeedback,
   onForwardMessage,
   onRetryMessages,
   onNavigate,
@@ -16481,6 +17767,8 @@ function ChatSurface({
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const defaultMessageWindow = useRef(detectCapabilitySettings().messageWindowSize).current;
+  const [messageWindowSize, setMessageWindowSize] = useState(defaultMessageWindow);
   const [inboxSearch, setInboxSearch] = useState("");
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
@@ -16518,6 +17806,8 @@ function ChatSurface({
     );
   });
   const visibleMessages = messages.filter((message) => !isRedundantAgentErrorMessage(message.body));
+  const hiddenMessageCount = Math.max(0, visibleMessages.length - messageWindowSize);
+  const windowedMessages = visibleMessages.slice(hiddenMessageCount);
 
   function openSmsHandoff(recipient: string, label: string) {
     let normalizedCandidate = "";
@@ -16603,6 +17893,18 @@ function ChatSurface({
   }, [workspaceOpen, onCloseWorkspace]);
 
   useEffect(() => {
+    setMessageWindowSize(defaultMessageWindow);
+  }, [activeConversationId, defaultMessageWindow]);
+
+  useEffect(() => {
+    recordReadiness("composer");
+  }, []);
+
+  useEffect(() => {
+    if (messages.length > 0) recordReadiness("chat-first-message");
+  }, [messages.length]);
+
+  useEffect(() => {
     function closeMessageMenu(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setActiveMessageMenuId(null);
@@ -16624,7 +17926,7 @@ function ChatSurface({
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeView, messages.length, mode, workspaceCardView]);
+  }, [activeConversationId, messages.length, workspaceCardView]);
 
   return (
     <div className={`chat-surface ${isInboxOpen ? "inbox-open" : ""}`}>
@@ -16775,7 +18077,16 @@ function ChatSurface({
           </button>
         </header>
         <div className="message-list" aria-live="polite" ref={messageListRef}>
-          {visibleMessages.map((message, index) => (
+          {hiddenMessageCount > 0 ? (
+            <button
+              className="load-older-messages"
+              type="button"
+              onClick={() => setMessageWindowSize((size) => size + defaultMessageWindow)}
+            >
+              Load {Math.min(hiddenMessageCount, defaultMessageWindow)} older messages
+            </button>
+          ) : null}
+          {windowedMessages.map((message, index) => (
             <Fragment key={message.id}>
               <article
                 className={`message ${message.author}`}
@@ -16862,6 +18173,8 @@ function ChatSurface({
                           <img
                             src={attachment.dataUrl}
                             alt={attachment.name}
+                            width={160}
+                            height={120}
                             loading="lazy"
                             decoding="async"
                           />
@@ -16893,6 +18206,24 @@ function ChatSurface({
                 ) : null}
                 {!message.deletedAt && !message.id.startsWith("welcome") ? (
                   <div className="message-actions">
+                    {message.author === "sokoclaw" ? (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Mark agent response correct"
+                          onClick={() => onAgentFeedback(message.id, true)}
+                        >
+                          Correct
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Flag agent response as incorrect"
+                          onClick={() => onAgentFeedback(message.id, false)}
+                        >
+                          Incorrect
+                        </button>
+                      </>
+                    ) : null}
                     <button type="button" onClick={() => onReply(message.id)}>
                       Reply
                     </button>
@@ -18641,11 +19972,30 @@ function EmptyStateSurface({
   );
 }
 
+interface ModelActivationDiagnostic {
+  activationRequestId: string;
+  userId: string;
+  shopId: string;
+  agentId: string;
+  modelId: string;
+  modelSource: string;
+  runtimeType: string;
+  runtimeSessionId: string | null;
+  online: boolean;
+  phaseDurations: Partial<Record<ModelActivationState, number>>;
+  failureCode: string | null;
+}
+
+function recordModelActivationDiagnostic(diagnostic: ModelActivationDiagnostic): void {
+  console.info("model_activation", diagnostic);
+}
+
 async function postJson<TResponse>(
   path: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {}
 ): Promise<TResponse> {
-  const response = await apiFetch<TResponse>(path, { method: "POST", body });
+  const response = await apiFetch<TResponse>(path, { method: "POST", body, ...options });
   invalidateApiCacheForMutation(path);
   return response;
 }
@@ -18659,8 +20009,12 @@ async function patchJson<TResponse>(
   return response;
 }
 
-async function putJson<TResponse>(path: string, body: Record<string, unknown>): Promise<TResponse> {
-  const response = await apiFetch<TResponse>(path, { method: "PUT", body });
+async function putJson<TResponse>(
+  path: string,
+  body: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {}
+): Promise<TResponse> {
+  const response = await apiFetch<TResponse>(path, { method: "PUT", body, ...options });
   invalidateApiCacheForMutation(path);
   return response;
 }
@@ -18674,8 +20028,14 @@ async function deleteJson<TResponse>(
   return response;
 }
 
-async function getJson<TResponse>(path: string): Promise<TResponse> {
-  return getCachedJson<TResponse>(path);
+async function getJson<TResponse>(
+  path: string,
+  onBackgroundUpdate?: (value: TResponse) => void
+): Promise<TResponse> {
+  return getCachedJson<TResponse>(
+    path,
+    onBackgroundUpdate === undefined ? {} : { onBackgroundUpdate }
+  );
 }
 
 function useInstallPrompt() {
@@ -18815,8 +20175,30 @@ function readStoredAgent(): AgentSettings | null {
       Array.isArray(parsed.tools) &&
       Array.isArray(parsed.integrations)
     ) {
+      const fallbackPersonality = defaultWebAgentPersonality(parsed.language, parsed.personality);
+      const fallbackInstructions = defaultWebAgentInstructions(parsed.instructions);
       return {
         ...parsed,
+        personalityConfig: parsed.personalityConfig ?? fallbackPersonality,
+        instructionPolicy: parsed.instructionPolicy ?? fallbackInstructions,
+        skillBindings: Array.isArray(parsed.skillBindings)
+          ? parsed.skillBindings
+          : defaultWebAgentSkills(),
+        memoryPolicy: parsed.memoryPolicy ?? defaultWebAgentMemoryPolicy(),
+        evaluationPolicy: parsed.evaluationPolicy ?? defaultWebAgentEvaluationPolicy(),
+        supportedLanguages: Array.isArray(parsed.supportedLanguages)
+          ? parsed.supportedLanguages
+          : [parsed.language],
+        businessCategory:
+          typeof parsed.businessCategory === "string" ? parsed.businessCategory : "general",
+        publicIntroduction:
+          typeof parsed.publicIntroduction === "string"
+            ? parsed.publicIntroduction
+            : parsed.description,
+        runtimeVersion:
+          typeof parsed.runtimeVersion === "number" && parsed.runtimeVersion > 0
+            ? parsed.runtimeVersion
+            : 1,
         contextScripts: Array.isArray(parsed.contextScripts)
           ? ensureRequiredAgentContextScripts(sanitizeContextScripts(parsed.contextScripts))
           : defaultAgentContextScripts
@@ -18911,11 +20293,132 @@ function readSetupDraft(): SetupDraft | null {
   return null;
 }
 
+const executableAgentSkillIds: AgentSkillBinding["skillId"][] = [
+  "products.list",
+  "invoices.list",
+  "product.create",
+  "product.update",
+  "product.delete",
+  "product.stock_adjust",
+  "product.field.add",
+  "product.field.remove",
+  "customer.create",
+  "invoice.draft",
+  "payment.record",
+  "receipt.scan",
+  "receipt.review",
+  "receipt.confirm",
+  "receipt.correct",
+  "receipt.cancel",
+  "receipt.lookup",
+  "receipt.list",
+  "document_import.confirm",
+  "unknown.clarify"
+];
+
+function defaultWebAgentPersonality(
+  language: SupportedLanguage,
+  additionalGuidance: string
+): AgentPersonality {
+  return {
+    tone: "warm",
+    formality: "balanced",
+    responseLength: "brief",
+    sellingStyle: "consultative",
+    negotiationStyle: "guided",
+    greetingStyle: "friendly",
+    useLocalVocabulary: true,
+    preferredLanguageOrder: language === "sw" ? ["sw", "en"] : ["en", "sw"],
+    humourLevel: "light",
+    customerCareBehaviour: "solution_focused",
+    escalationBehaviour: "when_required",
+    confidenceBoundary: 0.7,
+    additionalGuidance
+  };
+}
+
+function defaultWebAgentInstructions(generalRule: string): AgentInstructions {
+  return {
+    generalOperatingRules: [generalRule],
+    salesRules: ["Use authoritative catalogue and inventory records."],
+    pricingRules: ["Never invent or silently change prices."],
+    maximumDiscountPercent: 0,
+    negotiationAllowed: false,
+    creditSalesAllowed: false,
+    maximumCreditDays: 0,
+    deliveryRules: ["Confirm availability before promising delivery."],
+    returnsAndRefundRules: ["Escalate returns and refunds to the owner."],
+    inventoryRules: ["Never claim unavailable stock."],
+    supplierRules: ["Keep supplier and receipt records owner-only."],
+    customerPrivacyRules: ["Use the minimum customer data required."],
+    escalationRules: ["Escalate when facts, permission, or approval are missing."],
+    restrictedActions: [],
+    substituteOutOfStockAllowed: false,
+    ownerApprovalRequiredFor: executableAgentSkillIds.filter(
+      (skill) =>
+        !["products.list", "invoices.list", "receipt.lookup", "receipt.list"].includes(skill)
+    ),
+    customerDataRecommendationsAllowed: false,
+    catalogueModificationAllowed: true,
+    externalMessagingAllowed: false
+  };
+}
+
+function defaultWebAgentSkills(): AgentSkillBinding[] {
+  return executableAgentSkillIds.map((skillId) => ({
+    skillId,
+    version: 1,
+    enabled: true,
+    permissions: [],
+    allowedIntents: [],
+    requiredConfirmationLevel: [
+      "products.list",
+      "invoices.list",
+      "receipt.lookup",
+      "receipt.list"
+    ].includes(skillId)
+      ? "none"
+      : "explicit",
+    executionEnvironment: "server",
+    quotaPerHour: null,
+    lastSuccessfulExecution: null,
+    failureCount: 0
+  }));
+}
+
+function defaultWebAgentMemoryPolicy(): AgentMemoryPolicy {
+  return {
+    sessionMemoryEnabled: true,
+    customerConversationMemoryEnabled: false,
+    shopSemanticMemoryEnabled: true,
+    ownerCorrectionsEnabled: true,
+    reusableWorkflowMemoryEnabled: false,
+    customerMemoryRequiresConsent: true,
+    retentionDays: 90,
+    maximumItemsPerScope: 100
+  };
+}
+
+function defaultWebAgentEvaluationPolicy(): AgentEvaluationPolicy {
+  return {
+    enabled: true,
+    sampleRate: 1,
+    recordLatency: true,
+    recordToolOutcomes: true,
+    recordPolicyBlocks: true,
+    customerSatisfactionEnabled: false,
+    retainDays: 180
+  };
+}
+
 function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
   const businessName = business?.name.trim() || "Soko.market";
   const globalAgentId =
     business === null ? "local-soko-market" : createPublicStorefrontAgentId(business);
 
+  const generalInstruction =
+    "Help the owner run daily business work and help customers browse the storefront.";
+  const personality = "Warm, concise, accurate and commercially practical";
   return {
     id: `agent-${globalAgentId}`,
     name: businessName,
@@ -18925,14 +20428,23 @@ function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
     globalAgentId,
     storefrontUrl: createStorefrontUrl(globalAgentId),
     language: business?.language ?? "en",
-    personality: "Warm, concise, accurate and commercially practical",
-    instructions:
-      "Help the owner run daily business work and help customers browse the storefront.",
+    personality,
+    personalityConfig: defaultWebAgentPersonality(business?.language ?? "en", personality),
+    instructions: generalInstruction,
+    instructionPolicy: defaultWebAgentInstructions(generalInstruction),
     knowledge:
       "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
     tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    skillBindings: defaultWebAgentSkills(),
     integrations: ["Soko.market storefront"],
     contextScripts: defaultAgentContextScripts,
+    memoryPolicy: defaultWebAgentMemoryPolicy(),
+    evaluationPolicy: defaultWebAgentEvaluationPolicy(),
+    supportedLanguages:
+      business?.language === "sw" ? ["sw", "en"] : [business?.language ?? "en", "sw"],
+    businessCategory: "general",
+    publicIntroduction: `Welcome to ${businessName}.`,
+    runtimeVersion: 1,
     status: "active"
   };
 }
@@ -18952,13 +20464,30 @@ function agentSettingsFromBusinessProfile(
     storefrontUrl: createStorefrontUrl(globalAgentId),
     language: profile.language,
     personality: profile.personality,
+    personalityConfig:
+      profile.personalityConfig ??
+      defaultWebAgentPersonality(profile.language, profile.personality),
     instructions: profile.instructions,
+    instructionPolicy:
+      profile.instructionPolicy ?? defaultWebAgentInstructions(profile.instructions),
     knowledge: profile.knowledge,
     tools: [...profile.tools],
+    skillBindings:
+      profile.skillBindings?.map((binding) => ({
+        ...binding,
+        permissions: [...binding.permissions],
+        allowedIntents: [...binding.allowedIntents]
+      })) ?? defaultWebAgentSkills(),
     integrations: [...profile.integrations],
     contextScripts: ensureRequiredAgentContextScripts(
       sanitizeContextScripts(profile.contextScripts)
     ),
+    memoryPolicy: profile.memoryPolicy ?? defaultWebAgentMemoryPolicy(),
+    evaluationPolicy: profile.evaluationPolicy ?? defaultWebAgentEvaluationPolicy(),
+    supportedLanguages: profile.supportedLanguages ?? [profile.language],
+    businessCategory: profile.businessCategory ?? "general",
+    publicIntroduction: profile.publicIntroduction ?? profile.description,
+    runtimeVersion: profile.runtimeVersion ?? 1,
     status: profile.status
   };
 }
@@ -19028,6 +20557,13 @@ async function copyTextToClipboard(value: string): Promise<void> {
 function splitListInput(value: string): string[] {
   return value
     .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function splitMultilineInput(value: string): string[] {
+  return value
+    .split(/\r?\n/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 }
@@ -19186,6 +20722,9 @@ function installedModelRequest(model: LocalAiModel): Record<string, unknown> {
     contextLength: model.contextLength,
     fileSizeBytes: model.fileSizeBytes,
     checksum: model.checksum,
+    packageManifestVersion: model.packageManifestVersion ?? null,
+    packageSignature: model.packageSignature ?? null,
+    packageSigningKeyId: model.packageSigningKeyId ?? null,
     license: model.license,
     commercialUseAllowed: model.commercialUseAllowed,
     storageKey: model.storageKey,
@@ -19852,13 +21391,13 @@ function dataUrlPayload(dataUrl: string): string {
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
 }
 
-function runViewTransition(update: () => void): void {
+function runViewTransition(update: () => void, allowSnapshot = true): void {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const transitionDocument = document as Document & {
     startViewTransition?: (callback: () => void) => unknown;
   };
 
-  if (!reducedMotion && transitionDocument.startViewTransition !== undefined) {
+  if (allowSnapshot && !reducedMotion && transitionDocument.startViewTransition !== undefined) {
     transitionDocument.startViewTransition(update);
     return;
   }
@@ -20503,4 +22042,20 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-KE", {
     dateStyle: "medium"
   }).format(new Date(value));
+}
+
+function formatLatency(value: number): string {
+  return value < 1_000 ? `${value} ms` : `${(value / 1_000).toFixed(1)} s`;
+}
+
+function formatExecutionTarget(value: AgentModelBindingSummary["executionTarget"]): string {
+  return (
+    {
+      backend: "Soko backend",
+      "browser-local": "this browser",
+      "installed-app": "installed Soko app",
+      "remote-shop-device": "signed-in shop device",
+      openai: "OpenAI"
+    }[value] ?? value
+  );
 }

@@ -2,6 +2,11 @@ import type { RuntimeModelProvider } from "@soko/shared-types";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { createCloudFallbackProvider } from "./inference/cloud-fallback.js";
+import {
+  createBackendModelAdapter,
+  createProviderModelAdapter,
+  type ModelRuntimeAdapter
+} from "./inference/model-runtime.js";
 import { OwnerNodeBroker } from "./inference/owner-node-broker.js";
 import {
   startAccountDeletionRunner,
@@ -45,6 +50,31 @@ for (const [modelId, model, maxOutputTokens, timeoutMs] of [
 const runtimeModelProviderResolver = (modelId: string) => {
   return cloudProviders.get(modelId);
 };
+const modelRuntimeAdapters = new Map<string, ModelRuntimeAdapter>();
+let backendModelAdapter: ModelRuntimeAdapter | undefined;
+if (config.backendInferenceEnabled) {
+  const adapter = createBackendModelAdapter({
+    baseUrl: config.backendInferenceBaseUrl,
+    modelId: config.backendInferenceModelId,
+    serviceToken: config.inferenceServiceToken,
+    connectTimeoutMs: config.backendInferenceConnectTimeoutMs,
+    timeoutMs: config.backendInferenceTimeoutMs
+  });
+  backendModelAdapter = adapter;
+  modelRuntimeAdapters.set(`${adapter.executionTarget}:${config.backendInferenceModelId}`, adapter);
+}
+for (const [modelId, provider] of cloudProviders) {
+  const adapter = createProviderModelAdapter({
+    modelId,
+    provider,
+    executionTarget: "openai"
+  });
+  modelRuntimeAdapters.set(`${adapter.executionTarget}:${modelId}`, adapter);
+}
+const modelRuntimeAdapterResolver = (input: {
+  modelId: string;
+  executionTarget: ModelRuntimeAdapter["executionTarget"];
+}) => modelRuntimeAdapters.get(`${input.executionTarget}:${input.modelId}`);
 const cp2StoreMode = process.env.CP2_STORE?.trim().toLowerCase();
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
 const webPushConfiguration = readWebPushConfiguration();
@@ -78,6 +108,7 @@ const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
   runtimeModelProviderResolver,
+  modelRuntimeAdapterResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
   messageEmailNotificationSender:
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),
@@ -94,6 +125,7 @@ const cp2Store = shouldUsePostgresStore
   : createCp2Store(cp2StoreOptions);
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
+  inferenceRequired: config.backendInferenceRequired,
   cp2: {
     store: cp2Store,
     emailProvider,
@@ -108,12 +140,16 @@ const app = buildApi(
     ? {
         ...apiOptions,
         databaseHealth: () => cp2Store.health(),
-        agentRuntimeDiagnostic: () => cloudDiagnostic(),
+        ...(hasInferenceDiagnostic()
+          ? { agentRuntimeDiagnostic: (runInference: boolean) => runtimeDiagnostic(runInference) }
+          : {}),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
     : {
         ...apiOptions,
-        agentRuntimeDiagnostic: () => cloudDiagnostic(),
+        ...(hasInferenceDiagnostic()
+          ? { agentRuntimeDiagnostic: (runInference: boolean) => runtimeDiagnostic(runInference) }
+          : {}),
         ...(isFlushableStore(cp2Store) ? { mutationPersistenceFlush: () => cp2Store.flush() } : {})
       }
 );
@@ -185,4 +221,31 @@ async function cloudDiagnostic() {
       checkedAt: new Date().toISOString()
     }
   );
+}
+
+function hasInferenceDiagnostic(): boolean {
+  return backendModelAdapter !== undefined || cloudProviders.size > 0;
+}
+
+async function runtimeDiagnostic(runInference: boolean) {
+  if (backendModelAdapter !== undefined) {
+    const context = {
+      agentId: "health-check",
+      shopId: "health-check",
+      modelId: config.backendInferenceModelId
+    };
+    const result = runInference
+      ? await backendModelAdapter.healthCheck(context)
+      : await backendModelAdapter.canRun(context);
+    return {
+      provider: "ollama" as const,
+      status: result.available ? ("ready" as const) : ("unavailable" as const),
+      model: config.backendInferenceModelId,
+      modelAvailable: result.available,
+      inferenceAvailable: runInference ? result.available : null,
+      errorCode: result.errorCode,
+      checkedAt: new Date().toISOString()
+    };
+  }
+  return cloudDiagnostic();
 }

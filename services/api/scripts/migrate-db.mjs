@@ -11,7 +11,12 @@ import {
 
 const rootDir = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const migrationsDir = resolve(rootDir, "infra/db/migrations");
-const databaseUrl = readDatabaseUrl();
+const directDatabaseUrl = process.env.DIRECT_DATABASE_URL?.trim() ?? "";
+if (process.env.NODE_ENV === "production" && directDatabaseUrl === "") {
+  console.error("DIRECT_DATABASE_URL is required for production migrations.");
+  process.exit(1);
+}
+const databaseUrl = process.env.NODE_ENV === "production" ? directDatabaseUrl : readDatabaseUrl();
 if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to run database migrations.");
   process.exit(1);

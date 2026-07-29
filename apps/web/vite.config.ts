@@ -40,7 +40,7 @@ export default defineConfig(({ mode }) => {
             "manifest-src 'self'",
             "worker-src 'self' blob:",
             "child-src 'self' blob:",
-            "connect-src 'self' http://127.0.0.1:4000 ws://127.0.0.1:5173 ws://localhost:5173 https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co"
+            "connect-src 'self' http://127.0.0.1:4000 ws://127.0.0.1:5173 ws://localhost:5173 https://huggingface.co https://*.huggingface.co https://hf.co https://*.hf.co https://raw.githubusercontent.com"
           ].join("; "),
           "Cross-Origin-Embedder-Policy": "credentialless",
           "Cross-Origin-Opener-Policy": "same-origin"
@@ -49,6 +49,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     build: {
+      manifest: true,
       rollupOptions: {
         output: {
           assetFileNames: "assets/[name]-[hash][extname]",

@@ -1,7 +1,30 @@
-import type { InferenceRuntime } from "@soko/shared-types";
+import type {
+  BrowserCheckpointCompatibilityContract,
+  BrowserRuntimeAdapterId,
+  BrowserRuntimeContract,
+  InferenceRuntime
+} from "@soko/shared-types";
+
+export type {
+  BrowserCheckpointCompatibilityContract,
+  BrowserRuntimeAdapterId,
+  BrowserRuntimeContract
+} from "@soko/shared-types";
 
 export type BrowserInferenceBackend = "webgpu" | "wasm" | "none";
 export type BrowserDeviceTier = "low" | "medium" | "high";
+export type BrowserModelDtype = "q4" | "q8" | "fp16";
+export type BrowserCheckpointKind = "task-state" | "token-replay" | "native-kv";
+export type BrowserModelTaskClass =
+  "short-chat" | "classification" | "field-extraction" | "summarization";
+
+export interface BrowserTaskBudget {
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxWallTimeMs: number;
+  maxEstimatedMemoryBytes: number;
+  continuationAllowed: boolean;
+}
 
 export interface BrowserInferenceCapability {
   supported: boolean;
@@ -24,16 +47,31 @@ export interface BrowserInferenceCapability {
 export interface BrowserModelDescriptor {
   manifestVersion: number;
   id: string;
+  modelFamilyId: string;
   displayName: string;
   provider: "browser-local";
+  runtimeAdapter: BrowserRuntimeAdapterId;
+  runtimeAdapterVersion: string;
+  runtimeModelId: string;
+  runtimeLibraryRevision?: string;
   architecture: string;
   modelUrl: string;
+  modelRevision: string;
   tokenizerUrl?: string;
   modelFormat: string;
   quantization: string;
+  pipeline: "text-generation";
+  dtypeByBackend: Partial<Record<Exclude<BrowserInferenceBackend, "none">, BrowserModelDtype>>;
+  promptTemplateId: string;
   approximateDownloadBytes: number;
   approximateRuntimeMemoryBytes: number;
   contextWindowTokens: number;
+  recommendedContextTokens: Record<BrowserDeviceTier, number>;
+  recommendedOutputTokens: Record<BrowserDeviceTier, number>;
+  maximumGenerationTimeMs: Record<BrowserDeviceTier, number>;
+  taskClasses: BrowserModelTaskClass[];
+  readinessPrompt: string;
+  readinessMaxTokens: number;
   sha256?: string;
   supportedRuntimes: InferenceRuntime[];
   minimumDeviceTier: BrowserDeviceTier;
@@ -60,6 +98,7 @@ export interface BrowserEngineCapabilities {
   streaming: boolean;
   cancellation: boolean;
   contextWindowTokens: number;
+  runtimeContract: BrowserRuntimeContract;
 }
 
 export interface ModelMessage {
@@ -71,12 +110,14 @@ export interface BrowserModelConfig {
   backend: Exclude<BrowserInferenceBackend, "none">;
   approvedModelOrigins: string[];
   maxContextTokens: number;
+  runtimeContract: BrowserRuntimeContract;
 }
 
 export interface BrowserGenerationRequest {
   requestId: string;
   messages: ModelMessage[];
   maxNewTokens: number;
+  maxWallTimeMs: number;
   temperature: number;
   cacheKey?: string;
 }
@@ -130,6 +171,7 @@ export type BrowserInferenceErrorCode =
   | "MODEL_LOAD_FAILED"
   | "OUT_OF_MEMORY"
   | "CONTEXT_LIMIT_EXCEEDED"
+  | "TASK_BUDGET_EXCEEDED"
   | "GENERATION_CANCELLED"
   | "WORKER_CRASHED"
   | "STORAGE_QUOTA_EXCEEDED"
@@ -155,6 +197,50 @@ export interface BrowserInferenceSettings {
   downloadedAt: string | null;
   updatedAt: string;
   lastErrorCode: BrowserInferenceErrorCode | null;
+}
+
+export interface BrowserModelExecutionOutcome {
+  deviceProfileId: string;
+  modelId: string;
+  backend: Exclude<BrowserInferenceBackend, "none">;
+  successful: boolean;
+  loadTimeMs: number;
+  readinessTimeMs: number | null;
+  readinessTokensPerSecond: number | null;
+  failureCode: BrowserInferenceErrorCode | null;
+  updatedAt: string;
+}
+
+export interface BrowserModelOption {
+  model: BrowserModelDescriptor;
+  compatible: boolean;
+  reason: string | null;
+  score: number;
+  previousOutcome: BrowserModelExecutionOutcome | null;
+}
+
+export type BrowserTaskCheckpointReason =
+  "task-start" | "page-hidden" | "page-freeze" | "generation-failed" | "manual-suspend";
+
+export interface BrowserTaskStateCheckpoint {
+  version: 2;
+  id: string;
+  accountId: string;
+  businessId: string;
+  conversationId: string;
+  requestId: string;
+  modelId: string;
+  runtimeContract: BrowserRuntimeContract;
+  compatibilityContract: BrowserCheckpointCompatibilityContract;
+  objective: string;
+  relevantMessages: ModelMessage[];
+  partialOutput: string;
+  continuationInstruction: string;
+  reason: BrowserTaskCheckpointReason;
+  status: "running" | "interrupted";
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
 }
 
 export interface ContextSourceMetadata {

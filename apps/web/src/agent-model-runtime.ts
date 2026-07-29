@@ -1,13 +1,23 @@
 import type { AgentModelReadinessResult, AgentModelRuntimeBackend } from "@soko/shared-types";
 import type { LocalAiModel } from "./ai-model-manager";
+import {
+  evaluateNativeModelCompatibility,
+  type NativeModelCompatibilityProfile,
+  type NativeModelInspectionAttestation
+} from "./inference/native-model-compatibility";
 
 export type AgentModelRuntimeErrorCode =
   | "MODEL_FILE_MISSING"
   | "MODEL_CORRUPT"
+  | "MODEL_CHECKSUM_MISMATCH"
+  | "MODEL_SIGNATURE_INVALID"
   | "MODEL_INCOMPATIBLE"
   | "MODEL_LICENSE_RESTRICTED"
   | "MODEL_LOAD_FAILED"
+  | "BRIDGE_VERSION_UNSUPPORTED"
   | "INSUFFICIENT_MEMORY"
+  | "UNSUPPORTED_ARCHITECTURE"
+  | "UNSUPPORTED_QUANTIZATION"
   | "RUNTIME_UNAVAILABLE"
   | "INFERENCE_TIMEOUT"
   | "CONTEXT_LIMIT_EXCEEDED"
@@ -18,12 +28,24 @@ export interface ModelInspection {
   backend: AgentModelRuntimeBackend;
   estimatedMemoryBytes: number | null;
   errorCode: AgentModelRuntimeErrorCode | null;
+  compatibilityProfile: NativeModelCompatibilityProfile | null;
 }
 
 export interface LoadedModelHandle {
   installationId: string;
   backend: AgentModelRuntimeBackend;
 }
+
+export type AgentModelRuntimeEvent =
+  | { type: "MODEL_LOAD_STARTED"; installationId: string }
+  | {
+      type: "MODEL_LOAD_PROGRESS";
+      installationId: string;
+      progress: number | null;
+      elapsedMs: number;
+    }
+  | { type: "MODEL_READY"; installationId: string }
+  | { type: "MODEL_LOAD_FAILED"; installationId: string; errorCode: AgentModelRuntimeErrorCode };
 
 export interface GenerationRequest {
   installationId: string;
@@ -48,19 +70,17 @@ export interface ModelRuntimeHealth {
 
 export interface AgentModelRuntime {
   inspect(model: LocalAiModel): Promise<ModelInspection>;
-  load(model: LocalAiModel, options?: { signal?: AbortSignal }): Promise<LoadedModelHandle>;
+  load(
+    model: LocalAiModel,
+    options?: { signal?: AbortSignal; onEvent?: (event: AgentModelRuntimeEvent) => void }
+  ): Promise<LoadedModelHandle>;
   generate(request: GenerationRequest): Promise<GenerationResult>;
   unload(installationId: string): Promise<void>;
   health(installationId: string): Promise<ModelRuntimeHealth>;
 }
 
 interface NativeAgentModelRuntimeBridge {
-  inspect(input: SafeRuntimeModelDescriptor): Promise<{
-    compatible: boolean;
-    backend?: AgentModelRuntimeBackend;
-    estimatedMemoryBytes?: number | null;
-    errorCode?: AgentModelRuntimeErrorCode | null;
-  }>;
+  inspect(input: SafeRuntimeModelDescriptor): Promise<NativeModelInspectionAttestation>;
   load(input: SafeRuntimeModelDescriptor): Promise<void>;
   generate(input: {
     installationId: string;
@@ -89,6 +109,10 @@ interface SafeRuntimeModelDescriptor {
   quantization: string | null;
   contextLength: number | null;
   fileSizeBytes: number;
+  checksumSha256: string | null;
+  packageManifestVersion: string | null;
+  packageSignature: string | null;
+  packageSigningKeyId: string | null;
 }
 
 declare global {
@@ -99,8 +123,6 @@ declare global {
 
 const readinessPrompt = "Reply with exactly: SOKO_MODEL_READY";
 const defaultTimeoutMs = 90_000;
-const loadPromises = new Map<string, Promise<LoadedModelHandle>>();
-const loadedModels = new Map<string, LoadedModelHandle>();
 
 export class AgentModelRuntimeError extends Error {
   constructor(
@@ -115,57 +137,114 @@ export class AgentModelRuntimeError extends Error {
 export function createAgentModelRuntime(
   bridge: NativeAgentModelRuntimeBridge | undefined = window.SokoAgentModelRuntime
 ): AgentModelRuntime {
+  const compatibleModels = new Set<string>();
+  const loadPromises = new Map<string, Promise<LoadedModelHandle>>();
+  const loadedModels = new Map<string, LoadedModelHandle>();
+
+  const inspectWithBridge = async (model: LocalAiModel): Promise<ModelInspection> => {
+    if (bridge === undefined) {
+      return {
+        compatible: false,
+        backend: model.runtimeBackend,
+        estimatedMemoryBytes: estimateRequiredMemory(model),
+        errorCode: "RUNTIME_UNAVAILABLE",
+        compatibilityProfile: null
+      };
+    }
+    const result = await bridge.inspect(runtimeDescriptor(model));
+    const profile = evaluateNativeModelCompatibility({ model, inspection: result });
+    if (profile.passed) compatibleModels.add(model.id);
+    else compatibleModels.delete(model.id);
+    return {
+      compatible: profile.passed,
+      backend: result.backend ?? model.runtimeBackend,
+      estimatedMemoryBytes: result.estimatedMemoryBytes ?? estimateRequiredMemory(model),
+      errorCode: profile.errorCode,
+      compatibilityProfile: profile
+    };
+  };
+
   return {
     async inspect(model) {
       assertModelRecord(model);
-      if (bridge === undefined) {
-        return {
-          compatible: false,
-          backend: model.runtimeBackend,
-          estimatedMemoryBytes: estimateRequiredMemory(model),
-          errorCode: "RUNTIME_UNAVAILABLE"
-        };
-      }
-      const result = await bridge.inspect(runtimeDescriptor(model));
-      return {
-        compatible: result.compatible,
-        backend: result.backend ?? model.runtimeBackend,
-        estimatedMemoryBytes: result.estimatedMemoryBytes ?? estimateRequiredMemory(model),
-        errorCode: result.errorCode ?? null
-      };
+      return inspectWithBridge(model);
     },
 
     async load(model, options) {
       assertModelRecord(model);
-      const loaded = loadedModels.get(model.id);
-      if (loaded !== undefined) return loaded;
       if (bridge === undefined) {
         throw new AgentModelRuntimeError(
           "RUNTIME_UNAVAILABLE",
           "The on-device llama.cpp runtime is not available in this app."
         );
       }
+      if (!compatibleModels.has(model.id)) {
+        const inspection = await inspectWithBridge(model);
+        if (!inspection.compatible) {
+          throw new AgentModelRuntimeError(
+            inspection.errorCode ?? "MODEL_INCOMPATIBLE",
+            safeRuntimeErrorMessage(inspection.errorCode ?? "MODEL_INCOMPATIBLE")
+          );
+        }
+      }
+      const loaded = loadedModels.get(model.id);
+      if (loaded !== undefined) return loaded;
 
       const pending = loadPromises.get(model.id);
       if (pending !== undefined) return pending;
 
+      const startedAt = Date.now();
+      options?.onEvent?.({ type: "MODEL_LOAD_STARTED", installationId: model.id });
+      const heartbeat = setInterval(() => {
+        options?.onEvent?.({
+          type: "MODEL_LOAD_PROGRESS",
+          installationId: model.id,
+          progress: null,
+          elapsedMs: Date.now() - startedAt
+        });
+      }, 5_000);
       const load = withTimeout(
         bridge.load(runtimeDescriptor(model)),
         defaultTimeoutMs,
         options?.signal
       )
-        .then(() => {
+        .then(async () => {
+          const health = await withTimeout(
+            bridge.health({ installationId: model.id }),
+            10_000,
+            options?.signal
+          );
+          if (health.status !== "READY" && health.status !== "LOADED") {
+            throw new AgentModelRuntimeError(
+              health.errorCode ?? "MODEL_LOAD_FAILED",
+              "The runtime did not acknowledge that the model is ready."
+            );
+          }
           const handle = {
             installationId: model.id,
             backend: model.runtimeBackend
           };
           loadedModels.set(model.id, handle);
+          options?.onEvent?.({
+            type: "MODEL_LOAD_PROGRESS",
+            installationId: model.id,
+            progress: 100,
+            elapsedMs: Date.now() - startedAt
+          });
+          options?.onEvent?.({ type: "MODEL_READY", installationId: model.id });
           return handle;
         })
         .catch((error: unknown) => {
-          throw normalizeRuntimeError(error, "MODEL_LOAD_FAILED");
+          const normalized = normalizeRuntimeError(error, "MODEL_LOAD_FAILED");
+          options?.onEvent?.({
+            type: "MODEL_LOAD_FAILED",
+            installationId: model.id,
+            errorCode: normalized.code
+          });
+          throw normalized;
         })
         .finally(() => {
+          clearInterval(heartbeat);
           loadPromises.delete(model.id);
         });
       loadPromises.set(model.id, load);
@@ -213,8 +292,9 @@ export function createAgentModelRuntime(
     async unload(installationId) {
       loadPromises.delete(installationId);
       loadedModels.delete(installationId);
+      compatibleModels.delete(installationId);
       if (bridge !== undefined) {
-        await bridge.unload({ installationId }).catch(() => undefined);
+        await withTimeout(bridge.unload({ installationId }), 10_000).catch(() => undefined);
       }
     },
 
@@ -235,7 +315,7 @@ export function createAgentModelRuntime(
 export async function testAgentModelRuntime(
   runtime: AgentModelRuntime,
   model: LocalAiModel,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; onEvent?: (event: AgentModelRuntimeEvent) => void } = {}
 ): Promise<AgentModelReadinessResult> {
   const checkedAt = new Date().toISOString();
   const loadStartedAt = Date.now();
@@ -361,7 +441,11 @@ function runtimeDescriptor(model: LocalAiModel): SafeRuntimeModelDescriptor {
     architecture: model.architecture,
     quantization: model.quantization,
     contextLength: model.contextLength,
-    fileSizeBytes: model.fileSizeBytes
+    fileSizeBytes: model.fileSizeBytes,
+    checksumSha256: model.checksum,
+    packageManifestVersion: model.packageManifestVersion ?? null,
+    packageSignature: model.packageSignature ?? null,
+    packageSigningKeyId: model.packageSigningKeyId ?? null
   };
 }
 
@@ -395,10 +479,15 @@ function safeRuntimeErrorMessage(code: AgentModelRuntimeErrorCode): string {
   const messages: Record<AgentModelRuntimeErrorCode, string> = {
     MODEL_FILE_MISSING: "The model file is missing from this device.",
     MODEL_CORRUPT: "The installed model file is corrupt.",
+    MODEL_CHECKSUM_MISMATCH: "The installed model does not match its trusted SHA-256 checksum.",
+    MODEL_SIGNATURE_INVALID: "The model package signature is missing, invalid, or untrusted.",
     MODEL_INCOMPATIBLE: "This model is incompatible with the current device runtime.",
     MODEL_LICENSE_RESTRICTED: "This model is not approved for commercial use.",
     MODEL_LOAD_FAILED: "The local model could not be loaded.",
+    BRIDGE_VERSION_UNSUPPORTED: "Update the installed Soko app to use this model securely.",
     INSUFFICIENT_MEMORY: "This device does not have enough available memory for the model.",
+    UNSUPPORTED_ARCHITECTURE: "The installed app does not support this model architecture.",
+    UNSUPPORTED_QUANTIZATION: "The installed app does not support this model quantization.",
     RUNTIME_UNAVAILABLE: "The on-device llama.cpp runtime is not available in this app.",
     INFERENCE_TIMEOUT: "The local model took too long to respond.",
     CONTEXT_LIMIT_EXCEEDED: "The message exceeds the selected model's context limit.",

@@ -472,8 +472,18 @@ function getFirstConfiguredEnv(names: string[]): string {
 function getTokenEncryptionKey(): Buffer {
   const configured =
     process.env.AUTH_TOKEN_ENCRYPTION_KEY?.trim() ?? process.env.OAUTH_TOKEN_ENCRYPTION_KEY?.trim();
+  if (
+    (configured === undefined || configured.length < 32) &&
+    process.env.NODE_ENV === "production"
+  ) {
+    throw new Cp2Error(
+      503,
+      "oauth_token_encryption_unconfigured",
+      "OAuth token storage is not configured."
+    );
+  }
   const source =
-    configured === undefined || configured.length === 0
+    configured === undefined || configured.length < 32
       ? "soko-market-local-oauth-token-encryption-key"
       : configured;
 
@@ -532,8 +542,7 @@ function normalizeProfile(provider: OAuthProvider, payload: Record<string, unkno
   return {
     providerSubject: subject,
     email: email ?? null,
-    emailVerified:
-      typeof emailVerifiedValue === "boolean" ? emailVerifiedValue : email !== undefined,
+    emailVerified: emailVerifiedValue === true || emailVerifiedValue === "true",
     displayName: displayName ?? null
   };
 }

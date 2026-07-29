@@ -11,6 +11,13 @@ export interface EnvironmentConfig {
   apiPort: number;
   allowedCorsOrigins: string[];
   databaseUrl: string;
+  backendInferenceEnabled: boolean;
+  backendInferenceBaseUrl: string;
+  backendInferenceConnectTimeoutMs: number;
+  backendInferenceTimeoutMs: number;
+  backendInferenceModelId: string;
+  backendInferenceRequired: boolean;
+  inferenceServiceToken: string;
   inferenceClientFirst: boolean;
   inferenceOwnerNodeEnabled: boolean;
   inferenceCloudFallbackEnabled: boolean;
@@ -523,6 +530,163 @@ export type AgentModelFallbackPolicy =
 
 export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAILED";
 
+export type AgentModelBindingStatus =
+  "inactive" | "verifying" | "active" | "failed" | "unavailable";
+
+export type ModelExecutionTarget =
+  "backend" | "browser-local" | "installed-app" | "remote-shop-device" | "openai";
+
+export type BrowserInferenceBackend = "webgpu" | "wasm";
+export type BrowserDeviceTier = "low" | "medium" | "high";
+export type BrowserRuntimeAdapterId = "transformers-js" | "webllm";
+export type BrowserCheckpointKind = "task-state" | "token-replay" | "native-kv";
+
+export interface BrowserRuntimeContract {
+  schemaVersion: 1;
+  adapterId: BrowserRuntimeAdapterId;
+  adapterVersion: string;
+  libraryRevision: string | null;
+  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm">;
+  backend: BrowserInferenceBackend;
+  streaming: true;
+  cancellation: true;
+  tokenCounting: "exact" | "estimated";
+  checkpointKinds: BrowserCheckpointKind[];
+  nativeStateFormat: string | null;
+}
+
+export interface BrowserCheckpointCompatibilityContract {
+  schemaVersion: 1;
+  checkpointKind: "task-state";
+  taskStateSchema: "soko.browser-task-state.v2";
+  modelFamilyId: string;
+  sourceModelId: string;
+  sourceModelRevision: string;
+  sourceAdapterId: BrowserRuntimeAdapterId;
+  promptRepresentation: "role-content-messages";
+  portableAcrossAdapters: true;
+}
+
+export interface BrowserInferenceAssignmentSummary {
+  id: string;
+  agentId: string;
+  businessId: string;
+  accountId: string;
+  userId: string;
+  deviceId: string;
+  enabled: boolean;
+  selectedModelId: string | null;
+  modelFamilyId: string | null;
+  modelRevision: string | null;
+  runtimeContract: BrowserRuntimeContract | null;
+  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+  deviceTier: BrowserDeviceTier | null;
+  readinessStatus: AgentModelReadinessStatus;
+  lastSuccessfulInferenceAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface RuntimeModelDefinition {
+  id: string;
+  displayName: string;
+  provider: "ollama";
+  providerModelId: string;
+  executionTarget: "backend";
+  deploymentTarget: "render-private-inference";
+  contextWindow: number;
+  enabled: boolean;
+}
+
+export const runtimeModels = {
+  "qwen2.5-0.5b-android": {
+    id: "qwen2.5-0.5b-android",
+    displayName: "Qwen2.5 0.5B",
+    provider: "ollama",
+    providerModelId: "qwen2.5:0.5b",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 32_768,
+    enabled: true
+  },
+  "qwen2.5-1.5b-android": {
+    id: "qwen2.5-1.5b-android",
+    displayName: "Qwen2.5 1.5B",
+    provider: "ollama",
+    providerModelId: "qwen2.5:1.5b",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 32_768,
+    enabled: false
+  },
+  "smollm2-360m-android": {
+    id: "smollm2-360m-android",
+    displayName: "SmolLM2 360M",
+    provider: "ollama",
+    providerModelId: "smollm2:360m",
+    executionTarget: "backend",
+    deploymentTarget: "render-private-inference",
+    contextWindow: 8_192,
+    enabled: false
+  }
+} as const satisfies Record<string, RuntimeModelDefinition>;
+
+export type RuntimeModelId = keyof typeof runtimeModels;
+
+export function resolveRuntimeModel(modelId: string): RuntimeModelDefinition | null {
+  return Object.prototype.hasOwnProperty.call(runtimeModels, modelId)
+    ? runtimeModels[modelId as RuntimeModelId]
+    : null;
+}
+
+export interface AgentModelBindingPermissions {
+  allowInstalledApp: boolean;
+  allowRemoteShopDevice: boolean;
+  allowOpenAIFallback: boolean;
+}
+
+export interface AgentModelBindingSummary {
+  id: string;
+  agentId: string;
+  shopId: string;
+  accountId: string;
+  modelId: string;
+  status: AgentModelBindingStatus;
+  executionMode: PreferredExecutionMode;
+  fallbackPolicy: AgentModelFallbackPolicy;
+  executionTarget: ModelExecutionTarget;
+  permissions: AgentModelBindingPermissions;
+  fallbackModelId: string | null;
+  activatedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastVerificationStatus: "passed" | "failed" | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface ModelRuntimeHealthSummary {
+  ok: boolean;
+  modelId: string;
+  provider: string;
+  executionTarget: ModelExecutionTarget;
+  latencyMs: number;
+  responsePreview: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  retryable: boolean;
+  checkedAt: string;
+}
+
+export interface AgentModelActivationResult {
+  binding: AgentModelBindingSummary;
+  healthCheck: ModelRuntimeHealthSummary;
+}
+
 export interface InstalledAgentModelSummary {
   id: string;
   accountId: string;
@@ -540,6 +704,9 @@ export interface InstalledAgentModelSummary {
   contextLength: number | null;
   fileSizeBytes: number;
   checksum: string | null;
+  packageManifestVersion?: string | null;
+  packageSignature?: string | null;
+  packageSigningKeyId?: string | null;
   license: string;
   commercialUseAllowed: boolean;
   storageKey: string;
@@ -2217,8 +2384,10 @@ export type RuntimeTelemetryState =
   | "turn.received"
   | "context.built"
   | "model.prompt_built"
+  | "model.inference_started"
   | "model.completed"
   | "model.fallback"
+  | "model.fallback_completed"
   | "intent.routed"
   | "plan.created"
   | "verification.completed"
@@ -2269,6 +2438,9 @@ export interface RuntimeModelPrompt {
   context: RuntimeContextSummary;
   allowedTools: RuntimeToolName[];
   schemaVersion: "cp11-runtime-model-v1";
+  runtimeVersion?: number;
+  compiledInstructions?: CompiledAgentInstructionSet;
+  retrievedContext?: RetrievedAgentContextItem[];
 }
 
 export interface RuntimeModelConversationMessage {
@@ -2308,6 +2480,14 @@ export interface RuntimeModelTrace {
   fallbackUsed: boolean;
   outputKind: "tool" | "clarification" | "response" | null;
   errorCode: string | null;
+  bindingId?: string;
+  modelId?: string;
+  providerModelId?: string;
+  inferenceRequestId?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  executionTarget?: ModelExecutionTarget;
+  fallbackReason?: string | null;
 }
 
 export interface RuntimePlannedAction {
@@ -2370,10 +2550,301 @@ export interface RuntimeTurnSummary {
   response: string;
   toolResult: unknown | null;
   telemetry: RuntimeTelemetryEvent[];
+  runtimeVersion: number;
   createdAt: string;
 }
 
 export interface RuntimeTurnResult {
   session: RuntimeSessionSummary;
   turn: RuntimeTurnSummary;
+}
+
+export type AgentRuntimeStatus = "draft" | "active" | "paused" | "archived";
+export type AgentAudience = "owner" | "staff" | "customer";
+export type AgentContextSensitivity = "public" | "internal" | "confidential" | "restricted";
+export type AgentContextSourceType =
+  | "catalogue"
+  | "inventory"
+  | "customer"
+  | "supplier"
+  | "receipt"
+  | "order"
+  | "policy"
+  | "document"
+  | "conversation"
+  | "context_script"
+  | "owner_note";
+
+export interface AgentIdentity {
+  agentName: string;
+  shopName: string;
+  shopIdentifier: string;
+  role: string;
+  supportedLanguages: SupportedLanguage[];
+  shopDescription: string;
+  businessCategory: string;
+  publicIntroduction: string;
+}
+
+export interface AgentPersonality {
+  tone: "warm" | "neutral" | "direct" | "formal";
+  formality: "casual" | "balanced" | "formal";
+  responseLength: "brief" | "balanced" | "detailed";
+  sellingStyle: "consultative" | "informative" | "proactive";
+  negotiationStyle: "fixed" | "guided" | "flexible";
+  greetingStyle: "minimal" | "friendly" | "formal";
+  useLocalVocabulary: boolean;
+  preferredLanguageOrder: SupportedLanguage[];
+  humourLevel: "none" | "light" | "moderate";
+  customerCareBehaviour: "concise" | "empathetic" | "solution_focused";
+  escalationBehaviour: "when_required" | "when_uncertain" | "owner_first";
+  confidenceBoundary: number;
+  additionalGuidance: string;
+}
+
+export interface AgentInstructions {
+  generalOperatingRules: string[];
+  salesRules: string[];
+  pricingRules: string[];
+  maximumDiscountPercent: number;
+  negotiationAllowed: boolean;
+  creditSalesAllowed: boolean;
+  maximumCreditDays: number;
+  deliveryRules: string[];
+  returnsAndRefundRules: string[];
+  inventoryRules: string[];
+  supplierRules: string[];
+  customerPrivacyRules: string[];
+  escalationRules: string[];
+  restrictedActions: RuntimeToolName[];
+  substituteOutOfStockAllowed: boolean;
+  ownerApprovalRequiredFor: RuntimeToolName[];
+  customerDataRecommendationsAllowed: boolean;
+  catalogueModificationAllowed: boolean;
+  externalMessagingAllowed: boolean;
+}
+
+export interface AgentContextAccessRules {
+  audiences: AgentAudience[];
+  requiredPermission: string | null;
+  customerVisible: boolean;
+}
+
+export interface AgentContextSource {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  type: AgentContextSourceType;
+  title: string;
+  status: "active" | "disabled" | "archived";
+  sensitivity: AgentContextSensitivity;
+  accessRules: AgentContextAccessRules;
+  freshnessTimestamp: string;
+  version: number;
+  retrievalMetadata: {
+    keywords: string[];
+    sourceRecordId: string | null;
+    content: string | null;
+  };
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface BusinessContextManifest {
+  tenantId: string;
+  shopId: string;
+  generatedAt: string;
+  sources: AgentContextSource[];
+}
+
+export interface RetrievedAgentContextItem {
+  sourceId: string;
+  type: AgentContextSourceType;
+  title: string;
+  content: string;
+  sensitivity: AgentContextSensitivity;
+  freshnessTimestamp: string;
+  relevanceScore: number;
+}
+
+export interface AgentSkillBinding {
+  skillId: RuntimeToolName;
+  version: number;
+  enabled: boolean;
+  permissions: string[];
+  allowedIntents: RuntimeParserIntent[];
+  requiredConfirmationLevel: "none" | "owner" | "explicit";
+  executionEnvironment: "server" | "browser_worker" | "native";
+  quotaPerHour: number | null;
+  lastSuccessfulExecution: string | null;
+  failureCount: number;
+}
+
+export interface AgentMemoryPolicy {
+  sessionMemoryEnabled: boolean;
+  customerConversationMemoryEnabled: boolean;
+  shopSemanticMemoryEnabled: boolean;
+  ownerCorrectionsEnabled: boolean;
+  reusableWorkflowMemoryEnabled: boolean;
+  customerMemoryRequiresConsent: boolean;
+  retentionDays: number;
+  maximumItemsPerScope: number;
+}
+
+export interface AgentEvaluationPolicy {
+  enabled: boolean;
+  sampleRate: number;
+  recordLatency: boolean;
+  recordToolOutcomes: boolean;
+  recordPolicyBlocks: boolean;
+  customerSatisfactionEnabled: boolean;
+  retainDays: number;
+}
+
+export interface AgentModelBinding {
+  modelId: string;
+  provider: string;
+  executionMode: PreferredExecutionMode;
+  fallbackPolicy: AgentModelFallbackPolicy;
+  deviceAssignmentId: string | null;
+}
+
+export interface ShopAgentRuntime {
+  agentId: string;
+  shopId: string;
+  tenantId: string;
+  identity: AgentIdentity;
+  personality: AgentPersonality;
+  instructions: AgentInstructions;
+  context: BusinessContextManifest;
+  skills: AgentSkillBinding[];
+  memory: AgentMemoryPolicy;
+  evaluations: AgentEvaluationPolicy;
+  model: AgentModelBinding;
+  version: number;
+  status: AgentRuntimeStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentRuntimeVersion {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  version: number;
+  runtime: ShopAgentRuntime;
+  createdBy: string;
+  changeSummary: string;
+  createdAt: string;
+  previousVersion: number | null;
+}
+
+export interface AgentOwnerCorrection {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  correction: string;
+  category: "instruction" | "business_fact" | "memory" | "response";
+  status: "active" | "disabled";
+  sourceMessageId: string | null;
+  promotedToInstruction: boolean;
+  createdBy: string;
+  createdAt: string;
+  disabledAt: string | null;
+}
+
+export type AgentEvaluationEventType =
+  | "intent_classification"
+  | "context_retrieval"
+  | "tool_selection"
+  | "tool_execution"
+  | "policy_compliance"
+  | "customer_correction"
+  | "owner_correction"
+  | "sale_completed"
+  | "order_abandoned"
+  | "escalation_required"
+  | "unsupported_request"
+  | "response_latency"
+  | "model_failure"
+  | "hallucinated_product_or_price"
+  | "invalid_discount_attempt"
+  | "customer_satisfaction"
+  | "owner_feedback";
+
+export interface AgentEvaluationEvent {
+  id: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  sessionId: string | null;
+  messageId: string | null;
+  eventType: AgentEvaluationEventType;
+  outcome: "success" | "partial" | "failure" | "blocked";
+  score: number | null;
+  reason: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+  runtimeVersion: number;
+  modelId: string | null;
+  createdAt: string;
+}
+
+export interface AgentEvaluationSummary {
+  tenantId: string;
+  shopId: string;
+  runtimeVersion: number;
+  total: number;
+  success: number;
+  partial: number;
+  failure: number;
+  blocked: number;
+  averageScore: number | null;
+  recentEvents: AgentEvaluationEvent[];
+}
+
+export interface CompiledAgentInstructionSet {
+  precedence: [
+    "platform_security",
+    "tenant_identity",
+    "business_policy",
+    "personality",
+    "task",
+    "retrieved_context",
+    "tools",
+    "memory",
+    "output_contract"
+  ];
+  platformRules: string[];
+  identityRules: string[];
+  businessRules: string[];
+  personalityRules: string[];
+  outputRules: string[];
+}
+
+export type RuntimeReadinessIssue =
+  | "AGENT_NOT_FOUND"
+  | "MODEL_NOT_SELECTED"
+  | "MODEL_UNAVAILABLE"
+  | "INVALID_RUNTIME_PROFILE"
+  | "CONTEXT_SERVICE_UNAVAILABLE"
+  | "TOOL_REGISTRY_UNAVAILABLE"
+  | "SESSION_CREATION_FAILED"
+  | "TENANT_BINDING_INVALID";
+
+export interface AgentRuntimeReadiness {
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  ready: boolean;
+  issues: Array<{
+    code: RuntimeReadinessIssue;
+    message: string;
+    actionable: boolean;
+  }>;
+  checkedAt: string;
 }

@@ -1,4 +1,9 @@
 import { apiFetch } from "./lib/api";
+import {
+  clearAllLocalData,
+  createLocalDataRepository,
+  type LocalDataDomain
+} from "./local-data-repository";
 import { recordApiCache } from "./performance";
 
 interface CacheEntry {
@@ -10,14 +15,15 @@ interface CacheEntry {
 const responseCache = new Map<string, CacheEntry>();
 const defaultStaleTimeMs = 30_000;
 
-export interface CachedGetOptions {
+export interface CachedGetOptions<T = unknown> {
   force?: boolean;
+  onBackgroundUpdate?: (value: T) => void;
   staleTimeMs?: number;
 }
 
 export async function getCachedJson<TResponse>(
   path: string,
-  options: CachedGetOptions = {}
+  options: CachedGetOptions<TResponse> = {}
 ): Promise<TResponse> {
   const now = Date.now();
   const staleTimeMs = options.staleTimeMs ?? staleTimeForPath(path);
@@ -40,7 +46,7 @@ export async function getCachedJson<TResponse>(
     }
 
     recordApiCache(path, "stale");
-    existing.inFlight = refresh<TResponse>(path, existing);
+    existing.inFlight = refresh<TResponse>(path, existing, options.onBackgroundUpdate);
     void existing.inFlight.catch(() => undefined);
     return existing.value as TResponse;
   }
@@ -51,7 +57,7 @@ export async function getCachedJson<TResponse>(
   }
 
   const entry: CacheEntry = existing ?? { value: undefined, updatedAt: 0, inFlight: null };
-  entry.inFlight = refresh<TResponse>(path, entry);
+  entry.inFlight = hydrateOrRefresh<TResponse>(path, entry, options.onBackgroundUpdate);
   responseCache.set(path, entry);
   return entry.inFlight as Promise<TResponse>;
 }
@@ -85,11 +91,43 @@ export function clearApiRequestCache(): void {
   responseCache.clear();
 }
 
-function refresh<TResponse>(path: string, entry: CacheEntry): Promise<TResponse> {
+export async function clearPersistentApiRequestCache(): Promise<void> {
+  responseCache.clear();
+  await clearAllLocalData();
+}
+
+async function hydrateOrRefresh<TResponse>(
+  path: string,
+  entry: CacheEntry,
+  onBackgroundUpdate?: (value: TResponse) => void
+): Promise<TResponse> {
+  const persistent = persistentRepository<TResponse>(path);
+  if (persistent !== null) {
+    const cached = await persistent.readCached(path);
+    if (cached.value !== null) {
+      entry.value = cached.value;
+      entry.updatedAt = cached.updatedAt ?? Date.now();
+      entry.inFlight = refresh(path, entry, onBackgroundUpdate, persistent);
+      void entry.inFlight.catch(() => undefined);
+      recordApiCache(path, "stale");
+      return cached.value;
+    }
+  }
+  return refresh(path, entry, onBackgroundUpdate, persistent);
+}
+
+function refresh<TResponse>(
+  path: string,
+  entry: CacheEntry,
+  onBackgroundUpdate?: (value: TResponse) => void,
+  persistent = persistentRepository<TResponse>(path)
+): Promise<TResponse> {
   return apiFetch<TResponse>(path)
-    .then((value) => {
+    .then(async (value) => {
       entry.value = value;
       entry.updatedAt = Date.now();
+      await persistent?.writeCached(path, value);
+      onBackgroundUpdate?.(value);
       return value;
     })
     .catch((error) => {
@@ -99,6 +137,41 @@ function refresh<TResponse>(path: string, entry: CacheEntry): Promise<TResponse>
     .finally(() => {
       entry.inFlight = null;
     });
+}
+
+function persistentRepository<T>(path: string) {
+  const policy = persistentPolicy(path);
+  return policy === null ? null : createLocalDataRepository<T>(policy.domain, policy.scope);
+}
+
+function persistentPolicy(path: string): { domain: LocalDataDomain; scope: string } | null {
+  const pathname = path.split("?")[0] ?? path;
+  const business = pathname.match(/^\/businesses\/([^/]+)\/(.+)$/);
+  if (business !== null) {
+    const scope = `business:${business[1]}`;
+    const resource = business[2] ?? "";
+    if (/^(?:products|suppliers|customers|invoices)(?:\/|$)/.test(resource)) {
+      return {
+        domain: resource.startsWith("products") ? "catalogue" : "shop",
+        scope
+      };
+    }
+    if (
+      /^(?:reports|knowledge|notifications|payments|payment-summaries|customer-debts|imports|logistics|offline-cache|sync-queue)(?:\/|$)/.test(
+        resource
+      )
+    ) {
+      return { domain: resource.includes("sync") ? "sync" : "workspace", scope };
+    }
+    if (/^(?:agent-model|ai-model|agent-profile)(?:\/|$)/.test(resource)) {
+      return { domain: "model", scope };
+    }
+  }
+  if (pathname === "/network") return { domain: "workspace", scope: "account" };
+  if (pathname === "/v1/conversations") {
+    return { domain: "conversation", scope: "account" };
+  }
+  return null;
 }
 
 function staleTimeForPath(path: string): number {

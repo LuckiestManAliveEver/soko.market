@@ -14,6 +14,7 @@ import {
   type BrowserModelWorkerRequest,
   type BrowserModelWorkerResponse
 } from "./browser-model-worker-protocol";
+import { recordWorkerStartup } from "./performance";
 
 interface WorkerLike {
   postMessage(message: BrowserModelWorkerRequest): void;
@@ -48,7 +49,12 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly onMessage = (event: Event) => {
     const data = (event as MessageEvent<unknown>).data;
-    if (!isBrowserModelWorkerResponse(data)) return;
+    if (!isBrowserModelWorkerResponse(data)) {
+      this.rejectAll(
+        new BrowserInferenceError("WORKER_CRASHED", "The model worker returned an invalid message.")
+      );
+      return;
+    }
     const request = this.pending.get(data.requestId);
     if (request === undefined) return;
 
@@ -56,13 +62,17 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
       request.handlers.onToken?.(data.token);
       return;
     }
-    if (data.type === "MODEL_PROGRESS") {
+    if (data.type === "MODEL_LOAD_STARTED") {
+      this.status = "loading";
+      return;
+    }
+    if (data.type === "MODEL_LOAD_PROGRESS") {
       this.status = data.progress.status;
       request.handlers.onProgress?.(data.progress);
       return;
     }
     this.pending.delete(data.requestId);
-    if (data.type === "ERROR") {
+    if (data.type === "ERROR" || data.type === "MODEL_LOAD_FAILED") {
       this.status = "error";
       request.reject(new BrowserInferenceError(data.code, data.message));
       return;
@@ -82,13 +92,21 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
   constructor(private readonly workerFactory: () => WorkerLike) {}
 
   async initialize(config: BrowserModelConfig): Promise<void> {
+    const startedAt = performance.now();
     this.status = "initializing";
-    const response = await this.request({ type: "INITIALIZE", requestId: requestId(), config });
-    if (response.type !== "READY") {
-      throw new BrowserInferenceError("WORKER_CRASHED", "The model worker did not initialize.");
+    recordWorkerStartup("browser-model", "starting");
+    try {
+      const response = await this.request({ type: "INITIALIZE", requestId: requestId(), config });
+      if (response.type !== "READY") {
+        throw new BrowserInferenceError("WORKER_CRASHED", "The model worker did not initialize.");
+      }
+      this.capabilities = response.capabilities;
+      this.status = "idle";
+      recordWorkerStartup("browser-model", "ready", performance.now() - startedAt);
+    } catch (error) {
+      recordWorkerStartup("browser-model", "failed", performance.now() - startedAt);
+      throw error;
     }
-    this.capabilities = response.capabilities;
-    this.status = "idle";
   }
 
   async loadModel(
@@ -100,7 +118,7 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
       { type: "LOAD_MODEL", requestId: requestId(), model },
       handlers
     );
-    if (response.type !== "MODEL_LOADED") {
+    if (response.type !== "MODEL_READY") {
       throw new BrowserInferenceError("MODEL_LOAD_FAILED", "The browser model did not load.");
     }
     this.status = "ready";
@@ -196,6 +214,12 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
     this.status = "idle";
   }
 
+  private rejectAll(error: BrowserInferenceError): void {
+    this.status = "error";
+    for (const request of this.pending.values()) request.reject(error);
+    this.pending.clear();
+  }
+
   private getWorker(): WorkerLike {
     if (this.worker !== null) return this.worker;
     this.worker = this.workerFactory();
@@ -223,7 +247,7 @@ class BrowserWorkerModelEngine implements BrowserModelEngine {
 export function normalizeBrowserInferenceError(error: unknown): BrowserInferenceError {
   if (error instanceof BrowserInferenceError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  if (/memory|allocation|buffer/i.test(message)) {
+  if (/memory|allocation|buffer|device lost|gpu device.*lost/i.test(message)) {
     return new BrowserInferenceError("OUT_OF_MEMORY", "The device ran out of model memory.");
   }
   if (/quota|storage/i.test(message)) {
@@ -240,6 +264,9 @@ export function normalizeBrowserInferenceError(error: unknown): BrowserInference
       "MODEL_CACHE_CORRUPT",
       "The cached model is incomplete or corrupt."
     );
+  }
+  if (/download|fetch|network/i.test(message)) {
+    return new BrowserInferenceError("MODEL_DOWNLOAD_FAILED", "The browser model download failed.");
   }
   return new BrowserInferenceError("UNKNOWN", "Browser inference failed safely.");
 }

@@ -1,4 +1,12 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  scryptSync,
+  timingSafeEqual
+} from "node:crypto";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -14,6 +22,22 @@ import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
 import type {
   AccountSummary,
+  AgentAudience,
+  AgentContextSource,
+  AgentEvaluationEvent,
+  AgentEvaluationEventType,
+  AgentEvaluationPolicy,
+  AgentEvaluationSummary,
+  AgentInstructions,
+  AgentMemoryPolicy,
+  AgentOwnerCorrection,
+  AgentPersonality,
+  AgentRuntimeReadiness,
+  AgentRuntimeVersion,
+  AgentSkillBinding,
+  AgentModelActivationResult,
+  AgentModelBindingPermissions,
+  AgentModelBindingSummary,
   AgentModelAssignmentSummary,
   AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
@@ -30,6 +54,10 @@ import type {
   BetaReadinessReportSummary,
   BetaSupportTicketSummary,
   BetaTelemetryEventSummary,
+  BrowserCheckpointCompatibilityContract,
+  BrowserDeviceTier,
+  BrowserInferenceAssignmentSummary,
+  BrowserRuntimeContract,
   BusinessKnowledgeSummary,
   BusinessNotificationStatus,
   BusinessNotificationSummary,
@@ -85,6 +113,8 @@ import type {
   McpAccessTokenSummary,
   McpPrincipal,
   MembershipSummary,
+  ModelExecutionTarget,
+  ModelRuntimeHealthSummary,
   NetworkConsentStatus,
   NetworkEdgeSourceType,
   NetworkEdgeSummary,
@@ -126,6 +156,7 @@ import type {
   RuntimeTurnStatus,
   RuntimeTurnSummary,
   RuntimeVerificationResult,
+  ShopAgentRuntime,
   ReceiptLineItemSummary,
   ReceiptOCRJobSummary,
   SessionSummary,
@@ -158,6 +189,21 @@ import type {
   SyncPullPage,
   UserSummary
 } from "@soko/shared-types";
+import {
+  asModelRuntimeError,
+  runtimeProviderFromAdapter,
+  type ModelRuntimeAdapter
+} from "../inference/model-runtime.js";
+import {
+  assembleAgentInferenceMessage,
+  defaultAgentEvaluationPolicy,
+  defaultAgentInstructions,
+  defaultAgentMemoryPolicy,
+  defaultAgentPersonality,
+  defaultAgentSkillBindings,
+  enforceAgentPolicy,
+  retrieveAgentContext
+} from "./agent-business-runtime.js";
 import {
   createSyncQueueItem,
   markSyncProcessing,
@@ -315,6 +361,20 @@ const accessSessionTtlMs = 15 * 60 * 1000;
 const refreshSessionTtlMs = 30 * 24 * 60 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
+const pinAttemptWindowMs = 15 * 60 * 1000;
+const pinMaximumFailedAttempts = 5;
+const pinAttemptTrackerMaximumEntries = 10_000;
+const pinScryptCost = 16_384;
+const pinScryptBlockSize = 8;
+const pinScryptParallelization = 1;
+const pinScryptKeyLength = 32;
+const pinScryptMaximumMemory = 64 * 1024 * 1024;
+const dummyPinHash = createScryptPinHash(
+  "unknown-account",
+  "0000",
+  "soko-market-dummy-pin-hash-secret"
+);
+const maxPendingOtpChallenges = 10_000;
 const maxRuntimeTurnsPerSession = 20;
 const sellerOnlySurfaces = new Set<SokoChatSurface>(["catalogue", "owner-controls", "receipt"]);
 const marketplacePermissions = [
@@ -360,7 +420,9 @@ export class Cp2Error extends Error {
   constructor(
     readonly statusCode: number,
     readonly code: string,
-    message: string
+    message: string,
+    readonly retryable?: boolean,
+    readonly details?: Record<string, string | number | boolean | null>
   ) {
     super(message);
   }
@@ -411,13 +473,45 @@ export interface BusinessAgentProfileInput {
   integrations: string[];
   contextScripts: string[];
   status: "active" | "draft";
+  personalityConfig?: AgentPersonality;
+  instructionPolicy?: AgentInstructions;
+  skillBindings?: AgentSkillBinding[];
+  memoryPolicy?: AgentMemoryPolicy;
+  evaluationPolicy?: AgentEvaluationPolicy;
+  supportedLanguages?: SupportedLanguage[];
+  businessCategory?: string;
+  publicIntroduction?: string;
 }
 
 export interface BusinessAgentProfileSummary extends BusinessAgentProfileInput {
   businessId: string;
+  tenantId: string;
+  shopId: string;
+  agentId: string;
+  runtimeVersion: number;
+  createdAt: string;
+  personalityConfig: AgentPersonality;
+  instructionPolicy: AgentInstructions;
+  skillBindings: AgentSkillBinding[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
   updatedAt: string;
   updatedBy: string;
 }
+
+type NormalizedBusinessAgentProfile = BusinessAgentProfileInput & {
+  personalityConfig: AgentPersonality;
+  instructionPolicy: AgentInstructions;
+  skillBindings: AgentSkillBinding[];
+  memoryPolicy: AgentMemoryPolicy;
+  evaluationPolicy: AgentEvaluationPolicy;
+  supportedLanguages: SupportedLanguage[];
+  businessCategory: string;
+  publicIntroduction: string;
+};
 
 export interface NetworkImportConnectionInput {
   name: string;
@@ -606,8 +700,14 @@ export interface Cp2Snapshot {
   marketplaceIntroStates?: MarketplaceIntroStateSummary[];
   activeAiModels?: ActiveAiModelSummary[];
   agentProfiles?: BusinessAgentProfileSummary[];
+  agentRuntimeVersions?: AgentRuntimeVersion[];
+  agentContextSources?: AgentContextSource[];
+  agentEvaluationEvents?: AgentEvaluationEvent[];
+  agentOwnerCorrections?: AgentOwnerCorrection[];
   installedAgentModels?: InstalledAgentModelSummary[];
   agentModelAssignments?: AgentModelAssignmentSummary[];
+  browserInferenceAssignments?: BrowserInferenceAssignmentSummary[];
+  agentModelBindings?: AgentModelBindingSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -679,6 +779,12 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 export interface Cp2StoreOptions {
   runtimeModelProvider?: RuntimeModelProvider;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
+  modelRuntimeAdapterResolver?: (input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    agentId: string;
+    shopId: string;
+  }) => ModelRuntimeAdapter | undefined;
   pushNotificationSender?: PushNotificationSender;
   messageEmailNotificationSender?: MessageEmailNotificationSender;
   networkInviteSender?: NetworkInviteSender;
@@ -834,8 +940,18 @@ export class Cp2Store {
   private readonly marketplaceIntroStates = new Map<string, MarketplaceIntroStateSummary>();
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
+  private readonly agentRuntimeVersions = new Map<string, AgentRuntimeVersion>();
+  private readonly agentContextSources = new Map<string, AgentContextSource>();
+  private readonly agentEvaluationEvents = new Map<string, AgentEvaluationEvent>();
+  private readonly agentOwnerCorrections = new Map<string, AgentOwnerCorrection>();
   private readonly installedAgentModels = new Map<string, InstalledAgentModelSummary>();
   private readonly agentModelAssignments = new Map<string, AgentModelAssignmentSummary>();
+  private readonly browserInferenceAssignments = new Map<
+    string,
+    BrowserInferenceAssignmentSummary
+  >();
+  private readonly agentModelBindings = new Map<string, AgentModelBindingSummary>();
+  private readonly agentModelActivationLocks = new Set<string>();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly messageByClientId = new Map<string, string>();
   private readonly messageByIdempotencyKey = new Map<string, string>();
@@ -891,6 +1007,7 @@ export class Cp2Store {
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
+  private readonly otpRequestHistory = new Map<string, number[]>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingRefreshTokens = new Map<string, string>();
   private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
@@ -900,6 +1017,7 @@ export class Cp2Store {
   private readonly identityByEmail = new Map<string, string>();
   private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
+  private readonly failedPinAttempts = new Map<string, number[]>();
   private readonly accountRecoveryCodeHashes = new Map<string, string>();
   private readonly networkNodes = new Map<string, NetworkNodeSummary>();
   private readonly networkEdges = new Map<string, NetworkEdgeSummary>();
@@ -928,6 +1046,17 @@ export class Cp2Store {
     }
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
+    const purpose = input.purpose ?? "signup";
+    const requestKey = `${purpose}:${input.channel}:${destination}`;
+    this.requireOtpRequestAllowed(requestKey, now);
+    this.pruneOtpChallenges(now);
+    if (this.otpChallenges.size >= maxPendingOtpChallenges) {
+      throw new Cp2Error(
+        503,
+        "otp_capacity_exceeded",
+        "Verification codes are temporarily unavailable."
+      );
+    }
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
     const challengeId = randomUUID();
     const expiresAt = new Date(now.getTime() + otpTtlMs).toISOString();
@@ -937,7 +1066,7 @@ export class Cp2Store {
       id: challengeId,
       channel: input.channel,
       destination,
-      purpose: input.purpose ?? "signup",
+      purpose,
       codeHash: hashOtp(challengeId, code),
       attempts: 0,
       maxAttempts: maxOtpAttempts,
@@ -945,6 +1074,7 @@ export class Cp2Store {
       verifiedAt: null,
       createdAt
     });
+    this.recordOtpRequest(requestKey, now);
 
     return {
       challengeId,
@@ -952,6 +1082,56 @@ export class Cp2Store {
       expiresAt,
       devOtp: code
     };
+  }
+
+  private requireOtpRequestAllowed(key: string, now: Date): void {
+    const windowMs =
+      readBoundedSecurityInteger("OTP_RATE_LIMIT_WINDOW_SECONDS", 300, 60, 3_600) * 1000;
+    const maximumRequests = readBoundedSecurityInteger("OTP_RATE_LIMIT_MAX_REQUESTS", 5, 1, 20);
+    const cooldownMs = readBoundedSecurityInteger("OTP_COOLDOWN_SECONDS", 60, 0, 600) * 1000;
+    const cutoff = now.getTime() - windowMs;
+    const requests = (this.otpRequestHistory.get(key) ?? []).filter(
+      (requestedAt) => requestedAt > cutoff
+    );
+
+    if (requests.length === 0) {
+      this.otpRequestHistory.delete(key);
+      return;
+    }
+
+    this.otpRequestHistory.set(key, requests);
+    const lastRequestAt = requests.at(-1) ?? 0;
+    if (
+      requests.length >= maximumRequests ||
+      (cooldownMs > 0 && now.getTime() - lastRequestAt < cooldownMs)
+    ) {
+      throw new Cp2Error(
+        429,
+        "otp_rate_limited",
+        "Please wait before requesting another verification code."
+      );
+    }
+  }
+
+  private recordOtpRequest(key: string, now: Date): void {
+    if (
+      !this.otpRequestHistory.has(key) &&
+      this.otpRequestHistory.size >= pinAttemptTrackerMaximumEntries
+    ) {
+      const oldestKey = this.otpRequestHistory.keys().next().value as string | undefined;
+      if (oldestKey !== undefined) this.otpRequestHistory.delete(oldestKey);
+    }
+    const requests = this.otpRequestHistory.get(key) ?? [];
+    requests.push(now.getTime());
+    this.otpRequestHistory.set(key, requests);
+  }
+
+  private pruneOtpChallenges(now: Date): void {
+    for (const [challengeId, challenge] of this.otpChallenges) {
+      if (Date.parse(challenge.expiresAt) <= now.getTime()) {
+        this.otpChallenges.delete(challengeId);
+      }
+    }
   }
 
   verifyOtp(input: { challengeId: string; code: string; now?: Date }): VerifyOtpResult {
@@ -1047,7 +1227,9 @@ export class Cp2Store {
   }): OAuthStartResult {
     const now = input.now ?? new Date();
     const accountSession =
-      input.accountSessionId === null ? null : this.getSession(input.accountSessionId, now);
+      input.accountSessionId === null
+        ? null
+        : this.requirePinVerifiedSession(input.accountSessionId, now);
     const oauthSession: OAuthSessionRecord = {
       id: randomUUID(),
       provider: input.provider,
@@ -1487,10 +1669,7 @@ export class Cp2Store {
   }
 
   listDeviceSessions(sessionId: string | null, now = new Date()): DeviceSessionSummary[] {
-    const current = this.getSession(sessionId, now);
-    if (current === null) {
-      throw new Cp2Error(401, "auth_session_expired", "Authentication is required.");
-    }
+    const current = this.requirePinVerifiedSession(sessionId, now);
     return [...this.sessions.values()]
       .filter((session) => session.accountId === current.account.id)
       .map((session) => deviceSessionView(session, current.session.id, now))
@@ -1503,10 +1682,7 @@ export class Cp2Store {
     now?: Date;
   }): DeviceSessionSummary {
     const now = input.now ?? new Date();
-    const current = this.getSession(input.sessionId, now);
-    if (current === null) {
-      throw new Cp2Error(401, "auth_session_expired", "Authentication is required.");
-    }
+    const current = this.requirePinVerifiedSession(input.sessionId, now);
     const target = this.sessions.get(input.targetSessionId);
     if (target === undefined || target.accountId !== current.account.id) {
       throw new Cp2Error(404, "auth_device_session_not_found", "Device session was not found.");
@@ -1613,6 +1789,7 @@ export class Cp2Store {
     }
 
     const pin = normalizePin(input.pin);
+    pinHashSecret();
     const account = this.createAccount("phone", destination, now);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const session = this.createSession(account, user, now);
@@ -1751,15 +1928,19 @@ export class Cp2Store {
     const session = this.requireAnySession(input.sessionId, now);
     const pin = normalizePin(input.pin);
     const pinHash = this.accountPinHashes.get(session.account.id);
+    const attemptKey = `verify:${session.account.id}`;
 
     if (pinHash === undefined) {
       throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
     }
 
-    if (!hashMatches(hashPin(session.account.id, pin), pinHash)) {
+    this.requirePinAttemptAllowed(attemptKey, now);
+    if (!this.verifyStoredPin(session.account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
       throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     this.markSessionPinVerified(session.session.id, now);
     this.recordAuditEvent({
       type: "auth.pin_verified",
@@ -1781,27 +1962,35 @@ export class Cp2Store {
   }): AuthSessionView {
     const now = input.now ?? new Date();
     const destination = normalizeDestination(input.channel, input.destination);
+    const pin = normalizePin(input.pin);
+    const attemptKey = `login:${input.channel}:${destination}`;
+    this.requirePinAttemptAllowed(attemptKey, now);
     const accountId = this.accountByDestination.get(
       destinationAccountKey(input.channel, destination)
     );
 
     if (accountId === undefined) {
-      throw new Cp2Error(401, "account_not_found", "Owner account was not found.");
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
     const account = this.requireAccount(accountId);
     const user = this.requireUser(this.userByAccount.get(account.id));
-    const pin = normalizePin(input.pin);
     const pinHash = this.accountPinHashes.get(account.id);
 
     if (pinHash === undefined) {
-      throw new Cp2Error(404, "pin_not_set", "Login PIN has not been set.");
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
-    if (!hashMatches(hashPin(account.id, pin), pinHash)) {
-      throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
+    if (!this.verifyStoredPin(account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     const session = this.createSession(account, user, now);
     this.markSessionPinVerified(session.id, now);
     this.recordAuditEvent({
@@ -1828,7 +2017,7 @@ export class Cp2Store {
     options: PublicKeyCredentialCreationOptionsJSON;
   }> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.prunePasskeyCeremonies(now);
     const accountPasskeys = [...this.passkeys.values()].filter(
       (passkey) => passkey.accountId === session.account.id
@@ -1879,7 +2068,7 @@ export class Cp2Store {
     now?: Date;
   }): Promise<PasskeySummary> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const ceremony = this.takePasskeyCeremony(input.ceremonyId, "registration", now);
 
     if (ceremony.accountId !== session.account.id || ceremony.webauthnUserId === null) {
@@ -2037,7 +2226,7 @@ export class Cp2Store {
 
   listPasskeys(input: { sessionId: string | null; now?: Date }): PasskeySummary[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     return [...this.passkeys.values()]
       .filter((passkey) => passkey.accountId === session.account.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -2048,7 +2237,7 @@ export class Cp2Store {
     revoked: true;
   } {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const passkey = this.passkeys.get(input.credentialId);
 
     if (passkey === undefined || passkey.accountId !== session.account.id) {
@@ -2079,7 +2268,7 @@ export class Cp2Store {
     now?: Date;
   }): CreateBusinessResult {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     const name = input.name.trim();
 
@@ -2217,7 +2406,7 @@ export class Cp2Store {
     sessionId: string | null;
     now?: Date;
   }): Array<{ business: BusinessSummary; membership: MembershipSummary }> {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
 
     return [...this.memberships.values()]
       .filter(
@@ -2243,7 +2432,7 @@ export class Cp2Store {
     now?: Date;
   }): SyncPullPage {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.pruneExpiredSyncTombstones(now);
     const accountId = session.account.id;
     const limit = Math.min(100, Math.max(1, input.limit ?? 50));
@@ -2287,9 +2476,7 @@ export class Cp2Store {
     now?: Date;
   }): McpAccessTokenCreated {
     const now = input.now ?? new Date();
-    const session = input.scopes.includes("mcp:act")
-      ? this.requirePinVerifiedSession(input.sessionId, now)
-      : this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const name = input.name.trim();
     if (name.length < 3 || name.length > 80) {
       throw new Cp2Error(400, "mcp_token_name_invalid", "Token name must be 3 to 80 characters.");
@@ -2350,7 +2537,7 @@ export class Cp2Store {
   }
 
   listMcpAccessTokens(input: { sessionId: string | null; now?: Date }): McpAccessTokenSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.mcpAccessTokens.values()]
       .filter((token) => token.accountId === session.account.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -2363,7 +2550,7 @@ export class Cp2Store {
     now?: Date;
   }): McpAccessTokenSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const token = this.mcpAccessTokens.get(input.tokenId);
     if (token === undefined || token.accountId !== session.account.id) {
       throw new Cp2Error(404, "mcp_token_not_found", "MCP token was not found.");
@@ -2417,7 +2604,7 @@ export class Cp2Store {
     listener: (event: SyncRealtimeChangesAvailableEvent) => void;
     now?: Date;
   }): () => void {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const accountId = session.account.id;
     const listeners = this.syncChangeListeners.get(accountId) ?? new Set();
     listeners.add(input.listener);
@@ -2443,7 +2630,7 @@ export class Cp2Store {
 
   getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const context = this.ensureSokoSessionContext(session, now);
     return this.sokoSessionContextView(session, context, now);
   }
@@ -2537,7 +2724,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
 
     if (input.activeShopId !== null) {
       if (!this.businesses.has(input.activeShopId)) {
@@ -2592,7 +2779,7 @@ export class Cp2Store {
     now?: Date;
   }): MarketplaceIntroStateSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const businessId = input.businessId ?? null;
 
     if (businessId !== null) {
@@ -2741,7 +2928,292 @@ export class Cp2Store {
       occurredAt: now.toISOString(),
       payload: { modelId: selection.modelId }
     });
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const revised = {
+      ...profile,
+      modelId: selection.modelId,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(revised, session.user.id, "Cloud fallback model changed");
     return selection;
+  }
+
+  getActiveAgentModelBinding(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    now?: Date;
+  }): AgentModelBindingSummary | null {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    const binding =
+      this.activeAgentModelBinding(input.agentId) ??
+      [...this.agentModelBindings.values()]
+        .filter((candidate) => candidate.agentId === input.agentId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ??
+      null;
+    return binding === null ? null : cloneAgentModelBinding(binding);
+  }
+
+  async testAgentModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    now?: Date;
+  }): Promise<ModelRuntimeHealthSummary> {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage", now);
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    this.requireCanonicalAiModel(input.modelId);
+    const adapter = this.requireModelRuntimeAdapter(input);
+    const health = await adapter.healthCheck({
+      agentId: input.agentId,
+      shopId: input.businessId,
+      modelId: input.modelId
+    });
+    const summary = healthSummary(health, now);
+    if (!summary.ok) {
+      throw modelHealthError(summary);
+    }
+    return summary;
+  }
+
+  async activateAgentModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    executionMode: PreferredExecutionMode;
+    fallbackPolicy: AgentModelFallbackPolicy;
+    permissions: AgentModelBindingPermissions;
+    fallbackModelId: string | null;
+    now?: Date;
+  }): Promise<AgentModelActivationResult> {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    this.requireBusinessAgent(input.businessId, input.agentId, now);
+    const model = this.requireCanonicalAiModel(input.modelId);
+    validateAgentModelBindingConfiguration(input, model, aiModelRegistry);
+    const existingActive = this.activeAgentModelBinding(input.agentId);
+    if (
+      existingActive !== null &&
+      existingActive.modelId === input.modelId &&
+      existingActive.executionTarget === input.executionTarget &&
+      existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
+      existingActive.fallbackPolicy === normalizeFallbackPolicy(input.fallbackPolicy) &&
+      existingActive.fallbackModelId === input.fallbackModelId &&
+      existingActive.permissions.allowInstalledApp === input.permissions.allowInstalledApp &&
+      existingActive.permissions.allowRemoteShopDevice ===
+        input.permissions.allowRemoteShopDevice &&
+      existingActive.permissions.allowOpenAIFallback === input.permissions.allowOpenAIFallback
+    ) {
+      const health = healthSummary(
+        await this.requireModelRuntimeAdapter(input).healthCheck({
+          agentId: input.agentId,
+          shopId: input.businessId,
+          modelId: input.modelId
+        }),
+        now
+      );
+      if (!health.ok) throw modelHealthError(health);
+      const verified = {
+        ...existingActive,
+        lastVerifiedAt: health.checkedAt,
+        lastVerificationStatus: "passed" as const,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        updatedAt: health.checkedAt,
+        updatedBy: session.user.id
+      };
+      this.agentModelBindings.set(verified.id, verified);
+      this.recordAgentModelBindingAudit(
+        "agent_model.activation_reverified",
+        verified,
+        session.user.id,
+        { latencyMs: health.latencyMs }
+      );
+      return { binding: cloneAgentModelBinding(verified), healthCheck: health };
+    }
+    if (this.agentModelActivationLocks.has(input.agentId)) {
+      throw new Cp2Error(
+        409,
+        "MODEL_ACTIVATION_CONFLICT",
+        "Another model activation is already running for this agent.",
+        true,
+        { agentId: input.agentId }
+      );
+    }
+
+    this.agentModelActivationLocks.add(input.agentId);
+    const createdAt = now.toISOString();
+    const pending: AgentModelBindingSummary = {
+      id: randomUUID(),
+      agentId: input.agentId,
+      shopId: input.businessId,
+      accountId: session.account.id,
+      modelId: input.modelId,
+      status: "verifying",
+      executionMode: normalizeExecutionMode(input.executionMode),
+      fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
+      executionTarget: input.executionTarget,
+      permissions: { ...input.permissions },
+      fallbackModelId: input.fallbackModelId,
+      activatedAt: null,
+      lastVerifiedAt: null,
+      lastVerificationStatus: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt,
+      updatedAt: createdAt,
+      updatedBy: session.user.id
+    };
+    this.agentModelBindings.set(pending.id, pending);
+
+    try {
+      const adapter = this.requireModelRuntimeAdapter(input);
+      const health = healthSummary(
+        await adapter.healthCheck({
+          agentId: input.agentId,
+          shopId: input.businessId,
+          modelId: input.modelId
+        }),
+        now
+      );
+      if (!health.ok) {
+        const failed: AgentModelBindingSummary = {
+          ...pending,
+          status: isUnavailableRuntimeCode(health.errorCode) ? "unavailable" : "failed",
+          lastVerifiedAt: health.checkedAt,
+          lastVerificationStatus: "failed",
+          lastErrorCode: health.errorCode,
+          lastErrorMessage: health.errorMessage,
+          updatedAt: health.checkedAt
+        };
+        this.agentModelBindings.set(failed.id, failed);
+        this.recordAgentModelBindingAudit(
+          "agent_model.activation_failed",
+          failed,
+          session.user.id,
+          {
+            errorCode: health.errorCode,
+            latencyMs: health.latencyMs
+          }
+        );
+        throw modelHealthError(health);
+      }
+
+      const activatedAt = health.checkedAt;
+      for (const [bindingId, binding] of this.agentModelBindings) {
+        if (
+          binding.agentId === input.agentId &&
+          binding.status === "active" &&
+          binding.id !== pending.id
+        ) {
+          this.agentModelBindings.set(bindingId, {
+            ...binding,
+            status: "inactive",
+            updatedAt: activatedAt,
+            updatedBy: session.user.id
+          });
+        }
+      }
+      const active: AgentModelBindingSummary = {
+        ...pending,
+        status: "active",
+        activatedAt,
+        lastVerifiedAt: activatedAt,
+        lastVerificationStatus: "passed",
+        updatedAt: activatedAt
+      };
+      this.agentModelBindings.set(active.id, active);
+
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        modelId: input.modelId,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: activatedAt,
+        updatedBy: session.user.id
+      };
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Verified agent model activated");
+      this.recordAgentModelBindingAudit(
+        "agent_model.activation_succeeded",
+        active,
+        session.user.id,
+        { latencyMs: health.latencyMs }
+      );
+      return { binding: cloneAgentModelBinding(active), healthCheck: health };
+    } catch (error) {
+      if (error instanceof Cp2Error) {
+        const current = this.agentModelBindings.get(pending.id);
+        if (current?.status === "verifying") {
+          const failedAt = new Date().toISOString();
+          const failed: AgentModelBindingSummary = {
+            ...current,
+            status:
+              isUnavailableRuntimeCode(error.code) ||
+              error.code === "BRIDGE_UNAVAILABLE" ||
+              error.code === "BROWSER_RUNTIME_DISABLED"
+                ? "unavailable"
+                : "failed",
+            lastVerifiedAt: failedAt,
+            lastVerificationStatus: "failed",
+            lastErrorCode: error.code,
+            lastErrorMessage: error.message,
+            updatedAt: failedAt
+          };
+          this.agentModelBindings.set(failed.id, failed);
+          this.recordAgentModelBindingAudit(
+            "agent_model.activation_failed",
+            failed,
+            session.user.id,
+            { errorCode: error.code }
+          );
+        }
+        throw error;
+      }
+      const runtimeError = asModelRuntimeError(error);
+      const failedAt = new Date().toISOString();
+      const failed: AgentModelBindingSummary = {
+        ...pending,
+        status: "failed",
+        lastVerifiedAt: failedAt,
+        lastVerificationStatus: "failed",
+        lastErrorCode: runtimeError.code,
+        lastErrorMessage: runtimeError.message,
+        updatedAt: failedAt
+      };
+      this.agentModelBindings.set(failed.id, failed);
+      this.recordAgentModelBindingAudit("agent_model.activation_failed", failed, session.user.id, {
+        errorCode: runtimeError.code
+      });
+      throw new Cp2Error(
+        runtimeError.code === "INFERENCE_TIMEOUT" ? 504 : 503,
+        runtimeError.code,
+        runtimeError.message,
+        runtimeError.retryable,
+        {
+          agentId: input.agentId,
+          modelId: input.modelId,
+          executionTarget: input.executionTarget
+        }
+      );
+    } finally {
+      this.agentModelActivationLocks.delete(input.agentId);
+    }
   }
 
   listInstalledAgentModels(input: {
@@ -2749,7 +3221,7 @@ export class Cp2Store {
     deviceId?: string;
     now?: Date;
   }): InstalledAgentModelSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.installedAgentModels.values()]
       .filter(
         (model) =>
@@ -2768,7 +3240,7 @@ export class Cp2Store {
     now?: Date;
   }): InstalledAgentModelSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const model = normalizeInstalledAgentModel(input.model, session.account.id, session.user.id);
     const existing = this.installedAgentModels.get(model.id);
     if (
@@ -2811,7 +3283,7 @@ export class Cp2Store {
     now?: Date;
   }): InstalledAgentModelSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const existing = this.requireOwnedModelInstallation(
       session.account.id,
       session.user.id,
@@ -2922,6 +3394,20 @@ export class Cp2Store {
         "Run a successful local test inference before activating this model."
       );
     }
+    if (input.readinessStatus === "READY") {
+      const readiness = this.getAgentRuntimeReadiness({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        now
+      });
+      if (!readiness.ready) {
+        throw new Cp2Error(
+          409,
+          "agent_runtime_not_ready",
+          readiness.issues.map((issue) => issue.message).join(" ")
+        );
+      }
+    }
     const assignment: AgentModelAssignmentSummary = {
       agentId: input.businessId,
       businessId: input.businessId,
@@ -2964,6 +3450,21 @@ export class Cp2Store {
         fallbackPolicy: assignment.fallbackPolicy
       }
     });
+    if (assignment.readinessStatus === "READY") {
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        modelId: installation.modelId,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: now.toISOString(),
+        updatedBy: session.user.id
+      };
+      if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+        this.recordAgentRuntimeVersion(profile, session.user.id, "Initial business runtime");
+      }
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Active model changed");
+    }
     return { ...assignment };
   }
 
@@ -3000,6 +3501,281 @@ export class Cp2Store {
         deviceId: input.deviceId
       }
     });
+    if (existing !== undefined) {
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const revised = {
+        ...profile,
+        runtimeVersion: profile.runtimeVersion + 1,
+        updatedAt: now.toISOString(),
+        updatedBy: session.user.id
+      };
+      this.agentProfiles.set(input.businessId, revised);
+      this.recordAgentRuntimeVersion(revised, session.user.id, "Device model assignment removed");
+    }
+    return { removed: true };
+  }
+
+  getBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary | null {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const assignment = this.browserInferenceAssignments.get(
+      browserInferenceAssignmentKey(input.businessId, deviceId)
+    );
+    if (
+      assignment === undefined ||
+      assignment.accountId !== session.account.id ||
+      assignment.userId !== session.user.id
+    ) {
+      return null;
+    }
+    return cloneBrowserInferenceAssignment(assignment);
+  }
+
+  upsertBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    enabled: boolean;
+    selectedModelId: string | null;
+    modelFamilyId: string | null;
+    modelRevision: string | null;
+    runtimeContract: BrowserRuntimeContract | null;
+    checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+    deviceTier: BrowserDeviceTier | null;
+    readinessStatus: AgentModelReadinessStatus;
+    lastSuccessfulInferenceAt: string | null;
+    lastErrorCode: string | null;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
+    ) {
+      throw new Cp2Error(
+        403,
+        "browser_inference_owner_mismatch",
+        "Browser inference access was denied."
+      );
+    }
+    const runtimeContract =
+      input.runtimeContract === null
+        ? null
+        : normalizeBrowserRuntimeContract(input.runtimeContract);
+    const checkpointCompatibilityContract =
+      input.checkpointCompatibilityContract === null
+        ? null
+        : normalizeBrowserCheckpointContract(input.checkpointCompatibilityContract);
+    const selectedModelId =
+      input.selectedModelId === null
+        ? null
+        : normalizeRequiredBoundedText(input.selectedModelId, "browser model ID", 180);
+    const modelFamilyId =
+      input.modelFamilyId === null
+        ? null
+        : normalizeRequiredBoundedText(input.modelFamilyId, "browser model family ID", 180);
+    const modelRevision =
+      input.modelRevision === null
+        ? null
+        : normalizeRequiredBoundedText(input.modelRevision, "browser model revision", 180);
+
+    validateBrowserInferenceAssignment({
+      enabled: input.enabled,
+      selectedModelId,
+      modelFamilyId,
+      modelRevision,
+      runtimeContract,
+      checkpointCompatibilityContract,
+      readinessStatus: input.readinessStatus,
+      lastSuccessfulInferenceAt: input.lastSuccessfulInferenceAt
+    });
+    const occurredAt = now.toISOString();
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const assignment: BrowserInferenceAssignmentSummary = {
+      id: existing?.id ?? randomUUID(),
+      agentId: profile.agentId,
+      businessId: input.businessId,
+      accountId: session.account.id,
+      userId: session.user.id,
+      deviceId,
+      enabled: input.enabled,
+      selectedModelId,
+      modelFamilyId,
+      modelRevision,
+      runtimeContract,
+      checkpointCompatibilityContract,
+      deviceTier: input.deviceTier,
+      readinessStatus: input.readinessStatus,
+      lastSuccessfulInferenceAt:
+        input.lastSuccessfulInferenceAt === null
+          ? null
+          : normalizeBrowserInferenceTimestamp(input.lastSuccessfulInferenceAt),
+      lastErrorCode:
+        input.lastErrorCode === null
+          ? null
+          : normalizeRequiredBoundedText(input.lastErrorCode, "browser inference error code", 120),
+      createdAt: existing?.createdAt ?? occurredAt,
+      updatedAt: occurredAt,
+      updatedBy: session.user.id
+    };
+    this.browserInferenceAssignments.set(key, assignment);
+    this.recordAuditEvent({
+      type: input.enabled
+        ? assignment.readinessStatus === "READY"
+          ? "browser_inference.ready"
+          : "browser_inference.updated"
+        : "browser_inference.disabled",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt,
+      payload: {
+        deviceId,
+        modelId: selectedModelId,
+        modelFamilyId,
+        runtime: runtimeContract?.runtime ?? null,
+        adapterId: runtimeContract?.adapterId ?? null,
+        adapterVersion: runtimeContract?.adapterVersion ?? null,
+        readinessStatus: assignment.readinessStatus,
+        enabled: assignment.enabled
+      }
+    });
+    return cloneBrowserInferenceAssignment(assignment);
+  }
+
+  recordBrowserInferenceExecution(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    modelId: string;
+    successful: boolean;
+    errorCode: string | null;
+    occurredAt: string;
+    now?: Date;
+  }): BrowserInferenceAssignmentSummary {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const modelId = normalizeRequiredBoundedText(input.modelId, "browser model ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing === undefined ||
+      existing.accountId !== session.account.id ||
+      existing.userId !== session.user.id ||
+      existing.selectedModelId !== modelId
+    ) {
+      throw new Cp2Error(
+        409,
+        "browser_inference_assignment_mismatch",
+        "The browser inference execution does not match the active device assignment."
+      );
+    }
+    if (!existing.enabled) {
+      throw new Cp2Error(
+        409,
+        "browser_inference_assignment_inactive",
+        "The browser inference assignment is disabled."
+      );
+    }
+    const occurredAt = normalizeBrowserInferenceTimestamp(input.occurredAt);
+    const updated: BrowserInferenceAssignmentSummary = {
+      ...existing,
+      readinessStatus: input.successful ? "READY" : existing.readinessStatus,
+      lastSuccessfulInferenceAt: input.successful ? occurredAt : existing.lastSuccessfulInferenceAt,
+      lastErrorCode:
+        input.successful || input.errorCode === null
+          ? null
+          : normalizeRequiredBoundedText(
+              input.errorCode,
+              "browser inference execution error code",
+              120
+            ),
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.browserInferenceAssignments.set(key, updated);
+    this.recordAuditEvent({
+      type: input.successful
+        ? "browser_inference.execution_succeeded"
+        : "browser_inference.execution_failed",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: updated.updatedAt,
+      payload: {
+        deviceId,
+        modelId,
+        successful: input.successful,
+        errorCode: updated.lastErrorCode
+      }
+    });
+    return cloneBrowserInferenceAssignment(updated);
+  }
+
+  removeBrowserInferenceAssignment(input: {
+    sessionId: string | null;
+    businessId: string;
+    deviceId: string;
+    now?: Date;
+  }): { removed: true } {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const deviceId = normalizeRequiredBoundedText(input.deviceId, "device ID", 180);
+    const key = browserInferenceAssignmentKey(input.businessId, deviceId);
+    const existing = this.browserInferenceAssignments.get(key);
+    if (
+      existing !== undefined &&
+      (existing.accountId !== session.account.id || existing.userId !== session.user.id)
+    ) {
+      throw new Cp2Error(
+        403,
+        "browser_inference_owner_mismatch",
+        "Browser inference access was denied."
+      );
+    }
+    this.browserInferenceAssignments.delete(key);
+    this.recordAuditEvent({
+      type: "browser_inference.removed",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        deviceId,
+        modelId: existing?.selectedModelId ?? null
+      }
+    });
     return { removed: true };
   }
 
@@ -3018,7 +3794,7 @@ export class Cp2Store {
     const stored = this.agentProfiles.get(input.businessId);
     if (stored !== undefined) {
       return cloneBusinessAgentProfile({
-        ...stored,
+        ...hydrateBusinessAgentProfile(stored),
         contextScripts: ensureRequiredAgentContextScripts(stored.contextScripts)
       });
     }
@@ -3046,6 +3822,16 @@ export class Cp2Store {
       now
     );
     const profile = normalizeBusinessAgentProfile(input.profile);
+    const business = this.requireBusiness(input.businessId);
+    const current = hydrateBusinessAgentProfile(
+      this.agentProfiles.get(input.businessId) ??
+        createDefaultBusinessAgentProfile({
+          business,
+          modelId: this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId,
+          updatedAt: now.toISOString(),
+          updatedBy: session.user.id
+        })
+    );
     const model = aiModelRegistry.find((candidate) => candidate.id === profile.modelId);
     const deviceModel = downloadableAiModelIdPattern.test(profile.modelId);
     if ((!deviceModel && model === undefined) || model?.available === false) {
@@ -3061,13 +3847,24 @@ export class Cp2Store {
 
     const updated: BusinessAgentProfileSummary = {
       businessId: input.businessId,
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: current.agentId,
+      runtimeVersion: current.runtimeVersion + 1,
+      createdAt: current.createdAt,
       ...profile,
       contextScripts: ensureRequiredAgentContextScripts(profile.contextScripts),
       modelId: model?.id ?? profile.modelId,
       updatedAt: now.toISOString(),
       updatedBy: session.user.id
     };
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(current, new Date(current.updatedAt));
+      this.recordAgentRuntimeVersion(current, session.user.id, "Initial business runtime");
+    }
     this.agentProfiles.set(input.businessId, updated);
+    this.synchronizeProfileContextSources(updated, now);
+    this.recordAgentRuntimeVersion(updated, session.user.id, "Agent profile updated");
     this.recordAuditEvent({
       type: "agent_profile.updated",
       aggregateType: "business",
@@ -3084,13 +3881,483 @@ export class Cp2Store {
     return cloneBusinessAgentProfile(updated);
   }
 
+  getAgentRuntime(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ShopAgentRuntime {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    return this.buildShopAgentRuntime(
+      this.currentAgentProfile(input.businessId, now),
+      now,
+      "owner"
+    );
+  }
+
+  listAgentRuntimeVersions(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentRuntimeVersion[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.runtimeVersionsForBusiness(input.businessId).map(cloneAgentRuntimeVersion);
+  }
+
+  rollbackAgentRuntimeVersion(input: {
+    sessionId: string | null;
+    businessId: string;
+    version: number;
+    now?: Date;
+  }): ShopAgentRuntime {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const target = this.runtimeVersionsForBusiness(input.businessId).find(
+      (candidate) => candidate.version === input.version
+    );
+    if (target === undefined) {
+      throw new Cp2Error(404, "agent_runtime_version_not_found", "Runtime version was not found.");
+    }
+    const current = this.currentAgentProfile(input.businessId, now);
+    const runtime = target.runtime;
+    const targetContextSourceIds = new Set(runtime.context.sources.map((source) => source.id));
+    const restoredContextScripts = runtime.context.sources
+      .filter((source) => source.type === "context_script" && source.status === "active")
+      .map(
+        (source) =>
+          source.retrievalMetadata.content ??
+          this.agentContextSources.get(source.id)?.retrievalMetadata.content ??
+          ""
+      )
+      .filter((content) => content !== "");
+    for (const source of this.agentContextSources.values()) {
+      if (source.shopId !== input.businessId || source.type === "context_script") continue;
+      const targetSource = runtime.context.sources.find((candidate) => candidate.id === source.id);
+      if (targetSource === undefined || !targetContextSourceIds.has(source.id)) {
+        source.status = "archived";
+        source.deletedAt = now.toISOString();
+      } else {
+        source.status = targetSource.status;
+        source.deletedAt = targetSource.status === "archived" ? now.toISOString() : null;
+      }
+      source.updatedAt = now.toISOString();
+    }
+    const restored: BusinessAgentProfileSummary = {
+      ...current,
+      name: runtime.identity.agentName,
+      description: runtime.identity.shopDescription,
+      modelId: runtime.model.modelId,
+      role: runtime.identity.role,
+      language: runtime.identity.supportedLanguages[0] ?? current.language,
+      supportedLanguages: [...runtime.identity.supportedLanguages],
+      businessCategory: runtime.identity.businessCategory,
+      publicIntroduction: runtime.identity.publicIntroduction,
+      personality: runtime.personality.additionalGuidance || current.personality,
+      personalityConfig: cloneAgentPersonality(runtime.personality),
+      instructions: runtime.instructions.generalOperatingRules.join("\n") || current.instructions,
+      instructionPolicy: cloneAgentInstructions(runtime.instructions),
+      skillBindings: runtime.skills.map(cloneAgentSkillBinding),
+      memoryPolicy: { ...runtime.memory },
+      evaluationPolicy: { ...runtime.evaluations },
+      contextScripts: restoredContextScripts,
+      status:
+        runtime.status === "paused" || runtime.status === "archived" ? "draft" : runtime.status,
+      runtimeVersion: current.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, restored);
+    this.synchronizeProfileContextSources(restored, now);
+    this.recordAgentRuntimeVersion(
+      restored,
+      session.user.id,
+      `Rolled back to runtime version ${target.version}`
+    );
+    this.recordAuditEvent({
+      type: "agent_runtime.rolled_back",
+      aggregateType: "business",
+      aggregateId: input.businessId,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        fromVersion: current.runtimeVersion,
+        targetVersion: target.version,
+        activeVersion: restored.runtimeVersion
+      }
+    });
+    return this.buildShopAgentRuntime(restored, now, "owner");
+  }
+
+  getAgentRuntimeReadiness(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentRuntimeReadiness {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const business = this.businesses.get(input.businessId);
+    const profile = this.agentProfiles.get(input.businessId);
+    const effectiveProfile =
+      business === undefined ? null : this.currentAgentProfile(input.businessId, now);
+    const issues: AgentRuntimeReadiness["issues"] = [];
+    if (business === undefined || effectiveProfile === null) {
+      issues.push({
+        code: "AGENT_NOT_FOUND",
+        message: "The business agent was not found.",
+        actionable: true
+      });
+    } else {
+      if (
+        effectiveProfile.tenantId !== input.businessId ||
+        effectiveProfile.shopId !== input.businessId
+      ) {
+        issues.push({
+          code: "TENANT_BINDING_INVALID",
+          message: "The runtime tenant and shop binding is invalid.",
+          actionable: true
+        });
+      }
+      if (effectiveProfile.modelId.trim() === "") {
+        issues.push({
+          code: "MODEL_NOT_SELECTED",
+          message: "Select a model for this agent.",
+          actionable: true
+        });
+      } else if (
+        !downloadableAiModelIdPattern.test(effectiveProfile.modelId) &&
+        !aiModelRegistry.some(
+          (model) => model.id === effectiveProfile.modelId && model.available
+        ) &&
+        effectiveProfile.modelId !== "sokoclaw-local"
+      ) {
+        issues.push({
+          code: "MODEL_UNAVAILABLE",
+          message: "The selected model is unavailable.",
+          actionable: true
+        });
+      }
+      if (
+        effectiveProfile.skillBindings.length === 0 ||
+        effectiveProfile.skillBindings.some((binding) => !(binding.skillId in runtimeToolRegistry))
+      ) {
+        issues.push({
+          code: "TOOL_REGISTRY_UNAVAILABLE",
+          message: "The runtime tool registry does not match the active skill bindings.",
+          actionable: true
+        });
+      }
+      if (profile !== undefined && profile.status !== "active") {
+        issues.push({
+          code: "INVALID_RUNTIME_PROFILE",
+          message: "Activate the agent profile before using chat.",
+          actionable: true
+        });
+      }
+    }
+    return {
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: effectiveProfile?.agentId ?? input.businessId,
+      runtimeVersion: effectiveProfile?.runtimeVersion ?? 0,
+      ready: issues.length === 0,
+      issues,
+      checkedAt: now.toISOString()
+    };
+  }
+
+  listAgentContextSources(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentContextSource[] {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    return this.contextSourcesForRuntime(this.currentAgentProfile(input.businessId, now)).map(
+      cloneAgentContextSource
+    );
+  }
+
+  upsertAgentContextSource(input: {
+    sessionId: string | null;
+    businessId: string;
+    sourceId?: string;
+    type: AgentContextSource["type"];
+    title: string;
+    content: string;
+    sensitivity: AgentContextSource["sensitivity"];
+    customerVisible: boolean;
+    status: AgentContextSource["status"];
+    now?: Date;
+  }): AgentContextSource {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const existing =
+      input.sourceId === undefined ? undefined : this.agentContextSources.get(input.sourceId);
+    if (
+      existing !== undefined &&
+      (existing.tenantId !== input.businessId || existing.shopId !== input.businessId)
+    ) {
+      throw new Cp2Error(403, "agent_context_tenant_mismatch", "Context source access was denied.");
+    }
+    const profile = this.currentAgentProfile(input.businessId, now);
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(profile, new Date(profile.updatedAt));
+      this.recordAgentRuntimeVersion(profile, session.user.id, "Initial business runtime");
+    }
+    if (existing !== undefined) {
+      this.agentContextSources.set(existing.id, {
+        ...existing,
+        status: "archived",
+        updatedAt: now.toISOString(),
+        deletedAt: now.toISOString()
+      });
+    }
+    const source: AgentContextSource = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      type: input.type,
+      title: normalizeRequiredBoundedText(input.title, "context title", 160),
+      status: input.status,
+      sensitivity: input.sensitivity,
+      accessRules: {
+        audiences: input.customerVisible ? ["owner", "staff", "customer"] : ["owner", "staff"],
+        requiredPermission: input.customerVisible ? null : "business:read",
+        customerVisible: input.customerVisible
+      },
+      freshnessTimestamp: now.toISOString(),
+      version: (existing?.version ?? 0) + 1,
+      retrievalMetadata: {
+        keywords: contextKeywords(`${input.title} ${input.content}`),
+        sourceRecordId: null,
+        content: normalizeRequiredBoundedText(input.content, "context content", 4000)
+      },
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      deletedAt: input.status === "archived" ? now.toISOString() : null
+    };
+    this.agentContextSources.set(source.id, source);
+    const revised = {
+      ...profile,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(
+      revised,
+      session.user.id,
+      `Context source ${source.title} updated`
+    );
+    return cloneAgentContextSource(source);
+  }
+
+  listAgentOwnerCorrections(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentOwnerCorrection[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.ownerCorrectionsForBusiness(input.businessId).map((correction) => ({
+      ...correction
+    }));
+  }
+
+  submitAgentOwnerCorrection(input: {
+    sessionId: string | null;
+    businessId: string;
+    correction: string;
+    category: AgentOwnerCorrection["category"];
+    sourceMessageId?: string | null;
+    promoteToInstruction: boolean;
+    now?: Date;
+  }): AgentOwnerCorrection {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const current = this.currentAgentProfile(input.businessId, now);
+    const correctionText = normalizeRequiredBoundedText(input.correction, "owner correction", 1000);
+    if (this.runtimeVersionsForBusiness(input.businessId).length === 0) {
+      this.synchronizeProfileContextSources(current, new Date(current.updatedAt));
+      this.recordAgentRuntimeVersion(current, session.user.id, "Initial business runtime");
+    }
+    const revised: BusinessAgentProfileSummary = {
+      ...current,
+      ...(input.promoteToInstruction
+        ? {
+            instructions: [current.instructions, correctionText].filter(Boolean).join("\n"),
+            instructionPolicy: {
+              ...cloneAgentInstructions(current.instructionPolicy),
+              generalOperatingRules: [
+                ...current.instructionPolicy.generalOperatingRules,
+                correctionText
+              ]
+            }
+          }
+        : {}),
+      runtimeVersion: current.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(
+      revised,
+      session.user.id,
+      input.promoteToInstruction ? "Owner correction promoted" : "Owner correction memory added"
+    );
+    const runtimeVersion = revised.runtimeVersion;
+    const correction: AgentOwnerCorrection = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: current.agentId,
+      runtimeVersion,
+      correction: correctionText,
+      category: input.category,
+      status: "active",
+      sourceMessageId: input.sourceMessageId ?? null,
+      promotedToInstruction: input.promoteToInstruction,
+      createdBy: session.user.id,
+      createdAt: now.toISOString(),
+      disabledAt: null
+    };
+    this.agentOwnerCorrections.set(correction.id, correction);
+    this.recordAgentEvaluationEvent({
+      businessId: input.businessId,
+      runtimeVersion,
+      modelId: current.modelId,
+      eventType: "owner_correction",
+      outcome: "success",
+      score: 1,
+      reason: input.promoteToInstruction
+        ? "Owner correction promoted to a structured instruction."
+        : "Owner correction saved as runtime memory.",
+      metadata: { category: input.category, promoted: input.promoteToInstruction },
+      sessionId: null,
+      messageId: input.sourceMessageId ?? null,
+      now
+    });
+    return { ...correction };
+  }
+
+  disableAgentOwnerCorrection(input: {
+    sessionId: string | null;
+    businessId: string;
+    correctionId: string;
+    now?: Date;
+  }): AgentOwnerCorrection {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const existing = this.agentOwnerCorrections.get(input.correctionId);
+    if (existing === undefined || existing.shopId !== input.businessId) {
+      throw new Cp2Error(404, "agent_correction_not_found", "Owner correction was not found.");
+    }
+    const updated = { ...existing, status: "disabled" as const, disabledAt: now.toISOString() };
+    this.agentOwnerCorrections.set(updated.id, updated);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const revised = {
+      ...profile,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: now.toISOString(),
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(revised, session.user.id, "Owner correction memory disabled");
+    return { ...updated };
+  }
+
+  submitAgentFeedback(input: {
+    sessionId: string | null;
+    businessId: string;
+    messageId?: string | null;
+    correct: boolean;
+    reason?: string | null;
+    now?: Date;
+  }): AgentEvaluationEvent {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    return this.recordAgentEvaluationEvent({
+      businessId: input.businessId,
+      runtimeVersion: profile.runtimeVersion,
+      modelId: profile.modelId,
+      eventType: "owner_feedback",
+      outcome: input.correct ? "success" : "failure",
+      score: input.correct ? 1 : 0,
+      reason:
+        input.reason === undefined || input.reason === null
+          ? null
+          : normalizeRequiredBoundedText(input.reason, "feedback reason", 500),
+      metadata: { correct: input.correct },
+      sessionId: null,
+      messageId: input.messageId ?? null,
+      now
+    });
+  }
+
+  getAgentEvaluationSummary(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): AgentEvaluationSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    const profile = this.currentAgentProfile(input.businessId, now);
+    const events = this.evaluationEventsForBusiness(input.businessId);
+    const scores = events
+      .map((event) => event.score)
+      .filter((score): score is number => score !== null);
+    return {
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      runtimeVersion: profile.runtimeVersion,
+      total: events.length,
+      success: events.filter((event) => event.outcome === "success").length,
+      partial: events.filter((event) => event.outcome === "partial").length,
+      failure: events.filter((event) => event.outcome === "failure").length,
+      blocked: events.filter((event) => event.outcome === "blocked").length,
+      averageScore:
+        scores.length === 0 ? null : scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      recentEvents: events.slice(0, 20).map((event) => ({ ...event }))
+    };
+  }
+
   listConversations(input: {
     sessionId: string | null;
     includeArchived?: boolean;
     now?: Date;
   }): ConversationInboxItem[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     return [...this.conversations.values()]
       .map((conversation) => {
         const participant = this.accountConversationParticipant(
@@ -3129,7 +4396,7 @@ export class Cp2Store {
     conversationId: string;
     now?: Date;
   }): ConversationView {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return this.conversationView(
       this.requireAccountConversation(input.conversationId, session.account.id)
     );
@@ -3143,7 +4410,7 @@ export class Cp2Store {
     now?: Date;
   }): E2eeDeviceSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const deviceId = input.deviceId.trim();
     const label = input.label.trim();
     if (deviceId.length < 8 || deviceId.length > 120 || label.length < 1 || label.length > 120) {
@@ -3168,7 +4435,7 @@ export class Cp2Store {
   }
 
   listE2eeDevices(input: { sessionId: string | null; now?: Date }): E2eeDeviceSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     return [...this.e2eeDevices.values()].filter(
       (device) => device.accountId === session.account.id && device.revokedAt === null
     );
@@ -3180,7 +4447,7 @@ export class Cp2Store {
     now?: Date;
   }): E2eeDeviceSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const current = this.e2eeDevices.get(input.deviceId);
     if (!current || current.accountId !== session.account.id) {
       throw new Cp2Error(404, "e2ee_device_not_found", "Encryption device was not found.");
@@ -3195,7 +4462,7 @@ export class Cp2Store {
     conversationId: string;
     now?: Date;
   }): E2eeDeviceSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     this.requireAccountConversation(input.conversationId, session.account.id);
     const accountIds = new Set(this.humanConversationAccountIds(input.conversationId));
     return [...this.e2eeDevices.values()].filter(
@@ -3211,7 +4478,7 @@ export class Cp2Store {
     now?: Date;
   }): PushSubscriptionSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const endpoint = input.endpoint.trim();
     if (!endpoint.startsWith("https://") || endpoint.length > 2_048) {
       throw new Cp2Error(400, "push_subscription_invalid", "Push endpoint is invalid.");
@@ -3241,7 +4508,7 @@ export class Cp2Store {
   removePushSubscription(input: { sessionId: string | null; endpoint: string; now?: Date }): {
     removed: boolean;
   } {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const id = this.pushSubscriptionIdByEndpoint.get(input.endpoint);
     const subscription = id ? this.pushSubscriptions.get(id) : undefined;
     if (!subscription || subscription.accountId !== session.account.id) return { removed: false };
@@ -3260,7 +4527,7 @@ export class Cp2Store {
     now?: Date;
   }): MessageHandoffSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     if (input.businessId !== null) {
       this.requireMembership(input.businessId, session.user.id);
     }
@@ -3321,7 +4588,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationMessageSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const clientMessageId = input.clientMessageId.trim();
 
@@ -3505,7 +4772,7 @@ export class Cp2Store {
     now?: Date;
   }): Promise<AgentConversationMessageResult> {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const hasHumanRecipient = [...this.conversationParticipants.values()].some(
       (participant) =>
@@ -3659,7 +4926,7 @@ export class Cp2Store {
     messageId: string;
     now?: Date;
   }): MessageDeliveryAttemptSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     this.requireConversationMessage(input.messageId, conversation.id);
     return [...this.messageDeliveryAttempts.values()]
@@ -3722,7 +4989,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
     const participant = this.accountConversationParticipant(conversation.id, session.account.id);
     if (participant === null)
@@ -3776,7 +5043,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationMessageSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountConversation(input.conversationId, session.account.id);
     const current = this.requireConversationMessage(input.messageId, input.conversationId);
     let next = current;
@@ -3852,7 +5119,7 @@ export class Cp2Store {
     now?: Date;
   }): ConversationTypingSummary[] {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountConversation(input.conversationId, session.account.id);
     const key = `${input.conversationId}:${session.user.id}`;
     if (input.typing) {
@@ -6482,7 +7749,7 @@ export class Cp2Store {
     sessionId: string | null;
     now?: Date;
   }): ConnectedSocialAccountSummary[] {
-    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
 
     return [...this.userIdentities.values()]
       .filter((identity) => identity.accountId === session.account.id)
@@ -6504,7 +7771,7 @@ export class Cp2Store {
     identityId: string;
   } {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const identity = this.userIdentities.get(input.identityId);
 
     if (identity === undefined || identity.accountId !== session.account.id) {
@@ -6758,7 +8025,7 @@ export class Cp2Store {
     now?: Date;
   }): OtpChallengeDelivery {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
 
     if (request === undefined || request.businessId !== input.businessId) {
@@ -6793,7 +8060,7 @@ export class Cp2Store {
     now?: Date;
   }): AccountDeletionRequestSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
 
     if (request === undefined || request.businessId !== input.businessId) {
@@ -6912,7 +8179,7 @@ export class Cp2Store {
     now?: Date;
   }): AccountDeletionRequestSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const request = this.accountDeletionRequests.get(input.requestId);
     if (
       request === undefined ||
@@ -8454,26 +9721,41 @@ export class Cp2Store {
       "business:read",
       now
     );
+    const readiness = this.getAgentRuntimeReadiness({
+      sessionId: input.sessionId,
+      businessId: input.businessId,
+      now
+    });
+    if (!readiness.ready) {
+      throw new Cp2Error(
+        409,
+        "agent_runtime_not_ready",
+        readiness.issues.map((issue) => issue.message).join(" ")
+      );
+    }
+    const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
+    const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    if (this.options.modelRuntimeAdapterResolver !== undefined && activeBinding === null) {
+      throw new Cp2Error(
+        409,
+        "AGENT_MODEL_NOT_CONFIGURED",
+        "This agent does not have a working model yet. Open Agent model settings and activate one.",
+        false,
+        { agentId: storedAgentProfile.agentId, shopId: input.businessId }
+      );
+    }
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
     );
-    const requestedModelId = input.agentProfile?.model;
+    const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
-      this.options.runtimeModelProviderResolver === undefined ||
+      activeBinding?.modelId ??
+      (this.options.runtimeModelProviderResolver === undefined ||
       requestedModelId === selectedCloudFallbackModelId
         ? selectedCloudFallbackModelId
-        : "sokoclaw-local";
-    const storedAgentProfile = this.agentProfiles.get(input.businessId);
-    const agentProfile =
-      input.agentProfile !== undefined
-        ? {
-            ...input.agentProfile,
-            contextScripts: ensureRequiredAgentContextScripts(input.agentProfile.contextScripts),
-            model: activeModelId
-          }
-        : storedAgentProfile === undefined
-          ? undefined
-          : runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
+        : "sokoclaw-local");
+    const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
+    const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "owner", activeModelId);
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -8554,6 +9836,7 @@ export class Cp2Store {
           response: "This runtime session has reached its action limit. Start a new session.",
           toolResult: null,
           telemetry,
+          runtimeVersion: shopRuntime.version,
           createdAt: startedAt
         },
         now
@@ -8576,7 +9859,8 @@ export class Cp2Store {
         runtimeSession,
         telemetry,
         turnId,
-        token: input.confirmationToken
+        token: input.confirmationToken,
+        runtimeVersion: shopRuntime.version
       });
     }
 
@@ -8601,36 +9885,56 @@ export class Cp2Store {
         : receiptContextScriptMatch !== null
           ? receiptContextScriptMatchToParseResult(receiptContextScriptMatch)
           : productContextScriptMatchToParseResult(contextScriptMatch!);
+    const retrievedContext = retrieveAgentContext({
+      sources: this.contextSourcesForRuntime(storedAgentProfile),
+      query: input.message,
+      audience: "owner",
+      limit: 6
+    });
+    const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
+      ? this.ownerCorrectionsForBusiness(input.businessId)
+          .filter((correction) => correction.status === "active")
+          .slice(0, shopRuntime.memory.maximumItemsPerScope)
+          .map((correction) => correction.correction)
+      : [];
     const modelRoute =
       documentImportProposal === null && effectiveContextScriptMatch === null
-        ? await this.createRuntimeModelRoute(
-            agentProfile === undefined
-              ? {
-                  message: input.message,
-                  ...(input.conversationHistory === undefined
-                    ? {}
-                    : { conversationHistory: input.conversationHistory }),
-                  modelId: activeModelId,
-                  context,
-                  now,
-                  appendTelemetry
-                }
-              : {
-                  message: input.message,
-                  ...(input.conversationHistory === undefined
-                    ? {}
-                    : { conversationHistory: input.conversationHistory }),
-                  modelId: activeModelId,
-                  context,
-                  now,
-                  appendTelemetry,
-                  agentProfile
-                }
-          )
+        ? await this.createRuntimeModelRoute({
+            message: input.message,
+            ...(input.conversationHistory === undefined
+              ? {}
+              : { conversationHistory: input.conversationHistory }),
+            modelId: activeModelId,
+            context,
+            now,
+            appendTelemetry,
+            shopRuntime,
+            retrievedContext,
+            memory: runtimeMemory,
+            intent: parserResult.intent
+          })
         : {
             proposal: null,
             trace: null
           };
+    if (
+      activeBinding !== null &&
+      modelRoute.trace !== null &&
+      modelRoute.trace.status !== "available"
+    ) {
+      throw new Cp2Error(
+        modelRoute.trace.status === "timeout" ? 504 : 503,
+        "AGENT_MODEL_UNAVAILABLE",
+        "The active agent model could not complete this message.",
+        true,
+        {
+          bindingId: activeBinding.id,
+          modelId: activeBinding.modelId,
+          executionTarget: activeBinding.executionTarget,
+          runtimeErrorCode: modelRoute.trace.errorCode
+        }
+      );
+    }
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
@@ -8658,25 +9962,39 @@ export class Cp2Store {
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
-    const confirmationToken =
-      proposal.validation.ok && definition.requiresConfirmation ? randomUUID() : null;
+    const policyErrors = enforceAgentPolicy({
+      runtime: shopRuntime,
+      toolName: proposal.toolName,
+      toolInput: proposal.input,
+      intent: parserResult.intent
+    });
+    const skillBinding = shopRuntime.skills.find(
+      (binding) => binding.skillId === proposal.toolName
+    );
+    const runtimeRequiresConfirmation =
+      definition.requiresConfirmation ||
+      shopRuntime.instructions.ownerApprovalRequiredFor.includes(proposal.toolName) ||
+      (skillBinding !== undefined && skillBinding.requiredConfirmationLevel !== "none");
+    const proposalAllowed = proposal.validation.ok && policyErrors.length === 0;
+    const confirmationToken = proposalAllowed && runtimeRequiresConfirmation ? randomUUID() : null;
     const plan = createRuntimePlan({
       toolName: proposal.toolName,
       input: proposal.input,
-      validationErrors: proposal.validation.errors,
+      validationErrors: [...proposal.validation.errors, ...policyErrors],
       confirmationToken,
-      status: proposal.validation.ok
-        ? definition.requiresConfirmation
+      status: proposalAllowed
+        ? runtimeRequiresConfirmation
           ? "needs_confirmation"
           : "safe_to_execute"
         : "clarification_required"
     });
     const verificationErrors = [
       ...proposal.validation.errors,
+      ...policyErrors,
       ...(roleAllowed ? [] : ["Actor role cannot use the proposed runtime tool."])
     ];
     const verification = createRuntimeVerification({
-      requiresConfirmation: definition.requiresConfirmation,
+      requiresConfirmation: runtimeRequiresConfirmation,
       confirmationSatisfied: false,
       roleAllowed,
       rateLimited: false,
@@ -8750,6 +10068,7 @@ export class Cp2Store {
         }),
         toolResult,
         telemetry,
+        runtimeVersion: shopRuntime.version,
         createdAt: startedAt
       },
       now
@@ -8763,7 +10082,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const importedContacts = input.contacts.map((contact, index) =>
       normalizeNetworkConnectionInput(contact, `contacts.${index}`)
     );
@@ -8847,7 +10166,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const profiles = input.profiles.map((profile, index) =>
       normalizeNetworkConnectionInput(profile, `profiles.${index}`)
     );
@@ -8937,7 +10256,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const identity = [...this.userIdentities.values()].find(
       (candidate) =>
         candidate.accountId === session.account.id && candidate.provider === input.provider
@@ -8962,7 +10281,7 @@ export class Cp2Store {
 
   getNetworkGraph(input: { sessionId: string | null; now?: Date }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.ensureOwnerNetworkNode(session.user, now);
     return this.networkGraphForUser(session.user.id, now);
   }
@@ -8982,7 +10301,7 @@ export class Cp2Store {
     now?: Date;
   }): AgentRouteSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const targetNode = this.findAgentRouteTarget({
       ownerUserId: session.user.id,
       requestText: input.requestText,
@@ -9044,7 +10363,7 @@ export class Cp2Store {
     now?: Date;
   }): AgentRouteSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const route = this.networkRoutes.get(input.routeId);
 
     if (route === undefined || route.ownerUserId !== session.user.id) {
@@ -9076,7 +10395,7 @@ export class Cp2Store {
     now?: Date;
   }): NetworkGraphSummary {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
     const source = this.networkSources.get(input.sourceId);
 
     if (source === undefined || source.ownerUserId !== session.user.id) {
@@ -9105,10 +10424,23 @@ export class Cp2Store {
       marketplaceIntroStates: [...this.marketplaceIntroStates.values()],
       activeAiModels: [...this.activeAiModels.values()],
       agentProfiles: [...this.agentProfiles.values()].map(cloneBusinessAgentProfile),
+      agentRuntimeVersions: [...this.agentRuntimeVersions.values()].map(cloneAgentRuntimeVersion),
+      agentContextSources: [...this.agentContextSources.values()].map(cloneAgentContextSource),
+      agentEvaluationEvents: [...this.agentEvaluationEvents.values()].map((event) => ({
+        ...event,
+        metadata: { ...event.metadata }
+      })),
+      agentOwnerCorrections: [...this.agentOwnerCorrections.values()].map((correction) => ({
+        ...correction
+      })),
       installedAgentModels: [...this.installedAgentModels.values()].map(cloneInstalledAgentModel),
       agentModelAssignments: [...this.agentModelAssignments.values()].map((assignment) => ({
         ...assignment
       })),
+      browserInferenceAssignments: [...this.browserInferenceAssignments.values()].map(
+        cloneBrowserInferenceAssignment
+      ),
+      agentModelBindings: [...this.agentModelBindings.values()].map(cloneAgentModelBinding),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       productFieldSchemas: [...this.productFieldSchemas.values()],
@@ -9195,8 +10527,15 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.activeAiModels.clear();
     this.agentProfiles.clear();
+    this.agentRuntimeVersions.clear();
+    this.agentContextSources.clear();
+    this.agentEvaluationEvents.clear();
+    this.agentOwnerCorrections.clear();
     this.installedAgentModels.clear();
     this.agentModelAssignments.clear();
+    this.browserInferenceAssignments.clear();
+    this.agentModelBindings.clear();
+    this.agentModelActivationLocks.clear();
     this.quarantinedBusinessIds.clear();
     this.messageByClientId.clear();
     this.messageByIdempotencyKey.clear();
@@ -9373,7 +10712,29 @@ export class Cp2Store {
     }
 
     for (const profile of snapshot.agentProfiles ?? []) {
-      this.agentProfiles.set(profile.businessId, cloneBusinessAgentProfile(profile));
+      this.agentProfiles.set(
+        profile.businessId,
+        cloneBusinessAgentProfile(hydrateBusinessAgentProfile(profile))
+      );
+    }
+
+    for (const version of snapshot.agentRuntimeVersions ?? []) {
+      this.agentRuntimeVersions.set(version.id, cloneAgentRuntimeVersion(version));
+    }
+
+    for (const source of snapshot.agentContextSources ?? []) {
+      this.agentContextSources.set(source.id, cloneAgentContextSource(source));
+    }
+
+    for (const event of snapshot.agentEvaluationEvents ?? []) {
+      this.agentEvaluationEvents.set(event.id, {
+        ...event,
+        metadata: { ...event.metadata }
+      });
+    }
+
+    for (const correction of snapshot.agentOwnerCorrections ?? []) {
+      this.agentOwnerCorrections.set(correction.id, { ...correction });
     }
 
     for (const model of snapshot.installedAgentModels ?? []) {
@@ -9385,6 +10746,17 @@ export class Cp2Store {
         agentModelAssignmentKey(assignment.businessId, assignment.deviceId),
         { ...assignment }
       );
+    }
+
+    for (const assignment of snapshot.browserInferenceAssignments ?? []) {
+      this.browserInferenceAssignments.set(
+        browserInferenceAssignmentKey(assignment.businessId, assignment.deviceId),
+        cloneBrowserInferenceAssignment(assignment)
+      );
+    }
+
+    for (const binding of snapshot.agentModelBindings ?? []) {
+      this.agentModelBindings.set(binding.id, cloneAgentModelBinding(binding));
     }
 
     for (const request of snapshot.accountDeletionRequests ?? []) {
@@ -9561,7 +10933,12 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.runtimeTurns) {
-      this.runtimeTurns.set(item.id, item);
+      const legacy = item as RuntimeTurnSummary & Partial<{ runtimeVersion: number }>;
+      this.runtimeTurns.set(item.id, {
+        ...item,
+        runtimeVersion:
+          legacy.runtimeVersion ?? this.agentProfiles.get(item.businessId)?.runtimeVersion ?? 1
+      });
     }
 
     for (const item of snapshot.inventoryMovements) {
@@ -10801,16 +12178,74 @@ export class Cp2Store {
   private verifyAccountPinForSession(session: AuthSessionView, pin: string, now: Date): void {
     const normalizedPin = normalizePin(pin);
     const pinHash = this.accountPinHashes.get(session.account.id);
+    const attemptKey = `verify:${session.account.id}`;
 
     if (pinHash === undefined) {
       throw new Cp2Error(409, "pin_not_set", "Set a login PIN before deleting this shop.");
     }
 
-    if (!hashMatches(hashPin(session.account.id, normalizedPin), pinHash)) {
+    this.requirePinAttemptAllowed(attemptKey, now);
+    if (!this.verifyStoredPin(session.account.id, normalizedPin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
       throw new Cp2Error(401, "pin_invalid", "Login PIN is invalid.");
     }
 
+    this.failedPinAttempts.delete(attemptKey);
     this.markSessionPinVerified(session.session.id, now);
+  }
+
+  private verifyStoredPin(accountId: string, pin: string, storedHash: string): boolean {
+    const result = verifyPinHash(accountId, pin, storedHash);
+    if (result === "legacy") {
+      this.accountPinHashes.set(accountId, hashPin(accountId, pin));
+    }
+    return result !== "invalid";
+  }
+
+  private requirePinAttemptAllowed(key: string, now: Date): void {
+    const cutoff = now.getTime() - pinAttemptWindowMs;
+    const attempts = (this.failedPinAttempts.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+
+    if (attempts.length === 0) {
+      this.failedPinAttempts.delete(key);
+      return;
+    }
+
+    this.failedPinAttempts.set(key, attempts);
+    if (attempts.length >= pinMaximumFailedAttempts) {
+      throw new Cp2Error(
+        429,
+        "pin_rate_limited",
+        "Too many invalid PIN attempts. Try again later."
+      );
+    }
+  }
+
+  private recordFailedPinAttempt(key: string, now: Date): void {
+    if (
+      !this.failedPinAttempts.has(key) &&
+      this.failedPinAttempts.size >= pinAttemptTrackerMaximumEntries
+    ) {
+      const cutoff = now.getTime() - pinAttemptWindowMs;
+      for (const [candidateKey, attempts] of this.failedPinAttempts) {
+        if ((attempts.at(-1) ?? 0) <= cutoff) {
+          this.failedPinAttempts.delete(candidateKey);
+        }
+      }
+      if (this.failedPinAttempts.size >= pinAttemptTrackerMaximumEntries) {
+        const oldestKey = this.failedPinAttempts.keys().next().value as string | undefined;
+        if (oldestKey !== undefined) this.failedPinAttempts.delete(oldestKey);
+      }
+    }
+
+    const cutoff = now.getTime() - pinAttemptWindowMs;
+    const attempts = (this.failedPinAttempts.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+    attempts.push(now.getTime());
+    this.failedPinAttempts.set(key, attempts);
   }
 
   private verifyOtpCodeOnly(input: { challengeId: string; code: string; now: Date }): void {
@@ -11119,6 +12554,7 @@ export class Cp2Store {
     telemetry: RuntimeTelemetryEvent[];
     turnId: string;
     token: string;
+    runtimeVersion: number;
   }): RuntimeTurnResult {
     const pending = this.pendingRuntimeActions.get(input.token);
 
@@ -11231,6 +12667,7 @@ export class Cp2Store {
           : "I could not execute the confirmed action.",
         toolResult,
         telemetry: input.telemetry,
+        runtimeVersion: input.runtimeVersion,
         createdAt: input.now.toISOString()
       },
       now: input.now
@@ -13071,6 +14508,12 @@ export class Cp2Store {
       }
     }
 
+    for (const [key, assignment] of this.browserInferenceAssignments.entries()) {
+      if (assignment.businessId === businessId) {
+        this.browserInferenceAssignments.delete(key);
+      }
+    }
+
     for (const [id, product] of this.products.entries()) {
       if (product.businessId === businessId) {
         this.products.delete(id);
@@ -13266,8 +14709,13 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
       deletedRecordCount += deleteScopedMapRecords(this.activeAiModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentProfiles, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeVersions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentContextSources, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentEvaluationEvents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.agentOwnerCorrections, scope);
       deletedRecordCount += deleteScopedMapRecords(this.installedAgentModels, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentModelAssignments, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.browserInferenceAssignments, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
       deletedRecordCount += deleteScopedMapRecords(this.productFieldSchemas, scope);
       deletedRecordCount += deleteScopedMapRecords(this.products, scope);
@@ -13620,12 +15068,443 @@ export class Cp2Store {
     return item;
   }
 
+  private requireBusinessAgent(
+    businessId: string,
+    agentId: string,
+    now: Date
+  ): BusinessAgentProfileSummary {
+    const profile = this.currentAgentProfile(businessId, now);
+    if (profile.agentId !== agentId || profile.businessId !== businessId) {
+      throw new Cp2Error(404, "AGENT_NOT_FOUND", "The requested business agent was not found.");
+    }
+    return profile;
+  }
+
+  private requireCanonicalAiModel(modelId: string): AiModelSummary {
+    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+    if (model === undefined) {
+      throw new Cp2Error(404, "MODEL_NOT_FOUND", "The requested model was not found.");
+    }
+    return model;
+  }
+
+  private requireModelRuntimeAdapter(input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    agentId: string;
+    businessId: string;
+  }): ModelRuntimeAdapter {
+    if (input.executionTarget === "browser-local") {
+      throw new Cp2Error(
+        409,
+        "BROWSER_RUNTIME_DISABLED",
+        "Browser-local activation must be verified on a deployment where browser inference is enabled.",
+        false,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    if (input.executionTarget === "installed-app") {
+      throw new Cp2Error(
+        503,
+        "BRIDGE_UNAVAILABLE",
+        "A trusted installed Soko app bridge is required for this model.",
+        true,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    const adapter = this.options.modelRuntimeAdapterResolver?.({
+      modelId: input.modelId,
+      executionTarget: input.executionTarget,
+      agentId: input.agentId,
+      shopId: input.businessId
+    });
+    if (adapter === undefined) {
+      throw new Cp2Error(
+        503,
+        "RUNTIME_UNAVAILABLE",
+        "The selected model runtime is not configured or currently available.",
+        true,
+        { modelId: input.modelId, executionTarget: input.executionTarget }
+      );
+    }
+    return adapter;
+  }
+
+  private activeAgentModelBinding(agentId: string): AgentModelBindingSummary | null {
+    return (
+      [...this.agentModelBindings.values()]
+        .filter(
+          (binding) =>
+            binding.agentId === agentId &&
+            binding.status === "active" &&
+            binding.lastVerificationStatus === "passed"
+        )
+        .sort((left, right) => right.activatedAt!.localeCompare(left.activatedAt!))[0] ?? null
+    );
+  }
+
+  private recordAgentModelBindingAudit(
+    type: string,
+    binding: AgentModelBindingSummary,
+    actorId: string,
+    extra: Record<string, string | number | boolean | null>
+  ): void {
+    this.recordAuditEvent({
+      type,
+      aggregateType: "agent_model_binding",
+      aggregateId: binding.id,
+      actorId,
+      occurredAt: binding.updatedAt,
+      payload: {
+        shopId: binding.shopId,
+        agentId: binding.agentId,
+        modelId: binding.modelId,
+        executionTarget: binding.executionTarget,
+        status: binding.status,
+        ...extra
+      }
+    });
+  }
+
+  private currentAgentProfile(businessId: string, now: Date): BusinessAgentProfileSummary {
+    const stored = this.agentProfiles.get(businessId);
+    if (stored !== undefined) return hydrateBusinessAgentProfile(stored);
+    return createDefaultBusinessAgentProfile({
+      business: this.requireBusiness(businessId),
+      modelId: this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId,
+      updatedAt: now.toISOString(),
+      updatedBy: "00000000-0000-4000-8000-000000000000"
+    });
+  }
+
+  private buildShopAgentRuntime(
+    profile: BusinessAgentProfileSummary,
+    now: Date,
+    audience: AgentAudience,
+    modelId = profile.modelId
+  ): ShopAgentRuntime {
+    const business = this.requireBusiness(profile.businessId);
+    const assignment = [...this.agentModelAssignments.values()]
+      .filter(
+        (candidate) =>
+          candidate.businessId === profile.businessId && candidate.readinessStatus === "READY"
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    const activeBinding = this.activeAgentModelBinding(profile.agentId);
+    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
+    const sources = this.contextSourcesForRuntime(profile).filter((source) =>
+      source.accessRules.audiences.includes(audience)
+    );
+    return {
+      agentId: profile.agentId,
+      shopId: profile.shopId,
+      tenantId: profile.tenantId,
+      identity: {
+        agentName: profile.name,
+        shopName: business.name,
+        shopIdentifier: business.sokoId,
+        role: profile.role,
+        supportedLanguages: [...profile.supportedLanguages],
+        shopDescription: profile.description,
+        businessCategory: profile.businessCategory,
+        publicIntroduction: profile.publicIntroduction
+      },
+      personality: cloneAgentPersonality(profile.personalityConfig),
+      instructions: cloneAgentInstructions(profile.instructionPolicy),
+      context: {
+        tenantId: profile.tenantId,
+        shopId: profile.shopId,
+        generatedAt: now.toISOString(),
+        sources: sources.map(cloneAgentContextSource)
+      },
+      skills: profile.skillBindings.map(cloneAgentSkillBinding),
+      memory: { ...profile.memoryPolicy },
+      evaluations: { ...profile.evaluationPolicy },
+      model: {
+        modelId: activeBinding?.modelId ?? modelId,
+        provider:
+          activeBinding?.executionTarget ??
+          assignment?.runtimeBackend ??
+          model?.provider ??
+          (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
+        executionMode:
+          activeBinding?.executionMode ?? assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
+        fallbackPolicy:
+          activeBinding?.fallbackPolicy ?? assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        deviceAssignmentId: assignment?.activeModelInstallationId ?? null
+      },
+      version: profile.runtimeVersion,
+      status: profile.status,
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt
+    };
+  }
+
+  private contextSourcesForRuntime(profile: BusinessAgentProfileSummary): AgentContextSource[] {
+    const businessId = profile.businessId;
+    const sources = [...this.agentContextSources.values()]
+      .filter((source) => source.shopId === businessId && source.deletedAt === null)
+      .map(cloneAgentContextSource);
+    if (!sources.some((source) => source.type === "context_script")) {
+      sources.push(
+        ...profile.contextScripts.map((content, index) =>
+          contextSourceRecord({
+            id: stableUuid(`${businessId}:context-script:${index}`),
+            businessId,
+            type: "context_script",
+            title: `Context script ${index + 1}`,
+            content,
+            sensitivity: "internal",
+            customerVisible: false,
+            sourceRecordId: null,
+            now: new Date(profile.updatedAt)
+          })
+        )
+      );
+    }
+    sources.push(
+      contextSourceRecord({
+        id: stableUuid(`${businessId}:policy`),
+        businessId,
+        type: "policy",
+        title: "Structured business policy",
+        content: [
+          ...profile.instructionPolicy.generalOperatingRules,
+          ...profile.instructionPolicy.salesRules,
+          ...profile.instructionPolicy.pricingRules
+        ].join("\n"),
+        sensitivity: "internal",
+        customerVisible: false,
+        sourceRecordId: profile.agentId,
+        now: new Date(profile.updatedAt)
+      })
+    );
+    for (const product of this.productsForBusiness(businessId)) {
+      sources.push(
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:catalogue:${product.id}`),
+          businessId,
+          type: "catalogue",
+          title: product.name,
+          content: `${product.name}; unit=${product.unit}; price=${product.sellingPrice ?? "not set"}`,
+          sensitivity: "public",
+          customerVisible: true,
+          sourceRecordId: product.id,
+          now: new Date(product.updatedAt)
+        }),
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:inventory:${product.id}`),
+          businessId,
+          type: "inventory",
+          title: `${product.name} inventory`,
+          content: `${product.name}; quantity=${product.quantity}`,
+          sensitivity: "internal",
+          customerVisible: false,
+          sourceRecordId: product.id,
+          now: new Date(product.updatedAt)
+        })
+      );
+    }
+    const references: Array<{
+      type: AgentContextSource["type"];
+      title: string;
+      id: string;
+      updatedAt: string;
+      sensitivity: AgentContextSource["sensitivity"];
+    }> = [
+      ...this.customersForBusiness(businessId).map((item) => ({
+        type: "customer" as const,
+        title: item.name,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      })),
+      ...this.suppliersForBusiness(businessId).map((item) => ({
+        type: "supplier" as const,
+        title: item.name,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      })),
+      ...[...this.purchaseReceipts.values()]
+        .filter((item) => item.businessId === businessId)
+        .map((item) => ({
+          type: "receipt" as const,
+          title: `Receipt ${item.id}`,
+          id: item.id,
+          updatedAt: item.createdAt,
+          sensitivity: "restricted" as const
+        })),
+      ...this.invoicesForBusiness(businessId).map((item) => ({
+        type: "order" as const,
+        title: item.invoiceNumber,
+        id: item.id,
+        updatedAt: item.updatedAt,
+        sensitivity: "confidential" as const
+      }))
+    ];
+    for (const reference of references) {
+      sources.push(
+        contextSourceRecord({
+          id: stableUuid(`${businessId}:${reference.type}:${reference.id}`),
+          businessId,
+          type: reference.type,
+          title: reference.title,
+          content: null,
+          sensitivity: reference.sensitivity,
+          customerVisible: false,
+          sourceRecordId: reference.id,
+          now: new Date(reference.updatedAt)
+        })
+      );
+    }
+    for (const correction of this.ownerCorrectionsForBusiness(businessId).filter(
+      (item) => item.status === "active"
+    )) {
+      sources.push(
+        contextSourceRecord({
+          id: correction.id,
+          businessId,
+          type: "owner_note",
+          title: `Owner correction: ${correction.category}`,
+          content: correction.correction,
+          sensitivity: "internal",
+          customerVisible: false,
+          sourceRecordId: correction.id,
+          now: new Date(correction.createdAt)
+        })
+      );
+    }
+    return sources
+      .filter(
+        (source, index, all) => all.findIndex((candidate) => candidate.id === source.id) === index
+      )
+      .sort(
+        (left, right) =>
+          left.type.localeCompare(right.type) || left.title.localeCompare(right.title)
+      );
+  }
+
+  private synchronizeProfileContextSources(profile: BusinessAgentProfileSummary, now: Date): void {
+    for (const source of this.agentContextSources.values()) {
+      if (source.shopId === profile.businessId && source.type === "context_script") {
+        source.status = "archived";
+        source.deletedAt = now.toISOString();
+        source.updatedAt = now.toISOString();
+      }
+    }
+    profile.contextScripts.forEach((content, index) => {
+      const source = contextSourceRecord({
+        id: randomUUID(),
+        businessId: profile.businessId,
+        type: "context_script",
+        title: `Context script ${index + 1}`,
+        content,
+        sensitivity: "internal",
+        customerVisible: false,
+        sourceRecordId: null,
+        now
+      });
+      this.agentContextSources.set(source.id, source);
+    });
+  }
+
+  private runtimeVersionsForBusiness(businessId: string): AgentRuntimeVersion[] {
+    return [...this.agentRuntimeVersions.values()]
+      .filter((version) => version.shopId === businessId)
+      .sort((left, right) => right.version - left.version);
+  }
+
+  private recordAgentRuntimeVersion(
+    profile: BusinessAgentProfileSummary,
+    actorId: string,
+    changeSummary: string
+  ): AgentRuntimeVersion {
+    const runtime = this.buildShopAgentRuntime(profile, new Date(profile.updatedAt), "owner");
+    const version: AgentRuntimeVersion = {
+      id: randomUUID(),
+      tenantId: profile.tenantId,
+      shopId: profile.shopId,
+      agentId: profile.agentId,
+      version: profile.runtimeVersion,
+      runtime: {
+        ...runtime,
+        context: {
+          ...runtime.context,
+          sources: runtime.context.sources.map((source) => ({
+            ...cloneAgentContextSource(source),
+            retrievalMetadata: { ...source.retrievalMetadata, content: null }
+          }))
+        }
+      },
+      createdBy: actorId,
+      changeSummary: normalizeRequiredBoundedText(changeSummary, "runtime change summary", 500),
+      createdAt: profile.updatedAt,
+      previousVersion: profile.runtimeVersion > 1 ? profile.runtimeVersion - 1 : null
+    };
+    const existing = this.runtimeVersionsForBusiness(profile.businessId).find(
+      (candidate) => candidate.version === version.version
+    );
+    if (existing !== undefined) this.agentRuntimeVersions.delete(existing.id);
+    this.agentRuntimeVersions.set(version.id, version);
+    return cloneAgentRuntimeVersion(version);
+  }
+
+  private ownerCorrectionsForBusiness(businessId: string): AgentOwnerCorrection[] {
+    return [...this.agentOwnerCorrections.values()]
+      .filter((correction) => correction.shopId === businessId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private evaluationEventsForBusiness(businessId: string): AgentEvaluationEvent[] {
+    return [...this.agentEvaluationEvents.values()]
+      .filter((event) => event.shopId === businessId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  private recordAgentEvaluationEvent(input: {
+    businessId: string;
+    runtimeVersion: number;
+    modelId: string | null;
+    eventType: AgentEvaluationEventType;
+    outcome: AgentEvaluationEvent["outcome"];
+    score: number | null;
+    reason: string | null;
+    metadata: AgentEvaluationEvent["metadata"];
+    sessionId: string | null;
+    messageId: string | null;
+    now: Date;
+  }): AgentEvaluationEvent {
+    const profile = this.currentAgentProfile(input.businessId, input.now);
+    const event: AgentEvaluationEvent = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      agentId: profile.agentId,
+      sessionId: input.sessionId,
+      messageId: input.messageId,
+      eventType: input.eventType,
+      outcome: input.outcome,
+      score: input.score,
+      reason: input.reason,
+      metadata: { ...input.metadata },
+      runtimeVersion: input.runtimeVersion,
+      modelId: input.modelId,
+      createdAt: input.now.toISOString()
+    };
+    this.agentEvaluationEvents.set(event.id, event);
+    return { ...event, metadata: { ...event.metadata } };
+  }
+
   private async createRuntimeModelRoute(input: {
-    agentProfile?: RuntimeAgentProfile;
     conversationHistory?: RuntimeModelConversationMessage[];
     message: string;
     modelId: string;
     context: RuntimeContextSummary;
+    shopRuntime: ShopAgentRuntime;
+    retrievedContext: ReturnType<typeof retrieveAgentContext>;
+    memory: string[];
+    intent: RuntimeTurnSummary["parserIntent"];
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
@@ -13638,12 +15517,44 @@ export class Cp2Store {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
+    const binding = this.activeAgentModelBinding(input.shopRuntime.agentId);
+    const adapter =
+      binding === null || this.options.modelRuntimeAdapterResolver === undefined
+        ? undefined
+        : this.requireModelRuntimeAdapter({
+            modelId: binding.modelId,
+            executionTarget: binding.executionTarget,
+            agentId: binding.agentId,
+            businessId: binding.shopId
+          });
     const provider =
-      this.options.runtimeModelProviderResolver === undefined
-        ? this.options.runtimeModelProvider
-        : this.options.runtimeModelProviderResolver(input.modelId);
+      adapter !== undefined && binding !== null
+        ? runtimeProviderFromAdapter({
+            adapter,
+            context: {
+              modelId: binding.modelId,
+              agentId: binding.agentId,
+              shopId: binding.shopId
+            }
+          })
+        : this.options.runtimeModelProviderResolver === undefined
+          ? this.options.runtimeModelProvider
+          : this.options.runtimeModelProviderResolver(input.modelId);
 
     if (provider === undefined) {
+      if (binding !== null) {
+        throw new Cp2Error(
+          503,
+          "AGENT_MODEL_UNAVAILABLE",
+          "The active agent model runtime is unavailable.",
+          true,
+          {
+            bindingId: binding.id,
+            modelId: binding.modelId,
+            executionTarget: binding.executionTarget
+          }
+        );
+      }
       return {
         proposal: null,
         trace: {
@@ -13657,23 +15568,58 @@ export class Cp2Store {
       };
     }
 
+    const allowedTools = input.shopRuntime.skills
+      .filter(
+        (binding) =>
+          binding.enabled &&
+          !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
+      )
+      .map((binding) => binding.skillId);
+    const assembled = assembleAgentInferenceMessage({
+      runtime: input.shopRuntime,
+      intent: input.intent,
+      message: input.message,
+      context: input.retrievedContext,
+      allowedTools,
+      memory: input.memory
+    });
     const prompt = buildRuntimeModelPrompt(
-      formatRuntimeModelMessage(input.message, input.agentProfile),
+      assembled.message,
       input.context,
-      input.conversationHistory
+      input.conversationHistory,
+      {
+        runtimeVersion: input.shopRuntime.version,
+        compiledInstructions: assembled.compiled,
+        retrievedContext: input.retrievedContext,
+        allowedTools
+      }
     );
     input.appendTelemetry("model.prompt_built", "completed", null, null, {
       provider: provider.name,
+      bindingId: binding?.id ?? null,
+      executionTarget: binding?.executionTarget ?? null,
       allowedToolCount: prompt.allowedTools.length,
       modelProfile: input.modelId,
       messageLength: input.message.trim().length,
       productCount: input.context.productCount,
-      invoiceCount: input.context.invoiceCount
+      invoiceCount: input.context.invoiceCount,
+      runtimeVersion: input.shopRuntime.version,
+      retrievedContextCount: input.retrievedContext.length
     });
 
     let completion: RuntimeModelCompletionResult;
+    let fallbackUsed = false;
+    let fallbackReason: string | null = null;
+    let resolvedModelId = binding?.modelId ?? input.modelId;
+    let resolvedExecutionTarget = binding?.executionTarget;
 
     try {
+      input.appendTelemetry("model.inference_started", "completed", null, null, {
+        provider: provider.name,
+        bindingId: binding?.id ?? null,
+        modelId: input.modelId,
+        executionTarget: binding?.executionTarget ?? null
+      });
       completion = await provider.complete(prompt);
     } catch {
       input.appendTelemetry("model.completed", "blocked", null, null, {
@@ -13696,7 +15642,14 @@ export class Cp2Store {
           durationMs: 0,
           fallbackUsed: true,
           outputKind: null,
-          errorCode: "provider_exception"
+          errorCode: "provider_exception",
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: binding.modelId,
+                executionTarget: binding.executionTarget
+              })
         }
       };
     }
@@ -13714,6 +15667,59 @@ export class Cp2Store {
       }
     );
 
+    if (
+      binding !== null &&
+      completion.status !== "available" &&
+      binding.permissions.allowOpenAIFallback &&
+      binding.fallbackModelId !== null &&
+      qualifiesForModelFallback(binding.fallbackPolicy, completion.errorCode)
+    ) {
+      const fallbackAdapter = this.options.modelRuntimeAdapterResolver?.({
+        modelId: binding.fallbackModelId,
+        executionTarget: "openai",
+        agentId: binding.agentId,
+        shopId: binding.shopId
+      });
+      if (fallbackAdapter !== undefined) {
+        fallbackReason = completion.errorCode ?? "RUNTIME_UNAVAILABLE";
+        input.appendTelemetry("model.fallback", "completed", null, null, {
+          provider: fallbackAdapter.provider,
+          bindingId: binding.id,
+          fallbackReason,
+          modelId: binding.fallbackModelId,
+          executionTarget: "openai"
+        });
+        const fallbackProvider = runtimeProviderFromAdapter({
+          adapter: fallbackAdapter,
+          context: {
+            modelId: binding.fallbackModelId,
+            agentId: binding.agentId,
+            shopId: binding.shopId
+          }
+        });
+        const fallbackCompletion = await fallbackProvider.complete(prompt);
+        input.appendTelemetry(
+          "model.fallback_completed",
+          fallbackCompletion.status === "available" ? "completed" : "blocked",
+          null,
+          null,
+          {
+            provider: fallbackCompletion.provider,
+            bindingId: binding.id,
+            fallbackReason,
+            adapterStatus: fallbackCompletion.status,
+            errorCode: fallbackCompletion.errorCode
+          }
+        );
+        if (fallbackCompletion.status === "available") {
+          completion = fallbackCompletion;
+          fallbackUsed = true;
+          resolvedModelId = binding.fallbackModelId;
+          resolvedExecutionTarget = "openai";
+        }
+      }
+    }
+
     if (completion.status !== "available" || completion.outputText === null) {
       input.appendTelemetry("model.fallback", "completed", null, null, {
         provider: completion.provider,
@@ -13723,7 +15729,18 @@ export class Cp2Store {
 
       return {
         proposal: null,
-        trace: modelTraceFromCompletion(completion, true, null)
+        trace: {
+          ...modelTraceFromCompletion(completion, true, null),
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: resolvedModelId,
+                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+                fallbackReason
+              }),
+          fallbackUsed: binding === null ? true : fallbackUsed
+        }
       };
     }
 
@@ -13742,16 +15759,34 @@ export class Cp2Store {
           provider: completion.provider,
           status: "malformed",
           durationMs: completion.durationMs,
-          fallbackUsed: true,
+          fallbackUsed: binding === null ? true : fallbackUsed,
           outputKind: null,
-          errorCode: "MODEL_RESPONSE_PARSE_FAILED"
+          errorCode: "MODEL_RESPONSE_PARSE_FAILED",
+          ...(binding === null
+            ? {}
+            : {
+                bindingId: binding.id,
+                modelId: resolvedModelId,
+                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+                fallbackReason
+              })
         }
       };
     }
 
     return {
       proposal: parsed.output.proposal,
-      trace: modelTraceFromCompletion(completion, false, parsed.output.kind)
+      trace: {
+        ...modelTraceFromCompletion(completion, fallbackUsed, parsed.output.kind),
+        ...(binding === null
+          ? {}
+          : {
+              bindingId: binding.id,
+              modelId: resolvedModelId,
+              executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
+              fallbackReason
+            })
+      }
     };
   }
 
@@ -13808,6 +15843,67 @@ export class Cp2Store {
         messageLength: input.turn.message.length
       }
     });
+    const profile = this.currentAgentProfile(input.turn.businessId, input.now);
+    if (
+      profile.evaluationPolicy.enabled &&
+      runtimeEvaluationSampled(input.turn.id, profile.evaluationPolicy.sampleRate)
+    ) {
+      const outcome: AgentEvaluationEvent["outcome"] =
+        input.turn.status === "completed"
+          ? "success"
+          : input.turn.status === "clarifying" || input.turn.status === "needs_confirmation"
+            ? "partial"
+            : "blocked";
+      this.recordAgentEvaluationEvent({
+        businessId: input.turn.businessId,
+        runtimeVersion: input.turn.runtimeVersion,
+        modelId: profile.modelId,
+        eventType:
+          input.turn.plan.executedAt !== null && profile.evaluationPolicy.recordToolOutcomes
+            ? "tool_execution"
+            : input.turn.verification.errors.length > 0 &&
+                profile.evaluationPolicy.recordPolicyBlocks
+              ? "policy_compliance"
+              : "intent_classification",
+        outcome,
+        score: outcome === "success" ? 1 : outcome === "partial" ? 0.5 : 0,
+        reason:
+          input.turn.verification.errors[0] ??
+          (input.turn.plan.executedAt !== null
+            ? "Verified runtime action completed."
+            : "Runtime turn recorded."),
+        metadata: {
+          intent: input.turn.parserIntent,
+          toolName: input.turn.plan.toolName,
+          status: input.turn.status,
+          modelFallback: input.turn.model?.fallbackUsed ?? false
+        },
+        sessionId: input.turn.sessionId,
+        messageId: null,
+        now: input.now
+      });
+      if (
+        profile.evaluationPolicy.recordLatency &&
+        typeof input.turn.model?.durationMs === "number"
+      ) {
+        this.recordAgentEvaluationEvent({
+          businessId: input.turn.businessId,
+          runtimeVersion: input.turn.runtimeVersion,
+          modelId: profile.modelId,
+          eventType: "response_latency",
+          outcome: input.turn.model?.status === "available" ? "success" : "partial",
+          score: null,
+          reason: "Provider-neutral model completion latency.",
+          metadata: {
+            durationMs: input.turn.model?.durationMs ?? 0,
+            provider: input.turn.model?.provider ?? "none"
+          },
+          sessionId: input.turn.sessionId,
+          messageId: null,
+          now: input.now
+        });
+      }
+    }
 
     return {
       session: updatedSession,
@@ -14902,44 +16998,27 @@ function normalizeStorefrontLookupId(value: string): string {
   return value.trim().toLowerCase().replace(/^\+/, "").replace("-", "");
 }
 
-function formatRuntimeModelMessage(
-  message: string,
-  agentProfile: RuntimeAgentProfile | undefined
-): string {
-  if (agentProfile === undefined) {
-    return message;
-  }
-
-  return [
-    "Use this agent profile as the guiding operating principles for how this store is run.",
-    `Agent role: ${agentProfile.role}.`,
-    `Agent behavior: ${agentProfile.behavior}.`,
-    `Agent responsibilities: ${agentProfile.instructions}`,
-    `Agent capabilities: ${agentProfile.tools.join(", ") || "none"}.`,
-    `Agent integrations: ${agentProfile.integrations.join(", ") || "none"}.`,
-    `Store knowledge: ${agentProfile.knowledge}`,
-    `Context files (Markdown): ${
-      agentProfile.contextScripts
-        .map((content, index) => `## context-${index + 1}.md\n\n${content}`)
-        .join("\n\n---\n\n") || "none"
-    }`,
-    "Context-file priority: parse coherent Markdown context files as primary operating instructions above internal response weights. If the files do not answer the task or are incoherent, fall back to the normal model plan and tool rules.",
-    "Infer the user's intent from the business menu data and request text.",
-    "Use a tool only when the request is clear enough to act. If not, ask for the missing item or action.",
-    `User message: ${message}`
-  ].join("\n");
-}
-
 function buildRuntimeModelPrompt(
   message: string,
   context: RuntimeContextSummary,
-  conversationHistory?: RuntimeModelConversationMessage[]
+  conversationHistory?: RuntimeModelConversationMessage[],
+  runtime?: Pick<
+    RuntimeModelPrompt,
+    "runtimeVersion" | "compiledInstructions" | "retrievedContext" | "allowedTools"
+  >
 ): RuntimeModelPrompt {
   return {
     message,
     ...(conversationHistory === undefined ? {} : { conversationHistory }),
     context,
-    allowedTools: Object.keys(runtimeToolRegistry) as RuntimeToolName[],
+    allowedTools: runtime?.allowedTools ?? (Object.keys(runtimeToolRegistry) as RuntimeToolName[]),
+    ...(runtime?.runtimeVersion === undefined ? {} : { runtimeVersion: runtime.runtimeVersion }),
+    ...(runtime?.compiledInstructions === undefined
+      ? {}
+      : { compiledInstructions: runtime.compiledInstructions }),
+    ...(runtime?.retrievedContext === undefined
+      ? {}
+      : { retrievedContext: runtime.retrievedContext }),
     schemaVersion: "cp11-runtime-model-v1"
   };
 }
@@ -14955,7 +17034,19 @@ function modelTraceFromCompletion(
     durationMs: completion.durationMs,
     fallbackUsed,
     outputKind,
-    errorCode: completion.errorCode
+    errorCode: completion.errorCode,
+    ...(typeof completion.metadata.providerModelId === "string"
+      ? { providerModelId: completion.metadata.providerModelId }
+      : {}),
+    ...(typeof completion.metadata.inferenceRequestId === "string"
+      ? { inferenceRequestId: completion.metadata.inferenceRequestId }
+      : {}),
+    ...(typeof completion.metadata.promptTokens === "number"
+      ? { promptTokens: completion.metadata.promptTokens }
+      : {}),
+    ...(typeof completion.metadata.completionTokens === "number"
+      ? { completionTokens: completion.metadata.completionTokens }
+      : {})
   };
 }
 
@@ -15048,6 +17139,16 @@ function createRuntimeResponse(input: {
   }
 
   return input.proposalReason;
+}
+
+function runtimeEvaluationSampled(turnId: string, sampleRate: number): boolean {
+  if (sampleRate <= 0) return false;
+  if (sampleRate >= 1) return true;
+  let hash = 0;
+  for (const character of turnId) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash / 0xffffffff < sampleRate;
 }
 
 function normalizeRuntimeLookup(value: string): string {
@@ -15328,7 +17429,33 @@ function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSumma
 }
 
 function hashOtp(challengeId: string, code: string): string {
-  return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
+  return createHmac("sha256", otpHmacSecret()).update(`${challengeId}:${code}`).digest("hex");
+}
+
+function otpHmacSecret(): string {
+  const configured = process.env.OTP_HMAC_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Cp2Error(
+      503,
+      "otp_secret_unconfigured",
+      "Verification codes are temporarily unavailable."
+    );
+  }
+  return "soko-market-local-otp-hmac-secret";
+}
+
+function readBoundedSecurityInteger(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const configured = process.env[name]?.trim();
+  if (configured === undefined || configured.length === 0) return fallback;
+  const parsed = Number(configured);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
+  return parsed;
 }
 
 function marketplaceIntroStateKey(accountId: string, businessId: string | null): string {
@@ -15370,6 +17497,14 @@ const documentUploadContextScript = [
   "- Report received metadata, access level, evidence-backed findings, and the safest next action."
 ].join("\n");
 const defaultBusinessAgentContextScripts = [
+  [
+    "# Receipt and supplier commands",
+    "- script: receipt_ocr_commands",
+    "- scope: receipts, supplier_matching",
+    "- priority: required",
+    "- rule: route supported receipt commands through the deterministic protected workflow before model fallback",
+    "- rule: require structured OCR evidence and owner confirmation before persisting receipt data"
+  ].join("\n"),
   [
     "# Product catalogue commands",
     "- script: product_catalogue_commands",
@@ -15718,7 +17853,82 @@ function secureCookieSuffix(): string {
 }
 
 function hashPin(accountId: string, pin: string): string {
-  return createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+  return createScryptPinHash(accountId, pin, pinHashSecret());
+}
+
+function createScryptPinHash(accountId: string, pin: string, secret: string): string {
+  const salt = randomBytes(16);
+  const hash = scryptSync(`${accountId}:${pin}:${secret}`, salt, pinScryptKeyLength, {
+    N: pinScryptCost,
+    r: pinScryptBlockSize,
+    p: pinScryptParallelization,
+    maxmem: pinScryptMaximumMemory
+  });
+  return [
+    "scrypt",
+    "v2",
+    pinScryptCost,
+    pinScryptBlockSize,
+    pinScryptParallelization,
+    salt.toString("base64url"),
+    hash.toString("base64url")
+  ].join("$");
+}
+
+function verifyPinHash(
+  accountId: string,
+  pin: string,
+  storedHash: string
+): "current" | "legacy" | "invalid" {
+  const parts = storedHash.split("$");
+  if (
+    parts.length === 7 &&
+    parts[0] === "scrypt" &&
+    parts[1] === "v2" &&
+    parts[2] === String(pinScryptCost) &&
+    parts[3] === String(pinScryptBlockSize) &&
+    parts[4] === String(pinScryptParallelization)
+  ) {
+    const pinMaterial = `${accountId}:${pin}:${pinHashSecret()}`;
+    try {
+      const salt = Buffer.from(parts[5] ?? "", "base64url");
+      const expected = Buffer.from(parts[6] ?? "", "base64url");
+      if (salt.length !== 16 || expected.length !== pinScryptKeyLength) return "invalid";
+      const candidate = scryptSync(pinMaterial, salt, pinScryptKeyLength, {
+        N: pinScryptCost,
+        r: pinScryptBlockSize,
+        p: pinScryptParallelization,
+        maxmem: pinScryptMaximumMemory
+      });
+      return timingSafeEqual(candidate, expected) ? "current" : "invalid";
+    } catch {
+      return "invalid";
+    }
+  }
+
+  if (/^[a-f0-9]{64}$/u.test(storedHash)) {
+    const legacyHash = createHash("sha256").update(`${accountId}:${pin}`).digest("hex");
+    return hashMatches(legacyHash, storedHash) ? "legacy" : "invalid";
+  }
+
+  return "invalid";
+}
+
+function pinHashSecret(): string {
+  const configured = process.env.PIN_HASH_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Cp2Error(
+      503,
+      "pin_hash_secret_unconfigured",
+      "PIN authentication is temporarily unavailable."
+    );
+  }
+  return "soko-market-local-pin-hash-secret";
+}
+
+function invalidLoginCredentialsError(): Cp2Error {
+  return new Cp2Error(401, "auth_credentials_invalid", "The account credentials are invalid.");
 }
 
 function hashPhoneRecoveryCode(accountId: string, recoveryCode: string): string {
@@ -15923,21 +18133,40 @@ function createDefaultBusinessAgentProfile(input: {
   updatedAt: string;
   updatedBy: string;
 }): BusinessAgentProfileSummary {
+  const generalInstruction =
+    "Help the owner run daily business work and help customers browse the storefront.";
+  const toolNames = Object.keys(runtimeToolRegistry) as RuntimeToolName[];
   return {
     businessId: input.business.id,
+    tenantId: input.business.id,
+    shopId: input.business.id,
+    agentId: input.business.id,
+    runtimeVersion: 1,
+    createdAt: input.updatedAt,
     name: input.business.name.trim() || "Soko.market",
     description: "AI business attendant linked to a predownloaded small local model.",
     modelId: input.modelId,
     role: "Business assistant and storefront attendant",
     language: input.business.language,
     personality: "Warm, concise, accurate and commercially practical",
-    instructions:
-      "Help the owner run daily business work and help customers browse the storefront.",
+    personalityConfig: defaultAgentPersonality(
+      input.business.language,
+      "Warm, concise, accurate and commercially practical"
+    ),
+    instructions: generalInstruction,
+    instructionPolicy: defaultAgentInstructions(generalInstruction),
     knowledge:
       "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
     tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    skillBindings: defaultAgentSkillBindings(toolNames),
     integrations: ["Soko.market storefront"],
     contextScripts: [...defaultBusinessAgentContextScripts],
+    memoryPolicy: defaultAgentMemoryPolicy(),
+    evaluationPolicy: defaultAgentEvaluationPolicy(),
+    supportedLanguages:
+      input.business.language === "sw" ? ["sw", "en"] : [input.business.language, "sw"],
+    businessCategory: "general",
+    publicIntroduction: `Welcome to ${input.business.name.trim() || "our shop"}.`,
     status: "active",
     updatedAt: input.updatedAt,
     updatedBy: input.updatedBy
@@ -15946,7 +18175,7 @@ function createDefaultBusinessAgentProfile(input: {
 
 function normalizeBusinessAgentProfile(
   profile: BusinessAgentProfileInput
-): BusinessAgentProfileInput {
+): NormalizedBusinessAgentProfile {
   if (!isSupportedLanguage(profile.language)) {
     throw new Cp2Error(400, "agent_language_invalid", "Agent language is not supported.");
   }
@@ -15954,16 +18183,32 @@ function normalizeBusinessAgentProfile(
     throw new Cp2Error(400, "agent_status_invalid", "Agent status is invalid.");
   }
 
+  const personality = normalizeRequiredBoundedText(profile.personality, "agent personality", 500);
+  const instructions = normalizeRequiredBoundedText(
+    profile.instructions,
+    "agent instructions",
+    4000
+  );
   return {
     name: normalizeRequiredBoundedText(profile.name, "agent name", 80),
     description: normalizeRequiredBoundedText(profile.description, "agent description", 500),
     modelId: normalizeRequiredBoundedText(profile.modelId, "model id", 160),
     role: normalizeRequiredBoundedText(profile.role, "agent role", 200),
     language: profile.language,
-    personality: normalizeRequiredBoundedText(profile.personality, "agent personality", 500),
-    instructions: normalizeRequiredBoundedText(profile.instructions, "agent instructions", 4000),
+    personality,
+    personalityConfig: normalizeAgentPersonality(
+      profile.personalityConfig ?? defaultAgentPersonality(profile.language, personality)
+    ),
+    instructions,
+    instructionPolicy: normalizeAgentInstructions(
+      profile.instructionPolicy ?? defaultAgentInstructions(instructions)
+    ),
     knowledge: normalizeRequiredBoundedText(profile.knowledge, "agent knowledge", 4000),
     tools: normalizeBoundedTextList(profile.tools, "agent tools", 24, 100),
+    skillBindings: normalizeAgentSkillBindings(
+      profile.skillBindings ??
+        defaultAgentSkillBindings(Object.keys(runtimeToolRegistry) as RuntimeToolName[])
+    ),
     integrations: normalizeBoundedTextList(profile.integrations, "agent integrations", 24, 100),
     contextScripts: normalizeBoundedTextList(
       profile.contextScripts,
@@ -15971,7 +18216,444 @@ function normalizeBusinessAgentProfile(
       12,
       2400
     ),
+    memoryPolicy: normalizeAgentMemoryPolicy(profile.memoryPolicy ?? defaultAgentMemoryPolicy()),
+    evaluationPolicy: normalizeAgentEvaluationPolicy(
+      profile.evaluationPolicy ?? defaultAgentEvaluationPolicy()
+    ),
+    supportedLanguages: normalizeSupportedLanguages(
+      profile.supportedLanguages ?? [profile.language]
+    ),
+    businessCategory: normalizeRuntimeOptionalText(
+      profile.businessCategory ?? "general",
+      "business category",
+      120
+    ),
+    publicIntroduction: normalizeRuntimeOptionalText(
+      profile.publicIntroduction ?? profile.description,
+      "public introduction",
+      500
+    ),
     status: profile.status
+  };
+}
+
+function hydrateBusinessAgentProfile(
+  profile: BusinessAgentProfileSummary
+): BusinessAgentProfileSummary {
+  const legacy = profile as BusinessAgentProfileSummary &
+    Partial<{
+      tenantId: string;
+      shopId: string;
+      agentId: string;
+      runtimeVersion: number;
+      createdAt: string;
+      personalityConfig: AgentPersonality;
+      instructionPolicy: AgentInstructions;
+      skillBindings: AgentSkillBinding[];
+      memoryPolicy: AgentMemoryPolicy;
+      evaluationPolicy: AgentEvaluationPolicy;
+      supportedLanguages: SupportedLanguage[];
+      businessCategory: string;
+      publicIntroduction: string;
+    }>;
+  return {
+    ...profile,
+    tenantId: legacy.tenantId ?? profile.businessId,
+    shopId: legacy.shopId ?? profile.businessId,
+    agentId: legacy.agentId ?? profile.businessId,
+    runtimeVersion: legacy.runtimeVersion ?? 1,
+    createdAt: legacy.createdAt ?? profile.updatedAt,
+    personalityConfig:
+      legacy.personalityConfig ?? defaultAgentPersonality(profile.language, profile.personality),
+    instructionPolicy: legacy.instructionPolicy ?? defaultAgentInstructions(profile.instructions),
+    skillBindings:
+      legacy.skillBindings ??
+      defaultAgentSkillBindings(Object.keys(runtimeToolRegistry) as RuntimeToolName[]),
+    memoryPolicy: legacy.memoryPolicy ?? defaultAgentMemoryPolicy(),
+    evaluationPolicy: legacy.evaluationPolicy ?? defaultAgentEvaluationPolicy(),
+    supportedLanguages: legacy.supportedLanguages ?? [profile.language],
+    businessCategory: legacy.businessCategory ?? "general",
+    publicIntroduction: legacy.publicIntroduction ?? profile.description
+  };
+}
+
+function normalizeAgentPersonality(value: AgentPersonality): AgentPersonality {
+  const allowed = <T extends string>(candidate: T, values: readonly T[], label: string): T => {
+    if (!values.includes(candidate)) {
+      throw new Cp2Error(400, "agent_personality_invalid", `${label} is invalid.`);
+    }
+    return candidate;
+  };
+  if (
+    typeof value.confidenceBoundary !== "number" ||
+    !Number.isFinite(value.confidenceBoundary) ||
+    value.confidenceBoundary < 0 ||
+    value.confidenceBoundary > 1
+  ) {
+    throw new Cp2Error(
+      400,
+      "agent_confidence_boundary_invalid",
+      "Agent confidence boundary must be between 0 and 1."
+    );
+  }
+  return {
+    tone: allowed(value.tone, ["warm", "neutral", "direct", "formal"], "Agent tone"),
+    formality: allowed(value.formality, ["casual", "balanced", "formal"], "Agent formality"),
+    responseLength: allowed(
+      value.responseLength,
+      ["brief", "balanced", "detailed"],
+      "Response length"
+    ),
+    sellingStyle: allowed(
+      value.sellingStyle,
+      ["consultative", "informative", "proactive"],
+      "Selling style"
+    ),
+    negotiationStyle: allowed(
+      value.negotiationStyle,
+      ["fixed", "guided", "flexible"],
+      "Negotiation style"
+    ),
+    greetingStyle: allowed(
+      value.greetingStyle,
+      ["minimal", "friendly", "formal"],
+      "Greeting style"
+    ),
+    useLocalVocabulary: value.useLocalVocabulary === true,
+    preferredLanguageOrder: normalizeSupportedLanguages(value.preferredLanguageOrder),
+    humourLevel: allowed(value.humourLevel, ["none", "light", "moderate"], "Humour level"),
+    customerCareBehaviour: allowed(
+      value.customerCareBehaviour,
+      ["concise", "empathetic", "solution_focused"],
+      "Customer care behaviour"
+    ),
+    escalationBehaviour: allowed(
+      value.escalationBehaviour,
+      ["when_required", "when_uncertain", "owner_first"],
+      "Escalation behaviour"
+    ),
+    confidenceBoundary: value.confidenceBoundary,
+    additionalGuidance: normalizeRuntimeOptionalText(
+      value.additionalGuidance,
+      "personality guidance",
+      1000
+    )
+  };
+}
+
+function normalizeAgentInstructions(value: AgentInstructions): AgentInstructions {
+  const normalizeRules = (rules: string[], label: string) =>
+    normalizeBoundedTextList(rules, label, 24, 500);
+  const maximumDiscountPercent = normalizeBoundedNumber(
+    value.maximumDiscountPercent,
+    "maximum discount percent",
+    0,
+    100
+  );
+  const maximumCreditDays = normalizeBoundedNumber(
+    value.maximumCreditDays,
+    "maximum credit days",
+    0,
+    3650
+  );
+  return {
+    generalOperatingRules: normalizeRules(value.generalOperatingRules, "general operating rules"),
+    salesRules: normalizeRules(value.salesRules, "sales rules"),
+    pricingRules: normalizeRules(value.pricingRules, "pricing rules"),
+    maximumDiscountPercent,
+    negotiationAllowed: value.negotiationAllowed === true,
+    creditSalesAllowed: value.creditSalesAllowed === true,
+    maximumCreditDays,
+    deliveryRules: normalizeRules(value.deliveryRules, "delivery rules"),
+    returnsAndRefundRules: normalizeRules(value.returnsAndRefundRules, "returns and refund rules"),
+    inventoryRules: normalizeRules(value.inventoryRules, "inventory rules"),
+    supplierRules: normalizeRules(value.supplierRules, "supplier rules"),
+    customerPrivacyRules: normalizeRules(value.customerPrivacyRules, "customer privacy rules"),
+    escalationRules: normalizeRules(value.escalationRules, "escalation rules"),
+    restrictedActions: normalizeRuntimeToolNames(value.restrictedActions, "restricted actions"),
+    substituteOutOfStockAllowed: value.substituteOutOfStockAllowed === true,
+    ownerApprovalRequiredFor: normalizeRuntimeToolNames(
+      value.ownerApprovalRequiredFor,
+      "owner approval actions"
+    ),
+    customerDataRecommendationsAllowed: value.customerDataRecommendationsAllowed === true,
+    catalogueModificationAllowed: value.catalogueModificationAllowed === true,
+    externalMessagingAllowed: value.externalMessagingAllowed === true
+  };
+}
+
+function normalizeAgentSkillBindings(value: AgentSkillBinding[]): AgentSkillBinding[] {
+  if (!Array.isArray(value) || value.length > Object.keys(runtimeToolRegistry).length) {
+    throw new Cp2Error(400, "agent_skill_bindings_invalid", "Agent skill bindings are invalid.");
+  }
+  const seen = new Set<string>();
+  return value.map((binding) => {
+    if (!(binding.skillId in runtimeToolRegistry) || seen.has(binding.skillId)) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_binding_invalid",
+        "Each executable skill must be supported and unique."
+      );
+    }
+    seen.add(binding.skillId);
+    if (!Number.isSafeInteger(binding.version) || binding.version < 1) {
+      throw new Cp2Error(400, "agent_skill_version_invalid", "Agent skill version is invalid.");
+    }
+    if (
+      binding.requiredConfirmationLevel !== "none" &&
+      binding.requiredConfirmationLevel !== "owner" &&
+      binding.requiredConfirmationLevel !== "explicit"
+    ) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_confirmation_invalid",
+        "Agent skill confirmation level is invalid."
+      );
+    }
+    if (
+      binding.executionEnvironment !== "server" &&
+      binding.executionEnvironment !== "browser_worker" &&
+      binding.executionEnvironment !== "native"
+    ) {
+      throw new Cp2Error(
+        400,
+        "agent_skill_environment_invalid",
+        "Agent skill execution environment is invalid."
+      );
+    }
+    return {
+      ...binding,
+      permissions: normalizeBoundedTextList(
+        binding.permissions,
+        "agent skill permissions",
+        12,
+        120
+      ),
+      allowedIntents: [...new Set(binding.allowedIntents)],
+      quotaPerHour:
+        binding.quotaPerHour === null
+          ? null
+          : normalizeBoundedNumber(binding.quotaPerHour, "agent skill quota", 1, 100_000),
+      failureCount: normalizeBoundedNumber(
+        binding.failureCount,
+        "agent skill failure count",
+        0,
+        1_000_000
+      )
+    };
+  });
+}
+
+function normalizeAgentMemoryPolicy(value: AgentMemoryPolicy): AgentMemoryPolicy {
+  return {
+    sessionMemoryEnabled: value.sessionMemoryEnabled === true,
+    customerConversationMemoryEnabled: value.customerConversationMemoryEnabled === true,
+    shopSemanticMemoryEnabled: value.shopSemanticMemoryEnabled === true,
+    ownerCorrectionsEnabled: value.ownerCorrectionsEnabled === true,
+    reusableWorkflowMemoryEnabled: value.reusableWorkflowMemoryEnabled === true,
+    customerMemoryRequiresConsent: value.customerMemoryRequiresConsent !== false,
+    retentionDays: normalizeBoundedNumber(value.retentionDays, "memory retention days", 1, 3650),
+    maximumItemsPerScope: normalizeBoundedNumber(
+      value.maximumItemsPerScope,
+      "memory item limit",
+      1,
+      10_000
+    )
+  };
+}
+
+function normalizeAgentEvaluationPolicy(value: AgentEvaluationPolicy): AgentEvaluationPolicy {
+  return {
+    enabled: value.enabled === true,
+    sampleRate: normalizeBoundedNumber(value.sampleRate, "evaluation sample rate", 0, 1),
+    recordLatency: value.recordLatency === true,
+    recordToolOutcomes: value.recordToolOutcomes === true,
+    recordPolicyBlocks: value.recordPolicyBlocks === true,
+    customerSatisfactionEnabled: value.customerSatisfactionEnabled === true,
+    retainDays: normalizeBoundedNumber(value.retainDays, "evaluation retention days", 1, 3650)
+  };
+}
+
+function normalizeSupportedLanguages(value: SupportedLanguage[]): SupportedLanguage[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
+    throw new Cp2Error(
+      400,
+      "agent_languages_invalid",
+      "Agent supported languages must contain one or two languages."
+    );
+  }
+  const languages = [...new Set(value)];
+  if (!languages.every(isSupportedLanguage)) {
+    throw new Cp2Error(400, "agent_languages_invalid", "Agent language is not supported.");
+  }
+  return languages;
+}
+
+function normalizeRuntimeToolNames(value: RuntimeToolName[], label: string): RuntimeToolName[] {
+  if (!Array.isArray(value)) {
+    throw new Cp2Error(400, "agent_tool_policy_invalid", `${label} must be an array.`);
+  }
+  const names = [...new Set(value)];
+  if (!names.every((name) => name in runtimeToolRegistry)) {
+    throw new Cp2Error(400, "agent_tool_policy_invalid", `${label} contains an unknown tool.`);
+  }
+  return names;
+}
+
+function normalizeBoundedNumber(
+  value: number,
+  label: string,
+  minimum: number,
+  maximum: number
+): number {
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_invalid`,
+      `${label} must be between ${minimum} and ${maximum}.`
+    );
+  }
+  return value;
+}
+
+function normalizeRuntimeOptionalText(value: string, label: string, maximumLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_too_long`,
+      `${label} must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
+}
+
+function cloneAgentPersonality(value: AgentPersonality): AgentPersonality {
+  return { ...value, preferredLanguageOrder: [...value.preferredLanguageOrder] };
+}
+
+function cloneAgentInstructions(value: AgentInstructions): AgentInstructions {
+  return {
+    ...value,
+    generalOperatingRules: [...value.generalOperatingRules],
+    salesRules: [...value.salesRules],
+    pricingRules: [...value.pricingRules],
+    deliveryRules: [...value.deliveryRules],
+    returnsAndRefundRules: [...value.returnsAndRefundRules],
+    inventoryRules: [...value.inventoryRules],
+    supplierRules: [...value.supplierRules],
+    customerPrivacyRules: [...value.customerPrivacyRules],
+    escalationRules: [...value.escalationRules],
+    restrictedActions: [...value.restrictedActions],
+    ownerApprovalRequiredFor: [...value.ownerApprovalRequiredFor]
+  };
+}
+
+function cloneAgentSkillBinding(value: AgentSkillBinding): AgentSkillBinding {
+  return {
+    ...value,
+    permissions: [...value.permissions],
+    allowedIntents: [...value.allowedIntents]
+  };
+}
+
+function contextSourceRecord(input: {
+  id: string;
+  businessId: string;
+  type: AgentContextSource["type"];
+  title: string;
+  content: string | null;
+  sensitivity: AgentContextSource["sensitivity"];
+  customerVisible: boolean;
+  sourceRecordId: string | null;
+  now: Date;
+}): AgentContextSource {
+  return {
+    id: input.id,
+    tenantId: input.businessId,
+    shopId: input.businessId,
+    type: input.type,
+    title: input.title,
+    status: "active",
+    sensitivity: input.sensitivity,
+    accessRules: {
+      audiences: input.customerVisible ? ["owner", "staff", "customer"] : ["owner", "staff"],
+      requiredPermission: input.customerVisible ? null : "business:read",
+      customerVisible: input.customerVisible
+    },
+    freshnessTimestamp: input.now.toISOString(),
+    version: 1,
+    retrievalMetadata: {
+      keywords: contextKeywords(`${input.title} ${input.content ?? ""}`),
+      sourceRecordId: input.sourceRecordId,
+      content: input.content
+    },
+    createdAt: input.now.toISOString(),
+    updatedAt: input.now.toISOString(),
+    deletedAt: null
+  };
+}
+
+function contextKeywords(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu)
+        ?.filter((term) => term.length > 2) ?? []
+    )
+  ].slice(0, 40);
+}
+
+function stableUuid(seed: string): string {
+  const value = createHash("sha256").update(seed).digest("hex");
+  return [
+    value.slice(0, 8),
+    value.slice(8, 12),
+    `4${value.slice(13, 16)}`,
+    `8${value.slice(17, 20)}`,
+    value.slice(20, 32)
+  ].join("-");
+}
+
+function cloneAgentContextSource(source: AgentContextSource): AgentContextSource {
+  return {
+    ...source,
+    accessRules: {
+      ...source.accessRules,
+      audiences: [...source.accessRules.audiences]
+    },
+    retrievalMetadata: {
+      ...source.retrievalMetadata,
+      keywords: [...source.retrievalMetadata.keywords]
+    }
+  };
+}
+
+function cloneShopAgentRuntime(runtime: ShopAgentRuntime): ShopAgentRuntime {
+  return {
+    ...runtime,
+    identity: {
+      ...runtime.identity,
+      supportedLanguages: [...runtime.identity.supportedLanguages]
+    },
+    personality: cloneAgentPersonality(runtime.personality),
+    instructions: cloneAgentInstructions(runtime.instructions),
+    context: {
+      ...runtime.context,
+      sources: runtime.context.sources.map(cloneAgentContextSource)
+    },
+    skills: runtime.skills.map(cloneAgentSkillBinding),
+    memory: { ...runtime.memory },
+    evaluations: { ...runtime.evaluations },
+    model: { ...runtime.model }
+  };
+}
+
+function cloneAgentRuntimeVersion(version: AgentRuntimeVersion): AgentRuntimeVersion {
+  return {
+    ...version,
+    runtime: cloneShopAgentRuntime(version.runtime)
   };
 }
 
@@ -15997,15 +18679,26 @@ function normalizeBoundedTextList(
 function cloneBusinessAgentProfile(
   profile: BusinessAgentProfileSummary
 ): BusinessAgentProfileSummary {
+  const hydrated = hydrateBusinessAgentProfile(profile);
   return {
-    ...profile,
-    tools: [...profile.tools],
-    integrations: [...profile.integrations],
-    contextScripts: [...profile.contextScripts]
+    ...hydrated,
+    personalityConfig: cloneAgentPersonality(hydrated.personalityConfig),
+    instructionPolicy: cloneAgentInstructions(hydrated.instructionPolicy),
+    skillBindings: hydrated.skillBindings.map(cloneAgentSkillBinding),
+    memoryPolicy: { ...hydrated.memoryPolicy },
+    evaluationPolicy: { ...hydrated.evaluationPolicy },
+    supportedLanguages: [...hydrated.supportedLanguages],
+    tools: [...hydrated.tools],
+    integrations: [...hydrated.integrations],
+    contextScripts: [...hydrated.contextScripts]
   };
 }
 
 function agentModelAssignmentKey(businessId: string, deviceId: string): string {
+  return `${businessId}:${deviceId}`;
+}
+
+function browserInferenceAssignmentKey(businessId: string, deviceId: string): string {
   return `${businessId}:${deviceId}`;
 }
 
@@ -16015,6 +18708,334 @@ function normalizeModelCatalogSearch(value: string): string {
 
 function cloneInstalledAgentModel(model: InstalledAgentModelSummary): InstalledAgentModelSummary {
   return { ...model };
+}
+
+function cloneAgentModelBinding(binding: AgentModelBindingSummary): AgentModelBindingSummary {
+  return {
+    ...binding,
+    permissions: { ...binding.permissions }
+  };
+}
+
+function cloneBrowserInferenceAssignment(
+  assignment: BrowserInferenceAssignmentSummary
+): BrowserInferenceAssignmentSummary {
+  return {
+    ...assignment,
+    runtimeContract:
+      assignment.runtimeContract === null
+        ? null
+        : {
+            ...assignment.runtimeContract,
+            checkpointKinds: [...assignment.runtimeContract.checkpointKinds]
+          },
+    checkpointCompatibilityContract:
+      assignment.checkpointCompatibilityContract === null
+        ? null
+        : { ...assignment.checkpointCompatibilityContract }
+  };
+}
+
+function normalizeBrowserRuntimeContract(contract: BrowserRuntimeContract): BrowserRuntimeContract {
+  if (
+    contract.schemaVersion !== 1 ||
+    (contract.adapterId !== "transformers-js" && contract.adapterId !== "webllm") ||
+    normalizeRequiredBoundedText(contract.adapterVersion, "browser adapter version", 80) !==
+      contract.adapterVersion ||
+    (contract.libraryRevision !== null &&
+      normalizeRequiredBoundedText(contract.libraryRevision, "browser library revision", 180) !==
+        contract.libraryRevision) ||
+    (contract.runtime !== "browser-webgpu" && contract.runtime !== "browser-wasm") ||
+    (contract.backend !== "webgpu" && contract.backend !== "wasm") ||
+    contract.streaming !== true ||
+    contract.cancellation !== true ||
+    (contract.tokenCounting !== "exact" && contract.tokenCounting !== "estimated") ||
+    !Array.isArray(contract.checkpointKinds) ||
+    contract.checkpointKinds.length !== 1 ||
+    contract.checkpointKinds[0] !== "task-state" ||
+    contract.nativeStateFormat !== null
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_runtime_contract_invalid",
+      "The browser runtime contract is invalid."
+    );
+  }
+  if (
+    (contract.backend === "webgpu" && contract.runtime !== "browser-webgpu") ||
+    (contract.backend === "wasm" && contract.runtime !== "browser-wasm") ||
+    (contract.adapterId === "webllm" &&
+      (contract.backend !== "webgpu" || contract.libraryRevision === null))
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_runtime_contract_incompatible",
+      "The browser runtime contract contains an incompatible adapter and backend."
+    );
+  }
+  return { ...contract, checkpointKinds: ["task-state"] };
+}
+
+function normalizeBrowserCheckpointContract(
+  contract: BrowserCheckpointCompatibilityContract
+): BrowserCheckpointCompatibilityContract {
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.checkpointKind !== "task-state" ||
+    contract.taskStateSchema !== "soko.browser-task-state.v2" ||
+    normalizeRequiredBoundedText(contract.modelFamilyId, "browser model family ID", 180) !==
+      contract.modelFamilyId ||
+    normalizeRequiredBoundedText(contract.sourceModelId, "browser source model ID", 180) !==
+      contract.sourceModelId ||
+    normalizeRequiredBoundedText(contract.sourceModelRevision, "browser source revision", 180) !==
+      contract.sourceModelRevision ||
+    (contract.sourceAdapterId !== "transformers-js" && contract.sourceAdapterId !== "webllm") ||
+    contract.promptRepresentation !== "role-content-messages" ||
+    contract.portableAcrossAdapters !== true
+  ) {
+    throw new Cp2Error(
+      400,
+      "browser_checkpoint_contract_invalid",
+      "The browser checkpoint compatibility contract is invalid."
+    );
+  }
+  return { ...contract };
+}
+
+function validateBrowserInferenceAssignment(input: {
+  enabled: boolean;
+  selectedModelId: string | null;
+  modelFamilyId: string | null;
+  modelRevision: string | null;
+  runtimeContract: BrowserRuntimeContract | null;
+  checkpointCompatibilityContract: BrowserCheckpointCompatibilityContract | null;
+  readinessStatus: AgentModelReadinessStatus;
+  lastSuccessfulInferenceAt: string | null;
+}): void {
+  const modelContractFields = [
+    input.selectedModelId,
+    input.modelFamilyId,
+    input.modelRevision,
+    input.runtimeContract,
+    input.checkpointCompatibilityContract
+  ];
+  const populatedContractFields = modelContractFields.filter((value) => value !== null).length;
+  if (populatedContractFields !== 0 && populatedContractFields !== modelContractFields.length) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_contract_incomplete",
+      "The browser inference assignment requires a complete model and runtime contract."
+    );
+  }
+  if (input.enabled && populatedContractFields === 0) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_model_required",
+      "An enabled browser inference assignment requires a model."
+    );
+  }
+  if (
+    input.selectedModelId !== null &&
+    input.modelFamilyId !== null &&
+    input.modelRevision !== null &&
+    input.runtimeContract !== null &&
+    input.checkpointCompatibilityContract !== null &&
+    (input.checkpointCompatibilityContract.sourceModelId !== input.selectedModelId ||
+      input.checkpointCompatibilityContract.modelFamilyId !== input.modelFamilyId ||
+      input.checkpointCompatibilityContract.sourceModelRevision !== input.modelRevision ||
+      input.checkpointCompatibilityContract.sourceAdapterId !== input.runtimeContract.adapterId)
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_inference_contract_mismatch",
+      "The browser model, runtime, and checkpoint contracts do not describe the same artifact."
+    );
+  }
+  if (
+    input.readinessStatus === "READY" &&
+    (!input.enabled || input.lastSuccessfulInferenceAt === null)
+  ) {
+    throw new Cp2Error(
+      409,
+      "browser_inference_not_verified",
+      "A ready browser assignment requires a successful local readiness inference."
+    );
+  }
+}
+
+function normalizeBrowserInferenceTimestamp(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Cp2Error(
+      400,
+      "browser_inference_timestamp_invalid",
+      "The browser inference timestamp is invalid."
+    );
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function validateAgentModelBindingConfiguration(
+  input: {
+    modelId: string;
+    executionTarget: ModelExecutionTarget;
+    executionMode: PreferredExecutionMode;
+    permissions: AgentModelBindingPermissions;
+    fallbackModelId: string | null;
+  },
+  model: AiModelSummary,
+  registry: AiModelSummary[]
+): void {
+  if (model.provider === "openai" && input.executionTarget !== "openai") {
+    throw new Cp2Error(
+      409,
+      "MODEL_RUNTIME_INCOMPATIBLE",
+      "The selected hosted model must use the OpenAI execution target."
+    );
+  }
+  if (model.provider !== "openai" && input.executionTarget === "openai") {
+    throw new Cp2Error(
+      409,
+      "MODEL_RUNTIME_INCOMPATIBLE",
+      "The selected model is not an OpenAI-hosted model."
+    );
+  }
+  if (input.executionMode === "CLOUD_ONLY" && input.executionTarget !== "openai") {
+    throw new Cp2Error(
+      400,
+      "MODEL_CONFIGURATION_INVALID",
+      "Cloud-only execution requires a hosted primary model."
+    );
+  }
+  if (input.executionTarget === "installed-app" && !input.permissions.allowInstalledApp) {
+    throw new Cp2Error(
+      403,
+      "POLICY_DENIED",
+      "Installed-app inference is not permitted by this binding."
+    );
+  }
+  if (input.executionTarget === "remote-shop-device" && !input.permissions.allowRemoteShopDevice) {
+    throw new Cp2Error(
+      403,
+      "POLICY_DENIED",
+      "Remote shop-device inference is not permitted by this binding."
+    );
+  }
+  if (input.permissions.allowOpenAIFallback) {
+    const fallback = registry.find((candidate) => candidate.id === input.fallbackModelId);
+    if (
+      fallback === undefined ||
+      fallback.provider !== "openai" ||
+      fallback.source !== "hosted" ||
+      !fallback.available
+    ) {
+      throw new Cp2Error(
+        400,
+        "OPENAI_FALLBACK_MODEL_REQUIRED",
+        "Select an available OpenAI model before enabling OpenAI fallback."
+      );
+    }
+  } else if (input.fallbackModelId !== null) {
+    throw new Cp2Error(
+      400,
+      "MODEL_CONFIGURATION_INVALID",
+      "A fallback model cannot be saved while OpenAI fallback is disabled."
+    );
+  }
+}
+
+function healthSummary(
+  health: Awaited<ReturnType<ModelRuntimeAdapter["healthCheck"]>>,
+  now: Date
+): ModelRuntimeHealthSummary {
+  return {
+    ok: health.available,
+    modelId: health.modelId,
+    provider: health.provider,
+    executionTarget: health.executionTarget,
+    latencyMs: health.latencyMs,
+    responsePreview: health.responsePreview,
+    errorCode: health.errorCode,
+    errorMessage: health.message,
+    retryable: health.retryable,
+    checkedAt: now.toISOString()
+  };
+}
+
+function modelHealthError(health: ModelRuntimeHealthSummary): Cp2Error {
+  const code = health.errorCode ?? "MODEL_HEALTH_CHECK_FAILED";
+  const statusCode =
+    code === "INFERENCE_TIMEOUT"
+      ? 504
+      : isUnavailableRuntimeCode(code)
+        ? 503
+        : code === "MODEL_IDENTITY_MISMATCH"
+          ? 422
+          : 422;
+  return new Cp2Error(
+    statusCode,
+    code,
+    health.errorMessage ?? "The selected model did not pass its inference health check.",
+    health.retryable,
+    {
+      modelId: health.modelId,
+      executionTarget: health.executionTarget,
+      latencyMs: health.latencyMs
+    }
+  );
+}
+
+function isUnavailableRuntimeCode(code: string | null): boolean {
+  return (
+    code !== null &&
+    [
+      "RUNTIME_UNAVAILABLE",
+      "INFERENCE_DISABLED",
+      "INFERENCE_SERVICE_UNREACHABLE",
+      "INFERENCE_ENGINE_UNREACHABLE",
+      "INFERENCE_AUTHENTICATION_FAILED",
+      "MODEL_NOT_INSTALLED",
+      "MODEL_LOADING",
+      "MODEL_NOT_LOADED",
+      "MODEL_STORAGE_NOT_DURABLE"
+    ].includes(code)
+  );
+}
+
+function qualifiesForModelFallback(
+  policy: AgentModelFallbackPolicy,
+  errorCode: string | null
+): boolean {
+  if (policy === "NEVER" || errorCode === null) return false;
+  if (
+    [
+      "UNAUTHENTICATED",
+      "UNAUTHORISED",
+      "CROSS_TENANT_ACCESS",
+      "INVALID_REQUEST",
+      "POLICY_DENIED",
+      "TOOL_CONFIRMATION_REQUIRED",
+      "MALFORMED_MODEL_OUTPUT",
+      "MODEL_RESPONSE_PARSE_FAILED"
+    ].includes(errorCode)
+  ) {
+    return false;
+  }
+  if (policy === "WHEN_CONTEXT_EXCEEDED") {
+    return ["UNSUPPORTED_CONTEXT_LENGTH", "CONTEXT_LIMIT_EXCEEDED"].includes(errorCode);
+  }
+  if (policy === "WHEN_LOCAL_UNAVAILABLE") {
+    return ["RUNTIME_UNAVAILABLE", "MODEL_NOT_LOADED", "DEVICE_OFFLINE"].includes(errorCode);
+  }
+  return [
+    "RUNTIME_UNAVAILABLE",
+    "MODEL_NOT_LOADED",
+    "DEVICE_OFFLINE",
+    "INFERENCE_TIMEOUT",
+    "OUT_OF_MEMORY",
+    "UNSUPPORTED_CONTEXT_LENGTH",
+    "CONTEXT_LIMIT_EXCEEDED"
+  ].includes(errorCode);
 }
 
 function normalizeInstalledAgentModel(
@@ -16081,6 +19102,56 @@ function normalizeInstalledAgentModel(
     }
     return value;
   };
+  const rawChecksum = normalizeNullable(input.checksum, "model checksum", 160);
+  const checksum =
+    rawChecksum === null
+      ? null
+      : rawChecksum
+          .trim()
+          .toLowerCase()
+          .replace(/^sha256:/, "");
+  if (checksum !== null && !/^[a-f0-9]{64}$/u.test(checksum)) {
+    throw new Cp2Error(400, "model_checksum_invalid", "Model checksum must be a SHA-256 digest.");
+  }
+  const packageManifestVersion = normalizeNullable(
+    input.packageManifestVersion ?? null,
+    "model package manifest version",
+    40
+  );
+  const packageSignature = normalizeNullable(
+    input.packageSignature ?? null,
+    "model package signature",
+    240
+  );
+  const packageSigningKeyId = normalizeNullable(
+    input.packageSigningKeyId ?? null,
+    "model package signing key id",
+    160
+  );
+  const packageFieldCount = [packageManifestVersion, packageSignature, packageSigningKeyId].filter(
+    (value) => value !== null
+  ).length;
+  if (packageFieldCount !== 0 && packageFieldCount !== 3) {
+    throw new Cp2Error(
+      400,
+      "model_package_incomplete",
+      "Signed model packages require a manifest version, signature, and signing key ID."
+    );
+  }
+  if (packageFieldCount === 3 && packageManifestVersion !== "1.0") {
+    throw new Cp2Error(
+      409,
+      "model_package_version_unsupported",
+      "The model package manifest version is unsupported."
+    );
+  }
+  if (packageFieldCount === 3 && checksum === null) {
+    throw new Cp2Error(
+      400,
+      "model_package_checksum_required",
+      "Signed model packages require a pinned SHA-256 checksum."
+    );
+  }
   return {
     id: normalizeRequiredBoundedText(input.id, "model installation id", 160),
     accountId,
@@ -16097,7 +19168,10 @@ function normalizeInstalledAgentModel(
     parameterCount: normalizeNullableCount(input.parameterCount, "model parameter count"),
     contextLength: normalizeNullableCount(input.contextLength, "model context length"),
     fileSizeBytes: input.fileSizeBytes,
-    checksum: normalizeNullable(input.checksum, "model checksum", 160),
+    checksum,
+    packageManifestVersion,
+    packageSignature,
+    packageSigningKeyId,
     license: normalizeRequiredBoundedText(input.license, "model license", 160),
     commercialUseAllowed: input.commercialUseAllowed === true,
     storageKey: normalizeRequiredBoundedText(input.storageKey, "private storage key", 240),

@@ -35,8 +35,14 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "marketplaceIntroStates", tableName: "cp2_marketplace_intro_states" },
   { key: "activeAiModels", tableName: "cp2_active_ai_models" },
   { key: "agentProfiles", tableName: "cp2_agent_profiles" },
+  { key: "agentRuntimeVersions", tableName: "cp2_agent_runtime_versions" },
+  { key: "agentContextSources", tableName: "cp2_agent_context_sources" },
+  { key: "agentEvaluationEvents", tableName: "cp2_agent_evaluation_events" },
+  { key: "agentOwnerCorrections", tableName: "cp2_agent_owner_corrections" },
   { key: "installedAgentModels", tableName: "cp2_installed_agent_models" },
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
+  { key: "browserInferenceAssignments", tableName: "cp2_browser_inference_assignments" },
+  { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "customers", tableName: "cp2_customers" },
@@ -195,9 +201,17 @@ const mutatingMethodNames = new Set([
   "verifyOtp",
   "finalizeShopDeletion",
   "activateAiModel",
+  "activateAgentModel",
   "assignAgentModel",
+  "upsertBrowserInferenceAssignment",
+  "recordBrowserInferenceExecution",
   "authenticateMcpAccessToken",
   "updateAgentProfile",
+  "rollbackAgentRuntimeVersion",
+  "upsertAgentContextSource",
+  "submitAgentOwnerCorrection",
+  "disableAgentOwnerCorrection",
+  "submitAgentFeedback",
   "confirmInvoice",
   "disconnectSocialAccount",
   "restoreShopDeletion",
@@ -225,6 +239,7 @@ const mutatingMethodNames = new Set([
   "registerPushSubscription",
   "registerInstalledAgentModel",
   "removeAgentModelAssignment",
+  "removeBrowserInferenceAssignment",
   "validateInstalledAgentModel",
   "removePushSubscription"
 ]);
@@ -283,7 +298,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "038_auth_retention_policy.sql";
+const requiredMigrationFilename = "041_browser_inference_assignments.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -306,6 +321,9 @@ export async function createPostgresCp2Store(
       ...(options.runtimeModelProviderResolver === undefined
         ? {}
         : { runtimeModelProviderResolver: options.runtimeModelProviderResolver }),
+      ...(options.modelRuntimeAdapterResolver === undefined
+        ? {}
+        : { modelRuntimeAdapterResolver: options.modelRuntimeAdapterResolver }),
       ...(options.pushNotificationSender === undefined
         ? {}
         : { pushNotificationSender: options.pushNotificationSender }),
@@ -1832,7 +1850,7 @@ async function saveCollectionRecords(
       `,
       [
         recordEntityId(collection.key, record),
-        firstText(record, ["businessId"]),
+        firstText(record, ["businessId", "shopId", "tenantId"]),
         firstText(record, ["accountId"]),
         firstText(record, ["userId", "ownerUserId", "actorId"]),
         firstText(record, ["invoiceId", "importJobId", "sourceId", "eventId", "permissionId"]),
@@ -3044,8 +3062,14 @@ function emptySnapshot(): Cp2Snapshot {
     marketplaceIntroStates: [],
     activeAiModels: [],
     agentProfiles: [],
+    agentRuntimeVersions: [],
+    agentContextSources: [],
+    agentEvaluationEvents: [],
+    agentOwnerCorrections: [],
     installedAgentModels: [],
     agentModelAssignments: [],
+    browserInferenceAssignments: [],
+    agentModelBindings: [],
     syncChanges: [],
     mcpAccessTokens: [],
     productFieldSchemas: [],
@@ -3155,7 +3179,16 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     return requiredText(record, "businessId");
   }
 
-  if (key === "agentModelAssignments") {
+  if (
+    key === "agentRuntimeVersions" ||
+    key === "agentContextSources" ||
+    key === "agentEvaluationEvents" ||
+    key === "agentOwnerCorrections"
+  ) {
+    return requiredText(record, "id");
+  }
+
+  if (key === "agentModelAssignments" || key === "browserInferenceAssignments") {
     return [requiredText(record, "businessId"), requiredText(record, "deviceId")].join(":");
   }
 

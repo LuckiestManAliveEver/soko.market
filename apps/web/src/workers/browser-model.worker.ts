@@ -55,6 +55,16 @@ worker.addEventListener("message", (event: MessageEvent<unknown>) => {
       );
     }
     status = "error";
+    if (request.type === "LOAD_MODEL") {
+      const code = workerErrorCode(error);
+      post({
+        type: "MODEL_LOAD_FAILED",
+        requestId: request.requestId,
+        code,
+        message: safeWorkerErrorMessage(code)
+      });
+      return;
+    }
     post({
       type: "ERROR",
       requestId: request.requestId,
@@ -76,7 +86,8 @@ async function handleRequest(request: BrowserModelWorkerRequest): Promise<void> 
           tokenizerAvailable: true,
           streaming: true,
           cancellation: true,
-          contextWindowTokens: config.maxContextTokens
+          contextWindowTokens: config.maxContextTokens,
+          runtimeContract: config.runtimeContract
         }
       });
       return;
@@ -117,32 +128,39 @@ async function handleRequest(request: BrowserModelWorkerRequest): Promise<void> 
 
 async function loadModel(requestId: string, model: BrowserModelDescriptor): Promise<void> {
   if (config === null) throw new Error("Worker is not initialized.");
+  if (model.runtimeAdapter !== "transformers-js") {
+    throw new Error("The Transformers.js worker received an incompatible runtime profile.");
+  }
   if (!model.supportedBackends.includes(config.backend)) {
     throw new Error(`${config.backend} is not supported by this model.`);
   }
-  const repositoryId = assertApprovedBrowserModelUrl(model.modelUrl);
+  const repositoryId = assertApprovedBrowserModelUrl(model);
+  const dtype = model.dtypeByBackend[config.backend];
+  if (dtype === undefined) throw new Error(`${config.backend} has no approved model dtype.`);
   if (!config.approvedModelOrigins.includes(new URL(model.modelUrl).origin)) {
     throw new Error("Model origin is not approved.");
   }
   if (activeModel?.id === model.id && generator !== null) {
-    post({ type: "MODEL_LOADED", requestId, modelId: model.id });
+    post({ type: "MODEL_READY", requestId, modelId: model.id });
     return;
   }
+  post({ type: "MODEL_LOAD_STARTED", requestId, modelId: model.id });
   await generator?.dispose();
   generator = null;
   status = "idle";
-  const loaded = await pipeline("text-generation", repositoryId, {
+  const loaded = await pipeline(model.pipeline, repositoryId, {
     device: config.backend,
-    dtype: "q4",
+    dtype,
+    revision: model.modelRevision,
     progress_callback: (progress: unknown) => {
       const parsed = parseProgress(progress);
-      if (parsed !== null) post({ type: "MODEL_PROGRESS", requestId, progress: parsed });
+      if (parsed !== null) post({ type: "MODEL_LOAD_PROGRESS", requestId, progress: parsed });
     }
   });
   generator = loaded;
   activeModel = model;
   status = "ready";
-  post({ type: "MODEL_LOADED", requestId, modelId: model.id });
+  post({ type: "MODEL_READY", requestId, modelId: model.id });
 }
 
 function countTokens(messages: ModelMessage[]): number {
@@ -198,8 +216,15 @@ async function generate(
     throw new Error("Model is not loaded.");
   }
   if (status === "generating") throw new Error("A generation is already running.");
-  if (request.maxNewTokens > 256 || request.maxNewTokens < 1) {
+  if (request.maxNewTokens > activeModel.recommendedOutputTokens.high || request.maxNewTokens < 1) {
     throw new Error("Generation token limit is invalid.");
+  }
+  if (
+    !Number.isInteger(request.maxWallTimeMs) ||
+    request.maxWallTimeMs < 1_000 ||
+    request.maxWallTimeMs > 120_000
+  ) {
+    throw new Error("Generation time limit is invalid.");
   }
   status = "generating";
   const startedAt = performance.now();
@@ -209,6 +234,11 @@ async function generate(
   const interrupt = new InterruptableStoppingCriteria();
   const criteria = new StoppingCriteriaList();
   criteria.push(interrupt);
+  let timedOut = false;
+  const deadline = worker.setTimeout(() => {
+    timedOut = true;
+    interrupt.interrupt();
+  }, request.maxWallTimeMs);
   stoppingCriteria.set(requestId, interrupt);
   cancelledRequests.delete(requestId);
 
@@ -237,6 +267,15 @@ async function generate(
       streamer,
       stopping_criteria: criteria
     });
+    if (timedOut) {
+      post({
+        type: "ERROR",
+        requestId,
+        code: "TASK_BUDGET_EXCEEDED",
+        message: safeWorkerErrorMessage("TASK_BUDGET_EXCEEDED")
+      });
+      return;
+    }
     if (cancelledRequests.has(requestId)) {
       post({
         type: "ERROR",
@@ -262,6 +301,7 @@ async function generate(
     };
     post({ type: "GENERATION_COMPLETE", requestId, result });
   } finally {
+    worker.clearTimeout(deadline);
     stoppingCriteria.delete(requestId);
     cancelledRequests.delete(requestId);
     status = generator === null ? "idle" : "ready";
@@ -342,6 +382,7 @@ function safeWorkerErrorMessage(code: BrowserInferenceErrorCode): string {
     MODEL_LOAD_FAILED: "The browser model could not be loaded.",
     OUT_OF_MEMORY: "The browser ran out of memory while loading the model.",
     CONTEXT_LIMIT_EXCEEDED: "The request exceeds the browser model context limit.",
+    TASK_BUDGET_EXCEEDED: "The browser task exceeded its execution time budget.",
     GENERATION_CANCELLED: "Generation was cancelled.",
     WORKER_CRASHED: "The browser model worker stopped unexpectedly.",
     STORAGE_QUOTA_EXCEEDED: "There is not enough browser storage for the model.",
