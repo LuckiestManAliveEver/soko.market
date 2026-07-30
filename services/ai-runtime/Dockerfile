@@ -10,7 +10,7 @@ COPY services/ai-runtime/package.json services/ai-runtime/package.json
 RUN pnpm install --frozen-lockfile --filter @soko/ai-runtime...
 COPY packages/shared-types packages/shared-types
 COPY services/ai-runtime services/ai-runtime
-RUN pnpm --filter @soko/ai-runtime... build
+RUN pnpm --filter @soko/ai-runtime build
 
 FROM node:20.19.0-bookworm-slim AS runtime
 ENV NODE_ENV=production

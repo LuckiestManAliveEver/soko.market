@@ -15,7 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "build": "pnpm --filter @soko/shared-types build && pnpm build:package",
+    "build:package": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/server.ts",
     "health": "node ../../scripts/inference-health.mjs",

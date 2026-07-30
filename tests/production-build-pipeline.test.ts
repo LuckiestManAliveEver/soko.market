@@ -28,15 +28,19 @@ describe("production workspace build pipeline", () => {
       '--filter "./packages/**"'
     );
     expect(rootManifest.scripts["build:production:workspace"]).toContain(
-      "--filter @soko/ai-runtime"
+      "pnpm --filter @soko/ai-runtime build:package"
     );
-    expect(rootManifest.scripts["build:production:workspace"]).toContain("--filter @soko/api");
+    expect(rootManifest.scripts["build:production:workspace"]).toContain(
+      "pnpm --filter @soko/api build"
+    );
     expect(rootManifest.scripts["build:production:workspace"]).toContain("--if-present build");
     expect(rootManifest.scripts["inference:build"]).toBe("pnpm --filter @soko/ai-runtime build");
     expect(runtimeManifest.main).toBe("./dist/index.js");
     expect(runtimeManifest.types).toBe("./dist/index.d.ts");
     expect(runtimeManifest.exports).toHaveProperty(".");
-    expect(runtimeManifest.scripts.build).toContain("tsc -p tsconfig.build.json");
+    expect(runtimeManifest.scripts.build).toContain("pnpm --filter @soko/shared-types build");
+    expect(runtimeManifest.scripts.build).toContain("pnpm build:package");
+    expect(runtimeManifest.scripts["build:package"]).toContain("tsc -p tsconfig.build.json");
     expect(apiManifest.scripts.start).toBe("node dist/index.js");
   });
 
@@ -47,9 +51,10 @@ describe("production workspace build pipeline", () => {
     const apiService = blueprint.slice(apiStart, apiEnd);
 
     expect(apiService).toContain("corepack pnpm install --frozen-lockfile");
+    expect(apiService).toContain("corepack pnpm db:migrate");
     expect(apiService).toContain("corepack pnpm build:production");
     expect(apiService).not.toContain("services/ai-runtime/**");
-    expect(apiService).toContain("corepack pnpm db:migrate");
+    expect(apiService).not.toContain("preDeployCommand:");
     expect(apiService).toContain("corepack pnpm --filter @soko/api start");
   });
 

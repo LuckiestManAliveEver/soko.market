@@ -46,21 +46,27 @@ gateway reports the model only after `/api/tags` lists the completed model.
 
 ### Deterministic production build graph
 
-Render runs the root `pnpm build:production` command. Its workspace phase selects:
+Render runs the root `pnpm build:production` command. Its workspace phase:
 
-- every package under `packages/**`;
-- `@soko/ai-runtime`;
-- `@soko/api`.
+1. builds every package under `packages/**` in dependency order;
+2. compiles `@soko/ai-runtime` with its dependency output already present;
+3. compiles `@soko/api`;
+4. runs the production import and Render boundary checks.
 
-Pnpm recursively builds that selection in dependency order before the production import and Render
-boundary checks run. The API intentionally does not declare `@soko/ai-runtime` as a dependency:
-backend inference is reached through the authenticated private-service protocol, and importing the
-engine into the public API would violate the deployment boundary.
+The API service's Render build command installs the frozen workspace, runs the database migration
+once, and then runs this production build. There is no duplicate pre-deploy migration command.
+
+The public `@soko/ai-runtime` build script also builds `@soko/shared-types` first, so a direct
+`pnpm --filter @soko/ai-runtime build` works from a clean checkout. The root workspace phase uses
+the runtime's package-only build after building `packages/**`, avoiding a duplicate shared-types
+build. The API intentionally does not declare `@soko/ai-runtime` as a dependency: backend
+inference is reached through the authenticated private-service protocol, and importing the engine
+into the public API would violate the deployment boundary.
 
 The previous `@soko/api^...` filter selected only the API's declared shared-package dependencies.
 Because the runtime is an independent service, a clean Render checkout skipped its build while a
 developer checkout with a stale `services/ai-runtime/dist` could pass validation. The explicit
-workspace selection now emits and validates:
+workspace sequence now emits and validates:
 
 ```text
 services/ai-runtime/dist/index.js

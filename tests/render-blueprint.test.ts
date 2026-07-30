@@ -11,9 +11,9 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("name: soko-market-api\n    runtime: node");
     expect(blueprint).toContain("plan: starter");
     expect(blueprint).toContain(
-      "preDeployCommand: COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate"
+      "buildCommand: COREPACK_HOME=/tmp/corepack corepack pnpm install --frozen-lockfile && COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate && COREPACK_HOME=/tmp/corepack corepack pnpm build:production"
     );
-    expect(blueprint).not.toContain("db:migrate &&");
+    expect(blueprint).not.toContain("preDeployCommand:");
     expect(blueprint.match(/key: DATABASE_URL\n\s+sync: false/g)?.length).toBeGreaterThanOrEqual(4);
     expect(
       blueprint.match(/key: DIRECT_DATABASE_URL\n\s+sync: false/g)?.length

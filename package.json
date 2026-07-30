@@ -15,7 +15,7 @@
     "android:legal:verify": "node scripts/verify-play-legal-readiness.mjs",
     "build": "pnpm -r --if-present build",
     "build:production": "pnpm build:production:workspace && pnpm check:production-imports && pnpm check:render-inference-boundaries",
-    "build:production:workspace": "pnpm -r --filter \"./packages/**\" --filter @soko/ai-runtime --filter @soko/api --if-present build",
+    "build:production:workspace": "pnpm -r --filter \"./packages/**\" --if-present build && pnpm --filter @soko/ai-runtime build:package && pnpm --filter @soko/api build",
     "benchmark:browser-inference": "node scripts/benchmark-browser-inference.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:production-imports": "node scripts/check-production-imports.mjs",
