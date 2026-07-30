@@ -8,7 +8,6 @@ export const productionPackages = [
   packageDefinition("@soko/tool-core", "packages/tool-core/package.json"),
   packageDefinition("@soko/sync-core", "packages/sync-core/package.json"),
   packageDefinition("@soko/business-core", "packages/business-core/package.json"),
-  packageDefinition("@soko/ai-runtime", "services/ai-runtime/package.json", ["./dist/server.js"]),
   packageDefinition("@soko/api", "services/api/package.json")
 ];
 
