@@ -13,6 +13,8 @@ describe("PWA installability", () => {
       start_url?: string;
       scope?: string;
       display?: string;
+      launch_handler?: { client_mode?: string };
+      shortcuts?: Array<{ url?: string }>;
       icons?: Array<{ src?: string; sizes?: string; type?: string; purpose?: string }>;
     };
 
@@ -21,6 +23,13 @@ describe("PWA installability", () => {
     expect(manifest.start_url).toBe("/");
     expect(manifest.scope).toBe("/");
     expect(manifest.display).toBe("standalone");
+    expect(manifest.launch_handler?.client_mode).toBe("focus-existing");
+    expect(manifest.shortcuts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ url: "/marketplace" }),
+        expect.objectContaining({ url: "/workspace" })
+      ])
+    );
     expect(manifest.icons).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

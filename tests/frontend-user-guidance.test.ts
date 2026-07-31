@@ -394,7 +394,7 @@ describe("frontend user guidance", () => {
     expect(application).toContain("onClick={onLogoutAll}");
     expect(application).toContain("Signing out all devices…");
     expect(application).toContain(
-      'window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.home)'
+      'navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true })'
     );
     expect(application).toContain("setBusiness(null)");
     expect(application).toContain("setOwnerAuth(null)");

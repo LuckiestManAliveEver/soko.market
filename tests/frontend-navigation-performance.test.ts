@@ -43,7 +43,8 @@ describe("frontend navigation performance contracts", () => {
       application.indexOf("}, [accountId, business.id]);", settingsEffectStart)
     );
 
-    expect(navigationBlock).toContain("window.history[method]");
+    expect(navigationBlock).toContain("navigateToOwnerRoute");
+    expect(navigationBlock).not.toContain("window.history.pushState");
     expect(navigationBlock).not.toContain("window.location.assign");
     expect(navigationBlock).not.toContain("window.location.reload");
     expect(navigationBlock).not.toContain("ensureRuntimeSession");

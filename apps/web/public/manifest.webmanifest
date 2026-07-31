@@ -9,10 +9,27 @@
   "dir": "ltr",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
   "orientation": "any",
   "background_color": "#f4f6f2",
   "theme_color": "#117a4f",
   "categories": ["business", "productivity", "shopping"],
+  "shortcuts": [
+    {
+      "name": "Marketplace",
+      "short_name": "Marketplace",
+      "url": "/marketplace",
+      "icons": [{ "src": "/icons/soko-icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Seller workspace",
+      "short_name": "Workspace",
+      "url": "/workspace",
+      "icons": [{ "src": "/icons/soko-icon-192.png", "sizes": "192x192" }]
+    }
+  ],
   "icons": [
     {
       "src": "/icons/soko-icon.svg",

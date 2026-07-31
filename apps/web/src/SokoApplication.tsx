@@ -164,6 +164,20 @@ import {
   type E2eeIdentity
 } from "./e2ee";
 import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes } from "./routes";
+import {
+  canNavigateBackWithinApp,
+  initializeOwnerHistory,
+  navigateToBrowserUrl,
+  navigateToOwnerRoute,
+  readCurrentOwnerRoute,
+  readSokoHistoryState,
+  subscribeToBrowserNavigation
+} from "./browser-navigation";
+import {
+  clearOwnerNavigationSession,
+  readOwnerNavigationSession,
+  writeOwnerNavigationSession
+} from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
 import {
@@ -2122,6 +2136,9 @@ export function OwnerApp() {
   const initialOwnerAuth = readStoredOwnerAuth();
   const initialCachedSession = readCachedAuthSession();
   const initialOwnerRoute = readOwnerRoute(window.location.pathname);
+  const initialNavigationSession = readOwnerNavigationSession(
+    initialCachedSession?.account.id ?? null
+  );
   const [channel, setChannel] = useState<AuthChannel>(
     initialOwnerAuth === null ? "email" : initialOwnerAuth.contact.includes("@") ? "email" : "phone"
   );
@@ -2199,20 +2216,29 @@ export function OwnerApp() {
   const [isMessagingInboxOpen, setIsMessagingInboxOpen] = useState(
     () => window.matchMedia("(min-width: 760px)").matches
   );
-  const [chatDraft, setChatDraft] = useState("");
+  const [chatDraft, setChatDraft] = useState(initialNavigationSession?.chatDraft ?? "");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
-  const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
+  const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(
+    initialNavigationSession?.runtimeSessionId ?? null
+  );
   const [clarificationCount, setClarificationCount] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
-    createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
+    initialNavigationSession !== null && initialNavigationSession.chatMessages.length > 0
+      ? initialNavigationSession.chatMessages
+      : createInitialChatMessages(initialBusiness?.name ?? "Soko.market")
   );
   const [conversationInbox, setConversationInbox] = useState<ConversationInboxItem[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(
+    initialOwnerRoute?.conversationId ?? initialNavigationSession?.activeConversationId ?? null
+  );
   const [activeConversation, setActiveConversation] = useState<ConversationView | null>(null);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isContactTyping, setIsContactTyping] = useState(false);
   const [products, setProducts] = useState<ProductSummary[]>([]);
+  const [routedProductId, setRoutedProductId] = useState<string | null>(
+    initialOwnerRoute?.productId ?? null
+  );
   const [productFields, setProductFields] = useState<ProductFieldDefinition[]>(() =>
     createDefaultProductFieldDefinitions()
   );
@@ -2292,31 +2318,67 @@ export function OwnerApp() {
   const activeImportJob =
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
-  function navigateToView(nextView: ShellView, options?: { replace?: boolean }) {
-    const nextPath = pathForOwnerView(nextView, mode);
+  function navigateToView(nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) {
+    const nextMode = options?.mode ?? mode;
+    const nextRoute = { mode: nextMode, view: nextView };
+    const nextPath = pathForOwnerView(nextView, nextMode);
     const measurement = startNavigationMeasurement(nextPath);
     screenStateCacheRef.current.write(activeViewRef.current, {
       scrollX: window.scrollX,
       scrollY: window.scrollY
     });
     runViewTransition(() => {
+      setMode(nextMode);
       setView(nextView);
-      if (window.location.pathname !== nextPath) {
-        const method = options?.replace ? "replaceState" : "pushState";
-        window.history[method]({ mode, view: nextView }, "", nextPath);
-      }
+      setRoutedProductId(null);
+      navigateToOwnerRoute(nextRoute, { replace: options?.replace });
       markNavigationCommitted(measurement);
       restoreScreenScroll(screenStateCacheRef.current, nextView);
     }, nextView === "chat");
   }
 
+  function populateProductForm(product: ProductSummary) {
+    setProductForm({
+      id: product.id,
+      name: product.name,
+      sku: product.sku ?? "",
+      unit: product.unit,
+      quantity: String(product.quantity),
+      buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
+      sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
+    });
+    setStockProductId(product.id);
+    setStockQuantityAfter(String(product.quantity));
+  }
+
+  function openProduct(product: ProductSummary, options?: { replace?: boolean }) {
+    populateProductForm(product);
+    setMode("seller");
+    setView("products");
+    setRoutedProductId(product.id);
+    navigateToOwnerRoute(
+      { mode: "seller", view: "products", productId: product.id },
+      { replace: options?.replace }
+    );
+  }
+
+  function openAgentProfile(options?: { replace?: boolean }) {
+    if (business === null) return;
+    setMode("seller");
+    setView("agent");
+    navigateToOwnerRoute(
+      { mode: "seller", view: "agent", agentId: agentSettings.id },
+      { replace: options?.replace }
+    );
+  }
+
   function returnToChat() {
-    const currentState = window.history.state as { view?: ShellView } | null;
-    if (currentState?.view !== undefined && currentState.view !== "chat") {
+    const currentState = readSokoHistoryState(window.history.state);
+    if (currentState?.view !== "chat" && canNavigateBackWithinApp()) {
       window.history.back();
       return;
     }
-    navigateToView("chat");
+    navigateToView("chat", { replace: currentState?.view !== "chat" });
   }
 
   function requireMessagingSignIn() {
@@ -2413,19 +2475,59 @@ export function OwnerApp() {
   ]);
 
   useEffect(() => {
+    const initialRoute = readCurrentOwnerRoute();
+    if (initialRoute === null) return;
+    initializeOwnerHistory(initialRoute);
+    const previousScrollRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
+
     function restoreRoute() {
-      const route = readOwnerRoute(window.location.pathname);
+      const route = readCurrentOwnerRoute();
       if (route === null) return;
       const measurement = startNavigationMeasurement(window.location.pathname);
       setMode(route.mode);
       setView(route.view);
+      setRoutedProductId(route.productId ?? null);
+      setActiveConversationId(route.conversationId ?? null);
+      setReplyToMessageId(null);
       setIsWorkspacePanelOpen(false);
+      setIsMarketplaceShortcutOpen(false);
       markNavigationCommitted(measurement);
+      const historyState = readSokoHistoryState(window.history.state);
+      if (historyState !== null) {
+        window.requestAnimationFrame(() => {
+          window.scrollTo(historyState.scrollX, historyState.scrollY);
+        });
+      }
     }
 
-    window.addEventListener("popstate", restoreRoute);
-    return () => window.removeEventListener("popstate", restoreRoute);
+    const unsubscribe = subscribeToBrowserNavigation(restoreRoute);
+    return () => {
+      window.history.scrollRestoration = previousScrollRestoration;
+      unsubscribe();
+    };
   }, []);
+
+  useEffect(() => {
+    writeOwnerNavigationSession(session?.account.id ?? null, {
+      activeConversationId,
+      runtimeSessionId,
+      chatDraft,
+      chatMessages
+    });
+  }, [activeConversationId, chatDraft, chatMessages, runtimeSessionId, session?.account.id]);
+
+  useEffect(() => {
+    if (routedProductId === null || products.length === 0) return;
+    const product = products.find((candidate) => candidate.id === routedProductId);
+    if (product === undefined) {
+      setRoutedProductId(null);
+      navigateToView("products", { replace: true, mode: "seller" });
+      setStatusMessage("That product is no longer available.");
+      return;
+    }
+    populateProductForm(product);
+  }, [products, routedProductId]);
 
   useEffect(() => {
     function updateOnlineStatus() {
@@ -2572,9 +2674,21 @@ export function OwnerApp() {
       const notificationConversationId = new URLSearchParams(window.location.search).get(
         "conversation"
       );
-      if (!cancelled) await loadMessagingInbox(notificationConversationId ?? activeConversationId);
+      const routeConversationId = readCurrentOwnerRoute()?.conversationId ?? null;
+      if (!cancelled) {
+        await loadMessagingInbox(
+          notificationConversationId ?? routeConversationId ?? activeConversationId
+        );
+      }
       if (notificationConversationId) {
-        window.history.replaceState({}, "", window.location.pathname);
+        navigateToOwnerRoute(
+          {
+            mode,
+            view: "chat",
+            conversationId: notificationConversationId
+          },
+          { replace: true }
+        );
       }
     };
     void refresh();
@@ -2597,7 +2711,7 @@ export function OwnerApp() {
       window.removeEventListener("online", onOnline);
       navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
     };
-  }, [session?.account.id, activeConversationId, e2eeIdentity?.deviceId]);
+  }, [session?.account.id, activeConversationId, e2eeIdentity?.deviceId, mode]);
 
   useEffect(() => {
     if (business !== null) {
@@ -2940,7 +3054,7 @@ export function OwnerApp() {
     if (code === null || state === null || pendingOAuth === null || state !== pendingOAuth.state) {
       setStatusMessage("Social sign-in could not be verified. Please try again.");
       sessionStorage.removeItem(pendingOAuthStorageKey);
-      window.history.replaceState({}, document.title, "/");
+      navigateToBrowserUrl(routes.marketplace, { replace: true });
       return true;
     }
 
@@ -2952,11 +3066,11 @@ export function OwnerApp() {
         csrfToken: pendingOAuth.csrfToken
       });
       sessionStorage.removeItem(pendingOAuthStorageKey);
-      window.history.replaceState({}, document.title, "/");
+      navigateToBrowserUrl(routes.marketplace, { replace: true });
       await completeOAuthSession(response, pendingOAuth.provider);
     } catch (error) {
       sessionStorage.removeItem(pendingOAuthStorageKey);
-      window.history.replaceState({}, document.title, "/");
+      navigateToBrowserUrl(routes.marketplace, { replace: true });
       setStatusMessage(getErrorMessage(error));
     }
 
@@ -3021,7 +3135,7 @@ export function OwnerApp() {
       setOwnerAuth(nextOwnerAuth);
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
       setIsWorkspaceUnlocked(true);
-      setView("chat");
+      navigateToView("chat", { replace: true });
       setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete.${networkStatus}`);
       return;
     }
@@ -3036,8 +3150,7 @@ export function OwnerApp() {
     localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
     localStorage.removeItem(setupDraftStorageKey);
     setIsWorkspaceUnlocked(true);
-    setMode("marketplace");
-    setView("chat");
+    navigateToView("chat", { replace: true, mode: "marketplace" });
     setIsSignupOpen(false);
     setStatusMessage(
       `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.${networkStatus}`
@@ -3216,8 +3329,7 @@ export function OwnerApp() {
         };
         setOwnerAuth(nextOwnerAuth);
         setIsWorkspaceUnlocked(true);
-        setMode("marketplace");
-        setView("chat");
+        navigateToView("chat", { replace: true, mode: "marketplace" });
         setIsSignupOpen(false);
         localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
         localStorage.removeItem(setupDraftStorageKey);
@@ -3482,11 +3594,7 @@ export function OwnerApp() {
         destination: pathForOwnerView(destinationView, mode)
       });
       setView(destinationView);
-      window.history.replaceState(
-        { mode, view: destinationView },
-        "",
-        pathForOwnerView(destinationView, mode)
-      );
+      navigateToOwnerRoute({ mode, view: destinationView }, { replace: true });
       setStatusMessage("Login complete");
     } catch (error) {
       setStatusMessage(getAccountLoginErrorMessage(error));
@@ -3534,11 +3642,7 @@ export function OwnerApp() {
       }
       const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
       setView(destinationView);
-      window.history.replaceState(
-        { mode, view: destinationView },
-        "",
-        pathForOwnerView(destinationView, mode)
-      );
+      navigateToOwnerRoute({ mode, view: destinationView }, { replace: true });
       setStatusMessage("Passkey login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3649,7 +3753,7 @@ export function OwnerApp() {
       setLoginPin("");
       setRecoveryPin("");
       setRecoveryPinConfirm("");
-      setView("chat");
+      navigateToView("chat", { replace: true });
       setStatusMessage("PIN reset. Login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3658,8 +3762,7 @@ export function OwnerApp() {
 
   function finishPhoneSignup() {
     setGeneratedPhoneRecoveryCode("");
-    setMode("marketplace");
-    setView("chat");
+    navigateToView("chat", { replace: true, mode: "marketplace" });
     setIsSignupOpen(false);
     setStatusMessage("Phone account secured. Tap Sell when you are ready to register your shop.");
   }
@@ -3669,7 +3772,7 @@ export function OwnerApp() {
     setIsRecoveringPin(false);
     setIsWorkspaceUnlocked(true);
     setIsLoginOpen(false);
-    setView("chat");
+    navigateToView("chat", { replace: true });
     setStatusMessage("PIN reset. Login complete.");
   }
 
@@ -3687,7 +3790,7 @@ export function OwnerApp() {
     setView("chat");
     localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
     localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-    window.history.replaceState({ mode: "seller", view: "chat" }, "", routes.sell);
+    navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
     setStatusMessage("Account restored. Shop access is active again.");
   }
 
@@ -3713,7 +3816,7 @@ export function OwnerApp() {
       setLoginPin("");
       setRecoveryPin("");
       setRecoveryPinConfirm("");
-      setView("chat");
+      navigateToView("chat", { replace: true });
       setStatusMessage("PIN set. Login complete");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3749,8 +3852,7 @@ export function OwnerApp() {
       setIsWorkspaceUnlocked(true);
       setSignupPin("");
       setSignupPinConfirm("");
-      setMode("marketplace");
-      setView("chat");
+      navigateToView("chat", { replace: true, mode: "marketplace" });
       setIsSignupOpen(false);
       setIsBusinessSetupOpen(false);
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
@@ -3821,7 +3923,7 @@ export function OwnerApp() {
       setIsWorkspaceUnlocked(true);
       setIsBusinessSetupOpen(false);
       setMode("seller");
-      window.history.replaceState({ mode: "seller", view: "chat" }, "", routes.sell);
+      navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
       localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
       localStorage.removeItem(legacyActiveBusinessStorageKey);
       localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
@@ -3864,6 +3966,7 @@ export function OwnerApp() {
         clientTimestamp: new Date().toISOString()
       });
       setActiveConversationId(conversationId);
+      navigateToOwnerRoute({ mode: "seller", view: "chat", conversationId }, { replace: true });
       await loadConversationThread(conversationId);
     } catch {
       // Shop creation remains successful if messaging is temporarily unavailable.
@@ -4015,6 +4118,10 @@ export function OwnerApp() {
       }
 
       await loadProducts(business.id);
+      if (routedProductId === product.id) {
+        setRoutedProductId(null);
+        navigateToView("products", { replace: true, mode: "seller" });
+      }
       setStatusMessage("Product removed");
     } catch (error) {
       if (
@@ -5507,7 +5614,7 @@ export function OwnerApp() {
     const measurement = startNavigationMeasurement(nextPath);
     runViewTransition(() => {
       setMode(nextMode);
-      window.history.pushState({ mode: nextMode, view: "chat" }, "", nextPath);
+      navigateToOwnerRoute({ mode: nextMode, view: "chat" });
       setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
       setView("chat");
       setIsWorkspacePanelOpen(false);
@@ -5886,6 +5993,8 @@ export function OwnerApp() {
   async function selectConversation(conversationId: string) {
     setActiveConversationId(conversationId);
     setReplyToMessageId(null);
+    setView("chat");
+    navigateToOwnerRoute({ mode, view: "chat", conversationId });
     await loadConversationThread(conversationId);
   }
 
@@ -5901,6 +6010,11 @@ export function OwnerApp() {
       title
     });
     await loadMessagingInbox(created.conversation.id);
+    navigateToOwnerRoute({
+      mode,
+      view: "chat",
+      conversationId: created.conversation.id
+    });
     setStatusMessage("Conversation created");
   }
 
@@ -6123,6 +6237,8 @@ export function OwnerApp() {
     }
     await clearPersistentApiRequestCache();
     clearCachedAuthSession();
+    clearOwnerNavigationSession(accountId);
+    clearOwnerNavigationSession(null);
     localStorage.removeItem(activeBusinessStorageKey);
     localStorage.removeItem(legacyActiveBusinessStorageKey);
     localStorage.removeItem(activeAgentStorageKey);
@@ -6139,6 +6255,7 @@ export function OwnerApp() {
     setDestination("");
     setShopPhoneNumber("");
     setProducts([]);
+    setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
     setSuppliers([]);
     setCustomers([]);
@@ -6205,7 +6322,7 @@ export function OwnerApp() {
     setGeneratedPhoneRecoveryCode("");
     setView("chat");
     setMode("marketplace");
-    window.history.replaceState({ mode: "marketplace", view: "chat" }, "", routes.home);
+    navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setIsWorkspacePanelOpen(false);
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
@@ -6994,18 +7111,18 @@ export function OwnerApp() {
 
       if (result.turn.plan.toolName === "products.list" && business !== null) {
         await loadProducts(business.id);
-        setView("products");
+        navigateToView("products");
       }
 
       if (result.turn.plan.toolName === "invoices.list" && business !== null) {
         await loadInvoices(business.id);
-        setView("invoices");
+        navigateToView("invoices");
       }
 
       if (isNetworkDiscoveryRequest(agentRequest)) {
         await loadNetworkGraph();
         await requestNetworkRoute();
-        setView("network");
+        navigateToView("network");
       }
 
       if (business !== null) {
@@ -7056,7 +7173,7 @@ export function OwnerApp() {
     const supplierReply = createSupplierChatReply(agentRequest, suppliers);
     if (supplierReply !== null) {
       await appendAgentMessage(supplierReply.body);
-      setView(supplierReply.view);
+      navigateToView(supplierReply.view);
       return;
     }
 
@@ -7089,7 +7206,7 @@ export function OwnerApp() {
       await appendAgentMessage(parserReply.body);
       if (isNetworkDiscoveryRequest(agentRequest)) {
         await loadNetworkGraph();
-        setView("network");
+        navigateToView("network");
       }
       setStatusMessage(getErrorMessage(error));
     }
@@ -7126,12 +7243,12 @@ export function OwnerApp() {
 
       if (result.turn.plan.toolName === "product.create") {
         await loadProducts(business.id);
-        setView("products");
+        navigateToView("products");
       }
 
       if (result.turn.plan.toolName === "customer.create") {
         await loadCustomers(business.id);
-        setView("customers");
+        navigateToView("customers");
       }
 
       if (result.turn.plan.toolName === "document_import.confirm") {
@@ -7140,7 +7257,7 @@ export function OwnerApp() {
           loadProducts(business.id),
           loadSuppliers(business.id)
         ]);
-        setView("imports");
+        navigateToView("imports");
       }
 
       await loadRuntimeSessions(business.id);
@@ -7176,7 +7293,7 @@ export function OwnerApp() {
     const supplierReply = createSupplierChatReply(message, suppliers);
 
     if (supplierReply !== null) {
-      setView(supplierReply.view);
+      navigateToView(supplierReply.view);
       return {
         id: `sokoclaw-${Date.now()}`,
         author: "sokoclaw",
@@ -7200,7 +7317,7 @@ export function OwnerApp() {
     };
 
     if (decision.kind === "act" && decision.result.nextAction.type === "navigate") {
-      setView(decision.result.nextAction.view);
+      navigateToView(decision.result.nextAction.view);
     }
 
     if (
@@ -7217,7 +7334,7 @@ export function OwnerApp() {
             : String(decision.result.slots.quantity),
         unit: decision.result.slots.unit ?? form.unit
       }));
-      setView("products");
+      navigateToView("products");
     }
 
     if (
@@ -7229,7 +7346,7 @@ export function OwnerApp() {
         ...form,
         name: decision.result.slots.customerName ?? form.name
       }));
-      setView("customers");
+      navigateToView("customers");
     }
 
     if (
@@ -7251,7 +7368,7 @@ export function OwnerApp() {
             : String(decision.result.slots.quantity)
       }));
       setInvoicePreview(null);
-      setView("invoices");
+      navigateToView("invoices");
     }
 
     if (
@@ -7268,11 +7385,11 @@ export function OwnerApp() {
             ? form.amount
             : String(decision.result.slots.amount)
       }));
-      setView("payments");
+      navigateToView("payments");
     }
 
     if (decision.kind === "act" && decision.result.intent === "check_debt") {
-      setView("payments");
+      navigateToView("payments");
     }
 
     setClarificationCount(decision.kind === "act" ? 0 : clarificationCount + 1);
@@ -7295,21 +7412,17 @@ export function OwnerApp() {
             stockReason={stockReason}
             onFormChange={setProductForm}
             onSave={() => void runAction("product-save", saveProduct)}
-            onReset={() => setProductForm(emptyProductForm)}
-            onAdd={() => setProductForm(emptyProductForm)}
-            onEdit={(product) => {
-              setProductForm({
-                id: product.id,
-                name: product.name,
-                sku: product.sku ?? "",
-                unit: product.unit,
-                quantity: String(product.quantity),
-                buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
-                sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
-              });
-              setStockProductId(product.id);
-              setStockQuantityAfter(String(product.quantity));
+            onReset={() => {
+              setProductForm(emptyProductForm);
+              setRoutedProductId(null);
+              navigateToView("products", { replace: true, mode: "seller" });
             }}
+            onAdd={() => {
+              setProductForm(emptyProductForm);
+              setRoutedProductId(null);
+              navigateToView("products", { replace: true, mode: "seller" });
+            }}
+            onEdit={openProduct}
             onStockProductChange={(productId) => {
               const product = products.find((item) => item.id === productId);
               setStockProductId(productId);
@@ -7368,7 +7481,7 @@ export function OwnerApp() {
             onConfirmReceipt={(job) =>
               void runAction("receipt-confirm", () => confirmSupplierReceipt(job))
             }
-            onImport={() => setView("imports")}
+            onImport={() => navigateToView("imports")}
           />
         );
       case "customers":
@@ -7641,7 +7754,7 @@ export function OwnerApp() {
             <button
               className="brand-lockup"
               type="button"
-              onClick={() => setupComplete && navigateToView("agent")}
+              onClick={() => setupComplete && openAgentProfile()}
             >
               <AppIcon className="logo-mark" />
               <span>
@@ -7734,7 +7847,7 @@ export function OwnerApp() {
                   if (business === null) {
                     openLogin();
                   } else {
-                    navigateToView("agent");
+                    openAgentProfile();
                   }
                 }}
                 aria-label={business === null ? "Owner login" : "Account and agent settings"}
@@ -7854,11 +7967,7 @@ export function OwnerApp() {
             onRestored={completeAccountRestoration}
             onCancel={() => {
               setIsAccountRestorationOpen(false);
-              window.history.replaceState(
-                { mode: "marketplace", view: "chat" },
-                "",
-                routes.marketplace
-              );
+              navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
               setStatusMessage("Account restoration cancelled.");
             }}
           />
@@ -8087,7 +8196,7 @@ export function OwnerApp() {
               onNetworkRefresh={() => void loadNetworkGraph()}
               onRemoveAttachment={removePendingAttachment}
               onStatusChange={updateShopPresenceStatus}
-              onOpenAgentProfile={() => business !== null && navigateToView("agent")}
+              onOpenAgentProfile={() => openAgentProfile()}
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen}
@@ -10453,7 +10562,7 @@ interface ProductSurfaceProps {
   onAdjustStock: () => void;
 }
 
-export function PublicStorefrontChat(props: { agentId: string }) {
+export function PublicStorefrontChat(props: { agentId: string; productId?: string | null }) {
   const installPrompt = useInstallPrompt();
   const { isPending, runAction } = useAsyncActions();
   const [visitorId] = useState(readStorefrontVisitorId);
@@ -10477,6 +10586,7 @@ export function PublicStorefrontChat(props: { agentId: string }) {
   const [error, setError] = useState("");
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const storefrontFileInputRef = useRef<HTMLInputElement | null>(null);
+  const openedProductInAppRef = useRef(false);
 
   useEffect(() => {
     let isActive = true;
@@ -10507,6 +10617,10 @@ export function PublicStorefrontChat(props: { agentId: string }) {
   }, [props.agentId]);
 
   const products = storefront?.products ?? [];
+  const activeProduct =
+    props.productId === null || props.productId === undefined
+      ? null
+      : (products.find((product) => product.id === props.productId) ?? null);
   const availableProducts = products.filter((product) => product.available);
   const firstAvailableProductId = products.find((product) => product.available)?.id ?? "";
   const receiptProductMissing =
@@ -10552,6 +10666,27 @@ export function PublicStorefrontChat(props: { agentId: string }) {
       setReceiptProductId(firstAvailableProductId);
     }
   }, [firstAvailableProductId, receiptProductId, receiptProductMissing]);
+
+  useEffect(() => {
+    if (props.productId !== null && props.productId !== undefined) {
+      setCatalogueOpen(true);
+    }
+  }, [props.productId]);
+
+  function openStorefrontProduct(product: PublicStorefrontProductSummary) {
+    openedProductInAppRef.current = true;
+    setCatalogueOpen(true);
+    navigateToBrowserUrl(routes.storefrontProduct(props.agentId, product.id));
+  }
+
+  function closeStorefrontProduct() {
+    if (openedProductInAppRef.current) {
+      openedProductInAppRef.current = false;
+      window.history.back();
+      return;
+    }
+    navigateToBrowserUrl(routes.publicAgent(props.agentId), { replace: true });
+  }
 
   function appendMessage(author: StorefrontChatMessage["author"], body: string) {
     setMessages((currentMessages) => [
@@ -10983,6 +11118,35 @@ export function PublicStorefrontChat(props: { agentId: string }) {
               </p>
             </div>
 
+            {activeProduct !== null ? (
+              <section className="storefront-product-card" aria-label="Product details">
+                <div className="storefront-card-header">
+                  <div>
+                    <span>Product</span>
+                    <strong>{activeProduct.name}</strong>
+                  </div>
+                  <button className="secondary" type="button" onClick={closeStorefrontProduct}>
+                    Back
+                  </button>
+                </div>
+                <p>
+                  Sold by {storefront.businessName} · {activeProduct.unit}
+                </p>
+                <button type="button" onClick={() => addProductToCart(activeProduct)}>
+                  Add to receipt
+                </button>
+              </section>
+            ) : props.productId !== null && props.productId !== undefined ? (
+              <section className="storefront-product-card" aria-label="Product unavailable">
+                <div className="storefront-card-header">
+                  <strong>Product unavailable</strong>
+                  <button className="secondary" type="button" onClick={closeStorefrontProduct}>
+                    Back to catalogue
+                  </button>
+                </div>
+              </section>
+            ) : null}
+
             {catalogueOpen ? (
               <section className="storefront-product-card" aria-label="Product list">
                 <div className="storefront-card-header">
@@ -11010,6 +11174,13 @@ export function PublicStorefrontChat(props: { agentId: string }) {
                           <strong>{product.name}</strong>
                           <span>{product.unit}</span>
                         </div>
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={() => openStorefrontProduct(product)}
+                        >
+                          View
+                        </button>
                         <button type="button" onClick={() => addProductToCart(product)}>
                           Add
                         </button>
@@ -13909,7 +14080,7 @@ function AgentProfileSurface({
       const u = new URL(location.href);
       if (s) u.searchParams.set("ai_search", s);
       else u.searchParams.delete("ai_search");
-      window.history.pushState({}, "", `${u.pathname}${u.search}`);
+      navigateToBrowserUrl(`${u.pathname}${u.search}`, { replace: true });
     } catch {
       /* ignore history update errors in unusual environments */
     }
@@ -16346,7 +16517,7 @@ function AgentProfileSurface({
                       try {
                         const u = new URL(location.href);
                         u.searchParams.delete("ai_search");
-                        window.history.pushState({}, "", `${u.pathname}${u.search}`);
+                        navigateToBrowserUrl(`${u.pathname}${u.search}`, { replace: true });
                       } catch {
                         /* ignore history update errors in unusual environments */
                       }

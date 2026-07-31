@@ -1,9 +1,9 @@
 /* global URL, Response, caches, self */
 
 const CACHE_PREFIX = "soko-market-app-";
-const CACHE_NAME = `${CACHE_PREFIX}v10`;
-const STATIC_CACHE = `${CACHE_PREFIX}static-v10`;
-const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v10`;
+const CACHE_NAME = `${CACHE_PREFIX}v11`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v11`;
+const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v11`;
 const ACTIVE_CACHES = new Set([CACHE_NAME, STATIC_CACHE, PUBLIC_READ_CACHE]);
 const APP_SHELL = [
   "/",
@@ -185,7 +185,12 @@ self.addEventListener("message", (event) => {
       icon: "/icons/soko-icon-192.png",
       badge: "/icons/soko-icon-192.png",
       tag: event.data.tag,
-      data: { conversationId: event.data.conversationId, url: "/" }
+      data: {
+        conversationId: event.data.conversationId,
+        url: event.data.conversationId
+          ? `/marketplace/conversations/${encodeURIComponent(event.data.conversationId)}`
+          : "/marketplace"
+      }
     })
   );
 });
@@ -203,7 +208,12 @@ self.addEventListener("push", (event) => {
       icon: "/icons/soko-icon-192.png",
       badge: "/icons/soko-icon-192.png",
       tag: payload.messageId ? `soko-message-${payload.messageId}` : "soko-message",
-      data: { conversationId: payload.conversationId, url: "/" }
+      data: {
+        conversationId: payload.conversationId,
+        url: payload.conversationId
+          ? `/marketplace/conversations/${encodeURIComponent(payload.conversationId)}`
+          : "/marketplace"
+      }
     })
   );
 });
@@ -222,8 +232,8 @@ self.addEventListener("notificationclick", (event) => {
       }
       const conversationId = event.notification.data?.conversationId;
       const url = conversationId
-        ? `/?conversation=${encodeURIComponent(conversationId)}`
-        : event.notification.data?.url || "/";
+        ? `/marketplace/conversations/${encodeURIComponent(conversationId)}`
+        : event.notification.data?.url || "/marketplace";
       return self.clients.openWindow(url);
     })
   );

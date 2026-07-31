@@ -20,7 +20,8 @@ describe("persistent authenticated app shell", () => {
     const navigationEnd = application.indexOf("function returnToChat", navigationStart);
     const navigation = application.slice(navigationStart, navigationEnd);
 
-    expect(navigation).toContain("window.history[method]");
+    expect(navigation).toContain("navigateToOwnerRoute");
+    expect(navigation).not.toContain("window.history.pushState");
     expect(navigation).not.toContain("window.location.assign");
     expect(navigation).not.toContain("window.location.reload");
     expect(application).toContain("data-shell-instance={shellInstanceIdRef.current}");

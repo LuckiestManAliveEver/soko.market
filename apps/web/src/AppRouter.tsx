@@ -1,5 +1,10 @@
-import { lazy, Profiler, Suspense, type ReactNode } from "react";
+import { lazy, Profiler, Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { AppIcon } from "./AppIcon";
+import {
+  browserLocationSnapshot,
+  installBrowserLinkInterceptor,
+  subscribeToBrowserNavigation
+} from "./browser-navigation";
 import { recordComponentRender, recordRouteRender } from "./performance";
 import { readOwnerRoute, routes } from "./routes";
 
@@ -14,10 +19,25 @@ const PublicStorefront = lazy(() =>
 );
 
 export function AppRouter() {
-  const storefrontAgentId = readStorefrontAgentId();
+  useSyncExternalStore(
+    subscribeToBrowserNavigation,
+    browserLocationSnapshot,
+    browserLocationSnapshot
+  );
+  useEffect(() => installBrowserLinkInterceptor(), []);
+  const storefrontRoute = readStorefrontRoute();
 
-  if (storefrontAgentId !== null) {
-    return <LazyRoute page={<PublicStorefront agentId={storefrontAgentId} />} />;
+  if (storefrontRoute !== null) {
+    return (
+      <LazyRoute
+        page={
+          <PublicStorefront
+            agentId={storefrontRoute.agentId}
+            productId={storefrontRoute.productId}
+          />
+        }
+      />
+    );
   }
 
   if (window.location.pathname === routes.terms) {
@@ -88,9 +108,18 @@ function LegalRoute({ label, page }: { label: string; page: ReactNode }) {
 }
 
 export function readStorefrontAgentId(): string | null {
+  return readStorefrontRoute()?.agentId ?? null;
+}
+
+export interface StorefrontRoute {
+  agentId: string;
+  productId: string | null;
+}
+
+export function readStorefrontRoute(): StorefrontRoute | null {
   const pathname = window.location.pathname;
   const match =
-    pathname.match(/^\/agent\/([^/]+)\/?$/) ??
+    pathname.match(/^\/agent\/([^/]+)(?:\/products\/([^/]+))?\/?$/) ??
     pathname.match(/^\/(?:shop|shops|soko)\/([^/]+)\/?$/) ??
     pathname.match(/^(\/(?:\+?\d{1,3}-?[A-Za-z]\d{8}))\/?$/);
 
@@ -106,6 +135,15 @@ export function readStorefrontAgentId(): string | null {
 
   if (agentId.length === 0) return null;
 
+  let productId: string | null = null;
+  if (match[2] !== undefined) {
+    try {
+      productId = decodeURIComponent(match[2]).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   if (!pathname.startsWith("/agent/")) {
     const canonicalAgentId = isSokoId(agentId) ? normalizeSokoId(agentId) : agentId;
     window.history.replaceState(
@@ -115,7 +153,7 @@ export function readStorefrontAgentId(): string | null {
     );
   }
 
-  return agentId;
+  return { agentId, productId };
 }
 
 function isSokoId(value: unknown): value is string {
