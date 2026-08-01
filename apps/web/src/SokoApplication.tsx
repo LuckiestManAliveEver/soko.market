@@ -217,6 +217,7 @@ import {
 } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
+import { PhoneFirstAuthentication } from "./PhoneFirstAuthentication";
 import {
   ModelActivationCoordinator,
   ModelActivationError,
@@ -350,7 +351,7 @@ interface SessionResponse {
     phoneNumberE164?: string | null;
     phoneCountryCode?: string | null;
     phoneNationalNumber?: string | null;
-    phoneVerificationStatus?: "unverified" | null;
+    phoneVerificationStatus?: "unverified" | "verified" | null;
     phoneAddedAt?: string | null;
     phoneUpdatedAt?: string | null;
     phoneSource?: "phone_login" | "shop_registration" | null;
@@ -2169,6 +2170,10 @@ export function OwnerApp() {
   const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
   const [phoneRecoveryCodeInput, setPhoneRecoveryCodeInput] = useState("");
   const [generatedPhoneRecoveryCode, setGeneratedPhoneRecoveryCode] = useState("");
+  // Retained until all deployed PIN-only accounts have password credentials. The new auth screen
+  // does not invoke these setters directly, but compatibility actions below still use their state.
+  void setCountryCode;
+  void generatedPhoneRecoveryCode;
   const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
   const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
     initialCachedSession === null ? "initializing" : "offline-authenticated"
@@ -3862,6 +3867,27 @@ export function OwnerApp() {
       setStatusMessage(getErrorMessage(error));
     }
   }
+
+  // Legacy PIN/OTP actions are deliberately isolated from the mounted phone-first UI. Keeping the
+  // callable paths for one compatibility release prevents existing PIN-only accounts from being
+  // stranded while server-side credential migration is completed.
+  void [
+    requestOtp,
+    verifyOtp,
+    signupWithPhonePin,
+    requestLoginOtp,
+    verifyLoginOtp,
+    startPinRecovery,
+    cancelPinRecovery,
+    loginWithPin,
+    loginWithPasskey,
+    registerCurrentDevicePasskey,
+    recoverLoginPin,
+    finishPhoneSignup,
+    finishPhoneRecovery,
+    setMissingLoginPin,
+    completeSignup
+  ];
 
   async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
     if (session === null) {
@@ -7875,88 +7901,30 @@ export function OwnerApp() {
               agentSettings.name.trim().length > 0
             )}
           />
-        ) : shouldShowSignup ? (
-          <SetupPanel
-            countryCode={countryCode}
-            destination={destination}
-            challenge={challenge}
-            otp={otp}
-            signupPin={signupPin}
-            signupPinConfirm={signupPinConfirm}
-            generatedPhoneRecoveryCode={generatedPhoneRecoveryCode}
-            session={session}
-            statusMessage={statusMessage}
-            isRequestPending={isPending("signup-otp-request")}
-            isVerifyPending={isPending("signup-otp-verify")}
-            isCompletePending={isPending("signup-complete")}
-            isPhoneSignupPending={isPending("signup-phone-pin")}
-            isPasskeyPending={isPending("signup-passkey")}
-            isSocialPending={isPending("social-signup")}
-            passkeySupported={browserSupportsWebAuthn()}
-            oauthProviders={oauthProviders}
-            oauthProvidersLoaded={oauthProvidersLoaded}
-            onChannelChange={setChannel}
-            onCountryCodeChange={setCountryCode}
-            onDestinationChange={setDestination}
-            onOtpChange={setOtp}
-            onRequestOtp={() => void runAction("signup-otp-request", requestOtp)}
-            onVerifyOtp={() => void runAction("signup-otp-verify", verifyOtp)}
-            onCompleteSignup={() => void runAction("signup-complete", completeSignup)}
-            onRegisterPasskey={() => void runAction("signup-passkey", registerCurrentDevicePasskey)}
-            onSignupPinChange={setSignupPin}
-            onSignupPinConfirmChange={setSignupPinConfirm}
-            onSignupWithPhonePin={() => void runAction("signup-phone-pin", signupWithPhonePin)}
-            onFinishPhoneSignup={finishPhoneSignup}
-            onSocialSignup={(provider) =>
-              void runAction("social-signup", () => authenticateSocialProfile(provider))
-            }
-          />
-        ) : shouldShowLogin ? (
-          <LoginPanel
-            channel={channel}
-            countryCode={countryCode}
-            destination={destination}
-            challenge={challenge}
-            otp={otp}
-            isOtpVerified={isOtpVerified}
-            loginPin={loginPin}
-            isRecoveringPin={isRecoveringPin}
-            hasLoginPin={hasLoginPin}
-            recoveryPin={recoveryPin}
-            recoveryPinConfirm={recoveryPinConfirm}
-            phoneRecoveryCodeInput={phoneRecoveryCodeInput}
-            generatedPhoneRecoveryCode={generatedPhoneRecoveryCode}
-            statusMessage={statusMessage}
-            oauthProviders={oauthProviders}
-            oauthProvidersLoaded={oauthProvidersLoaded}
-            isRequestPending={isPending("login-otp-request")}
-            isVerifyPending={isPending("login-otp-verify")}
-            isLoginPending={isPending("login-pin")}
-            isPinPending={isPending("login-pin-update")}
-            isSocialPending={isPending("social-login")}
-            isPasskeyPending={isPending("passkey-login")}
-            passkeySupported={browserSupportsWebAuthn()}
-            onChannelChange={setChannel}
-            onCountryCodeChange={setCountryCode}
-            onDestinationChange={setDestination}
-            onOtpChange={setOtp}
-            onRequestOtp={() => void runAction("login-otp-request", requestLoginOtp)}
-            onVerifyOtp={() => void runAction("login-otp-verify", verifyLoginOtp)}
-            onLoginPinChange={setLoginPin}
-            onRecoveryPinChange={setRecoveryPin}
-            onRecoveryPinConfirmChange={setRecoveryPinConfirm}
-            onPhoneRecoveryCodeInputChange={setPhoneRecoveryCodeInput}
-            onStartPinRecovery={startPinRecovery}
-            onCancelPinRecovery={cancelPinRecovery}
-            onRecoverPin={() => void runAction("login-pin-update", recoverLoginPin)}
-            onFinishPhoneRecovery={finishPhoneRecovery}
-            onSetMissingPin={() => void runAction("login-pin-update", setMissingLoginPin)}
-            onLogin={() => void runAction("login-pin", loginWithPin)}
-            onPasskeyLogin={() => void runAction("passkey-login", loginWithPasskey)}
-            onSocialLogin={(provider) =>
-              void runAction("social-login", () => authenticateSocialProfile(provider))
-            }
+        ) : shouldShowSignup || shouldShowLogin ? (
+          <PhoneFirstAuthentication
+            initialMode={shouldShowSignup ? "signup" : "login"}
+            onAuthenticated={(response) => {
+              acceptAuthenticatedSession(response);
+              const nextOwnerAuth: OwnerAuthRecord = {
+                contact: response.account.primaryAuthDestination,
+                countryCode:
+                  response.account.primaryAuthChannel === "phone"
+                    ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
+                    : countryCode,
+                pinSet: true
+              };
+              setOwnerAuth(nextOwnerAuth);
+              localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+              setHasLoginPin(true);
+              setIsWorkspaceUnlocked(true);
+              setIsSignupOpen(false);
+              setIsLoginOpen(false);
+              navigateToView("chat", { replace: true, mode: "marketplace" });
+              setStatusMessage("Authentication complete");
+            }}
             onCancel={() => {
+              setIsSignupOpen(false);
               setIsLoginOpen(false);
               setIsWorkspaceUnlocked(true);
               setStatusMessage("Marketplace ready. Tap Sell when you want to register a shop.");
@@ -8404,7 +8372,7 @@ function AuthLegalFooter() {
   );
 }
 
-function SetupPanel(props: SetupPanelProps) {
+export function SetupPanel(props: SetupPanelProps) {
   const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
@@ -8891,7 +8859,7 @@ interface LoginPanelProps {
   onSocialLogin: (provider: SocialSignupProvider) => void;
 }
 
-function LoginPanel(props: LoginPanelProps) {
+export function LoginPanel(props: LoginPanelProps) {
   const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
   const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
@@ -13545,6 +13513,17 @@ function AgentProfileSurface({
     ConnectedSocialAccountSummary[]
   >([]);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [passkeyLabels, setPasskeyLabels] = useState<Record<string, string>>({});
+  const [mfaFactors, setMfaFactors] = useState<
+    Array<{ id: string; type: "totp"; createdAt: string }>
+  >([]);
+  const [pendingTotp, setPendingTotp] = useState<{
+    factorId: string;
+    secret: string;
+    otpauthUri: string;
+  } | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
   const [deviceSessions, setDeviceSessions] = useState<DeviceSessionSummary[]>([]);
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
   const [mcpTokenName, setMcpTokenName] = useState("My integration");
@@ -13688,6 +13667,7 @@ function AgentProfileSurface({
     setInferencePreferences(readClientInferencePreferences(accountId, business.id));
     void loadConnectedSocialAccounts();
     void loadPasskeys();
+    void loadMfaFactors();
     void loadDeviceSessions();
     void loadMcpTokens();
     void loadShopDeletionPreview();
@@ -14787,6 +14767,64 @@ function AgentProfileSurface({
     try {
       const response = await getJson<PasskeyListResponse>("/auth/passkeys");
       setPasskeys(response.passkeys);
+      setPasskeyLabels(
+        Object.fromEntries(response.passkeys.map((passkey) => [passkey.id, passkey.label]))
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadMfaFactors() {
+    try {
+      const response = await getJson<{
+        factors: Array<{ id: string; type: "totp"; createdAt: string }>;
+      }>("/auth/mfa/factors");
+      setMfaFactors(response.factors);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function beginTotpSetup() {
+    try {
+      const setup = await postJson<{ factorId: string; secret: string; otpauthUri: string }>(
+        "/auth/mfa/totp/setup",
+        {}
+      );
+      setPendingTotp(setup);
+      setMfaRecoveryCodes([]);
+      setProfileMessage("Add this secret to your authenticator app, then enter its code.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function confirmTotpSetup() {
+    if (pendingTotp === null) return;
+    try {
+      const result = await postJson<{ recoveryCodes: string[] }>("/auth/mfa/totp/confirm", {
+        factorId: pendingTotp.factorId,
+        code: mfaCode
+      });
+      setMfaRecoveryCodes(result.recoveryCodes);
+      setPendingTotp(null);
+      setMfaCode("");
+      await loadMfaFactors();
+      setProfileMessage("MFA enabled. Save the recovery codes; they are shown once.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function disableTotpFactor(factorId: string) {
+    try {
+      await deleteJson<{ disabled: true }>(`/auth/mfa/factors/${encodeURIComponent(factorId)}`, {
+        code: mfaCode
+      });
+      setMfaCode("");
+      await loadMfaFactors();
+      setProfileMessage("MFA disabled.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -14867,6 +14905,20 @@ function AgentProfileSurface({
       await deleteJson<{ revoked: true }>(`/auth/passkeys/${encodeURIComponent(credentialId)}`);
       await loadPasskeys();
       setProfileMessage("Passkey revoked.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function renamePasskey(credentialId: string, currentLabel: string, nextLabel: string) {
+    const label = nextLabel.trim();
+    if (!label || label === currentLabel) return;
+    try {
+      await patchJson<PasskeySummary>(`/auth/passkeys/${encodeURIComponent(credentialId)}`, {
+        label
+      });
+      await loadPasskeys();
+      setProfileMessage("Passkey renamed.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -16923,6 +16975,36 @@ function AgentProfileSurface({
                   </span>
                 </div>
                 <div className="row-actions">
+                  <label>
+                    Passkey name
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={passkeyLabels[passkey.id] ?? passkey.label}
+                      onChange={(event) =>
+                        setPasskeyLabels((current) => ({
+                          ...current,
+                          [passkey.id]: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction("passkey-rename", () =>
+                        renamePasskey(
+                          passkey.id,
+                          passkey.label,
+                          passkeyLabels[passkey.id] ?? passkey.label
+                        )
+                      )
+                    }
+                  >
+                    Rename
+                  </button>
                   <button
                     className="secondary"
                     type="button"
@@ -16946,6 +17028,68 @@ function AgentProfileSurface({
               ? "Secure this device with a passkey"
               : "Passkeys unavailable"}
           </button>
+          <div className="record-form" role="group" aria-label="Multi-factor authentication">
+            <div className="section-heading">
+              <p className="eyebrow">Multi-factor authentication</p>
+              <h4>Authenticator app</h4>
+              <p>MFA is optional. Enabling it adds a second step after password sign-in.</p>
+            </div>
+            {mfaFactors.map((factor) => (
+              <div className="connected-social-card" key={factor.id}>
+                <span>Enabled {formatDate(factor.createdAt)}</span>
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={pendingProfileAction !== null || mfaCode.length !== 6}
+                  onClick={() =>
+                    void runProfileAction("mfa-disable", () => disableTotpFactor(factor.id))
+                  }
+                >
+                  Disable with current code
+                </button>
+              </div>
+            ))}
+            {pendingTotp !== null ? (
+              <>
+                <label>
+                  Authenticator secret
+                  <input readOnly value={pendingTotp.secret} autoComplete="off" />
+                </label>
+                <a href={pendingTotp.otpauthUri}>Open authenticator app</a>
+                <button
+                  type="button"
+                  disabled={mfaCode.length !== 6 || pendingProfileAction !== null}
+                  onClick={() => void runProfileAction("mfa-confirm", confirmTotpSetup)}
+                >
+                  Confirm authenticator
+                </button>
+              </>
+            ) : mfaFactors.length === 0 ? (
+              <button
+                type="button"
+                disabled={pendingProfileAction !== null}
+                onClick={() => void runProfileAction("mfa-setup", beginTotpSetup)}
+              >
+                Set up authenticator
+              </button>
+            ) : null}
+            <label>
+              Authenticator code
+              <input
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={mfaCode}
+                onChange={(event) => setMfaCode(event.target.value.replace(/\D/gu, ""))}
+              />
+            </label>
+            {mfaRecoveryCodes.length > 0 ? (
+              <div>
+                <strong>Recovery codes (shown once)</strong>
+                <pre>{mfaRecoveryCodes.join("\n")}</pre>
+              </div>
+            ) : null}
+          </div>
           <div className="connected-social-list">
             {oauthProviders
               .filter((provider) =>

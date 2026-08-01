@@ -162,6 +162,8 @@ export interface AccountSummary {
   id: string;
   primaryAuthChannel: AuthChannel;
   primaryAuthDestination: string;
+  status?: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
+  deletedAt?: string | null;
 }
 
 export interface UserSummary {
@@ -172,7 +174,7 @@ export interface UserSummary {
   phoneNumberE164?: string | null;
   phoneCountryCode?: string | null;
   phoneNationalNumber?: string | null;
-  phoneVerificationStatus?: "unverified" | null;
+  phoneVerificationStatus?: "unverified" | "verified" | null;
   phoneAddedAt?: string | null;
   phoneUpdatedAt?: string | null;
   phoneSource?: "phone_login" | "shop_registration" | null;

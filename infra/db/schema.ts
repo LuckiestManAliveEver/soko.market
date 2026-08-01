@@ -46,6 +46,8 @@ export const accounts = pgTable("accounts", {
   id: uuid("id").primaryKey(),
   primaryAuthChannel: text("primary_auth_channel").notNull(),
   primaryAuthDestination: text("primary_auth_destination").notNull(),
+  status: text("status").notNull().default("active"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
@@ -161,6 +163,80 @@ export const otpChallenges = pgTable("otp_challenges", {
   maxAttempts: integer("max_attempts").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const accountIdentities = pgTable(
+  "account_identities",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    normalizedValue: text("normalized_value").notNull(),
+    displayValue: text("display_value").notNull(),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    identityUnique: uniqueIndex("account_identities_normalized_unique_idx").on(
+      table.type,
+      table.normalizedValue
+    )
+  })
+);
+
+export const passwordCredentials = pgTable("password_credentials", {
+  accountId: uuid("account_id")
+    .primaryKey()
+    .references(() => accounts.id, { onDelete: "cascade" }),
+  passwordHash: text("password_hash").notNull(),
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
+});
+
+export const authTransactions = pgTable("auth_transactions", {
+  id: uuid("id").primaryKey(),
+  purpose: text("purpose").notNull(),
+  accountId: uuid("account_id").references(() => accounts.id, { onDelete: "cascade" }),
+  identifierType: text("identifier_type"),
+  identifierHash: text("identifier_hash"),
+  providerChallengeId: text("provider_challenge_id"),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+});
+
+export const mfaFactors = pgTable("mfa_factors", {
+  id: uuid("id").primaryKey(),
+  accountId: uuid("account_id")
+    .notNull()
+    .references(() => accounts.id, { onDelete: "cascade" }),
+  factorType: text("factor_type").notNull(),
+  secretEncrypted: text("secret_encrypted").notNull(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  lastUsedStep: bigint("last_used_step", { mode: "number" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  disabledAt: timestamp("disabled_at", { withTimezone: true })
+});
+
+export const recoveryCodes = pgTable("recovery_codes", {
+  id: uuid("id").primaryKey(),
+  accountId: uuid("account_id")
+    .notNull()
+    .references(() => accounts.id, { onDelete: "cascade" }),
+  codeHash: text("code_hash").notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 

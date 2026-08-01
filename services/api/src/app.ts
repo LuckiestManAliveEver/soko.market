@@ -67,7 +67,15 @@ export function buildApi(options: BuildApiOptions = {}) {
     reply.header("x-frame-options", "DENY");
     reply.header("referrer-policy", "no-referrer");
     reply.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
-    if (request.url.startsWith("/auth/") || request.url === "/session") {
+    if (
+      request.url.startsWith("/auth/") ||
+      request.url === "/session" ||
+      request.url.startsWith("/session/") ||
+      request.url === "/logout" ||
+      request.url === "/logout-all" ||
+      request.url === "/sessions" ||
+      request.url.startsWith("/sessions/")
+    ) {
       reply.header("cache-control", "no-store");
     }
 

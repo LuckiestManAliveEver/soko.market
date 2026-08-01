@@ -82,6 +82,14 @@ import {
 } from "./store.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
+  createPhoneVerificationProviderFromEnvironment,
+  type PhoneVerificationProvider
+} from "./phone-verification-provider.js";
+import {
+  normalizeInternationalOwnerPhoneNumber,
+  normalizeOwnerPhoneNumber
+} from "./phone-identity.js";
+import {
   createGitHubModelCatalogFromEnvironment,
   type GitHubModelCatalog
 } from "./github-model-catalog.js";
@@ -110,6 +118,7 @@ import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
+  phoneVerificationProvider?: PhoneVerificationProvider;
   githubModelCatalog?: GitHubModelCatalog;
   huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
@@ -314,6 +323,12 @@ interface PasskeyRegistrationVerifyBody {
 interface PasskeyAuthenticationVerifyBody {
   ceremonyId?: string;
   response?: AuthenticationResponseJSON;
+}
+
+interface IdentifierBody {
+  type?: string;
+  identifier?: string;
+  country?: string;
 }
 
 interface CreateBusinessBody {
@@ -895,8 +910,28 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const huggingFaceModelCatalog =
     options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
+  const phoneVerificationProvider =
+    options.phoneVerificationProvider ?? createPhoneVerificationProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
+  const authAttemptsByIp = new Map<string, number[]>();
+
+  function enforceAuthIpRate(request: FastifyRequest, purpose: string, maximum: number): void {
+    const now = Date.now();
+    const key = `${purpose}:${request.ip}`;
+    const attempts = (authAttemptsByIp.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > now - 10 * 60_000
+    );
+    if (attempts.length >= maximum) {
+      throw new Cp2Error(429, "auth_rate_limited", "Too many attempts. Please try again later.");
+    }
+    attempts.push(now);
+    authAttemptsByIp.set(key, attempts);
+    if (authAttemptsByIp.size > 10_000) {
+      const oldest = authAttemptsByIp.keys().next().value;
+      if (oldest !== undefined) authAttemptsByIp.delete(oldest);
+    }
+  }
 
   function passkeyRelyingParty(request: FastifyRequest): { origin: string; rpId: string } {
     const origin = request.headers.origin;
@@ -1105,6 +1140,445 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       tokens
     });
   }
+
+  function readIdentifier(body: IdentifierBody): { channel: AuthChannel; value: string } {
+    const channel = parseAuthChannel(body.type);
+    const identifier = parseString(body.identifier, "identifier");
+    if (channel === "email") return { channel, value: identifier };
+    try {
+      const phone =
+        body.country === undefined
+          ? normalizeInternationalOwnerPhoneNumber(identifier)
+          : normalizeOwnerPhoneNumber(identifier, parseString(body.country, "country"));
+      return { channel, value: phone.e164 };
+    } catch {
+      throw new Cp2Error(400, "destination_invalid", "Phone number is invalid.");
+    }
+  }
+
+  app.post("/auth/identify", async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
+    try {
+      const identifier = readIdentifier(request.body);
+      return store.identifyAccount({ channel: identifier.channel, identifier: identifier.value });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/signup/start",
+    async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
+      try {
+        enforceAuthIpRate(request, "signup_challenge", 10);
+        const identifier = readIdentifier({ ...request.body, type: "phone" });
+        if (
+          store.identifyAccount({ channel: "phone", identifier: identifier.value }).next === "login"
+        ) {
+          throw new Cp2Error(409, "account_exists", "Continue to sign in.");
+        }
+        store.preparePhoneChallenge({ phoneE164: identifier.value, purpose: "signup" });
+        const challenge = await phoneVerificationProvider.sendChallenge(identifier.value);
+        const transaction = store.beginPhoneSignup({
+          phoneE164: identifier.value,
+          providerChallengeId: challenge.challengeId,
+          expiresAt: challenge.expiresAt
+        });
+        return {
+          ...transaction,
+          challengeId: challenge.challengeId,
+          ...(phoneVerificationProvider.exposesDevelopmentCode && challenge.developmentCode
+            ? { developmentCode: challenge.developmentCode }
+            : {})
+        };
+      } catch (error) {
+        if (error instanceof Cp2Error) return sendCp2Error(reply, error);
+        return sendCp2Error(
+          reply,
+          new Cp2Error(
+            503,
+            "phone_verification_unavailable",
+            "Phone verification is temporarily unavailable."
+          )
+        );
+      }
+    }
+  );
+
+  app.post(
+    "/auth/signup/verify-phone",
+    async (request: FastifyRequest<{ Body: { transactionId?: string; code?: string } }>, reply) => {
+      try {
+        const transactionId = parseString(request.body.transactionId, "transactionId");
+        const transaction = store.getPhoneVerificationTransaction(transactionId, "signup");
+        const verified = await phoneVerificationProvider.verifyChallenge(
+          transaction.identifierValue!,
+          transaction.providerChallengeId!,
+          parseString(request.body.code, "code")
+        );
+        if (!verified.verified)
+          throw new Cp2Error(
+            401,
+            "verification_code_invalid",
+            "The verification code is invalid or expired."
+          );
+        return store.markPhoneTransactionVerified(transactionId, "signup");
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/signup/complete",
+    async (
+      request: FastifyRequest<{
+        Body: {
+          transactionId?: string;
+          displayName?: string;
+          password?: string;
+          passwordConfirmation?: string;
+          email?: string;
+          termsAccepted?: boolean;
+          privacyAccepted?: boolean;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const password = parseString(request.body.password, "password");
+        if (password !== request.body.passwordConfirmation)
+          throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
+        const result = store.completePhoneSignup({
+          transactionId: parseString(request.body.transactionId, "transactionId"),
+          displayName: parseString(request.body.displayName, "displayName"),
+          password,
+          ...(request.body.email === undefined ? {} : { email: request.body.email }),
+          termsAccepted: request.body.termsAccepted === true,
+          privacyAccepted: request.body.privacyAccepted === true
+        });
+        setAuthSessionCookies(reply, request, store, result.session.id);
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/auth/email/verification/start", async (request, reply) => {
+    try {
+      const identity = store.getPendingEmailIdentity({
+        sessionId: readSessionCookie(request.headers.cookie)
+      });
+      const otp = store.requestOtp({
+        channel: "email",
+        destination: identity.normalizedValue,
+        purpose: "signup"
+      });
+      await emailProvider.sendOtp({
+        challengeId: otp.challengeId,
+        code: otp.devOtp,
+        expiresAt: otp.expiresAt,
+        to: otp.destination
+      });
+      return {
+        challengeId: otp.challengeId,
+        expiresAt: otp.expiresAt,
+        ...(emailProvider.exposesDevOtp ? { developmentCode: otp.devOtp } : {})
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/email/verification/verify",
+    async (request: FastifyRequest<{ Body: { challengeId?: string; code?: string } }>, reply) => {
+      try {
+        return store.verifyPendingEmail({
+          sessionId: readSessionCookie(request.headers.cookie),
+          challengeId: parseString(request.body.challengeId, "challengeId"),
+          code: parseString(request.body.code, "code")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/login/password",
+    async (request: FastifyRequest<{ Body: IdentifierBody & { password?: string } }>, reply) => {
+      try {
+        enforceAuthIpRate(request, "password_login", 30);
+        const identifier = readIdentifier(request.body);
+        const result = store.loginWithPassword({
+          channel: identifier.channel,
+          identifier: identifier.value,
+          password: parseString(request.body.password, "password")
+        });
+        if (result.mfaRequired) return reply.code(202).send(result);
+        setAuthSessionCookies(reply, request, store, result.session.session.id);
+        return result.session;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/auth/mfa/totp/setup", async (request, reply) => {
+    try {
+      return store.setupTotp({ sessionId: readSessionCookie(request.headers.cookie) });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/auth/mfa/factors", async (request, reply) => {
+    try {
+      return {
+        factors: store.listMfaFactors({ sessionId: readSessionCookie(request.headers.cookie) })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/auth/mfa/totp/confirm",
+    async (request: FastifyRequest<{ Body: { factorId?: string; code?: string } }>, reply) => {
+      try {
+        return store.confirmTotp({
+          sessionId: readSessionCookie(request.headers.cookie),
+          factorId: parseString(request.body.factorId, "factorId"),
+          code: parseString(request.body.code, "code")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/mfa/challenge",
+    async (request: FastifyRequest<{ Body: { transactionId?: string } }>, reply) => {
+      try {
+        const transaction = store.getPhoneVerificationTransaction(
+          parseString(request.body.transactionId, "transactionId"),
+          "login_mfa"
+        );
+        return {
+          transactionId: transaction.id,
+          factors: ["totp", "recovery_code"],
+          expiresAt: transaction.expiresAt
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/mfa/verify",
+    async (
+      request: FastifyRequest<{ Body: { transactionId?: string; factor?: string; code?: string } }>,
+      reply
+    ) => {
+      try {
+        const factor = parseString(request.body.factor, "factor");
+        if (factor !== "totp" && factor !== "recovery_code")
+          throw new Cp2Error(400, "mfa_factor_invalid", "MFA factor is invalid.");
+        const result = store.verifyMfa({
+          transactionId: parseString(request.body.transactionId, "transactionId"),
+          factor,
+          code: parseString(request.body.code, "code")
+        });
+        setAuthSessionCookies(reply, request, store, result.session.id);
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post("/auth/mfa/recovery-codes/regenerate", async (request, reply) => {
+    try {
+      return store.regenerateMfaRecoveryCodes({
+        sessionId: readSessionCookie(request.headers.cookie)
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.delete(
+    "/auth/mfa/factors/:factorId",
+    async (
+      request: FastifyRequest<{ Params: { factorId: string }; Body: { code?: string } }>,
+      reply
+    ) => {
+      try {
+        return store.disableMfaFactor({
+          sessionId: readSessionCookie(request.headers.cookie),
+          factorId: parseString(request.params.factorId, "factorId"),
+          code: parseString(request.body?.code, "code")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/recovery/start",
+    async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
+      try {
+        enforceAuthIpRate(request, "recovery_challenge", 10);
+        const identifier = readIdentifier(request.body);
+        if (identifier.channel === "phone") {
+          store.preparePhoneChallenge({ phoneE164: identifier.value, purpose: "recovery" });
+          const challenge = await phoneVerificationProvider.sendChallenge(identifier.value);
+          const transaction = store.beginRecovery({
+            channel: "phone",
+            identifier: identifier.value,
+            providerChallengeId: challenge.challengeId,
+            expiresAt: challenge.expiresAt
+          });
+          return {
+            message: "If an account matches those details, recovery instructions have been sent.",
+            transactionId: transaction.transactionId,
+            ...(phoneVerificationProvider.exposesDevelopmentCode && challenge.developmentCode
+              ? { developmentCode: challenge.developmentCode }
+              : {})
+          };
+        }
+        const otp = store.requestOtp({
+          channel: "email",
+          destination: identifier.value,
+          purpose: "recovery"
+        });
+        const transaction = store.beginRecovery({
+          channel: "email",
+          identifier: identifier.value,
+          providerChallengeId: otp.challengeId,
+          expiresAt: otp.expiresAt
+        });
+        if (transaction.accountFound)
+          await emailProvider.sendOtp({
+            challengeId: otp.challengeId,
+            code: otp.devOtp,
+            expiresAt: otp.expiresAt,
+            to: otp.destination
+          });
+        return {
+          message: "If an account matches those details, recovery instructions have been sent.",
+          transactionId: transaction.transactionId,
+          ...(emailProvider.exposesDevOtp ? { developmentCode: otp.devOtp } : {})
+        };
+      } catch (error) {
+        if (error instanceof Cp2Error) return sendCp2Error(reply, error);
+        return sendCp2Error(
+          reply,
+          new Cp2Error(503, "recovery_unavailable", "Account recovery is temporarily unavailable.")
+        );
+      }
+    }
+  );
+
+  app.post(
+    "/auth/recovery/verify",
+    async (request: FastifyRequest<{ Body: { transactionId?: string; code?: string } }>, reply) => {
+      try {
+        const transactionId = parseString(request.body.transactionId, "transactionId");
+        const transaction = store.getPhoneVerificationTransaction(transactionId, "recovery");
+        const code = parseString(request.body.code, "code");
+        if (transaction.identifierType === "phone") {
+          const result = await phoneVerificationProvider.verifyChallenge(
+            transaction.identifierValue!,
+            transaction.providerChallengeId!,
+            code
+          );
+          if (!result.verified)
+            throw new Cp2Error(
+              401,
+              "recovery_verification_invalid",
+              "Recovery verification failed."
+            );
+          return store.markPhoneTransactionVerified(transactionId, "recovery");
+        }
+        return store.verifyEmailRecovery({
+          transactionId,
+          challengeId: transaction.providerChallengeId!,
+          code
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/recovery/reset-password",
+    async (
+      request: FastifyRequest<{
+        Body: {
+          transactionId?: string;
+          password?: string;
+          passwordConfirmation?: string;
+          mfaCode?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const password = parseString(request.body.password, "password");
+        if (password !== request.body.passwordConfirmation)
+          throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
+        const result = store.resetRecoveredPassword({
+          transactionId: parseString(request.body.transactionId, "transactionId"),
+          password,
+          ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode })
+        });
+        setAuthSessionCookies(reply, request, store, result.session.id);
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/password/change",
+    async (
+      request: FastifyRequest<{
+        Body: {
+          currentPassword?: string;
+          password?: string;
+          passwordConfirmation?: string;
+          mfaCode?: string;
+          revokeOtherSessions?: boolean;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        enforceAuthIpRate(request, "password_change", 10);
+        const password = parseString(request.body.password, "password");
+        if (password !== request.body.passwordConfirmation)
+          throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
+        return store.changePassword({
+          sessionId: readSessionCookie(request.headers.cookie),
+          currentPassword: parseString(request.body.currentPassword, "currentPassword"),
+          password,
+          ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode }),
+          ...(request.body.revokeOtherSessions === undefined
+            ? {}
+            : { revokeOtherSessions: request.body.revokeOtherSessions })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post(
     "/auth/otp/request",
@@ -1376,6 +1850,24 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.patch(
+    "/auth/passkeys/:credentialId",
+    async (
+      request: FastifyRequest<{ Params: { credentialId: string }; Body: { label?: string } }>,
+      reply
+    ) => {
+      try {
+        return store.renamePasskey({
+          sessionId: readSessionCookie(request.headers.cookie),
+          credentialId: parseString(request.params.credentialId, "credentialId"),
+          label: parseString(request.body.label, "label")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.delete(
     "/auth/passkeys/:credentialId",
@@ -1840,7 +2332,39 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.post("/session/refresh", async (request, reply) => {
+    try {
+      const refreshed = store.refreshSessionCredential({
+        refreshToken: readRefreshCookie(request.headers.cookie),
+        metadata: readDeviceSessionMetadata(request)
+      });
+      reply.header("set-cookie", [
+        serializeSessionCookie(refreshed.session.id),
+        serializeRefreshCookie(refreshed.refreshToken)
+      ]);
+      return {
+        authenticated: true,
+        account: refreshed.account,
+        user: refreshed.user,
+        session: refreshed.session,
+        deviceSession: refreshed.deviceSession
+      };
+    } catch (error) {
+      if (error instanceof Cp2Error && error.statusCode === 401)
+        reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+      return sendCp2Error(reply, error);
+    }
+  });
+
   app.get("/auth/sessions", async (request, reply) => {
+    try {
+      return { sessions: store.listDeviceSessions(readSessionCookie(request.headers.cookie)) };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/sessions", async (request, reply) => {
     try {
       return { sessions: store.listDeviceSessions(readSessionCookie(request.headers.cookie)) };
     } catch (error) {
@@ -1859,6 +2383,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         if (revoked.current) {
           reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
         }
+        return revoked;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/sessions/:sessionId",
+    async (request: FastifyRequest<{ Params: { sessionId: string } }>, reply) => {
+      try {
+        const revoked = store.revokeDeviceSession({
+          sessionId: readSessionCookie(request.headers.cookie),
+          targetSessionId: parseString(request.params.sessionId, "sessionId")
+        });
+        if (revoked.current)
+          reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
         return revoked;
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -3233,6 +3774,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     };
   });
 
+  app.post("/logout", async (request, reply) => {
+    const revoked = store.logout(readSessionCookie(request.headers.cookie));
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+    return { revoked };
+  });
+
   app.post("/api/auth/logout", async (request, reply) => {
     const revoked = store.logout(readSessionCookie(request.headers.cookie));
     reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
@@ -3242,6 +3789,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   });
 
   app.post("/auth/logout-all", async (request, reply) => {
+    const result = store.logoutAll(readSessionCookie(request.headers.cookie));
+    reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+    return result;
+  });
+
+  app.post("/logout-all", async (request, reply) => {
     const result = store.logoutAll(readSessionCookie(request.headers.cookie));
     reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
     return result;

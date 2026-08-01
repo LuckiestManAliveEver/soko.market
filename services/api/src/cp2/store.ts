@@ -213,6 +213,7 @@ import {
 } from "@soko/sync-core";
 import {
   assertOAuthSecretMatches,
+  decryptOAuthToken,
   encryptOAuthToken,
   hashOAuthSecret,
   type OAuthProfile,
@@ -373,6 +374,11 @@ const dummyPinHash = createScryptPinHash(
   "unknown-account",
   "0000",
   "soko-market-dummy-pin-hash-secret"
+);
+const dummyPasswordHash = createScryptPasswordHash(
+  "unknown-account",
+  "not-a-real-password",
+  "soko-market-local-password-hash-secret"
 );
 const maxPendingOtpChallenges = 10_000;
 const maxRuntimeTurnsPerSession = 20;
@@ -575,6 +581,61 @@ export interface PasskeyCeremonyRecord {
   createdAt: string;
 }
 
+export interface AccountIdentityRecord {
+  id: string;
+  accountId: string;
+  userId: string;
+  type: AuthChannel;
+  normalizedValue: string;
+  displayValue: string;
+  isPrimary: boolean;
+  verifiedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PasswordCredentialRecord {
+  accountId: string;
+  passwordHash: string;
+  passwordChangedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthTransactionRecord {
+  id: string;
+  purpose: "signup" | "login_mfa" | "recovery" | "totp_setup";
+  accountId: string | null;
+  identifierType: AuthChannel | null;
+  identifierValue: string | null;
+  providerChallengeId: string | null;
+  verifiedAt: string | null;
+  attempts: number;
+  expiresAt: string;
+  consumedAt: string | null;
+  metadata: Record<string, string | boolean | null>;
+  createdAt: string;
+}
+
+export interface MfaFactorRecord {
+  id: string;
+  accountId: string;
+  type: "totp";
+  secret: string;
+  verifiedAt: string | null;
+  lastUsedStep: number | null;
+  createdAt: string;
+  disabledAt: string | null;
+}
+
+export interface RecoveryCodeRecord {
+  id: string;
+  accountId: string;
+  codeHash: string;
+  usedAt: string | null;
+  createdAt: string;
+}
+
 interface UserIdentityRecord extends UserIdentitySummary {
   encryptedAccessToken: string | null;
   encryptedRefreshToken: string | null;
@@ -752,6 +813,11 @@ export interface Cp2Snapshot {
   sessions: SessionRecord[];
   passkeys?: PasskeyCredentialRecord[];
   passkeyCeremonies?: PasskeyCeremonyRecord[];
+  accountIdentities?: AccountIdentityRecord[];
+  passwordCredentials?: PasswordCredentialRecord[];
+  authTransactions?: AuthTransactionRecord[];
+  mfaFactors?: MfaFactorRecord[];
+  recoveryCodes?: RecoveryCodeRecord[];
   userIdentities: UserIdentitySummary[];
   oauthSessions: OAuthSessionSummary[];
   accountPinHashes: Array<{
@@ -1012,6 +1078,12 @@ export class Cp2Store {
   private readonly pendingRefreshTokens = new Map<string, string>();
   private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
   private readonly passkeyCeremonies = new Map<string, PasskeyCeremonyRecord>();
+  private readonly accountIdentities = new Map<string, AccountIdentityRecord>();
+  private readonly identityAccountByValue = new Map<string, string>();
+  private readonly passwordCredentials = new Map<string, PasswordCredentialRecord>();
+  private readonly authTransactions = new Map<string, AuthTransactionRecord>();
+  private readonly mfaFactors = new Map<string, MfaFactorRecord>();
+  private readonly recoveryCodes = new Map<string, RecoveryCodeRecord>();
   private readonly userIdentities = new Map<string, UserIdentityRecord>();
   private readonly identityByProviderSubject = new Map<string, string>();
   private readonly identityByEmail = new Map<string, string>();
@@ -1889,6 +1961,7 @@ export class Cp2Store {
     }
 
     const account = this.requireAccount(accountId);
+    this.requireAccountAuthenticationAllowed(account);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const pin = normalizePin(input.pin);
     const replacementRecoveryCode = createPhoneRecoveryCode();
@@ -2006,6 +2079,326 @@ export class Cp2Store {
     });
 
     return this.requireAnySession(session.id, now);
+  }
+
+  identifyAccount(input: { channel: AuthChannel; identifier: string }): {
+    channel: AuthChannel;
+    normalizedIdentifier: string;
+    next: "signup" | "login";
+  } {
+    const normalizedIdentifier = normalizeDestination(input.channel, input.identifier);
+    const accountId = this.resolveIdentityAccount(input.channel, normalizedIdentifier);
+    return {
+      channel: input.channel,
+      normalizedIdentifier,
+      next: accountId === undefined ? "signup" : "login"
+    };
+  }
+
+  preparePhoneChallenge(input: {
+    phoneE164: string;
+    purpose: "signup" | "recovery";
+    now?: Date;
+  }): string {
+    const now = input.now ?? new Date();
+    const phoneE164 = normalizeDestination("phone", input.phoneE164);
+    const key = `${input.purpose}:phone:${phoneE164}`;
+    this.requireOtpRequestAllowed(key, now);
+    this.recordOtpRequest(key, now);
+    return phoneE164;
+  }
+
+  beginPhoneSignup(input: {
+    phoneE164: string;
+    providerChallengeId: string;
+    expiresAt: string;
+    now?: Date;
+  }): { transactionId: string; expiresAt: string } {
+    const now = input.now ?? new Date();
+    const phoneE164 = normalizeDestination("phone", input.phoneE164);
+    if (this.resolveIdentityAccount("phone", phoneE164) !== undefined) {
+      throw new Cp2Error(409, "account_exists", "Continue to sign in.");
+    }
+    const transaction: AuthTransactionRecord = {
+      id: randomUUID(),
+      purpose: "signup",
+      accountId: null,
+      identifierType: "phone",
+      identifierValue: phoneE164,
+      providerChallengeId: input.providerChallengeId,
+      verifiedAt: null,
+      attempts: 0,
+      expiresAt: input.expiresAt,
+      consumedAt: null,
+      metadata: {},
+      createdAt: now.toISOString()
+    };
+    this.authTransactions.set(transaction.id, transaction);
+    this.recordSecurityEvent("auth.signup_started", null, "success", now, {
+      identifierHash: securityCorrelationHash(phoneE164)
+    });
+    return { transactionId: transaction.id, expiresAt: transaction.expiresAt };
+  }
+
+  getPhoneVerificationTransaction(
+    transactionId: string,
+    purpose: AuthTransactionRecord["purpose"],
+    now = new Date()
+  ): AuthTransactionRecord {
+    return this.requireAuthTransaction(transactionId, purpose, now);
+  }
+
+  markPhoneTransactionVerified(
+    transactionId: string,
+    purpose: "signup" | "recovery",
+    now = new Date()
+  ): { verified: true; transactionId: string } {
+    const transaction = this.requireAuthTransaction(transactionId, purpose, now);
+    transaction.verifiedAt = now.toISOString();
+    transaction.attempts += 1;
+    this.recordSecurityEvent(
+      `auth.${purpose}_phone_verified`,
+      transaction.accountId,
+      "success",
+      now,
+      {}
+    );
+    return { verified: true, transactionId };
+  }
+
+  completePhoneSignup(input: {
+    transactionId: string;
+    displayName: string;
+    password: string;
+    email?: string;
+    termsAccepted: boolean;
+    privacyAccepted: boolean;
+    now?: Date;
+  }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const transaction = this.requireAuthTransaction(input.transactionId, "signup", now, true);
+    if (!input.termsAccepted || !input.privacyAccepted) {
+      throw new Cp2Error(
+        400,
+        "consent_required",
+        "Accept the Terms and Privacy Policy to continue."
+      );
+    }
+    const displayName = input.displayName.trim();
+    if (displayName.length < 2 || displayName.length > 100) {
+      throw new Cp2Error(400, "display_name_invalid", "Enter your display name.");
+    }
+    const phone = transaction.identifierValue!;
+    if (this.resolveIdentityAccount("phone", phone) !== undefined) {
+      throw new Cp2Error(409, "account_exists", "Continue to sign in.");
+    }
+    validatePassword(input.password);
+    const email =
+      input.email === undefined || input.email.trim() === ""
+        ? undefined
+        : normalizeDestination("email", input.email);
+    if (
+      email !== undefined &&
+      (this.identityAccountByValue.has(destinationAccountKey("email", email)) ||
+        this.resolveIdentityAccount("email", email) !== undefined)
+    ) {
+      throw new Cp2Error(409, "identity_in_use", "That email cannot be linked to this account.");
+    }
+
+    const account = this.createAccount("phone", phone, now);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const normalizedPhone = normalizeInternationalOwnerPhoneNumber(phone);
+    Object.assign(user, {
+      displayName,
+      phoneNumberE164: phone,
+      phoneCountryCode: normalizedPhone.country,
+      phoneNationalNumber: normalizedPhone.nationalNumber,
+      phoneVerificationStatus: "verified" as const,
+      phoneUpdatedAt: now.toISOString()
+    });
+    this.addAccountIdentity(account, user, "phone", phone, true, now, true);
+    if (email !== undefined)
+      this.addAccountIdentity(account, user, "email", email, false, now, false);
+    this.passwordCredentials.set(
+      account.id,
+      createPasswordCredential(account.id, input.password, now)
+    );
+    transaction.accountId = account.id;
+    transaction.consumedAt = now.toISOString();
+    const session = this.createSession(account, user, now);
+    this.markSessionPinVerified(session.id, now);
+    this.recordSecurityEvent("auth.signup_completed", account.id, "success", now, {
+      emailAdded: email !== undefined
+    });
+    return this.requireAnySession(session.id, now);
+  }
+
+  loginWithPassword(input: {
+    channel: AuthChannel;
+    identifier: string;
+    password: string;
+    now?: Date;
+  }):
+    | { mfaRequired: false; session: AuthSessionView }
+    | { mfaRequired: true; transactionId: string; factors: string[]; expiresAt: string } {
+    const now = input.now ?? new Date();
+    const identifier = normalizeDestination(input.channel, input.identifier);
+    const attemptKey = `password:${input.channel}:${identifier}`;
+    this.requirePinAttemptAllowed(attemptKey, now);
+    const accountId = this.resolveIdentityAccount(input.channel, identifier);
+    const credential =
+      accountId === undefined ? undefined : this.passwordCredentials.get(accountId);
+    const valid =
+      credential === undefined
+        ? verifyPasswordHash("unknown-account", input.password, dummyPasswordHash) === "current"
+        : verifyPasswordHash(accountId!, input.password, credential.passwordHash) !== "invalid";
+    if (accountId === undefined || credential === undefined || !valid) {
+      this.recordFailedPinAttempt(attemptKey, now);
+      this.recordSecurityEvent("auth.login", null, "failure", now, {
+        identifierHash: securityCorrelationHash(identifier)
+      });
+      throw invalidLoginCredentialsError();
+    }
+    this.failedPinAttempts.delete(attemptKey);
+    const account = this.requireAccount(accountId);
+    this.requireAccountAuthenticationAllowed(account);
+    const factors = this.activeMfaFactors(accountId);
+    if (factors.length > 0) {
+      const transaction = this.createAuthTransaction("login_mfa", accountId, now);
+      this.recordSecurityEvent("auth.mfa_requested", accountId, "success", now, {});
+      return {
+        mfaRequired: true,
+        transactionId: transaction.id,
+        factors: ["totp", "recovery_code"],
+        expiresAt: transaction.expiresAt
+      };
+    }
+    const user = this.requireUser(this.userByAccount.get(accountId));
+    const sessionRecord = this.createSession(account, user, now);
+    this.markSessionPinVerified(sessionRecord.id, now);
+    this.recordSecurityEvent("auth.login", accountId, "success", now, { method: "password" });
+    return { mfaRequired: false, session: this.requireAnySession(sessionRecord.id, now) };
+  }
+
+  setupTotp(input: { sessionId: string | null; now?: Date }): {
+    factorId: string;
+    secret: string;
+    otpauthUri: string;
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const secret = base32Encode(randomBytes(20));
+    const factor: MfaFactorRecord = {
+      id: randomUUID(),
+      accountId: session.account.id,
+      type: "totp",
+      secret: encryptOAuthToken(secret),
+      verifiedAt: null,
+      lastUsedStep: null,
+      createdAt: now.toISOString(),
+      disabledAt: null
+    };
+    this.mfaFactors.set(factor.id, factor);
+    const issuer = encodeURIComponent("Soko.market");
+    const label = encodeURIComponent(session.account.primaryAuthDestination);
+    return {
+      factorId: factor.id,
+      secret,
+      otpauthUri: `otpauth://totp/${issuer}:${label}?secret=${encodeURIComponent(secret)}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`
+    };
+  }
+
+  confirmTotp(input: { sessionId: string | null; factorId: string; code: string; now?: Date }): {
+    enabled: true;
+    recoveryCodes: string[];
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const factor = this.mfaFactors.get(input.factorId);
+    if (
+      !factor ||
+      factor.accountId !== session.account.id ||
+      factor.disabledAt !== null ||
+      factor.verifiedAt !== null
+    ) {
+      throw new Cp2Error(400, "mfa_factor_invalid", "MFA setup is invalid or expired.");
+    }
+    const step = verifyTotp(decryptOAuthToken(factor.secret), input.code, now, null);
+    if (step === null)
+      throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+    factor.verifiedAt = now.toISOString();
+    factor.lastUsedStep = step;
+    const codes = this.replaceRecoveryCodes(session.account.id, now);
+    this.recordSecurityEvent("auth.mfa_enabled", session.account.id, "success", now, {
+      factorType: "totp"
+    });
+    return { enabled: true, recoveryCodes: codes };
+  }
+
+  verifyMfa(input: {
+    transactionId: string;
+    factor: "totp" | "recovery_code";
+    code: string;
+    now?: Date;
+  }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const transaction = this.requireAuthTransaction(input.transactionId, "login_mfa", now);
+    const accountId = transaction.accountId!;
+    let verified = false;
+    if (input.factor === "totp") {
+      const factor = this.activeMfaFactors(accountId)[0];
+      if (factor !== undefined) {
+        const step = verifyTotp(
+          decryptOAuthToken(factor.secret),
+          input.code,
+          now,
+          factor.lastUsedStep
+        );
+        if (step !== null) {
+          factor.lastUsedStep = step;
+          verified = true;
+        }
+      }
+    } else {
+      const codeHash = hashRecoveryCode(accountId, input.code);
+      const recovery = [...this.recoveryCodes.values()].find(
+        (item) =>
+          item.accountId === accountId &&
+          item.usedAt === null &&
+          safeHashEqual(item.codeHash, codeHash)
+      );
+      if (recovery !== undefined) {
+        recovery.usedAt = now.toISOString();
+        verified = true;
+      }
+    }
+    transaction.attempts += 1;
+    if (!verified) {
+      this.recordSecurityEvent("auth.mfa", accountId, "failure", now, {});
+      throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+    }
+    transaction.consumedAt = now.toISOString();
+    const account = this.requireAccount(accountId);
+    const user = this.requireUser(this.userByAccount.get(accountId));
+    const sessionRecord = this.createSession(account, user, now);
+    this.markSessionPinVerified(sessionRecord.id, now);
+    this.recordSecurityEvent("auth.mfa", accountId, "success", now, { factor: input.factor });
+    return this.requireAnySession(sessionRecord.id, now);
+  }
+
+  renamePasskey(input: {
+    sessionId: string | null;
+    credentialId: string;
+    label: string;
+    now?: Date;
+  }): PasskeySummary {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const passkey = this.passkeys.get(input.credentialId);
+    if (!passkey || passkey.accountId !== session.account.id)
+      throw new Cp2Error(404, "passkey_not_found", "Passkey was not found.");
+    passkey.label = normalizePasskeyLabel(input.label);
+    return passkeyView(passkey);
   }
 
   async beginPasskeyRegistration(input: {
@@ -2207,6 +2600,7 @@ export class Cp2Store {
     passkey.deviceType = verification.authenticationInfo.credentialDeviceType;
     passkey.lastUsedAt = now.toISOString();
     const account = this.requireAccount(passkey.accountId);
+    this.requireAccountAuthenticationAllowed(account);
     const user = this.requireUser(passkey.userId);
     const createdSession = this.createSession(account, user, now);
     this.markSessionPinVerified(createdSession.id, now);
@@ -2242,6 +2636,21 @@ export class Cp2Store {
 
     if (passkey === undefined || passkey.accountId !== session.account.id) {
       throw new Cp2Error(404, "passkey_not_found", "Passkey was not found.");
+    }
+
+    const remainingPasskeys = [...this.passkeys.values()].filter(
+      (candidate) => candidate.accountId === session.account.id && candidate.id !== passkey.id
+    );
+    if (
+      remainingPasskeys.length === 0 &&
+      !this.passwordCredentials.has(session.account.id) &&
+      !this.accountPinHashes.has(session.account.id)
+    ) {
+      throw new Cp2Error(
+        409,
+        "final_login_method_required",
+        "Add another login method before removing this passkey."
+      );
     }
 
     this.passkeys.delete(passkey.id);
@@ -10488,6 +10897,11 @@ export class Cp2Store {
       sessions: [...this.sessions.values()],
       passkeys: [...this.passkeys.values()],
       passkeyCeremonies: [...this.passkeyCeremonies.values()],
+      accountIdentities: [...this.accountIdentities.values()],
+      passwordCredentials: [...this.passwordCredentials.values()],
+      authTransactions: [...this.authTransactions.values()],
+      mfaFactors: [...this.mfaFactors.values()],
+      recoveryCodes: [...this.recoveryCodes.values()],
       userIdentities: [...this.userIdentities.values()].map(userIdentityView),
       oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
       accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
@@ -10588,6 +11002,12 @@ export class Cp2Store {
     this.sessions.clear();
     this.passkeys.clear();
     this.passkeyCeremonies.clear();
+    this.accountIdentities.clear();
+    this.identityAccountByValue.clear();
+    this.passwordCredentials.clear();
+    this.authTransactions.clear();
+    this.mfaFactors.clear();
+    this.recoveryCodes.clear();
     this.userIdentities.clear();
     this.identityByProviderSubject.clear();
     this.identityByEmail.clear();
@@ -10981,6 +11401,22 @@ export class Cp2Store {
       this.passkeyCeremonies.set(ceremony.id, ceremony);
     }
 
+    for (const identity of snapshot.accountIdentities ?? []) {
+      this.accountIdentities.set(identity.id, identity);
+      this.identityAccountByValue.set(
+        destinationAccountKey(identity.type, identity.normalizedValue),
+        identity.accountId
+      );
+    }
+    for (const credential of snapshot.passwordCredentials ?? []) {
+      this.passwordCredentials.set(credential.accountId, credential);
+    }
+    for (const transaction of snapshot.authTransactions ?? []) {
+      this.authTransactions.set(transaction.id, transaction);
+    }
+    for (const factor of snapshot.mfaFactors ?? []) this.mfaFactors.set(factor.id, factor);
+    for (const code of snapshot.recoveryCodes ?? []) this.recoveryCodes.set(code.id, code);
+
     for (const identity of snapshot.userIdentities) {
       const persistedIdentity = identity as UserIdentitySummary &
         Partial<
@@ -11107,11 +11543,437 @@ export class Cp2Store {
     this.auditEvents.push(...snapshot.auditEvents.map((event) => createAuditEvent(event)));
   }
 
+  beginRecovery(input: {
+    channel: AuthChannel;
+    identifier: string;
+    providerChallengeId?: string;
+    expiresAt?: string;
+    now?: Date;
+  }): {
+    transactionId: string;
+    accountFound: boolean;
+    normalizedIdentifier: string;
+    expiresAt: string;
+  } {
+    const now = input.now ?? new Date();
+    const identifier = normalizeDestination(input.channel, input.identifier);
+    const accountId = this.resolveIdentityAccount(input.channel, identifier) ?? null;
+    const transaction = this.createAuthTransaction("recovery", accountId, now, {
+      identifierType: input.channel,
+      identifierValue: identifier,
+      providerChallengeId: input.providerChallengeId ?? null,
+      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt })
+    });
+    this.recordSecurityEvent("auth.recovery_requested", accountId, "success", now, {
+      identifierHash: securityCorrelationHash(identifier)
+    });
+    return {
+      transactionId: transaction.id,
+      accountFound: accountId !== null,
+      normalizedIdentifier: identifier,
+      expiresAt: transaction.expiresAt
+    };
+  }
+
+  verifyEmailRecovery(input: {
+    transactionId: string;
+    challengeId: string;
+    code: string;
+    now?: Date;
+  }): { verified: true } {
+    const now = input.now ?? new Date();
+    const transaction = this.requireAuthTransaction(input.transactionId, "recovery", now);
+    if (
+      transaction.providerChallengeId !== input.challengeId ||
+      transaction.identifierType !== "email"
+    ) {
+      throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
+    }
+    const challenge = this.otpChallenges.get(input.challengeId);
+    if (
+      !challenge ||
+      challenge.purpose !== "recovery" ||
+      challenge.verifiedAt !== null ||
+      Date.parse(challenge.expiresAt) <= now.getTime() ||
+      challenge.attempts >= challenge.maxAttempts
+    ) {
+      throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
+    }
+    challenge.attempts += 1;
+    if (!safeHashEqual(challenge.codeHash, hashOtp(challenge.id, input.code))) {
+      throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
+    }
+    challenge.verifiedAt = now.toISOString();
+    transaction.verifiedAt = now.toISOString();
+    return { verified: true };
+  }
+
+  resetRecoveredPassword(input: {
+    transactionId: string;
+    password: string;
+    mfaCode?: string;
+    now?: Date;
+  }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const transaction = this.requireAuthTransaction(input.transactionId, "recovery", now, true);
+    if (transaction.accountId === null)
+      throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
+    const factors = this.activeMfaFactors(transaction.accountId);
+    if (factors.length > 0) {
+      if (input.mfaCode === undefined)
+        throw new Cp2Error(401, "mfa_required", "A second factor is required.");
+      const factor = factors[0]!;
+      const step = verifyTotp(
+        decryptOAuthToken(factor.secret),
+        input.mfaCode,
+        now,
+        factor.lastUsedStep
+      );
+      if (step === null)
+        throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+      factor.lastUsedStep = step;
+    }
+    validatePassword(input.password);
+    this.passwordCredentials.set(
+      transaction.accountId,
+      createPasswordCredential(transaction.accountId, input.password, now)
+    );
+    for (const session of this.sessions.values()) {
+      if (session.accountId === transaction.accountId && session.revokedAt === null) {
+        session.revokedAt = now.toISOString();
+        session.revocationReason = "password_reset";
+      }
+    }
+    transaction.consumedAt = now.toISOString();
+    const account = this.requireAccount(transaction.accountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const sessionRecord = this.createSession(account, user, now);
+    this.markSessionPinVerified(sessionRecord.id, now);
+    this.recordSecurityEvent("auth.password_reset", account.id, "success", now, {});
+    return this.requireAnySession(sessionRecord.id, now);
+  }
+
+  changePassword(input: {
+    sessionId: string | null;
+    currentPassword: string;
+    password: string;
+    mfaCode?: string;
+    revokeOtherSessions?: boolean;
+    now?: Date;
+  }): { changed: true; revokedSessions: number } {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const credential = this.passwordCredentials.get(session.account.id);
+    if (
+      credential === undefined ||
+      verifyPasswordHash(session.account.id, input.currentPassword, credential.passwordHash) ===
+        "invalid"
+    ) {
+      throw new Cp2Error(401, "current_password_invalid", "The current password is incorrect.");
+    }
+    const factors = this.activeMfaFactors(session.account.id);
+    if (factors.length > 0) {
+      if (input.mfaCode === undefined)
+        throw new Cp2Error(401, "mfa_required", "A second factor is required.");
+      const factor = factors[0]!;
+      const step = verifyTotp(
+        decryptOAuthToken(factor.secret),
+        input.mfaCode,
+        now,
+        factor.lastUsedStep
+      );
+      if (step === null)
+        throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+      factor.lastUsedStep = step;
+    }
+    validatePassword(input.password);
+    this.passwordCredentials.set(
+      session.account.id,
+      createPasswordCredential(session.account.id, input.password, now)
+    );
+    let revokedSessions = 0;
+    if (input.revokeOtherSessions !== false) {
+      for (const candidate of this.sessions.values()) {
+        if (
+          candidate.accountId === session.account.id &&
+          candidate.id !== session.session.id &&
+          candidate.revokedAt === null
+        ) {
+          candidate.revokedAt = now.toISOString();
+          candidate.revocationReason = "password_changed";
+          revokedSessions += 1;
+        }
+      }
+    }
+    this.recordSecurityEvent("auth.password_changed", session.account.id, "success", now, {
+      revokedSessions: String(revokedSessions)
+    });
+    return { changed: true, revokedSessions };
+  }
+
+  regenerateMfaRecoveryCodes(input: { sessionId: string | null; now?: Date }): {
+    recoveryCodes: string[];
+  } {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    if (this.activeMfaFactors(session.account.id).length === 0)
+      throw new Cp2Error(409, "mfa_not_enabled", "MFA is not enabled.");
+    return { recoveryCodes: this.replaceRecoveryCodes(session.account.id, now) };
+  }
+
+  listMfaFactors(input: { sessionId: string | null; now?: Date }): Array<{
+    id: string;
+    type: "totp";
+    verifiedAt: string;
+    createdAt: string;
+  }> {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return this.activeMfaFactors(session.account.id).map((factor) => ({
+      id: factor.id,
+      type: factor.type,
+      verifiedAt: factor.verifiedAt!,
+      createdAt: factor.createdAt
+    }));
+  }
+
+  getPendingEmailIdentity(input: { sessionId: string | null; now?: Date }): AccountIdentityRecord {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    const identity = [...this.accountIdentities.values()].find(
+      (item) =>
+        item.accountId === session.account.id && item.type === "email" && item.verifiedAt === null
+    );
+    if (!identity)
+      throw new Cp2Error(
+        404,
+        "email_verification_not_pending",
+        "No email is waiting for verification."
+      );
+    return identity;
+  }
+
+  verifyPendingEmail(input: {
+    sessionId: string | null;
+    challengeId: string;
+    code: string;
+    now?: Date;
+  }): { verified: true; email: string } {
+    const now = input.now ?? new Date();
+    const identity = this.getPendingEmailIdentity({ sessionId: input.sessionId, now });
+    const challenge = this.otpChallenges.get(input.challengeId);
+    if (
+      !challenge ||
+      challenge.destination !== identity.normalizedValue ||
+      challenge.verifiedAt !== null ||
+      Date.parse(challenge.expiresAt) <= now.getTime() ||
+      challenge.attempts >= challenge.maxAttempts
+    ) {
+      throw new Cp2Error(401, "email_verification_invalid", "Email verification failed.");
+    }
+    challenge.attempts += 1;
+    if (!safeHashEqual(challenge.codeHash, hashOtp(challenge.id, input.code)))
+      throw new Cp2Error(401, "email_verification_invalid", "Email verification failed.");
+    challenge.verifiedAt = now.toISOString();
+    identity.verifiedAt = now.toISOString();
+    identity.updatedAt = now.toISOString();
+    this.recordSecurityEvent("auth.email_verified", identity.accountId, "success", now, {});
+    return { verified: true, email: identity.normalizedValue };
+  }
+
+  disableMfaFactor(input: {
+    sessionId: string | null;
+    factorId: string;
+    code: string;
+    now?: Date;
+  }): { disabled: true } {
+    const now = input.now ?? new Date();
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const factor = this.mfaFactors.get(input.factorId);
+    if (
+      !factor ||
+      factor.accountId !== session.account.id ||
+      factor.disabledAt !== null ||
+      factor.verifiedAt === null
+    )
+      throw new Cp2Error(404, "mfa_factor_not_found", "MFA factor was not found.");
+    const step = verifyTotp(decryptOAuthToken(factor.secret), input.code, now, factor.lastUsedStep);
+    if (step === null)
+      throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+    factor.disabledAt = now.toISOString();
+    this.recordSecurityEvent("auth.mfa_disabled", session.account.id, "success", now, {
+      factorType: factor.type
+    });
+    return { disabled: true };
+  }
+
+  private resolveIdentityAccount(type: AuthChannel, normalizedValue: string): string | undefined {
+    const mappedAccount = this.identityAccountByValue.get(
+      destinationAccountKey(type, normalizedValue)
+    );
+    if (mappedAccount !== undefined) {
+      const identity = [...this.accountIdentities.values()].find(
+        (item) =>
+          item.accountId === mappedAccount &&
+          item.type === type &&
+          item.normalizedValue === normalizedValue
+      );
+      if (type === "phone" || (identity !== undefined && identity.verifiedAt !== null))
+        return mappedAccount;
+    }
+    return this.accountByDestination.get(destinationAccountKey(type, normalizedValue));
+  }
+
+  private requireAccountAuthenticationAllowed(account: AccountSummary): void {
+    const status = account.status ?? "active";
+    if (status === "active") return;
+    if (status === "locked") {
+      throw new Cp2Error(423, "account_locked", "This account is temporarily locked.");
+    }
+    if (status === "suspended") {
+      throw new Cp2Error(403, "account_suspended", "This account is suspended.");
+    }
+    if (status === "pending_deletion") {
+      throw new Cp2Error(
+        410,
+        "account_pending_deletion",
+        "Verify your identity to restore this account."
+      );
+    }
+    throw invalidLoginCredentialsError();
+  }
+
+  private addAccountIdentity(
+    account: AccountSummary,
+    user: UserSummary,
+    type: AuthChannel,
+    value: string,
+    isPrimary: boolean,
+    now: Date,
+    verified: boolean
+  ): AccountIdentityRecord {
+    const key = destinationAccountKey(type, value);
+    const existingAccount =
+      this.identityAccountByValue.get(key) ?? this.resolveIdentityAccount(type, value);
+    if (existingAccount !== undefined && existingAccount !== account.id) {
+      throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
+    }
+    const record: AccountIdentityRecord = {
+      id: randomUUID(),
+      accountId: account.id,
+      userId: user.id,
+      type,
+      normalizedValue: value,
+      displayValue: value,
+      isPrimary,
+      verifiedAt: verified ? now.toISOString() : null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.accountIdentities.set(record.id, record);
+    this.identityAccountByValue.set(key, account.id);
+    return record;
+  }
+
+  private createAuthTransaction(
+    purpose: AuthTransactionRecord["purpose"],
+    accountId: string | null,
+    now: Date,
+    override: Partial<AuthTransactionRecord> = {}
+  ): AuthTransactionRecord {
+    const record: AuthTransactionRecord = {
+      id: randomUUID(),
+      purpose,
+      accountId,
+      identifierType: null,
+      identifierValue: null,
+      providerChallengeId: null,
+      verifiedAt: null,
+      attempts: 0,
+      expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      consumedAt: null,
+      metadata: {},
+      createdAt: now.toISOString(),
+      ...override
+    };
+    this.authTransactions.set(record.id, record);
+    return record;
+  }
+
+  private requireAuthTransaction(
+    id: string,
+    purpose: AuthTransactionRecord["purpose"],
+    now: Date,
+    verified = false
+  ): AuthTransactionRecord {
+    const record = this.authTransactions.get(id);
+    if (
+      !record ||
+      record.purpose !== purpose ||
+      record.consumedAt !== null ||
+      Date.parse(record.expiresAt) <= now.getTime() ||
+      record.attempts >= 5 ||
+      (verified && record.verifiedAt === null)
+    ) {
+      throw new Cp2Error(
+        400,
+        "auth_transaction_invalid",
+        "The authentication request expired or is invalid."
+      );
+    }
+    return record;
+  }
+
+  private activeMfaFactors(accountId: string): MfaFactorRecord[] {
+    return [...this.mfaFactors.values()].filter(
+      (factor) =>
+        factor.accountId === accountId && factor.verifiedAt !== null && factor.disabledAt === null
+    );
+  }
+
+  private replaceRecoveryCodes(accountId: string, now: Date): string[] {
+    for (const [id, code] of this.recoveryCodes)
+      if (code.accountId === accountId && code.usedAt === null) this.recoveryCodes.delete(id);
+    const codes = Array.from(
+      { length: 10 },
+      () =>
+        `${randomBytes(4).toString("hex").toUpperCase().slice(0, 4)}-${randomBytes(4).toString("hex").toUpperCase().slice(0, 4)}`
+    );
+    for (const code of codes) {
+      const record: RecoveryCodeRecord = {
+        id: randomUUID(),
+        accountId,
+        codeHash: hashRecoveryCode(accountId, code),
+        usedAt: null,
+        createdAt: now.toISOString()
+      };
+      this.recoveryCodes.set(record.id, record);
+    }
+    return codes;
+  }
+
+  private recordSecurityEvent(
+    type: string,
+    accountId: string | null,
+    outcome: "success" | "failure",
+    now: Date,
+    metadata: Record<string, string | boolean | null>
+  ): void {
+    this.recordAuditEvent({
+      type,
+      aggregateType: "account",
+      aggregateId: accountId ?? randomUUID(),
+      actorId: accountId ?? "anonymous",
+      occurredAt: now.toISOString(),
+      payload: { outcome, ...metadata }
+    });
+  }
+
   private createAccount(channel: AuthChannel, destination: string, now: Date): AccountSummary {
     const account: AccountSummary = {
       id: randomUUID(),
       primaryAuthChannel: channel,
-      primaryAuthDestination: destination
+      primaryAuthDestination: destination,
+      status: "active",
+      deletedAt: null
     };
     let phoneIdentity: NormalizedOwnerPhoneIdentity | null = null;
     if (channel === "phone") {
@@ -17854,6 +18716,155 @@ function secureCookieSuffix(): string {
 
 function hashPin(accountId: string, pin: string): string {
   return createScryptPinHash(accountId, pin, pinHashSecret());
+}
+
+function validatePassword(password: string): void {
+  if (password.length < 10 || password.length > 256) {
+    throw new Cp2Error(400, "password_invalid", "Use a password between 10 and 256 characters.");
+  }
+}
+
+function createPasswordCredential(
+  accountId: string,
+  password: string,
+  now: Date
+): PasswordCredentialRecord {
+  const timestamp = now.toISOString();
+  return {
+    accountId,
+    passwordHash: createScryptPasswordHash(accountId, password, passwordHashSecret()),
+    passwordChangedAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
+function createScryptPasswordHash(accountId: string, password: string, secret: string): string {
+  const salt = randomBytes(16);
+  const hash = scryptSync(`${accountId}:${password}:${secret}`, salt, 32, {
+    N: 32_768,
+    r: 8,
+    p: 1,
+    maxmem: 96 * 1024 * 1024
+  });
+  return [
+    "scrypt",
+    "password-v1",
+    "32768",
+    "8",
+    "1",
+    salt.toString("base64url"),
+    hash.toString("base64url")
+  ].join("$");
+}
+
+function verifyPasswordHash(
+  accountId: string,
+  password: string,
+  storedHash: string
+): "current" | "invalid" {
+  const parts = storedHash.split("$");
+  if (parts.length !== 7 || parts[0] !== "scrypt" || parts[1] !== "password-v1") return "invalid";
+  try {
+    const salt = Buffer.from(parts[5]!, "base64url");
+    const expected = Buffer.from(parts[6]!, "base64url");
+    const candidate = scryptSync(`${accountId}:${password}:${passwordHashSecret()}`, salt, 32, {
+      N: 32_768,
+      r: 8,
+      p: 1,
+      maxmem: 96 * 1024 * 1024
+    });
+    return candidate.length === expected.length && timingSafeEqual(candidate, expected)
+      ? "current"
+      : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
+function passwordHashSecret(): string {
+  const configured = process.env.PASSWORD_HASH_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production")
+    throw new Cp2Error(
+      503,
+      "password_hash_unconfigured",
+      "Password authentication is temporarily unavailable."
+    );
+  return "soko-market-local-password-hash-secret";
+}
+
+function hashRecoveryCode(accountId: string, code: string): string {
+  return createHmac("sha256", passwordHashSecret())
+    .update(`${accountId}:${code.trim().toUpperCase()}`)
+    .digest("hex");
+}
+
+function securityCorrelationHash(value: string): string {
+  const secret = process.env.AUTH_AUDIT_HMAC_SECRET?.trim() || passwordHashSecret();
+  return createHmac("sha256", secret).update(value).digest("hex").slice(0, 24);
+}
+
+function safeHashEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left, "hex");
+  const b = Buffer.from(right, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function base32Encode(value: Buffer): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0;
+  let buffer = 0;
+  let result = "";
+  for (const byte of value) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      result += alphabet[(buffer >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) result += alphabet[(buffer << (5 - bits)) & 31];
+  return result;
+}
+
+function base32Decode(value: string): Buffer {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0;
+  let buffer = 0;
+  const bytes: number[] = [];
+  for (const character of value.toUpperCase().replace(/=+$/u, "")) {
+    const index = alphabet.indexOf(character);
+    if (index < 0) throw new Error("Invalid base32 secret.");
+    buffer = (buffer << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((buffer >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function verifyTotp(
+  secret: string,
+  code: string,
+  now: Date,
+  lastUsedStep: number | null
+): number | null {
+  if (!/^\d{6}$/u.test(code.trim())) return null;
+  const currentStep = Math.floor(now.getTime() / 30_000);
+  for (const step of [currentStep - 1, currentStep, currentStep + 1]) {
+    if (lastUsedStep !== null && step <= lastUsedStep) continue;
+    const counter = Buffer.alloc(8);
+    counter.writeBigUInt64BE(BigInt(step));
+    const digest = createHmac("sha1", base32Decode(secret)).update(counter).digest();
+    const offset = digest[digest.length - 1]! & 0x0f;
+    const binary = (digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000;
+    const expected = binary.toString().padStart(6, "0");
+    if (timingSafeEqual(Buffer.from(expected), Buffer.from(code.trim()))) return step;
+  }
+  return null;
 }
 
 function createScryptPinHash(accountId: string, pin: string, secret: string): string {

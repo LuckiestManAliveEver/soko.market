@@ -85,6 +85,11 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "sessions", tableName: "cp2_sessions" },
   { key: "passkeys", tableName: "cp2_passkeys" },
   { key: "passkeyCeremonies", tableName: "cp2_passkey_ceremonies" },
+  { key: "accountIdentities", tableName: "cp2_account_identities" },
+  { key: "passwordCredentials", tableName: "cp2_password_credentials" },
+  { key: "authTransactions", tableName: "cp2_auth_transactions" },
+  { key: "mfaFactors", tableName: "cp2_mfa_factors" },
+  { key: "recoveryCodes", tableName: "cp2_recovery_codes" },
   { key: "userIdentities", tableName: "cp2_user_identities" },
   { key: "oauthSessions", tableName: "cp2_oauth_sessions" },
   { key: "accountPinHashes", tableName: "cp2_account_pin_hashes" },
@@ -109,6 +114,22 @@ const mutatingMethodNames = new Set([
   "completeOAuthCallback",
   "completePasskeyAuthentication",
   "completePasskeyRegistration",
+  "beginPhoneSignup",
+  "preparePhoneChallenge",
+  "markPhoneTransactionVerified",
+  "completePhoneSignup",
+  "loginWithPassword",
+  "setupTotp",
+  "confirmTotp",
+  "verifyMfa",
+  "beginRecovery",
+  "verifyEmailRecovery",
+  "resetRecoveredPassword",
+  "changePassword",
+  "regenerateMfaRecoveryCodes",
+  "disableMfaFactor",
+  "renamePasskey",
+  "verifyPendingEmail",
   "completeMarketplaceIntro",
   "confirmProductImport",
   "confirmReceiptOCRJob",
@@ -945,16 +966,20 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: string;
     primary_auth_channel: string;
     primary_auth_destination: string;
+    status: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
+    deleted_at: Date | null;
     created_at: Date;
   }>(
     pool,
     "load accounts",
-    "select id, primary_auth_channel, primary_auth_destination, created_at from accounts order by id"
+    "select id, primary_auth_channel, primary_auth_destination, status, deleted_at, created_at from accounts order by id"
   );
   snapshot.accounts = accountsResult.rows.map((row) => ({
     id: row.id,
     primaryAuthChannel: row.primary_auth_channel,
     primaryAuthDestination: row.primary_auth_destination,
+    status: row.status,
+    deletedAt: row.deleted_at === null ? null : timestampToIso(row.deleted_at),
     createdAt: timestampToIso(row.created_at)
   })) as Cp2Snapshot["accounts"];
 
@@ -966,7 +991,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     phone_number_e164: string | null;
     phone_country_code: string | null;
     phone_national_number: string | null;
-    phone_verification_status: "unverified" | null;
+    phone_verification_status: "unverified" | "verified" | null;
     phone_added_at: Date | null;
     phone_updated_at: Date | null;
     phone_source: "phone_login" | "shop_registration" | null;
@@ -1896,16 +1921,20 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.accounts)) {
     await client.query(
       `
-        insert into accounts (id, primary_auth_channel, primary_auth_destination, created_at)
-        values ($1, $2, $3, $4)
+        insert into accounts (id, primary_auth_channel, primary_auth_destination, status, deleted_at, created_at)
+        values ($1, $2, $3, $4, $5, $6)
         on conflict (id) do update set
           primary_auth_channel = excluded.primary_auth_channel,
-          primary_auth_destination = excluded.primary_auth_destination
+          primary_auth_destination = excluded.primary_auth_destination,
+          status = excluded.status,
+          deleted_at = excluded.deleted_at
       `,
       [
         requiredText(record, "id"),
         requiredText(record, "primaryAuthChannel"),
         requiredText(record, "primaryAuthDestination"),
+        firstText(record, ["status"]) ?? "active",
+        firstText(record, ["deletedAt"]),
         now
       ]
     );
@@ -3114,6 +3143,11 @@ function emptySnapshot(): Cp2Snapshot {
     sessions: [],
     passkeys: [],
     passkeyCeremonies: [],
+    accountIdentities: [],
+    passwordCredentials: [],
+    authTransactions: [],
+    mfaFactors: [],
+    recoveryCodes: [],
     userIdentities: [],
     oauthSessions: [],
     accountPinHashes: [],
@@ -3161,6 +3195,10 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
   }
 
   if (key === "accountPinHashes") {
+    return requiredText(record, "accountId");
+  }
+
+  if (key === "passwordCredentials") {
     return requiredText(record, "accountId");
   }
 

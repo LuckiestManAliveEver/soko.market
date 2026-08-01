@@ -155,6 +155,11 @@ function isNetworkOnlyRequest(request, url) {
     request.headers.has("authorization") ||
     url.pathname.startsWith("/auth/") ||
     url.pathname === "/session" ||
+    url.pathname.startsWith("/session/") ||
+    url.pathname === "/logout" ||
+    url.pathname === "/logout-all" ||
+    url.pathname === "/sessions" ||
+    url.pathname.startsWith("/sessions/") ||
     url.pathname.startsWith("/businesses/") ||
     url.pathname.startsWith("/v1/conversations") ||
     url.pathname.startsWith("/v1/messages") ||
