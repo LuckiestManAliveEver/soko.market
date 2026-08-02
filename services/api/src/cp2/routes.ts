@@ -82,10 +82,6 @@ import {
 } from "./store.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
-  createPhoneVerificationProviderFromEnvironment,
-  type PhoneVerificationProvider
-} from "./phone-verification-provider.js";
-import {
   normalizeInternationalOwnerPhoneNumber,
   normalizeOwnerPhoneNumber
 } from "./phone-identity.js";
@@ -114,11 +110,11 @@ import {
 import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
+import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
 
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
-  phoneVerificationProvider?: PhoneVerificationProvider;
   githubModelCatalog?: GitHubModelCatalog;
   huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
@@ -145,8 +141,6 @@ interface OtpVerifyBody {
   method?: string;
   otp?: string;
 }
-
-type OtpDeliveryChannel = "email" | "sms";
 
 interface OAuthStartBody {
   provider?: string;
@@ -910,11 +904,14 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const huggingFaceModelCatalog =
     options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
-  const phoneVerificationProvider =
-    options.phoneVerificationProvider ?? createPhoneVerificationProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
+  const authRuntime = readAuthRuntimeConfig(realtimeAllowedOrigins);
   const authAttemptsByIp = new Map<string, number[]>();
+
+  function requireAuthFeature(enabled: boolean, code: string, message: string): void {
+    if (!enabled) throw new Cp2Error(503, code, message);
+  }
 
   function enforceAuthIpRate(request: FastifyRequest, purpose: string, maximum: number): void {
     const now = Date.now();
@@ -936,7 +933,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   function passkeyRelyingParty(request: FastifyRequest): { origin: string; rpId: string } {
     const origin = request.headers.origin;
 
-    if (origin === undefined || !realtimeAllowedOrigins.has(origin)) {
+    if (
+      !authRuntime.passkeysEnabled ||
+      origin === undefined ||
+      !authRuntime.expectedPasskeyOrigins.has(origin)
+    ) {
       throw new Cp2Error(
         403,
         "passkey_origin_not_allowed",
@@ -989,12 +990,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   async function requestOtpForBody(body: OtpRequestBody) {
     const channel = parseAuthChannel(body.method ?? body.channel);
     const destination = parseString(body.contact ?? body.destination, "contact");
-    parseOtpDeliveryChannel(body.deliveryChannel, channel);
-    const purpose = parseOtpPurpose(body.purpose);
 
     if (channel === "phone") {
       throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
     }
+    parseOtpDeliveryChannel(body.deliveryChannel, channel);
+    const purpose = parseOtpPurpose(body.purpose);
 
     const otp = store.requestOtp({ channel, destination, purpose });
 
@@ -1158,70 +1159,54 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/identify", async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
     try {
-      const identifier = readIdentifier(request.body);
-      return store.identifyAccount({ channel: identifier.channel, identifier: identifier.value });
+      readIdentifier(request.body);
+      return reply.code(410).send({
+        code: "auth_method_discovery_replaced",
+        message: "Use the enumeration-safe login method endpoint."
+      });
     } catch (error) {
       return sendCp2Error(reply, error);
     }
   });
 
   app.post(
+    "/auth/login/methods",
+    async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
+      try {
+        // Validate and normalize the identifier, but deliberately return the same capabilities
+        // for known and unknown accounts to avoid an account-enumeration oracle.
+        readIdentifier(request.body);
+        return {
+          preferred: "passkey",
+          passkeyAvailable: authRuntime.passkeysEnabled,
+          passwordFallback: authRuntime.passwordFallbackEnabled,
+          recoveryAvailable: true,
+          smsLogin: false
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/auth/signup/start",
     async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
       try {
-        enforceAuthIpRate(request, "signup_challenge", 10);
+        enforceAuthIpRate(request, "signup_start", 10);
         const identifier = readIdentifier({ ...request.body, type: "phone" });
         if (
           store.identifyAccount({ channel: "phone", identifier: identifier.value }).next === "login"
         ) {
           throw new Cp2Error(409, "account_exists", "Continue to sign in.");
         }
-        store.preparePhoneChallenge({ phoneE164: identifier.value, purpose: "signup" });
-        const challenge = await phoneVerificationProvider.sendChallenge(identifier.value);
         const transaction = store.beginPhoneSignup({
-          phoneE164: identifier.value,
-          providerChallengeId: challenge.challengeId,
-          expiresAt: challenge.expiresAt
+          phoneE164: identifier.value
         });
         return {
           ...transaction,
-          challengeId: challenge.challengeId,
-          ...(phoneVerificationProvider.exposesDevelopmentCode && challenge.developmentCode
-            ? { developmentCode: challenge.developmentCode }
-            : {})
+          verificationRequired: false
         };
-      } catch (error) {
-        if (error instanceof Cp2Error) return sendCp2Error(reply, error);
-        return sendCp2Error(
-          reply,
-          new Cp2Error(
-            503,
-            "phone_verification_unavailable",
-            "Phone verification is temporarily unavailable."
-          )
-        );
-      }
-    }
-  );
-
-  app.post(
-    "/auth/signup/verify-phone",
-    async (request: FastifyRequest<{ Body: { transactionId?: string; code?: string } }>, reply) => {
-      try {
-        const transactionId = parseString(request.body.transactionId, "transactionId");
-        const transaction = store.getPhoneVerificationTransaction(transactionId, "signup");
-        const verified = await phoneVerificationProvider.verifyChallenge(
-          transaction.identifierValue!,
-          transaction.providerChallengeId!,
-          parseString(request.body.code, "code")
-        );
-        if (!verified.verified)
-          throw new Cp2Error(
-            401,
-            "verification_code_invalid",
-            "The verification code is invalid or expired."
-          );
-        return store.markPhoneTransactionVerified(transactionId, "signup");
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1245,13 +1230,21 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        const password = parseString(request.body.password, "password");
-        if (password !== request.body.passwordConfirmation)
+        const password = parseOptionalString(request.body.password);
+        const passwordConfirmation = parseOptionalString(request.body.passwordConfirmation);
+        if (password !== passwordConfirmation)
           throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
+        if (password !== undefined) {
+          requireAuthFeature(
+            authRuntime.passwordFallbackEnabled,
+            "password_fallback_disabled",
+            "Password fallback is disabled."
+          );
+        }
         const result = store.completePhoneSignup({
           transactionId: parseString(request.body.transactionId, "transactionId"),
           displayName: parseString(request.body.displayName, "displayName"),
-          password,
+          ...(password === undefined ? {} : { password }),
           ...(request.body.email === undefined ? {} : { email: request.body.email }),
           termsAccepted: request.body.termsAccepted === true,
           privacyAccepted: request.body.privacyAccepted === true
@@ -1309,6 +1302,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/login/password",
     async (request: FastifyRequest<{ Body: IdentifierBody & { password?: string } }>, reply) => {
       try {
+        requireAuthFeature(
+          authRuntime.passwordFallbackEnabled,
+          "password_fallback_disabled",
+          "Password fallback is disabled."
+        );
         enforceAuthIpRate(request, "password_login", 30);
         const identifier = readIdentifier(request.body);
         const result = store.loginWithPassword({
@@ -1362,7 +1360,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/mfa/challenge",
     async (request: FastifyRequest<{ Body: { transactionId?: string } }>, reply) => {
       try {
-        const transaction = store.getPhoneVerificationTransaction(
+        const transaction = store.getAuthTransaction(
           parseString(request.body.transactionId, "transactionId"),
           "login_mfa"
         );
@@ -1435,21 +1433,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         enforceAuthIpRate(request, "recovery_challenge", 10);
         const identifier = readIdentifier(request.body);
         if (identifier.channel === "phone") {
-          store.preparePhoneChallenge({ phoneE164: identifier.value, purpose: "recovery" });
-          const challenge = await phoneVerificationProvider.sendChallenge(identifier.value);
-          const transaction = store.beginRecovery({
-            channel: "phone",
-            identifier: identifier.value,
-            providerChallengeId: challenge.challengeId,
-            expiresAt: challenge.expiresAt
-          });
-          return {
-            message: "If an account matches those details, recovery instructions have been sent.",
-            transactionId: transaction.transactionId,
-            ...(phoneVerificationProvider.exposesDevelopmentCode && challenge.developmentCode
-              ? { developmentCode: challenge.developmentCode }
-              : {})
-          };
+          throw new Cp2Error(
+            400,
+            "phone_recovery_unavailable",
+            "Phone and SMS recovery are unavailable. Use a passkey, password, linked email, or saved recovery code."
+          );
         }
         const otp = store.requestOtp({
           channel: "email",
@@ -1489,25 +1477,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     async (request: FastifyRequest<{ Body: { transactionId?: string; code?: string } }>, reply) => {
       try {
         const transactionId = parseString(request.body.transactionId, "transactionId");
-        const transaction = store.getPhoneVerificationTransaction(transactionId, "recovery");
+        const transaction = store.getAuthTransaction(transactionId, "recovery");
         const code = parseString(request.body.code, "code");
-        if (transaction.identifierType === "phone") {
-          const result = await phoneVerificationProvider.verifyChallenge(
-            transaction.identifierValue!,
-            transaction.providerChallengeId!,
-            code
-          );
-          if (!result.verified)
-            throw new Cp2Error(
-              401,
-              "recovery_verification_invalid",
-              "Recovery verification failed."
-            );
-          return store.markPhoneTransactionVerified(transactionId, "recovery");
-        }
+        if (transaction.identifierType !== "email" || transaction.providerChallengeId === null)
+          throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
         return store.verifyEmailRecovery({
           transactionId,
-          challengeId: transaction.providerChallengeId!,
+          challengeId: transaction.providerChallengeId,
           code
         });
       } catch (error) {
@@ -1530,6 +1506,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
+        requireAuthFeature(
+          authRuntime.passwordFallbackEnabled,
+          "password_fallback_disabled",
+          "Password fallback is disabled."
+        );
         const password = parseString(request.body.password, "password");
         if (password !== request.body.passwordConfirmation)
           throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
@@ -1561,6 +1542,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
+        requireAuthFeature(
+          authRuntime.passwordFallbackEnabled,
+          "password_fallback_disabled",
+          "Password fallback is disabled."
+        );
         enforceAuthIpRate(request, "password_change", 10);
         const password = parseString(request.body.password, "password");
         if (password !== request.body.passwordConfirmation)
@@ -1592,17 +1578,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
-    "/auth/phone/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({ ...request.body, method: "phone" });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
     "/api/auth/otp/request",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
@@ -1625,51 +1600,10 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
-    "/auth/whatsapp/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({
-          ...request.body,
-          method: "phone",
-          deliveryChannel: "whatsapp"
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/phone/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({ ...request.body, method: "phone" });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
     "/api/auth/email/request-otp",
     async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
       try {
         return await requestOtpForBody({ ...request.body, method: "email" });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/whatsapp/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({
-          ...request.body,
-          method: "phone",
-          deliveryChannel: "whatsapp"
-        });
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1685,19 +1619,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
-
-  app.post(
-    "/auth/phone/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
 
   app.post(
     "/api/auth/otp/verify",
@@ -1726,49 +1647,10 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
-    "/auth/whatsapp/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/phone/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
     "/api/auth/email/verify-otp",
     async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
       try {
         const result = await verifyOtpForBody({ ...request.body, method: "email" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/whatsapp/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "phone" });
         setAuthSessionCookies(reply, request, store, result.session.id);
         return result;
       } catch (error) {
@@ -6228,24 +6110,14 @@ function parseOtpPurpose(value: string | undefined): "signup" | "recovery" {
   throw new Cp2Error(400, "otp_purpose_invalid", "OTP purpose must be signup or recovery.");
 }
 
-function parseOtpDeliveryChannel(
-  value: string | undefined,
-  authChannel: AuthChannel
-): OtpDeliveryChannel {
-  const deliveryChannel = value ?? (authChannel === "email" ? "email" : "sms");
+function parseOtpDeliveryChannel(value: string | undefined, authChannel: AuthChannel): "email" {
+  const deliveryChannel = value ?? "email";
 
-  if (
-    (authChannel === "email" && deliveryChannel !== "email") ||
-    (authChannel === "phone" && deliveryChannel !== "sms")
-  ) {
-    throw new Cp2Error(
-      400,
-      "otp_delivery_channel_invalid",
-      `OTP delivery channel must be ${authChannel === "email" ? "email" : "sms"}.`
-    );
+  if (authChannel !== "email" || deliveryChannel !== "email") {
+    throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be email.");
   }
 
-  return deliveryChannel as OtpDeliveryChannel;
+  return "email";
 }
 
 function parseLanguage(value: string | undefined) {

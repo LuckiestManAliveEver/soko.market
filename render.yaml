@@ -35,12 +35,40 @@ services:
         value: https://soko.market,https://www.soko.market
       - key: WEBAUTHN_RP_ID
         value: soko.market
+      - key: WEBAUTHN_EXPECTED_ORIGINS
+        value: https://soko.market,https://www.soko.market
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAME_SITE
+        value: lax
+      - key: AUTH_PASSKEYS_ENABLED
+        value: "true"
+      - key: AUTH_PASSWORD_FALLBACK_ENABLED
+        value: "true"
+      - key: SESSION_ACCESS_TTL_SECONDS
+        value: "900"
+      - key: SESSION_INACTIVITY_TTL_DAYS
+        value: "30"
+      - key: SESSION_ABSOLUTE_TTL_DAYS
+        value: "180"
+      - key: SESSION_ROTATION_ENABLED
+        value: "true"
+      - key: SESSION_REUSE_DETECTION_ENABLED
+        value: "true"
       - key: OTP_HMAC_SECRET
+        generateValue: true
+      - key: PASSWORD_HASH_SECRET
+        generateValue: true
+      - key: AUTH_AUDIT_HMAC_SECRET
         generateValue: true
       - key: PIN_HASH_SECRET
         generateValue: true
       - key: AUTH_TOKEN_ENCRYPTION_KEY
         generateValue: true
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SOKO_EMAIL_FROM
+        value: "Soko <messages@soko.market>"
       - key: CP2_STORE
         value: postgres
       - key: DATABASE_URL

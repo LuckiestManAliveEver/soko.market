@@ -5,7 +5,7 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 describe("phone-first authentication", () => {
-  it("verifies a normalized phone before atomically creating a password account", async () => {
+  it("creates a password account with a normalized, unverified phone identifier", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const start = await post(app, "/auth/signup/start", {
@@ -14,26 +14,10 @@ describe("phone-first authentication", () => {
       country: "KE"
     });
     expect(start.statusCode).toBe(200);
-    const challenge = start.json<{ transactionId: string; developmentCode: string }>();
-
-    const premature = await post(app, "/auth/signup/complete", {
-      transactionId: challenge.transactionId,
-      displayName: "Jane",
-      password: "a long password with spaces",
-      passwordConfirmation: "a long password with spaces",
-      termsAccepted: true,
-      privacyAccepted: true
-    });
-    expect(premature.statusCode).toBe(400);
-    expect(store.snapshot().accounts).toHaveLength(0);
-
-    const verified = await post(app, "/auth/signup/verify-phone", {
-      transactionId: challenge.transactionId,
-      code: challenge.developmentCode
-    });
-    expect(verified.statusCode).toBe(200);
+    const transaction = start.json<{ transactionId: string; verificationRequired: boolean }>();
+    expect(transaction.verificationRequired).toBe(false);
     const signup = await post(app, "/auth/signup/complete", {
-      transactionId: challenge.transactionId,
+      transactionId: transaction.transactionId,
       displayName: "Jane",
       email: "Jane@Example.com",
       password: "a long password with spaces",
@@ -44,7 +28,7 @@ describe("phone-first authentication", () => {
     expect(signup.statusCode).toBe(200);
     expect(signup.json()).toMatchObject({
       account: { primaryAuthDestination: "+254712345678" },
-      user: { displayName: "Jane", phoneVerificationStatus: "verified" }
+      user: { displayName: "Jane", phoneVerificationStatus: "unverified" }
     });
     expect(store.snapshot().passwordCredentials?.[0]?.passwordHash).not.toContain(
       "a long password"
@@ -54,7 +38,7 @@ describe("phone-first authentication", () => {
         expect.objectContaining({
           type: "phone",
           normalizedValue: "+254712345678",
-          verifiedAt: expect.any(String)
+          verifiedAt: null
         }),
         expect.objectContaining({
           type: "email",
@@ -65,7 +49,7 @@ describe("phone-first authentication", () => {
     );
 
     const replay = await post(app, "/auth/signup/complete", {
-      transactionId: challenge.transactionId,
+      transactionId: transaction.transactionId,
       displayName: "Jane",
       password: "another long password",
       passwordConfirmation: "another long password",
@@ -81,23 +65,43 @@ describe("phone-first authentication", () => {
     const app = buildApi({ cp2: { store: createCp2Store() } });
     const credentials = { type: "phone", identifier: "+254712345679" };
     const started = await post(app, "/auth/signup/start", credentials);
-    const signupChallenge = started.json<{ transactionId: string; developmentCode: string }>();
-    await post(app, "/auth/signup/verify-phone", {
-      transactionId: signupChallenge.transactionId,
-      code: signupChallenge.developmentCode
-    });
+    const signupChallenge = started.json<{ transactionId: string }>();
     const signup = await post(app, "/auth/signup/complete", {
       transactionId: signupChallenge.transactionId,
       displayName: "Owner",
+      email: "owner-recovery@example.com",
       password: "correct horse battery staple",
       passwordConfirmation: "correct horse battery staple",
       termsAccepted: true,
       privacyAccepted: true
     });
+    const signupCookie = cookies(signup.headers["set-cookie"]);
+    const emailChallenge = await app.inject({
+      method: "POST",
+      url: "/auth/email/verification/start",
+      headers: { cookie: signupCookie }
+    });
+    const emailChallengeData = emailChallenge.json<{
+      challengeId: string;
+      developmentCode: string;
+    }>();
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/auth/email/verification/verify",
+          headers: { cookie: signupCookie, "content-type": "application/json" },
+          payload: {
+            challengeId: emailChallengeData.challengeId,
+            code: emailChallengeData.developmentCode
+          }
+        })
+      ).statusCode
+    ).toBe(200);
     await app.inject({
       method: "POST",
       url: "/logout",
-      headers: { cookie: cookies(signup.headers["set-cookie"]) }
+      headers: { cookie: signupCookie }
     });
 
     for (const identifier of [credentials.identifier, "+254700000000"]) {
@@ -119,7 +123,14 @@ describe("phone-first authentication", () => {
     expect(login.statusCode).toBe(200);
     expect(cookies(login.headers["set-cookie"])).toContain("soko_refresh=");
 
-    const recovery = await post(app, "/auth/recovery/start", credentials);
+    const phoneRecovery = await post(app, "/auth/recovery/start", credentials);
+    expect(phoneRecovery.statusCode).toBe(400);
+    expect(phoneRecovery.json()).toMatchObject({ code: "phone_recovery_unavailable" });
+
+    const recovery = await post(app, "/auth/recovery/start", {
+      type: "email",
+      identifier: "owner-recovery@example.com"
+    });
     expect(recovery.json()).toMatchObject({
       message: "If an account matches those details, recovery instructions have been sent."
     });
@@ -187,11 +198,7 @@ describe("phone-first authentication", () => {
       type: "phone",
       identifier: "+254712345680"
     });
-    const challenge = started.json<{ transactionId: string; developmentCode: string }>();
-    await post(app, "/auth/signup/verify-phone", {
-      transactionId: challenge.transactionId,
-      code: challenge.developmentCode
-    });
+    const challenge = started.json<{ transactionId: string }>();
     const signup = await post(app, "/auth/signup/complete", {
       transactionId: challenge.transactionId,
       displayName: "MFA Owner",

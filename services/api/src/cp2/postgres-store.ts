@@ -82,6 +82,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "inventoryMovements", tableName: "cp2_inventory_movements" },
   { key: "syncQueue", tableName: "cp2_sync_queue_items" },
   { key: "otpChallenges", tableName: "cp2_otp_challenges" },
+  { key: "smsDeliveryAttempts", tableName: "cp2_sms_delivery_attempts" },
   { key: "sessions", tableName: "cp2_sessions" },
   { key: "passkeys", tableName: "cp2_passkeys" },
   { key: "passkeyCeremonies", tableName: "cp2_passkey_ceremonies" },
@@ -115,8 +116,6 @@ const mutatingMethodNames = new Set([
   "completePasskeyAuthentication",
   "completePasskeyRegistration",
   "beginPhoneSignup",
-  "preparePhoneChallenge",
-  "markPhoneTransactionVerified",
   "completePhoneSignup",
   "loginWithPassword",
   "setupTotp",
@@ -319,7 +318,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "041_browser_inference_assignments.sql";
+const requiredMigrationFilename = "046_disable_sms_verification.sql";
 const realtimeChannel = "soko_sync_changes";
 
 export async function createPostgresCp2Store(
@@ -1493,6 +1492,10 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     refresh_token_hash: string;
     session_family_id: string;
     refresh_expires_at: Date;
+    inactivity_expires_at: Date;
+    absolute_expires_at: Date;
+    rotated_from_session_id: string | null;
+    authenticated_at: Date;
     last_used_at: Date;
     rotated_at: Date | null;
     revocation_reason: string | null;
@@ -1505,6 +1508,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     "load sessions",
     `select id, account_id, user_id, device_id, device_name, platform, browser_or_app,
             user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
+            inactivity_expires_at, absolute_expires_at, rotated_from_session_id, authenticated_at,
             last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
             revoked_at, created_at
        from sessions order by created_at, id`
@@ -1521,6 +1525,10 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     refreshTokenHash: row.refresh_token_hash,
     sessionFamilyId: row.session_family_id,
     refreshExpiresAt: timestampToIso(row.refresh_expires_at),
+    inactivityExpiresAt: timestampToIso(row.inactivity_expires_at),
+    absoluteExpiresAt: timestampToIso(row.absolute_expires_at),
+    rotatedFromSessionId: row.rotated_from_session_id,
+    authenticatedAt: timestampToIso(row.authenticated_at),
     lastUsedAt: timestampToIso(row.last_used_at),
     rotatedAt: row.rotated_at === null ? null : timestampToIso(row.rotated_at),
     revocationReason: row.revocation_reason,
@@ -1540,12 +1548,19 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     max_attempts: number;
     expires_at: Date;
     verified_at: Date | null;
+    consumed_at: Date | null;
+    resend_count: number;
+    next_resend_at: Date | null;
+    provider: string | null;
+    provider_message_id: string | null;
     created_at: Date;
   }>(
     pool,
     "load OTP challenges",
     `
-      select id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+      select id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at,
+             verified_at, consumed_at, resend_count, next_resend_at, provider, provider_message_id,
+             created_at
       from otp_challenges
       order by created_at, id
     `
@@ -1560,6 +1575,11 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     maxAttempts: row.max_attempts,
     expiresAt: timestampToIso(row.expires_at),
     verifiedAt: row.verified_at === null ? null : timestampToIso(row.verified_at),
+    consumedAt: row.consumed_at === null ? null : timestampToIso(row.consumed_at),
+    resendCount: row.resend_count,
+    nextResendAt: row.next_resend_at === null ? null : timestampToIso(row.next_resend_at),
+    provider: row.provider,
+    providerMessageId: row.provider_message_id,
     createdAt: timestampToIso(row.created_at)
   })) as Cp2Snapshot["otpChallenges"];
 
@@ -1908,6 +1928,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     client,
     "verification_challenges",
     snapshotRecords(snapshot.otpChallenges)
+  );
+  await deleteMissingRows(
+    client,
+    "sms_delivery_attempts",
+    snapshotRecords(snapshot.smsDeliveryAttempts)
   );
   await deleteMissingRows(client, "user_identities", snapshotRecords(snapshot.userIdentities));
   await deleteMissingRows(client, "otp_challenges", snapshotRecords(snapshot.otpChallenges));
@@ -2322,10 +2347,11 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         insert into sessions (
           id, account_id, user_id, device_id, device_name, platform, browser_or_app,
           user_agent_hash, refresh_token_hash, session_family_id, refresh_expires_at,
+          inactivity_expires_at, absolute_expires_at, rotated_from_session_id, authenticated_at,
           last_used_at, rotated_at, revocation_reason, expires_at, pin_verified_at,
           revoked_at, created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
         on conflict (id) do update set
           device_id = excluded.device_id,
           device_name = excluded.device_name,
@@ -2335,6 +2361,10 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
           refresh_token_hash = excluded.refresh_token_hash,
           session_family_id = excluded.session_family_id,
           refresh_expires_at = excluded.refresh_expires_at,
+          inactivity_expires_at = excluded.inactivity_expires_at,
+          absolute_expires_at = excluded.absolute_expires_at,
+          rotated_from_session_id = excluded.rotated_from_session_id,
+          authenticated_at = excluded.authenticated_at,
           last_used_at = excluded.last_used_at,
           rotated_at = excluded.rotated_at,
           revocation_reason = excluded.revocation_reason,
@@ -2354,6 +2384,10 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "refreshTokenHash"),
         requiredText(record, "sessionFamilyId"),
         requiredText(record, "refreshExpiresAt"),
+        requiredText(record, "inactivityExpiresAt"),
+        requiredText(record, "absoluteExpiresAt"),
+        firstText(record, ["rotatedFromSessionId"]),
+        requiredText(record, "authenticatedAt"),
         requiredText(record, "lastUsedAt"),
         firstText(record, ["rotatedAt"]),
         firstText(record, ["revocationReason"]),
@@ -2646,9 +2680,11 @@ async function savePhase1AuthSecurityRecords(
     await client.query(
       `
         insert into otp_challenges (
-          id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at, verified_at, created_at
+          id, channel, destination, purpose, code_hash, attempts, max_attempts, expires_at,
+          verified_at, consumed_at, resend_count, next_resend_at, provider, provider_message_id,
+          created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         on conflict (id) do update set
           channel = excluded.channel,
           destination = excluded.destination,
@@ -2657,7 +2693,12 @@ async function savePhase1AuthSecurityRecords(
           attempts = excluded.attempts,
           max_attempts = excluded.max_attempts,
           expires_at = excluded.expires_at,
-          verified_at = excluded.verified_at
+          verified_at = excluded.verified_at,
+          consumed_at = excluded.consumed_at,
+          resend_count = excluded.resend_count,
+          next_resend_at = excluded.next_resend_at,
+          provider = excluded.provider,
+          provider_message_id = excluded.provider_message_id
       `,
       [
         requiredText(record, "id"),
@@ -2669,6 +2710,11 @@ async function savePhase1AuthSecurityRecords(
         record.maxAttempts ?? 5,
         requiredText(record, "expiresAt"),
         firstText(record, ["verifiedAt"]),
+        firstText(record, ["consumedAt"]),
+        record.resendCount ?? 0,
+        firstText(record, ["nextResendAt"]),
+        firstText(record, ["provider"]),
+        firstText(record, ["providerMessageId"]),
         requiredText(record, "createdAt")
       ]
     );
@@ -2677,17 +2723,20 @@ async function savePhase1AuthSecurityRecords(
       `
         insert into verification_challenges (
           id, channel, destination, purpose, code_hash, attempts, max_attempts,
-          status, expires_at, verified_at, created_at, updated_at
+          status, expires_at, verified_at, consumed_at, resend_count, next_resend_at,
+          provider, provider_message_id, created_at, updated_at
         )
         values (
           $1, $2, $3, $4, $5, $6, $7,
           case
             when $9::timestamptz is not null then 'verified'
+            when $10::timestamptz is not null then 'invalidated'
             when $8::timestamptz <= now() then 'expired'
             when $6::integer >= $7::integer then 'locked'
             else 'pending'
           end,
-          $8, $9, $10, coalesce($9::timestamptz, $10::timestamptz)
+          $8, $9, $10, $11, $12, $13, $14, $15,
+          coalesce($9::timestamptz, $10::timestamptz, $15::timestamptz)
         )
         on conflict (id) do update set
           channel = excluded.channel,
@@ -2699,6 +2748,11 @@ async function savePhase1AuthSecurityRecords(
           status = excluded.status,
           expires_at = excluded.expires_at,
           verified_at = excluded.verified_at,
+          consumed_at = excluded.consumed_at,
+          resend_count = excluded.resend_count,
+          next_resend_at = excluded.next_resend_at,
+          provider = excluded.provider,
+          provider_message_id = excluded.provider_message_id,
           updated_at = excluded.updated_at
       `,
       [
@@ -2711,7 +2765,40 @@ async function savePhase1AuthSecurityRecords(
         record.maxAttempts ?? 5,
         requiredText(record, "expiresAt"),
         firstText(record, ["verifiedAt"]),
+        firstText(record, ["consumedAt"]),
+        record.resendCount ?? 0,
+        firstText(record, ["nextResendAt"]),
+        firstText(record, ["provider"]),
+        firstText(record, ["providerMessageId"]),
         requiredText(record, "createdAt")
+      ]
+    );
+  }
+
+  for (const record of snapshotRecords(snapshot.smsDeliveryAttempts)) {
+    await client.query(
+      `
+        insert into sms_delivery_attempts (
+          id, challenge_id, provider, provider_message_id, status, error_code,
+          attempt_number, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        on conflict (id) do update set
+          provider_message_id = excluded.provider_message_id,
+          status = excluded.status,
+          error_code = excluded.error_code,
+          updated_at = excluded.updated_at
+      `,
+      [
+        requiredText(record, "id"),
+        requiredText(record, "challengeId"),
+        requiredText(record, "provider"),
+        firstText(record, ["providerMessageId"]),
+        requiredText(record, "status"),
+        firstText(record, ["errorCode"]),
+        record.attemptNumber ?? 1,
+        requiredText(record, "createdAt"),
+        requiredText(record, "updatedAt")
       ]
     );
   }
@@ -3140,6 +3227,7 @@ function emptySnapshot(): Cp2Snapshot {
     inventoryMovements: [],
     syncQueue: [],
     otpChallenges: [],
+    smsDeliveryAttempts: [],
     sessions: [],
     passkeys: [],
     passkeyCeremonies: [],

@@ -198,6 +198,8 @@ export interface MembershipSummary {
 export interface SessionSummary {
   id: string;
   expiresAt: string;
+  inactivityExpiresAt?: string;
+  absoluteExpiresAt?: string;
 }
 
 export type AuthBootstrapState =
@@ -224,6 +226,7 @@ export interface DeviceSessionSummary {
   lastUsedAt: string;
   rotatedAt: string | null;
   expiresAt: string;
+  absoluteExpiresAt?: string;
   revokedAt: string | null;
   revocationReason: string | null;
   current: boolean;

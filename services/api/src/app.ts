@@ -77,6 +77,7 @@ export function buildApi(options: BuildApiOptions = {}) {
       request.url.startsWith("/sessions/")
     ) {
       reply.header("cache-control", "no-store");
+      reply.header("pragma", "no-cache");
     }
 
     if (

@@ -31,11 +31,10 @@ all authentication and session URLs as network-only.
 ## Compatibility and obsolete integrations
 
 Legacy PIN routes and an explicitly labeled login fallback remain for existing users during the
-compatibility release; new signup uses verified phone plus password. Legacy email OTP and OAuth
-records are retained. Firebase phone authentication and its client code were previously removed;
-no Twilio integration is present. The new phone boundary is the `PhoneVerificationProvider`
-interface. Production must configure the webhook adapter; development uses a hashed, expiring
-in-memory adapter.
+compatibility release. New signup stores the phone as an unverified identifier and supports an
+optional password plus a recommended passkey. Legacy email OTP and OAuth records are retained.
+Firebase phone authentication and its client code were previously removed; no phone verification
+provider, SMS gateway, or SMS recovery route is present.
 
 The audited login-loop failure mode is an expired 15-minute access cookie being treated as a
 terminal logout before the rotating refresh cookie is tried, especially when stale PWA navigation

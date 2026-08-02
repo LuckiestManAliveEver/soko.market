@@ -24,6 +24,28 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("key: ACCOUNT_DELETION_WEBHOOK_SECRET\n        sync: false");
   });
 
+  it("declares authentication dependencies without SMS verification", async () => {
+    const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
+    const api = blueprint.slice(
+      blueprint.indexOf("name: soko-market-api"),
+      blueprint.indexOf("name: soko-market-inference")
+    );
+
+    for (const generatedSecret of [
+      "PASSWORD_HASH_SECRET",
+      "AUTH_AUDIT_HMAC_SECRET",
+      "OTP_HMAC_SECRET",
+      "AUTH_TOKEN_ENCRYPTION_KEY"
+    ]) {
+      expect(api).toContain(`${generatedSecret}\n        generateValue: true`);
+    }
+    for (const configuredSecret of ["RESEND_API_KEY"]) {
+      expect(api).toContain(`${configuredSecret}\n        sync: false`);
+    }
+    expect(api).not.toMatch(/AUTH_SMS|SMS_GATEWAY|ANDROID_SMS|LOCAL_SMS/u);
+    expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
+  });
+
   it("provisions authenticated private inference with durable storage and disabled cloud fallback", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(

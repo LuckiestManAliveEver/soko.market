@@ -236,7 +236,6 @@ Authentication methods may include:
 
 - email verification;
 - one-time passwords (OTP);
-- telephone verification;
 - passkeys;
 - social login providers;
 - multi-factor authentication;

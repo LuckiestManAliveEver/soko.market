@@ -1,11 +1,22 @@
 import { useState } from "react";
-import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
+import {
+  browserSupportsWebAuthn,
+  startAuthentication,
+  startRegistration
+} from "@simplewebauthn/browser";
 import type { AuthSessionView } from "@soko/shared-types";
 import { apiFetch } from "./lib/api";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
 type Stage =
-  "entry" | "verify-phone" | "profile" | "password" | "mfa" | "recovery-code" | "reset-password";
+  | "entry"
+  | "profile"
+  | "passkey-prompt"
+  | "passkey-recommendation"
+  | "password"
+  | "mfa"
+  | "recovery-code"
+  | "reset-password";
 type IdentifierType = "phone" | "email";
 
 const countries = [
@@ -39,9 +50,12 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
   const [email, setEmail] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [createdSession, setCreatedSession] = useState<AuthSessionView | null>(null);
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("Phone is your primary Soko.market identity.");
+  const [message, setMessage] = useState(
+    "Phone can be your Soko.market identifier. SMS verification is not used."
+  );
 
   const identifierBody = () => ({
     type: identifierType,
@@ -62,36 +76,23 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
   }
 
   async function continueIdentifier() {
-    const result = await apiFetch<{ next: "signup" | "login" }>("/auth/identify", {
-      method: "POST",
-      body: identifierBody()
-    });
-    if (result.next === "login") {
-      setStage("password");
-      setMessage("Enter your password to continue.");
+    if (initialMode === "login") {
+      await apiFetch("/auth/login/methods", { method: "POST", body: identifierBody() });
+      setStage("passkey-prompt");
+      setMessage("Use a passkey for the fastest, most secure return access.");
       return;
     }
     if (identifierType === "email") {
-      setMessage(
-        "New accounts start with a verified phone number. Use phone to create your account."
-      );
+      setMessage("New accounts start with a phone identifier. Use phone to create your account.");
       return;
     }
-    const challenge = await apiFetch<{ transactionId: string; developmentCode?: string }>(
-      "/auth/signup/start",
-      { method: "POST", body: identifierBody() }
-    );
-    setTransactionId(challenge.transactionId);
-    setCode(challenge.developmentCode ?? "");
-    setStage("verify-phone");
-    setMessage("Enter the verification code sent to your phone.");
-  }
-
-  async function verifyPhone() {
-    await apiFetch("/auth/signup/verify-phone", { method: "POST", body: { transactionId, code } });
+    const transaction = await apiFetch<{ transactionId: string }>("/auth/signup/start", {
+      method: "POST",
+      body: identifierBody()
+    });
+    setTransactionId(transaction.transactionId);
     setStage("profile");
-    setCode("");
-    setMessage("Phone verified. Finish creating your account.");
+    setMessage("Phone added as an unverified sign-in identifier. Finish creating your account.");
   }
 
   async function completeSignup() {
@@ -100,14 +101,15 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       body: {
         transactionId,
         displayName,
-        password,
-        passwordConfirmation,
+        ...(password ? { password, passwordConfirmation } : {}),
         email: email || undefined,
         termsAccepted,
         privacyAccepted
       }
     });
-    onAuthenticated(session);
+    setCreatedSession(session);
+    setStage("passkey-recommendation");
+    setMessage("Account created. Add a passkey for secure passwordless return access.");
   }
 
   async function login() {
@@ -148,6 +150,12 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
   }
 
   async function startRecovery() {
+    if (identifierType === "phone") {
+      setMessage(
+        "Phone recovery is unavailable. Use a passkey, password, linked verified email, or saved recovery code."
+      );
+      return;
+    }
     const result = await apiFetch<{
       transactionId: string;
       developmentCode?: string;
@@ -193,6 +201,27 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
     });
     onAuthenticated(session);
   }
+
+  async function createPasskey() {
+    if (!createdSession) return;
+    if (!browserSupportsWebAuthn()) {
+      setMessage("Passkeys are unavailable in this browser. You can add one later in Security.");
+      return;
+    }
+    const challenge = await apiFetch<{
+      ceremonyId: string;
+      options: Parameters<typeof startRegistration>[0]["optionsJSON"];
+    }>("/auth/passkeys/register/options", { method: "POST", body: {} });
+    const response = await startRegistration({ optionsJSON: challenge.options });
+    await apiFetch("/auth/passkeys/register/verify", {
+      method: "POST",
+      body: { ceremonyId: challenge.ceremonyId, label: "Signup device", response }
+    });
+    onAuthenticated(createdSession);
+  }
+
+  const optionalPasswordInvalid =
+    password.length !== 0 && (password.length < 10 || password !== passwordConfirmation);
 
   return (
     <main className="setup-grid auth-landing-grid" id={initialMode}>
@@ -295,11 +324,40 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
               disabled={!identifier.trim() || busy}
               onClick={() => void run(startRecovery)}
             >
-              Forgot password?
+              Recover account
             </button>
           </>
         ) : null}
-        {stage === "verify-phone" || stage === "recovery-code" ? (
+        {stage === "passkey-prompt" ? (
+          <>
+            <h2>Welcome back</h2>
+            <p>Continue with a passkey for passwordless access.</p>
+            <button type="button" disabled={busy} onClick={() => void run(usePasskey)}>
+              Continue with passkey
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setPassword("");
+                setStage("password");
+                setMessage("Use your password fallback if this account has one.");
+              }}
+            >
+              Use password fallback
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={!identifier.trim() || busy}
+              onClick={() => void run(startRecovery)}
+            >
+              Recover account
+            </button>
+          </>
+        ) : null}
+        {stage === "recovery-code" ? (
           <>
             <label>
               Verification code
@@ -314,7 +372,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
               type="button"
               disabled={busy || !code.trim()}
               aria-busy={busy}
-              onClick={() => void run(stage === "verify-phone" ? verifyPhone : verifyRecovery)}
+              onClick={() => void run(verifyRecovery)}
             >
               {busy ? "Verifying…" : "Verify"}
             </button>
@@ -340,6 +398,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
               />
             </label>
             <PasswordFields
+              optional
               password={password}
               confirmation={passwordConfirmation}
               setPassword={setPassword}
@@ -366,8 +425,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
               disabled={
                 busy ||
                 !displayName.trim() ||
-                password.length < 10 ||
-                password !== passwordConfirmation ||
+                optionalPasswordInvalid ||
                 !termsAccepted ||
                 !privacyAccepted
               }
@@ -376,6 +434,30 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
             >
               {busy ? "Creating account…" : "Create account"}
             </button>
+          </>
+        ) : null}
+        {stage === "passkey-recommendation" && createdSession ? (
+          <>
+            <h2>Make return access effortless</h2>
+            <p>
+              Create a passkey for this device. It works with your device unlock and provides
+              passwordless return access.
+            </p>
+            <button type="button" disabled={busy} onClick={() => void run(createPasskey)}>
+              Create passkey
+            </button>
+            {password ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => onAuthenticated(createdSession)}
+              >
+                Do this later
+              </button>
+            ) : (
+              <p>Create a passkey now because this account does not have a password fallback.</p>
+            )}
           </>
         ) : null}
         {stage === "mfa" ? (
@@ -440,6 +522,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
 }
 
 function PasswordFields(props: {
+  optional?: boolean;
   password: string;
   confirmation: string;
   setPassword: (value: string) => void;
@@ -448,7 +531,7 @@ function PasswordFields(props: {
   return (
     <>
       <label>
-        Password
+        Password{props.optional ? " fallback (optional)" : ""}
         <input
           type="password"
           minLength={10}
@@ -459,7 +542,7 @@ function PasswordFields(props: {
         />
       </label>
       <label>
-        Confirm password
+        Confirm password{props.optional ? " (optional)" : ""}
         <input
           type="password"
           minLength={10}

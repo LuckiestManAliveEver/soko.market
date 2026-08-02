@@ -14,6 +14,14 @@ The receipt OCR worker is self-hosted and uses the following third-party compone
 
 No required paid OCR API is used by the default production receipt OCR flow.
 
+## Authentication
+
+- libphonenumber-js 1.13.9 — MIT — E.164 parsing and normalization.
+- @simplewebauthn/server 13.3.2 — MIT — WebAuthn/passkey ceremony validation.
+- @simplewebauthn/browser 13.3.0 — MIT — browser passkey ceremony support.
+
+Phone numbers are normalized only; the authentication system does not perform SMS verification.
+
 ## Optional on-device AI models
 
 Soko can download these optional GGUF weights directly from Hugging Face into private device

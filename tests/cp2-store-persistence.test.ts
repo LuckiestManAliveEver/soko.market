@@ -21,6 +21,27 @@ interface ProductResponse {
 }
 
 describe("CP2 store persistence", () => {
+  it("repairs empty legacy session security fields while hydrating", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    await createOwnerBusiness(app);
+    const snapshot = store.snapshot();
+    const legacySession = snapshot.sessions[0];
+    expect(legacySession).toBeDefined();
+    if (legacySession === undefined) throw new Error("Expected a session fixture.");
+    legacySession.userAgentHash = "";
+    legacySession.refreshTokenHash = "   ";
+
+    const restoredStore = createCp2Store();
+    restoredStore.hydrateSnapshot(snapshot);
+    expect(restoredStore.snapshot().sessions[0]).toMatchObject({
+      userAgentHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      refreshTokenHash: expect.stringMatching(/^[a-f0-9]{64}$/u)
+    });
+
+    await app.close();
+  });
+
   it("hydrates sessions, PIN hashes, catalogue data, and network data from a snapshot", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

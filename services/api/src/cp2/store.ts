@@ -358,8 +358,6 @@ export const refreshCookieName = "soko_refresh";
 const otpTtlMs = 5 * 60 * 1000;
 const passkeyCeremonyTtlMs = 5 * 60 * 1000;
 const maxPendingPasskeyCeremonies = 1_000;
-const accessSessionTtlMs = 15 * 60 * 1000;
-const refreshSessionTtlMs = 30 * 24 * 60 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const pinAttemptWindowMs = 15 * 60 * 1000;
@@ -444,7 +442,25 @@ interface OtpChallenge {
   maxAttempts: number;
   expiresAt: string;
   verifiedAt: string | null;
+  consumedAt?: string | null;
+  resendCount?: number;
+  nextResendAt?: string | null;
+  provider?: string | null;
+  providerMessageId?: string | null;
   createdAt: string;
+}
+
+/** Historical delivery records retained only so old database snapshots remain readable. */
+export interface SmsDeliveryAttemptRecord {
+  id: string;
+  challengeId: string;
+  provider: string;
+  providerMessageId: string | null;
+  status: "accepted" | "delivered" | "failed" | "rejected" | "unknown";
+  errorCode: string | null;
+  attemptNumber: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OtpChallengeDelivery {
@@ -547,6 +563,10 @@ interface SessionRecord extends SessionSummary {
   refreshTokenHash: string;
   sessionFamilyId: string;
   refreshExpiresAt: string;
+  inactivityExpiresAt: string;
+  absoluteExpiresAt: string;
+  rotatedFromSessionId: string | null;
+  authenticatedAt: string;
   lastUsedAt: string;
   rotatedAt: string | null;
   revocationReason: string | null;
@@ -810,6 +830,7 @@ export interface Cp2Snapshot {
   inventoryMovements: InventoryMovementSummary[];
   syncQueue: SyncQueueItem[];
   otpChallenges: OtpChallenge[];
+  smsDeliveryAttempts?: SmsDeliveryAttemptRecord[];
   sessions: SessionRecord[];
   passkeys?: PasskeyCredentialRecord[];
   passkeyCeremonies?: PasskeyCeremonyRecord[];
@@ -1073,6 +1094,7 @@ export class Cp2Store {
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
+  private readonly smsDeliveryAttempts = new Map<string, SmsDeliveryAttemptRecord>();
   private readonly otpRequestHistory = new Map<string, number[]>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingRefreshTokens = new Map<string, string>();
@@ -1202,6 +1224,9 @@ export class Cp2Store {
     for (const [challengeId, challenge] of this.otpChallenges) {
       if (Date.parse(challenge.expiresAt) <= now.getTime()) {
         this.otpChallenges.delete(challengeId);
+        for (const [attemptId, attempt] of this.smsDeliveryAttempts) {
+          if (attempt.challengeId === challengeId) this.smsDeliveryAttempts.delete(attemptId);
+        }
       }
     }
   }
@@ -1531,6 +1556,10 @@ export class Cp2Store {
       throw new Cp2Error(409, "otp_already_verified", "OTP challenge is already verified.");
     }
 
+    if (challenge.consumedAt != null) {
+      throw new Cp2Error(409, "otp_invalidated", "OTP challenge is no longer active.");
+    }
+
     if (Date.parse(challenge.expiresAt) <= now.getTime()) {
       throw new Cp2Error(410, "otp_expired", "OTP challenge has expired.");
     }
@@ -1610,12 +1639,24 @@ export class Cp2Store {
       return null;
     }
 
+    const account = this.requireAccount(session.accountId);
     if (Date.parse(session.expiresAt) <= now.getTime()) {
+      return null;
+    }
+    if (
+      Date.parse(session.absoluteExpiresAt) <= now.getTime() ||
+      (account.status ?? "active") !== "active"
+    ) {
+      this.revokeSessionFamily(
+        session.sessionFamilyId,
+        (account.status ?? "active") === "active" ? "expired" : "account_status_changed",
+        now
+      );
       return null;
     }
 
     return {
-      account: this.requireAccount(session.accountId),
+      account,
       user: this.requireUser(session.userId),
       session: sessionView(session)
     };
@@ -1640,7 +1681,8 @@ export class Cp2Store {
     if (refreshToken === undefined) {
       refreshToken = createRefreshToken();
       session.refreshTokenHash = hashRefreshToken(refreshToken);
-      session.refreshExpiresAt = new Date(now.getTime() + refreshSessionTtlMs).toISOString();
+      session.inactivityExpiresAt = sessionInactivityExpiry(now, session.absoluteExpiresAt);
+      session.refreshExpiresAt = session.inactivityExpiresAt;
       this.pendingRefreshTokens.set(session.id, refreshToken);
     }
     return refreshToken;
@@ -1682,17 +1724,30 @@ export class Cp2Store {
       }
       throw new Cp2Error(401, "auth_refresh_revoked", "The refresh session was revoked.");
     }
-    if (Date.parse(matched.refreshExpiresAt) <= now.getTime()) {
-      matched.revokedAt = now.toISOString();
-      matched.revocationReason = "expired";
+    if (
+      Date.parse(matched.refreshExpiresAt) <= now.getTime() ||
+      Date.parse(matched.inactivityExpiresAt) <= now.getTime() ||
+      Date.parse(matched.absoluteExpiresAt) <= now.getTime()
+    ) {
+      this.revokeSessionFamily(matched.sessionFamilyId, "maximum_session_lifetime", now);
       throw new Cp2Error(401, "auth_refresh_expired", "The refresh session has expired.");
     }
 
     const account = this.requireAccount(matched.accountId);
+    if ((account.status ?? "active") !== "active") {
+      this.revokeSessionFamily(matched.sessionFamilyId, "account_status_changed", now);
+    }
+    this.requireAccountAuthenticationAllowed(account);
     const user = this.requireUser(matched.userId);
     const replacement = this.createSession(account, user, now);
     const replacementRecord = this.sessions.get(replacement.id)!;
     replacementRecord.sessionFamilyId = matched.sessionFamilyId;
+    replacementRecord.absoluteExpiresAt = matched.absoluteExpiresAt;
+    replacementRecord.inactivityExpiresAt = sessionInactivityExpiry(now, matched.absoluteExpiresAt);
+    replacementRecord.refreshExpiresAt = replacementRecord.inactivityExpiresAt;
+    replacementRecord.rotatedFromSessionId = matched.id;
+    replacementRecord.authenticatedAt = matched.authenticatedAt;
+    replacementRecord.pinVerifiedAt = matched.pinVerifiedAt;
     replacementRecord.deviceId = normalizeDeviceSessionValue(
       input.metadata.deviceId,
       matched.deviceId
@@ -1799,11 +1854,7 @@ export class Cp2Store {
   }
 
   logoutAll(sessionId: string | null, now = new Date()): { revoked: number } {
-    const session = this.getSession(sessionId, now);
-
-    if (session === null) {
-      return { revoked: 0 };
-    }
+    const session = this.requireRecentlyAuthenticatedSession(sessionId, now);
 
     let revoked = 0;
 
@@ -2095,25 +2146,10 @@ export class Cp2Store {
     };
   }
 
-  preparePhoneChallenge(input: {
-    phoneE164: string;
-    purpose: "signup" | "recovery";
-    now?: Date;
-  }): string {
-    const now = input.now ?? new Date();
-    const phoneE164 = normalizeDestination("phone", input.phoneE164);
-    const key = `${input.purpose}:phone:${phoneE164}`;
-    this.requireOtpRequestAllowed(key, now);
-    this.recordOtpRequest(key, now);
-    return phoneE164;
-  }
-
-  beginPhoneSignup(input: {
-    phoneE164: string;
-    providerChallengeId: string;
+  beginPhoneSignup(input: { phoneE164: string; now?: Date }): {
+    transactionId: string;
     expiresAt: string;
-    now?: Date;
-  }): { transactionId: string; expiresAt: string } {
+  } {
     const now = input.now ?? new Date();
     const phoneE164 = normalizeDestination("phone", input.phoneE164);
     if (this.resolveIdentityAccount("phone", phoneE164) !== undefined) {
@@ -2125,12 +2161,12 @@ export class Cp2Store {
       accountId: null,
       identifierType: "phone",
       identifierValue: phoneE164,
-      providerChallengeId: input.providerChallengeId,
+      providerChallengeId: null,
       verifiedAt: null,
       attempts: 0,
-      expiresAt: input.expiresAt,
+      expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
       consumedAt: null,
-      metadata: {},
+      metadata: { phoneVerificationRequired: false },
       createdAt: now.toISOString()
     };
     this.authTransactions.set(transaction.id, transaction);
@@ -2140,7 +2176,7 @@ export class Cp2Store {
     return { transactionId: transaction.id, expiresAt: transaction.expiresAt };
   }
 
-  getPhoneVerificationTransaction(
+  getAuthTransaction(
     transactionId: string,
     purpose: AuthTransactionRecord["purpose"],
     now = new Date()
@@ -2148,35 +2184,17 @@ export class Cp2Store {
     return this.requireAuthTransaction(transactionId, purpose, now);
   }
 
-  markPhoneTransactionVerified(
-    transactionId: string,
-    purpose: "signup" | "recovery",
-    now = new Date()
-  ): { verified: true; transactionId: string } {
-    const transaction = this.requireAuthTransaction(transactionId, purpose, now);
-    transaction.verifiedAt = now.toISOString();
-    transaction.attempts += 1;
-    this.recordSecurityEvent(
-      `auth.${purpose}_phone_verified`,
-      transaction.accountId,
-      "success",
-      now,
-      {}
-    );
-    return { verified: true, transactionId };
-  }
-
   completePhoneSignup(input: {
     transactionId: string;
     displayName: string;
-    password: string;
+    password?: string;
     email?: string;
     termsAccepted: boolean;
     privacyAccepted: boolean;
     now?: Date;
   }): AuthSessionView {
     const now = input.now ?? new Date();
-    const transaction = this.requireAuthTransaction(input.transactionId, "signup", now, true);
+    const transaction = this.requireAuthTransaction(input.transactionId, "signup", now);
     if (!input.termsAccepted || !input.privacyAccepted) {
       throw new Cp2Error(
         400,
@@ -2192,7 +2210,7 @@ export class Cp2Store {
     if (this.resolveIdentityAccount("phone", phone) !== undefined) {
       throw new Cp2Error(409, "account_exists", "Continue to sign in.");
     }
-    validatePassword(input.password);
+    if (input.password !== undefined) validatePassword(input.password);
     const email =
       input.email === undefined || input.email.trim() === ""
         ? undefined
@@ -2213,22 +2231,25 @@ export class Cp2Store {
       phoneNumberE164: phone,
       phoneCountryCode: normalizedPhone.country,
       phoneNationalNumber: normalizedPhone.nationalNumber,
-      phoneVerificationStatus: "verified" as const,
+      phoneVerificationStatus: "unverified" as const,
       phoneUpdatedAt: now.toISOString()
     });
-    this.addAccountIdentity(account, user, "phone", phone, true, now, true);
+    this.addAccountIdentity(account, user, "phone", phone, true, now, false);
     if (email !== undefined)
       this.addAccountIdentity(account, user, "email", email, false, now, false);
-    this.passwordCredentials.set(
-      account.id,
-      createPasswordCredential(account.id, input.password, now)
-    );
+    if (input.password !== undefined) {
+      this.passwordCredentials.set(
+        account.id,
+        createPasswordCredential(account.id, input.password, now)
+      );
+    }
     transaction.accountId = account.id;
     transaction.consumedAt = now.toISOString();
     const session = this.createSession(account, user, now);
     this.markSessionPinVerified(session.id, now);
     this.recordSecurityEvent("auth.signup_completed", account.id, "success", now, {
-      emailAdded: email !== undefined
+      emailAdded: email !== undefined,
+      phoneVerified: false
     });
     return this.requireAnySession(session.id, now);
   }
@@ -2410,7 +2431,7 @@ export class Cp2Store {
     options: PublicKeyCredentialCreationOptionsJSON;
   }> {
     const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
     this.prunePasskeyCeremonies(now);
     const accountPasskeys = [...this.passkeys.values()].filter(
       (passkey) => passkey.accountId === session.account.id
@@ -2461,7 +2482,7 @@ export class Cp2Store {
     now?: Date;
   }): Promise<PasskeySummary> {
     const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
     const ceremony = this.takePasskeyCeremony(input.ceremonyId, "registration", now);
 
     if (ceremony.accountId !== session.account.id || ceremony.webauthnUserId === null) {
@@ -10894,6 +10915,7 @@ export class Cp2Store {
       inventoryMovements: [...this.inventoryMovements.values()],
       syncQueue: [...this.syncQueue.values()],
       otpChallenges: [...this.otpChallenges.values()],
+      smsDeliveryAttempts: [...this.smsDeliveryAttempts.values()],
       sessions: [...this.sessions.values()],
       passkeys: [...this.passkeys.values()],
       passkeyCeremonies: [...this.passkeyCeremonies.values()],
@@ -10999,6 +11021,7 @@ export class Cp2Store {
     this.syncQueue.clear();
     this.syncQueueIdByIdempotency.clear();
     this.otpChallenges.clear();
+    this.smsDeliveryAttempts.clear();
     this.sessions.clear();
     this.passkeys.clear();
     this.passkeyCeremonies.clear();
@@ -11385,8 +11408,19 @@ export class Cp2Store {
     for (const challenge of snapshot.otpChallenges ?? []) {
       this.otpChallenges.set(challenge.id, {
         ...challenge,
-        purpose: challenge.purpose ?? "signup"
+        purpose: challenge.purpose ?? "signup",
+        consumedAt: challenge.consumedAt ?? null,
+        resendCount: challenge.resendCount ?? 0,
+        nextResendAt: challenge.nextResendAt ?? null,
+        provider: challenge.provider ?? null,
+        providerMessageId: challenge.providerMessageId ?? null
       });
+    }
+
+    for (const attempt of snapshot.smsDeliveryAttempts ?? []) {
+      if (this.otpChallenges.has(attempt.challengeId)) {
+        this.smsDeliveryAttempts.set(attempt.id, attempt);
+      }
     }
 
     for (const session of snapshot.sessions) {
@@ -12079,6 +12113,8 @@ export class Cp2Store {
 
   private createSession(account: AccountSummary, user: UserSummary, now: Date): SessionSummary {
     const refreshToken = createRefreshToken();
+    const absoluteExpiresAt = new Date(now.getTime() + sessionAbsoluteTtlMs()).toISOString();
+    const inactivityExpiresAt = sessionInactivityExpiry(now, absoluteExpiresAt);
     const session: SessionRecord = {
       id: randomUUID(),
       accountId: account.id,
@@ -12090,11 +12126,15 @@ export class Cp2Store {
       userAgentHash: hashUserAgent(""),
       refreshTokenHash: hashRefreshToken(refreshToken),
       sessionFamilyId: randomUUID(),
-      refreshExpiresAt: new Date(now.getTime() + refreshSessionTtlMs).toISOString(),
+      refreshExpiresAt: inactivityExpiresAt,
+      inactivityExpiresAt,
+      absoluteExpiresAt,
+      rotatedFromSessionId: null,
+      authenticatedAt: now.toISOString(),
       lastUsedAt: now.toISOString(),
       rotatedAt: null,
       revocationReason: null,
-      expiresAt: new Date(now.getTime() + accessSessionTtlMs).toISOString(),
+      expiresAt: new Date(now.getTime() + sessionAccessTtlMs()).toISOString(),
       pinVerifiedAt: null,
       revokedAt: null,
       createdAt: now.toISOString()
@@ -12819,12 +12859,9 @@ export class Cp2Store {
     sessionId: string | null,
     now: Date
   ): AuthSessionView {
-    const session = this.requireAnySession(sessionId, now);
+    const session = this.requirePinVerifiedSession(sessionId, now);
     const sessionRecord = this.sessions.get(session.session.id);
-    const authenticatedAt =
-      this.accountPinHashes.has(session.account.id) && sessionRecord?.pinVerifiedAt !== null
-        ? sessionRecord?.pinVerifiedAt
-        : sessionRecord?.createdAt;
+    const authenticatedAt = sessionRecord?.pinVerifiedAt ?? sessionRecord?.authenticatedAt;
 
     if (
       authenticatedAt === undefined ||
@@ -12945,6 +12982,7 @@ export class Cp2Store {
 
     if (session !== undefined) {
       session.pinVerifiedAt = now.toISOString();
+      session.authenticatedAt = now.toISOString();
     }
   }
 
@@ -18022,26 +18060,60 @@ function normalizeRuntimeLookup(value: string): string {
     .trim();
 }
 
+function sessionAccessTtlMs(): number {
+  return readSessionDuration("SESSION_ACCESS_TTL_SECONDS", 900, 60, 86_400) * 1_000;
+}
+
+function sessionInactivityTtlMs(): number {
+  return readSessionDuration("SESSION_INACTIVITY_TTL_DAYS", 30, 1, 90) * 24 * 60 * 60 * 1_000;
+}
+
+function sessionAbsoluteTtlMs(): number {
+  return readSessionDuration("SESSION_ABSOLUTE_TTL_DAYS", 180, 7, 365) * 24 * 60 * 60 * 1_000;
+}
+
+function sessionInactivityExpiry(now: Date, absoluteExpiresAt?: string): string {
+  const inactivity = now.getTime() + sessionInactivityTtlMs();
+  const absolute =
+    absoluteExpiresAt === undefined ? Number.POSITIVE_INFINITY : Date.parse(absoluteExpiresAt);
+  return new Date(Math.min(inactivity, absolute)).toISOString();
+}
+
+function readSessionDuration(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
 export function serializeSessionCookie(
   sessionId: string,
-  maxAgeSeconds = accessSessionTtlMs / 1000
+  maxAgeSeconds = sessionAccessTtlMs() / 1000
 ): string {
-  return `${sessionCookieName}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureCookieSuffix()}`;
+  return `${sessionCookieName}=${sessionId}; ${cookieAttributes(maxAgeSeconds)}`;
 }
 
 export function serializeRefreshCookie(
   refreshToken: string,
-  maxAgeSeconds = refreshSessionTtlMs / 1000
+  maxAgeSeconds = sessionInactivityTtlMs() / 1000
 ): string {
-  return `${refreshCookieName}=${refreshToken}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureCookieSuffix()}`;
+  return `${refreshCookieName}=${refreshToken}; ${cookieAttributes(maxAgeSeconds)}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix()}`;
+  return `${sessionCookieName}=; ${cookieAttributes(0)}`;
 }
 
 export function clearRefreshCookie(): string {
-  return `${refreshCookieName}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix()}`;
+  return `${refreshCookieName}=; ${cookieAttributes(0)}`;
 }
 
 export function readSessionCookie(cookieHeader: string | undefined): string | null {
@@ -18704,14 +18776,36 @@ function isBase64Url(value: string, minimumLength: number, maximumLength: number
   );
 }
 
+function cookieAttributes(maxAgeSeconds: number): string {
+  const sameSite = cookieSameSite();
+  const domain = process.env.COOKIE_DOMAIN?.trim();
+  return `Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${Math.floor(maxAgeSeconds)}${
+    domain ? `; Domain=${domain}` : ""
+  }${secureCookieSuffix()}`;
+}
+
 function secureCookieSuffix(): string {
+  const explicitCookie = process.env.COOKIE_SECURE?.trim().toLowerCase();
   const explicit = process.env.SESSION_COOKIE_SECURE?.trim().toLowerCase();
 
-  if (explicit === "true" || explicit === "1" || process.env.NODE_ENV === "production") {
+  if (
+    explicitCookie === "true" ||
+    explicitCookie === "1" ||
+    explicit === "true" ||
+    explicit === "1" ||
+    process.env.NODE_ENV === "production"
+  ) {
     return "; Secure";
   }
 
   return "";
+}
+
+function cookieSameSite(): "Lax" | "Strict" | "None" {
+  const configured = process.env.COOKIE_SAME_SITE?.trim().toLowerCase() ?? "lax";
+  if (configured === "strict") return "Strict";
+  if (configured === "none") return "None";
+  return "Lax";
 }
 
 function hashPin(accountId: string, pin: string): string {
@@ -19002,7 +19096,9 @@ function hashMatches(actual: string, expected: string): boolean {
 function sessionView(session: SessionRecord): SessionSummary {
   return {
     id: session.id,
-    expiresAt: session.expiresAt
+    expiresAt: session.expiresAt,
+    inactivityExpiresAt: session.inactivityExpiresAt,
+    absoluteExpiresAt: session.absoluteExpiresAt
   };
 }
 
@@ -19011,7 +19107,9 @@ function deviceSessionView(
   currentSessionId: string,
   now: Date
 ): DeviceSessionSummary {
-  const expired = Date.parse(session.refreshExpiresAt) <= now.getTime();
+  const expired =
+    Date.parse(session.inactivityExpiresAt) <= now.getTime() ||
+    Date.parse(session.absoluteExpiresAt) <= now.getTime();
   return {
     id: session.id,
     deviceId: session.deviceId,
@@ -19023,7 +19121,8 @@ function deviceSessionView(
     createdAt: session.createdAt,
     lastUsedAt: session.lastUsedAt,
     rotatedAt: session.rotatedAt,
-    expiresAt: session.refreshExpiresAt,
+    expiresAt: session.inactivityExpiresAt,
+    absoluteExpiresAt: session.absoluteExpiresAt,
     revokedAt: session.revokedAt,
     revocationReason: session.revocationReason,
     current: session.id === currentSessionId
@@ -19032,20 +19131,41 @@ function deviceSessionView(
 
 function normalizeRestoredSession(session: SessionRecord): SessionRecord {
   const legacy = session as SessionRecord & Partial<SessionRecord>;
+  const inactivityExpiresAt =
+    legacy.inactivityExpiresAt ?? legacy.refreshExpiresAt ?? session.expiresAt;
+  const legacyAbsoluteExpiry = new Date(
+    Date.parse(session.createdAt) + sessionAbsoluteTtlMs()
+  ).toISOString();
+  const absoluteExpiresAt =
+    legacy.absoluteExpiresAt ??
+    new Date(
+      Math.max(Date.parse(inactivityExpiresAt), Date.parse(legacyAbsoluteExpiry))
+    ).toISOString();
   return {
     ...session,
-    deviceId: legacy.deviceId ?? "unknown-device",
-    deviceName: legacy.deviceName ?? "This device",
-    platform: legacy.platform ?? "unknown",
-    browserOrApp: legacy.browserOrApp ?? "web",
-    userAgentHash: legacy.userAgentHash ?? hashUserAgent(""),
-    refreshTokenHash: legacy.refreshTokenHash ?? hashRefreshToken(createRefreshToken()),
+    deviceId: nonEmptySessionText(legacy.deviceId, "unknown-device"),
+    deviceName: nonEmptySessionText(legacy.deviceName, "This device"),
+    platform: nonEmptySessionText(legacy.platform, "unknown"),
+    browserOrApp: nonEmptySessionText(legacy.browserOrApp, "web"),
+    userAgentHash: nonEmptySessionText(legacy.userAgentHash, hashUserAgent("")),
+    refreshTokenHash: nonEmptySessionText(
+      legacy.refreshTokenHash,
+      hashRefreshToken(createRefreshToken())
+    ),
     sessionFamilyId: legacy.sessionFamilyId ?? session.id,
-    refreshExpiresAt: legacy.refreshExpiresAt ?? session.expiresAt,
+    refreshExpiresAt: inactivityExpiresAt,
+    inactivityExpiresAt,
+    absoluteExpiresAt,
+    rotatedFromSessionId: legacy.rotatedFromSessionId ?? null,
+    authenticatedAt: legacy.authenticatedAt ?? legacy.pinVerifiedAt ?? session.createdAt,
     lastUsedAt: legacy.lastUsedAt ?? session.createdAt,
     rotatedAt: legacy.rotatedAt ?? null,
     revocationReason: legacy.revocationReason ?? null
   };
+}
+
+function nonEmptySessionText(value: string | undefined, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
 }
 
 function createRefreshToken(): string {

@@ -22,7 +22,7 @@ describe("browser inference assignment migration", () => {
     ]);
     expect(rollback).toContain("drop table if exists cp2_browser_inference_assignments");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "041_browser_inference_assignments.sql"'
+      'requiredMigrationFilename = "046_disable_sms_verification.sql"'
     );
   });
 });

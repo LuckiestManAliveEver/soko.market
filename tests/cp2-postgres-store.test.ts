@@ -57,6 +57,25 @@ const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 
 describePostgres("CP2 Postgres store", () => {
+  it("does not expose retired phone verification routes", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/phone/challenges",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        phone: `+254702${Date.now().toString().slice(-6)}`,
+        purpose: "signup"
+      })
+    });
+    expect(response.statusCode).toBe(404);
+    expect(store.snapshot().smsDeliveryAttempts).toHaveLength(0);
+    await app.close();
+  }, 15_000);
+
   it("persists API state in normalized Postgres tables across store restarts", async () => {
     expect(databaseUrl).toBeDefined();
 
