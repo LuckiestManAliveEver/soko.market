@@ -16,6 +16,7 @@ type Stage =
   | "password"
   | "mfa"
   | "recovery-code"
+  | "reset-pin"
   | "reset-password";
 type IdentifierType = "phone" | "email";
 
@@ -151,9 +152,10 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
 
   async function startRecovery() {
     if (identifierType === "phone") {
-      setMessage(
-        "Phone recovery is unavailable. Use a passkey, password, linked verified email, or saved recovery code."
-      );
+      setPassword("");
+      setPasswordConfirmation("");
+      setStage("reset-pin");
+      setMessage("Choose a new PIN, then verify your phone passkey to authorize the reset.");
       return;
     }
     const result = await apiFetch<{
@@ -181,6 +183,34 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
     const session = await apiFetch<AuthSessionView>("/auth/recovery/reset-password", {
       method: "POST",
       body: { transactionId, password, passwordConfirmation, ...(code ? { mfaCode: code } : {}) }
+    });
+    onAuthenticated(session);
+  }
+
+  async function resetPinWithPasskey() {
+    if (!/^\d{4}$/u.test(password) || password !== passwordConfirmation) {
+      setMessage("Enter and confirm a new 4-digit PIN.");
+      return;
+    }
+    if (!browserSupportsWebAuthn()) {
+      setMessage("Passkeys are unavailable in this browser.");
+      return;
+    }
+    const challenge = await apiFetch<{
+      ceremonyId: string;
+      options: Parameters<typeof startAuthentication>[0]["optionsJSON"];
+    }>("/auth/passkeys/login/options", {
+      method: "POST",
+      body: { purpose: "pin_recovery" }
+    });
+    const response = await startAuthentication({ optionsJSON: challenge.options });
+    await apiFetch<AuthSessionView>("/auth/passkeys/login/verify", {
+      method: "POST",
+      body: { ceremonyId: challenge.ceremonyId, response }
+    });
+    const session = await apiFetch<AuthSessionView>("/auth/pin/recover/passkey", {
+      method: "POST",
+      body: { pin: password }
     });
     onAuthenticated(session);
   }
@@ -507,6 +537,43 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
               onClick={() => void run(resetPassword)}
             >
               Reset password
+            </button>
+          </>
+        ) : null}
+        {stage === "reset-pin" ? (
+          <>
+            <h2>Reset legacy PIN</h2>
+            <p>Your phone passkey will verify your identity before the PIN is changed.</p>
+            <label>
+              New 4-digit PIN
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                autoComplete="new-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value.replace(/\D/gu, ""))}
+              />
+            </label>
+            <label>
+              Confirm new PIN
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                autoComplete="new-password"
+                value={passwordConfirmation}
+                onChange={(event) =>
+                  setPasswordConfirmation(event.target.value.replace(/\D/gu, ""))
+                }
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !/^\d{4}$/u.test(password) || password !== passwordConfirmation}
+              onClick={() => void run(resetPinWithPasskey)}
+            >
+              Verify passkey and reset PIN
             </button>
           </>
         ) : null}

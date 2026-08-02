@@ -10,8 +10,8 @@
    `/auth/bootstrap`. A 401 triggers one silent `POST /auth/session/refresh` and retries the original
    request.
 4. After explicit logout, return access is passkey-first. The password fallback is available only
-   when the account has one. Phone recovery is unavailable; a linked verified email or saved
-   recovery code provides recovery where configured.
+   when the account has one. A verified passkey can authorize a legacy phone-PIN reset; no separate
+   phone PIN recovery code is issued or accepted.
 
 Offline startup may show the previously cached non-secret account view as
 `offline-authenticated`. It does not treat cached UI data as proof of authentication and does not
@@ -43,4 +43,4 @@ shape, no-store headers, and mocked WebAuthn ceremonies. A production release st
 browser and installed Android PWA check on the final HTTPS domains, a hardware-backed passkey test,
 and an email delivery test. Fastify-injected requests are test doubles, not proof of email delivery
 or OS-level PWA persistence. The release must also confirm that retired phone-verification routes
-return 404 and phone recovery returns its explicit unavailable error.
+and the retired phone PIN recovery-code route return 404.

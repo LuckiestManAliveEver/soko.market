@@ -31,7 +31,6 @@ interface PhonePinSignupResponse {
   session: {
     id: string;
   };
-  recoveryCode: string;
 }
 
 interface CreateBusinessResponse {
@@ -363,16 +362,13 @@ describe("CP2 auth and business creation", () => {
       primaryAuthChannel: "phone",
       primaryAuthDestination: phone
     });
-    expect(signupResult.recoveryCode).toMatch(/^(?:[A-F0-9]{4}-){5}[A-F0-9]{4}$/u);
+    expect(signupResult).not.toHaveProperty("recoveryCode");
     expect(signupCookie).toContain("soko_session=");
     expect(store.snapshot().otpChallenges).toHaveLength(0);
     expect(store.snapshot().accountPinHashes[0]).toMatchObject({
-      accountId: signupResult.account.id,
-      recoveryCodeHash: expect.stringMatching(/^[a-f0-9]{64}$/u)
+      accountId: signupResult.account.id
     });
-    expect(store.snapshot().accountPinHashes[0]?.recoveryCodeHash).not.toContain(
-      signupResult.recoveryCode
-    );
+    expect(store.snapshot().accountPinHashes[0]).not.toHaveProperty("recoveryCodeHash");
 
     const pinStatus = await app.inject({
       method: "GET",
@@ -413,7 +409,7 @@ describe("CP2 auth and business creation", () => {
     const loginCookie = extractSessionCookie(login.headers["set-cookie"]);
     expect(loginCookie).toContain("soko_session=");
 
-    const rejectedRecovery = await app.inject({
+    const retiredRecovery = await app.inject({
       method: "POST",
       url: "/auth/pin/recover/phone",
       headers: jsonHeaders(),
@@ -424,65 +420,15 @@ describe("CP2 auth and business creation", () => {
         pin: "1357"
       })
     });
-    expect(rejectedRecovery.statusCode).toBe(401);
-    expect(rejectedRecovery.json()).toMatchObject({ code: "phone_recovery_invalid" });
-
-    const recovery = await app.inject({
-      method: "POST",
-      url: "/auth/pin/recover/phone",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        method: "phone",
-        contact: phone,
-        recoveryCode: signupResult.recoveryCode,
-        pin: "1357"
-      })
-    });
-    const recoveryResult = recovery.json<PhonePinSignupResponse>();
-    expect(recovery.statusCode).toBe(200);
-    expect(recoveryResult.recoveryCode).toMatch(/^(?:[A-F0-9]{4}-){5}[A-F0-9]{4}$/u);
-    expect(recoveryResult.recoveryCode).not.toBe(signupResult.recoveryCode);
-    expect(extractSessionCookie(recovery.headers["set-cookie"])).toContain("soko_session=");
-
-    const revokedSession = await app.inject({
-      method: "GET",
-      url: "/session",
-      headers: { cookie: loginCookie }
-    });
-    const oldPin = await app.inject({
-      method: "POST",
-      url: "/auth/pin/login",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({ method: "phone", contact: phone, pin: "2468" })
-    });
-    const newPin = await app.inject({
-      method: "POST",
-      url: "/auth/pin/login",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({ method: "phone", contact: phone, pin: "1357" })
-    });
-    const consumedCode = await app.inject({
-      method: "POST",
-      url: "/auth/pin/recover/phone",
-      headers: jsonHeaders(),
-      payload: JSON.stringify({
-        method: "phone",
-        contact: phone,
-        recoveryCode: signupResult.recoveryCode,
-        pin: "8642"
-      })
-    });
-    expect(revokedSession.statusCode).toBe(401);
-    expect(oldPin.statusCode).toBe(401);
-    expect(newPin.statusCode).toBe(200);
-    expect(consumedCode.statusCode).toBe(401);
+    expect(retiredRecovery.statusCode).toBe(404);
+    expect(loginCookie).toContain("soko_session=");
 
     await app.close();
   });
 
-  it("persists phone recovery hashes without persisting plaintext recovery codes", () => {
+  it("persists phone PIN hashes without a separate recovery credential", () => {
     const store = createCp2Store();
-    const signup = store.signupWithPhonePin({
+    store.signupWithPhonePin({
       destination: "+254700000089",
       pin: "2468"
     });
@@ -490,13 +436,13 @@ describe("CP2 auth and business creation", () => {
     const restored = createCp2Store();
     restored.hydrateSnapshot(snapshot);
 
-    expect(JSON.stringify(snapshot)).not.toContain(signup.recoveryCode);
-    const recovered = restored.recoverPhoneAccountPin({
+    expect(snapshot.accountPinHashes[0]).not.toHaveProperty("recoveryCodeHash");
+    const login = restored.loginWithAccountPin({
+      channel: "phone",
       destination: "+254700000089",
-      recoveryCode: signup.recoveryCode,
-      pin: "1357"
+      pin: "2468"
     });
-    expect(recovered.recoveryCode).not.toBe(signup.recoveryCode);
+    expect(login.account.primaryAuthChannel).toBe("phone");
   });
 
   it("sets and verifies an owner login PIN after email verification", async () => {

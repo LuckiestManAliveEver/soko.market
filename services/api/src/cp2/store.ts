@@ -357,6 +357,7 @@ export const refreshCookieName = "soko_refresh";
 
 const otpTtlMs = 5 * 60 * 1000;
 const passkeyCeremonyTtlMs = 5 * 60 * 1000;
+const passkeyPinRecoveryGrantTtlMs = 5 * 60 * 1000;
 const maxPendingPasskeyCeremonies = 1_000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
@@ -594,6 +595,7 @@ export interface PasskeyCredentialRecord extends PasskeySummary {
 export interface PasskeyCeremonyRecord {
   id: string;
   kind: "registration" | "authentication";
+  purpose?: "login" | "pin_recovery";
   accountId: string | null;
   challenge: string;
   webauthnUserId: string | null;
@@ -755,10 +757,6 @@ export interface OwnerPhoneIdentityResult {
   user: UserSummary;
 }
 
-export interface PhonePinAuthResult extends AuthSessionView {
-  recoveryCode: string;
-}
-
 export interface RoleCheckResult {
   allowed: boolean;
   role: BusinessRole;
@@ -844,7 +842,6 @@ export interface Cp2Snapshot {
   accountPinHashes: Array<{
     accountId: string;
     pinHash: string;
-    recoveryCodeHash?: string | null;
   }>;
   networkNodes: NetworkNodeSummary[];
   networkEdges: NetworkEdgeSummary[];
@@ -864,6 +861,7 @@ export interface McpAccessTokenRecord extends McpAccessTokenSummary {
 }
 
 export interface Cp2StoreOptions {
+  passkeyAuthenticationVerifier?: typeof verifyAuthenticationResponse;
   runtimeModelProvider?: RuntimeModelProvider;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
   modelRuntimeAdapterResolver?: (input: {
@@ -1100,6 +1098,7 @@ export class Cp2Store {
   private readonly pendingRefreshTokens = new Map<string, string>();
   private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
   private readonly passkeyCeremonies = new Map<string, PasskeyCeremonyRecord>();
+  private readonly passkeyPinRecoveryGrants = new Map<string, string>();
   private readonly accountIdentities = new Map<string, AccountIdentityRecord>();
   private readonly identityAccountByValue = new Map<string, string>();
   private readonly passwordCredentials = new Map<string, PasswordCredentialRecord>();
@@ -1112,7 +1111,6 @@ export class Cp2Store {
   private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
   private readonly failedPinAttempts = new Map<string, number[]>();
-  private readonly accountRecoveryCodeHashes = new Map<string, string>();
   private readonly networkNodes = new Map<string, NetworkNodeSummary>();
   private readonly networkEdges = new Map<string, NetworkEdgeSummary>();
   private readonly networkSources = new Map<string, NetworkSyncSourceSummary>();
@@ -1898,7 +1896,7 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): PhonePinAuthResult {
+  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
     const now = input.now ?? new Date();
     const destination = normalizeDestination("phone", input.destination);
     const destinationKey = destinationAccountKey("phone", destination);
@@ -1917,8 +1915,6 @@ export class Cp2Store {
     const user = this.requireUser(this.userByAccount.get(account.id));
     const session = this.createSession(account, user, now);
     this.accountPinHashes.set(account.id, hashPin(account.id, pin));
-    const recoveryCode = createPhoneRecoveryCode();
-    this.accountRecoveryCodeHashes.set(account.id, hashPhoneRecoveryCode(account.id, recoveryCode));
     this.markSessionPinVerified(session.id, now);
 
     this.recordAuditEvent({
@@ -1945,10 +1941,7 @@ export class Cp2Store {
       }
     });
 
-    return {
-      ...this.requireAnySession(session.id, now),
-      recoveryCode
-    };
+    return this.requireAnySession(session.id, now);
   }
 
   getAccountPinStatus(input: { sessionId: string | null; now?: Date }): { hasPin: boolean } {
@@ -1984,67 +1977,64 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  recoverPhoneAccountPin(input: {
-    destination: string;
-    recoveryCode: string;
+  recoverPhoneAccountPinWithPasskey(input: {
+    sessionId: string | null;
     pin: string;
     now?: Date;
-  }): PhonePinAuthResult {
+  }): AuthSessionView {
     const now = input.now ?? new Date();
-    const destination = normalizeDestination("phone", input.destination);
-    const accountId = this.accountByDestination.get(destinationAccountKey("phone", destination));
-    const candidateAccountId = accountId ?? destination;
-    const candidateHash = hashPhoneRecoveryCode(candidateAccountId, input.recoveryCode);
-    const expectedHash =
-      (accountId === undefined ? undefined : this.accountRecoveryCodeHashes.get(accountId)) ??
-      "0".repeat(64);
+    const pin = normalizePin(input.pin);
+    const session = this.requireAnySession(input.sessionId, now);
+    this.prunePasskeyPinRecoveryGrants(now);
+    const grantExpiresAt = this.passkeyPinRecoveryGrants.get(session.session.id);
+    this.passkeyPinRecoveryGrants.delete(session.session.id);
 
-    if (
-      accountId === undefined ||
-      expectedHash === "0".repeat(64) ||
-      !hashMatches(candidateHash, expectedHash)
-    ) {
+    if (grantExpiresAt === undefined || Date.parse(grantExpiresAt) <= now.getTime()) {
       throw new Cp2Error(
         401,
-        "phone_recovery_invalid",
-        "The phone number or recovery code is invalid."
+        "passkey_pin_recovery_required",
+        "Verify a passkey before resetting this phone account PIN."
       );
     }
 
-    const account = this.requireAccount(accountId);
-    this.requireAccountAuthenticationAllowed(account);
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    const pin = normalizePin(input.pin);
-    const replacementRecoveryCode = createPhoneRecoveryCode();
-    this.accountPinHashes.set(account.id, hashPin(account.id, pin));
-    this.accountRecoveryCodeHashes.set(
-      account.id,
-      hashPhoneRecoveryCode(account.id, replacementRecoveryCode)
-    );
+    if (session.account.primaryAuthChannel !== "phone") {
+      throw new Cp2Error(
+        409,
+        "phone_pin_recovery_not_applicable",
+        "Passkey PIN recovery is available only for phone accounts."
+      );
+    }
+
+    if (!this.accountPinHashes.has(session.account.id)) {
+      throw new Cp2Error(409, "pin_not_set", "Login PIN has not been set.");
+    }
+
+    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
 
     for (const existingSession of this.sessions.values()) {
-      if (existingSession.accountId === account.id && existingSession.revokedAt === null) {
+      if (
+        existingSession.accountId === session.account.id &&
+        existingSession.id !== session.session.id &&
+        existingSession.revokedAt === null
+      ) {
         existingSession.revokedAt = now.toISOString();
+        existingSession.revocationReason = "pin_recovery";
       }
     }
 
-    const session = this.createSession(account, user, now);
-    this.markSessionPinVerified(session.id, now);
+    this.markSessionPinVerified(session.session.id, now);
     this.recordAuditEvent({
       type: "auth.pin_recovered",
       aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
+      aggregateId: session.account.id,
+      actorId: session.user.id,
       occurredAt: now.toISOString(),
       payload: {
-        method: "recovery_code"
+        method: "passkey"
       }
     });
 
-    return {
-      ...this.requireAnySession(session.id, now),
-      recoveryCode: replacementRecoveryCode
-    };
+    return this.requireAnySession(session.session.id, now);
   }
 
   verifyAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
@@ -2544,12 +2534,17 @@ export class Cp2Store {
     return passkeyView(passkey);
   }
 
-  async beginPasskeyAuthentication(input: { rpId: string; now?: Date }): Promise<{
+  async beginPasskeyAuthentication(input: {
+    rpId: string;
+    purpose?: "login" | "pin_recovery";
+    now?: Date;
+  }): Promise<{
     ceremonyId: string;
     options: PublicKeyCredentialRequestOptionsJSON;
   }> {
     const now = input.now ?? new Date();
     this.prunePasskeyCeremonies(now);
+    this.prunePasskeyPinRecoveryGrants(now);
     const options = await generateAuthenticationOptions({
       rpID: input.rpId,
       userVerification: "required"
@@ -2557,6 +2552,7 @@ export class Cp2Store {
     const ceremony: PasskeyCeremonyRecord = {
       id: randomUUID(),
       kind: "authentication",
+      purpose: input.purpose ?? "login",
       accountId: null,
       challenge: options.challenge,
       webauthnUserId: null,
@@ -2595,7 +2591,9 @@ export class Cp2Store {
 
     let verification;
     try {
-      verification = await verifyAuthenticationResponse({
+      verification = await (
+        this.options.passkeyAuthenticationVerifier ?? verifyAuthenticationResponse
+      )({
         response: input.response,
         expectedChallenge: ceremony.challenge,
         expectedOrigin: input.origin,
@@ -2625,6 +2623,12 @@ export class Cp2Store {
     const user = this.requireUser(passkey.userId);
     const createdSession = this.createSession(account, user, now);
     this.markSessionPinVerified(createdSession.id, now);
+    if (ceremony.purpose === "pin_recovery") {
+      this.passkeyPinRecoveryGrants.set(
+        createdSession.id,
+        new Date(now.getTime() + passkeyPinRecoveryGrantTtlMs).toISOString()
+      );
+    }
     this.recordAuditEvent({
       type: "auth.passkey_login",
       aggregateType: "account",
@@ -2632,7 +2636,8 @@ export class Cp2Store {
       actorId: user.id,
       occurredAt: now.toISOString(),
       payload: {
-        credentialId: passkey.id
+        credentialId: passkey.id,
+        purpose: ceremony.purpose ?? "login"
       }
     });
 
@@ -10928,8 +10933,7 @@ export class Cp2Store {
       oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
       accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
         accountId,
-        pinHash,
-        recoveryCodeHash: this.accountRecoveryCodeHashes.get(accountId) ?? null
+        pinHash
       })),
       networkNodes: [...this.networkNodes.values()],
       networkEdges: [...this.networkEdges.values()],
@@ -11025,6 +11029,7 @@ export class Cp2Store {
     this.sessions.clear();
     this.passkeys.clear();
     this.passkeyCeremonies.clear();
+    this.passkeyPinRecoveryGrants.clear();
     this.accountIdentities.clear();
     this.identityAccountByValue.clear();
     this.passwordCredentials.clear();
@@ -11036,7 +11041,6 @@ export class Cp2Store {
     this.identityByEmail.clear();
     this.oauthSessions.clear();
     this.accountPinHashes.clear();
-    this.accountRecoveryCodeHashes.clear();
     this.networkNodes.clear();
     this.networkEdges.clear();
     this.networkSources.clear();
@@ -11512,9 +11516,6 @@ export class Cp2Store {
 
     for (const pinHash of snapshot.accountPinHashes ?? []) {
       this.accountPinHashes.set(pinHash.accountId, pinHash.pinHash);
-      if (typeof pinHash.recoveryCodeHash === "string") {
-        this.accountRecoveryCodeHashes.set(pinHash.accountId, pinHash.recoveryCodeHash);
-      }
     }
 
     for (const node of snapshot.networkNodes ?? []) {
@@ -12826,6 +12827,14 @@ export class Cp2Store {
       .slice(0, this.passkeyCeremonies.size - maxPendingPasskeyCeremonies + 1);
     for (const ceremony of overflow) {
       this.passkeyCeremonies.delete(ceremony.id);
+    }
+  }
+
+  private prunePasskeyPinRecoveryGrants(now: Date): void {
+    for (const [sessionId, expiresAt] of this.passkeyPinRecoveryGrants) {
+      if (Date.parse(expiresAt) <= now.getTime() || this.getSession(sessionId, now) === null) {
+        this.passkeyPinRecoveryGrants.delete(sessionId);
+      }
     }
   }
 
@@ -15662,7 +15671,6 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.accountRecoveryCodeHashes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkNodes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkEdges, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkSources, scope);
@@ -18174,22 +18182,6 @@ function normalizePin(pin: string): string {
   return pin;
 }
 
-function normalizePhoneRecoveryCode(recoveryCode: string): string {
-  const normalized = recoveryCode.trim().replace(/[\s-]/g, "").toUpperCase();
-  if (!/^[A-F0-9]{24}$/.test(normalized)) {
-    return "";
-  }
-  return normalized;
-}
-
-function createPhoneRecoveryCode(): string {
-  return randomBytes(12)
-    .toString("hex")
-    .toUpperCase()
-    .match(/.{1,4}/g)!
-    .join("-");
-}
-
 function createAuditEvent<TPayload extends Record<string, unknown>>(
   event: BusinessEvent<TPayload>
 ): BusinessEvent<TPayload> {
@@ -19034,12 +19026,6 @@ function pinHashSecret(): string {
 
 function invalidLoginCredentialsError(): Cp2Error {
   return new Cp2Error(401, "auth_credentials_invalid", "The account credentials are invalid.");
-}
-
-function hashPhoneRecoveryCode(accountId: string, recoveryCode: string): string {
-  return createHash("sha256")
-    .update(`${accountId}:${normalizePhoneRecoveryCode(recoveryCode)}`)
-    .digest("hex");
 }
 
 function hashMcpAccessToken(accessToken: string): string {

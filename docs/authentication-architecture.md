@@ -6,8 +6,9 @@ ownership and are stored as unverified. A password is optional; passkeys, TOTP f
 codes, and persistent device sessions are stored as separate account-scoped records.
 
 Phone signup creates a short-lived transaction that is consumed exactly once by account creation.
-It does not create or send a verification code. Phone recovery is unavailable; users return with a
-passkey, password, linked verified email, an existing session, or an applicable saved recovery code.
+It does not create or send a verification code. Legacy phone-PIN recovery requires a verified
+passkey ceremony; phone PIN recovery codes are no longer generated, stored, or accepted. Users can
+also return with a password, linked verified email, or an existing session.
 Email verification and email password recovery continue to use purpose-bound email OTPs.
 
 Return access does not send SMS. The web app first restores its HTTP-only cookie session,

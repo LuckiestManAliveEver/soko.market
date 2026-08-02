@@ -208,7 +208,7 @@ describe("frontend user guidance", () => {
     expect(emailSignup).toContain('purpose: "signup"');
     expect(emailSignup).not.toContain('method: "phone"');
     expect(emailSignup).not.toContain("sendFirebasePhoneOtp");
-    expect(phoneSignup).toContain('postJson<PhonePinAuthResponse>("/auth/pin/signup"');
+    expect(phoneSignup).toContain('postJson<SessionResponse>("/auth/pin/signup"');
     expect(phoneSignup).toContain('method: "phone"');
     expect(phoneSignup).not.toContain("/auth/otp/");
     expect(phoneSignup).not.toContain("sendFirebasePhoneOtp");
@@ -247,12 +247,12 @@ describe("frontend user guidance", () => {
     expect(loginPanel).toContain("Email verification code");
     expect(loginPanel).toContain("Sign in with");
     expect(loginPanel).toContain("Phone sign in uses your phone number and 4-digit PIN only.");
-    expect(loginPanel).toContain("Recovery code");
-    expect(loginPanel).toContain("Use the recovery code saved during signup");
-    expect(loginPanel).toContain("I saved my new recovery code");
-    expect(application).toContain('postJson<PhonePinAuthResponse>("/auth/pin/recover/phone"');
-    expect(application).toContain("Save your recovery code");
-    expect(application).toContain("I saved my recovery code");
+    expect(loginPanel).toContain("Your phone passkey verifies your identity");
+    expect(loginPanel).toContain("Verify passkey and reset PIN");
+    expect(application).toContain('postJson<SessionResponse>("/auth/pin/recover/passkey"');
+    expect(application).toContain('purpose: "pin_recovery"');
+    expect(application).not.toContain("Phone account recovery code");
+    expect(application).not.toContain("Replacement recovery code");
     expect(loginPanel).not.toContain("Send SMS code");
     expect(loginPanel).not.toContain("SMS verification code");
     expect(loginPanel).not.toContain("firebase-recaptcha");

@@ -17,7 +17,7 @@ describe("legacy session hash repair migration", () => {
     expect(migration).toContain("sessions_refresh_token_hash_nonempty_check");
     expect(rollback).toContain("drop constraint if exists");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "046_disable_sms_verification.sql"'
+      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
     );
   });
 });

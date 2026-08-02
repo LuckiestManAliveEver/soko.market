@@ -2,19 +2,25 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("phone PIN recovery migration", () => {
-  it("stores only a nullable recovery-code hash for legacy-safe rollout", async () => {
-    const sql = await readFile("infra/db/migrations/030_phone_pin_recovery_code.sql", "utf8");
+  it("drops the retired recovery-code credential", async () => {
+    const sql = await readFile(
+      "infra/db/migrations/047_remove_phone_pin_recovery_codes.sql",
+      "utf8"
+    );
+    const rollback = await readFile(
+      "infra/db/rollbacks/047_remove_phone_pin_recovery_codes.down.sql",
+      "utf8"
+    );
     const schema = await readFile("infra/db/schema.ts", "utf8");
     const postgresStore = await readFile("services/api/src/cp2/postgres-store.ts", "utf8");
 
-    expect(sql).toContain("recovery_code_hash text");
-    expect(sql).toContain("recovery_code_hash is null");
-    expect(sql).toContain("^[a-f0-9]{64}$");
-    expect(sql).not.toContain("recovery_code text");
-    expect(schema).toContain('recoveryCodeHash: text("recovery_code_hash")');
-    expect(postgresStore).toContain("recovery_code_hash");
+    expect(sql).toContain("drop column if exists recovery_code_hash");
+    expect(rollback).toContain("add column if not exists recovery_code_hash text");
+    expect(rollback).toContain("cannot be reconstructed");
+    expect(schema).not.toContain('recoveryCodeHash: text("recovery_code_hash")');
+    expect(postgresStore).not.toContain("recovery_code_hash");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "046_disable_sms_verification.sql"'
+      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
     );
   });
 });

@@ -304,10 +304,6 @@ interface PinLoginBody extends PinBody {
   method?: string;
 }
 
-interface PhonePinRecoveryBody extends PinLoginBody {
-  recoveryCode?: string;
-}
-
 interface PasskeyRegistrationVerifyBody {
   ceremonyId?: string;
   label?: string;
@@ -317,6 +313,10 @@ interface PasskeyRegistrationVerifyBody {
 interface PasskeyAuthenticationVerifyBody {
   ceremonyId?: string;
   response?: AuthenticationResponseJSON;
+}
+
+interface PasskeyAuthenticationOptionsBody {
+  purpose?: string;
 }
 
 interface IdentifierBody {
@@ -1436,7 +1436,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           throw new Cp2Error(
             400,
             "phone_recovery_unavailable",
-            "Phone and SMS recovery are unavailable. Use a passkey, password, linked email, or saved recovery code."
+            "Phone and SMS recovery are unavailable. Use a passkey, password, or linked verified email."
           );
         }
         const otp = store.requestOtp({
@@ -1691,16 +1691,20 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.post("/auth/passkeys/login/options", async (request, reply) => {
-    try {
-      const relyingParty = passkeyRelyingParty(request);
-      return await store.beginPasskeyAuthentication({
-        rpId: relyingParty.rpId
-      });
-    } catch (error) {
-      return sendCp2Error(reply, error);
+  app.post(
+    "/auth/passkeys/login/options",
+    async (request: FastifyRequest<{ Body: PasskeyAuthenticationOptionsBody }>, reply) => {
+      try {
+        const relyingParty = passkeyRelyingParty(request);
+        return await store.beginPasskeyAuthentication({
+          rpId: relyingParty.rpId,
+          purpose: parsePasskeyAuthenticationPurpose(request.body?.purpose)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
     }
-  });
+  );
 
   app.post(
     "/auth/passkeys/login/verify",
@@ -2131,16 +2135,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   });
 
   app.post(
-    "/auth/pin/recover/phone",
-    async (request: FastifyRequest<{ Body: PhonePinRecoveryBody }>, reply) => {
+    "/auth/pin/recover/passkey",
+    async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
       try {
-        const result = store.recoverPhoneAccountPin({
-          destination: parseString(request.body.contact ?? request.body.destination, "contact"),
-          recoveryCode: parseString(request.body.recoveryCode, "recoveryCode"),
+        return store.recoverPhoneAccountPinWithPasskey({
+          sessionId: readSessionCookie(request.headers.cookie),
           pin: parseString(request.body.pin, "pin")
         });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -6108,6 +6109,18 @@ function parseOtpPurpose(value: string | undefined): "signup" | "recovery" {
   }
 
   throw new Cp2Error(400, "otp_purpose_invalid", "OTP purpose must be signup or recovery.");
+}
+
+function parsePasskeyAuthenticationPurpose(value: string | undefined): "login" | "pin_recovery" {
+  if (value === undefined || value === "login") {
+    return "login";
+  }
+
+  if (value === "pin_recovery") {
+    return "pin_recovery";
+  }
+
+  throw new Cp2Error(400, "passkey_purpose_invalid", "Passkey purpose is invalid.");
 }
 
 function parseOtpDeliveryChannel(value: string | undefined, authChannel: AuthChannel): "email" {

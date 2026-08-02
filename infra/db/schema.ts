@@ -460,7 +460,6 @@ export const accountPinHashes = pgTable("account_pin_hashes", {
     .primaryKey()
     .references(() => accounts.id),
   pinHash: text("pin_hash").notNull(),
-  recoveryCodeHash: text("recovery_code_hash"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
 });
 

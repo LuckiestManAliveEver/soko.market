@@ -8,7 +8,9 @@
    `AUTH_AUDIT_HMAC_SECRET`, and `AUTH_TOKEN_ENCRYPTION_KEY`. Store them only in the deployment secret
    manager.
 3. Confirm retired phone challenge, verification, resend, webhook, gateway-health, and SMS-metrics
-   routes return 404. Confirm phone recovery returns `phone_recovery_unavailable`.
+   routes return 404. Confirm phone password recovery returns `phone_recovery_unavailable`, the
+   retired phone PIN recovery-code route returns 404, and PIN reset requires a purpose-bound
+   passkey ceremony.
 4. Probe `/health/ready`.
 5. Perform a controlled signup, email verification/recovery, MFA, passkey, logout, and
    session-revocation exercise.

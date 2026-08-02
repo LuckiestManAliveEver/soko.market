@@ -9,7 +9,8 @@ Password recovery uses a purpose-bound email verification transaction for a link
 Phone and SMS recovery are unavailable. Responses for email identifiers are worded generically to
 reduce account enumeration. A successful email challenge grants only the ability to complete that
 recovery transaction, not a general login session, and the grant is consumed once. Existing sessions,
-passkeys, passwords, and saved recovery codes remain the other supported return paths.
+passkeys, passwords, and saved MFA recovery codes remain the other supported return paths. Legacy
+phone-PIN resets instead require a verified passkey and do not use a separate recovery code.
 
 After password reset, existing device sessions are revoked. Security-sensitive factor changes and
 recovery-code regeneration require an authenticated session and verification appropriate to the

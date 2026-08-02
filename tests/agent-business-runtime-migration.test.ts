@@ -18,7 +18,9 @@ describe("agent business runtime migration", () => {
     }
     expect(sql).toContain("business_version_idx");
     expect(sql).toContain("business_created_idx");
-    expect(store).toContain('requiredMigrationFilename = "046_disable_sms_verification.sql"');
+    expect(store).toContain(
+      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
+    );
   });
 
   it("provides a scoped rollback for only the new runtime tables", async () => {
