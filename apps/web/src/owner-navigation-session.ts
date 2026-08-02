@@ -2,6 +2,11 @@ import type { ChatMessage } from "./app-shell";
 
 const storagePrefix = "soko.market.owner-navigation.v1";
 const maxPersistedMessages = 80;
+const navigationWriteDelayMs = 180;
+const pendingWrites = new Map<
+  string,
+  { idleId: number | null; timeoutId: ReturnType<typeof globalThis.setTimeout> }
+>();
 
 export interface OwnerNavigationSession {
   activeConversationId: string | null;
@@ -58,11 +63,49 @@ export function writeOwnerNavigationSession(
   }
 }
 
+export function scheduleOwnerNavigationSessionWrite(
+  accountId: string | null,
+  value: OwnerNavigationSession,
+  storage: Storage | undefined = browserSessionStorage()
+): void {
+  if (storage === undefined) return;
+  const key = storageKey(accountId);
+  cancelPendingWrite(key);
+  const timeoutId = globalThis.setTimeout(() => {
+    const write = () => {
+      pendingWrites.delete(key);
+      writeOwnerNavigationSession(accountId, value, storage);
+    };
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(write, { timeout: 500 });
+      pendingWrites.set(key, { idleId, timeoutId });
+      return;
+    }
+    write();
+  }, navigationWriteDelayMs);
+  pendingWrites.set(key, { idleId: null, timeoutId });
+}
+
 export function clearOwnerNavigationSession(
   accountId: string | null,
   storage: Storage | undefined = browserSessionStorage()
 ): void {
+  cancelPendingWrite(storageKey(accountId));
   storage?.removeItem(storageKey(accountId));
+}
+
+function cancelPendingWrite(key: string): void {
+  const pending = pendingWrites.get(key);
+  if (pending === undefined) return;
+  globalThis.clearTimeout(pending.timeoutId);
+  if (
+    pending.idleId !== null &&
+    typeof window !== "undefined" &&
+    typeof window.cancelIdleCallback === "function"
+  ) {
+    window.cancelIdleCallback(pending.idleId);
+  }
+  pendingWrites.delete(key);
 }
 
 function browserSessionStorage(): Storage | undefined {

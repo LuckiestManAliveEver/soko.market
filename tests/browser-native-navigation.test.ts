@@ -11,6 +11,7 @@ import {
 } from "../apps/web/src/browser-navigation";
 import {
   readOwnerNavigationSession,
+  scheduleOwnerNavigationSessionWrite,
   writeOwnerNavigationSession
 } from "../apps/web/src/owner-navigation-session";
 
@@ -115,6 +116,34 @@ describe("browser-native navigation", () => {
     expect(readOwnerNavigationSession("account-2")).toBeNull();
   });
 
+  it("coalesces rapid draft persistence so typing does not serialize the conversation per key", () => {
+    vi.useFakeTimers();
+    const storage = {
+      getItem: vi.fn(() => null),
+      removeItem: vi.fn(),
+      setItem: vi.fn(),
+      clear: vi.fn(),
+      key: vi.fn(() => null),
+      length: 0
+    } satisfies Storage;
+    const value = (chatDraft: string) => ({
+      activeConversationId: "conversation-1",
+      runtimeSessionId: "runtime-1",
+      chatDraft,
+      chatMessages: []
+    });
+
+    scheduleOwnerNavigationSessionWrite("account-fast", value("a"), storage);
+    scheduleOwnerNavigationSessionWrite("account-fast", value("ab"), storage);
+    scheduleOwnerNavigationSessionWrite("account-fast", value("abc"), storage);
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(200);
+    expect(storage.setItem).toHaveBeenCalledTimes(1);
+    expect(storage.setItem.mock.calls[0]?.[1]).toContain('"chatDraft":"abc"');
+    vi.useRealTimers();
+  });
+
   it("keeps all application pushes behind the central adapter", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const router = readFileSync("apps/web/src/AppRouter.tsx", "utf8");
@@ -122,7 +151,7 @@ describe("browser-native navigation", () => {
 
     expect(application).not.toContain("window.history.pushState");
     expect(application).toContain('navigateToOwnerRoute({ mode, view: "chat", conversationId })');
-    expect(application).toContain("writeOwnerNavigationSession");
+    expect(application).toContain("scheduleOwnerNavigationSessionWrite");
     expect(router).toContain("installBrowserLinkInterceptor");
     expect(worker).toContain("/marketplace/conversations/");
   });

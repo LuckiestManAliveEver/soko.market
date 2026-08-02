@@ -78,6 +78,7 @@ import {
   type ShellView,
   type SokoMode
 } from "./app-shell";
+import { replaceActorReaction, replaceMessageReactions } from "./optimistic-message-reactions";
 import {
   openIndexedDbSyncRepository,
   type IndexedDbSyncRepository
@@ -176,7 +177,7 @@ import {
 import {
   clearOwnerNavigationSession,
   readOwnerNavigationSession,
-  writeOwnerNavigationSession
+  scheduleOwnerNavigationSessionWrite
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
@@ -198,7 +199,7 @@ import {
   recordReadiness,
   startNavigationMeasurement
 } from "./performance";
-import { prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
+import { prefetchOwnerView } from "./prefetch";
 import { createScreenStateCache, restoreScreenScroll } from "./screen-state-cache";
 import { setConnectivityAuthentication } from "./connectivity";
 import { RuntimeManager } from "./runtime-manager";
@@ -2325,14 +2326,12 @@ export function OwnerApp() {
       scrollX: window.scrollX,
       scrollY: window.scrollY
     });
-    runViewTransition(() => {
-      setMode(nextMode);
-      setView(nextView);
-      setRoutedProductId(null);
-      navigateToOwnerRoute(nextRoute, { replace: options?.replace });
-      markNavigationCommitted(measurement);
-      restoreScreenScroll(screenStateCacheRef.current, nextView);
-    }, nextView === "chat");
+    setMode(nextMode);
+    setView(nextView);
+    setRoutedProductId(null);
+    navigateToOwnerRoute(nextRoute, { replace: options?.replace });
+    markNavigationCommitted(measurement);
+    restoreScreenScroll(screenStateCacheRef.current, nextView);
   }
 
   function populateProductForm(product: ProductSummary) {
@@ -2503,7 +2502,7 @@ export function OwnerApp() {
   }, []);
 
   useEffect(() => {
-    writeOwnerNavigationSession(session?.account.id ?? null, {
+    scheduleOwnerNavigationSessionWrite(session?.account.id ?? null, {
       activeConversationId,
       runtimeSessionId,
       chatDraft,
@@ -2921,17 +2920,7 @@ export function OwnerApp() {
       refreshInFlight = true;
       const refreshes: Promise<void>[] = [];
 
-      if (view === "chat") {
-        refreshes.push(
-          loadProducts(businessId),
-          loadProductFields(businessId),
-          loadSuppliers(businessId),
-          loadCustomers(businessId),
-          loadInvoices(businessId),
-          loadReports(businessId),
-          loadNotifications(businessId)
-        );
-      }
+      if (view === "chat") refreshes.push(loadNotifications(businessId));
 
       if (view === "products") {
         refreshes.push(loadProducts(businessId), loadProductFields(businessId));
@@ -2957,7 +2946,7 @@ export function OwnerApp() {
         refreshes.push(loadSyncQueue(businessId), loadOfflineCache(businessId));
       }
 
-      if (view === "chat" || view === "home" || view === "network") {
+      if (view === "home" || view === "network") {
         refreshes.push(loadNetworkGraph(), loadNetworkInvites(businessId));
       }
 
@@ -3031,8 +3020,33 @@ export function OwnerApp() {
   }, [business?.id, session?.account.id, setupComplete, view]);
 
   useEffect(() => {
-    if (!setupComplete || view !== "chat") return;
-    return scheduleIdleOwnerPrefetch("products", business?.id ?? null);
+    if (!setupComplete || view !== "chat" || business === null) return;
+    let cancelled = false;
+    const hydrate = () => {
+      if (cancelled) return;
+      void Promise.allSettled([
+        loadProducts(business.id),
+        loadProductFields(business.id),
+        loadSuppliers(business.id),
+        loadCustomers(business.id),
+        loadInvoices(business.id),
+        loadReports(business.id),
+        loadNetworkGraph(),
+        loadNetworkInvites(business.id)
+      ]);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(hydrate, { timeout: 1_200 });
+      return () => {
+        cancelled = true;
+        window.cancelIdleCallback(idleId);
+      };
+    }
+    const timeoutId = window.setTimeout(hydrate, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
   }, [business?.id, setupComplete, view]);
 
   async function handleOAuthCallback(): Promise<boolean> {
@@ -6072,6 +6086,42 @@ export function OwnerApp() {
     action: { text?: string; deleted?: boolean; reaction?: string | null }
   ) {
     if (activeConversationId === null) return;
+    if (action.reaction !== undefined && session !== null) {
+      const previousReactions =
+        chatMessages.find((message) => message.id === messageId)?.reactions ?? [];
+      setChatMessages((messages) =>
+        replaceActorReaction(messages, messageId, session.user.id, action.reaction ?? null)
+      );
+      try {
+        const updated = await patchJson<ConversationMessageSummary>(
+          `/v1/conversations/${activeConversationId}/messages/${messageId}`,
+          action
+        );
+        const confirmedReactions = (updated.reactions ?? []).map(({ actorId, emoji }) => ({
+          actorId,
+          emoji
+        }));
+        setChatMessages((messages) =>
+          replaceMessageReactions(messages, messageId, confirmedReactions)
+        );
+        setActiveConversation((conversation) =>
+          conversation === null
+            ? conversation
+            : {
+                ...conversation,
+                messages: conversation.messages.map((message) =>
+                  message.id === updated.id ? updated : message
+                )
+              }
+        );
+      } catch (error) {
+        setChatMessages((messages) =>
+          replaceMessageReactions(messages, messageId, previousReactions)
+        );
+        throw error;
+      }
+      return;
+    }
     let request: typeof action | { content: ConversationMessageContent } = action;
     if (action.text !== undefined && isHumanDirectConversation(activeConversation, session)) {
       const current = chatMessages.find((message) => message.id === messageId);
@@ -6384,7 +6434,7 @@ export function OwnerApp() {
     );
   }
 
-  async function sendChatDraft() {
+  async function sendChatDraft(draftOverride?: string) {
     if (session === null) {
       requireMessagingSignIn();
       return;
@@ -6392,7 +6442,9 @@ export function OwnerApp() {
     const activeSession = session;
     const attachments = pendingAttachments;
     const message =
-      chatDraft.trim().length > 0 ? chatDraft.trim() : createAttachmentOnlyMessage(attachments);
+      (draftOverride ?? chatDraft).trim().length > 0
+        ? (draftOverride ?? chatDraft).trim()
+        : createAttachmentOnlyMessage(attachments);
     const helpCommand = extractAgentHelpCommand(message);
     const agentRequest = helpCommand === undefined || helpCommand === null ? message : helpCommand;
     let runtimeMessage = appendAttachmentSummary(agentRequest, attachments);
@@ -8095,7 +8147,7 @@ export function OwnerApp() {
                 )
               }
               onReactMessage={(messageId, reaction) =>
-                void runAction("message-reaction", () =>
+                void runAction(`message-reaction-${messageId}`, () =>
                   updateMessageAction(messageId, { reaction })
                 )
               }
@@ -8151,7 +8203,7 @@ export function OwnerApp() {
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen}
-              onSend={() => void runAction("chat-send", sendChatDraft)}
+              onSend={(draft) => void runAction("chat-send", () => sendChatDraft(draft))}
               onCancelGeneration={() => void cancelBrowserGeneration()}
               onSmsHandoff={recordSmsHandoff}
               onPlatformHandoff={recordPlatformHandoff}
@@ -17915,7 +17967,7 @@ interface ChatSurfaceProps {
   onRemoveAttachment: (attachmentId: string) => void;
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
-  onSend: () => void;
+  onSend: (draft: string) => void;
   onCancelGeneration: () => void;
   onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
   onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
@@ -18019,6 +18071,8 @@ function ChatSurface({
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
   const [externalShareNotice, setExternalShareNotice] = useState<string | null>(null);
+  const [liveDraft, setLiveDraft] = useState(chatDraft);
+  const draftSyncTimerRef = useRef<number | null>(null);
   const workspaceDialogRef = useRef<HTMLElement | null>(null);
   const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
@@ -18048,6 +18102,32 @@ function ChatSurface({
   const hiddenMessageCount = Math.max(0, visibleMessages.length - messageWindowSize);
   const windowedMessages = visibleMessages.slice(hiddenMessageCount);
 
+  function clearDraftSyncTimer() {
+    if (draftSyncTimerRef.current === null) return;
+    window.clearTimeout(draftSyncTimerRef.current);
+    draftSyncTimerRef.current = null;
+  }
+
+  function updateLiveDraft(nextDraft: string) {
+    setLiveDraft(nextDraft);
+    clearDraftSyncTimer();
+    draftSyncTimerRef.current = window.setTimeout(() => {
+      draftSyncTimerRef.current = null;
+      onDraftChange(nextDraft);
+    }, 120);
+  }
+
+  function commitDraft(nextDraft: string) {
+    clearDraftSyncTimer();
+    setLiveDraft(nextDraft);
+    onDraftChange(nextDraft);
+  }
+
+  function sendLiveDraft() {
+    clearDraftSyncTimer();
+    onSend(liveDraft);
+  }
+
   function openSmsHandoff(recipient: string, label: string) {
     let normalizedCandidate = "";
     try {
@@ -18056,7 +18136,7 @@ function ChatSurface({
       // The confirmation sheet collects or corrects a missing contact number.
     }
     setSmsHandoffRequest({
-      body: chatDraft,
+      body: liveDraft,
       label: label.trim() || "SMS recipient",
       recipient: normalizedCandidate || recipient
     });
@@ -18064,7 +18144,7 @@ function ChatSurface({
 
   async function openPlatformHandoff(label: string) {
     const result = await shareMessageExternally({
-      text: chatDraft,
+      text: liveDraft,
       title: label.trim() ? `Message for ${label.trim()}` : "Message from Soko"
     });
     onPlatformHandoff(result.status, result.errorCode);
@@ -18078,6 +18158,17 @@ function ChatSurface({
             : null
     );
   }
+
+  useEffect(() => {
+    setLiveDraft(chatDraft);
+  }, [chatDraft]);
+
+  useEffect(
+    () => () => {
+      clearDraftSyncTimer();
+    },
+    []
+  );
 
   useEffect(() => {
     if (!workspaceOpen) {
@@ -18236,7 +18327,7 @@ function ChatSurface({
               <button
                 className="secondary"
                 type="button"
-                disabled={newRecipient.trim().length === 0 || chatDraft.trim().length === 0}
+                disabled={newRecipient.trim().length === 0 || liveDraft.trim().length === 0}
                 onClick={() => openSmsHandoff(newRecipient, newConversationTitle)}
               >
                 Send as SMS
@@ -18244,7 +18335,7 @@ function ChatSurface({
               <button
                 className="secondary"
                 type="button"
-                disabled={chatDraft.trim().length === 0}
+                disabled={liveDraft.trim().length === 0}
                 onClick={() => void openPlatformHandoff(newConversationTitle)}
               >
                 Share to apps
@@ -18485,7 +18576,10 @@ function ChatSurface({
                             key={emoji}
                             type="button"
                             aria-label={`React ${emoji}`}
-                            onClick={() => onReactMessage(message.id, emoji)}
+                            onClick={() => {
+                              setActiveMessageMenuId(null);
+                              onReactMessage(message.id, emoji);
+                            }}
                           >
                             {emoji}
                           </button>
@@ -18614,10 +18708,10 @@ function ChatSurface({
                     onBack={() => setWorkspaceCardView("cards")}
                     onOpenProfile={onOpenAgentProfile}
                     onAddToOrder={(product) =>
-                      onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+                      commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
                     }
                     onSell={() => onModeChange("seller")}
-                    onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+                    onMessage={() => commitDraft(`Hello ${businessName}, `)}
                   />
                 ) : (
                   <MarketplaceModeCard
@@ -18628,7 +18722,7 @@ function ChatSurface({
                     sokoId={sokoId}
                     onCompleteIntro={onCompleteMarketplaceIntro}
                     onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
-                    onPrompt={onDraftChange}
+                    onPrompt={commitDraft}
                     onSell={() => onModeChange("seller")}
                   />
                 )
@@ -18698,10 +18792,10 @@ function ChatSurface({
                   onBack={() => setWorkspaceCardView("cards")}
                   onOpenProfile={onOpenAgentProfile}
                   onAddToOrder={(product) =>
-                    onDraftChange(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+                    commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
                   }
                   onSell={() => onModeChange("marketplace")}
-                  onMessage={() => onDraftChange(`Hello ${businessName}, `)}
+                  onMessage={() => commitDraft(`Hello ${businessName}, `)}
                 />
               ) : (
                 <CatalogueNestedCard
@@ -18762,7 +18856,7 @@ function ChatSurface({
               type="button"
               aria-label="Voice input"
               title="Voice input"
-              onClick={() => startVoiceInput(onDraftChange)}
+              onClick={() => startVoiceInput(commitDraft)}
             >
               <span className="mic-icon" aria-hidden="true" />
             </button>
@@ -18808,24 +18902,19 @@ function ChatSurface({
                 {pendingAttachments.some(isExtractableChatAttachment) ? (
                   <div className="document-instructions" aria-label="Document instructions">
                     <span>OCR ready for scans and images</span>
-                    <button
-                      type="button"
-                      onClick={() => onDraftChange("Extract all readable text")}
-                    >
+                    <button type="button" onClick={() => commitDraft("Extract all readable text")}>
                       Extract text
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        onDraftChange("Summarize this document in simple bullet points")
-                      }
+                      onClick={() => commitDraft("Summarize this document in simple bullet points")}
                     >
                       Summarize
                     </button>
                     <button
                       type="button"
                       onClick={() =>
-                        onDraftChange("Extract names, dates, totals, and line items into a table")
+                        commitDraft("Extract names, dates, totals, and line items into a table")
                       }
                     >
                       Extract fields
@@ -18839,12 +18928,12 @@ function ChatSurface({
               <textarea
                 aria-label="Message"
                 rows={1}
-                value={chatDraft}
-                onChange={(event) => onDraftChange(event.target.value)}
+                value={liveDraft}
+                onChange={(event) => updateLiveDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !isSending) {
                     event.preventDefault();
-                    onSend();
+                    sendLiveDraft();
                   }
                 }}
                 placeholder={
@@ -18868,7 +18957,7 @@ function ChatSurface({
               <button
                 className="sms-send-button"
                 type="button"
-                disabled={chatDraft.trim().length === 0}
+                disabled={liveDraft.trim().length === 0}
                 onClick={() =>
                   openSmsHandoff(
                     selectedConversation?.title ?? "",
@@ -18881,7 +18970,7 @@ function ChatSurface({
               <button
                 className="share-send-button"
                 type="button"
-                disabled={chatDraft.trim().length === 0}
+                disabled={liveDraft.trim().length === 0}
                 title="Share outside Soko using an installed app or connected-device service"
                 onClick={() => void openPlatformHandoff(selectedConversation?.title ?? "")}
               >
@@ -18890,9 +18979,9 @@ function ChatSurface({
               <button
                 className="send-button"
                 type="button"
-                onClick={onSend}
+                onClick={sendLiveDraft}
                 disabled={
-                  isSending || (chatDraft.trim().length === 0 && pendingAttachments.length === 0)
+                  isSending || (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
                 }
                 aria-busy={isSending}
               >
@@ -21630,13 +21719,13 @@ function dataUrlPayload(dataUrl: string): string {
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
 }
 
-function runViewTransition(update: () => void, allowSnapshot = true): void {
+function runViewTransition(update: () => void): void {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const transitionDocument = document as Document & {
     startViewTransition?: (callback: () => void) => unknown;
   };
 
-  if (allowSnapshot && !reducedMotion && transitionDocument.startViewTransition !== undefined) {
+  if (!reducedMotion && transitionDocument.startViewTransition !== undefined) {
     transitionDocument.startViewTransition(update);
     return;
   }
