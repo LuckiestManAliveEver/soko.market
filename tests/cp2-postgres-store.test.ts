@@ -203,6 +203,104 @@ describePostgres("CP2 Postgres store", () => {
     await restoredApp.close();
   }, 15_000);
 
+  it("persists phone-first access, verified recovery email, and password login across restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const suffix = Date.now().toString().slice(-7);
+    const phone = `+25473${suffix}`;
+    const email = `access-${suffix}@example.test`;
+    const password = "persistent account access password";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({
+      cp2: { store },
+      mutationPersistenceFlush: () => store.flush()
+    });
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/auth/signup/start",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({ type: "phone", identifier: phone })
+    });
+    expect(started.statusCode).toBe(200);
+    const transactionId = started.json<{ transactionId: string }>().transactionId;
+    const completed = await app.inject({
+      method: "POST",
+      url: "/auth/signup/complete",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        transactionId,
+        displayName: "Persistent Access Owner",
+        email,
+        password,
+        passwordConfirmation: password,
+        termsAccepted: true,
+        privacyAccepted: true
+      })
+    });
+    expect(completed.statusCode).toBe(200);
+    const signupCookie = extractSessionCookie(completed.headers["set-cookie"]);
+    const verification = await app.inject({
+      method: "POST",
+      url: "/auth/email/verification/start",
+      headers: { cookie: signupCookie }
+    });
+    expect(verification.statusCode).toBe(200);
+    const verificationData = verification.json<{
+      challengeId: string;
+      developmentCode: string;
+    }>();
+    const verified = await app.inject({
+      method: "POST",
+      url: "/auth/email/verification/verify",
+      headers: { ...jsonHeaders(), cookie: signupCookie },
+      payload: JSON.stringify({
+        challengeId: verificationData.challengeId,
+        code: verificationData.developmentCode
+      })
+    });
+    expect(verified.statusCode).toBe(200);
+
+    await store.flush();
+    await app.close();
+    await store.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const restoredApp = buildApi({
+      cp2: { store: restoredStore },
+      mutationPersistenceFlush: () => restoredStore.flush()
+    });
+    const login = await restoredApp.inject({
+      method: "POST",
+      url: "/auth/login/password",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({ type: "email", identifier: email, password })
+    });
+
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({
+      account: { primaryAuthDestination: phone },
+      session: { id: expect.any(String) }
+    });
+    expect(restoredStore.snapshot().accountIdentities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "email",
+          normalizedValue: email,
+          verifiedAt: expect.any(String)
+        })
+      ])
+    );
+    expect(restoredStore.snapshot().passwordCredentials).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ passwordHash: expect.stringContaining("scrypt$password-v1$") })
+      ])
+    );
+
+    await restoredApp.close();
+    await restoredStore.close();
+  }, 20_000);
+
   it("completes phone PIN login with canonical, non-duplicated sync rows", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";

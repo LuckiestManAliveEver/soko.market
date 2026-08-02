@@ -175,6 +175,11 @@ function isAuthenticationEntryPoint(pathOrUrl: string): boolean {
     const pathname = pathOrUrl.startsWith("http") ? new URL(pathOrUrl).pathname : pathOrUrl;
     return (
       pathname === refreshPath ||
+      pathname.startsWith("/auth/signup/") ||
+      pathname.startsWith("/auth/login/") ||
+      pathname.startsWith("/auth/recovery/") ||
+      pathname === "/auth/mfa/challenge" ||
+      pathname === "/auth/mfa/verify" ||
       pathname.startsWith("/auth/pin/") ||
       pathname.startsWith("/auth/otp/") ||
       pathname.startsWith("/auth/passkeys/login/") ||

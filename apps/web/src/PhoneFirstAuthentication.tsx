@@ -11,6 +11,7 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 type Stage =
   | "entry"
   | "profile"
+  | "email-verification"
   | "passkey-prompt"
   | "passkey-recommendation"
   | "password"
@@ -19,6 +20,14 @@ type Stage =
   | "reset-pin"
   | "reset-password";
 type IdentifierType = "phone" | "email";
+
+interface LoginMethods {
+  preferred: "passkey";
+  passkeyAvailable: boolean;
+  passwordFallback: boolean;
+  recoveryAvailable: boolean;
+  smsLogin: false;
+}
 
 const countries = [
   ["KE", "+254", "Kenya"],
@@ -52,6 +61,8 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [createdSession, setCreatedSession] = useState<AuthSessionView | null>(null);
+  const [loginMethods, setLoginMethods] = useState<LoginMethods | null>(null);
+  const [emailChallengeId, setEmailChallengeId] = useState("");
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
@@ -78,9 +89,17 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
 
   async function continueIdentifier() {
     if (initialMode === "login") {
-      await apiFetch("/auth/login/methods", { method: "POST", body: identifierBody() });
+      const methods = await apiFetch<LoginMethods>("/auth/login/methods", {
+        method: "POST",
+        body: identifierBody()
+      });
+      setLoginMethods(methods);
       setStage("passkey-prompt");
-      setMessage("Use a passkey for the fastest, most secure return access.");
+      setMessage(
+        methods.passkeyAvailable
+          ? "Use a passkey for the fastest, most secure return access."
+          : "Passkeys are unavailable on this deployment. Use the approved fallback."
+      );
       return;
     }
     if (identifierType === "email") {
@@ -109,8 +128,51 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       }
     });
     setCreatedSession(session);
+    if (email.trim()) {
+      try {
+        const challenge = await apiFetch<{
+          challengeId: string;
+          expiresAt: string;
+          developmentCode?: string;
+        }>("/auth/email/verification/start", { method: "POST", body: {} });
+        setEmailChallengeId(challenge.challengeId);
+        setCode(challenge.developmentCode ?? "");
+        setStage("email-verification");
+        setMessage(
+          "Account created. Verify the email address so it can be used for account recovery."
+        );
+        return;
+      } catch (error) {
+        setStage("passkey-recommendation");
+        setMessage(
+          `Account created, but email verification could not start: ${getUserFacingErrorMessage(error)} Add a passkey now and retry email verification later.`
+        );
+        return;
+      }
+    }
     setStage("passkey-recommendation");
     setMessage("Account created. Add a passkey for secure passwordless return access.");
+  }
+
+  async function verifySignupEmail() {
+    await apiFetch("/auth/email/verification/verify", {
+      method: "POST",
+      body: { challengeId: emailChallengeId, code }
+    });
+    setCode("");
+    setStage("passkey-recommendation");
+    setMessage("Email verified and enabled for account recovery. Add a passkey next.");
+  }
+
+  async function resendSignupEmailVerification() {
+    const challenge = await apiFetch<{
+      challengeId: string;
+      expiresAt: string;
+      developmentCode?: string;
+    }>("/auth/email/verification/start", { method: "POST", body: {} });
+    setEmailChallengeId(challenge.challengeId);
+    setCode(challenge.developmentCode ?? "");
+    setMessage("A new email verification code was sent.");
   }
 
   async function login() {
@@ -362,28 +424,81 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
           <>
             <h2>Welcome back</h2>
             <p>Continue with a passkey for passwordless access.</p>
-            <button type="button" disabled={busy} onClick={() => void run(usePasskey)}>
-              Continue with passkey
+            {loginMethods?.passkeyAvailable !== false ? (
+              <button type="button" disabled={busy} onClick={() => void run(usePasskey)}>
+                Continue with passkey
+              </button>
+            ) : null}
+            {loginMethods?.passwordFallback !== false ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setPassword("");
+                  setStage("password");
+                  setMessage("Use your password fallback if this account has one.");
+                }}
+              >
+                Use password fallback
+              </button>
+            ) : null}
+            {loginMethods?.recoveryAvailable !== false ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={!identifier.trim() || busy}
+                onClick={() => void run(startRecovery)}
+              >
+                Recover account
+              </button>
+            ) : null}
+          </>
+        ) : null}
+        {stage === "email-verification" ? (
+          <>
+            <h2>Verify your recovery email</h2>
+            <p>
+              The account is already stored. Verification links this email as an approved recovery
+              method.
+            </p>
+            <label>
+              Email verification code
+              <input
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !emailChallengeId || !code.trim()}
+              onClick={() => void run(verifySignupEmail)}
+            >
+              Verify recovery email
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => void run(resendSignupEmailVerification)}
+            >
+              Send a new code
             </button>
             <button
               className="secondary"
               type="button"
               disabled={busy}
               onClick={() => {
-                setPassword("");
-                setStage("password");
-                setMessage("Use your password fallback if this account has one.");
+                setCode("");
+                setStage("passkey-recommendation");
+                setMessage(
+                  "Email verification skipped. It cannot be used for recovery until verified."
+                );
               }}
             >
-              Use password fallback
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              disabled={!identifier.trim() || busy}
-              onClick={() => void run(startRecovery)}
-            >
-              Recover account
+              Verify later
             </button>
           </>
         ) : null}

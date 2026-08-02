@@ -55,6 +55,36 @@ describe("authenticated API client", () => {
     expect(requestBodies.filter((body) => body === '{"value":1}')).toHaveLength(2);
     expect(requestBodies.filter((body) => body === '{"value":2}')).toHaveLength(2);
   });
+
+  it("does not refresh an existing session after an account-entry credential failure", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => undefined
+    });
+    vi.stubGlobal("navigator", { platform: "Android" });
+    vi.stubGlobal("window", { matchMedia: () => ({ matches: false }) });
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/auth/session/refresh")) {
+        return jsonResponse(200, { authenticated: true });
+      }
+      return jsonResponse(401, {
+        code: "auth_credentials_invalid",
+        message: "The account credentials are invalid."
+      });
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(
+      apiFetch("/auth/login/password", {
+        method: "POST",
+        body: { type: "phone", identifier: "+254712345678", password: "incorrect password" }
+      })
+    ).rejects.toMatchObject({ status: 401, code: "auth_credentials_invalid" });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("/auth/login/password");
+  });
 });
 
 function jsonResponse(status: number, body: unknown): Response {

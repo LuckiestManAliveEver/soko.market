@@ -3090,6 +3090,36 @@ export function OwnerApp() {
     setIsLoginOpen(false);
   }
 
+  async function completePhoneFirstAuthentication(response: SessionResponse) {
+    acceptAuthenticatedSession(response);
+    let pinSet = false;
+
+    try {
+      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
+      pinSet = pinStatus.hasPin;
+    } catch {
+      // Modern password/passkey access does not require a legacy PIN. Keep the local compatibility
+      // flag disabled when the database-backed status cannot be read.
+    }
+
+    const nextOwnerAuth: OwnerAuthRecord = {
+      contact: response.account.primaryAuthDestination,
+      countryCode:
+        response.account.primaryAuthChannel === "phone"
+          ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
+          : countryCode,
+      pinSet
+    };
+    setOwnerAuth(nextOwnerAuth);
+    localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
+    setHasLoginPin(pinSet);
+    setIsWorkspaceUnlocked(true);
+    setIsSignupOpen(false);
+    setIsLoginOpen(false);
+    navigateToView("chat", { replace: true, mode: "marketplace" });
+    setStatusMessage("Authentication complete");
+  }
+
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     acceptAuthenticatedSession(response);
@@ -7875,25 +7905,7 @@ export function OwnerApp() {
         ) : shouldShowSignup || shouldShowLogin ? (
           <PhoneFirstAuthentication
             initialMode={shouldShowSignup ? "signup" : "login"}
-            onAuthenticated={(response) => {
-              acceptAuthenticatedSession(response);
-              const nextOwnerAuth: OwnerAuthRecord = {
-                contact: response.account.primaryAuthDestination,
-                countryCode:
-                  response.account.primaryAuthChannel === "phone"
-                    ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
-                    : countryCode,
-                pinSet: true
-              };
-              setOwnerAuth(nextOwnerAuth);
-              localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-              setHasLoginPin(true);
-              setIsWorkspaceUnlocked(true);
-              setIsSignupOpen(false);
-              setIsLoginOpen(false);
-              navigateToView("chat", { replace: true, mode: "marketplace" });
-              setStatusMessage("Authentication complete");
-            }}
+            onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
             onCancel={() => {
               setIsSignupOpen(false);
               setIsLoginOpen(false);

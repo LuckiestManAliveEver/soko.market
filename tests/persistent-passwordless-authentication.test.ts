@@ -206,6 +206,10 @@ describe("persistent passwordless authentication", () => {
 
     const frontend = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     expect(frontend).toContain('"/auth/login/methods"');
+    expect(frontend).toContain('"/auth/email/verification/start"');
+    expect(frontend).toContain('"/auth/email/verification/verify"');
+    expect(frontend).toContain("methods.passkeyAvailable");
+    expect(frontend).toContain("loginMethods?.passwordFallback");
     expect(frontend).not.toContain('"/auth/identify"');
     expect(frontend).not.toContain('"/auth/signup/verify-phone"');
     expect(frontend).not.toContain('"verify-phone"');
