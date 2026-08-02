@@ -133,10 +133,14 @@ DB_CONNECTION_TIMEOUT_MS=5000
 DB_IDLE_TIMEOUT_MS=30000
 DB_QUERY_TIMEOUT_MS=15000
 DB_STATEMENT_TIMEOUT_MS=15000
+DB_PERSISTENCE_QUEUE_WARN_MS=10000
 DB_SLOW_QUERY_MS=500
 ```
 
 Slow persistence operations are logged by the API when they exceed `DB_SLOW_QUERY_MS`.
+`GET /health/db` reports pending and queued persistence work, the active operation and its age,
+and the most recent queue wait/run durations. Database health becomes degraded when the oldest
+pending operation reaches `DB_PERSISTENCE_QUEUE_WARN_MS`.
 
 ## Failover
 

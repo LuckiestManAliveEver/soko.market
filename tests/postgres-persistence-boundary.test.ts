@@ -29,4 +29,20 @@ describe("Postgres persistence boundary", () => {
       expect(source).toContain(`"${method}"`);
     }
   });
+
+  it("uses a targeted write for passkey ceremony creation and reports queue timing", () => {
+    const source = readFileSync("services/api/src/cp2/postgres-store.ts", "utf8");
+    const snapshotMutationMethods = source.slice(
+      source.indexOf("const mutatingMethodNames"),
+      source.indexOf("const targetedPasskeyCeremonyMethodNames")
+    );
+
+    expect(snapshotMutationMethods).not.toContain('"beginPasskeyAuthentication"');
+    expect(snapshotMutationMethods).not.toContain('"beginPasskeyRegistration"');
+    expect(source).toContain("insert into cp2_passkey_ceremonies");
+    expect(source).toContain('enqueuePersistenceOperation("passkey_ceremony"');
+    expect(source).toContain("oldestPendingAgeMs");
+    expect(source).toContain("lastWaitDurationMs");
+    expect(source).toContain("lastRunDurationMs");
+  });
 });

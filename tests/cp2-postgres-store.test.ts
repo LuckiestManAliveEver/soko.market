@@ -57,6 +57,68 @@ const databaseUrl = process.env.CP2_POSTGRES_TEST_DATABASE_URL;
 const describePostgres = databaseUrl === undefined ? describe.skip : describe;
 
 describePostgres("CP2 Postgres store", () => {
+  it("persists passkey ceremony creation without replacing the application snapshot", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const pool = new Pool({ connectionString });
+    const sentinelId = randomUUID();
+    let ceremonyId: string | null = null;
+
+    try {
+      const now = new Date();
+      const sentinel = {
+        id: sentinelId,
+        kind: "authentication",
+        purpose: "login",
+        accountId: null,
+        challenge: "targeted-write-sentinel",
+        webauthnUserId: null,
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        createdAt: now.toISOString()
+      };
+      await pool.query(
+        `
+          insert into cp2_passkey_ceremonies
+            (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
+          values ($1, null, null, null, null, $2::jsonb, now())
+        `,
+        [sentinelId, JSON.stringify(sentinel)]
+      );
+
+      const result = await store.beginPasskeyAuthentication({
+        rpId: "localhost",
+        purpose: "pin_recovery"
+      });
+      ceremonyId = result.ceremonyId;
+      await store.flush();
+
+      const persisted = await pool.query<{ entity_id: string }>(
+        "select entity_id from cp2_passkey_ceremonies where entity_id = any($1::text[]) order by entity_id",
+        [[sentinelId, ceremonyId]]
+      );
+      expect(persisted.rows.map((row) => row.entity_id).sort()).toEqual(
+        [sentinelId, ceremonyId].sort()
+      );
+      expect((await store.health()).persistenceQueue).toMatchObject({
+        status: "ok",
+        pendingCount: 0,
+        queuedCount: 0,
+        active: false,
+        activeOperation: null,
+        lastWaitDurationMs: expect.any(Number),
+        lastRunDurationMs: expect.any(Number),
+        lastCompletedAt: expect.any(String)
+      });
+    } finally {
+      await pool.query("delete from cp2_passkey_ceremonies where entity_id = any($1::text[])", [
+        [sentinelId, ...(ceremonyId === null ? [] : [ceremonyId])]
+      ]);
+      await pool.end();
+      await store.close();
+    }
+  }, 15_000);
+
   it("does not expose retired phone verification routes", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";

@@ -6,7 +6,13 @@ import {
   type SyncRealtimeChangesAvailableEvent
 } from "@soko/shared-types";
 import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
-import { createCp2Store, type Cp2Snapshot, type Cp2Store, type Cp2StoreOptions } from "./store.js";
+import {
+  createCp2Store,
+  type Cp2Snapshot,
+  type Cp2Store,
+  type Cp2StoreOptions,
+  type PasskeyCeremonyRecord
+} from "./store.js";
 
 type SnapshotCollectionKey = keyof Cp2Snapshot;
 type SnapshotRecord = Record<string, unknown>;
@@ -110,8 +116,6 @@ const mutatingMethodNames = new Set([
   "approveAgentRoute",
   "authenticateSocialProfile",
   "beginOAuthSession",
-  "beginPasskeyAuthentication",
-  "beginPasskeyRegistration",
   "completeOAuthCallback",
   "completePasskeyAuthentication",
   "completePasskeyRegistration",
@@ -264,6 +268,11 @@ const mutatingMethodNames = new Set([
   "removePushSubscription"
 ]);
 
+const targetedPasskeyCeremonyMethodNames = new Set([
+  "beginPasskeyAuthentication",
+  "beginPasskeyRegistration"
+]);
+
 export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
   databaseUrl: string;
 }
@@ -294,6 +303,19 @@ export interface PostgresStoreHealth {
   latencyMs: number;
   latestMigration: string | null;
   persistenceError: string | null;
+  persistenceQueue: {
+    status: "ok" | "degraded";
+    pendingCount: number;
+    queuedCount: number;
+    active: boolean;
+    activeOperation: "snapshot" | "passkey_ceremony" | null;
+    activeDurationMs: number | null;
+    oldestPendingAgeMs: number | null;
+    lastWaitDurationMs: number | null;
+    lastRunDurationMs: number | null;
+    lastCompletedAt: string | null;
+    warningThresholdMs: number;
+  };
   syncJournal: {
     status: "ok" | "degraded";
     error: string | null;
@@ -320,6 +342,14 @@ export interface PostgresStoreHealth {
 
 const requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql";
 const realtimeChannel = "soko_sync_changes";
+const defaultPersistenceQueueWarningThresholdMs = 10_000;
+
+type PersistenceOperationName = "snapshot" | "passkey_ceremony";
+
+interface PasskeyCeremonyMutation {
+  removedIds: string[];
+  upsert: PasskeyCeremonyRecord | null;
+}
 
 export async function createPostgresCp2Store(
   options: PostgresCp2StoreOptions
@@ -387,6 +417,23 @@ export async function createPostgresCp2Store(
   let lastPersistedSnapshot = structuredClone(store.snapshot());
   let saveQueue: Promise<void> = Promise.resolve();
   let lastPersistenceError: unknown = null;
+  let nextPersistenceOperationId = 1;
+  const pendingPersistenceOperations = new Map<
+    number,
+    { enqueuedAt: number; name: PersistenceOperationName }
+  >();
+  let activePersistenceOperation: {
+    id: number;
+    name: PersistenceOperationName;
+    startedAt: number;
+  } | null = null;
+  let lastPersistenceWaitDurationMs: number | null = null;
+  let lastPersistenceRunDurationMs: number | null = null;
+  let lastPersistenceCompletedAt: string | null = null;
+  const persistenceQueueWarningThresholdMs = positiveIntegerFromEnv(
+    "DB_PERSISTENCE_QUEUE_WARN_MS",
+    defaultPersistenceQueueWarningThresholdMs
+  );
   let lastSyncPersistenceError: AccountSyncPersistenceError | null = initialSyncPersistenceError;
   if (lastSyncPersistenceError !== null) {
     logAccountSyncDegradation(lastSyncPersistenceError);
@@ -447,23 +494,28 @@ export async function createPostgresCp2Store(
 
   await connectRealtimeListener();
 
-  function enqueueSave(): void {
+  function enqueuePersistenceOperation(
+    name: PersistenceOperationName,
+    operation: () => Promise<void>
+  ): void {
+    const operationId = nextPersistenceOperationId;
+    nextPersistenceOperationId += 1;
+    const enqueuedAt = Date.now();
+    pendingPersistenceOperations.set(operationId, { enqueuedAt, name });
+
     saveQueue = saveQueue
       .then(async () => {
-        const snapshot = store.snapshot();
-        const result = await saveNormalizedSnapshot(pool, snapshot);
-        lastPersistedSnapshot = structuredClone(snapshot);
-        lastSyncPersistenceError = result.syncJournalError;
-        if (result.syncJournalError !== null) {
-          logAccountSyncDegradation(result.syncJournalError);
-          return;
-        }
+        const startedAt = Date.now();
+        activePersistenceOperation = { id: operationId, name, startedAt };
+        lastPersistenceWaitDurationMs = startedAt - enqueuedAt;
         try {
-          await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
-          lastRealtimePublishError = null;
-        } catch (error) {
-          lastRealtimePublishError = error;
-          console.error("Failed to publish PostgreSQL realtime hints.", error);
+          await operation();
+        } finally {
+          const completedAt = Date.now();
+          lastPersistenceRunDurationMs = completedAt - startedAt;
+          lastPersistenceCompletedAt = new Date(completedAt).toISOString();
+          activePersistenceOperation = null;
+          pendingPersistenceOperations.delete(operationId);
         }
       })
       .then(
@@ -492,6 +544,35 @@ export async function createPostgresCp2Store(
           );
         }
       );
+  }
+
+  function enqueueSave(): void {
+    enqueuePersistenceOperation("snapshot", async () => {
+      const snapshot = store.snapshot();
+      const result = await saveNormalizedSnapshot(pool, snapshot);
+      lastPersistedSnapshot = structuredClone(snapshot);
+      lastSyncPersistenceError = result.syncJournalError;
+      if (result.syncJournalError !== null) {
+        logAccountSyncDegradation(result.syncJournalError);
+        return;
+      }
+      try {
+        await publishRealtimeNotifications(pool, snapshot, instanceId, publishedCursorByAccount);
+        lastRealtimePublishError = null;
+      } catch (error) {
+        lastRealtimePublishError = error;
+        console.error("Failed to publish PostgreSQL realtime hints.", error);
+      }
+    });
+  }
+
+  function enqueuePasskeyCeremonyMutation(mutation: PasskeyCeremonyMutation): void {
+    if (mutation.upsert === null && mutation.removedIds.length === 0) return;
+
+    enqueuePersistenceOperation("passkey_ceremony", async () => {
+      await savePasskeyCeremonyMutation(pool, mutation);
+      applyPersistedPasskeyCeremonyMutation(lastPersistedSnapshot, mutation);
+    });
   }
 
   async function flush(): Promise<void> {
@@ -595,16 +676,31 @@ export async function createPostgresCp2Store(
       `
     );
     const row = result.rows[0];
+    const healthCheckedAt = Date.now();
+    const oldestPendingAt = [...pendingPersistenceOperations.values()].reduce<number | null>(
+      (oldest, operation) =>
+        oldest === null || operation.enqueuedAt < oldest ? operation.enqueuedAt : oldest,
+      null
+    );
+    const oldestPendingAgeMs =
+      oldestPendingAt === null ? null : Math.max(0, healthCheckedAt - oldestPendingAt);
+    const activeDurationMs =
+      activePersistenceOperation === null
+        ? null
+        : Math.max(0, healthCheckedAt - activePersistenceOperation.startedAt);
+    const persistenceQueueDegraded =
+      (oldestPendingAgeMs ?? 0) >= persistenceQueueWarningThresholdMs;
 
     return {
       database: "postgres",
       status:
         lastPersistenceError === null &&
         lastSyncPersistenceError === null &&
-        lastRealtimeError === null
+        lastRealtimeError === null &&
+        !persistenceQueueDegraded
           ? "ok"
           : "degraded",
-      latencyMs: Date.now() - startedAt,
+      latencyMs: healthCheckedAt - startedAt,
       latestMigration: row?.latest_migration ?? null,
       persistenceError:
         lastPersistenceError instanceof Error
@@ -612,6 +708,20 @@ export async function createPostgresCp2Store(
           : lastPersistenceError === null
             ? null
             : "PostgreSQL persistence failed.",
+      persistenceQueue: {
+        status: persistenceQueueDegraded ? "degraded" : "ok",
+        pendingCount: pendingPersistenceOperations.size,
+        queuedCount:
+          pendingPersistenceOperations.size - (activePersistenceOperation === null ? 0 : 1),
+        active: activePersistenceOperation !== null,
+        activeOperation: activePersistenceOperation?.name ?? null,
+        activeDurationMs,
+        oldestPendingAgeMs,
+        lastWaitDurationMs: lastPersistenceWaitDurationMs,
+        lastRunDurationMs: lastPersistenceRunDurationMs,
+        lastCompletedAt: lastPersistenceCompletedAt,
+        warningThresholdMs: persistenceQueueWarningThresholdMs
+      },
       syncJournal:
         lastSyncPersistenceError === null
           ? { status: "ok", error: null }
@@ -706,7 +816,31 @@ export async function createPostgresCp2Store(
       }
 
       return (...args: unknown[]) => {
+        const previousPasskeyCeremonyIds = targetedPasskeyCeremonyMethodNames.has(property)
+          ? new Set((store.snapshot().passkeyCeremonies ?? []).map((ceremony) => ceremony.id))
+          : null;
         const result = value.apply(target, args);
+
+        if (previousPasskeyCeremonyIds !== null) {
+          if (!isPromiseLike(result)) {
+            throw new Error(`${property} must return a promise.`);
+          }
+
+          return result.then(
+            (resolved: unknown) => {
+              enqueuePasskeyCeremonyMutation(
+                passkeyCeremonyMutation(store.snapshot(), previousPasskeyCeremonyIds, resolved)
+              );
+              return resolved;
+            },
+            (error: unknown) => {
+              enqueuePasskeyCeremonyMutation(
+                passkeyCeremonyMutation(store.snapshot(), previousPasskeyCeremonyIds, null)
+              );
+              throw error;
+            }
+          );
+        }
 
         if (!mutatingMethodNames.has(property)) {
           return result;
@@ -1826,6 +1960,104 @@ async function saveNormalizedSnapshot(
       .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
       .catch((error: unknown) => {
         console.error("Failed to release CP2 normalized persistence lock.", error);
+      });
+    client.release();
+  }
+}
+
+function passkeyCeremonyMutation(
+  snapshot: Cp2Snapshot,
+  previousIds: Set<string>,
+  result: unknown
+): PasskeyCeremonyMutation {
+  const ceremonies = snapshot.passkeyCeremonies ?? [];
+  const currentIds = new Set(ceremonies.map((ceremony) => ceremony.id));
+  const removedIds = [...previousIds].filter((ceremonyId) => !currentIds.has(ceremonyId));
+
+  if (result === null) {
+    return { removedIds, upsert: null };
+  }
+
+  if (typeof result !== "object" || !("ceremonyId" in result)) {
+    throw new Error("Passkey ceremony creation did not return a ceremony ID.");
+  }
+  const ceremonyId = (result as { ceremonyId?: unknown }).ceremonyId;
+  if (typeof ceremonyId !== "string") {
+    throw new Error("Passkey ceremony creation returned an invalid ceremony ID.");
+  }
+  const ceremony = ceremonies.find((candidate) => candidate.id === ceremonyId);
+  if (ceremony === undefined) {
+    throw new Error("Created passkey ceremony is missing from the persistence snapshot.");
+  }
+
+  return { removedIds, upsert: structuredClone(ceremony) };
+}
+
+function applyPersistedPasskeyCeremonyMutation(
+  snapshot: Cp2Snapshot,
+  mutation: PasskeyCeremonyMutation
+): void {
+  const ceremonies = new Map(
+    (snapshot.passkeyCeremonies ?? []).map((ceremony) => [ceremony.id, ceremony])
+  );
+  for (const ceremonyId of mutation.removedIds) {
+    ceremonies.delete(ceremonyId);
+  }
+  if (mutation.upsert !== null) {
+    ceremonies.set(mutation.upsert.id, structuredClone(mutation.upsert));
+  }
+  snapshot.passkeyCeremonies = [...ceremonies.values()];
+}
+
+async function savePasskeyCeremonyMutation(
+  pool: Pool,
+  mutation: PasskeyCeremonyMutation
+): Promise<void> {
+  const client = await pool.connect();
+  const startedAt = Date.now();
+
+  try {
+    await client.query("select pg_advisory_lock(hashtext('soko.cp2.normalized_store'))");
+    try {
+      await client.query("begin");
+      if (mutation.removedIds.length > 0) {
+        await client.query("delete from cp2_passkey_ceremonies where entity_id = any($1::text[])", [
+          mutation.removedIds
+        ]);
+      }
+      if (mutation.upsert !== null) {
+        await client.query(
+          `
+            insert into cp2_passkey_ceremonies
+              (entity_id, business_id, account_id, user_id, parent_id, record, updated_at)
+            values ($1, null, $2, null, null, $3::jsonb, now())
+            on conflict (entity_id) do update set
+              business_id = excluded.business_id,
+              account_id = excluded.account_id,
+              user_id = excluded.user_id,
+              parent_id = excluded.parent_id,
+              record = excluded.record,
+              updated_at = now()
+          `,
+          [mutation.upsert.id, mutation.upsert.accountId, JSON.stringify(mutation.upsert)]
+        );
+      }
+      await client.query("commit");
+      logSlowQuery("persist passkey ceremony", startedAt);
+    } catch (error) {
+      await client.query("rollback").catch((rollbackError: unknown) => {
+        console.error(
+          "Failed to roll back passkey ceremony persistence transaction.",
+          rollbackError
+        );
+      });
+      throw error;
+    }
+  } finally {
+    await client
+      .query("select pg_advisory_unlock(hashtext('soko.cp2.normalized_store'))")
+      .catch((error: unknown) => {
+        console.error("Failed to release passkey ceremony persistence lock.", error);
       });
     client.release();
   }

@@ -83,6 +83,8 @@ services:
         value: "30000"
       - key: DB_QUERY_TIMEOUT_MS
         value: "15000"
+      - key: DB_PERSISTENCE_QUEUE_WARN_MS
+        value: "10000"
       - key: DB_SLOW_QUERY_MS
         value: "500"
       - key: GITHUB_TOKEN
