@@ -195,6 +195,119 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
+  it("persists retry and approved-fallback guidance in chat when the active model is unavailable", async () => {
+    const adapter = failingGenerationAdapter(primaryModelId, "INFERENCE_TIMEOUT");
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId ? adapter : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002007", "Recovery Guidance Shop");
+    await activate(app, owner, primaryModelId);
+    const conversations = await getJson<{ conversations: Array<{ id: string }> }>(
+      app,
+      "/v1/conversations",
+      owner.cookie
+    );
+    const conversationId = conversations.conversations[0]?.id;
+    expect(conversationId).toBeTruthy();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        conversationId,
+        clientMessageId: "binding-chat-recovery-0001",
+        content: { type: "text", text: "Help me with stock" },
+        clientTimestamp: new Date().toISOString(),
+        agent: {
+          businessId: owner.businessId,
+          message: "Help me with stock"
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(200);
+    const responseBody = response.json<{
+      id: string;
+      agentMessage: { content: { type: string; text: string } };
+      runtime: null;
+      processing: { status: string; errorCode: string; retryable: boolean };
+    }>();
+    expect(responseBody).toMatchObject({
+      agentMessage: {
+        content: {
+          type: "text",
+          text: expect.stringMatching(/retry[\s\S]*configure an approved fallback/iu)
+        }
+      },
+      runtime: null,
+      processing: {
+        status: "completed",
+        errorCode: "AGENT_MODEL_UNAVAILABLE",
+        retryable: true
+      }
+    });
+    const persisted = await getJson<{
+      messages: Array<{ clientMessageId: string; content: { type: string; text?: string } }>;
+    }>(app, `/v1/conversations/${conversationId}`, owner.cookie);
+    expect(
+      persisted.messages.find(
+        (message) => message.clientMessageId === `agent-reply-${responseBody.id}`
+      )?.content.text
+    ).toMatch(/approved fallback/iu);
+
+    await app.close();
+  });
+
+  it("guides unconfigured agents to activate a model and approve a fallback within chat", async () => {
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: () => healthyAdapter(primaryModelId)
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002008", "Configuration Guidance Shop");
+    const conversations = await getJson<{ conversations: Array<{ id: string }> }>(
+      app,
+      "/v1/conversations",
+      owner.cookie
+    );
+    const conversationId = conversations.conversations[0]?.id;
+    expect(conversationId).toBeTruthy();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        conversationId,
+        clientMessageId: "binding-chat-configure-0001",
+        content: { type: "text", text: "Can you help?" },
+        clientTimestamp: new Date().toISOString(),
+        agent: {
+          businessId: owner.businessId,
+          message: "Can you help?"
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      agentMessage: {
+        content: {
+          type: "text",
+          text: expect.stringMatching(/Agent settings → Model[\s\S]*hosted fallback/iu)
+        }
+      },
+      processing: {
+        status: "completed",
+        errorCode: "AGENT_MODEL_NOT_CONFIGURED"
+      }
+    });
+
+    await app.close();
+  });
+
   it("rejects unbound chat, cross-shop activation, browser activation, and absent bridges", async () => {
     const adapter = healthyAdapter(primaryModelId);
     const store = createCp2Store({

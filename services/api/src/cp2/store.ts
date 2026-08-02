@@ -433,6 +433,20 @@ export class Cp2Error extends Error {
   }
 }
 
+const recoverableAgentModelChatErrorCodes = new Set([
+  "AGENT_MODEL_NOT_CONFIGURED",
+  "AGENT_MODEL_UNAVAILABLE",
+  "BROWSER_RUNTIME_DISABLED",
+  "BRIDGE_UNAVAILABLE",
+  "MODEL_HEALTH_CHECK_FAILED",
+  "MODEL_UNAVAILABLE",
+  "RUNTIME_UNAVAILABLE"
+]);
+
+function isRecoverableAgentModelChatError(error: unknown): error is Cp2Error {
+  return error instanceof Cp2Error && recoverableAgentModelChatErrorCodes.has(error.code);
+}
+
 interface OtpChallenge {
   id: string;
   channel: AuthChannel;
@@ -5261,15 +5275,48 @@ export class Cp2Store {
     }
 
     const conversationHistory = this.runtimeConversationHistory(conversation.id, message.id);
-    const runtime = await this.createRuntimeTurn({
-      sessionId: input.sessionId,
-      businessId: input.businessId,
-      ...(input.runtimeSessionId === undefined ? {} : { runtimeSessionId: input.runtimeSessionId }),
-      message: input.message,
-      conversationHistory,
-      ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
-      now
-    });
+    let runtime: RuntimeTurnResult;
+    try {
+      runtime = await this.createRuntimeTurn({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        ...(input.runtimeSessionId === undefined
+          ? {}
+          : { runtimeSessionId: input.runtimeSessionId }),
+        message: input.message,
+        conversationHistory,
+        ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
+        now
+      });
+    } catch (error) {
+      if (!isRecoverableAgentModelChatError(error)) throw error;
+
+      const agentMessage = this.createConversationMessage({
+        sessionId: input.sessionId,
+        conversationId: conversation.id,
+        clientMessageId: `agent-reply-${message.id}`,
+        idempotencyKey: `soko-agent-reply:${message.id}`,
+        author: "agent",
+        content: {
+          type: "text",
+          text: this.agentModelRecoveryGuidance(input.businessId, error)
+        },
+        replyToMessageId: message.id,
+        clientTimestamp: now.toISOString(),
+        now
+      });
+      return {
+        message: this.markAgentProcessedMessageDelivered(message, now),
+        agentMessage,
+        runtime: null,
+        processing: {
+          correlationId: message.id,
+          status: "completed",
+          errorCode: error.code,
+          retryable: error.retryable ?? true
+        }
+      };
+    }
     const confirmationToken = runtime.turn.plan.confirmationToken;
     const agentMessage = this.createConversationMessage({
       sessionId: input.sessionId,
@@ -5289,25 +5336,7 @@ export class Cp2Store {
       clientTimestamp: now.toISOString(),
       now
     });
-    const deliveredMessage =
-      message.status === "failed"
-        ? {
-            ...message,
-            status: "delivered" as const,
-            failureCode: null,
-            nextRetryAt: null
-          }
-        : message;
-    if (deliveredMessage !== message) {
-      this.conversationMessages.set(message.id, deliveredMessage);
-      this.recordConversationSyncForParticipants(
-        conversation.id,
-        "conversation_messages",
-        deliveredMessage.id,
-        deliveredMessage,
-        now
-      );
-    }
+    const deliveredMessage = this.markAgentProcessedMessageDelivered(message, now);
 
     return {
       message: deliveredMessage,
@@ -5320,6 +5349,59 @@ export class Cp2Store {
         retryable: false
       }
     };
+  }
+
+  private markAgentProcessedMessageDelivered(
+    message: ConversationMessageSummary,
+    now: Date
+  ): ConversationMessageSummary {
+    if (message.status !== "failed") return message;
+
+    const deliveredMessage: ConversationMessageSummary = {
+      ...message,
+      status: "delivered",
+      failureCode: null,
+      nextRetryAt: null
+    };
+    this.conversationMessages.set(message.id, deliveredMessage);
+    this.recordConversationSyncForParticipants(
+      message.conversationId,
+      "conversation_messages",
+      deliveredMessage.id,
+      deliveredMessage,
+      now
+    );
+    return deliveredMessage;
+  }
+
+  private agentModelRecoveryGuidance(businessId: string, error: Cp2Error): string {
+    const profile = this.agentProfiles.get(businessId);
+    const binding = profile === undefined ? null : this.activeAgentModelBinding(profile.agentId);
+    if (binding === null) {
+      return [
+        "I can’t use a working model for this chat yet, but your message is saved.",
+        "To continue:",
+        "1. Open Agent settings → Model.",
+        "2. Test an available model, then activate it for this agent.",
+        "3. To keep chat available during model outages, select a hosted fallback, approve cloud fallback access, and activate the configuration.",
+        "4. Return here and send your message again."
+      ].join("\n");
+    }
+
+    const modelName =
+      aiModelRegistry.find((model) => model.id === binding.modelId)?.label ?? binding.modelId;
+    const approvedFallbackConfigured =
+      binding.permissions.allowOpenAIFallback && binding.fallbackModelId !== null;
+    return [
+      `I couldn’t reach ${modelName}, but your message is saved.`,
+      "To continue:",
+      "1. Retry in a moment, or open Agent settings → Model and run the model test.",
+      approvedFallbackConfigured
+        ? "2. An approved fallback is configured but did not produce a reply. Test it or select another approved fallback, then reactivate the configuration."
+        : "2. Configure an approved fallback by selecting an available hosted model, approving cloud fallback access, and reactivating the model configuration.",
+      "3. Return here and send your message again.",
+      `Reference: ${error.code}.`
+    ].join("\n");
   }
 
   private runtimeConversationHistory(
