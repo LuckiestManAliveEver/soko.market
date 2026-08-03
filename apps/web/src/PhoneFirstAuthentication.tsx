@@ -8,6 +8,7 @@ import type { AuthSessionView } from "@soko/shared-types";
 import { normalizePhoneInput, phoneNormalizationErrorMessage } from "@soko/shared-types";
 import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
 import { apiFetch } from "./lib/api";
+import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
@@ -317,6 +318,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
     <main className="setup-grid auth-landing-grid" id={initialMode}>
       <section className="panel auth-card">
         <div className="section-heading">
+          <AppIcon className="auth-brand-icon" />
           <p className="eyebrow">SECURE ACCOUNT ACCESS</p>
           <h1>Welcome to soko.market</h1>
         </div>

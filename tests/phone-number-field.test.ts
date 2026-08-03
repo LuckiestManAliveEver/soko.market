@@ -18,7 +18,9 @@ describe("shared phone-number field", () => {
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     expect(phoneFirst).toContain("<PhoneNumberField");
-    expect(application.match(/<PhoneNumberField/gu)).toHaveLength(4);
+    expect(application.match(/<PhoneNumberField/gu)).toHaveLength(2);
+    expect(application).not.toContain("function SetupPanel");
+    expect(application).not.toContain("function LoginPanel");
     expect(application).not.toContain("return `${countryCode}${phone}`");
   });
 });

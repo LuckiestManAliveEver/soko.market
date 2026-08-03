@@ -102,6 +102,7 @@ describe("PWA installability", () => {
     const icon = readFileSync(`${publicDirectory}/icons/soko-icon.svg`, "utf8");
     const iconComponent = readFileSync("apps/web/src/AppIcon.tsx", "utf8");
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const router = readFileSync("apps/web/src/AppRouter.tsx", "utf8");
     const legalPages = [
       "apps/web/src/legal/AccountDeletionPage.tsx",
@@ -113,7 +114,7 @@ describe("PWA installability", () => {
     expect(icon).toContain('viewBox="100 50 480 480"');
     expect(iconComponent).toContain('src="/icons/soko-icon.svg"');
     expect(application).toContain('<AppIcon className="logo-mark" />');
-    expect(application).toContain('<AppIcon className="auth-brand-icon" />');
+    expect(phoneFirst).toContain('<AppIcon className="auth-brand-icon" />');
     expect(router).toContain('<AppIcon className="route-brand-icon" />');
     for (const legalPage of legalPages) {
       expect(legalPage).toContain('<AppIcon className="legal-brand-icon" />');

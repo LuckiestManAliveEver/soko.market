@@ -9,10 +9,8 @@ import {
 } from "react";
 import {
   browserSupportsWebAuthn,
-  startAuthentication,
   startRegistration,
-  type PublicKeyCredentialCreationOptionsJSON,
-  type PublicKeyCredentialRequestOptionsJSON
+  type PublicKeyCredentialCreationOptionsJSON
 } from "@simplewebauthn/browser";
 import type { CountryCode } from "libphonenumber-js";
 import {
@@ -181,7 +179,7 @@ import {
   scheduleOwnerNavigationSessionWrite
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
-import { getAccountLoginErrorMessage, getUserFacingErrorMessage } from "./user-facing-error";
+import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
   ApiRequestError,
   apiFetch,
@@ -266,13 +264,6 @@ const chatAttachmentAccept = [
   ".xlsx",
   ".xml"
 ].join(",");
-
-interface OtpRequestResponse {
-  challengeId: string;
-  destination: string;
-  expiresAt: string;
-  devOtp?: string;
-}
 
 interface MarketplaceIntroStateSummary {
   completedAt: string | null;
@@ -370,11 +361,6 @@ interface PasskeyRegistrationOptionsResponse {
   options: PublicKeyCredentialCreationOptionsJSON;
 }
 
-interface PasskeyAuthenticationOptionsResponse {
-  ceremonyId: string;
-  options: PublicKeyCredentialRequestOptionsJSON;
-}
-
 interface PasskeyListResponse {
   passkeys: PasskeySummary[];
 }
@@ -414,10 +400,6 @@ interface BeforeInstallPromptEvent extends Event {
     outcome: "accepted" | "dismissed";
     platform: string;
   }>;
-}
-
-interface PinStatusResponse {
-  hasPin: boolean;
 }
 
 interface BusinessResponse {
@@ -483,18 +465,15 @@ interface AgentRuntimeProfile {
 }
 
 interface SetupDraft {
-  channel: AuthChannel;
   countryCode: CountryDialCode;
-  destination: string;
   businessName: string;
   language: SupportedLanguage;
-  completedStep: 0 | 1 | 2;
+  completedStep: 1 | 2;
 }
 
 interface OwnerAuthRecord {
   contact: string;
   countryCode: CountryDialCode;
-  pinSet?: boolean;
   provider?: SocialSignupProvider;
 }
 
@@ -2144,37 +2123,8 @@ export function OwnerApp() {
   const initialNavigationSession = readOwnerNavigationSession(
     initialCachedSession?.account.id ?? null
   );
-  const [channel, setChannel] = useState<AuthChannel>(
-    initialOwnerAuth === null ? "email" : initialOwnerAuth.contact.includes("@") ? "email" : "phone"
-  );
-  const [countryCode, setCountryCode] = useState<CountryDialCode>(
-    initialOwnerAuth?.countryCode ??
-      initialSetupDraft?.countryCode ??
-      inferCountryCode(initialSetupDraft?.destination ?? "") ??
-      "+254"
-  );
-  const [destination, setDestination] = useState(
-    initialOwnerAuth !== null
-      ? initialOwnerAuth.contact.includes("@")
-        ? initialOwnerAuth.contact
-        : stripDialCode(initialOwnerAuth.contact, initialOwnerAuth.countryCode)
-      : initialSetupDraft?.channel === "phone"
-        ? stripDialCode(initialSetupDraft.destination, initialSetupDraft.countryCode)
-        : (initialSetupDraft?.destination ?? "")
-  );
-  const [challenge, setChallenge] = useState<OtpRequestResponse | null>(null);
-  const [otp, setOtp] = useState("");
-  const [isOtpVerified, setIsOtpVerified] = useState(false);
-  const [signupPin, setSignupPin] = useState("");
-  const [signupPinConfirm, setSignupPinConfirm] = useState("");
-  const [loginPin, setLoginPin] = useState("");
-  const [isRecoveringPin, setIsRecoveringPin] = useState(false);
-  const [hasLoginPin, setHasLoginPin] = useState(initialOwnerAuth?.pinSet ?? true);
-  const [recoveryPin, setRecoveryPin] = useState("");
-  const [recoveryPinConfirm, setRecoveryPinConfirm] = useState("");
-  // Retained until all deployed PIN-only accounts have password credentials. The new auth screen
-  // does not invoke these setters directly, but compatibility actions below still use their state.
-  void setCountryCode;
+  const initialCountryCode: CountryDialCode =
+    initialOwnerAuth?.countryCode ?? initialSetupDraft?.countryCode ?? "+254";
   const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
   const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
     initialCachedSession === null ? "initializing" : "offline-authenticated"
@@ -2184,15 +2134,14 @@ export function OwnerApp() {
   const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
   const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
   const [businessSetupStep, setBusinessSetupStep] = useState<"phone" | "details">("phone");
-  const [shopPhoneCountryCode, setShopPhoneCountryCode] = useState<CountryDialCode>(countryCode);
+  const [shopPhoneCountryCode, setShopPhoneCountryCode] =
+    useState<CountryDialCode>(initialCountryCode);
   const [shopPhoneNumber, setShopPhoneNumber] = useState(
     initialOwnerAuth !== null && !initialOwnerAuth.contact.includes("@")
       ? initialOwnerAuth.contact
       : ""
   );
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
-  const [ownerAuth, setOwnerAuth] = useState<OwnerAuthRecord | null>(initialOwnerAuth);
-  const [isWorkspaceUnlocked, setIsWorkspaceUnlocked] = useState(true);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
@@ -2311,12 +2260,9 @@ export function OwnerApp() {
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
 
   const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
-  const shouldShowLogin =
-    !authBootstrapPending &&
-    !isSignupOpen &&
-    (isLoginOpen || (ownerAuth !== null && !isWorkspaceUnlocked));
+  const shouldShowLogin = !authBootstrapPending && !isSignupOpen && isLoginOpen;
   const setupComplete = business !== null && !shouldShowLogin && !authBootstrapPending;
-  const shouldShowSignup = isSignupOpen && (session === null || !hasLoginPin);
+  const shouldShowSignup = isSignupOpen && session === null;
   const isAuthScreen =
     authBootstrapPending || shouldShowSignup || shouldShowLogin || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
@@ -2391,10 +2337,6 @@ export function OwnerApp() {
   }
 
   function openSignup() {
-    setChannel("email");
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
     setIsBusinessSetupOpen(false);
     setIsLoginOpen(false);
     setIsSignupOpen(true);
@@ -2402,9 +2344,6 @@ export function OwnerApp() {
   }
 
   function openLogin() {
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(true);
@@ -2718,21 +2657,26 @@ export function OwnerApp() {
       localStorage.removeItem(setupDraftStorageKey);
       return;
     }
-    if (session === null && destination.trim().length === 0 && businessName.trim().length === 0) {
+    if (!isBusinessSetupOpen && businessName.trim().length === 0) {
       localStorage.removeItem(setupDraftStorageKey);
       return;
     }
 
     const draft: SetupDraft = {
-      channel,
-      countryCode,
-      destination,
+      countryCode: shopPhoneCountryCode,
       businessName,
       language,
-      completedStep: session === null ? 0 : 1
+      completedStep: businessSetupStep === "phone" ? 1 : 2
     };
     localStorage.setItem(setupDraftStorageKey, JSON.stringify(draft));
-  }, [business, businessName, channel, countryCode, destination, language, session]);
+  }, [
+    business,
+    businessName,
+    businessSetupStep,
+    isBusinessSetupOpen,
+    language,
+    shopPhoneCountryCode
+  ]);
 
   useEffect(() => {
     if (business !== null) {
@@ -3104,39 +3048,28 @@ export function OwnerApp() {
   }
 
   function acceptAuthenticatedSession(response: SessionResponse) {
+    logAuthenticationLifecycle("session_response_received", response);
     setSession(response);
     saveCachedAuthSession(response);
+    logAuthenticationLifecycle("frontend_session_stored", response);
     setAuthBootstrapState("authenticated");
-    setIsWorkspaceUnlocked(true);
     setIsLoginOpen(false);
   }
 
-  async function completePhoneFirstAuthentication(response: SessionResponse) {
+  function completePhoneFirstAuthentication(response: SessionResponse) {
     acceptAuthenticatedSession(response);
-    let pinSet = false;
-
-    try {
-      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
-      pinSet = pinStatus.hasPin;
-    } catch {
-      // Modern password/passkey access does not require a legacy PIN. Keep the local compatibility
-      // flag disabled when the database-backed status cannot be read.
-    }
 
     const nextOwnerAuth: OwnerAuthRecord = {
       contact: response.account.primaryAuthDestination,
       countryCode:
         response.account.primaryAuthChannel === "phone"
-          ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
-          : countryCode,
-      pinSet
+          ? (inferCountryCode(response.account.primaryAuthDestination) ?? initialCountryCode)
+          : initialCountryCode
     };
-    setOwnerAuth(nextOwnerAuth);
     localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-    setHasLoginPin(pinSet);
-    setIsWorkspaceUnlocked(true);
     setIsSignupOpen(false);
     setIsLoginOpen(false);
+    logAuthenticationLifecycle("redirect_issued", response);
     navigateToView("chat", { replace: true, mode: "marketplace" });
     setStatusMessage("Authentication complete");
   }
@@ -3144,9 +3077,6 @@ export function OwnerApp() {
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     acceptAuthenticatedSession(response);
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
     let networkStatus = "";
 
     try {
@@ -3173,13 +3103,10 @@ export function OwnerApp() {
 
       const nextOwnerAuth: OwnerAuthRecord = {
         contact: `oauth:${provider}:${response.account.id}`,
-        countryCode,
-        pinSet: true,
+        countryCode: initialCountryCode,
         provider
       };
-      setOwnerAuth(nextOwnerAuth);
       localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      setIsWorkspaceUnlocked(true);
       navigateToView("chat", { replace: true });
       setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete.${networkStatus}`);
       return;
@@ -3187,14 +3114,11 @@ export function OwnerApp() {
 
     const nextOwnerAuth: OwnerAuthRecord = {
       contact: `oauth:${provider}:${response.account.id}`,
-      countryCode,
-      pinSet: true,
+      countryCode: initialCountryCode,
       provider
     };
-    setOwnerAuth(nextOwnerAuth);
     localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
     localStorage.removeItem(setupDraftStorageKey);
-    setIsWorkspaceUnlocked(true);
     navigateToView("chat", { replace: true, mode: "marketplace" });
     setIsSignupOpen(false);
     setStatusMessage(
@@ -3214,7 +3138,6 @@ export function OwnerApp() {
       setSession(nextSession);
       saveCachedAuthSession(nextSession);
       setAuthBootstrapState("authenticated");
-      setIsWorkspaceUnlocked(true);
       if (!accountDeletionIntent && !accountRestorationIntent) {
         setIsLoginOpen(false);
       }
@@ -3228,7 +3151,6 @@ export function OwnerApp() {
         setSession(cached);
         setBusiness(storedBusiness);
         setAuthBootstrapState("offline-authenticated");
-        setIsWorkspaceUnlocked(true);
         setIsLoginOpen(false);
         setStatusMessage("Offline workspace restored. Cloud data will refresh after reconnect.");
         return;
@@ -3239,7 +3161,7 @@ export function OwnerApp() {
         clearCachedAuthSession();
         setAuthBootstrapState("reauthentication-required");
         if (storedBusiness === null) setBusiness(null);
-        if (ownerAuth !== null) setIsLoginOpen(true);
+        if (initialOwnerAuth !== null) setIsLoginOpen(true);
         setStatusMessage("Sign in to continue");
         return;
       }
@@ -3314,124 +3236,6 @@ export function OwnerApp() {
     setStatusMessage("Saved workspace loaded");
   }
 
-  async function requestOtp() {
-    const contactValue = destination.trim().toLowerCase();
-
-    if (!isValidContact("email", contactValue)) {
-      setStatusMessage("Enter a valid email address");
-      return;
-    }
-
-    setChallenge(null);
-    setOtp("");
-
-    try {
-      const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        method: "email",
-        contact: contactValue,
-        deliveryChannel: "email",
-        purpose: "signup"
-      });
-      setChallenge(response);
-      setOtp(response.devOtp ?? "");
-      setIsOtpVerified(false);
-      setStatusMessage(`Verification code sent to ${response.destination}`);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function verifyOtp() {
-    if (challenge === null) {
-      setStatusMessage("Request a verification code first");
-      return;
-    }
-
-    const contactValue = destination.trim().toLowerCase();
-
-    if (!isValidContact("email", contactValue)) {
-      setStatusMessage("Enter a valid email address");
-      return;
-    }
-
-    try {
-      const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: "email",
-        contact: contactValue,
-        challengeId: challenge.challengeId,
-        otp
-      });
-      acceptAuthenticatedSession(response);
-      setIsOtpVerified(true);
-      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
-      setHasLoginPin(pinStatus.hasPin);
-
-      if (pinStatus.hasPin) {
-        const nextOwnerAuth: OwnerAuthRecord = {
-          contact: contactValue,
-          countryCode,
-          pinSet: true
-        };
-        setOwnerAuth(nextOwnerAuth);
-        setIsWorkspaceUnlocked(true);
-        navigateToView("chat", { replace: true, mode: "marketplace" });
-        setIsSignupOpen(false);
-        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-        localStorage.removeItem(setupDraftStorageKey);
-        setStatusMessage(
-          "Login complete. Browse the marketplace or tap Sell to set up a business."
-        );
-        return;
-      }
-
-      setStatusMessage("Email verified. Add a passkey and create your login PIN.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function signupWithPhonePin() {
-    const contactValue = composeSignupContact("phone", countryCode, destination);
-
-    if (!isSignupContactValid("phone", countryCode, destination)) {
-      setStatusMessage("Enter a valid phone number");
-      return;
-    }
-
-    if (!isValidPin(signupPin) || signupPin !== signupPinConfirm) {
-      setStatusMessage("Enter and confirm a 4-digit PIN");
-      return;
-    }
-
-    try {
-      const response = await postJson<SessionResponse>("/auth/pin/signup", {
-        method: "phone",
-        contact: contactValue,
-        country: getCountryDialCode(countryCode).countryCode,
-        pin: signupPin
-      });
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: response.account.primaryAuthDestination,
-        countryCode: inferCountryCode(response.account.primaryAuthDestination) ?? countryCode,
-        pinSet: true
-      };
-      acceptAuthenticatedSession(response);
-      setOwnerAuth(nextOwnerAuth);
-      setHasLoginPin(true);
-      setIsWorkspaceUnlocked(true);
-      setSignupPin("");
-      setSignupPinConfirm("");
-      setIsBusinessSetupOpen(false);
-      navigateToView("chat", { replace: true, mode: "marketplace" });
-      setIsSignupOpen(false);
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Phone account created. Add a passkey to enable secure PIN recovery.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   async function authenticateSocialProfile(provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     const providerConfig = oauthProviders.find((item) => item.id === provider);
@@ -3466,349 +3270,6 @@ export function OwnerApp() {
     }
   }
 
-  function updateOwnerPinSet(pinSet: boolean) {
-    setHasLoginPin(pinSet);
-    setOwnerAuth((current) => {
-      if (current === null) {
-        return current;
-      }
-
-      const next = {
-        ...current,
-        pinSet
-      };
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(next));
-      return next;
-    });
-  }
-
-  async function requestLoginOtp() {
-    if (channel !== "email") {
-      setStatusMessage("Phone accounts use PIN-only sign in.");
-      return;
-    }
-
-    const contactValue = destination.trim().toLowerCase();
-
-    if (!isValidContact("email", contactValue)) {
-      setStatusMessage("Enter a valid email address");
-      return;
-    }
-
-    setChallenge(null);
-    setOtp("");
-
-    try {
-      const response = await postJson<OtpRequestResponse>("/auth/otp/request", {
-        method: "email",
-        contact: contactValue,
-        deliveryChannel: "email",
-        purpose: "recovery"
-      });
-      setChallenge(response);
-      setOtp(response.devOtp ?? "");
-      setIsOtpVerified(false);
-      setStatusMessage(`OTP sent to ${response.destination}`);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function verifyLoginOtp() {
-    if (challenge === null) {
-      setStatusMessage("Request an email verification code first");
-      return;
-    }
-
-    if (channel !== "email") {
-      setStatusMessage("Phone accounts use PIN-only sign in.");
-      return;
-    }
-
-    const contactValue = destination.trim().toLowerCase();
-
-    if (!isValidContact("email", contactValue)) {
-      setStatusMessage("Enter a valid email address");
-      return;
-    }
-
-    try {
-      const response = await postJson<SessionResponse>("/auth/otp/verify", {
-        method: "email",
-        contact: contactValue,
-        challengeId: challenge.challengeId,
-        otp
-      });
-      acceptAuthenticatedSession(response);
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: response.account.primaryAuthDestination,
-        countryCode:
-          response.account.primaryAuthChannel === "phone"
-            ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
-            : countryCode,
-        pinSet: true
-      };
-      setOwnerAuth(nextOwnerAuth);
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      const pinStatus = await getJson<PinStatusResponse>("/auth/pin/status");
-      updateOwnerPinSet(pinStatus.hasPin);
-      if (!pinStatus.hasPin) {
-        setIsRecoveringPin(false);
-      }
-      setIsOtpVerified(true);
-      setStatusMessage(
-        pinStatus.hasPin
-          ? isRecoveringPin
-            ? "OTP verified. Reset your login PIN."
-            : "OTP verified. Enter your login PIN."
-          : "OTP verified. Set your login PIN once."
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  function startPinRecovery() {
-    setIsRecoveringPin(true);
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
-    setLoginPin("");
-    setRecoveryPin("");
-    setRecoveryPinConfirm("");
-    setStatusMessage(
-      channel === "phone"
-        ? "Set a new PIN, then verify your phone passkey to authorize the reset."
-        : "Use your recovery contact to verify the account, then set a new PIN."
-    );
-  }
-
-  function cancelPinRecovery() {
-    setIsRecoveringPin(false);
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
-    setRecoveryPin("");
-    setRecoveryPinConfirm("");
-    setStatusMessage("Enter your login contact and PIN.");
-  }
-
-  async function loginWithPin() {
-    const contactValue = composeSignupContact(channel, countryCode, destination);
-
-    if (ownerAuth !== null && contactValue !== ownerAuth.contact) {
-      setStatusMessage("Contact does not match this account");
-      return;
-    }
-
-    if (!isValidPin(loginPin)) {
-      setStatusMessage("Enter your 4-digit PIN");
-      return;
-    }
-
-    try {
-      const response = await postJson<SessionResponse>("/auth/pin/login", {
-        method: channel,
-        contact: contactValue,
-        ...(channel === "phone" ? { country: getCountryDialCode(countryCode).countryCode } : {}),
-        pin: loginPin
-      });
-      logAuthenticationLifecycle("session_response_received", response);
-      acceptAuthenticatedSession(response);
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: contactValue,
-        countryCode,
-        pinSet: true
-      };
-      setOwnerAuth(nextOwnerAuth);
-      setHasLoginPin(true);
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      setIsWorkspaceUnlocked(true);
-      setIsLoginOpen(false);
-      setIsOtpVerified(false);
-      setLoginPin("");
-      logAuthenticationLifecycle("frontend_session_stored", response);
-      if (accountRestorationIntent) {
-        setIsAccountRestorationOpen(true);
-        setStatusMessage("Login complete. Re-enter your PIN to restore the account.");
-        return;
-      }
-      const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
-      logAuthenticationLifecycle("redirect_issued", response, {
-        destination: pathForOwnerView(destinationView, mode)
-      });
-      setView(destinationView);
-      navigateToOwnerRoute({ mode, view: destinationView }, { replace: true });
-      setStatusMessage("Login complete");
-    } catch (error) {
-      setStatusMessage(getAccountLoginErrorMessage(error));
-    }
-  }
-
-  async function loginWithPasskey() {
-    if (!browserSupportsWebAuthn()) {
-      setStatusMessage("Passkeys are not supported in this browser.");
-      return;
-    }
-
-    try {
-      const challenge = await postJson<PasskeyAuthenticationOptionsResponse>(
-        "/auth/passkeys/login/options",
-        {}
-      );
-      const credential = await startAuthentication({
-        optionsJSON: challenge.options
-      });
-      const response = await postJson<SessionResponse>("/auth/passkeys/login/verify", {
-        ceremonyId: challenge.ceremonyId,
-        response: credential
-      });
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: response.account.primaryAuthDestination,
-        countryCode:
-          response.account.primaryAuthChannel === "phone"
-            ? (inferCountryCode(response.account.primaryAuthDestination) ?? countryCode)
-            : countryCode,
-        pinSet: true
-      };
-      acceptAuthenticatedSession(response);
-      setOwnerAuth(nextOwnerAuth);
-      setHasLoginPin(true);
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      setIsWorkspaceUnlocked(true);
-      setIsLoginOpen(false);
-      setIsOtpVerified(false);
-      setLoginPin("");
-      if (accountRestorationIntent) {
-        setIsAccountRestorationOpen(true);
-        setStatusMessage("Passkey login complete. Confirm restoration to continue.");
-        return;
-      }
-      const destinationView = accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat");
-      setView(destinationView);
-      navigateToOwnerRoute({ mode, view: destinationView }, { replace: true });
-      setStatusMessage("Passkey login complete");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function registerCurrentDevicePasskey() {
-    if (!browserSupportsWebAuthn()) {
-      setStatusMessage("Passkeys are not supported in this browser.");
-      return;
-    }
-
-    try {
-      const challenge = await postJson<PasskeyRegistrationOptionsResponse>(
-        "/auth/passkeys/register/options",
-        {}
-      );
-      const credential = await startRegistration({
-        optionsJSON: challenge.options
-      });
-      await postJson<PasskeySummary>("/auth/passkeys/register/verify", {
-        ceremonyId: challenge.ceremonyId,
-        label: passkeyDeviceLabel(),
-        response: credential
-      });
-      setStatusMessage("Passkey added. This device can now sign in and authorize PIN recovery.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function recoverLoginPin() {
-    if (channel === "phone") {
-      if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
-        setStatusMessage("Enter and confirm a new 4-digit PIN");
-        return;
-      }
-      if (!browserSupportsWebAuthn()) {
-        setStatusMessage("Passkeys are not supported in this browser.");
-        return;
-      }
-
-      try {
-        const challenge = await postJson<PasskeyAuthenticationOptionsResponse>(
-          "/auth/passkeys/login/options",
-          { purpose: "pin_recovery" }
-        );
-        const credential = await startAuthentication({
-          optionsJSON: challenge.options
-        });
-        await postJson<SessionResponse>("/auth/passkeys/login/verify", {
-          ceremonyId: challenge.ceremonyId,
-          response: credential
-        });
-        const response = await postJson<SessionResponse>("/auth/pin/recover/passkey", {
-          pin: recoveryPin
-        });
-        const nextOwnerAuth: OwnerAuthRecord = {
-          contact: response.account.primaryAuthDestination,
-          countryCode: inferCountryCode(response.account.primaryAuthDestination) ?? countryCode,
-          pinSet: true
-        };
-        acceptAuthenticatedSession(response);
-        setOwnerAuth(nextOwnerAuth);
-        setHasLoginPin(true);
-        setRecoveryPin("");
-        setRecoveryPinConfirm("");
-        setIsRecoveringPin(false);
-        setIsWorkspaceUnlocked(true);
-        setIsLoginOpen(false);
-        navigateToView("chat", { replace: true });
-        localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-        setStatusMessage("Passkey verified. PIN reset and login complete.");
-      } catch (error) {
-        setStatusMessage(getErrorMessage(error));
-      }
-      return;
-    }
-
-    if (session === null) {
-      setStatusMessage("Verify the email address before resetting your PIN");
-      return;
-    }
-
-    const contactValue = composeSignupContact(channel, countryCode, destination);
-
-    if (
-      channel !== session.account.primaryAuthChannel ||
-      contactValue !== session.account.primaryAuthDestination
-    ) {
-      setStatusMessage("The recovery contact does not match the verified account");
-      return;
-    }
-
-    if (!isOtpVerified) {
-      setStatusMessage("Complete recovery verification before resetting your PIN");
-      return;
-    }
-
-    if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
-      setStatusMessage("Enter and confirm a new 4-digit PIN");
-      return;
-    }
-
-    try {
-      await postJson<SessionResponse>("/auth/pin/recover", {
-        pin: recoveryPin
-      });
-      updateOwnerPinSet(true);
-      setIsWorkspaceUnlocked(true);
-      setIsLoginOpen(false);
-      setIsRecoveringPin(false);
-      setLoginPin("");
-      setRecoveryPin("");
-      setRecoveryPinConfirm("");
-      navigateToView("chat", { replace: true });
-      setStatusMessage("PIN reset. Login complete");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   function completeAccountRestoration(result: AccountRestorationResult) {
     const nextBusiness: ActiveBusiness = {
       ...result.business,
@@ -3818,7 +3279,6 @@ export function OwnerApp() {
     setBusiness(nextBusiness);
     setAgentSettings(nextAgent);
     setIsAccountRestorationOpen(false);
-    setIsWorkspaceUnlocked(true);
     setMode("seller");
     setView("chat");
     localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
@@ -3826,94 +3286,6 @@ export function OwnerApp() {
     navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
     setStatusMessage("Account restored. Shop access is active again.");
   }
-
-  async function setMissingLoginPin() {
-    if (!isOtpVerified) {
-      setStatusMessage("Complete recovery verification before setting your PIN");
-      return;
-    }
-
-    if (!isValidPin(recoveryPin) || recoveryPin !== recoveryPinConfirm) {
-      setStatusMessage("Enter and confirm a 4-digit PIN");
-      return;
-    }
-
-    try {
-      await postJson<SessionResponse>("/auth/pin/setup", {
-        pin: recoveryPin
-      });
-      updateOwnerPinSet(true);
-      setIsWorkspaceUnlocked(true);
-      setIsLoginOpen(false);
-      setIsRecoveringPin(false);
-      setLoginPin("");
-      setRecoveryPin("");
-      setRecoveryPinConfirm("");
-      navigateToView("chat", { replace: true });
-      setStatusMessage("PIN set. Login complete");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function completeSignup() {
-    if (session === null) {
-      setStatusMessage("Sign in before creating your owner PIN");
-      return;
-    }
-
-    if (!isValidPin(signupPin) || signupPin !== signupPinConfirm) {
-      setStatusMessage("Enter and confirm a 4-digit PIN");
-      return;
-    }
-
-    try {
-      await postJson<SessionResponse>("/auth/pin/setup", {
-        pin: signupPin
-      });
-      const contactValue =
-        channel === "email"
-          ? destination.trim().toLowerCase()
-          : composeSignupContact(channel, countryCode, destination);
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: contactValue,
-        countryCode,
-        pinSet: true
-      };
-      setOwnerAuth(nextOwnerAuth);
-      setHasLoginPin(true);
-      setIsWorkspaceUnlocked(true);
-      setSignupPin("");
-      setSignupPinConfirm("");
-      navigateToView("chat", { replace: true, mode: "marketplace" });
-      setIsSignupOpen(false);
-      setIsBusinessSetupOpen(false);
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      localStorage.removeItem(setupDraftStorageKey);
-      setStatusMessage("Signup complete. Tap Sell when you are ready to register your shop.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  // Legacy PIN/OTP actions are deliberately isolated from the mounted phone-first UI. Keeping the
-  // callable paths for one compatibility release prevents existing PIN-only accounts from being
-  // stranded while server-side credential migration is completed.
-  void [
-    requestOtp,
-    verifyOtp,
-    signupWithPhonePin,
-    requestLoginOtp,
-    verifyLoginOtp,
-    startPinRecovery,
-    cancelPinRecovery,
-    loginWithPin,
-    loginWithPasskey,
-    registerCurrentDevicePasskey,
-    recoverLoginPin,
-    setMissingLoginPin,
-    completeSignup
-  ];
 
   async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
     if (session === null) {
@@ -3972,7 +3344,6 @@ export function OwnerApp() {
       const nextAgent = createDefaultAgent(nextBusiness);
       setBusiness(nextBusiness);
       setAgentSettings(nextAgent);
-      setIsWorkspaceUnlocked(true);
       setIsBusinessSetupOpen(false);
       setMode("seller");
       navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
@@ -5643,7 +5014,6 @@ export function OwnerApp() {
         return;
       }
 
-      setChannel("email");
       setBusinessSetupStep(
         typeof session.user.phoneNumberE164 === "string" && session.user.phoneNumberE164.length > 0
           ? "details"
@@ -6336,11 +5706,9 @@ export function OwnerApp() {
     sessionStorage.removeItem(pendingOAuthStorageKey);
     setSession(null);
     setBusiness(null);
-    setOwnerAuth(null);
     setAgentSettings(createDefaultAgent(null));
     setAuthBootstrapState("unauthenticated");
     setBusinessName("");
-    setDestination("");
     setShopPhoneNumber("");
     setProducts([]);
     setRoutedProductId(null);
@@ -6397,15 +5765,6 @@ export function OwnerApp() {
     setActiveConversation(null);
     setE2eeIdentity(null);
     setReplyToMessageId(null);
-    setChallenge(null);
-    setOtp("");
-    setIsOtpVerified(false);
-    setSignupPin("");
-    setSignupPinConfirm("");
-    setLoginPin("");
-    setIsRecoveringPin(false);
-    setRecoveryPin("");
-    setRecoveryPinConfirm("");
     setView("chat");
     setMode("marketplace");
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
@@ -6415,7 +5774,6 @@ export function OwnerApp() {
     setIsLoginOpen(false);
     setIsAccountRestorationOpen(false);
     setStatusMessage(message);
-    setIsWorkspaceUnlocked(true);
   }
 
   async function logout(allSessions = false) {
@@ -7970,7 +7328,6 @@ export function OwnerApp() {
             onCancel={() => {
               setIsSignupOpen(false);
               setIsLoginOpen(false);
-              setIsWorkspaceUnlocked(true);
               setStatusMessage("Marketplace ready. Tap Sell when you want to register a shop.");
             }}
           />
@@ -8281,347 +7638,6 @@ function PrimaryNavigation({
   );
 }
 
-interface SetupPanelProps {
-  countryCode: CountryDialCode;
-  destination: string;
-  challenge: OtpRequestResponse | null;
-  otp: string;
-  signupPin: string;
-  signupPinConfirm: string;
-  session: SessionResponse | null;
-  statusMessage: string;
-  isRequestPending: boolean;
-  isVerifyPending: boolean;
-  isCompletePending: boolean;
-  isPhoneSignupPending: boolean;
-  isPasskeyPending: boolean;
-  isSocialPending: boolean;
-  passkeySupported: boolean;
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  onChannelChange: (channel: AuthChannel) => void;
-  onCountryCodeChange: (countryCode: CountryDialCode) => void;
-  onDestinationChange: (destination: string) => void;
-  onOtpChange: (otp: string) => void;
-  onRequestOtp: () => void;
-  onVerifyOtp: () => void;
-  onCompleteSignup: () => void;
-  onRegisterPasskey: () => void;
-  onSocialSignup: (provider: SocialSignupProvider) => void;
-  onSignupPinChange: (pin: string) => void;
-  onSignupPinConfirmChange: (pin: string) => void;
-  onSignupWithPhonePin: () => void;
-}
-
-interface SocialLoginOptionsProps {
-  mode: "signup" | "login";
-  onSelectPasskey?: () => void;
-  onSelectPhone?: () => void;
-  onSelectEmail?: () => void;
-  onSelectSocial?: (provider: SocialSignupProvider) => void;
-  providers?: OAuthProviderSummary[];
-  providersLoaded?: boolean;
-  passkeyPending?: boolean;
-  passkeySupported?: boolean;
-  socialPending?: boolean;
-}
-
-function SocialLoginOptions(props: SocialLoginOptionsProps) {
-  return (
-    <>
-      <AuthBrand />
-      <div className="auth-provider-stack" aria-label={`${props.mode} options`}>
-        {props.onSelectPasskey !== undefined && props.passkeySupported ? (
-          <button
-            className="social-signup-button passkey"
-            type="button"
-            onClick={props.onSelectPasskey}
-            disabled={props.passkeyPending}
-          >
-            <span aria-hidden="true">🔐</span>
-            {props.passkeyPending ? "Checking passkey…" : "Continue with passkey"}
-          </button>
-        ) : null}
-        {props.onSelectPhone === undefined ? null : (
-          <button
-            className="social-signup-button phone"
-            type="button"
-            onClick={props.onSelectPhone}
-          >
-            <span aria-hidden="true">☎</span>
-            {props.mode === "signup" ? "Continue with phone" : "Use phone and PIN"}
-          </button>
-        )}
-        {props.onSelectEmail === undefined ? null : (
-          <button
-            className="social-signup-button email"
-            type="button"
-            onClick={props.onSelectEmail}
-          >
-            <span aria-hidden="true">@</span>
-            Continue with email
-          </button>
-        )}
-        {props.providersLoaded === false ? (
-          <p className="shell-note" role="status">
-            Loading social sign-in options…
-          </p>
-        ) : null}
-        {props.onSelectSocial === undefined
-          ? null
-          : (props.providers ?? [])
-              .filter((provider) => provider.enabled !== false && provider.implemented !== false)
-              .map((provider) => (
-                <button
-                  className="social-signup-button"
-                  type="button"
-                  key={provider.id}
-                  onClick={() => props.onSelectSocial?.(provider.id)}
-                  disabled={!provider.configured || props.socialPending}
-                  title={
-                    provider.configured
-                      ? `Continue with ${provider.displayName}`
-                      : `${provider.displayName} sign-in is not configured yet.`
-                  }
-                >
-                  <span aria-hidden="true">{provider.icon ?? "●"}</span>
-                  Continue with {provider.displayName}
-                </button>
-              ))}
-      </div>
-
-      <AuthLegalFooter />
-    </>
-  );
-}
-
-function AuthBrand() {
-  return (
-    <div className="auth-brand">
-      <AppIcon className="auth-brand-icon" />
-      <h1>soko.market</h1>
-      <p>Karibu Soko</p>
-    </div>
-  );
-}
-
-function AuthLegalFooter() {
-  return (
-    <p className="auth-legal">
-      By continuing, you agree to the <a href={routes.terms}>Terms of Service</a> and{" "}
-      <a href={routes.privacy}>Privacy Policy</a>.
-    </p>
-  );
-}
-
-export function SetupPanel(props: SetupPanelProps) {
-  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
-  const selectedCountryCode = getCountryDialCode(props.countryCode);
-  const emailIsValid = isValidContact("email", props.destination);
-  const phoneIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
-  const showAuthForm = authView !== "options";
-
-  return (
-    <main className="setup-grid auth-landing-grid" id="signup">
-      {props.session === null ? (
-        <section className="panel auth-card">
-          {!showAuthForm ? (
-            <SocialLoginOptions
-              mode="signup"
-              onSelectPhone={() => {
-                props.onChannelChange("phone");
-                props.onDestinationChange("");
-                setAuthView("phone");
-              }}
-              onSelectEmail={() => {
-                props.onChannelChange("email");
-                props.onDestinationChange("");
-                setAuthView("email");
-              }}
-              onSelectSocial={props.onSocialSignup}
-              providers={props.oauthProviders}
-              providersLoaded={props.oauthProvidersLoaded}
-              socialPending={props.isSocialPending}
-            />
-          ) : (
-            <>
-              <div className="auth-heading-row">
-                <div className="section-heading">
-                  <p className="eyebrow">Account signup</p>
-                  <h2>{authView === "phone" ? "Continue with phone" : "Verify your email"}</h2>
-                  <p>
-                    {authView === "phone"
-                      ? "Enter your phone number and create a PIN. No verification code is required."
-                      : "Use email or a social account to create your Soko account."}
-                  </p>
-                </div>
-              </div>
-              {authView === "phone" ? (
-                <>
-                  <PhoneNumberField
-                    country={selectedCountryCode.countryCode}
-                    countries={phoneCountryOptions}
-                    value={props.destination}
-                    onCountryChange={(country) =>
-                      props.onCountryCodeChange(getCountryDialCodeByCountry(country).code)
-                    }
-                    onValueChange={props.onDestinationChange}
-                  />
-                  <label>
-                    Create owner PIN
-                    <input
-                      value={props.signupPin}
-                      onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
-                      autoComplete="new-password"
-                      inputMode="numeric"
-                      maxLength={4}
-                      pattern="[0-9]*"
-                      type="password"
-                      placeholder="4-digit PIN"
-                    />
-                  </label>
-                  <label>
-                    Confirm owner PIN
-                    <input
-                      value={props.signupPinConfirm}
-                      onChange={(event) =>
-                        props.onSignupPinConfirmChange(sanitizePin(event.target.value))
-                      }
-                      autoComplete="new-password"
-                      inputMode="numeric"
-                      maxLength={4}
-                      pattern="[0-9]*"
-                      type="password"
-                      placeholder="Re-enter PIN"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={props.onSignupWithPhonePin}
-                    disabled={
-                      !phoneIsValid ||
-                      !isValidPin(props.signupPin) ||
-                      props.signupPin !== props.signupPinConfirm ||
-                      props.isPhoneSignupPending
-                    }
-                    aria-busy={props.isPhoneSignupPending}
-                  >
-                    {props.isPhoneSignupPending ? "Creating account…" : "Continue with phone"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <label>
-                    Email address
-                    <input
-                      type="email"
-                      autoComplete="email"
-                      value={props.destination}
-                      onChange={(event) => props.onDestinationChange(event.target.value)}
-                      placeholder="you@example.com"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={props.onRequestOtp}
-                    disabled={!emailIsValid || props.isRequestPending}
-                    aria-busy={props.isRequestPending}
-                  >
-                    {props.isRequestPending ? "Sending…" : "Send email code"}
-                  </button>
-                  <label>
-                    Email verification code
-                    <input
-                      value={props.otp}
-                      onChange={(event) => props.onOtpChange(event.target.value)}
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={props.onVerifyOtp}
-                    disabled={props.challenge === null || props.isVerifyPending}
-                    aria-busy={props.isVerifyPending}
-                  >
-                    {props.isVerifyPending ? "Verifying…" : "Verify email"}
-                  </button>
-                </>
-              )}
-              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
-                Back to signup options
-              </button>
-            </>
-          )}
-          <p className="setup-status" role="status" aria-live="polite">
-            <AuthenticationActionMessage message={props.statusMessage} />
-          </p>
-        </section>
-      ) : null}
-
-      {props.session !== null ? (
-        <section className="panel">
-          <div className="section-heading">
-            <p className="eyebrow">Account security</p>
-            <h2>Create your owner PIN</h2>
-            <p>Finish signup now. Add a passkey to enable secure PIN recovery.</p>
-          </div>
-          <label>
-            PIN
-            <input
-              value={props.signupPin}
-              onChange={(event) => props.onSignupPinChange(sanitizePin(event.target.value))}
-              inputMode="numeric"
-              maxLength={4}
-              pattern="[0-9]*"
-              type="password"
-              placeholder="4-digit PIN"
-            />
-          </label>
-          <label>
-            Confirm PIN
-            <input
-              value={props.signupPinConfirm}
-              onChange={(event) => props.onSignupPinConfirmChange(sanitizePin(event.target.value))}
-              inputMode="numeric"
-              maxLength={4}
-              pattern="[0-9]*"
-              type="password"
-              placeholder="Re-enter PIN"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={props.onCompleteSignup}
-            disabled={
-              props.session === null ||
-              !isValidPin(props.signupPin) ||
-              props.signupPin !== props.signupPinConfirm ||
-              props.isCompletePending
-            }
-            aria-busy={props.isCompletePending}
-          >
-            {props.isCompletePending ? "Saving…" : "Finish signup"}
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            onClick={props.onRegisterPasskey}
-            disabled={!props.passkeySupported || props.isPasskeyPending}
-            aria-busy={props.isPasskeyPending}
-          >
-            {props.passkeySupported
-              ? props.isPasskeyPending
-                ? "Securing device…"
-                : "Secure this device with a passkey"
-              : "Passkeys unavailable in this browser"}
-          </button>
-        </section>
-      ) : null}
-    </main>
-  );
-}
-
 interface BusinessSetupPanelProps {
   step: "phone" | "details";
   businessName: string;
@@ -8761,306 +7777,6 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
           <AuthenticationActionMessage message={props.statusMessage} />
         </p>
       </section>
-    </main>
-  );
-}
-
-interface LoginPanelProps {
-  channel: AuthChannel;
-  countryCode: CountryDialCode;
-  destination: string;
-  challenge: OtpRequestResponse | null;
-  otp: string;
-  isOtpVerified: boolean;
-  loginPin: string;
-  isRecoveringPin: boolean;
-  hasLoginPin: boolean;
-  recoveryPin: string;
-  recoveryPinConfirm: string;
-  statusMessage: string;
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  isRequestPending: boolean;
-  isVerifyPending: boolean;
-  isLoginPending: boolean;
-  isPinPending: boolean;
-  isPasskeyPending: boolean;
-  isSocialPending: boolean;
-  passkeySupported: boolean;
-  onChannelChange: (channel: AuthChannel) => void;
-  onCountryCodeChange: (countryCode: CountryDialCode) => void;
-  onDestinationChange: (destination: string) => void;
-  onOtpChange: (otp: string) => void;
-  onRequestOtp: () => void;
-  onVerifyOtp: () => void;
-  onLoginPinChange: (pin: string) => void;
-  onRecoveryPinChange: (pin: string) => void;
-  onRecoveryPinConfirmChange: (pin: string) => void;
-  onStartPinRecovery: () => void;
-  onCancelPinRecovery: () => void;
-  onRecoverPin: () => void;
-  onSetMissingPin: () => void;
-  onLogin: () => void;
-  onPasskeyLogin: () => void;
-  onCancel: () => void;
-  onSocialLogin: (provider: SocialSignupProvider) => void;
-}
-
-export function LoginPanel(props: LoginPanelProps) {
-  const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
-  const selectedCountryCode = getCountryDialCode(props.countryCode);
-  const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
-  const isEmailRecovery = props.channel === "email" && props.isRecoveringPin;
-  const isPhoneRecovery = props.channel === "phone" && props.isRecoveringPin;
-  const isSettingPin = props.channel === "email" && !props.hasLoginPin;
-  const needsOtp = isEmailRecovery || isSettingPin;
-  const isPhoneWithoutPin =
-    props.channel === "phone" && !props.hasLoginPin && !props.isRecoveringPin;
-  const showAuthForm =
-    authView !== "options" ||
-    props.challenge !== null ||
-    props.isRecoveringPin ||
-    !props.hasLoginPin;
-
-  return (
-    <main className="setup-grid auth-landing-grid login-grid" id="login">
-      <section className="panel auth-card">
-        {!showAuthForm ? (
-          <SocialLoginOptions
-            mode="login"
-            onSelectPasskey={props.onPasskeyLogin}
-            onSelectPhone={() => {
-              props.onCancelPinRecovery();
-              props.onChannelChange("phone");
-              setAuthView("phone");
-            }}
-            onSelectEmail={() => {
-              props.onCancelPinRecovery();
-              props.onChannelChange("email");
-              setAuthView("email");
-            }}
-            onSelectSocial={props.onSocialLogin}
-            providers={props.oauthProviders}
-            providersLoaded={props.oauthProvidersLoaded}
-            passkeyPending={props.isPasskeyPending}
-            passkeySupported={props.passkeySupported}
-            socialPending={props.isSocialPending}
-          />
-        ) : (
-          <>
-            <div className="auth-heading-row">
-              <div className="section-heading">
-                <p className="eyebrow">Continue with {props.channel}</p>
-                <h2>Owner login</h2>
-              </div>
-            </div>
-            {props.channel === "phone" ? (
-              <PhoneNumberField
-                country={selectedCountryCode.countryCode}
-                countries={phoneCountryOptions}
-                value={props.destination}
-                onCountryChange={(country) =>
-                  props.onCountryCodeChange(getCountryDialCodeByCountry(country).code)
-                }
-                onValueChange={props.onDestinationChange}
-              />
-            ) : (
-              <label>
-                Email address
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={props.destination}
-                  onChange={(event) => props.onDestinationChange(event.target.value)}
-                  placeholder="you@example.com"
-                />
-              </label>
-            )}
-            {needsOtp ? (
-              <>
-                <p className="shell-note">
-                  This verification is only for reclaiming access when your passkey or PIN is
-                  unavailable.
-                </p>
-                <button
-                  type="button"
-                  onClick={props.onRequestOtp}
-                  disabled={!contactIsValid || props.isRequestPending}
-                  aria-busy={props.isRequestPending}
-                >
-                  {props.isRequestPending ? "Sending…" : "Send email code"}
-                </button>
-                <label>
-                  Email verification code
-                  <input
-                    value={props.otp}
-                    onChange={(event) => props.onOtpChange(event.target.value)}
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={props.onVerifyOtp}
-                  disabled={props.challenge === null || props.isVerifyPending}
-                  aria-busy={props.isVerifyPending}
-                >
-                  {props.isVerifyPending ? "Verifying…" : "Verify email"}
-                </button>
-              </>
-            ) : (
-              <p className="shell-note">
-                {isPhoneRecovery
-                  ? "Your phone passkey verifies your identity. No SMS or recovery code is required."
-                  : props.channel === "phone"
-                    ? "Phone sign in uses your phone number and 4-digit PIN only."
-                    : "Recovery verification is not required for normal login. Use your saved email and PIN."}
-              </p>
-            )}
-          </>
-        )}
-      </section>
-
-      {showAuthForm ? (
-        <section className="panel auth-card">
-          <div className="section-heading">
-            <p className="eyebrow">
-              {isPhoneWithoutPin
-                ? "PIN unavailable"
-                : isSettingPin
-                  ? "PIN setup"
-                  : isEmailRecovery
-                    ? "PIN recovery"
-                    : "Login PIN"}
-            </p>
-            <h2>
-              {isPhoneWithoutPin
-                ? "Use another sign-in method"
-                : isSettingPin
-                  ? "Set PIN"
-                  : isEmailRecovery
-                    ? "Reset PIN"
-                    : "Enter PIN"}
-            </h2>
-          </div>
-          {isPhoneWithoutPin ? (
-            <>
-              <p className="shell-note">
-                Phone verification is not available. Use a passkey or another linked sign-in method
-                to access this account.
-              </p>
-              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
-                Back to login options
-              </button>
-            </>
-          ) : isEmailRecovery || isPhoneRecovery || isSettingPin ? (
-            <>
-              {isPhoneRecovery ? (
-                <p className="shell-note">
-                  After you choose a new PIN, your device will ask you to verify the passkey for
-                  this account.
-                </p>
-              ) : null}
-              <label>
-                {isSettingPin ? "PIN" : "New PIN"}
-                <input
-                  value={props.recoveryPin}
-                  onChange={(event) => props.onRecoveryPinChange(sanitizePin(event.target.value))}
-                  inputMode="numeric"
-                  maxLength={4}
-                  pattern="[0-9]*"
-                  type="password"
-                  placeholder="4-digit PIN"
-                />
-              </label>
-              <label>
-                {isSettingPin ? "Confirm PIN" : "Confirm new PIN"}
-                <input
-                  value={props.recoveryPinConfirm}
-                  onChange={(event) =>
-                    props.onRecoveryPinConfirmChange(sanitizePin(event.target.value))
-                  }
-                  inputMode="numeric"
-                  maxLength={4}
-                  pattern="[0-9]*"
-                  type="password"
-                  placeholder="Confirm PIN"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={isSettingPin ? props.onSetMissingPin : props.onRecoverPin}
-                disabled={
-                  (!isPhoneRecovery && !props.isOtpVerified) ||
-                  !isValidPin(props.recoveryPin) ||
-                  props.recoveryPin !== props.recoveryPinConfirm ||
-                  props.isPinPending
-                }
-                aria-busy={props.isPinPending}
-              >
-                {props.isPinPending
-                  ? "Saving…"
-                  : isSettingPin
-                    ? "Set PIN"
-                    : isPhoneRecovery
-                      ? "Verify passkey and reset PIN"
-                      : "Reset PIN"}
-              </button>
-              {!isSettingPin ? (
-                <button className="secondary" type="button" onClick={props.onCancelPinRecovery}>
-                  Back to PIN login
-                </button>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <label>
-                PIN
-                <input
-                  value={props.loginPin}
-                  onChange={(event) => props.onLoginPinChange(sanitizePin(event.target.value))}
-                  inputMode="numeric"
-                  maxLength={4}
-                  pattern="[0-9]*"
-                  type="password"
-                  placeholder="4-digit PIN"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={props.onLogin}
-                disabled={
-                  !contactIsValid ||
-                  !isValidPin(props.loginPin) ||
-                  (needsOtp && !props.isOtpVerified) ||
-                  props.isLoginPending
-                }
-                aria-busy={props.isLoginPending}
-              >
-                {props.isLoginPending ? "Signing in…" : `Sign in with ${props.channel}`}
-              </button>
-              {props.hasLoginPin ? (
-                <button className="secondary" type="button" onClick={props.onStartPinRecovery}>
-                  Forgot PIN?
-                </button>
-              ) : null}
-              <button className="secondary" type="button" onClick={() => setAuthView("options")}>
-                Back to login options
-              </button>
-            </>
-          )}
-          <p className="setup-status" role="status" aria-live="polite">
-            <AuthenticationActionMessage message={props.statusMessage} />
-          </p>
-          <button className="secondary" type="button" onClick={props.onCancel}>
-            Back to marketplace
-          </button>
-        </section>
-      ) : (
-        <p className="setup-status auth-status" role="status" aria-live="polite">
-          <AuthenticationActionMessage message={props.statusMessage} />
-        </p>
-      )}
     </main>
   );
 }
@@ -20455,7 +19171,6 @@ function readStoredOwnerAuth(): OwnerAuthRecord | null {
       return {
         contact: parsed.contact,
         countryCode: parsed.countryCode,
-        pinSet: typeof parsed.pinSet === "boolean" ? parsed.pinSet : true,
         ...(isSocialSignupProvider(parsed.provider) ? { provider: parsed.provider } : {})
       };
     }
@@ -20500,20 +19215,21 @@ function readSetupDraft(): SetupDraft | null {
   }
 
   try {
-    const parsed = JSON.parse(stored) as SetupDraft;
+    const parsed = JSON.parse(stored) as Partial<SetupDraft> & { destination?: unknown };
 
     if (
-      (parsed.channel === "phone" || parsed.channel === "email") &&
-      typeof parsed.destination === "string" &&
       typeof parsed.businessName === "string" &&
-      (parsed.language === "en" || parsed.language === "sw") &&
-      (parsed.completedStep === 0 || parsed.completedStep === 1 || parsed.completedStep === 2)
+      (parsed.language === "en" || parsed.language === "sw")
     ) {
       return {
-        ...parsed,
         countryCode: isCountryDialCode(parsed.countryCode)
           ? parsed.countryCode
-          : (inferCountryCode(parsed.destination) ?? "+254")
+          : typeof parsed.destination === "string"
+            ? (inferCountryCode(parsed.destination) ?? "+254")
+            : "+254",
+        businessName: parsed.businessName,
+        language: parsed.language,
+        completedStep: parsed.completedStep === 2 ? 2 : 1
       };
     }
   } catch {
@@ -20980,38 +19696,10 @@ function isSocialSignupProvider(value: unknown): value is SocialSignupProvider {
   );
 }
 
-function composeSignupContact(
-  channel: AuthChannel,
-  countryCode: CountryDialCode,
-  destination: string
-): string {
-  if (channel === "email") {
-    return destination.trim();
-  }
-
-  try {
-    return normalizeOwnerPhoneInput(destination, getCountryDialCode(countryCode).countryCode);
-  } catch {
-    return destination.trim();
-  }
-}
-
 function inferCountryCode(value: string): CountryDialCode | null {
   const normalized = value.trim().replace(/[\s-]/g, "");
 
   return countryDialCodes.find((item) => normalized.startsWith(item.code))?.code ?? null;
-}
-
-function stripDialCode(value: string, countryCode: CountryDialCode): string {
-  const normalized = value.trim();
-
-  if (!normalized.startsWith("+")) {
-    return normalized;
-  }
-
-  const matchedCode = inferCountryCode(normalized) ?? countryCode;
-
-  return normalized.replace(matchedCode, "").replace(/^[\s-]+/, "");
 }
 
 function isCountryDialCode(value: unknown): value is CountryDialCode {
@@ -21042,33 +19730,6 @@ function sanitizePin(value: string): string {
 
 function isValidPin(value: string): boolean {
   return /^\d{4}$/.test(value);
-}
-
-function isSignupContactValid(
-  channel: AuthChannel,
-  countryCode: CountryDialCode,
-  contact: string
-): boolean {
-  if (channel === "email") {
-    return isValidContact(channel, contact);
-  }
-
-  try {
-    normalizeOwnerPhoneInput(contact, getCountryDialCode(countryCode).countryCode);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isValidContact(channel: AuthChannel, contact: string): boolean {
-  const value = contact.trim();
-
-  if (channel === "email") {
-    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
-  }
-
-  return /^\+?[0-9\s-]{7,18}$/.test(value);
 }
 
 function createClientMessageId(prefix: string): string {

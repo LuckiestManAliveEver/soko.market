@@ -31,12 +31,8 @@ describe("frontend user guidance", () => {
   });
 
   it("sanitizes login initialization errors and guarantees the pending action is released", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const asyncActions = readFileSync("apps/web/src/hooks/useAsyncActions.ts", "utf8");
-    const login = application.slice(
-      application.indexOf("async function loginWithPin"),
-      application.indexOf("async function loginWithPasskey")
-    );
 
     expect(
       getAccountLoginErrorMessage(
@@ -45,8 +41,8 @@ describe("frontend user guidance", () => {
         )
       )
     ).toBe(accountSyncInitializationMessage);
-    expect(login).toContain("getAccountLoginErrorMessage(error)");
-    expect(login).not.toContain("setDestination(");
+    expect(phoneFirst).toContain("getUserFacingErrorMessage(error)");
+    expect(phoneFirst).not.toContain("setDestination(");
     expect(asyncActions).toContain("if (activeActions.current.has(key)) return undefined");
     expect(asyncActions).toContain("finally");
     expect(asyncActions).toContain("activeActions.current.delete(key)");
@@ -190,33 +186,18 @@ describe("frontend user guidance", () => {
 
   it("removes Firebase phone OTP while preserving email verification", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
-    const emailSignup = application.slice(
-      application.indexOf("async function requestOtp()"),
-      application.indexOf("async function signupWithPhonePin()")
-    );
-    const phoneSignup = application.slice(
-      application.indexOf("async function signupWithPhonePin()"),
-      application.indexOf("async function authenticateSocialProfile")
-    );
-    const recovery = application.slice(
-      application.indexOf("async function requestLoginOtp()"),
-      application.indexOf("async function loginWithPin()")
-    );
 
-    expect(emailSignup).toContain('method: "email"');
-    expect(emailSignup).toContain('purpose: "signup"');
-    expect(emailSignup).not.toContain('method: "phone"');
-    expect(emailSignup).not.toContain("sendFirebasePhoneOtp");
-    expect(phoneSignup).toContain('postJson<SessionResponse>("/auth/pin/signup"');
-    expect(phoneSignup).toContain('method: "phone"');
-    expect(phoneSignup).not.toContain("/auth/otp/");
-    expect(phoneSignup).not.toContain("sendFirebasePhoneOtp");
-    expect(recovery).toContain('purpose: "recovery"');
-    expect(recovery).toContain('method: "email"');
-    expect(recovery).not.toContain('method: "phone"');
-    expect(recovery).not.toContain("sendFirebasePhoneOtp");
-    expect(recovery).not.toContain("firebaseIdToken");
+    expect(phoneFirst).toContain('"/auth/signup/start"');
+    expect(phoneFirst).toContain('"/auth/signup/complete"');
+    expect(phoneFirst).toContain('"/auth/email/verification/start"');
+    expect(phoneFirst).toContain('"/auth/email/verification/verify"');
+    expect(phoneFirst).toContain("SMS verification is not used.");
+    expect(phoneFirst).not.toContain("sendFirebasePhoneOtp");
+    expect(phoneFirst).not.toContain("firebaseIdToken");
+    expect(application).not.toContain("async function requestOtp");
+    expect(application).not.toContain("async function signupWithPhonePin");
     expect(authRoutes).toContain("phone_pin_only");
     expect(authRoutes).toContain("emailProvider.sendOtp");
     expect(authRoutes).not.toContain("firebase");
@@ -224,70 +205,52 @@ describe("frontend user guidance", () => {
     expect(existsSync("services/api/src/cp2/otp-provider.ts")).toBe(false);
   });
 
-  it("completes email signup, PIN login, and challenge-bound email recovery", () => {
+  it("uses one phone-first surface for login and account recovery", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const emailLogin = application.slice(
-      application.indexOf("async function requestLoginOtp"),
-      application.indexOf("async function loginWithPasskey")
-    );
-    const loginPanel = application.slice(
-      application.indexOf("function LoginPanel"),
-      application.indexOf("interface SyncSurfaceProps")
-    );
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
 
-    expect(emailLogin).toContain('deliveryChannel: "email"');
-    expect(emailLogin).toContain("challengeId: challenge.challengeId");
-    expect(emailLogin).toContain('postJson<SessionResponse>("/auth/pin/login"');
-    expect(emailLogin).toContain("response.account.primaryAuthDestination");
-    expect(emailLogin).toContain('logAuthenticationLifecycle("session_response_received"');
-    expect(emailLogin).toContain('logAuthenticationLifecycle("frontend_session_stored"');
-    expect(emailLogin).toContain('logAuthenticationLifecycle("redirect_issued"');
+    expect(application).toContain("<PhoneFirstAuthentication");
+    expect(application).not.toContain("function LoginPanel");
+    expect(application).not.toContain("function SetupPanel");
+    expect(phoneFirst).toContain('"/auth/login/password"');
+    expect(phoneFirst).toContain('"/auth/pin/login"');
+    expect(phoneFirst).toContain('"/auth/recovery/start"');
+    expect(phoneFirst).toContain('"/auth/recovery/verify"');
+    expect(phoneFirst).toContain('"/auth/recovery/reset-password"');
+    expect(phoneFirst).toContain("Email verification code");
+    expect(phoneFirst).toContain("Use a passkey");
+    expect(phoneFirst).toContain("Verify passkey and reset PIN");
+    expect(phoneFirst).toContain('"/auth/pin/recover/passkey"');
+    expect(phoneFirst).toContain('purpose: "pin_recovery"');
+    expect(phoneFirst).not.toContain("Phone account recovery code");
+    expect(phoneFirst).not.toContain("Replacement recovery code");
+    expect(phoneFirst).not.toContain("Send SMS code");
+    expect(phoneFirst).not.toContain("SMS verification code");
+    expect(phoneFirst).not.toContain("firebase-recaptcha");
+    expect(application).toContain('logAuthenticationLifecycle("session_response_received"');
+    expect(application).toContain('logAuthenticationLifecycle("frontend_session_stored"');
+    expect(application).toContain('logAuthenticationLifecycle("redirect_issued"');
     expect(application).toContain('logAuthenticationLifecycle("authenticated_user_loaded"');
-    expect(loginPanel).toContain("Send email code");
-    expect(loginPanel).toContain("Email verification code");
-    expect(loginPanel).toContain("Sign in with");
-    expect(loginPanel).toContain("Phone sign in uses your phone number and 4-digit PIN only.");
-    expect(loginPanel).toContain("Your phone passkey verifies your identity");
-    expect(loginPanel).toContain("Verify passkey and reset PIN");
-    expect(application).toContain('postJson<SessionResponse>("/auth/pin/recover/passkey"');
-    expect(application).toContain('purpose: "pin_recovery"');
-    expect(application).not.toContain("Phone account recovery code");
-    expect(application).not.toContain("Replacement recovery code");
-    expect(loginPanel).not.toContain("Send SMS code");
-    expect(loginPanel).not.toContain("SMS verification code");
-    expect(loginPanel).not.toContain("firebase-recaptcha");
     expect(application).not.toContain("firebase-auth");
   });
 
   it("captures a compulsory unverified phone before authenticated first-shop registration", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
-    const accountSetup = application.slice(
-      application.indexOf("function SetupPanel"),
-      application.indexOf("interface BusinessSetupPanelProps")
-    );
     const shopSetup = application.slice(
       application.indexOf("function BusinessSetupPanel"),
-      application.indexOf("interface LoginPanelProps")
-    );
-    const completeSignup = application.slice(
-      application.indexOf("async function completeSignup"),
-      application.indexOf("async function createBusiness")
+      application.indexOf("interface SyncSurfaceProps")
     );
     const switchMode = application.slice(
       application.indexOf("function switchMode"),
       application.indexOf("async function logout")
     );
 
-    expect(accountSetup).toContain("Account signup");
-    expect(accountSetup).toContain("Verify your email");
-    expect(accountSetup).toContain('autoComplete="one-time-code"');
-    expect(accountSetup).toContain("Finish signup");
-    expect(accountSetup).not.toContain("Verify your phone");
-    expect(accountSetup).toContain("Continue with phone");
-    expect(accountSetup).toContain("No verification code is required");
-    expect(accountSetup).toContain("onSignupWithPhonePin");
-    expect(accountSetup).not.toContain("sendFirebasePhoneOtp");
+    expect(phoneFirst).toContain("Phone added as an unverified sign-in identifier");
+    expect(phoneFirst).toContain('"/auth/signup/complete"');
+    expect(phoneFirst).not.toContain("Verify your phone");
+    expect(phoneFirst).not.toContain("sendFirebasePhoneOtp");
     expect(shopSetup).toContain("FIRST SHOP REGISTRATION");
     expect(shopSetup).toContain("Add your phone number");
     expect(shopSetup).toContain("shop identity, account recovery, and last-resort customer");
@@ -299,8 +262,6 @@ describe("frontend user guidance", () => {
     expect(shopSetup).not.toContain("Send SMS code");
     expect(shopSetup).not.toContain("Firebase");
     expect(shopSetup).not.toContain('autoComplete="one-time-code"');
-    expect(completeSignup).not.toContain("!isOtpVerified");
-    expect(completeSignup).toContain("setIsBusinessSetupOpen(false)");
     expect(switchMode).toContain("Sign up or log in from the welcome message");
     const createBusinessRoute = authRoutes.slice(
       authRoutes.indexOf('app.post("/businesses"'),
@@ -326,6 +287,7 @@ describe("frontend user guidance", () => {
 
   it("links authentication requirements to the correct login or signup process", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const actionMessage = readFileSync("apps/web/src/AuthenticationActionMessage.tsx", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
@@ -355,14 +317,14 @@ describe("frontend user guidance", () => {
     expect(actionMessage).toContain("href={authenticationRoute(target)}");
     expect(application).toContain("<AuthenticationActionMessage message={statusMessage} />");
     expect(application).toContain("readAuthenticationRouteHash(window.location.hash)");
-    expect(application).toContain('className="setup-grid auth-landing-grid" id="signup"');
-    expect(application).toContain('className="setup-grid auth-landing-grid login-grid" id="login"');
+    expect(phoneFirst).toContain('className="setup-grid auth-landing-grid" id={initialMode}');
     expect(styles).toContain(".authentication-required-link");
     expect(styles).toContain("pointer-events: auto");
   });
 
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const complianceSurface = application.slice(
       application.indexOf("function ComplianceSurface"),
       application.indexOf("interface BetaSurfaceProps")
@@ -382,8 +344,9 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       "Account deactivated and deletion scheduled. You have been returned to startup."
     );
-    expect(application).toContain("Continue with phone");
-    expect(application).toContain("Use phone and PIN");
+    expect(application).toContain("<PhoneFirstAuthentication");
+    expect(phoneFirst).toContain("Use phone instead");
+    expect(phoneFirst).toContain("Use legacy PIN");
   });
 
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {
@@ -397,7 +360,7 @@ describe("frontend user guidance", () => {
       'navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true })'
     );
     expect(application).toContain("setBusiness(null)");
-    expect(application).toContain("setOwnerAuth(null)");
+    expect(application).toContain("localStorage.removeItem(ownerAuthStorageKey)");
     expect(application).toContain('deleteJson("/v1/push/subscriptions"');
     expect(application).toContain('getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")');
     expect(application).toContain("MCP access tokens");
