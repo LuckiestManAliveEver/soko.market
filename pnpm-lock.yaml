@@ -115,7 +115,11 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
 
-  packages/shared-types: {}
+  packages/shared-types:
+    dependencies:
+      libphonenumber-js:
+        specifier: ^1.13.9
+        version: 1.13.9
 
   packages/sync-core:
     dependencies:

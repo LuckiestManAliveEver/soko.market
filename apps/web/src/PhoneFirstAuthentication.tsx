@@ -5,7 +5,10 @@ import {
   startRegistration
 } from "@simplewebauthn/browser";
 import type { AuthSessionView } from "@soko/shared-types";
+import { normalizePhoneInput, phoneNormalizationErrorMessage } from "@soko/shared-types";
+import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
 import { apiFetch } from "./lib/api";
+import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
 type Stage =
@@ -29,17 +32,6 @@ interface LoginMethods {
   smsLogin: false;
 }
 
-const countries = [
-  ["KE", "+254", "Kenya"],
-  ["UG", "+256", "Uganda"],
-  ["TZ", "+255", "Tanzania"],
-  ["RW", "+250", "Rwanda"],
-  ["NG", "+234", "Nigeria"],
-  ["ZA", "+27", "South Africa"],
-  ["GB", "+44", "United Kingdom"],
-  ["US", "+1", "United States"]
-] as const;
-
 interface Props {
   initialMode: "signup" | "login";
   onAuthenticated: (session: AuthSessionView) => void;
@@ -48,7 +40,7 @@ interface Props {
 
 export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCancel }: Props) {
   const [identifierType, setIdentifierType] = useState<IdentifierType>("phone");
-  const [country, setCountry] = useState("KE");
+  const [country, setCountry] = useState<CountryCode>("KE");
   const [identifier, setIdentifier] = useState("");
   const [stage, setStage] = useState<Stage>("entry");
   const [transactionId, setTransactionId] = useState("");
@@ -69,11 +61,16 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
     "Phone can be your Soko.market identifier. SMS verification is not used."
   );
 
-  const identifierBody = () => ({
-    type: identifierType,
-    identifier,
-    ...(identifierType === "phone" ? { country } : {})
-  });
+  const identifierBody = () => {
+    if (identifierType === "email") return { type: identifierType, identifier };
+    const normalized = normalizePhoneInput({
+      rawInput: identifier,
+      selectedCountry: country,
+      selectedCallingCode: getCountryCallingCode(country)
+    });
+    if (!normalized.valid) throw new Error(phoneNormalizationErrorMessage(normalized.error));
+    return { type: identifierType, identifier: normalized.e164, country: normalized.country };
+  };
 
   async function run(action: () => Promise<void>) {
     if (busy) return;
@@ -177,14 +174,15 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
 
   async function login() {
     if (legacyPin) {
-      const dial = countries.find(([iso]) => iso === country)?.[1] ?? "+254";
-      const contact =
-        identifierType === "phone" && !identifier.trim().startsWith("+")
-          ? `${dial}${identifier.replace(/\D/gu, "").replace(/^0+/u, "")}`
-          : identifier;
+      const normalizedBody = identifierBody();
       const session = await apiFetch<AuthSessionView>("/auth/pin/login", {
         method: "POST",
-        body: { method: identifierType, contact, pin: password }
+        body: {
+          method: identifierType,
+          contact: normalizedBody.identifier,
+          ...(identifierType === "phone" ? { country } : {}),
+          pin: password
+        }
       });
       onAuthenticated(session);
       return;
@@ -325,28 +323,13 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
         {stage === "entry" || stage === "password" ? (
           <>
             {identifierType === "phone" ? (
-              <div className="phone-contact-row">
-                <label>
-                  Country code
-                  <select value={country} onChange={(event) => setCountry(event.target.value)}>
-                    {countries.map(([iso, dial, name]) => (
-                      <option value={iso} key={iso}>
-                        {dial} {name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Phone number
-                  <input
-                    type="tel"
-                    inputMode="tel"
-                    autoComplete="tel"
-                    value={identifier}
-                    onChange={(event) => setIdentifier(event.target.value)}
-                  />
-                </label>
-              </div>
+              <PhoneNumberField
+                country={country}
+                value={identifier}
+                countries={authenticationPhoneCountries}
+                onCountryChange={setCountry}
+                onValueChange={setIdentifier}
+              />
             ) : (
               <label>
                 Email address

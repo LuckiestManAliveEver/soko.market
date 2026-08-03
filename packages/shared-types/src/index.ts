@@ -1,5 +1,7 @@
 export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
+export * from "./phone-number.js";
+
 export interface HealthResponse {
   service: RuntimeName;
   status: "ok";

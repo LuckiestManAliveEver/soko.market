@@ -18243,13 +18243,11 @@ export function normalizeDestination(channel: AuthChannel, destination: string):
     return email;
   }
 
-  const phone = normalized.replace(/[\s-]/g, "");
-
-  if (!/^\+?[0-9]{7,15}$/.test(phone)) {
-    throw new Cp2Error(400, "destination_invalid", "Phone number is invalid.");
+  try {
+    return normalizeInternationalOwnerPhoneNumber(normalized).e164;
+  } catch {
+    throw new Cp2Error(400, "INVALID_PHONE_NUMBER", "Enter a valid phone number.");
   }
-
-  return phone.startsWith("+") ? phone : `+${phone}`;
 }
 
 export function isSupportedLanguage(value: string): value is SupportedLanguage {

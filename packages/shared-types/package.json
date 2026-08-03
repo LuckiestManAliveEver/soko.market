@@ -18,5 +18,8 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "libphonenumber-js": "^1.13.9"
   }
 }

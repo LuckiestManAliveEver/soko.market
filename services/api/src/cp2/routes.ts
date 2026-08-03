@@ -300,6 +300,7 @@ interface PinBody {
 interface PinLoginBody extends PinBody {
   channel?: string;
   contact?: string;
+  country?: string;
   destination?: string;
   method?: string;
 }
@@ -1153,7 +1154,17 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           : normalizeOwnerPhoneNumber(identifier, parseString(body.country, "country"));
       return { channel, value: phone.e164 };
     } catch {
-      throw new Cp2Error(400, "destination_invalid", "Phone number is invalid.");
+      throw new Cp2Error(400, "INVALID_PHONE_NUMBER", "Enter a valid phone number.");
+    }
+  }
+
+  function normalizeAuthPhone(rawPhone: string, country?: string): string {
+    try {
+      return country === undefined
+        ? normalizeInternationalOwnerPhoneNumber(rawPhone).e164
+        : normalizeOwnerPhoneNumber(rawPhone, country).e164;
+    } catch {
+      throw new Cp2Error(400, "INVALID_PHONE_NUMBER", "Enter a valid phone number.");
     }
   }
 
@@ -2058,8 +2069,18 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         throw new Cp2Error(400, "phone_pin_signup_only", "PIN signup requires a phone number.");
       }
 
+      const rawDestination = parseString(
+        request.body.contact ?? request.body.destination,
+        "contact"
+      );
+      const destination = normalizeAuthPhone(
+        rawDestination,
+        request.body.country === undefined
+          ? undefined
+          : parseString(request.body.country, "country")
+      );
       const result = store.signupWithPhonePin({
-        destination: parseString(request.body.contact ?? request.body.destination, "contact"),
+        destination,
         pin: parseString(request.body.pin, "pin")
       });
       setAuthSessionCookies(reply, request, store, result.session.id);
@@ -2093,9 +2114,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/pin/login", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
+      const channel = parseAuthChannel(request.body.method ?? request.body.channel);
+      const rawDestination = parseString(
+        request.body.contact ?? request.body.destination,
+        "contact"
+      );
+      const destination =
+        channel !== "phone"
+          ? rawDestination
+          : normalizeAuthPhone(
+              rawDestination,
+              request.body.country === undefined
+                ? undefined
+                : parseString(request.body.country, "country")
+            );
       const result = store.loginWithAccountPin({
-        channel: parseAuthChannel(request.body.method ?? request.body.channel),
-        destination: parseString(request.body.contact ?? request.body.destination, "contact"),
+        channel,
+        destination,
         pin: parseString(request.body.pin, "pin")
       });
       request.log.info(

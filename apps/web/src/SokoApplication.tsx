@@ -84,6 +84,7 @@ import {
   type IndexedDbSyncRepository
 } from "./sync/indexeddb-repository";
 import { normalizeOwnerPhoneInput } from "./phone-identity";
+import { PhoneNumberField, type PhoneCountryOption } from "./PhoneNumberField";
 import {
   catchUpAccountSync,
   createLocalSyncMutation,
@@ -1965,6 +1966,12 @@ const countryDialCodes: Array<{
   { code: "+250", country: "Rwanda", countryCode: "RW", flag: "RW", suffixLength: 9 }
 ];
 
+const phoneCountryOptions: PhoneCountryOption[] = countryDialCodes.map((item) => ({
+  country: item.countryCode,
+  name: item.country,
+  flag: item.flag
+}));
+
 const emptyProductForm: ProductFormState = {
   id: null,
   name: "",
@@ -3400,6 +3407,7 @@ export function OwnerApp() {
       const response = await postJson<SessionResponse>("/auth/pin/signup", {
         method: "phone",
         contact: contactValue,
+        country: getCountryDialCode(countryCode).countryCode,
         pin: signupPin
       });
       const nextOwnerAuth: OwnerAuthRecord = {
@@ -3602,6 +3610,7 @@ export function OwnerApp() {
       const response = await postJson<SessionResponse>("/auth/pin/login", {
         method: channel,
         contact: contactValue,
+        ...(channel === "phone" ? { country: getCountryDialCode(countryCode).countryCode } : {}),
         pin: loginPin
       });
       logAuthenticationLifecycle("session_response_received", response);
@@ -8408,7 +8417,6 @@ function AuthLegalFooter() {
 export function SetupPanel(props: SetupPanelProps) {
   const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
-  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const emailIsValid = isValidContact("email", props.destination);
   const phoneIsValid = isSignupContactValid("phone", props.countryCode, props.destination);
   const showAuthForm = authView !== "options";
@@ -8450,43 +8458,15 @@ export function SetupPanel(props: SetupPanelProps) {
               </div>
               {authView === "phone" ? (
                 <>
-                  <div className="phone-contact-row">
-                    <label>
-                      Country code
-                      <select
-                        value={props.countryCode}
-                        onChange={(event) =>
-                          props.onCountryCodeChange(event.target.value as CountryDialCode)
-                        }
-                      >
-                        {countryDialCodes.map((item) => (
-                          <option key={item.code} value={item.code}>
-                            {item.flag} {item.code} {item.country}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Phone number
-                      <input
-                        value={phoneSuffix}
-                        onChange={(event) =>
-                          props.onDestinationChange(
-                            sanitizePhoneSuffix(
-                              event.target.value,
-                              selectedCountryCode.suffixLength
-                            )
-                          )
-                        }
-                        autoComplete="tel-national"
-                        inputMode="numeric"
-                        maxLength={selectedCountryCode.suffixLength}
-                        pattern="[0-9]*"
-                        type="tel"
-                        placeholder={"0".repeat(selectedCountryCode.suffixLength)}
-                      />
-                    </label>
-                  </div>
+                  <PhoneNumberField
+                    country={selectedCountryCode.countryCode}
+                    countries={phoneCountryOptions}
+                    value={props.destination}
+                    onCountryChange={(country) =>
+                      props.onCountryCodeChange(getCountryDialCodeByCountry(country).code)
+                    }
+                    onValueChange={props.onDestinationChange}
+                  />
                   <label>
                     Create owner PIN
                     <input
@@ -8663,7 +8643,6 @@ interface BusinessSetupPanelProps {
 
 function BusinessSetupPanel(props: BusinessSetupPanelProps) {
   const [phoneError, setPhoneError] = useState("");
-  const phoneInputRef = useRef<HTMLInputElement | null>(null);
 
   function continueWithPhone() {
     const selectedCountry = getCountryDialCode(props.phoneCountryCode);
@@ -8678,7 +8657,6 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
       props.onContinuePhone(normalizedPhone, selectedCountry.countryCode);
     } catch (error) {
       setPhoneError(getErrorMessage(error));
-      phoneInputRef.current?.focus();
     }
   }
 
@@ -8697,50 +8675,22 @@ function BusinessSetupPanel(props: BusinessSetupPanelProps) {
               your shop settings.
             </p>
           </div>
-          <div className="phone-contact-row">
-            <label>
-              Country
-              <select
-                value={props.phoneCountryCode}
-                onChange={(event) => {
-                  props.onPhoneCountryCodeChange(event.target.value as CountryDialCode);
-                  setPhoneError("");
-                }}
-              >
-                {countryDialCodes.map((item) => (
-                  <option key={item.code} value={item.code}>
-                    {item.flag} {item.country} ({item.code})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Phone number
-              <input
-                ref={phoneInputRef}
-                autoFocus
-                type="tel"
-                inputMode="tel"
-                autoComplete="tel"
-                value={props.phoneNumber}
-                onChange={(event) => {
-                  props.onPhoneNumberChange(event.target.value);
-                  setPhoneError("");
-                }}
-                placeholder={`e.g. 0712345678 or ${selectedCountry.code}712345678`}
-                aria-invalid={phoneError.length > 0}
-                aria-describedby={phoneError.length > 0 ? "shop-phone-error" : "shop-phone-help"}
-              />
-            </label>
-          </div>
-          <p id="shop-phone-help" className="shell-note">
-            Your phone number is required to register and recover your shop.
-          </p>
-          {phoneError.length > 0 ? (
-            <p id="shop-phone-error" className="setup-error" role="alert">
-              {phoneError}
-            </p>
-          ) : null}
+          <PhoneNumberField
+            autoFocus
+            country={selectedCountry.countryCode}
+            countries={phoneCountryOptions}
+            value={props.phoneNumber}
+            error={phoneError}
+            helpText="Your phone number is required to register and recover your shop."
+            onCountryChange={(country) => {
+              props.onPhoneCountryCodeChange(getCountryDialCodeByCountry(country).code);
+              setPhoneError("");
+            }}
+            onValueChange={(value) => {
+              props.onPhoneNumberChange(value);
+              setPhoneError("");
+            }}
+          />
           <div className="compact-actions">
             <button
               type="button"
@@ -8859,7 +8809,6 @@ interface LoginPanelProps {
 export function LoginPanel(props: LoginPanelProps) {
   const [authView, setAuthView] = useState<"options" | AuthChannel>("options");
   const selectedCountryCode = getCountryDialCode(props.countryCode);
-  const phoneSuffix = sanitizePhoneSuffix(props.destination, selectedCountryCode.suffixLength);
   const contactIsValid = isSignupContactValid(props.channel, props.countryCode, props.destination);
   const isEmailRecovery = props.channel === "email" && props.isRecoveringPin;
   const isPhoneRecovery = props.channel === "phone" && props.isRecoveringPin;
@@ -8906,39 +8855,15 @@ export function LoginPanel(props: LoginPanelProps) {
               </div>
             </div>
             {props.channel === "phone" ? (
-              <div className="phone-contact-row">
-                <label>
-                  Country code
-                  <select
-                    value={props.countryCode}
-                    onChange={(event) =>
-                      props.onCountryCodeChange(event.target.value as CountryDialCode)
-                    }
-                  >
-                    {countryDialCodes.map((item) => (
-                      <option key={item.code} value={item.code}>
-                        {item.flag} {item.code} {item.country}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Phone number
-                  <input
-                    value={phoneSuffix}
-                    onChange={(event) =>
-                      props.onDestinationChange(
-                        sanitizePhoneSuffix(event.target.value, selectedCountryCode.suffixLength)
-                      )
-                    }
-                    inputMode="numeric"
-                    maxLength={selectedCountryCode.suffixLength}
-                    pattern="[0-9]*"
-                    type="tel"
-                    placeholder={"0".repeat(selectedCountryCode.suffixLength)}
-                  />
-                </label>
-              </div>
+              <PhoneNumberField
+                country={selectedCountryCode.countryCode}
+                countries={phoneCountryOptions}
+                value={props.destination}
+                onCountryChange={(country) =>
+                  props.onCountryCodeChange(getCountryDialCodeByCountry(country).code)
+                }
+                onValueChange={props.onDestinationChange}
+              />
             ) : (
               <label>
                 Email address
@@ -16884,44 +16809,21 @@ function AgentProfileSurface({
                 unverified and hidden from customers by default.
               </p>
             </div>
-            <div className="phone-contact-row">
-              <label>
-                Country
-                <select
-                  value={ownerPhoneCountryCode}
-                  onChange={(event) => {
-                    setOwnerPhoneCountryCode(event.target.value as CountryDialCode);
-                    setOwnerPhoneError("");
-                  }}
-                >
-                  {countryDialCodes.map((item) => (
-                    <option key={item.code} value={item.code}>
-                      {item.flag} {item.country} ({item.code})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Owner phone number
-                <input
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  value={ownerPhoneNumber}
-                  onChange={(event) => {
-                    setOwnerPhoneNumber(event.target.value);
-                    setOwnerPhoneError("");
-                  }}
-                  aria-invalid={ownerPhoneError.length > 0}
-                  aria-describedby={ownerPhoneError.length > 0 ? "owner-phone-error" : undefined}
-                />
-              </label>
-            </div>
-            {ownerPhoneError.length > 0 ? (
-              <p id="owner-phone-error" className="setup-error" role="alert">
-                {ownerPhoneError}
-              </p>
-            ) : null}
+            <PhoneNumberField
+              country={getCountryDialCode(ownerPhoneCountryCode).countryCode}
+              countries={phoneCountryOptions}
+              value={ownerPhoneNumber}
+              label="Owner phone number"
+              error={ownerPhoneError}
+              onCountryChange={(country) => {
+                setOwnerPhoneCountryCode(getCountryDialCodeByCountry(country).code);
+                setOwnerPhoneError("");
+              }}
+              onValueChange={(value) => {
+                setOwnerPhoneNumber(value);
+                setOwnerPhoneError("");
+              }}
+            />
             <div className="compact-actions">
               <button
                 type="button"
@@ -21087,14 +20989,11 @@ function composeSignupContact(
     return destination.trim();
   }
 
-  const selectedCountryCode = getCountryDialCode(countryCode);
-  const phone = sanitizePhoneSuffix(destination, selectedCountryCode.suffixLength);
-
-  if (phone.startsWith("+")) {
-    return phone;
+  try {
+    return normalizeOwnerPhoneInput(destination, getCountryDialCode(countryCode).countryCode);
+  } catch {
+    return destination.trim();
   }
-
-  return `${countryCode}${phone}`;
 }
 
 function inferCountryCode(value: string): CountryDialCode | null {
@@ -21131,8 +21030,10 @@ function getCountryDialCode(countryCode: CountryDialCode) {
   );
 }
 
-function sanitizePhoneSuffix(value: string, maxLength: number): string {
-  return value.replace(/\D/g, "").slice(0, maxLength);
+function getCountryDialCodeByCountry(country: CountryCode) {
+  return (
+    countryDialCodes.find((item) => item.countryCode === country) ?? getCountryDialCode("+254")
+  );
 }
 
 function sanitizePin(value: string): string {
@@ -21152,10 +21053,12 @@ function isSignupContactValid(
     return isValidContact(channel, contact);
   }
 
-  const selectedCountryCode = getCountryDialCode(countryCode);
-  const phoneSuffix = sanitizePhoneSuffix(contact, selectedCountryCode.suffixLength);
-
-  return phoneSuffix.length === selectedCountryCode.suffixLength;
+  try {
+    normalizeOwnerPhoneInput(contact, getCountryDialCode(countryCode).countryCode);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isValidContact(channel: AuthChannel, contact: string): boolean {

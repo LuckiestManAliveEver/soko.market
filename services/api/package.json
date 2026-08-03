@@ -22,6 +22,8 @@
     "db:purge-shops": "node scripts/purge-shop-deletions.mjs",
     "db:purge-accounts": "node scripts/purge-account-deletions.mjs",
     "db:verify-schema": "node scripts/verify-db-schema.mjs",
+    "phone-identities:audit": "tsx scripts/audit-phone-identities.ts",
+    "phone-identities:normalize": "tsx scripts/audit-phone-identities.ts",
     "vapid:generate": "node scripts/generate-vapid-env.mjs",
     "db:rollback": "node scripts/rollback-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",

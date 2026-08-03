@@ -5,6 +5,87 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 describe("phone-first authentication", () => {
+  it.each([
+    "712345678",
+    "0712345678",
+    "254712345678",
+    "+254712345678",
+    "00254712345678",
+    "+254 712 345 678",
+    "254254712345678",
+    "+254+254712345678"
+  ])("normalizes %s before creating a signup transaction", async (identifier) => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const response = await post(app, "/auth/signup/start", {
+      type: "phone",
+      identifier,
+      country: "KE"
+    });
+    expect(response.statusCode).toBe(200);
+    expect(store.snapshot().authTransactions?.at(-1)).toMatchObject({
+      identifierType: "phone",
+      identifierValue: "+254712345678"
+    });
+    await app.close();
+  });
+
+  it("rejects malformed phone input with INVALID_PHONE_NUMBER", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const response = await post(app, "/auth/signup/start", {
+      type: "phone",
+      identifier: "+254abc123",
+      country: "KE"
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      code: "INVALID_PHONE_NUMBER",
+      message: "Enter a valid phone number."
+    });
+    await app.close();
+  });
+
+  it("accepts a foreign international paste without prepending the selected country", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const response = await post(app, "/auth/signup/start", {
+      type: "phone",
+      identifier: "+256772123456",
+      country: "KE"
+    });
+    expect(response.statusCode).toBe(200);
+    expect(store.snapshot().authTransactions?.at(-1)).toMatchObject({
+      identifierType: "phone",
+      identifierValue: "+256772123456"
+    });
+    await app.close();
+  });
+
+  it("uses one canonical identity for PIN signup and duplicate-prefix login", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const signup = await post(app, "/auth/pin/signup", {
+      method: "phone",
+      contact: "0712345678",
+      country: "KE",
+      pin: "1234"
+    });
+    expect(signup.statusCode).toBe(200);
+    expect(signup.json()).toMatchObject({
+      account: { primaryAuthDestination: "+254712345678" }
+    });
+    const login = await post(app, "/auth/pin/login", {
+      method: "phone",
+      contact: "+254254712345678",
+      country: "KE",
+      pin: "1234"
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({
+      account: { primaryAuthDestination: "+254712345678" }
+    });
+    await app.close();
+  });
+
   it("creates a password account with a normalized, unverified phone identifier", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
@@ -118,12 +199,18 @@ describe("phone-first authentication", () => {
     }
     const login = await post(app, "/auth/login/password", {
       ...credentials,
+      identifier: "+254254712345679",
+      country: "KE",
       password: "correct horse battery staple"
     });
     expect(login.statusCode).toBe(200);
     expect(cookies(login.headers["set-cookie"])).toContain("soko_refresh=");
 
-    const phoneRecovery = await post(app, "/auth/recovery/start", credentials);
+    const phoneRecovery = await post(app, "/auth/recovery/start", {
+      ...credentials,
+      identifier: "254254712345679",
+      country: "KE"
+    });
     expect(phoneRecovery.statusCode).toBe(400);
     expect(phoneRecovery.json()).toMatchObject({ code: "phone_recovery_unavailable" });
 

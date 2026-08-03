@@ -1,9 +1,10 @@
 import {
-  getCountryCallingCode,
-  isSupportedCountry,
-  parsePhoneNumberFromString,
-  type CountryCode
-} from "libphonenumber-js";
+  normalizeInternationalPhoneInput,
+  normalizePhoneInput,
+  phoneNormalizationErrorMessage,
+  type PhoneNormalizationError
+} from "@soko/shared-types";
+import { getCountryCallingCode, isSupportedCountry, type CountryCode } from "libphonenumber-js";
 
 export type PhoneIdentityErrorCode =
   "phone_country_invalid" | "phone_number_invalid" | "phone_number_required";
@@ -27,8 +28,7 @@ export function normalizeOwnerPhoneNumber(
   phoneNumber: string,
   country: string
 ): NormalizedOwnerPhoneIdentity {
-  const rawPhoneNumber = phoneNumber.trim();
-  if (rawPhoneNumber.length === 0) {
+  if (phoneNumber.trim().length === 0) {
     throw new PhoneIdentityError("phone_number_required", "Enter your phone number to continue.");
   }
 
@@ -38,46 +38,35 @@ export function normalizeOwnerPhoneNumber(
   }
 
   const countryCode = normalizedCountry as CountryCode;
-  const digits = rawPhoneNumber.replace(/\D/g, "");
-  const callingCode = getCountryCallingCode(countryCode);
-  const candidate = rawPhoneNumber.startsWith("+")
-    ? `+${digits}`
-    : digits.startsWith(callingCode)
-      ? `+${digits}`
-      : rawPhoneNumber;
-  const parsed = parsePhoneNumberFromString(candidate, countryCode);
-
-  if (!parsed?.isValid() || parsed.country !== countryCode) {
-    throw new PhoneIdentityError(
-      "phone_number_invalid",
-      "Enter a valid phone number for the selected country."
-    );
-  }
+  const result = normalizePhoneInput({
+    rawInput: phoneNumber,
+    selectedCountry: countryCode,
+    selectedCallingCode: getCountryCallingCode(countryCode)
+  });
+  if (!result.valid) throw invalidPhoneError(result.error);
 
   return {
-    country: countryCode,
-    e164: parsed.number,
-    nationalNumber: parsed.nationalNumber
+    country: result.country,
+    e164: result.e164,
+    nationalNumber: result.nationalNumber
   };
 }
 
 export function normalizeInternationalOwnerPhoneNumber(
   phoneNumber: string
 ): NormalizedOwnerPhoneIdentity {
-  const parsed = parsePhoneNumberFromString(phoneNumber.trim());
-
-  if (!parsed?.isValid() || parsed.country === undefined) {
-    throw new PhoneIdentityError(
-      "phone_number_invalid",
-      "Enter a valid phone number for the selected country."
-    );
-  }
+  const result = normalizeInternationalPhoneInput(phoneNumber);
+  if (!result.valid) throw invalidPhoneError(result.error);
 
   return {
-    country: parsed.country,
-    e164: parsed.number,
-    nationalNumber: parsed.nationalNumber
+    country: result.country,
+    e164: result.e164,
+    nationalNumber: result.nationalNumber
   };
+}
+
+function invalidPhoneError(error: PhoneNormalizationError): PhoneIdentityError {
+  return new PhoneIdentityError("phone_number_invalid", phoneNormalizationErrorMessage(error));
 }
 
 export function maskPhoneNumber(phoneNumber: string | null | undefined): string | null {
