@@ -681,7 +681,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
           {message}
         </p>
         <button className="secondary" type="button" onClick={onCancel}>
-          Back to marketplace
+          Browse marketplace without an account
         </button>
       </section>
     </main>

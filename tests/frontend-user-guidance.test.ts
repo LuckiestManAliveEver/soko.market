@@ -322,6 +322,25 @@ describe("frontend user guidance", () => {
     expect(styles).toContain("pointer-events: auto");
   });
 
+  it("offers a read-only guest marketplace without forcing signup", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
+    const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
+
+    expect(application).toContain("function browseAsGuest()");
+    expect(application).toContain("Browse as guest");
+    expect(application).toContain("Browsing as a guest");
+    expect(application).toContain(
+      'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
+    );
+    expect(application).toContain("routes.publicAgent(storefront.agentId)");
+    expect(application).toContain(
+      "marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}"
+    );
+    expect(phoneFirst).toContain("Browse marketplace without an account");
+    expect(apiRoutes).toContain('"/public/storefronts"');
+  });
+
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");

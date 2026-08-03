@@ -505,6 +505,10 @@ interface PublicStorefrontSummary {
   products: PublicStorefrontProductSummary[];
 }
 
+interface PublicStorefrontListResponse {
+  storefronts: PublicStorefrontSummary[];
+}
+
 interface ShopPresenceSummary {
   businessId: string;
   status: ShopPresenceStatus;
@@ -1726,6 +1730,7 @@ const activeModeStorageKey = "soko.chatFirst.mode";
 const ownerAuthStorageKey = "soko.chatFirst.ownerAuth";
 const setupDraftStorageKey = "soko.chatFirst.setupDraft";
 const pendingOAuthStorageKey = "soko.chatFirst.pendingOAuth";
+const guestBrowsingStorageKey = "soko.market.guest-browsing.v1";
 
 const socialSignupProviders: Array<{
   id: SocialSignupProvider;
@@ -2168,6 +2173,8 @@ export function OwnerApp() {
     () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
   );
   const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(false);
+  const [publicStorefronts, setPublicStorefronts] = useState<PublicStorefrontSummary[]>([]);
+  const [publicStorefrontsLoading, setPublicStorefrontsLoading] = useState(false);
   const [isMessagingInboxOpen, setIsMessagingInboxOpen] = useState(
     () => window.matchMedia("(min-width: 760px)").matches
   );
@@ -2266,7 +2273,7 @@ export function OwnerApp() {
   const isAuthScreen =
     authBootstrapPending || shouldShowSignup || shouldShowLogin || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
-  const userLabel = session?.user.displayName ?? "Signed out";
+  const userLabel = session?.user.displayName ?? "Guest";
   const activeImportJob =
     importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
@@ -2337,6 +2344,7 @@ export function OwnerApp() {
   }
 
   function openSignup() {
+    sessionStorage.removeItem(guestBrowsingStorageKey);
     setIsBusinessSetupOpen(false);
     setIsLoginOpen(false);
     setIsSignupOpen(true);
@@ -2344,10 +2352,25 @@ export function OwnerApp() {
   }
 
   function openLogin() {
+    sessionStorage.removeItem(guestBrowsingStorageKey);
     setIsBusinessSetupOpen(false);
     setIsSignupOpen(false);
     setIsLoginOpen(true);
     setStatusMessage("Enter your email or phone number and PIN.");
+  }
+
+  function browseAsGuest() {
+    sessionStorage.setItem(guestBrowsingStorageKey, "true");
+    setIsSignupOpen(false);
+    setIsLoginOpen(false);
+    setIsBusinessSetupOpen(false);
+    setIsAccountRestorationOpen(false);
+    setIsMessagingInboxOpen(false);
+    setMode("marketplace");
+    setView("chat");
+    setIsMarketplaceShortcutOpen(true);
+    navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
+    setStatusMessage("Browsing as a guest. Sign in only when you want to message, order, or sell.");
   }
 
   useEffect(() => {
@@ -2382,6 +2405,11 @@ export function OwnerApp() {
   useEffect(() => {
     setConnectivityAuthentication(session !== null);
   }, [session]);
+
+  useEffect(() => {
+    if (authBootstrapPending) return;
+    void loadPublicStorefronts();
+  }, [authBootstrapPending]);
 
   useEffect(() => {
     void loadOAuthProviders();
@@ -3048,6 +3076,7 @@ export function OwnerApp() {
   }
 
   function acceptAuthenticatedSession(response: SessionResponse) {
+    sessionStorage.removeItem(guestBrowsingStorageKey);
     logAuthenticationLifecycle("session_response_received", response);
     setSession(response);
     saveCachedAuthSession(response);
@@ -3161,8 +3190,20 @@ export function OwnerApp() {
         clearCachedAuthSession();
         setAuthBootstrapState("reauthentication-required");
         if (storedBusiness === null) setBusiness(null);
-        if (initialOwnerAuth !== null) setIsLoginOpen(true);
-        setStatusMessage("Sign in to continue");
+        const browsingAsGuest = sessionStorage.getItem(guestBrowsingStorageKey) === "true";
+        if (initialOwnerAuth !== null && !browsingAsGuest) {
+          setIsLoginOpen(true);
+          setStatusMessage("Sign in to continue");
+        } else if (
+          initialAuthenticationTarget === null &&
+          !accountDeletionIntent &&
+          !accountRestorationIntent
+        ) {
+          setMode("marketplace");
+          setView("chat");
+          navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
+          setStatusMessage("Browse the marketplace as a guest. No account is required.");
+        }
         return;
       }
 
@@ -3184,6 +3225,18 @@ export function OwnerApp() {
       }
     } catch {
       // Anonymous and offline visitors use the local completion marker.
+    }
+  }
+
+  async function loadPublicStorefronts() {
+    setPublicStorefrontsLoading(true);
+    try {
+      const response = await getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24");
+      setPublicStorefronts(response.storefronts);
+    } catch {
+      setPublicStorefronts([]);
+    } finally {
+      setPublicStorefrontsLoading(false);
     }
   }
 
@@ -7276,6 +7329,11 @@ export function OwnerApp() {
               >
                 {mode === "seller" ? "Shop" : "Sell"}
               </button>
+              {session === null ? (
+                <span className="guest-mode-badge" aria-label="Browsing without an account">
+                  Guest
+                </span>
+              ) : null}
               {business !== null && mode === "seller" ? (
                 <button
                   className="header-action-button"
@@ -7325,11 +7383,7 @@ export function OwnerApp() {
           <PhoneFirstAuthentication
             initialMode={shouldShowSignup ? "signup" : "login"}
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
-            onCancel={() => {
-              setIsSignupOpen(false);
-              setIsLoginOpen(false);
-              setStatusMessage("Marketplace ready. Tap Sell when you want to register a shop.");
-            }}
+            onCancel={browseAsGuest}
           />
         ) : isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
@@ -7473,6 +7527,8 @@ export function OwnerApp() {
               productFields={productFields}
               productCount={products.length}
               products={products}
+              publicStorefronts={publicStorefronts}
+              publicStorefrontsLoading={publicStorefrontsLoading}
               sokoId={business?.sokoId ?? "Not set up yet"}
               report={reportSummary}
               shopPresenceStatus={shopPresenceStatus}
@@ -7491,8 +7547,10 @@ export function OwnerApp() {
                 )
               }
               onRequireSignIn={requireMessagingSignIn}
+              onBrowseAsGuest={browseAsGuest}
               onSignUp={openSignup}
               onLogin={openLogin}
+              onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
                   updateConversationPreference(conversationId, preference)
@@ -7568,7 +7626,7 @@ export function OwnerApp() {
               onOpenAgentProfile={() => openAgentProfile()}
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
-              marketplaceShortcutOpen={isMarketplaceShortcutOpen}
+              marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}
               onSend={(draft) => void runAction("chat-send", () => sendChatDraft(draft))}
               onCancelGeneration={() => void cancelBrowserGeneration()}
               onSmsHandoff={recordSmsHandoff}
@@ -16536,6 +16594,8 @@ interface ChatSurfaceProps {
   productFields: ProductFieldDefinition[];
   productCount: number;
   products: ProductSummary[];
+  publicStorefronts: PublicStorefrontSummary[];
+  publicStorefrontsLoading: boolean;
   sokoId: string;
   report: BusinessReportSummary | null;
   shopPresenceStatus: ShopPresenceStatus;
@@ -16548,8 +16608,10 @@ interface ChatSurfaceProps {
   onSelectConversation: (conversationId: string) => void;
   onCreateConversation: (recipient: string, title: string) => void;
   onRequireSignIn: () => void;
+  onBrowseAsGuest: () => void;
   onSignUp: () => void;
   onLogin: () => void;
+  onRefreshPublicStorefronts: () => void;
   onConversationPreference: (
     conversationId: string,
     preference: "archive" | "mute" | "pin"
@@ -16625,6 +16687,8 @@ function ChatSurface({
   productFields,
   productCount,
   products,
+  publicStorefronts,
+  publicStorefrontsLoading,
   sokoId,
   report,
   shopPresenceStatus,
@@ -16637,8 +16701,10 @@ function ChatSurface({
   onSelectConversation,
   onCreateConversation,
   onRequireSignIn,
+  onBrowseAsGuest,
   onSignUp,
   onLogin,
+  onRefreshPublicStorefronts,
   onConversationPreference,
   onEnableNotifications,
   onInboxOpenChange,
@@ -17106,6 +17172,9 @@ function ChatSurface({
                     <button className="secondary" type="button" onClick={onLogin}>
                       Log in
                     </button>
+                    <button className="secondary" type="button" onClick={onBrowseAsGuest}>
+                      Browse as guest
+                    </button>
                   </div>
                 ) : null}
                 {message.attachments !== undefined && message.attachments.length > 0 ? (
@@ -17335,12 +17404,16 @@ function ChatSurface({
                   <MarketplaceModeCard
                     businessName={businessName}
                     hasBusiness={hasBusiness}
+                    isAuthenticated={isAuthenticated}
                     isIntro={!marketplaceIntroComplete}
+                    isLoadingStorefronts={publicStorefrontsLoading}
                     productCount={productCount}
+                    publicStorefronts={publicStorefronts}
                     sokoId={sokoId}
                     onCompleteIntro={onCompleteMarketplaceIntro}
                     onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
                     onPrompt={commitDraft}
+                    onRefreshStorefronts={onRefreshPublicStorefronts}
                     onSell={() => onModeChange("seller")}
                   />
                 )
@@ -17635,24 +17708,32 @@ function ChatSurface({
 interface MarketplaceModeCardProps {
   businessName: string;
   hasBusiness: boolean;
+  isAuthenticated: boolean;
   isIntro: boolean;
+  isLoadingStorefronts: boolean;
   productCount: number;
+  publicStorefronts: PublicStorefrontSummary[];
   sokoId: string;
   onOpenStore: () => void;
   onCompleteIntro: () => void;
   onPrompt: (prompt: string) => void;
+  onRefreshStorefronts: () => void;
   onSell: () => void;
 }
 
 function MarketplaceModeCard({
   businessName,
   hasBusiness,
+  isAuthenticated,
   isIntro,
+  isLoadingStorefronts,
   productCount,
+  publicStorefronts,
   sokoId,
   onOpenStore,
   onCompleteIntro,
   onPrompt,
+  onRefreshStorefronts,
   onSell
 }: MarketplaceModeCardProps) {
   return (
@@ -17671,17 +17752,65 @@ function MarketplaceModeCard({
           Start exploring
         </button>
       ) : null}
-      <div className="marketplace-prompts" aria-label="Marketplace suggestions">
-        <button type="button" onClick={() => onPrompt("Show me shops near me")}>
-          Shops near me
-        </button>
-        <button type="button" onClick={() => onPrompt("Show me today's offers")}>
-          Today&apos;s offers
-        </button>
-        <button type="button" onClick={() => onPrompt("Find affordable essentials")}>
-          Affordable essentials
+      {!isAuthenticated ? (
+        <div className="guest-browsing-note">
+          <strong>Browsing as a guest</strong>
+          <span>Open shops and explore their public catalogues without creating an account.</span>
+        </div>
+      ) : (
+        <div className="marketplace-prompts" aria-label="Marketplace suggestions">
+          <button type="button" onClick={() => onPrompt("Show me shops near me")}>
+            Shops near me
+          </button>
+          <button type="button" onClick={() => onPrompt("Show me today's offers")}>
+            Today&apos;s offers
+          </button>
+          <button type="button" onClick={() => onPrompt("Find affordable essentials")}>
+            Affordable essentials
+          </button>
+        </div>
+      )}
+      <div className="marketplace-directory-heading">
+        <div>
+          <span>Public marketplace</span>
+          <h3>Explore shops</h3>
+        </div>
+        <button className="secondary" type="button" onClick={onRefreshStorefronts}>
+          Refresh
         </button>
       </div>
+      {isLoadingStorefronts ? (
+        <p className="marketplace-directory-status" role="status">
+          Loading public shops…
+        </p>
+      ) : publicStorefronts.length === 0 ? (
+        <p className="marketplace-directory-status">No public shops are available yet.</p>
+      ) : (
+        <div className="marketplace-directory" aria-label="Public shops">
+          {publicStorefronts.map((storefront) => (
+            <a
+              className="public-shop-card"
+              href={routes.publicAgent(storefront.agentId)}
+              key={storefront.agentId}
+            >
+              <span className={`presence-label ${storefront.presence.status}`}>
+                {storefront.presence.status}
+              </span>
+              <strong>{storefront.businessName}</strong>
+              <small>{storefront.sokoId}</small>
+              <p>
+                {storefront.products.length === 0
+                  ? "No public catalogue items"
+                  : storefront.products
+                      .slice(0, 3)
+                      .map((product) => product.name)
+                      .join(" · ")}
+              </p>
+              <span>Open shop →</span>
+            </a>
+          ))}
+        </div>
+      )}
       {hasBusiness ? (
         <article className="shop-discovery-card">
           <button className="shop-discovery-identity" type="button" onClick={onOpenStore}>
@@ -17705,7 +17834,11 @@ function MarketplaceModeCard({
           <div>
             <span>Want to sell?</span>
             <h3>Set up your business</h3>
-            <p>Create your shop when you are ready. Your buyer account is already active.</p>
+            <p>
+              {isAuthenticated
+                ? "Create your shop when you are ready."
+                : "Keep browsing freely. Create an account only when you are ready to sell."}
+            </p>
           </div>
           <div className="compact-actions">
             <button type="button" onClick={onSell}>

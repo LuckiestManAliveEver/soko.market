@@ -263,6 +263,17 @@ button:disabled {
   min-width: 0;
 }
 
+.guest-mode-badge {
+  background: #fff8df;
+  border: 1px solid #e4cf88;
+  border-radius: 999px;
+  color: #6b4c00;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
 .auth-top-bar {
   background: transparent;
   border-bottom: 0;
@@ -2565,6 +2576,101 @@ button:disabled {
   background: #ffffff;
   border: 1px solid #cddbd0;
   color: #23342a;
+}
+
+.guest-browsing-note {
+  align-items: start;
+  background: #f7fbf8;
+  border: 1px solid #cfe2d6;
+  border-radius: 10px;
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+}
+
+.guest-browsing-note strong {
+  color: #0d6943;
+}
+
+.guest-browsing-note span,
+.marketplace-directory-status {
+  color: #516258;
+  font-size: 13px;
+}
+
+.marketplace-directory-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.marketplace-directory-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.marketplace-directory-heading span {
+  color: #117a4f;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.marketplace-directory-heading h3,
+.marketplace-directory-status,
+.public-shop-card p {
+  margin: 0;
+}
+
+.marketplace-directory {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.public-shop-card {
+  background: #ffffff;
+  border: 1px solid #dbe4dc;
+  border-radius: 10px;
+  color: #17211b;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px;
+  text-decoration: none;
+}
+
+.public-shop-card:hover,
+.public-shop-card:focus-visible {
+  border-color: #78aa8a;
+  box-shadow: 0 4px 14px rgba(17, 63, 43, 0.1);
+}
+
+.public-shop-card small,
+.public-shop-card p {
+  color: #516258;
+  font-size: 12px;
+}
+
+.public-shop-card > span:last-child {
+  color: #117a4f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.presence-label {
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.presence-label.online {
+  color: #117a4f;
+}
+
+.presence-label.offline {
+  color: #6b7470;
 }
 
 .compact-actions button.secondary,

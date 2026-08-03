@@ -3,6 +3,47 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
 describe("storefront interaction contracts", () => {
+  it("lets guests discover public shops without creating an account", async () => {
+    const app = buildApi();
+    const owner = await createOwnerBusiness(app, "254700000061", "Guest Market", "3061");
+
+    await injectJson(
+      app,
+      "POST",
+      `/businesses/${owner.business.id}/products`,
+      { name: "Fresh mangoes", unit: "crate", quantity: 8 },
+      owner.cookie
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/public/storefronts?search=mango&limit=10"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      storefronts: [
+        expect.objectContaining({
+          agentId: owner.business.sokoId,
+          businessName: "Guest Market",
+          products: [expect.objectContaining({ name: "Fresh mangoes", available: true })]
+        })
+      ]
+    });
+
+    await injectJson(
+      app,
+      "PATCH",
+      `/businesses/${owner.business.id}/presence`,
+      { status: "private" },
+      owner.cookie
+    );
+    const hidden = await app.inject({ method: "GET", url: "/public/storefronts" });
+    expect(hidden.statusCode).toBe(200);
+    expect(hidden.json()).toEqual({ storefronts: [] });
+    await app.close();
+  });
+
   it("persists presence, invites, public care, messages, and order requests", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

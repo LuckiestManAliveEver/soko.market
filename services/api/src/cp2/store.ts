@@ -5745,24 +5745,27 @@ export class Cp2Store {
 
   getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
     const business = this.requirePublicStorefrontBusiness(input.agentId);
+    return this.publicStorefrontForBusiness(business);
+  }
 
-    return {
-      agentId: business.sokoId,
-      sokoId: business.sokoId,
-      businessName: business.name,
-      presence: (() => {
-        const presence = this.shopPresenceForBusiness(business.id);
-        return { status: presence.status, updatedAt: presence.updatedAt };
-      })(),
-      products: this.productsForBusiness(business.id)
-        .filter((product) => product.quantity > 0)
-        .map((product) => ({
-          id: product.id,
-          name: product.name,
-          unit: product.unit,
-          available: true
-        }))
-    };
+  listPublicStorefronts(input?: { search?: string; limit?: number }): PublicStorefrontSummary[] {
+    const search = input?.search?.trim().toLowerCase().slice(0, 120) ?? "";
+    const limit = Math.min(50, Math.max(1, input?.limit ?? 24));
+
+    return [...this.businesses.values()]
+      .filter((business) => !this.quarantinedBusinessIds.has(business.id))
+      .filter((business) => this.shopPresenceForBusiness(business.id).status !== "private")
+      .map((business) => this.publicStorefrontForBusiness(business))
+      .filter((storefront) => {
+        if (search.length === 0) return true;
+        return [
+          storefront.businessName,
+          storefront.sokoId,
+          ...storefront.products.map((product) => product.name)
+        ].some((value) => value.toLowerCase().includes(search));
+      })
+      .sort((left, right) => left.businessName.localeCompare(right.businessName))
+      .slice(0, limit);
   }
 
   getShopPresence(input: {
@@ -13280,6 +13283,24 @@ export class Cp2Store {
       throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
     }
     return business;
+  }
+
+  private publicStorefrontForBusiness(business: BusinessSummary): PublicStorefrontSummary {
+    const presence = this.shopPresenceForBusiness(business.id);
+    return {
+      agentId: business.sokoId,
+      sokoId: business.sokoId,
+      businessName: business.name,
+      presence: { status: presence.status, updatedAt: presence.updatedAt },
+      products: this.productsForBusiness(business.id)
+        .filter((product) => product.quantity > 0)
+        .map((product) => ({
+          id: product.id,
+          name: product.name,
+          unit: product.unit,
+          available: true
+        }))
+    };
   }
 
   private shopPresenceForBusiness(businessId: string): ShopPresenceSummary {

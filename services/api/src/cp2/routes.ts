@@ -488,6 +488,11 @@ interface StorefrontParams {
   agentId: string;
 }
 
+interface PublicStorefrontSearchQuery {
+  search?: string;
+  limit?: string;
+}
+
 interface ShopPresenceBody {
   status?: string;
 }
@@ -3928,6 +3933,27 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.get(
+    "/public/storefronts",
+    async (request: FastifyRequest<{ Querystring: PublicStorefrontSearchQuery }>, reply) => {
+      try {
+        const search = parseOptionalString(request.query.search);
+        const limit =
+          request.query.limit === undefined
+            ? undefined
+            : parseIntegerString(request.query.limit, "limit");
+        return {
+          storefronts: store.listPublicStorefronts({
+            ...(search === undefined ? {} : { search }),
+            ...(limit === undefined ? {} : { limit })
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get(
     "/public/storefronts/:agentId",
