@@ -2230,7 +2230,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     return { authenticated: true, ...session, deviceSession };
   });
 
-  app.post("/auth/session/refresh", async (request, reply) => {
+  // "/session/refresh" is a legacy alias kept for existing clients. Fastify's shorthand route
+  // typings do not accept an array of paths, so the two registrations below share this one
+  // handler function instead - there is exactly one implementation, so they cannot silently
+  // drift out of sync again.
+  async function handleSessionRefresh(request: FastifyRequest, reply: FastifyReply) {
     try {
       const refreshed = store.refreshSessionCredential({
         refreshToken: readRefreshCookie(request.headers.cookie),
@@ -2250,34 +2254,19 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     } catch (error) {
       if (error instanceof Cp2Error && error.statusCode === 401) {
         reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
+        // Classified for operators without exposing anything beyond the same code already
+        // returned to the client (never the token/cookie itself) - see auth-runtime-config.md
+        // and the refresh-reuse grace period in Cp2Store.refreshSessionCredential.
+        request.log.warn(
+          { event: "auth.session_refresh_failed", code: error.code, requestId: request.id },
+          "Session refresh rejected."
+        );
       }
       return sendCp2Error(reply, error);
     }
-  });
-
-  app.post("/session/refresh", async (request, reply) => {
-    try {
-      const refreshed = store.refreshSessionCredential({
-        refreshToken: readRefreshCookie(request.headers.cookie),
-        metadata: readDeviceSessionMetadata(request)
-      });
-      reply.header("set-cookie", [
-        serializeSessionCookie(refreshed.session.id),
-        serializeRefreshCookie(refreshed.refreshToken)
-      ]);
-      return {
-        authenticated: true,
-        account: refreshed.account,
-        user: refreshed.user,
-        session: refreshed.session,
-        deviceSession: refreshed.deviceSession
-      };
-    } catch (error) {
-      if (error instanceof Cp2Error && error.statusCode === 401)
-        reply.header("set-cookie", [clearSessionCookie(), clearRefreshCookie()]);
-      return sendCp2Error(reply, error);
-    }
-  });
+  }
+  app.post("/auth/session/refresh", handleSessionRefresh);
+  app.post("/session/refresh", handleSessionRefresh);
 
   app.get("/auth/sessions", async (request, reply) => {
     try {

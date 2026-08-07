@@ -127,6 +127,51 @@ describe("native-style account session lifecycle", () => {
     await app.close();
   });
 
+  it("rejects refresh with no credential and rejects refresh after logout", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const noCookie = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: deviceHeaders("device-one", false)
+    });
+    expect(noCookie.statusCode).toBe(401);
+    expect(noCookie.json()).toMatchObject({ code: "auth_refresh_required" });
+
+    const invalidCookie = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: "soko_refresh=not-a-real-token" }
+    });
+    expect(invalidCookie.statusCode).toBe(401);
+    expect(invalidCookie.json()).toMatchObject({ code: "auth_refresh_revoked" });
+
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("device-one"),
+      payload: { method: "phone", contact: "+254700003009", pin: "1234" }
+    });
+    const cookies = cookieHeader(signup.headers["set-cookie"]);
+
+    const loggedOut = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: cookies }
+    });
+    expect(loggedOut.statusCode).toBe(200);
+
+    const refreshAfterLogout = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: cookies }
+    });
+    expect(refreshAfterLogout.statusCode).toBe(401);
+    expect(refreshAfterLogout.json()).toMatchObject({ code: "auth_refresh_revoked" });
+    await app.close();
+  });
+
   it("logs out one device family without revoking another device", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
