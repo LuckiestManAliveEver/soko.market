@@ -2090,6 +2090,70 @@ export class Cp2Store {
     return { ...this.requireAnySession(session.id, now), isNewAccount: false };
   }
 
+  loginWithSokoIdPin(input: { sokoId: string; pin: string; now?: Date }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const pin = normalizePin(input.pin);
+    const normalizedSokoId = normalizeStorefrontLookupId(input.sokoId);
+    const attemptKey = `login:store:${normalizedSokoId}`;
+    this.requirePinAttemptAllowed(attemptKey, now);
+
+    const business = [...this.businesses.values()].find(
+      (candidate) => normalizeStorefrontLookupId(candidate.sokoId) === normalizedSokoId
+    );
+    const membership =
+      business === undefined
+        ? undefined
+        : [...this.memberships.values()].find(
+            (candidate) => candidate.businessId === business.id && candidate.role === "owner"
+          );
+
+    if (
+      business === undefined ||
+      membership === undefined ||
+      this.quarantinedBusinessIds.has(business.id)
+    ) {
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
+    }
+
+    const user = this.requireUser(membership.userId);
+    const account = this.requireAccount(user.accountId);
+    const pinHash = this.accountPinHashes.get(account.id);
+
+    if (pinHash === undefined) {
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw new Cp2Error(
+        401,
+        "pin_not_configured",
+        "This store owner signs in with a passkey or password. Use that account's phone or email to sign in, then set a PIN for faster sign-in next time."
+      );
+    }
+
+    if (!this.verifyStoredPin(account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
+    }
+
+    this.failedPinAttempts.delete(attemptKey);
+    const session = this.createSession(account, user, now);
+    this.markSessionPinVerified(session.id, now);
+    this.recordAuditEvent({
+      type: "auth.pin_login",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        channel: "store_id",
+        destination: normalizedSokoId
+      }
+    });
+
+    return this.requireAnySession(session.id, now);
+  }
+
   getAccountPinStatus(input: { sessionId: string | null; now?: Date }): { hasPin: boolean } {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);

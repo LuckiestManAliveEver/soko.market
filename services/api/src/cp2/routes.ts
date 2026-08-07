@@ -305,6 +305,10 @@ interface PinLoginBody extends PinBody {
   method?: string;
 }
 
+interface StoreLoginBody extends PinBody {
+  sokoId?: string;
+}
+
 interface PasskeyRegistrationVerifyBody {
   ceremonyId?: string;
   label?: string;
@@ -2130,6 +2134,26 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  // Lets a store owner sign in with their store's Soko Global Shop ID instead of their own
+  // phone/email - resolves the ID to the owning account and runs the same PIN check as any
+  // other PIN login. Login only: a Soko ID cannot be used to create a new account.
+  app.post(
+    "/auth/pin/store-login",
+    async (request: FastifyRequest<{ Body: StoreLoginBody }>, reply) => {
+      try {
+        enforceAuthIpRate(request, "store_login", 10);
+        const result = store.loginWithSokoIdPin({
+          sokoId: parseString(request.body.sokoId, "sokoId"),
+          pin: parseString(request.body.pin, "pin")
+        });
+        setAuthSessionCookies(reply, request, store, result.session.id);
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.get("/auth/pin/status", async (request, reply) => {
     try {

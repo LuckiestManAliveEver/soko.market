@@ -22,7 +22,7 @@ type Stage =
   | "recovery-code"
   | "reset-pin"
   | "reset-password";
-type IdentifierType = "phone" | "email";
+type IdentifierType = "phone" | "email" | "store";
 type SecureOffer = "passkey" | "pin";
 
 interface Props {
@@ -58,6 +58,13 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
       }
       return { type: identifierType, identifier: trimmed };
     }
+    if (identifierType === "store") {
+      const normalized = identifier.trim().replace(/^\+/u, "").replace(/-/gu, "");
+      if (!/^\d{1,3}[A-Za-z]\d{8}$/u.test(normalized)) {
+        throw new Error("Enter a valid Soko ID, e.g. 254A00000001.");
+      }
+      return { type: identifierType, identifier: normalized };
+    }
     const normalized = normalizePhoneInput({
       rawInput: identifier,
       selectedCountry: country,
@@ -84,21 +91,29 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
     setPin("");
     setStage("pin");
     setMessage(
-      "Enter your PIN. New here? This creates one. Already have an account? Enter your existing PIN."
+      identifierType === "store"
+        ? "Enter the store owner's PIN to continue."
+        : "Enter your PIN. New here? This creates one. Already have an account? Enter your existing PIN."
     );
   }
 
   async function submitPin() {
     const normalized = identifierBody();
-    const result = await apiFetch<AuthSessionView>("/auth/pin/continue", {
-      method: "POST",
-      body: {
-        method: identifierType,
-        contact: normalized.identifier,
-        ...(identifierType === "phone" ? { country } : {}),
-        pin
+    const result = await apiFetch<AuthSessionView>(
+      identifierType === "store" ? "/auth/pin/store-login" : "/auth/pin/continue",
+      {
+        method: "POST",
+        body:
+          identifierType === "store"
+            ? { sokoId: normalized.identifier, pin }
+            : {
+                method: identifierType,
+                contact: normalized.identifier,
+                ...(identifierType === "phone" ? { country } : {}),
+                pin
+              }
       }
-    });
+    );
     if (result.isNewAccount) {
       setCreatedSession(result);
       setDisplayName(result.user.displayName);
@@ -303,12 +318,24 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 onCountryChange={setCountry}
                 onValueChange={setIdentifier}
               />
-            ) : (
+            ) : identifierType === "email" ? (
               <label>
                 Email address
                 <input
                   type="email"
                   autoComplete="email"
+                  value={identifier}
+                  onChange={(event) => setIdentifier(event.target.value)}
+                />
+              </label>
+            ) : (
+              <label>
+                Soko ID
+                <input
+                  type="text"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  placeholder="254A00000001"
                   value={identifier}
                   onChange={(event) => setIdentifier(event.target.value)}
                 />
@@ -378,23 +405,31 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 className="secondary"
                 type="button"
                 onClick={() => {
-                  setIdentifierType(identifierType === "phone" ? "email" : "phone");
+                  setIdentifierType(
+                    identifierType === "phone" ? "email" : identifierType === "email" ? "store" : "phone"
+                  );
                   setIdentifier("");
                   setStage("entry");
                 }}
               >
-                {identifierType === "phone" ? "Use email instead" : "Use phone instead"}
+                {identifierType === "phone"
+                  ? "Use email instead"
+                  : identifierType === "email"
+                    ? "Use store ID instead"
+                    : "Use phone instead"}
               </button>
             ) : null}
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => void run(usePasskey)}
-            >
-              Use a passkey instead
-            </button>
-            {stage !== "password" ? (
+            {identifierType !== "store" ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => void run(usePasskey)}
+              >
+                Use a passkey instead
+              </button>
+            ) : null}
+            {stage !== "password" && identifierType !== "store" ? (
               <button
                 className="secondary"
                 type="button"
@@ -407,14 +442,16 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 Use a password instead
               </button>
             ) : null}
-            <button
-              className="secondary"
-              type="button"
-              disabled={!identifier.trim() || busy}
-              onClick={() => void run(startRecovery)}
-            >
-              Trouble signing in?
-            </button>
+            {identifierType !== "store" ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={!identifier.trim() || busy}
+                onClick={() => void run(startRecovery)}
+              >
+                Trouble signing in?
+              </button>
+            ) : null}
           </>
         ) : null}
         {stage === "recovery-code" ? (

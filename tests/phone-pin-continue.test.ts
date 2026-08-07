@@ -161,6 +161,100 @@ describe("unified email + PIN continue flow", () => {
   });
 });
 
+describe("store ID + PIN login", () => {
+  it("logs the owner in using their store's Soko ID and PIN", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const signup = await post(app, "/auth/pin/continue", {
+      contact: "0712345700",
+      country: "KE",
+      pin: "9012"
+    });
+    const ownerCookie = cookies(signup.headers["set-cookie"]);
+    const ownerAccountId = signup.json<{ account: { id: string } }>().account.id;
+
+    const business = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { cookie: ownerCookie, "content-type": "application/json" },
+      payload: { name: "Soko ID Login Shop", language: "en" }
+    });
+    const { sokoId } = business.json<{ business: { sokoId: string } }>().business;
+
+    const storeLogin = await post(app, "/auth/pin/store-login", { sokoId, pin: "9012" });
+    expect(storeLogin.statusCode).toBe(200);
+    expect(storeLogin.json()).toMatchObject({ account: { id: ownerAccountId } });
+    expect(cookies(storeLogin.headers["set-cookie"])).toContain("soko_refresh=");
+
+    const storeLoginLowercase = await post(app, "/auth/pin/store-login", {
+      sokoId: sokoId.toLowerCase(),
+      pin: "9012"
+    });
+    expect(storeLoginLowercase.statusCode).toBe(200);
+    expect(storeLoginLowercase.json()).toMatchObject({ account: { id: ownerAccountId } });
+    await app.close();
+  });
+
+  it("rejects an unknown store ID and a wrong PIN with the same generic error", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const unknown = await post(app, "/auth/pin/store-login", {
+      sokoId: "254A99999999",
+      pin: "9012"
+    });
+    expect(unknown.statusCode).toBe(401);
+    expect(unknown.json()).toMatchObject({ code: "auth_credentials_invalid" });
+
+    const signup = await post(app, "/auth/pin/continue", {
+      contact: "0712345701",
+      country: "KE",
+      pin: "3456"
+    });
+    const ownerCookie = cookies(signup.headers["set-cookie"]);
+    const business = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { cookie: ownerCookie, "content-type": "application/json" },
+      payload: { name: "Wrong PIN Shop", language: "en" }
+    });
+    const { sokoId } = business.json<{ business: { sokoId: string } }>().business;
+
+    const wrongPin = await post(app, "/auth/pin/store-login", { sokoId, pin: "0000" });
+    expect(wrongPin.statusCode).toBe(401);
+    expect(wrongPin.json()).toMatchObject({ code: "auth_credentials_invalid" });
+    await app.close();
+  });
+
+  it("tells a store owner without a PIN to use their account credential instead", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const start = await post(app, "/auth/signup/start", {
+      type: "phone",
+      identifier: "0712345702",
+      country: "KE"
+    });
+    const { transactionId } = start.json<{ transactionId: string }>();
+    const signup = await post(app, "/auth/signup/complete", {
+      transactionId,
+      displayName: "Password Owner",
+      password: "a reasonably long password",
+      passwordConfirmation: "a reasonably long password",
+      termsAccepted: true,
+      privacyAccepted: true
+    });
+    const ownerCookie = cookies(signup.headers["set-cookie"]);
+    const business = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { cookie: ownerCookie, "content-type": "application/json" },
+      payload: { name: "No PIN Shop", language: "en" }
+    });
+    const { sokoId } = business.json<{ business: { sokoId: string } }>().business;
+
+    const attempt = await post(app, "/auth/pin/store-login", { sokoId, pin: "1234" });
+    expect(attempt.statusCode).toBe(401);
+    expect(attempt.json()).toMatchObject({ code: "pin_not_configured" });
+    await app.close();
+  });
+});
+
 describe("display name updates", () => {
   it("lets an authenticated user set their display name", async () => {
     const app = buildApi({ cp2: { store: createCp2Store() } });
