@@ -108,6 +108,59 @@ describe("unified phone + PIN continue flow", () => {
   });
 });
 
+describe("unified email + PIN continue flow", () => {
+  it("creates a new account by email on first use", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const response = await post(app, "/auth/pin/continue", {
+      method: "email",
+      contact: "New.Trader@Example.com",
+      pin: "1234"
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      isNewAccount: true,
+      account: { primaryAuthChannel: "email", primaryAuthDestination: "new.trader@example.com" },
+      user: { displayName: "new.trader" }
+    });
+    expect(cookies(response.headers["set-cookie"])).toContain("soko_refresh=");
+    await app.close();
+  });
+
+  it("directs a repeat signup attempt to log in instead of creating a duplicate account", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const first = await post(app, "/auth/pin/continue", {
+      method: "email",
+      contact: "owner@example.com",
+      pin: "5678"
+    });
+    const firstAccountId = first.json<{ account: { id: string } }>().account.id;
+
+    const second = await post(app, "/auth/pin/continue", {
+      method: "email",
+      contact: "Owner@Example.com",
+      pin: "5678"
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json<{ isNewAccount: boolean; account: { id: string } }>();
+    expect(body.isNewAccount).toBe(false);
+    expect(body.account.id).toBe(firstAccountId);
+    await app.close();
+  });
+
+  it("rejects an email account signup attempt when one already exists with the wrong PIN", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    await post(app, "/auth/pin/continue", { method: "email", contact: "owner2@example.com", pin: "1111" });
+    const wrongPin = await post(app, "/auth/pin/continue", {
+      method: "email",
+      contact: "owner2@example.com",
+      pin: "2222"
+    });
+    expect(wrongPin.statusCode).toBe(401);
+    expect(wrongPin.json()).toMatchObject({ code: "auth_credentials_invalid" });
+    await app.close();
+  });
+});
+
 describe("display name updates", () => {
   it("lets an authenticated user set their display name", async () => {
     const app = buildApi({ cp2: { store: createCp2Store() } });

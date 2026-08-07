@@ -16,7 +16,6 @@ type Stage =
   | "entry"
   | "pin"
   | "name"
-  | "passkey-prompt"
   | "secure"
   | "password"
   | "mfa"
@@ -25,14 +24,6 @@ type Stage =
   | "reset-password";
 type IdentifierType = "phone" | "email";
 type SecureOffer = "passkey" | "pin";
-
-interface LoginMethods {
-  preferred: "passkey";
-  passkeyAvailable: boolean;
-  passwordFallback: boolean;
-  recoveryAvailable: boolean;
-  smsLogin: false;
-}
 
 interface Props {
   onAuthenticated: (session: AuthSessionView) => void;
@@ -53,7 +44,6 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   const [displayName, setDisplayName] = useState("");
   const [createdSession, setCreatedSession] = useState<AuthSessionView | null>(null);
   const [secureOffer, setSecureOffer] = useState<SecureOffer>("passkey");
-  const [loginMethods, setLoginMethods] = useState<LoginMethods | null>(null);
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
@@ -61,7 +51,13 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   );
 
   const identifierBody = () => {
-    if (identifierType === "email") return { type: identifierType, identifier };
+    if (identifierType === "email") {
+      const trimmed = identifier.trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/u.test(trimmed)) {
+        throw new Error("Enter a valid email address.");
+      }
+      return { type: identifierType, identifier: trimmed };
+    }
     const normalized = normalizePhoneInput({
       rawInput: identifier,
       selectedCountry: country,
@@ -84,20 +80,6 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   }
 
   async function continueIdentifier() {
-    if (identifierType === "email") {
-      const methods = await apiFetch<LoginMethods>("/auth/login/methods", {
-        method: "POST",
-        body: identifierBody()
-      });
-      setLoginMethods(methods);
-      setStage("passkey-prompt");
-      setMessage(
-        methods.passkeyAvailable
-          ? "Use a passkey for the fastest, most secure return access."
-          : "Passkeys are unavailable on this deployment. Use the approved fallback."
-      );
-      return;
-    }
     identifierBody();
     setPin("");
     setStage("pin");
@@ -110,7 +92,12 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
     const normalized = identifierBody();
     const result = await apiFetch<AuthSessionView>("/auth/pin/continue", {
       method: "POST",
-      body: { contact: normalized.identifier, country, pin }
+      body: {
+        method: identifierType,
+        contact: normalized.identifier,
+        ...(identifierType === "phone" ? { country } : {}),
+        pin
+      }
     });
     if (result.isNewAccount) {
       setCreatedSession(result);
@@ -428,41 +415,6 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
             >
               Trouble signing in?
             </button>
-          </>
-        ) : null}
-        {stage === "passkey-prompt" ? (
-          <>
-            <h2>Welcome back</h2>
-            <p>Continue with a passkey for passwordless access.</p>
-            {loginMethods?.passkeyAvailable !== false ? (
-              <button type="button" disabled={busy} onClick={() => void run(usePasskey)}>
-                Continue with passkey
-              </button>
-            ) : null}
-            {loginMethods?.passwordFallback !== false ? (
-              <button
-                className="secondary"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setPassword("");
-                  setStage("password");
-                  setMessage("Use your password fallback if this account has one.");
-                }}
-              >
-                Use password fallback
-              </button>
-            ) : null}
-            {loginMethods?.recoveryAvailable !== false ? (
-              <button
-                className="secondary"
-                type="button"
-                disabled={!identifier.trim() || busy}
-                onClick={() => void run(startRecovery)}
-              >
-                Recover account
-              </button>
-            ) : null}
           </>
         ) : null}
         {stage === "recovery-code" ? (

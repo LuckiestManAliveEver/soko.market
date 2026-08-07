@@ -2105,15 +2105,22 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   app.post("/auth/pin/continue", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
       enforceAuthIpRate(request, "pin_continue", 10);
+      const channel = parseAuthChannel(request.body.method ?? request.body.channel ?? "phone");
       const rawDestination = parseString(
         request.body.contact ?? request.body.destination,
         "contact"
       );
-      const destination = normalizeAuthPhone(
-        rawDestination,
-        request.body.country === undefined ? undefined : parseString(request.body.country, "country")
-      );
-      const result = store.continueWithPhonePin({
+      const destination =
+        channel === "phone"
+          ? normalizeAuthPhone(
+              rawDestination,
+              request.body.country === undefined
+                ? undefined
+                : parseString(request.body.country, "country")
+            )
+          : rawDestination;
+      const result = store.continueWithChannelPin({
+        channel,
         destination,
         pin: parseString(request.body.pin, "pin")
       });

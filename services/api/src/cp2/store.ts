@@ -1977,22 +1977,26 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
-    const now = input.now ?? new Date();
-    const destination = normalizeDestination("phone", input.destination);
-    const destinationKey = destinationAccountKey("phone", destination);
+  private createAccountWithPin(
+    channel: AuthChannel,
+    rawDestination: string,
+    rawPin: string,
+    now: Date
+  ): AuthSessionView {
+    const destination = normalizeDestination(channel, rawDestination);
+    const destinationKey = destinationAccountKey(channel, destination);
 
     if (this.accountByDestination.has(destinationKey)) {
       throw new Cp2Error(
         409,
         "account_exists",
-        "An account already exists for this phone number. Sign in with your PIN."
+        `An account already exists for this ${channel === "phone" ? "phone number" : "email address"}. Sign in with your PIN.`
       );
     }
 
-    const pin = normalizePin(input.pin);
+    const pin = normalizePin(rawPin);
     pinHashSecret();
-    const account = this.createAccount("phone", destination, now);
+    const account = this.createAccount(channel, destination, now);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const session = this.createSession(account, user, now);
     this.accountPinHashes.set(account.id, hashPin(account.id, pin));
@@ -2005,7 +2009,7 @@ export class Cp2Store {
       actorId: user.id,
       occurredAt: now.toISOString(),
       payload: {
-        channel: "phone",
+        channel,
         destination
       }
     });
@@ -2025,16 +2029,27 @@ export class Cp2Store {
     return this.requireAnySession(session.id, now);
   }
 
-  continueWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
+  signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
+    return this.createAccountWithPin("phone", input.destination, input.pin, input.now ?? new Date());
+  }
+
+  continueWithChannelPin(input: {
+    channel: AuthChannel;
+    destination: string;
+    pin: string;
+    now?: Date;
+  }): AuthSessionView {
     const now = input.now ?? new Date();
-    const destination = normalizeDestination("phone", input.destination);
+    const destination = normalizeDestination(input.channel, input.destination);
     const pin = normalizePin(input.pin);
-    const attemptKey = `login:phone:${destination}`;
+    const attemptKey = `login:${input.channel}:${destination}`;
     this.requirePinAttemptAllowed(attemptKey, now);
-    const accountId = this.accountByDestination.get(destinationAccountKey("phone", destination));
+    const accountId = this.accountByDestination.get(
+      destinationAccountKey(input.channel, destination)
+    );
 
     if (accountId === undefined) {
-      const session = this.signupWithPhonePin({ destination, pin, now });
+      const session = this.createAccountWithPin(input.channel, destination, input.pin, now);
       return { ...session, isNewAccount: true };
     }
 
@@ -2067,7 +2082,7 @@ export class Cp2Store {
       actorId: user.id,
       occurredAt: now.toISOString(),
       payload: {
-        channel: "phone",
+        channel: input.channel,
         destination
       }
     });
