@@ -10,7 +10,7 @@ import {
 import { modelActivationMessage } from "../apps/web/src/model-activation-state";
 
 describe("native-style account session lifecycle", () => {
-  it("bootstraps a device session, rotates refresh credentials, and rejects reuse", async () => {
+  it("bootstraps a device session and rotates refresh credentials", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const signup = await app.inject({
@@ -40,21 +40,90 @@ describe("native-style account session lifecycle", () => {
     expect(refresh.statusCode).toBe(200);
     const rotatedCookies = cookieHeader(refresh.headers["set-cookie"]);
     expect(rotatedCookies).not.toBe(originalCookies);
+    await app.close();
+  });
 
-    const reused = await app.inject({
+  it("tolerates a near-simultaneous second refresh with the pre-rotation cookie (e.g. two tabs)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("device-one"),
+      payload: { method: "phone", contact: "+254700003002", pin: "1234" }
+    });
+    const originalCookies = cookieHeader(signup.headers["set-cookie"]);
+
+    const firstTab = await app.inject({
       method: "POST",
       url: "/auth/session/refresh",
       headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
     });
-    expect(reused.statusCode).toBe(401);
-    expect(reused.json()).toMatchObject({ code: "auth_refresh_reuse_detected" });
+    expect(firstTab.statusCode).toBe(200);
+    const firstTabCookies = cookieHeader(firstTab.headers["set-cookie"]);
 
-    const revokedFamily = await app.inject({
+    // A second tab/request still holding the pre-rotation cookie, arriving moments later, must
+    // not be treated as a stolen-token replay - it gets handed the same rotated session instead.
+    const secondTab = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
+    });
+    expect(secondTab.statusCode).toBe(200);
+    const firstTabBody = firstTab.json<{ session: { id: string } }>();
+    const secondTabBody = secondTab.json<{ session: { id: string } }>();
+    expect(secondTabBody.session.id).toBe(firstTabBody.session.id);
+    expect(cookieHeader(secondTab.headers["set-cookie"])).toBe(firstTabCookies);
+
+    const stillActive = await app.inject({
       method: "GET",
       url: "/auth/bootstrap",
-      headers: { cookie: rotatedCookies }
+      headers: { cookie: firstTabCookies }
     });
-    expect(revokedFamily.statusCode).toBe(401);
+    expect(stillActive.statusCode).toBe(200);
+    expect(stillActive.json()).toMatchObject({ authenticated: true });
+    await app.close();
+  });
+
+  it("rejects reuse of a pre-rotation cookie once the grace period has passed", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: deviceHeaders("device-one"),
+      payload: { method: "phone", contact: "+254700003003", pin: "1234" }
+    });
+    const originalCookies = cookieHeader(signup.headers["set-cookie"]);
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
+    });
+    expect(refresh.statusCode).toBe(200);
+    const rotatedCookies = cookieHeader(refresh.headers["set-cookie"]);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.now() + 20_000));
+    try {
+      const reused = await app.inject({
+        method: "POST",
+        url: "/auth/session/refresh",
+        headers: { ...deviceHeaders("device-one", false), cookie: originalCookies }
+      });
+      expect(reused.statusCode).toBe(401);
+      expect(reused.json()).toMatchObject({ code: "auth_refresh_reuse_detected" });
+
+      const revokedFamily = await app.inject({
+        method: "GET",
+        url: "/auth/bootstrap",
+        headers: { cookie: rotatedCookies }
+      });
+      expect(revokedFamily.statusCode).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
     await app.close();
   });
 

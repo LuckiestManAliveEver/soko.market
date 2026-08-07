@@ -357,6 +357,13 @@ export const sessionCookieName = "soko_session";
 export const refreshCookieName = "soko_refresh";
 
 const otpTtlMs = 5 * 60 * 1000;
+/**
+ * How long a just-rotated refresh token's replacement credentials stay available for a
+ * near-simultaneous reuse of the old token to claim, before further reuse is treated as theft.
+ * Covers realistic multi-tab/multi-request races (network round trips, not idle time), not
+ * legitimate reasons to present an already-superseded token minutes or hours later.
+ */
+const refreshTokenReuseGracePeriodMs = 15_000;
 const passkeyCeremonyTtlMs = 5 * 60 * 1000;
 const passkeyPinRecoveryGrantTtlMs = 5 * 60 * 1000;
 const maxPendingPasskeyCeremonies = 1_000;
@@ -1113,6 +1120,16 @@ export class Cp2Store {
   private readonly otpRequestHistory = new Map<string, number[]>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingRefreshTokens = new Map<string, string>();
+  /**
+   * Short-lived record of "this now-rotated session became that new session", keyed by the old
+   * session's ID. Exists so that near-simultaneous reuse of a just-rotated refresh token - e.g. two
+   * browser tabs open on the same account racing the same rotation - hands back the already-issued
+   * replacement credentials instead of being treated as token theft. See refreshSessionCredential.
+   */
+  private readonly recentSessionRotations = new Map<
+    string,
+    { replacementSessionId: string; replacementRefreshToken: string; rotatedAt: string }
+  >();
   private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
   private readonly passkeyCeremonies = new Map<string, PasskeyCeremonyRecord>();
   private readonly passkeyPinRecoveryGrants = new Map<string, string>();
@@ -1735,6 +1752,7 @@ export class Cp2Store {
     now?: Date;
   }): AuthSessionView & { refreshToken: string; deviceSession: DeviceSessionSummary } {
     const now = input.now ?? new Date();
+    this.pruneExpiredSessionRotations(now);
     if (input.refreshToken === null || input.refreshToken.trim().length === 0) {
       throw new Cp2Error(401, "auth_refresh_required", "A refresh session is required.");
     }
@@ -1747,6 +1765,22 @@ export class Cp2Store {
     }
     if (matched.revokedAt !== null) {
       if (matched.revocationReason === "rotated") {
+        const recentRotation = this.recentSessionRotations.get(matched.id);
+        if (recentRotation !== undefined) {
+          const replacementSession = this.sessions.get(recentRotation.replacementSessionId);
+          if (replacementSession !== undefined && replacementSession.revokedAt === null) {
+            const replacementAccount = this.requireAccount(replacementSession.accountId);
+            const replacementUser = this.requireUser(replacementSession.userId);
+            replacementSession.lastUsedAt = now.toISOString();
+            return {
+              account: replacementAccount,
+              user: replacementUser,
+              session: sessionView(replacementSession),
+              refreshToken: recentRotation.replacementRefreshToken,
+              deviceSession: deviceSessionView(replacementSession, replacementSession.id, now)
+            };
+          }
+        }
         this.revokeSessionFamily(matched.sessionFamilyId, "refresh_token_reuse", now);
         throw new Cp2Error(
           401,
@@ -1810,6 +1844,11 @@ export class Cp2Store {
     matched.lastUsedAt = now.toISOString();
 
     const refreshToken = this.consumeSessionRefreshToken(replacement.id);
+    this.recentSessionRotations.set(matched.id, {
+      replacementSessionId: replacement.id,
+      replacementRefreshToken: refreshToken,
+      rotatedAt: now.toISOString()
+    });
     this.recordAuditEvent({
       type: "auth.session_refreshed",
       aggregateType: "session",
@@ -1825,6 +1864,14 @@ export class Cp2Store {
       refreshToken,
       deviceSession: deviceSessionView(replacementRecord, replacementRecord.id, now)
     };
+  }
+
+  private pruneExpiredSessionRotations(now: Date): void {
+    for (const [oldSessionId, rotation] of this.recentSessionRotations) {
+      if (now.getTime() - Date.parse(rotation.rotatedAt) > refreshTokenReuseGracePeriodMs) {
+        this.recentSessionRotations.delete(oldSessionId);
+      }
+    }
   }
 
   listDeviceSessions(sessionId: string | null, now = new Date()): DeviceSessionSummary[] {

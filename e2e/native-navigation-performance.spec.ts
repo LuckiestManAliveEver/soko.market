@@ -52,9 +52,11 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   await expect(page.getByRole("dialog", { name: "Workspace cards" })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page).toHaveURL(/\/agents\//);
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByLabel("Backend models")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByLabel("Cloud fallback models", { exact: true })).toBeVisible({
+    timeout: 30_000
+  });
 
   expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
 });
@@ -89,6 +91,19 @@ async function installDelayedApi(page: Page): Promise<void> {
     }
     if (url.pathname === "/roles/check") return json({ allowed: true, role: "owner" });
     if (url.pathname === "/health") return json({ status: "ok" });
+    // Opening the model library (agent settings > "Open model library") fetches these two
+    // without their own fallback/catch, unlike the rest of loadAiModels's requests - an
+    // unmocked 404 here throws and the library never expands. See loadAiModels in
+    // SokoApplication.tsx.
+    if (url.pathname === "/v1/ai-models") return json({ models: [] });
+    if (url.pathname.endsWith("/ai-model") && url.pathname.startsWith("/businesses/")) {
+      return json({
+        businessId: "performance-shop",
+        modelId: "qwen2.5-0.5b-android",
+        activatedAt: "2026-07-26T00:00:00.000Z",
+        activatedBy: "performance-account"
+      });
+    }
 
     await new Promise((resolve) => setTimeout(resolve, 750));
     return json({ code: "performance_fixture_miss" }, 404);

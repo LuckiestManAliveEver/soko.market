@@ -114,11 +114,13 @@ describe("persistent passwordless authentication", () => {
       expect.objectContaining({ code: "recent_authentication_required" })
     );
 
+    // Well past the short near-simultaneous-reuse grace window (see the next test): a token
+    // reused this long after its own rotation is treated as compromise, not a race.
     expect(() =>
       store.refreshSessionCredential({
         refreshToken: originalRefreshToken,
         metadata: deviceMetadata,
-        now: new Date(refreshAt.getTime() + 1)
+        now: new Date(refreshAt.getTime() + 20_000)
       })
     ).toThrowError(expect.objectContaining({ code: "auth_refresh_reuse_detected" }));
     expect(
@@ -127,6 +129,61 @@ describe("persistent passwordless authentication", () => {
         .sessions.filter((session) => session.sessionFamilyId === original.sessionFamilyId)
         .every((session) => session.revokedAt !== null)
     ).toBe(true);
+  });
+
+  it("tolerates near-simultaneous reuse of a just-rotated token instead of revoking the family", async () => {
+    // Simulates two tabs/requests racing the same refresh: both hold the same pre-rotation
+    // token, one wins the rotation, and the other's request lands moments later still carrying
+    // the now-superseded token. That must not be treated as theft - both tabs are the same
+    // legitimate client - so it should hand back the winning tab's new credentials instead of
+    // revoking the session family out from under it.
+    const startedAt = new Date("2030-02-01T00:00:00.000Z");
+    const store = createCp2Store();
+    const signup = store.signupWithPhonePin({
+      destination: "+254712349003",
+      pin: "1234",
+      now: startedAt
+    });
+    const originalRefreshToken = store.prepareDeviceSession(
+      signup.session.id,
+      deviceMetadata,
+      startedAt
+    );
+    store.consumeSessionRefreshToken(signup.session.id);
+    const original = store.snapshot().sessions[0]!;
+
+    const refreshAt = new Date(startedAt.getTime() + 16 * 60_000);
+    const firstTabRefresh = store.refreshSessionCredential({
+      refreshToken: originalRefreshToken,
+      metadata: deviceMetadata,
+      now: refreshAt
+    });
+
+    const secondTabRefresh = store.refreshSessionCredential({
+      refreshToken: originalRefreshToken,
+      metadata: deviceMetadata,
+      now: new Date(refreshAt.getTime() + 200)
+    });
+
+    expect(secondTabRefresh.session.id).toBe(firstTabRefresh.session.id);
+    expect(secondTabRefresh.refreshToken).toBe(firstTabRefresh.refreshToken);
+    expect(
+      store
+        .snapshot()
+        .sessions.filter((session) => session.sessionFamilyId === original.sessionFamilyId)
+        .every((session) => session.revokedAt !== null)
+    ).toBe(false);
+
+    // The credentials handed back to the second tab must actually still work afterward.
+    const followUpRefresh = store.refreshSessionCredential({
+      refreshToken: secondTabRefresh.refreshToken,
+      metadata: deviceMetadata,
+      now: new Date(refreshAt.getTime() + 300)
+    });
+    expect(followUpRefresh.session.id).not.toBe(secondTabRefresh.session.id);
+    expect(
+      store.getSession(followUpRefresh.session.id, new Date(refreshAt.getTime() + 301))
+    ).not.toBeNull();
   });
 
   it("rejects refresh at the absolute boundary and after an account is suspended", async () => {
