@@ -245,7 +245,10 @@ function huggingFaceFileToAiModel(
     fileName,
     fileSizeBytes,
     minimumMemoryGb: inferMinimumMemoryGb(fileSizeBytes),
-    recommended: /q4[_ .-]?k[_ .-]?m/i.test(fileName) && fileSizeBytes <= 800 * 1024 ** 2
+    recommended: /q4[_ .-]?k[_ .-]?m/i.test(fileName) && fileSizeBytes <= 800 * 1024 ** 2,
+    // Discovered dynamically from the Hugging Face Hub; its context window is not known without
+    // parsing a model card, so it is left undeclared rather than guessed.
+    contextWindow: null
   };
 }
 

@@ -1,10 +1,18 @@
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
 import { registerCp2Routes, type Cp2RouteOptions } from "./cp2/routes.js";
 import { registerMcpRoutes } from "./mcp/routes.js";
 
 const defaultAllowedCorsOrigins = ["http://127.0.0.1:5173", "http://localhost:5173"];
+
+// Coarse, HTTP-level request throttling. This is a backstop against scraping/DoS across the
+// entire surface, not the primary brute-force defense for auth actions - the OTP/PIN/signup
+// flows already enforce tighter, purpose-specific limits deeper in cp2/routes.ts and cp2/store.ts.
+const defaultRateLimitMax = 300;
+const authRateLimitMax = 60;
+const rateLimitWindowMs = 60_000;
 
 export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
@@ -13,6 +21,11 @@ export interface BuildApiOptions {
   databaseHealth?: () => Promise<Record<string, unknown>>;
   inferenceRequired?: boolean;
   mutationPersistenceFlush?: () => Promise<void>;
+  /**
+   * ioredis-compatible client used to share rate-limit counters across API instances/restarts.
+   * When omitted, rate limiting still runs but falls back to an in-memory, per-process store.
+   */
+  rateLimitRedisClient?: unknown;
 }
 
 export function buildApi(options: BuildApiOptions = {}) {
@@ -28,6 +41,23 @@ export function buildApi(options: BuildApiOptions = {}) {
     options: {
       maxPayload: 1_024
     }
+  });
+
+  void app.register(rateLimit, {
+    global: true,
+    max: (request) => (request.url.startsWith("/auth/") ? authRateLimitMax : defaultRateLimitMax),
+    timeWindow: rateLimitWindowMs,
+    hook: "onRequest",
+    keyGenerator: (request) => request.ip,
+    allowList: (request) => request.url.startsWith("/health"),
+    skipOnError: true,
+    ...(options.rateLimitRedisClient === undefined
+      ? {}
+      : { redis: options.rateLimitRedisClient }),
+    errorResponseBuilder: (_request, context) => ({
+      code: "rate_limited",
+      message: `Too many requests. Please retry after ${context.after}.`
+    })
   });
 
   app.addHook("onRequest", async (request, reply) => {

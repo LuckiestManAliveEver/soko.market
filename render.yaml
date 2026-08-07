@@ -18,6 +18,7 @@ services:
         - infra/db/**
         - packages/**
         - services/api/**
+        - vendor/**
     domains:
       - api.soko.market
     envVars:
@@ -149,6 +150,18 @@ services:
         sync: false
       - key: VAPID_SUBJECT
         value: mailto:operations@soko.market
+      - key: REDIS_URL
+        fromService:
+          name: soko-market-rate-limit-cache
+          type: keyvalue
+          property: connectionString
+
+  - type: keyvalue
+    name: soko-market-rate-limit-cache
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
 
   - type: pserv
     name: soko-market-inference
@@ -208,6 +221,11 @@ services:
         value: "512"
       - key: INFERENCE_SERVICE_TOKEN
         generateValue: true
+      - key: REDIS_URL
+        fromService:
+          name: soko-market-rate-limit-cache
+          type: keyvalue
+          property: connectionString
 
   - type: web
     name: soko-market-web

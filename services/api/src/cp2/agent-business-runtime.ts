@@ -1,11 +1,13 @@
 import type {
   AgentAudience,
   AgentContextSource,
+  AgentContextSourceType,
   AgentEvaluationPolicy,
   AgentInstructions,
   AgentMemoryPolicy,
   AgentPersonality,
   AgentSkillBinding,
+  BusinessRole,
   CompiledAgentInstructionSet,
   RetrievedAgentContextItem,
   RuntimeParserIntent,
@@ -227,20 +229,54 @@ export function assembleAgentInferenceMessage(input: {
   };
 }
 
+/**
+ * Deterministic task -> context-category mapping. A recognized intent narrows retrieval to the
+ * source types that task actually needs (e.g. a stock question never pulls supplier or receipt
+ * records). `null` is the documented fallback for "unknown": no category narrowing, matching the
+ * pre-existing behavior for unclassified tasks so callers that omit `intent` are unaffected.
+ */
+const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] | null> = {
+  add_product: ["catalogue", "inventory"],
+  add_customer: ["customer"],
+  create_invoice: ["catalogue", "inventory", "customer", "order"],
+  record_payment: ["customer", "order"],
+  check_debt: ["customer", "order"],
+  show_products: ["catalogue", "inventory"],
+  show_invoices: ["order", "customer"],
+  confirm_document_import: ["document"],
+  unknown: null
+};
+
+/** Cross-cutting categories eligible for every recognized task, regardless of the mapping above. */
+const alwaysEligibleContextTypes: AgentContextSourceType[] = ["policy", "context_script"];
+
 export function retrieveAgentContext(input: {
   sources: AgentContextSource[];
   query: string;
   audience: AgentAudience;
   limit?: number;
+  intent?: RuntimeParserIntent;
+  /**
+   * Optional total character budget across selected items, derived from the active model's
+   * context window. Items are packed in relevance order; an item that would overflow the
+   * budget is skipped in favor of smaller lower-relevance items so the budget is used fully.
+   * The top-ranked item is always included even if it alone exceeds the budget, so a relevant
+   * task never silently receives zero context.
+   */
+  characterBudget?: number;
 }): RetrievedAgentContextItem[] {
   const queryTerms = terms(input.query);
-  return input.sources
+  const restrictedTypes = input.intent === undefined ? null : intentContextTypes[input.intent];
+  const eligibleTypes =
+    restrictedTypes === null ? null : new Set([...restrictedTypes, ...alwaysEligibleContextTypes]);
+  const scored = input.sources
     .filter(
       (source) =>
         source.status === "active" &&
         source.deletedAt === null &&
         source.accessRules.audiences.includes(input.audience) &&
-        (input.audience !== "customer" || source.accessRules.customerVisible)
+        (input.audience !== "customer" || source.accessRules.customerVisible) &&
+        (eligibleTypes === null || eligibleTypes.has(source.type))
     )
     .map((source) => {
       const content = source.retrievalMetadata.content ?? "";
@@ -260,16 +296,27 @@ export function retrieveAgentContext(input: {
         right.relevanceScore - left.relevanceScore ||
         right.source.freshnessTimestamp.localeCompare(left.source.freshnessTimestamp)
     )
-    .slice(0, input.limit ?? 6)
-    .map(({ source, content, relevanceScore }) => ({
-      sourceId: source.id,
-      type: source.type,
-      title: source.title,
-      content,
-      sensitivity: source.sensitivity,
-      freshnessTimestamp: source.freshnessTimestamp,
-      relevanceScore
-    }));
+    .slice(0, input.limit ?? 6);
+  const budgeted: typeof scored = [];
+  let usedCharacters = 0;
+  for (const candidate of scored) {
+    const fitsBudget =
+      input.characterBudget === undefined ||
+      budgeted.length === 0 ||
+      usedCharacters + candidate.content.length <= input.characterBudget;
+    if (!fitsBudget) continue;
+    usedCharacters += candidate.content.length;
+    budgeted.push(candidate);
+  }
+  return budgeted.map(({ source, content, relevanceScore }) => ({
+    sourceId: source.id,
+    type: source.type,
+    title: source.title,
+    content,
+    sensitivity: source.sensitivity,
+    freshnessTimestamp: source.freshnessTimestamp,
+    relevanceScore
+  }));
 }
 
 export function enforceAgentPolicy(input: {
@@ -318,15 +365,34 @@ export function enforceAgentPolicy(input: {
   return errors;
 }
 
+/**
+ * Maps a business membership role to the context/prompt audience it should see. Only the shop
+ * owner gets the "owner" audience; every other membership role is treated as "staff" so non-owner
+ * members never see owner-only context sources. "customer" is never derived from a business
+ * membership role — it is reserved for a caller that is not a business member at all.
+ */
+export function agentAudienceForBusinessRole(role: BusinessRole): AgentAudience {
+  return role === "owner" ? "owner" : "staff";
+}
+
+const maxUntrustedContextLength = 4_000;
+
 export function sanitizeUntrustedContext(value: string): string {
-  return value
+  const neutralized = value
     .split(/\r?\n/)
     .map((line) =>
       promptInjectionPattern.test(line) ? "[instruction-like content ignored]" : line
     )
     .join("\n")
-    .trim()
-    .slice(0, 4_000);
+    .trim();
+  if (neutralized.length <= maxUntrustedContextLength) return neutralized;
+  // Cut at the nearest preceding whitespace rather than mid-character, so a structured token (a
+  // price, an identifier, a permission name) is never silently split in half, and mark that
+  // truncation happened so the model never treats a cut string as complete content.
+  const truncated = neutralized.slice(0, maxUntrustedContextLength);
+  const lastBreak = Math.max(truncated.lastIndexOf(" "), truncated.lastIndexOf("\n"));
+  const boundary = lastBreak > maxUntrustedContextLength * 0.5 ? lastBreak : maxUntrustedContextLength;
+  return `${truncated.slice(0, boundary).trimEnd()}\n[content truncated]`;
 }
 
 function terms(value: string): Set<string> {

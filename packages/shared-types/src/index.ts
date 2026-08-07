@@ -507,6 +507,12 @@ export interface AiModelSummary {
   fileSizeBytes: number | null;
   minimumMemoryGb: number | null;
   recommended: boolean;
+  /**
+   * Declared context window in tokens, used to budget retrieved agent context for this model.
+   * `null` for models with no fixed, centrally-knowable window: a deterministic non-LLM fallback,
+   * or a native bridge model chosen by an installed app that the server cannot introspect.
+   */
+  contextWindow: number | null;
 }
 
 export interface ActiveAiModelSummary {
@@ -2442,7 +2448,12 @@ export type RuntimeModelAdapterStatus =
 export interface RuntimeModelPrompt {
   message: string;
   conversationHistory?: RuntimeModelConversationMessage[];
-  context: RuntimeContextSummary;
+  /**
+   * Owner-facing operational counts (invoices, compliance, etc.). Absent for callers with no
+   * business membership, such as an anonymous storefront visitor's message to the shop's agent —
+   * that data must never be computed for or shown to a non-member caller.
+   */
+  context?: RuntimeContextSummary;
   allowedTools: RuntimeToolName[];
   schemaVersion: "cp11-runtime-model-v1";
   runtimeVersion?: number;

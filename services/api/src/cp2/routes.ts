@@ -3995,7 +3995,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        return store.createPublicStorefrontMessage({
+        return await store.createPublicStorefrontMessage({
           agentId: parseString(request.params.agentId, "agentId"),
           visitorId: parseString(request.body.visitorId, "visitorId"),
           body: parseString(request.body.body, "body"),

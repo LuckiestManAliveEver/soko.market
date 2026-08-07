@@ -459,7 +459,183 @@ describePostgres("CP2 Postgres store", () => {
       await pool.end();
     }
   }, 15_000);
+
+  it("persists a shop presence update instead of failing (shopPresences has no id field)", async () => {
+    // Regression test: ShopPresenceSummary (packages/shared-types) has no `id` field - it is keyed
+    // by businessId in the in-memory store. recordEntityId's fallback case required "id" for any
+    // collection without an explicit case, which made every presence update fail with 500 whenever
+    // the Postgres store persisted it (discovered while testing the save-skip/retry changes above).
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const pool = new Pool({ connectionString });
+
+    try {
+      const uniquePhone = `254703${Date.now().toString().slice(-6)}`;
+      const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/businesses/${business.id}/presence`,
+        headers: { ...jsonHeaders(), cookie: sessionCookie },
+        payload: JSON.stringify({ status: "private" })
+      });
+
+      expect(response.statusCode).toBe(200);
+      const persisted = await pool.query<{ record: { status: string } }>(
+        "select record from cp2_shop_presences where entity_id = $1",
+        [business.id]
+      );
+      expect(persisted.rows[0]?.record.status).toBe("private");
+    } finally {
+      await pool.end();
+      await app.close();
+      await store.close();
+    }
+  }, 15_000);
+
+  it("skips re-persisting a collection that has not changed since the last save", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const pool = new Pool({ connectionString });
+
+    try {
+      const uniquePhone = `254701${Date.now().toString().slice(-6)}`;
+      const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+      const product = await postJson<ProductResponse>(
+        app,
+        `/businesses/${business.id}/products`,
+        { name: "Untouched Rice", quantity: 5, unit: "kg", buyingPrice: 90, sellingPrice: 120 },
+        sessionCookie
+      );
+      await store.flush();
+      const beforeUpdatedAt = await rowUpdatedAt(pool, "cp2_products", product.id);
+      expect(beforeUpdatedAt).not.toBeNull();
+
+      // An unrelated mutation on a different collection (presence) must not touch the products
+      // row's persisted state at all - not even re-write it with identical content.
+      await app.inject({
+        method: "PATCH",
+        url: `/businesses/${business.id}/presence`,
+        headers: { ...jsonHeaders(), cookie: sessionCookie },
+        payload: JSON.stringify({ status: "private" })
+      });
+      await store.flush();
+      const afterUpdatedAt = await rowUpdatedAt(pool, "cp2_products", product.id);
+
+      expect(afterUpdatedAt).toEqual(beforeUpdatedAt);
+
+      // Actually changing the product must still persist normally.
+      await app.inject({
+        method: "PATCH",
+        url: `/businesses/${business.id}/products/${product.id}`,
+        headers: { ...jsonHeaders(), cookie: sessionCookie },
+        payload: JSON.stringify({ quantity: 6 })
+      });
+      await store.flush();
+      const afterRealChangeUpdatedAt = await rowUpdatedAt(pool, "cp2_products", product.id);
+      expect(afterRealChangeUpdatedAt).not.toEqual(beforeUpdatedAt);
+
+      const persistedProduct = await pool.query<{ record: { quantity: number } }>(
+        "select record from cp2_products where entity_id = $1",
+        [product.id]
+      );
+      expect(persistedProduct.rows[0]?.record.quantity).toBe(6);
+    } finally {
+      await pool.end();
+      await app.close();
+      await store.close();
+    }
+  }, 20_000);
+
+  it("does not discard in-memory mutations when a save fails, and recovers on its own", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const pool = new Pool({ connectionString });
+
+    try {
+      const uniquePhone = `254702${Date.now().toString().slice(-6)}`;
+      const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+      await store.flush();
+
+      // Force every future write to cp2_products to fail, without disturbing existing rows
+      // (NOT VALID skips the initial validation scan) or any other table.
+      await pool.query(
+        "alter table cp2_products add constraint force_persistence_failure check (false) not valid"
+      );
+
+      const failingProduct = await postJson<ProductResponse>(
+        app,
+        `/businesses/${business.id}/products`,
+        { name: "Race Condition Beans", quantity: 3, unit: "kg", buyingPrice: 50, sellingPrice: 70 },
+        sessionCookie
+      );
+
+      // Give the queued save a moment to actually run and fail.
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+
+      // The mutation must still be visible in memory - not reverted because Postgres rejected it.
+      expect(store.snapshot().products).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: failingProduct.id })])
+      );
+      const healthDuringFailure = await store.health();
+      expect(healthDuringFailure.persistenceError).not.toBeNull();
+      const notYetPersisted = await pool.query(
+        "select 1 from cp2_products where entity_id = $1",
+        [failingProduct.id]
+      );
+      expect(notYetPersisted.rows).toHaveLength(0);
+
+      // Fix the underlying problem and let the scheduled retry (no further mutation needed) catch up.
+      await pool.query("alter table cp2_products drop constraint force_persistence_failure");
+      await waitUntil(async () => {
+        const result = await pool.query(
+          "select 1 from cp2_products where entity_id = $1",
+          [failingProduct.id]
+        );
+        return result.rows.length > 0;
+      });
+      expect((await store.health()).persistenceError).toBeNull();
+    } finally {
+      await pool
+        .query("alter table cp2_products drop constraint if exists force_persistence_failure")
+        .catch(() => undefined);
+      await pool.end();
+      await app.close();
+      await store.close();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+    }
+  }, 20_000);
 });
+
+async function rowUpdatedAt(
+  pool: SqlExecutor,
+  tableName: string,
+  entityId: string
+): Promise<string | null> {
+  const result = await pool.query<{ updated_at: string }>(
+    `select updated_at::text as updated_at from ${tableName} where entity_id = $1`,
+    [entityId]
+  );
+  return result.rows[0]?.updated_at ?? null;
+}
+
+async function waitUntil(condition: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  throw new Error("Condition was not met within the timeout.");
+}
 
 async function syncCount(pool: SqlExecutor, accountId: string): Promise<number> {
   const result = await pool.query<{ count: string }>(

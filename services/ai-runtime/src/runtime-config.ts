@@ -13,6 +13,7 @@ export interface InferenceServiceConfig {
   modelStoragePath: string;
   durableModelStorage: boolean;
   production: boolean;
+  redisUrl: string;
 }
 
 export function readInferenceServiceConfig(
@@ -63,7 +64,8 @@ export function readInferenceServiceConfig(
     maximumOutputTokens: positiveInteger(environment, ["INFERENCE_MAX_OUTPUT_TOKENS"], 512),
     modelStoragePath: (environment.MODEL_STORAGE_PATH ?? "/var/lib/soko-models").trim(),
     durableModelStorage: booleanValue(environment.MODEL_STORAGE_DURABLE, !production),
-    production
+    production,
+    redisUrl: (environment.REDIS_URL ?? "redis://127.0.0.1:6379").trim()
   };
 }
 

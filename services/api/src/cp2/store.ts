@@ -19,7 +19,7 @@ import {
   type RegistrationResponseJSON
 } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
-import { isAccountSyncCollection } from "@soko/shared-types";
+import { isAccountSyncCollection, resolveRuntimeModel } from "@soko/shared-types";
 import type {
   AccountSummary,
   AgentAudience,
@@ -195,6 +195,7 @@ import {
   type ModelRuntimeAdapter
 } from "../inference/model-runtime.js";
 import {
+  agentAudienceForBusinessRole,
   assembleAgentInferenceMessage,
   defaultAgentEvaluationPolicy,
   defaultAgentInstructions,
@@ -1082,6 +1083,8 @@ export class Cp2Store {
   private readonly networkInvites = new Map<string, NetworkInviteSummary>();
   private readonly publicCustomerCareRequests = new Map<string, PublicCustomerCareRequestSummary>();
   private readonly publicStorefrontMessages = new Map<string, PublicStorefrontMessageSummary>();
+  /** Ephemeral per-(business,visitor) attempt timestamps; never persisted or snapshotted. */
+  private readonly publicAgentReplyAttemptsByVisitor = new Map<string, number[]>();
   private readonly publicOrders = new Map<string, PublicOrderSummary>();
   private readonly verificationTiers = new Map<string, VerificationTierSummary>();
   private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
@@ -4454,10 +4457,18 @@ export class Cp2Store {
   }): AgentRuntimeReadiness {
     const now = input.now ?? new Date();
     this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
-    const business = this.businesses.get(input.businessId);
-    const profile = this.agentProfiles.get(input.businessId);
-    const effectiveProfile =
-      business === undefined ? null : this.currentAgentProfile(input.businessId, now);
+    return this.computeAgentRuntimeReadiness(input.businessId, now);
+  }
+
+  /**
+   * The readiness computation itself does not depend on who is asking — only on the business's
+   * own agent configuration — so it is factored out from the authorization check above. Reused by
+   * the public, memberless storefront-reply path, which has no session to authorize.
+   */
+  private computeAgentRuntimeReadiness(businessId: string, now: Date): AgentRuntimeReadiness {
+    const business = this.businesses.get(businessId);
+    const profile = this.agentProfiles.get(businessId);
+    const effectiveProfile = business === undefined ? null : this.currentAgentProfile(businessId, now);
     const issues: AgentRuntimeReadiness["issues"] = [];
     if (business === undefined || effectiveProfile === null) {
       issues.push({
@@ -4466,10 +4477,7 @@ export class Cp2Store {
         actionable: true
       });
     } else {
-      if (
-        effectiveProfile.tenantId !== input.businessId ||
-        effectiveProfile.shopId !== input.businessId
-      ) {
+      if (effectiveProfile.tenantId !== businessId || effectiveProfile.shopId !== businessId) {
         issues.push({
           code: "TENANT_BINDING_INVALID",
           message: "The runtime tenant and shop binding is invalid.",
@@ -4514,9 +4522,9 @@ export class Cp2Store {
       }
     }
     return {
-      tenantId: input.businessId,
-      shopId: input.businessId,
-      agentId: effectiveProfile?.agentId ?? input.businessId,
+      tenantId: businessId,
+      shopId: businessId,
+      agentId: effectiveProfile?.agentId ?? businessId,
       runtimeVersion: effectiveProfile?.runtimeVersion ?? 0,
       ready: issues.length === 0,
       issues,
@@ -5978,13 +5986,13 @@ export class Cp2Store {
     return request;
   }
 
-  createPublicStorefrontMessage(input: {
+  async createPublicStorefrontMessage(input: {
     agentId: string;
     visitorId: string;
     body: string;
     attachmentNames: string[];
     now?: Date;
-  }): PublicStorefrontMessageSummary {
+  }): Promise<PublicStorefrontMessageSummary & { agentReply: PublicStorefrontMessageSummary | null }> {
     const now = input.now ?? new Date();
     const business = this.requirePublicStorefrontBusiness(input.agentId);
     if (input.attachmentNames.length > 10) {
@@ -6002,7 +6010,102 @@ export class Cp2Store {
       createdAt: now.toISOString()
     };
     this.publicStorefrontMessages.set(message.id, message);
-    return message;
+    const agentReply = await this.attemptPublicAgentReply({
+      businessId: business.id,
+      visitorId: message.visitorId,
+      body: message.body,
+      now
+    });
+    return { ...message, agentReply };
+  }
+
+  /**
+   * Answers an anonymous storefront visitor's message using the same context-retrieval and
+   * model-routing machinery as the authenticated owner/staff runtime turn, scoped to
+   * audience "customer" (only sources marked customerVisible are ever retrieved) and with no
+   * tools available: an anonymous, non-member caller can never trigger a privileged action, so
+   * the model is never even told a tool exists to propose. If the model nonetheless returns a
+   * tool proposal, it is discarded — never executed, never surfaced to the customer as if it were
+   * a completed action.
+   *
+   * Every failure mode here (agent not ready, rate limited, no model provider, malformed model
+   * output) resolves to `null` rather than throwing: the customer's own message must always be
+   * accepted, whether or not an automatic reply could be produced.
+   */
+  private async attemptPublicAgentReply(input: {
+    businessId: string;
+    visitorId: string;
+    body: string;
+    now: Date;
+  }): Promise<PublicStorefrontMessageSummary | null> {
+    const { businessId, visitorId, body, now } = input;
+    if (!this.computeAgentRuntimeReadiness(businessId, now).ready) return null;
+    if (this.publicAgentReplyRateLimited(businessId, visitorId, now)) return null;
+
+    const storedAgentProfile = this.currentAgentProfile(businessId, now);
+    const { activeModelId } = this.resolveActiveRuntimeModelId(businessId, storedAgentProfile);
+    const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "customer", activeModelId);
+    const { provider } = this.resolveRuntimeModelProvider(shopRuntime, activeModelId);
+    if (provider === undefined) return null;
+
+    const parserResult = parseMerchantCommand(body);
+    const retrievedContext = retrieveAgentContext({
+      sources: this.contextSourcesForRuntime(storedAgentProfile),
+      query: body,
+      audience: "customer",
+      limit: 6,
+      intent: parserResult.intent,
+      characterBudget: contextCharacterBudgetForModel(activeModelId)
+    });
+    const assembled = assembleAgentInferenceMessage({
+      runtime: shopRuntime,
+      intent: parserResult.intent,
+      message: body,
+      context: retrievedContext,
+      allowedTools: [],
+      memory: []
+    });
+    const prompt = buildRuntimeModelPrompt(assembled.message, undefined, undefined, {
+      runtimeVersion: shopRuntime.version,
+      compiledInstructions: assembled.compiled,
+      retrievedContext,
+      allowedTools: []
+    });
+
+    let completion: RuntimeModelCompletionResult;
+    try {
+      completion = await provider.complete(prompt);
+    } catch {
+      return null;
+    }
+    if (completion.status !== "available" || completion.outputText === null) return null;
+
+    const replyText = publicAgentReplyText(parseRuntimeModelOutput(completion.outputText));
+    if (replyText === null) return null;
+
+    const reply: PublicStorefrontMessageSummary = {
+      id: randomUUID(),
+      businessId,
+      visitorId,
+      author: "agent",
+      body: normalizeRequiredBoundedText(replyText, "message", 4000),
+      attachmentNames: [],
+      createdAt: now.toISOString()
+    };
+    this.publicStorefrontMessages.set(reply.id, reply);
+    return reply;
+  }
+
+  private publicAgentReplyRateLimited(businessId: string, visitorId: string, now: Date): boolean {
+    const key = `${businessId}:${visitorId}`;
+    const cutoff = now.getTime() - 60 * 60 * 1000;
+    const recentAttempts = (this.publicAgentReplyAttemptsByVisitor.get(key) ?? []).filter(
+      (attemptedAt) => attemptedAt > cutoff
+    );
+    if (recentAttempts.length >= 20) return true;
+    recentAttempts.push(now.getTime());
+    this.publicAgentReplyAttemptsByVisitor.set(key, recentAttempts);
+    return false;
   }
 
   createPublicOrder(input: {
@@ -10241,6 +10344,14 @@ export class Cp2Store {
       "business:read",
       now
     );
+    // Every current caller of this method is an authenticated business member (this endpoint
+    // requires "business:read"); there is no customer-facing entry point yet. Only the owner role
+    // gets the "owner" context/prompt audience; every other membership role is treated as "staff"
+    // so non-owner members never see owner-only context sources. "customer" audience remains
+    // reserved for a future customer-facing entry point and is intentionally never derived here.
+    const callerAudience: AgentAudience = agentAudienceForBusinessRole(
+      this.requireMembership(input.businessId, auth.user.id).role
+    );
     const readiness = this.getAgentRuntimeReadiness({
       sessionId: input.sessionId,
       businessId: input.businessId,
@@ -10254,7 +10365,10 @@ export class Cp2Store {
       );
     }
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
-    const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    const { activeBinding, activeModelId } = this.resolveActiveRuntimeModelId(
+      input.businessId,
+      storedAgentProfile
+    );
     if (this.options.modelRuntimeAdapterResolver !== undefined && activeBinding === null) {
       throw new Cp2Error(
         409,
@@ -10264,18 +10378,13 @@ export class Cp2Store {
         { agentId: storedAgentProfile.agentId, shopId: input.businessId }
       );
     }
-    const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
-      this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
-    );
-    const requestedModelId = storedAgentProfile.modelId;
-    const activeModelId =
-      activeBinding?.modelId ??
-      (this.options.runtimeModelProviderResolver === undefined ||
-      requestedModelId === selectedCloudFallbackModelId
-        ? selectedCloudFallbackModelId
-        : "sokoclaw-local");
     const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
-    const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "owner", activeModelId);
+    const shopRuntime = this.buildShopAgentRuntime(
+      storedAgentProfile,
+      now,
+      callerAudience,
+      activeModelId
+    );
     const runtimeSession =
       input.runtimeSessionId === undefined
         ? this.createRuntimeSession({
@@ -10408,8 +10517,10 @@ export class Cp2Store {
     const retrievedContext = retrieveAgentContext({
       sources: this.contextSourcesForRuntime(storedAgentProfile),
       query: input.message,
-      audience: "owner",
-      limit: 6
+      audience: callerAudience,
+      limit: 6,
+      intent: parserResult.intent,
+      characterBudget: contextCharacterBudgetForModel(activeModelId)
     });
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
@@ -16154,6 +16265,25 @@ export class Cp2Store {
     );
   }
 
+  /** Shared by createRuntimeTurn and the public storefront agent reply path. */
+  private resolveActiveRuntimeModelId(
+    businessId: string,
+    storedAgentProfile: BusinessAgentProfileSummary
+  ): { activeBinding: AgentModelBindingSummary | null; activeModelId: string } {
+    const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
+      this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId
+    );
+    const requestedModelId = storedAgentProfile.modelId;
+    const activeModelId =
+      activeBinding?.modelId ??
+      (this.options.runtimeModelProviderResolver === undefined ||
+      requestedModelId === selectedCloudFallbackModelId
+        ? selectedCloudFallbackModelId
+        : "sokoclaw-local");
+    return { activeBinding, activeModelId };
+  }
+
   private recordAgentModelBindingAudit(
     type: string,
     binding: AgentModelBindingSummary,
@@ -16507,28 +16637,12 @@ export class Cp2Store {
     return { ...event, metadata: { ...event.metadata } };
   }
 
-  private async createRuntimeModelRoute(input: {
-    conversationHistory?: RuntimeModelConversationMessage[];
-    message: string;
-    modelId: string;
-    context: RuntimeContextSummary;
-    shopRuntime: ShopAgentRuntime;
-    retrievedContext: ReturnType<typeof retrieveAgentContext>;
-    memory: string[];
-    intent: RuntimeTurnSummary["parserIntent"];
-    now: Date;
-    appendTelemetry: (
-      state: RuntimeTelemetryEvent["state"],
-      status: RuntimeTelemetryEvent["status"],
-      toolName: RuntimeToolName | null,
-      risk: RuntimePlannedAction["risk"] | null,
-      metadata?: RuntimeTelemetryEvent["metadata"]
-    ) => void;
-  }): Promise<{
-    proposal: ReturnType<typeof createRuntimeToolProposal> | null;
-    trace: RuntimeModelTrace | null;
-  }> {
-    const binding = this.activeAgentModelBinding(input.shopRuntime.agentId);
+  /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */
+  private resolveRuntimeModelProvider(
+    shopRuntime: ShopAgentRuntime,
+    modelId: string
+  ): { provider: RuntimeModelProvider | undefined; binding: AgentModelBindingSummary | null } {
+    const binding = this.activeAgentModelBinding(shopRuntime.agentId);
     const adapter =
       binding === null || this.options.modelRuntimeAdapterResolver === undefined
         ? undefined
@@ -16550,7 +16664,32 @@ export class Cp2Store {
           })
         : this.options.runtimeModelProviderResolver === undefined
           ? this.options.runtimeModelProvider
-          : this.options.runtimeModelProviderResolver(input.modelId);
+          : this.options.runtimeModelProviderResolver(modelId);
+    return { provider, binding };
+  }
+
+  private async createRuntimeModelRoute(input: {
+    conversationHistory?: RuntimeModelConversationMessage[];
+    message: string;
+    modelId: string;
+    context: RuntimeContextSummary;
+    shopRuntime: ShopAgentRuntime;
+    retrievedContext: ReturnType<typeof retrieveAgentContext>;
+    memory: string[];
+    intent: RuntimeTurnSummary["parserIntent"];
+    now: Date;
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void;
+  }): Promise<{
+    proposal: ReturnType<typeof createRuntimeToolProposal> | null;
+    trace: RuntimeModelTrace | null;
+  }> {
+    const { provider, binding } = this.resolveRuntimeModelProvider(input.shopRuntime, input.modelId);
 
     if (provider === undefined) {
       if (binding !== null) {
@@ -16615,7 +16754,11 @@ export class Cp2Store {
       productCount: input.context.productCount,
       invoiceCount: input.context.invoiceCount,
       runtimeVersion: input.shopRuntime.version,
-      retrievedContextCount: input.retrievedContext.length
+      retrievedContextCount: input.retrievedContext.length,
+      retrievedContextTypes: [...new Set(input.retrievedContext.map((item) => item.type))].join(
+        ","
+      ),
+      intent: input.intent
     });
 
     let completion: RuntimeModelCompletionResult;
@@ -18011,7 +18154,7 @@ function normalizeStorefrontLookupId(value: string): string {
 
 function buildRuntimeModelPrompt(
   message: string,
-  context: RuntimeContextSummary,
+  context: RuntimeContextSummary | undefined,
   conversationHistory?: RuntimeModelConversationMessage[],
   runtime?: Pick<
     RuntimeModelPrompt,
@@ -18021,7 +18164,7 @@ function buildRuntimeModelPrompt(
   return {
     message,
     ...(conversationHistory === undefined ? {} : { conversationHistory }),
-    context,
+    ...(context === undefined ? {} : { context }),
     allowedTools: runtime?.allowedTools ?? (Object.keys(runtimeToolRegistry) as RuntimeToolName[]),
     ...(runtime?.runtimeVersion === undefined ? {} : { runtimeVersion: runtime.runtimeVersion }),
     ...(runtime?.compiledInstructions === undefined
@@ -18150,6 +18293,23 @@ function createRuntimeResponse(input: {
   }
 
   return input.proposalReason;
+}
+
+/**
+ * Extracts customer-facing reply text from a parsed model output for the public storefront path,
+ * where no tool has an execution path at all. A "tool" proposal is deliberately never surfaced or
+ * executed here — the customer gets a safe hand-off reply instead, matching how
+ * createRuntimeResponse never lets a model claim an action happened without a verified result.
+ */
+function publicAgentReplyText(parsed: ReturnType<typeof parseRuntimeModelOutput>): string | null {
+  if (!parsed.ok || parsed.output === null) return null;
+  if (parsed.output.kind === "tool") {
+    return "Let me check that with the shop and get back to you.";
+  }
+  if (parsed.output.kind === "clarification") {
+    return parsed.output.proposal.validation.errors[0] ?? "Could you share a bit more detail?";
+  }
+  return parsed.output.proposal.reason;
 }
 
 function runtimeEvaluationSampled(turnId: string, sampleRate: number): boolean {
@@ -18568,6 +18728,23 @@ const configuredCloudFallbackAvailable =
   process.env.INFERENCE_CLOUD_FALLBACK_ENABLED?.trim().toLowerCase() === "true" &&
   process.env.INFERENCE_CLOUD_PROVIDER?.trim().toLowerCase() === "openai" &&
   (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0;
+// The exact hosted model behind each cloud profile is operator-configured (OPENAI_FAST_MODEL /
+// OPENAI_REASONING_MODEL) and can change without a code deploy, so its context window is also
+// operator-configurable rather than hardcoded to today's default model's true limit. The fallback
+// values are deliberately conservative so an unconfigured deployment cannot overflow an unknown
+// model's real window.
+const openaiFastContextWindow = readBoundedSecurityInteger(
+  "OPENAI_FAST_CONTEXT_WINDOW_TOKENS",
+  32_000,
+  1_000,
+  2_000_000
+);
+const openaiReasoningContextWindow = readBoundedSecurityInteger(
+  "OPENAI_REASONING_CONTEXT_WINDOW_TOKENS",
+  32_000,
+  1_000,
+  2_000_000
+);
 const aiModelRegistry: AiModelSummary[] = [
   {
     id: "smollm2-360m-android",
@@ -18586,7 +18763,8 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: "smollm2-360m-instruct-q8_0.gguf",
     fileSizeBytes: 386_000_000,
     minimumMemoryGb: 2,
-    recommended: false
+    recommended: false,
+    contextWindow: 8_192
   },
   {
     id: "tinyllama-1.1b-chat-q3-k-m-android",
@@ -18606,7 +18784,10 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: "tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf",
     fileSizeBytes: 551_000_000,
     minimumMemoryGb: 3,
-    recommended: false
+    recommended: false,
+    // TinyLlama-1.1B-Chat-v1.0's published training/model-card context length; quantization does
+    // not change it.
+    contextWindow: 2_048
   },
   {
     id: "tinyllama-1.1b-chat-q4-k-m-android",
@@ -18626,7 +18807,8 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
     fileSizeBytes: 669_000_000,
     minimumMemoryGb: 4,
-    recommended: true
+    recommended: true,
+    contextWindow: 2_048
   },
   {
     id: defaultAiModelId,
@@ -18645,7 +18827,9 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
     fileSizeBytes: 491_000_000,
     minimumMemoryGb: 3,
-    recommended: true
+    recommended: true,
+    // Matches the backend/Ollama runtimeModels declaration for this same model id.
+    contextWindow: 32_768
   },
   {
     id: "qwen2.5-1.5b-android",
@@ -18664,7 +18848,8 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
     fileSizeBytes: 1_120_000_000,
     minimumMemoryGb: 6,
-    recommended: false
+    recommended: false,
+    contextWindow: 32_768
   },
   {
     id: "sokoclaw-local",
@@ -18683,7 +18868,9 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: null,
     fileSizeBytes: null,
     minimumMemoryGb: null,
-    recommended: false
+    recommended: false,
+    // Deterministic rule-based fallback, not a token-based language model: no context window applies.
+    contextWindow: null
   },
   {
     id: "llama-cpp-configured",
@@ -18701,7 +18888,9 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: null,
     fileSizeBytes: null,
     minimumMemoryGb: null,
-    recommended: false
+    recommended: false,
+    // The native bridge's active model is chosen by the installed app and unknown to the server.
+    contextWindow: null
   },
   {
     id: "openai-fast",
@@ -18722,7 +18911,8 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: null,
     fileSizeBytes: null,
     minimumMemoryGb: null,
-    recommended: false
+    recommended: false,
+    contextWindow: openaiFastContextWindow
   },
   {
     id: "openai-reasoning",
@@ -18743,9 +18933,34 @@ const aiModelRegistry: AiModelSummary[] = [
     fileName: null,
     fileSizeBytes: null,
     minimumMemoryGb: null,
-    recommended: false
+    recommended: false,
+    contextWindow: openaiReasoningContextWindow
   }
 ];
+
+/**
+ * Conservative retrieved-context character budget for a resolved model, derived from its declared
+ * context window (packages/shared-types runtimeModels). Retrieved context is one of several
+ * sections sharing the window with platform/policy/personality instructions, tool schemas,
+ * conversation history, and the model's output allowance, so only a fraction of the window is
+ * spent here. Uses a conservative ~4 characters-per-token estimate since no exact tokenizer is
+ * wired into this service. Models outside the backend runtime registry (cloud fallback, the
+ * deterministic "sokoclaw-local" compatibility mode) have no declared context window here, so a
+ * fixed conservative default is used instead.
+ */
+const defaultContextCharacterBudget = 6_000;
+const contextWindowCharacterShare = 0.25;
+const estimatedCharactersPerToken = 4;
+
+function contextCharacterBudgetForModel(modelId: string): number {
+  const runtimeModel = resolveRuntimeModel(modelId);
+  const contextWindow =
+    runtimeModel?.contextWindow ??
+    aiModelRegistry.find((candidate) => candidate.id === modelId)?.contextWindow ??
+    null;
+  if (contextWindow === null) return defaultContextCharacterBudget;
+  return Math.floor(contextWindow * estimatedCharactersPerToken * contextWindowCharacterShare);
+}
 
 function resolveDefaultDeviceModelId(preferredModelId: string): string {
   const preferredModel = aiModelRegistry.find((model) => model.id === preferredModelId);

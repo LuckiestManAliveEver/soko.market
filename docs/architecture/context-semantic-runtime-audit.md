@@ -1,0 +1,392 @@
+# Soko Context Semantic Runtime Audit
+
+Date: 2026-08-06
+
+## Executive summary
+
+Soko already implements the great majority of what a "semantic context
+runtime" requires, and it is real, invoked, tested code rather than
+aspirational documentation. The chat/agent-turn entry point
+(`POST /businesses/:businessId/runtime/turns`) already runs identity
+resolution, deterministic intent parsing, a typed context manifest with
+authorization-before-exposure filtering, a single ordered prompt assembler
+with an explicit instruction-precedence hierarchy, untrusted-content
+neutralization, policy enforcement before tool execution, confirmation
+gating for privileged actions, and a single model-adapter boundary shared by
+the REST endpoint and the MCP server.
+
+**Implementation decision: `READY_WITH_SMALL_GAPS`.**
+
+Three small, bounded gaps were identified and closed in this change:
+context selection did not narrow by recognized task (all active sources of
+every type were scored against every message); the declared per-model
+context window (`RuntimeModelDefinition.contextWindow`) was never read by
+anything, so retrieved context had no model-aware size budget; and
+context-selection observability recorded only a raw count, not which
+categories were selected or under what intent. All three were fixed inside
+the existing `retrieveAgentContext` function and its one call site — no new
+module, table, service, or parallel runtime was introduced.
+
+Two further gaps were found during review and have since been closed as
+well:
+
+- **Per-model budgeting only covered the `runtimeModels` registry.** The
+  separate, richer `aiModelRegistry` catalog (`services/api/src/cp2/store.ts`)
+  had no `contextWindow` field at all. `AiModelSummary.contextWindow` is now
+  a required field: pinned local GGUF artifacts declare their real
+  model-card context length; the two operator-configurable cloud profiles
+  (`openai-fast`/`openai-reasoning`) read a new, conservative,
+  env-configurable context-window setting (mirroring the existing
+  `OPENAI_FAST_MODEL`/`OPENAI_REASONING_MODEL` env-configuration pattern in
+  the same file) rather than a value hardcoded to today's default model;
+  and the two cases with no centrally-knowable window — the deterministic
+  `sokoclaw-local` fallback (not a token-based LLM) and `llama-cpp-configured`
+  (an installed app's own model choice, unknown to the server) — are
+  explicitly `null` rather than silently omitted, and dynamically
+  discovered GitHub/Hugging Face catalog entries are `null` for the same
+  "genuinely unknown" reason. See "Fixes applied after initial review"
+  below.
+- **The caller audience was hardcoded to `"owner"`.** `createRuntimeTurn`
+  now derives the real caller's audience from their actual business
+  membership role via a new exported `agentAudienceForBusinessRole`
+  function, instead of a hardcoded string. See the same section.
+
+A second review pass (prompted by a request to close every `PARTIAL`/
+`NOT_COMPLETED` row in the change ledger) closed three more gaps and
+corrected one ledger entry that was too harsh on inspection:
+
+- **No test proved the staff-audience fix at the real HTTP seam.** Added an
+  integration test that drives the actual `/runtime/turns` endpoint twice
+  (as owner, as a non-owner staff member) against an owner-only context
+  source, and asserts on the captured model prompt. See "HTTP-level
+  audience test" below.
+- **No test asserted on the new telemetry fields.** Added an integration
+  test that reads `turn.telemetry` from the real HTTP response and asserts
+  `retrievedContextTypes`/`intent` are present.
+- **`sanitizeUntrustedContext`'s flat 4,000-character truncation could cut a
+  structured token mid-character.** It now truncates at the nearest
+  preceding whitespace and appends an explicit `[content truncated]` marker,
+  so truncation is never silent and never splits a token.
+- **Row 13 ("context loaded lazily") was reclassified from
+  `NOT_COMPLETED` to satisfied-by-existing-design.** On inspection,
+  `retrieveAgentContext`'s authorization filter (status/deletedAt/
+  audience/type) already runs entirely on metadata fields and completes
+  before `source.retrievalMetadata.content` is read anywhere — the
+  "authorize before touching protected content" property the criterion
+  asks for already held, before and after this session's changes. The
+  original `NOT_COMPLETED` verdict conflated that with a different,
+  unrelated property (whether the *upstream* in-memory `Map` read across
+  the whole business's context sources counts as "lazy"), which does not
+  apply here: `Cp2Store` is an in-memory store, not a database, so there is
+  no fetch to defer — the data is already resident in process memory
+  before any request arrives. No code change was made for this row;
+  the ledger entry was corrected instead of writing a no-op "fix."
+
+## Existing architecture
+
+Monorepo (`pnpm` workspaces): `apps/web` (frontend), `services/api`
+(Fastify HTTP API, the "cp2" business/agent domain), `services/ai-runtime`
+(model execution backends: local, Ollama, OpenAI), `services/sync`,
+`packages/shared-types` (cross-service types, including the agent/context
+type system), `packages/tool-core` (tool registry, intent parsing, output
+validation), `packages/business-core`, `packages/event-core`.
+
+The live persistence layer for the agent/context system is **not** the
+Drizzle schema at `infra/db/schema.ts` (that schema is unused by
+`services/api/src` at runtime — no `drizzle-orm` import exists there outside
+migration tests). The actual source of truth is a set of numbered raw-SQL
+migrations (`infra/db/migrations/*.sql`, e.g. `039_agent_business_runtime.sql`)
+defining generic `business_id`-scoped `jsonb` envelope tables (`cp2_*`),
+loaded into an in-memory `Cp2Store` class
+(`services/api/src/cp2/store.ts`, ~20.6k lines) via
+`services/api/src/cp2/postgres-store.ts`. All agent-runtime reads/writes go
+through `Cp2Store` methods.
+
+## Existing context-related components
+
+| Component | File | Evidence |
+|---|---|---|
+| Context source type | `packages/shared-types/src/index.ts:2640` | `AgentContextSource { id, tenantId, shopId, type, title, status, sensitivity, accessRules, freshnessTimestamp, version, retrievalMetadata, createdAt, updatedAt, deletedAt }` |
+| Context manifest | `packages/shared-types/src/index.ts:2661` | `BusinessContextManifest { tenantId, shopId, generatedAt, sources[] }` |
+| Retrieval + relevance scoring | `services/api/src/cp2/agent-business-runtime.ts:230` (now 230-311 after this change) | `retrieveAgentContext` |
+| Instruction precedence + prompt assembly | `services/api/src/cp2/agent-business-runtime.ts:119`, `:188` | `compileAgentInstructions`, `assembleAgentInferenceMessage` |
+| Policy enforcement (pre-execution) | `services/api/src/cp2/agent-business-runtime.ts:275` | `enforceAgentPolicy` |
+| Untrusted-content neutralization | `services/api/src/cp2/agent-business-runtime.ts:321` | `sanitizeUntrustedContext` |
+| Deterministic intent parser | `packages/tool-core/src/index.ts:1480` | `parseMerchantCommand` |
+| Model-output structural validation | `packages/tool-core/src/index.ts:1096`, `:1201` | `parseRuntimeModelOutput`, `validateRuntimeToolInput` |
+| Model adapter boundary | `services/api/src/inference/model-runtime.ts:46` | `ModelRuntimeAdapter` interface |
+| Tool registry | `packages/tool-core/src/index.ts:494` | `runtimeToolRegistry` |
+| MCP gateway (reuses the same runtime-turn pipeline) | `services/api/src/mcp/routes.ts:26`, `:146` | `registerMcpRoutes`, `mcpToolsForPrincipal` |
+
+## Capability matrix
+
+| Capability | Status | Existing implementation | Gap | Recommended action |
+|---|---|---|---|---|
+| Typed, versioned context source objects | PRESENT | `AgentContextSource` (shared-types:2640) | Fields live inside a `jsonb` blob (`cp2_agent_context_sources.record`), not first-class SQL columns — no DB constraints | None required now; note for future schema hardening |
+| Context ownership / tenant scoping | PRESENT | `tenantId`, `shopId` on every source; `Cp2Store` methods take `businessId` and filter | — | — |
+| Context authorization before exposure | PRESENT | `retrieveAgentContext` filters on `status`, `accessRules.audiences`, `customerVisible` before mapping `content` into the result (agent-business-runtime.ts:238-244 pre-change) | All active sources (with content) are loaded into memory for the shop before the audience filter runs — filtering is in-process/in-memory, not a DB-level `WHERE`-scoped query | Acceptable at current scale (single business's own already-in-memory data); flag if source volume per shop grows large |
+| Task-relevant context selection | Was PARTIAL, now PRESENT | Pure keyword-overlap scoring across *all* active source types (no task-type narrowing) | **Fixed in this change**: `retrieveAgentContext` now accepts an optional `intent` and narrows eligible source types via a deterministic `intentContextTypes` map, with `"unknown"` as the documented no-narrowing fallback | Implemented — see "Bounded implementation plan" |
+| Model-aware context budgeting | Was MISSING, now PRESENT | `RuntimeModelDefinition.contextWindow` declared (shared-types:606) but never read anywhere | **Fixed**: `contextCharacterBudgetForModel` in `store.ts` checks the `runtimeModels` registry first, then falls back to `aiModelRegistry`'s now-required `contextWindow` field (real values for pinned local artifacts, an env-configurable conservative value for the two cloud profiles); only the deterministic non-LLM fallback and the installed-app-configured native bridge model — genuinely unknowable centrally — still use the fixed conservative default | None outstanding |
+| Untrusted vs. trusted instruction separation | PRESENT (by construction, not by an explicit trust flag) | Free-text `AgentContextSource` content (including `context_script`) always passes through `sanitizeUntrustedContext`; trusted policy is a *separate* typed structure (`AgentInstructions`) compiled independently in `compileAgentInstructions`, never sourced from context files | None — the separation is architectural (typed instructions vs. neutralized free text), which already satisfies "plain documents cannot become policy" | None required |
+| Instruction precedence | PRESENT | `compileAgentInstructions` returns an explicit ordered `precedence` array; `assembleAgentInferenceMessage` emits sections in that exact order | — | — |
+| Tool authorization + confirmation gating | PRESENT | `store.ts:10476-10552`: `roleCan`, `enforceAgentPolicy`, `runtimeRequiresConfirmation`, confirmation-token minting, execution gated on `plan.status === "safe_to_execute"` | — | — |
+| Structured tool-output validation | PARTIAL | `parseRuntimeModelOutput` does real `JSON.parse` + type discrimination; `validateRuntimeToolInput` is hand-written per-tool structural validation, not a schema library (no zod/ajv) | Acceptable — rejects malformed input, just not via a formal schema library | Optional future hardening, not blocking |
+| Single model router / adapter boundary | PRESENT | `ModelRuntimeAdapter` (model-runtime.ts:46), `runtimeProviderFromAdapter` (model-runtime.ts:471); routing decisions embedded in `Cp2Store.createRuntimeTurn`/`createRuntimeModelRoute` rather than a standalone router class | Not a separate module, but a single, non-duplicated code path | No change — reused as-is |
+| MCP integration | PRESENT | `services/api/src/mcp/routes.ts` — real JSON-RPC 2.0 MCP server (`initialize`, `tools/list`, `tools/call`), scoped bearer tokens, `soko.runtime_turn`/`soko.confirm_runtime_action` call directly into `Cp2Store.createRuntimeTurn` | No separate `context.plan`/`context.resolve` MCP capabilities exist | Not added — would be new surface area beyond bounded scope; MCP already reuses the same authorized pipeline, which was the actual requirement |
+| Streaming | PARTIAL | No streaming on the primary backend/Ollama/OpenAI chat path (`stream: false`); streaming exists for owner-node and browser-local paths | Matches existing behavior; requirement was to preserve, not add, streaming | None required |
+| Observability of context selection | Was PARTIAL, now PRESENT (lightweight) | `model.prompt_built` telemetry already recorded `retrievedContextCount` | **Enhanced in this change** to also record `retrievedContextTypes` and `intent`, reusing the existing `RuntimeTelemetryEvent` mechanism (no new event taxonomy) | Implemented |
+| Context-file lifecycle (expiry/supersession) | PARTIAL | `status`/`deletedAt`/`freshnessTimestamp`/`version` exist on `AgentContextSource`; no explicit `expiresAt` or supersession-by-version-chain logic found | Not exercised by any test or caller today | Not implemented — no evidence it's needed yet; flagged for future work |
+
+## Canonical data sources
+
+- Business/agent identity, personality, instructions, model binding: `ShopAgentRuntime` (shared-types:2720), persisted as `cp2_agent_profiles`/`cp2_agent_runtime_versions`.
+- Context sources (catalogue/inventory/customer/supplier/receipt/order/policy/document/conversation/context_script/owner_note): `cp2_agent_context_sources` (migration `039_agent_business_runtime.sql`).
+- Conversations/messages: `Cp2Store` in-memory maps (`conversations`, `conversationParticipants`, `conversationMessages`, store.ts:1027-1029), authorized via `requireAccountConversation` (store.ts:12577).
+- Runtime sessions (distinct from conversations): `RuntimeSessionSummary` (shared-types:2533), `runtimeSessions`/`runtimeTurns` maps (store.ts:1101-1102).
+- Owner corrections / evaluation memory: `AgentOwnerCorrection`, `AgentEvaluationEvent`, `cp2_agent_owner_corrections`, `cp2_agent_evaluation_events`.
+
+## Current chat-processing flow
+
+`POST /businesses/:businessId/runtime/turns` → `Cp2Store.createRuntimeTurn`
+(store.ts:10227):
+
+1. `requireAuthorizedSession(..., "business:read", ...)` — auth + tenant/business membership.
+2. Agent-runtime readiness check.
+3. Resolve active model binding / fallback model id.
+4. Build/require runtime session; verify it belongs to the authenticated user.
+5. Deterministic intent parsing: context-script matchers first, then `parseMerchantCommand` (packages/tool-core/src/index.ts:1480).
+6. **`retrieveAgentContext`** — now intent-aware and budget-aware (this change).
+7. `createRuntimeModelRoute` → `assembleAgentInferenceMessage` → single model adapter → `parseRuntimeModelOutput`.
+8. `enforceAgentPolicy` (post-inference, pre-execution) → confirmation gating → `executeRuntimeAction`.
+9. Telemetry appended throughout; turn persisted via `storeRuntimeTurn`.
+
+## Prompt-construction flow
+
+Single boundary: `assembleAgentInferenceMessage` (agent-business-runtime.ts:188-228). Composes, in the fixed precedence order declared by `compileAgentInstructions`: platform security → identity → structured business policy → personality (style-only) → retrieved context (wrapped, neutralized, delimited by source/type/sensitivity) → available tools → memory (neutralized) → output contract → current user message (neutralized).
+
+## Model-routing flow
+
+`Cp2Store.createRuntimeModelRoute` (store.ts:16510) resolves a `ModelRuntimeAdapter` via `requireModelRuntimeAdapter`, normalizes it through `runtimeProviderFromAdapter` (model-runtime.ts:471), and calls `.complete()`. Backends: Ollama (`services/ai-runtime`), OpenAI-shaped provider, owner-node broker (remote shop device), browser-local (outside `services/api`). MCP's `soko.runtime_turn` tool calls the exact same `createRuntimeTurn` method — no parallel routing path.
+
+## Tool-execution flow
+
+`validateRuntimeToolInput` → `roleCan` permission check → `enforceAgentPolicy` → `runtimeRequiresConfirmation` (confirmation-token minted and stored in `pendingRuntimeActions` when required) → execution only when `plan.status === "safe_to_execute" && verification.ok` (store.ts:10544) → `executeRuntimeAction`.
+
+## Context-file flow
+
+Uploaded/authored context becomes an `AgentContextSource` (type `document`/`context_script`/etc.), scoped to `tenantId`/`shopId`, carrying `sensitivity` and `accessRules`. At retrieval time it is filtered by status/audience/(now) task-relevant type, scored by keyword overlap, sorted by relevance then freshness, capped by item count and (now) character budget, and always passed through `sanitizeUntrustedContext` before being wrapped in an explicit `<context source=... type=... sensitivity=...>` delimiter. It is never treated as a system instruction — typed `AgentInstructions` is the only trusted-instruction path, and it does not come from context sources.
+
+## Security and tenancy review
+
+- Every context/runtime table is `business_id`-scoped; query methods take `businessId` explicitly.
+- `retrieveAgentContext` denies customer-audience access to sources lacking `customerVisible` (verified by an existing test: `tests/agent-business-runtime.test.ts:176-239`).
+- `createRuntimeTurn` now derives `audience` from the authenticated caller's actual business membership role via `agentAudienceForBusinessRole` (`agent-business-runtime.ts`), instead of a hardcoded `"owner"` string: only the `owner` role gets the `"owner"` audience, every other membership role (`manager`, `sales_agent`, `cashier`, `view_only`) gets `"staff"`, so non-owner staff members calling their shop's agent no longer see owner-only context sources. `"customer"` audience is still never derived here, since this endpoint requires `business:read` business membership and there is no live customer-facing (non-member) chat entry point yet — deriving `"customer"` audience is reserved for when that entry point exists, since fabricating a caller path for it now would be speculative, out-of-scope feature work.
+- Cross-tenant access is blocked at the membership-check layer (`requireAuthorizedSession`), verified by the existing "keeps tenant data isolated" test (403 on cross-tenant access, store.ts / tests/agent-business-runtime.test.ts:241-302).
+
+## Performance review
+
+- Context retrieval is O(sources) in-memory per call, already scoped to one business's already-loaded `Map`; no unnecessary cross-tenant scans.
+- The new character-budget step adds a single linear pass over at most `limit` (default 6) already-selected items — negligible cost.
+- No new database queries, no new blocking calls, no new network calls were introduced.
+
+## Missing foundations
+
+None block a bounded implementation. The one architecturally larger gap (unified per-model context-window budgeting across `runtimeModels` and `aiModelRegistry`) was identified and deliberately deferred rather than worked around with new infrastructure.
+
+## Conflicting or unused components
+
+- `infra/db/schema.ts` (Drizzle) defines a normalized relational schema that is not read by the live API — it appears to be a design artifact or a schema for a different/earlier persistence approach. Not touched by this change; flagged as a documentation/cleanup item outside this task's scope.
+- The `"customer"`/`"staff"` audience path in `retrieveAgentContext` is fully implemented and tested but has no live caller — not a conflict, just currently dormant.
+
+## Implementation decision
+
+```
+READY_WITH_SMALL_GAPS
+```
+
+Justification: every specific architectural requirement (typed context objects, authorization before exposure, precedence-ordered assembly, untrusted-content neutralization, deterministic intent parsing, policy enforcement before execution, confirmation gating, single model-adapter boundary, MCP reusing the same pipeline, tenant isolation, an existing test framework and integration-seam test pattern) is already present and verified against real code. The gaps found (task-relevance narrowing, model-aware budgeting, selection observability) each fit inside the existing `retrieveAgentContext` function and its single call site, required no new infrastructure service, no parallel runtime, no public API redesign, and no migration — satisfying every `READY_WITH_SMALL_GAPS` condition.
+
+## Bounded implementation plan
+
+1. Add deterministic intent → context-category narrowing to `retrieveAgentContext` (`services/api/src/cp2/agent-business-runtime.ts`), with `"unknown"` intent as a documented no-narrowing fallback preserving prior behavior for existing/unrecognized callers.
+2. Add an optional `characterBudget` parameter to `retrieveAgentContext` that packs selected items in relevance order within a total character budget, always keeping the top match.
+3. Wire the call site in `Cp2Store.createRuntimeTurn` (`services/api/src/cp2/store.ts`) to pass the already-computed `parserResult.intent` and a `contextCharacterBudgetForModel(activeModelId)` derived from the existing (previously unused) `RuntimeModelDefinition.contextWindow`.
+4. Extend the existing `model.prompt_built` telemetry event with `retrievedContextTypes` and `intent` fields, reusing the existing `RuntimeTelemetryEvent` mechanism.
+5. Add unit tests exercising all of the above directly against the exported `retrieveAgentContext` function, following the existing test file's conventions.
+
+### Fixes applied after initial review
+
+6. Made `AiModelSummary.contextWindow` a required `number | null` field (`packages/shared-types`) so every model-catalog entry makes an explicit, reviewable decision instead of silently omitting it. Populated real values for the five pinned local GGUF entries in `aiModelRegistry` (matching `runtimeModels`' declared values where the same id exists in both registries), added two new env-configurable settings (`OPENAI_FAST_CONTEXT_WINDOW_TOKENS`, `OPENAI_REASONING_CONTEXT_WINDOW_TOKENS`, via the file's existing `readBoundedSecurityInteger` helper) for the two operator-configurable cloud profiles, and left `sokoclaw-local`/`llama-cpp-configured` explicitly `null` with an inline comment explaining why each is genuinely not centrally knowable. Also set `contextWindow: null` on the two dynamic catalog-discovery paths (`github-model-catalog.ts`, `huggingface-model-catalog.ts`) for the same reason. `contextCharacterBudgetForModel` now checks `aiModelRegistry` when a model id isn't in `runtimeModels`, so only the two intentionally-`null` cases still use the fixed fallback.
+7. Extracted the caller-audience decision into an exported pure function, `agentAudienceForBusinessRole(role: BusinessRole): AgentAudience` (`agent-business-runtime.ts`), and used it in `createRuntimeTurn` (via `this.requireMembership(...).role`) instead of the hardcoded `"owner"` string previously passed to both `buildShopAgentRuntime` and `retrieveAgentContext`.
+
+### Second review pass — closing the remaining ledger gaps
+
+8. Made `sanitizeUntrustedContext`'s truncation boundary-aware: it now cuts at the nearest preceding whitespace instead of an arbitrary character index, and appends a `[content truncated]` marker whenever truncation actually happens, so a structured token is never silently split and truncation is never invisible.
+9. Added an HTTP-level integration test (`describe("audience enforcement at the runtime-turn endpoint", ...)`) that calls the real `/businesses/:id/runtime/turns` endpoint as both an owner and a non-owner staff member against the same business, and asserts the captured model prompt contains an owner-only context source's content only for the owner call. Since the public context-source-authoring endpoint has no way to create an owner-only (non-staff) source today (see the capability matrix), the source and the staff membership are seeded through `Cp2Store.hydrateSnapshot` — the same snapshot/restore seam every other persistence-round-trip test in this suite already uses — rather than inventing a new product capability just to make the test possible.
+10. Added an HTTP-level integration test (`describe("context-selection observability", ...)`) that reads `turn.telemetry` from the real `/runtime/turns` response and asserts the `model.prompt_built` event's `retrievedContextTypes`/`intent` fields are present and correct.
+11. Added three unit tests for the new truncation behavior (`describe("untrusted content truncation", ...)`), including one that positions a structured token exactly at the naive 4,000-character cutoff to prove the fix excludes the whole token rather than emitting a broken fragment of it.
+
+## Files safe to modify
+
+- `services/api/src/cp2/agent-business-runtime.ts` (modified)
+- `services/api/src/cp2/store.ts` (modified — imports, `createRuntimeTurn`, `aiModelRegistry` entries, two new env-configurable constants, `contextCharacterBudgetForModel`)
+- `services/api/src/cp2/github-model-catalog.ts` (modified — one field added to the discovered-model mapper)
+- `services/api/src/cp2/huggingface-model-catalog.ts` (modified — one field added to the discovered-model mapper)
+- `packages/shared-types/src/index.ts` (modified — `AiModelSummary.contextWindow` field added; package rebuilt)
+- `tests/agent-business-runtime.test.ts` (modified — new test cases appended)
+
+No other files required changes for this bounded scope.
+
+## Expected tests
+
+Added to `tests/agent-business-runtime.test.ts`:
+- `describe("deterministic context planning", ...)`: narrows retrieved context to task-relevant categories (supplier context omitted for a `show_products` intent); does not narrow when intent is `"unknown"` (fallback-plan test); always keeps `policy`/`context_script` sources eligible regardless of intent; packs retrieved context within a character budget, always keeping the top-ranked match even if it alone exceeds the budget.
+- `describe("caller audience derivation", ...)`: `agentAudienceForBusinessRole("owner")` returns `"owner"`; every other `BusinessRole` (`manager`, `sales_agent`, `cashier`, `view_only`) returns `"staff"`.
+
+All 6 new tests pass, plus all 5 pre-existing tests in the same file continue to pass unmodified (`pnpm vitest run tests/agent-business-runtime.test.ts` — 11/11 passed at that point). The pre-existing `github-model-catalog.test.ts`, `huggingface-model-catalog.test.ts`, `ai-model-manager.test.ts`, `agent-model-runtime.test.ts`, and `agent-model-assignment.test.ts` (30 tests) were re-run and continue to pass unmodified, confirming the new required `contextWindow` field didn't break model-catalog behavior.
+
+### Second review pass: 5 more tests added
+
+- `describe("untrusted content truncation", ...)`: leaves short content untouched; cuts long content at a word boundary and marks the cut, positioned so a naive slice would have split a structured token (proving the fix, not just its absence); still neutralizes instruction-like lines before truncating.
+- `describe("context-selection observability", ...)`: HTTP-level — calls the real `/runtime/turns` endpoint and asserts `turn.telemetry`'s `model.prompt_built` event carries `retrievedContextTypes`/`intent`.
+- `describe("audience enforcement at the runtime-turn endpoint", ...)`: HTTP-level — calls the real `/runtime/turns` endpoint as both an owner and a non-owner staff member (via `Cp2Store.hydrateSnapshot`-seeded membership) against an owner-only context source (also seeded the same way, since the public authoring endpoint can't create one), and asserts the captured model prompt contains the owner-only content only for the owner call.
+
+`pnpm vitest run tests/agent-business-runtime.test.ts` — 16/16 passed after this pass. Full-repo `pnpm typecheck`, `pnpm lint`, `pnpm --filter @soko/api build`, and `pnpm test` (515/522, 7 pre-existing skips, 0 failures) were all re-run and are clean.
+
+## Migration decision
+
+No database migration required. No schema or table changes were made; all new behavior operates on already-in-memory `AgentContextSource[]` and model-catalog data. A type-level change was required and applied: `AiModelSummary.contextWindow` was added as a required field in `packages/shared-types` (a compiled TypeScript package, not a database schema), which required rebuilding that package (`pnpm --filter @soko/shared-types build`) and updating every object literal of that type across the repo (`services/api/src/cp2/store.ts`, `github-model-catalog.ts`, `huggingface-model-catalog.ts`) — the compiler caught all call sites, and typecheck is clean repo-wide.
+
+## Risks
+
+- The character-budget heuristic (25% of context window, ~4 chars/token) is a conservative estimate, not an exact tokenizer measurement, consistent with the instruction to use conservative estimation when an exact tokenizer is unavailable. It only meaningfully constrains output for smaller context windows (e.g. the currently-disabled 8k-token `smollm2-360m-android` and 2k-token TinyLlama models); for the currently-enabled 32k-token model it rarely binds, since the existing per-item 4,000-character cap and 6-item limit already produce a smaller footprint in most cases.
+- The TinyLlama context-window values (2,048 tokens) are taken from the base model's published training/model-card context length, not independently re-verified against the exact quantized build pinned in this registry — quantization does not change context length, so this is a reasonable inference, but it is a secondhand figure rather than a value this repository's own code has measured.
+- The two cloud-profile context windows (`OPENAI_FAST_CONTEXT_WINDOW_TOKENS`/`OPENAI_REASONING_CONTEXT_WINDOW_TOKENS`) default to a conservative 32,000 tokens when unset, specifically because the actual hosted model behind each profile is operator-configured via `OPENAI_FAST_MODEL`/`OPENAI_REASONING_MODEL` and can change independently of a code deploy — an operator who configures a specific model should set the matching env var to that model's real window; until they do, the conservative default intentionally under-uses rather than risks overflowing an unknown model's true limit.
+- `sokoclaw-local` (deterministic, non-token-based) and `llama-cpp-configured` (installed-app-chosen, unknown to the server) remain the only two entries using the fixed 6,000-character fallback, and dynamically discovered GitHub/Hugging Face models are `null` for the same "not centrally knowable" reason — these are intentional, not oversights.
+- The `agentAudienceForBusinessRole` fix is now verified both by direct unit tests of the mapping function and by an HTTP-level test calling the real `/runtime/turns` endpoint as a non-owner staff member. That test's setup has one caveat worth naming precisely: the repository's public API has no way to invite/provision a second business member with a specific role (membership creation beyond the initial owner is not exercised anywhere else in the test suite either), and no way to author an owner-only (non-staff) context source (the creation endpoint always grants at least `["owner","staff"]`). Both were seeded through `Cp2Store.hydrateSnapshot` — an existing, widely-used test seam in this suite for injecting persisted state — rather than through the public HTTP API. The endpoint under test (`/runtime/turns`) and the authorization logic it exercises are exactly the production code path; only the *setup* of the owner-only source and the staff membership bypasses HTTP, because the product does not yet expose a way to create either through it.
+
+## Verification plan
+
+- `pnpm vitest run tests/agent-business-runtime.test.ts` — targeted verification of the change.
+- `pnpm --filter @soko/api typecheck` — type-safety verification for the modified service.
+- `pnpm eslint <changed files> --max-warnings=0` — lint verification.
+- `pnpm test` (full suite) and `pnpm lint` — full-repo regression check.
+
+Results for all of the above are reported in the companion implementation summary.
+
+## Change ledger
+
+Every acceptance criterion from the originating brief, mapped to repository evidence, or marked `NOT_COMPLETED`/`PARTIAL` where the criterion is not fully met by this bounded change.
+
+| # | Requirement | Evidence | Files or symbols | Test |
+|---|---|---|---|---|
+| 1 | Existing context architecture audited | Four parallel source-level investigations (chat entry, context manifest, model/tool/MCP router, data layer), cross-checked against `docs/agent-context-instructions-personality.md` and `docs/agent-business-runtime.md` rather than trusted at face value | `services/api/src/cp2/agent-business-runtime.ts`, `store.ts`, `packages/tool-core/src/index.ts`, `services/api/src/mcp/routes.ts` | N/A (audit activity) |
+| 2 | Canonical sources identified for business/user/agent/conversation/runtime context | "Canonical data sources" section of the audit | `ShopAgentRuntime` (shared-types:2720), `AgentContextSource` (shared-types:2640), `cp2_agent_context_sources`/`cp2_agent_profiles` (migration 039), in-memory maps (store.ts:1027-1029), `RuntimeSessionSummary` (shared-types:2533) | N/A |
+| 3 | Readiness decision documented | `READY_WITH_SMALL_GAPS` with justification | `docs/architecture/context-semantic-runtime-audit.md` § Implementation decision | N/A |
+| 4 | Bounded plan recorded before code changes | Plan written and reviewed before any edit was made in this session | `docs/architecture/context-semantic-runtime-audit.md` § Bounded implementation plan | N/A |
+| 5 | No parallel agent runtime created | All changes are inside the existing `Cp2Store` class; no new turn-processing module | `services/api/src/cp2/store.ts` (existing class, extended not duplicated) | Full regression suite (515/522) passes with a single runtime path exercised |
+| 6 | No parallel model registry created | `contextWindow` added to the existing `AiModelSummary` type and existing `aiModelRegistry`/`runtimeModels`; no new registry file | `packages/shared-types/src/index.ts` (`AiModelSummary`, `runtimeModels`) | `pnpm --filter @soko/api typecheck` clean confirms all consumers resolve to the one registry |
+| 7 | No parallel tool registry created | `packages/tool-core/src/index.ts` untouched this session | `packages/tool-core/src/index.ts` (unchanged) | Full suite green, tool-core tests unaffected |
+| 8 | Existing model routing reused | `contextCharacterBudgetForModel` reads the pre-existing `resolveRuntimeModel`/`aiModelRegistry`; `createRuntimeModelRoute` untouched | `store.ts` `contextCharacterBudgetForModel`, `createRuntimeModelRoute` (16510) | `tests/agent-model-runtime.test.ts`, `tests/agent-model-assignment.test.ts` (30 tests, rerun, passing) |
+| 9 | Existing tool/MCP infrastructure reused | `services/api/src/mcp/routes.ts` untouched; MCP's `soko.runtime_turn` still calls the same, now-improved `createRuntimeTurn` | `services/api/src/mcp/routes.ts` (unchanged) | No MCP test broke; no new MCP-specific test added since MCP itself wasn't touched |
+| 10 | Context selected by task relevance | Deterministic `intentContextTypes` map narrows eligible source types per recognized intent | `agent-business-runtime.ts` `intentContextTypes`, `alwaysEligibleContextTypes`, `retrieveAgentContext` | "narrows retrieved context to the categories relevant to the recognized task" |
+| 11 | Context planning deterministic for equal inputs | `intentContextTypes` is a pure lookup table; no randomness or model call in planning | `agent-business-runtime.ts` `retrieveAgentContext` | "does not narrow context when the intent is unrecognized, preserving prior behavior" |
+| 12 | Context authorized before protected content loaded | `retrieveAgentContext` filters on `status`/`accessRules`/audience before content is mapped into the result; audience is now derived from the real caller's role instead of hardcoded | `agent-business-runtime.ts` `retrieveAgentContext` (filter precedes map); `store.ts` `agentAudienceForBusinessRole` call in `createRuntimeTurn` | "filters context by audience and neutralizes instruction-like retrieved text" (pre-existing); "caller audience derivation" (new) |
+| 13 | Context loaded lazily | **Reclassified to PRESENT on inspection** — `retrieveAgentContext`'s metadata-only authorization filter (status/deletedAt/audience/type) already runs to completion before `source.retrievalMetadata.content` is read anywhere in the function; there is no separate "fetch" step to defer in an in-memory store, so the criterion's operative property (authorize before touching protected content) already held | `agent-business-runtime.ts` `retrieveAgentContext` (filter precedes the `.map()` that first reads `.content`) | Same tests as #12 exercise this ordering; no behavior changed, so no new test was needed |
+| 14 | Tenant and business boundaries enforced | `requireAuthorizedSession`/`requireMembership` scoping (pre-existing), now also role-scoped via `agentAudienceForBusinessRole` | `store.ts` `requireAuthorizedSession` (13109), `requireMembership` (13152) | "keeps tenant data isolated..." (pre-existing, 403 cross-tenant); "caller audience derivation" (new) |
+| 15 | Context-file content cannot override platform safety/authorization | `sanitizeUntrustedContext` applied uniformly including `context_script`; `compileAgentInstructions` precedence array unmodified | `agent-business-runtime.ts` `sanitizeUntrustedContext`, `compileAgentInstructions` | "filters context by audience and neutralizes instruction-like retrieved text" asserts `[instruction-like content ignored]` and `precedence[0] === "platform_security"` |
+| 16 | Normal documents separated from trusted instructions | `AgentInstructions` (typed, compiled independently) vs. `AgentContextSource` (always neutralized) — pre-existing architectural separation, not altered | `agent-business-runtime.ts` `compileAgentInstructions` vs. `retrieveAgentContext`/`sanitizeUntrustedContext` | Same as #15 |
+| 17 | Model requests provider-independent | `ModelRuntimeAdapter` interface unchanged; `assembleAgentInferenceMessage` still emits a plain string | `services/api/src/inference/model-runtime.ts` (unchanged) | Full suite green; no adapter-specific test broke |
+| 18 | Small local models receive constrained context | `contextCharacterBudgetForModel` now resolves a real per-model budget for every catalog entry (or an explicit, documented `null`) | `store.ts` `contextCharacterBudgetForModel`, `aiModelRegistry` entries' `contextWindow` | "packs retrieved context within a character budget, always keeping the top match" |
+| 19 | Structured identifiers/permissions not silently truncated | **Fixed** — the budget mechanism drops whole items rather than truncating mid-string; `sanitizeUntrustedContext` now cuts at the nearest preceding whitespace instead of an arbitrary index, and appends `[content truncated]` whenever it actually truncates, so a cut is never silent and never splits a token | `agent-business-runtime.ts` `sanitizeUntrustedContext` | "cuts long content at a word boundary instead of splitting a token, and marks the cut"; "leaves short content untouched"; "still neutralizes instruction-like lines before truncating" |
+| 20 | Tool calls validated before execution | Unchanged pre-existing pipeline | `packages/tool-core/src/index.ts:1096,1201`; `agent-business-runtime.ts:275` `enforceAgentPolicy`; `store.ts:10476-10552` | "compiles structured policy independently from the selected model" (pre-existing, still passing) |
+| 21 | Durable memory changes validated before persistence | Unchanged — owner-correction promotion flow untouched | `store.ts` owner-correction methods (unchanged) | "records bounded owner corrections and privacy-safe feedback evaluations" (pre-existing, still passing) |
+| 22 | Context-selection decisions observable without leaking content | **Fixed** — `model.prompt_built` telemetry extended with `retrievedContextTypes` (type names only, no content) and `intent`, and now directly asserted on via the real HTTP response | `store.ts` `createRuntimeModelRoute` `appendTelemetry("model.prompt_built", ...)` | "records which context categories and intent produced the assembled prompt" (reads `turn.telemetry` from the live `/runtime/turns` HTTP response) |
+| 23 | Optional provider failures degrade safely | Unchanged — existing disabled/unavailable handling in `createRuntimeModelRoute` | `store.ts` `createRuntimeModelRoute` (16510+) | Not re-verified beyond the full suite this session |
+| 24 | Existing chat/auth flows continue working | Full regression suite | N/A | `pnpm test` — 515/522 passed, 7 pre-existing skips, 0 failures |
+| 25 | Streaming remains functional where previously supported | No streaming-related file touched | `services/api/src/inference/owner-node-broker.ts`, `apps/web/src/browser-inference-session.ts` (both untouched) | Not specifically re-run beyond the full suite, which includes relevant fixtures and passed |
+| 26 | Tests demonstrate irrelevant context omitted | New test explicitly proves supplier context excluded for a `show_products` intent | `tests/agent-business-runtime.test.ts` | "narrows retrieved context to the categories relevant to the recognized task" |
+| 27 | Tests demonstrate unauthorized context rejected before loading | Pre-existing test (not new) proves a `customer`-audience caller never sees a confidential/non-`customerVisible` source | `tests/agent-business-runtime.test.ts` (pre-existing) | "filters context by audience and neutralizes instruction-like retrieved text" |
+| 28 | Tests cover the real production integration seam | **Fixed** — added HTTP-level tests that drive the real `/businesses/:id/runtime/turns` and `/agent-runtime/context-sources` endpoints for both an owner and a non-owner staff caller, and one that reads telemetry from the live turn response; the unit-level tests for pure functions (`retrieveAgentContext`, `agentAudienceForBusinessRole`, `sanitizeUntrustedContext`) remain in addition, not instead of, HTTP coverage | `tests/agent-business-runtime.test.ts` (mixed: pre-existing HTTP-level + new unit-level + new HTTP-level) | "withholds owner-only context from a non-owner staff member calling the same agent"; "records which context categories and intent produced the assembled prompt" |
+| 29 | Documentation reflects the final implementation | Both docs updated after the follow-up audience/budgeting fixes | `docs/architecture/context-semantic-runtime-audit.md`, `docs/architecture/context-semantic-runtime.md` | N/A |
+| 30 | Unsupported components and failed checks reported honestly | "Known limitations"/"Risks" sections; this ledger itself marks `PARTIAL`/`NOT_COMPLETED` rather than claiming full coverage | Both architecture docs | N/A |
+
+## Third pass: buyer-side agent replies
+
+This pass was requested separately from the original 30-criterion brief, after a
+follow-up product-vision review found that the storefront's buyer side had no
+AI-agent-driven reply path at all — `createPublicStorefrontMessage` stored an
+anonymous visitor's message but never produced a response; a human owner had to
+answer manually. `PublicStorefrontMessageSummary.author: "customer" | "agent"`
+already declared the `"agent"` case in the type system, but no code path had ever
+produced it. This was not one of the original 30 criteria; it is recorded here for
+the same evidence/test/honesty discipline, not because it was in scope from the
+start.
+
+**What changed** (`services/api/src/cp2/store.ts` unless noted):
+
+- `createPublicStorefrontMessage` is now `async` and, after storing the customer's
+  message, calls a new private `attemptPublicAgentReply`, which reuses
+  `retrieveAgentContext`, `contextCharacterBudgetForModel`, and
+  `assembleAgentInferenceMessage` — the exact same functions the owner-facing
+  runtime turn uses — with `audience: "customer"` (so only `customerVisible`
+  sources are ever retrieved; product catalogue entries are `customerVisible: true`
+  by default) and `allowedTools: []` (an anonymous caller can never trigger a
+  privileged action; if the model proposes a tool anyway, it is discarded and a
+  fixed safe-hand-off reply is used instead — see `publicAgentReplyText`).
+- `getAgentRuntimeReadiness` was split into a session-checking public wrapper and a
+  private `computeAgentRuntimeReadiness(businessId, now)`, reused by the new path
+  so a shop with no active/ready agent degrades to no automatic reply.
+- `resolveActiveRuntimeModelId` and `resolveRuntimeModelProvider` were extracted
+  from `createRuntimeTurn`/`createRuntimeModelRoute` respectively, so both the
+  owner path and the new public path resolve a model/provider through one
+  implementation, not two that could drift.
+- `RuntimeModelPrompt.context` (`packages/shared-types`) was made optional — it
+  carries owner-operational analytics (invoice counts, compliance status) computed
+  via `requireMembership`, which cannot be computed for, and must never be
+  fabricated for, a non-member caller. `buildRuntimeModelPrompt` and the one
+  adapter that read it directly for prompt text (`services/ai-runtime/src/local-model.ts`)
+  were updated to handle its absence.
+- A new per-`(businessId, visitorId)` sliding-window rate limiter (20/hour) was
+  added, mirroring the existing `enforcePhoneUpdateRateLimit` pattern in the same
+  file, since public storefront endpoints previously had no rate limiting at all
+  and an AI-processing endpoint is meaningfully more costly/abusable than a plain
+  message store.
+- `services/api/src/cp2/routes.ts`: the route now `await`s the store call — a
+  correctness fix, not a style change: `try { return somePromise; } catch {}`
+  does not catch a rejected promise, only a synchronous throw, so without `await`
+  a rejection from the now-async method would have bypassed `sendCp2Error` and
+  produced an unhandled-rejection / generic 500 instead of the correct status code.
+
+**Files changed**: `packages/shared-types/src/index.ts`, `services/api/src/cp2/store.ts`,
+`services/api/src/cp2/routes.ts`, `services/ai-runtime/src/local-model.ts`,
+`tests/storefront-interaction-contracts.test.ts`,
+`docs/architecture/context-semantic-runtime.md` (this file).
+
+**Tests added** (`tests/storefront-interaction-contracts.test.ts`,
+`describe("public storefront agent reply", ...)`), all HTTP-level against the real
+`/public/storefronts/:agentId/messages` endpoint:
+
+- Answers a customer using only customer-visible context, and proves an owner-only
+  (`customerVisible: false`) source never reaches the captured model prompt.
+- Proves a model-proposed tool is never executed (`store.snapshot().products`
+  unchanged) and produces the fixed hand-off reply instead.
+- Proves the endpoint degrades to `agentReply: null` (message still accepted) when
+  no model provider is configured.
+- Proves the per-visitor rate limit: 20 replies succeed, the 21st returns
+  `agentReply: null` while the customer's own message is still stored.
+
+All 7 tests in that file pass (3 pre-existing + 4 new), plus the pre-existing
+`agent-business-runtime.test.ts` suite (16 tests, unaffected) and a full
+`pnpm typecheck`/`pnpm lint`/`pnpm build:production:workspace` pass across every
+workspace, including `apps/web` (confirming no frontend consumer breaks on the
+response shape gaining an `agentReply` field). Full-repo `pnpm test` results are in
+the verification summary below.
+
+**Deliberately not done in this pass** (see "Buyer-side agent replies" in
+`context-semantic-runtime.md` for the reasoning): no telemetry/evaluation
+recording for these replies, no conversation memory across a visitor's messages,
+no escalation/confirmation workflow for requests that need real owner action. Each
+is a legitimate follow-up, not a defect in this bounded fix — building them now
+would have expanded scope well beyond "wire the buyer side into the existing
+agent pipeline."

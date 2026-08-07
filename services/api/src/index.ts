@@ -24,8 +24,10 @@ import {
   type NotificationDeliveryRunner
 } from "./cp2/notification-delivery-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
+import { createRateLimitRedisClient } from "./redis-client.js";
 
 const config = readEnvironment();
+const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
 const cloudProviders = new Map<string, RuntimeModelProvider>();
 for (const [modelId, model, maxOutputTokens, timeoutMs] of [
@@ -126,6 +128,7 @@ const cp2Store = shouldUsePostgresStore
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   inferenceRequired: config.backendInferenceRequired,
+  rateLimitRedisClient,
   cp2: {
     store: cp2Store,
     emailProvider,
@@ -159,6 +162,7 @@ let notificationDeliveryRunner: NotificationDeliveryRunner | null = null;
 app.addHook("onClose", async () => {
   await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
+  rateLimitRedisClient.disconnect();
   if (isClosableStore(cp2Store)) {
     await cp2Store.close();
   }

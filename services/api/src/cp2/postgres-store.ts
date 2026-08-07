@@ -343,6 +343,8 @@ export interface PostgresStoreHealth {
 const requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
+const defaultPersistenceRetryInitialDelayMs = 2_000;
+const defaultPersistenceRetryMaxDelayMs = 60_000;
 
 type PersistenceOperationName = "snapshot" | "passkey_ceremony";
 
@@ -400,7 +402,7 @@ export async function createPostgresCp2Store(
     if (snapshotHasData(savedSnapshot)) {
       store.hydrateSnapshot(savedSnapshot);
       if (savedSnapshot.syncChanges.length === 0 && store.snapshot().syncChanges.length > 0) {
-        const result = await saveNormalizedSnapshot(pool, store.snapshot());
+        const result = await saveNormalizedSnapshot(pool, store.snapshot(), savedSnapshot);
         initialSyncPersistenceError = result.syncJournalError;
       }
     }
@@ -434,6 +436,44 @@ export async function createPostgresCp2Store(
     "DB_PERSISTENCE_QUEUE_WARN_MS",
     defaultPersistenceQueueWarningThresholdMs
   );
+  const persistenceRetryInitialDelayMs = positiveIntegerFromEnv(
+    "DB_PERSISTENCE_RETRY_INITIAL_MS",
+    defaultPersistenceRetryInitialDelayMs
+  );
+  const persistenceRetryMaxDelayMs = positiveIntegerFromEnv(
+    "DB_PERSISTENCE_RETRY_MAX_MS",
+    defaultPersistenceRetryMaxDelayMs
+  );
+  let persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
+  let persistenceRetryTimer: NodeJS.Timeout | null = null;
+  let closing = false;
+
+  /**
+   * A failed save no longer reverts in-memory state to the last successfully persisted snapshot.
+   * The in-memory data is still perfectly valid after an ordinary transient failure (a dropped
+   * connection, a pool timeout) - discarding it there was strictly worse than leaving it in place:
+   * it silently undid every mutation across every tenant made since the last successful save, not
+   * just whatever triggered the failure, even though the client of that request had already
+   * received a 200 OK. Instead, the failure is recorded (surfaced via health()/lastPersistenceError,
+   * already monitored - see docs/single-instance-store-ceiling.md) and a retry is scheduled with
+   * exponential backoff, capped at persistenceRetryMaxDelayMs. Because enqueueSave always takes a
+   * fresh store.snapshot() at run time, a retry naturally catches up everything accumulated since
+   * the failure, not just the operation that failed. Every mutating call already triggers its own
+   * enqueueSave via the Proxy below, so this timer only matters for the case where mutations stop
+   * happening after a failure - it guarantees eventual catch-up even during a quiet period, rather
+   * than requiring some other write to happen to notice Postgres is reachable again.
+   */
+  function scheduleSaveRetry(): void {
+    if (closing || persistenceRetryTimer !== null) return;
+    const delay = persistenceRetryDelayMs;
+    persistenceRetryTimer = setTimeout(() => {
+      persistenceRetryTimer = null;
+      enqueueSave();
+    }, delay);
+    persistenceRetryTimer.unref();
+    persistenceRetryDelayMs = Math.min(delay * 2, persistenceRetryMaxDelayMs);
+  }
+
   let lastSyncPersistenceError: AccountSyncPersistenceError | null = initialSyncPersistenceError;
   if (lastSyncPersistenceError !== null) {
     logAccountSyncDegradation(lastSyncPersistenceError);
@@ -521,9 +561,9 @@ export async function createPostgresCp2Store(
       .then(
         () => {
           lastPersistenceError = null;
+          persistenceRetryDelayMs = persistenceRetryInitialDelayMs;
         },
         (error: unknown) => {
-          store.hydrateSnapshot(structuredClone(lastPersistedSnapshot));
           lastPersistenceError = error;
           console.error(
             JSON.stringify({
@@ -542,6 +582,7 @@ export async function createPostgresCp2Store(
                 error instanceof AccountSyncPersistenceError ? error.constraintName : null
             })
           );
+          scheduleSaveRetry();
         }
       );
   }
@@ -549,7 +590,7 @@ export async function createPostgresCp2Store(
   function enqueueSave(): void {
     enqueuePersistenceOperation("snapshot", async () => {
       const snapshot = store.snapshot();
-      const result = await saveNormalizedSnapshot(pool, snapshot);
+      const result = await saveNormalizedSnapshot(pool, snapshot, lastPersistedSnapshot);
       lastPersistedSnapshot = structuredClone(snapshot);
       lastSyncPersistenceError = result.syncJournalError;
       if (result.syncJournalError !== null) {
@@ -583,6 +624,11 @@ export async function createPostgresCp2Store(
   }
 
   async function close(): Promise<void> {
+    closing = true;
+    if (persistenceRetryTimer !== null) {
+      clearTimeout(persistenceRetryTimer);
+      persistenceRetryTimer = null;
+    }
     try {
       await flush();
     } finally {
@@ -1917,9 +1963,32 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
   }));
 }
 
+/**
+ * `previousSnapshot`, when given, is compared against `snapshot` per collection so that a
+ * collection nobody touched since the last successful save is skipped entirely - no
+ * `select entity_id`, no upserts, no round trip for it. Every mutating call on the store triggers
+ * a full-snapshot save (see the Proxy at the bottom of this file), so without this gate a single
+ * product edit re-scans and re-upserts every row in every one of the ~60 collections below, not
+ * just the one that changed. The comparison is a plain content equality check - it can only ever
+ * produce a false "changed" (falls back to today's existing behavior for that collection, safe by
+ * definition), never a false "unchanged", so it cannot skip work that was actually needed.
+ *
+ * This intentionally does not touch saveRelationalCoreRecords below: that function's ~20
+ * individually-hand-written table blocks (accounts, users, sessions, business_memberships, etc.)
+ * are exactly the kind of large, correctness-sensitive surface the single-instance-store-ceiling
+ * doc already warns against rewriting in one sitting. Applying the same "skip if unchanged"
+ * technique there is a legitimate, bounded follow-up, not something to fold into this change.
+ */
+function collectionUnchanged(current: SnapshotRecord[], previous: SnapshotRecord[]): boolean {
+  if (current === previous) return true;
+  if (current.length !== previous.length) return false;
+  return JSON.stringify(current) === JSON.stringify(previous);
+}
+
 async function saveNormalizedSnapshot(
   pool: Pool,
-  snapshot: Cp2Snapshot
+  snapshot: Cp2Snapshot,
+  previousSnapshot?: Cp2Snapshot
 ): Promise<{ syncJournalError: AccountSyncPersistenceError | null }> {
   const client = await pool.connect();
   const startedAt = Date.now();
@@ -1930,11 +1999,14 @@ async function saveNormalizedSnapshot(
       await client.query("begin");
 
       for (const collection of normalizedCollections) {
-        await saveCollectionRecords(
-          client,
-          collection,
-          getSnapshotCollection(snapshot, collection.key)
-        );
+        const records = getSnapshotCollection(snapshot, collection.key);
+        if (
+          previousSnapshot !== undefined &&
+          collectionUnchanged(records, getSnapshotCollection(previousSnapshot, collection.key))
+        ) {
+          continue;
+        }
+        await saveCollectionRecords(client, collection, records);
       }
 
       await saveRelationalCoreRecords(client, snapshot);
@@ -3543,7 +3615,12 @@ function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): str
     return [requiredText(record, "businessId"), requiredText(record, "deviceId")].join(":");
   }
 
-  if (key === "verificationTiers" || key === "taxConfigs" || key === "betaAccess") {
+  if (
+    key === "verificationTiers" ||
+    key === "taxConfigs" ||
+    key === "betaAccess" ||
+    key === "shopPresences"
+  ) {
     return requiredText(record, "businessId");
   }
 

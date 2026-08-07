@@ -1,12 +1,19 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { resolveRuntimeModel, runtimeModels } from "@soko/shared-types";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import {
   InferenceEngineError,
   createOllamaInferenceEngine,
   type InferenceEngine
 } from "./inference-engine.js";
 import { readInferenceServiceConfig, type InferenceServiceConfig } from "./runtime-config.js";
+
+// This service sits behind a shared bearer token and is only reachable from the API over
+// Render's private network (it has no public domain), so the limit here is a coarse backstop
+// against a misbehaving or compromised caller, not the primary defense.
+const defaultRateLimitMax = 600;
+const rateLimitWindowMs = 60_000;
 export {
   buildLlamaPrompt,
   createLlamaCppRuntimeModelProvider,
@@ -38,6 +45,7 @@ export function buildAiRuntime(
   options: {
     config?: InferenceServiceConfig;
     engine?: InferenceEngine;
+    rateLimitRedisClient?: unknown;
   } = {}
 ) {
   const config = options.config ?? readInferenceServiceConfig();
@@ -50,6 +58,27 @@ export function buildAiRuntime(
   const app = Fastify({
     logger: true,
     bodyLimit: Math.max(64_000, config.maximumInputCharacters * 2)
+  });
+
+  void app.register(rateLimit, {
+    global: true,
+    max: defaultRateLimitMax,
+    timeWindow: rateLimitWindowMs,
+    hook: "onRequest",
+    keyGenerator: (request) => request.ip,
+    allowList: (request) => request.url === "/health/live",
+    skipOnError: true,
+    ...(options.rateLimitRedisClient === undefined
+      ? {}
+      : { redis: options.rateLimitRedisClient }),
+    errorResponseBuilder: (_request, context) => ({
+      ok: false,
+      error: {
+        code: "RATE_LIMITED",
+        message: `Too many requests. Please retry after ${context.after}.`,
+        retryable: true
+      }
+    })
   });
 
   app.addHook("onRequest", async (request, reply) => {

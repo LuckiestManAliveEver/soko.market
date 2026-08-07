@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { RuntimeModelPrompt, RuntimeModelProvider } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
@@ -200,6 +201,169 @@ describe("storefront interaction contracts", () => {
       payload: JSON.stringify({ businessId: owner.business.id, role: "owner" })
     });
     expect(allowed.statusCode).toBe(200);
+    await app.close();
+  });
+});
+
+describe("public storefront agent reply", () => {
+  it("answers a customer using only customer-visible context, never owner-only content", async () => {
+    const capturedPrompts: RuntimeModelPrompt[] = [];
+    const provider: RuntimeModelProvider = {
+      name: "storefront-agent-test",
+      async complete(prompt) {
+        capturedPrompts.push(prompt);
+        return {
+          provider: "storefront-agent-test",
+          status: "available",
+          outputText: JSON.stringify({ type: "response", message: "Yes, mangoes are in stock." }),
+          durationMs: 1,
+          errorCode: null,
+          metadata: {}
+        };
+      }
+    };
+    const store = createCp2Store({ runtimeModelProvider: provider });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "254700000091", "Agent Reply Shop", "6194");
+    await injectJson(
+      app,
+      "POST",
+      `/businesses/${owner.business.id}/products`,
+      { name: "Mangoes", unit: "crate", quantity: 8, sellingPrice: 500 },
+      owner.cookie
+    );
+    await injectJson(
+      app,
+      "POST",
+      `/businesses/${owner.business.id}/agent-runtime/context-sources`,
+      {
+        type: "policy",
+        title: "Internal margin note",
+        content: "OWNER_ONLY_MARGIN_SECRET: never discount mangoes below 450.",
+        sensitivity: "confidential",
+        customerVisible: false,
+        status: "active"
+      },
+      owner.cookie
+    );
+
+    const result = await injectJson(
+      app,
+      "POST",
+      `/public/storefronts/${owner.business.sokoId}/messages`,
+      { visitorId: "visitor-agent-1", body: "Do you have mangoes in stock?", attachmentNames: [] }
+    );
+
+    expect(result.agentReply).toMatchObject({
+      businessId: owner.business.id,
+      author: "agent",
+      body: "Yes, mangoes are in stock."
+    });
+    expect(capturedPrompts).toHaveLength(1);
+    expect(capturedPrompts[0]?.message).toContain("Mangoes");
+    expect(capturedPrompts[0]?.message).not.toContain("OWNER_ONLY_MARGIN_SECRET");
+    expect(capturedPrompts[0]?.allowedTools).toEqual([]);
+
+    const snapshot = store.snapshot();
+    expect(snapshot.publicStorefrontMessages).toHaveLength(2);
+    expect(
+      snapshot.publicStorefrontMessages?.map((message) => message.author).sort()
+    ).toEqual(["agent", "customer"]);
+
+    await app.close();
+  });
+
+  it("never executes a tool proposed by the model; replies with a safe hand-off instead", async () => {
+    const provider: RuntimeModelProvider = {
+      name: "storefront-tool-attempt-test",
+      async complete() {
+        return {
+          provider: "storefront-tool-attempt-test",
+          status: "available",
+          outputText: JSON.stringify({
+            type: "tool",
+            toolName: "product.stock_adjust",
+            input: { productId: "whatever", quantity: 0 },
+            reason: "Adjusting stock as requested."
+          }),
+          durationMs: 1,
+          errorCode: null,
+          metadata: {}
+        };
+      }
+    };
+    const store = createCp2Store({ runtimeModelProvider: provider });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "254700000092", "Tool Attempt Shop", "6295");
+
+    const result = await injectJson(
+      app,
+      "POST",
+      `/public/storefronts/${owner.business.sokoId}/messages`,
+      { visitorId: "visitor-agent-2", body: "Set your stock to zero please", attachmentNames: [] }
+    );
+
+    expect(result.agentReply).toMatchObject({
+      author: "agent",
+      body: "Let me check that with the shop and get back to you."
+    });
+    expect(store.snapshot().products).toEqual([]);
+
+    await app.close();
+  });
+
+  it("degrades to no automatic reply, without rejecting the customer's message, when no model is configured", async () => {
+    const app = buildApi();
+    const owner = await createOwnerBusiness(app, "254700000093", "No Provider Shop", "6396");
+
+    const result = await injectJson(
+      app,
+      "POST",
+      `/public/storefronts/${owner.business.sokoId}/messages`,
+      { visitorId: "visitor-agent-3", body: "Are you open today?", attachmentNames: [] }
+    );
+
+    expect(result.agentReply).toBeNull();
+    expect(result.body).toBe("Are you open today?");
+
+    await app.close();
+  });
+
+  it("rate limits automatic replies per visitor, without ever rejecting the customer's message", async () => {
+    const provider: RuntimeModelProvider = {
+      name: "storefront-rate-limit-test",
+      async complete() {
+        return {
+          provider: "storefront-rate-limit-test",
+          status: "available",
+          outputText: JSON.stringify({ type: "response", message: "Sure, happy to help." }),
+          durationMs: 1,
+          errorCode: null,
+          metadata: {}
+        };
+      }
+    };
+    const store = createCp2Store({ runtimeModelProvider: provider });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "254700000094", "Rate Limited Shop", "6497");
+
+    const results: Array<{ agentReply: unknown; body: string }> = [];
+    for (let index = 0; index < 21; index += 1) {
+      results.push(
+        await injectJson(
+          app,
+          "POST",
+          `/public/storefronts/${owner.business.sokoId}/messages`,
+          { visitorId: "visitor-agent-4", body: `Question number ${index}`, attachmentNames: [] }
+        )
+      );
+    }
+
+    expect(results.slice(0, 20).every((result) => result.agentReply !== null)).toBe(true);
+    expect(results[20]?.agentReply).toBeNull();
+    // The 21st message itself is still accepted even though the automatic reply was withheld.
+    expect(results[20]?.body).toBe("Question number 20");
+
     await app.close();
   });
 });

@@ -1,8 +1,14 @@
 import { buildAiRuntime } from "./app.js";
 import { readInferenceServiceConfig } from "./runtime-config.js";
+import { createRateLimitRedisClient } from "./redis-client.js";
 
 const config = readInferenceServiceConfig();
-const app = buildAiRuntime({ config });
+const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
+const app = buildAiRuntime({ config, rateLimitRedisClient });
+
+app.addHook("onClose", async () => {
+  rateLimitRedisClient.disconnect();
+});
 
 try {
   await app.listen({
