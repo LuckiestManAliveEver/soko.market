@@ -184,15 +184,12 @@ describe("frontend user guidance", () => {
     expect(render).toContain("- key: INFERENCE_CLOUD_FALLBACK_ENABLED");
   });
 
-  it("removes Firebase phone OTP while preserving email verification", () => {
+  it("removes Firebase phone OTP and creates phone accounts with a PIN, not SMS", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
-    expect(phoneFirst).toContain('"/auth/signup/start"');
-    expect(phoneFirst).toContain('"/auth/signup/complete"');
-    expect(phoneFirst).toContain('"/auth/email/verification/start"');
-    expect(phoneFirst).toContain('"/auth/email/verification/verify"');
+    expect(phoneFirst).toContain('"/auth/pin/continue"');
     expect(phoneFirst).toContain("SMS verification is not used.");
     expect(phoneFirst).not.toContain("sendFirebasePhoneOtp");
     expect(phoneFirst).not.toContain("firebaseIdToken");
@@ -217,7 +214,6 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('"/auth/recovery/start"');
     expect(phoneFirst).toContain('"/auth/recovery/verify"');
     expect(phoneFirst).toContain('"/auth/recovery/reset-password"');
-    expect(phoneFirst).toContain("Email verification code");
     expect(phoneFirst).toContain("Use a passkey");
     expect(phoneFirst).toContain("Verify passkey and reset PIN");
     expect(phoneFirst).toContain('"/auth/pin/recover/passkey"');
@@ -247,8 +243,7 @@ describe("frontend user guidance", () => {
       application.indexOf("async function logout")
     );
 
-    expect(phoneFirst).toContain("Phone added as an unverified sign-in identifier");
-    expect(phoneFirst).toContain('"/auth/signup/complete"');
+    expect(phoneFirst).toContain('"/auth/pin/continue"');
     expect(phoneFirst).not.toContain("Verify your phone");
     expect(phoneFirst).not.toContain("sendFirebasePhoneOtp");
     expect(shopSetup).toContain("FIRST SHOP REGISTRATION");
@@ -274,14 +269,13 @@ describe("frontend user guidance", () => {
     expect(createBusinessRoute).toContain('app.put("/account/phone"');
   });
 
-  it("shows Sign up and Log in actions in the first greeting", () => {
+  it("shows a single Sign in action in the first greeting", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const welcomeMessage = readFileSync("apps/web/src/app-shell.ts", "utf8");
 
     expect(application).toContain('data-testid={message.id === "welcome"');
     expect(application).toContain('<div className="welcome-auth-actions"');
-    expect(application).toContain("onClick={onSignUp}");
-    expect(application).toContain("onClick={onLogin}");
+    expect(application).toContain("onClick={onSignIn}");
     expect(welcomeMessage).toContain("Sign up or log in");
   });
 
@@ -317,7 +311,7 @@ describe("frontend user guidance", () => {
     expect(actionMessage).toContain("href={authenticationRoute(target)}");
     expect(application).toContain("<AuthenticationActionMessage message={statusMessage} />");
     expect(application).toContain("readAuthenticationRouteHash(window.location.hash)");
-    expect(phoneFirst).toContain('className="setup-grid auth-landing-grid" id={initialMode}');
+    expect(phoneFirst).toContain('className="setup-grid auth-landing-grid"');
     expect(styles).toContain(".authentication-required-link");
     expect(styles).toContain("pointer-events: auto");
   });

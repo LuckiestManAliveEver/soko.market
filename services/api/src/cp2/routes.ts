@@ -338,6 +338,10 @@ interface OwnerPhoneBody {
   phoneNumber?: string;
 }
 
+interface DisplayNameBody {
+  displayName?: string;
+}
+
 interface RoleCheckBody {
   businessId?: string;
   role?: string;
@@ -2085,6 +2089,31 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           : parseString(request.body.country, "country")
       );
       const result = store.signupWithPhonePin({
+        destination,
+        pin: parseString(request.body.pin, "pin")
+      });
+      setAuthSessionCookies(reply, request, store, result.session.id);
+      return result;
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  // Single phone + PIN entry point: creates the account on first use, signs in on return
+  // visits, and tells an existing passkey/password account to use that method instead of
+  // silently repurposing whatever 4 digits were typed as a new credential.
+  app.post("/auth/pin/continue", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
+    try {
+      enforceAuthIpRate(request, "pin_continue", 10);
+      const rawDestination = parseString(
+        request.body.contact ?? request.body.destination,
+        "contact"
+      );
+      const destination = normalizeAuthPhone(
+        rawDestination,
+        request.body.country === undefined ? undefined : parseString(request.body.country, "country")
+      );
+      const result = store.continueWithPhonePin({
         destination,
         pin: parseString(request.body.pin, "pin")
       });
@@ -3904,6 +3933,20 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.put(
+    "/account/display-name",
+    async (request: FastifyRequest<{ Body: DisplayNameBody }>, reply) => {
+      try {
+        return store.updateOwnDisplayName({
+          sessionId: readSessionCookie(request.headers.cookie),
+          displayName: parseString(request.body.displayName, "displayName")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post("/roles/check", async (request: FastifyRequest<{ Body: RoleCheckBody }>, reply) => {
     try {

@@ -263,8 +263,7 @@ describe("persistent passwordless authentication", () => {
 
     const frontend = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     expect(frontend).toContain('"/auth/login/methods"');
-    expect(frontend).toContain('"/auth/email/verification/start"');
-    expect(frontend).toContain('"/auth/email/verification/verify"');
+    expect(frontend).toContain('"/auth/pin/continue"');
     expect(frontend).toContain("methods.passkeyAvailable");
     expect(frontend).toContain("loginMethods?.passwordFallback");
     expect(frontend).not.toContain('"/auth/identify"');
@@ -272,7 +271,7 @@ describe("persistent passwordless authentication", () => {
     expect(frontend).not.toContain('"verify-phone"');
     expect(frontend).toContain(" fallback (optional)");
     expect(frontend).toContain("Create passkey");
-    expect(frontend).toContain("Do this later");
+    expect(frontend).toContain("Skip for now");
   });
 
   it("fails closed on unsafe production cookie and session configuration", () => {

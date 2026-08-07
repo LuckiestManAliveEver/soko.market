@@ -14,16 +14,17 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 
 type Stage =
   | "entry"
-  | "profile"
-  | "email-verification"
+  | "pin"
+  | "name"
   | "passkey-prompt"
-  | "passkey-recommendation"
+  | "secure"
   | "password"
   | "mfa"
   | "recovery-code"
   | "reset-pin"
   | "reset-password";
 type IdentifierType = "phone" | "email";
+type SecureOffer = "passkey" | "pin";
 
 interface LoginMethods {
   preferred: "passkey";
@@ -34,28 +35,25 @@ interface LoginMethods {
 }
 
 interface Props {
-  initialMode: "signup" | "login";
   onAuthenticated: (session: AuthSessionView) => void;
   onCancel: () => void;
 }
 
-export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCancel }: Props) {
+export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   const [identifierType, setIdentifierType] = useState<IdentifierType>("phone");
   const [country, setCountry] = useState<CountryCode>("KE");
   const [identifier, setIdentifier] = useState("");
   const [stage, setStage] = useState<Stage>("entry");
   const [transactionId, setTransactionId] = useState("");
   const [code, setCode] = useState("");
+  const [pin, setPin] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [legacyPin, setLegacyPin] = useState(false);
   const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
-  const [termsAccepted, setTermsAccepted] = useState(false);
-  const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [createdSession, setCreatedSession] = useState<AuthSessionView | null>(null);
+  const [secureOffer, setSecureOffer] = useState<SecureOffer>("passkey");
   const [loginMethods, setLoginMethods] = useState<LoginMethods | null>(null);
-  const [emailChallengeId, setEmailChallengeId] = useState("");
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
@@ -86,7 +84,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
   }
 
   async function continueIdentifier() {
-    if (initialMode === "login") {
+    if (identifierType === "email") {
       const methods = await apiFetch<LoginMethods>("/auth/login/methods", {
         method: "POST",
         body: identifierBody()
@@ -100,77 +98,58 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       );
       return;
     }
-    if (identifierType === "email") {
-      setMessage("New accounts start with a phone identifier. Use phone to create your account.");
+    identifierBody();
+    setPin("");
+    setStage("pin");
+    setMessage(
+      "Enter your PIN. New here? This creates one. Already have an account? Enter your existing PIN."
+    );
+  }
+
+  async function submitPin() {
+    const normalized = identifierBody();
+    const result = await apiFetch<AuthSessionView>("/auth/pin/continue", {
+      method: "POST",
+      body: { contact: normalized.identifier, country, pin }
+    });
+    if (result.isNewAccount) {
+      setCreatedSession(result);
+      setDisplayName(result.user.displayName);
+      setStage("name");
+      setMessage("Welcome! What should we call you?");
       return;
     }
-    const transaction = await apiFetch<{ transactionId: string }>("/auth/signup/start", {
-      method: "POST",
-      body: identifierBody()
-    });
-    setTransactionId(transaction.transactionId);
-    setStage("profile");
-    setMessage("Phone added as an unverified sign-in identifier. Finish creating your account.");
+    onAuthenticated(result);
   }
 
-  async function completeSignup() {
-    const session = await apiFetch<AuthSessionView>("/auth/signup/complete", {
-      method: "POST",
-      body: {
-        transactionId,
-        displayName,
-        ...(password ? { password, passwordConfirmation } : {}),
-        email: email || undefined,
-        termsAccepted,
-        privacyAccepted
-      }
+  async function submitDisplayName() {
+    if (!createdSession) return;
+    const result = await apiFetch<{ user: AuthSessionView["user"] }>("/account/display-name", {
+      method: "PUT",
+      body: { displayName: displayName.trim() }
     });
-    setCreatedSession(session);
-    if (email.trim()) {
-      try {
-        const challenge = await apiFetch<{
-          challengeId: string;
-          expiresAt: string;
-          developmentCode?: string;
-        }>("/auth/email/verification/start", { method: "POST", body: {} });
-        setEmailChallengeId(challenge.challengeId);
-        setCode(challenge.developmentCode ?? "");
-        setStage("email-verification");
-        setMessage(
-          "Account created. Verify the email address so it can be used for account recovery."
-        );
-        return;
-      } catch (error) {
-        setStage("passkey-recommendation");
-        setMessage(
-          `Account created, but email verification could not start: ${getUserFacingErrorMessage(error)} Add a passkey now and retry email verification later.`
-        );
+    setCreatedSession({ ...createdSession, user: result.user });
+    setSecureOffer("passkey");
+    setStage("secure");
+    setMessage("Add a passkey for secure passwordless return access, or skip for now.");
+  }
+
+  async function afterAlternateAuthentication(session: AuthSessionView) {
+    try {
+      const status = await apiFetch<{ hasPin: boolean }>("/auth/pin/status");
+      if (!status.hasPin) {
+        setCreatedSession(session);
+        setSecureOffer("pin");
+        setPassword("");
+        setPasswordConfirmation("");
+        setStage("secure");
+        setMessage("Set a 4-digit PIN so next time you can sign in even faster.");
         return;
       }
+    } catch {
+      // The nudge is best-effort only; fall through to the authenticated state either way.
     }
-    setStage("passkey-recommendation");
-    setMessage("Account created. Add a passkey for secure passwordless return access.");
-  }
-
-  async function verifySignupEmail() {
-    await apiFetch("/auth/email/verification/verify", {
-      method: "POST",
-      body: { challengeId: emailChallengeId, code }
-    });
-    setCode("");
-    setStage("passkey-recommendation");
-    setMessage("Email verified and enabled for account recovery. Add a passkey next.");
-  }
-
-  async function resendSignupEmailVerification() {
-    const challenge = await apiFetch<{
-      challengeId: string;
-      expiresAt: string;
-      developmentCode?: string;
-    }>("/auth/email/verification/start", { method: "POST", body: {} });
-    setEmailChallengeId(challenge.challengeId);
-    setCode(challenge.developmentCode ?? "");
-    setMessage("A new email verification code was sent.");
+    onAuthenticated(session);
   }
 
   async function login() {
@@ -200,7 +179,9 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       setStage("mfa");
       setCode("");
       setMessage("Enter your second factor.");
-    } else onAuthenticated(result as AuthSessionView);
+    } else {
+      await afterAlternateAuthentication(result as AuthSessionView);
+    }
   }
 
   async function verifyMfa() {
@@ -208,7 +189,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       method: "POST",
       body: { transactionId, factor: mfaFactor, code }
     });
-    onAuthenticated(session);
+    await afterAlternateAuthentication(session);
   }
 
   async function startRecovery() {
@@ -290,7 +271,7 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
       method: "POST",
       body: { ceremonyId: challenge.ceremonyId, response }
     });
-    onAuthenticated(session);
+    await afterAlternateAuthentication(session);
   }
 
   async function createPasskey() {
@@ -311,18 +292,21 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
     onAuthenticated(createdSession);
   }
 
-  const optionalPasswordInvalid =
-    password.length !== 0 && (password.length < 10 || password !== passwordConfirmation);
+  async function setupPin() {
+    if (!createdSession) return;
+    await apiFetch("/auth/pin/setup", { method: "POST", body: { pin: password } });
+    onAuthenticated(createdSession);
+  }
 
   return (
-    <main className="setup-grid auth-landing-grid" id={initialMode}>
+    <main className="setup-grid auth-landing-grid">
       <section className="panel auth-card">
         <div className="section-heading">
           <AppIcon className="auth-brand-icon" />
           <p className="eyebrow">SECURE ACCOUNT ACCESS</p>
           <h1>Welcome to soko.market</h1>
         </div>
-        {stage === "entry" || stage === "password" ? (
+        {stage === "entry" || stage === "password" || stage === "pin" ? (
           <>
             {identifierType === "phone" ? (
               <PhoneNumberField
@@ -356,14 +340,40 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
                 />
               </label>
             ) : null}
+            {stage === "pin" ? (
+              <label>
+                4-digit PIN
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  autoComplete="one-time-code"
+                  value={pin}
+                  onChange={(event) => setPin(event.target.value.replace(/\D/gu, ""))}
+                />
+              </label>
+            ) : null}
             <button
               type="button"
-              disabled={busy || !identifier.trim() || (stage === "password" && !password)}
+              disabled={
+                busy ||
+                !identifier.trim() ||
+                (stage === "password" && !password) ||
+                (stage === "pin" && pin.length !== 4)
+              }
               aria-busy={busy}
-              onClick={() => void run(stage === "password" ? login : continueIdentifier)}
+              onClick={() =>
+                void run(stage === "password" ? login : stage === "pin" ? submitPin : continueIdentifier)
+              }
             >
               {busy ? "Working…" : stage === "password" ? "Sign in" : "Continue"}
             </button>
+            {stage === "pin" ? (
+              <p className="setup-status">
+                By continuing, you agree to our <a href="/terms">Terms of Service</a> and{" "}
+                <a href="/privacy">Privacy Policy</a>.
+              </p>
+            ) : null}
             {stage === "password" ? (
               <button
                 className="secondary"
@@ -376,32 +386,47 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
                 {legacyPin ? "Use password" : "Use legacy PIN"}
               </button>
             ) : null}
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => {
-                setIdentifierType(identifierType === "phone" ? "email" : "phone");
-                setIdentifier("");
-                setStage("entry");
-              }}
-            >
-              {identifierType === "phone" ? "Use email instead" : "Use phone instead"}
-            </button>
+            {stage !== "password" ? (
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => {
+                  setIdentifierType(identifierType === "phone" ? "email" : "phone");
+                  setIdentifier("");
+                  setStage("entry");
+                }}
+              >
+                {identifierType === "phone" ? "Use email instead" : "Use phone instead"}
+              </button>
+            ) : null}
             <button
               className="secondary"
               type="button"
               disabled={busy}
               onClick={() => void run(usePasskey)}
             >
-              Use a passkey
+              Use a passkey instead
             </button>
+            {stage !== "password" ? (
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => {
+                  setPassword("");
+                  setStage("password");
+                  setMessage("Use your password fallback if this account has one.");
+                }}
+              >
+                Use a password instead
+              </button>
+            ) : null}
             <button
               className="secondary"
               type="button"
               disabled={!identifier.trim() || busy}
               onClick={() => void run(startRecovery)}
             >
-              Recover account
+              Trouble signing in?
             </button>
           </>
         ) : null}
@@ -440,53 +465,6 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
             ) : null}
           </>
         ) : null}
-        {stage === "email-verification" ? (
-          <>
-            <h2>Verify your recovery email</h2>
-            <p>
-              The account is already stored. Verification links this email as an approved recovery
-              method.
-            </p>
-            <label>
-              Email verification code
-              <input
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              disabled={busy || !emailChallengeId || !code.trim()}
-              onClick={() => void run(verifySignupEmail)}
-            >
-              Verify recovery email
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => void run(resendSignupEmailVerification)}
-            >
-              Send a new code
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setCode("");
-                setStage("passkey-recommendation");
-                setMessage(
-                  "Email verification skipped. It cannot be used for recovery until verified."
-                );
-              }}
-            >
-              Verify later
-            </button>
-          </>
-        ) : null}
         {stage === "recovery-code" ? (
           <>
             <label>
@@ -508,8 +486,9 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
             </button>
           </>
         ) : null}
-        {stage === "profile" ? (
+        {stage === "name" ? (
           <>
+            <h2>What should we call you?</h2>
             <label>
               Display name
               <input
@@ -518,76 +497,73 @@ export function PhoneFirstAuthentication({ initialMode, onAuthenticated, onCance
                 onChange={(event) => setDisplayName(event.target.value)}
               />
             </label>
-            <label>
-              Email (optional)
-              <input
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-            </label>
-            <PasswordFields
-              optional
-              password={password}
-              confirmation={passwordConfirmation}
-              setPassword={setPassword}
-              setConfirmation={setPasswordConfirmation}
-            />
-            <label>
-              <input
-                type="checkbox"
-                checked={termsAccepted}
-                onChange={(event) => setTermsAccepted(event.target.checked)}
-              />{" "}
-              I accept the <a href="/terms">Terms of Service</a>
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={privacyAccepted}
-                onChange={(event) => setPrivacyAccepted(event.target.checked)}
-              />{" "}
-              I acknowledge the <a href="/privacy">Privacy Policy</a>
-            </label>
             <button
               type="button"
-              disabled={
-                busy ||
-                !displayName.trim() ||
-                optionalPasswordInvalid ||
-                !termsAccepted ||
-                !privacyAccepted
-              }
+              disabled={busy || !displayName.trim()}
               aria-busy={busy}
-              onClick={() => void run(completeSignup)}
+              onClick={() => void run(submitDisplayName)}
             >
-              {busy ? "Creating account…" : "Create account"}
+              {busy ? "Saving…" : "Continue"}
             </button>
           </>
         ) : null}
-        {stage === "passkey-recommendation" && createdSession ? (
+        {stage === "secure" && createdSession ? (
           <>
             <h2>Make return access effortless</h2>
-            <p>
-              Create a passkey for this device. It works with your device unlock and provides
-              passwordless return access.
-            </p>
-            <button type="button" disabled={busy} onClick={() => void run(createPasskey)}>
-              Create passkey
-            </button>
-            {password ? (
-              <button
-                className="secondary"
-                type="button"
-                disabled={busy}
-                onClick={() => onAuthenticated(createdSession)}
-              >
-                Do this later
-              </button>
+            {secureOffer === "passkey" ? (
+              <>
+                <p>
+                  Create a passkey for this device. It works with your device unlock and provides
+                  passwordless return access.
+                </p>
+                <button type="button" disabled={busy} onClick={() => void run(createPasskey)}>
+                  Create passkey
+                </button>
+              </>
             ) : (
-              <p>Create a passkey now because this account does not have a password fallback.</p>
+              <>
+                <p>Choose a 4-digit PIN so your next sign-in is even faster.</p>
+                <label>
+                  New PIN
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value.replace(/\D/gu, ""))}
+                  />
+                </label>
+                <label>
+                  Confirm new PIN
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    autoComplete="new-password"
+                    value={passwordConfirmation}
+                    onChange={(event) =>
+                      setPasswordConfirmation(event.target.value.replace(/\D/gu, ""))
+                    }
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={busy || !/^\d{4}$/u.test(password) || password !== passwordConfirmation}
+                  onClick={() => void run(setupPin)}
+                >
+                  Set PIN
+                </button>
+              </>
             )}
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => onAuthenticated(createdSession)}
+            >
+              Skip for now
+            </button>
           </>
         ) : null}
         {stage === "mfa" ? (

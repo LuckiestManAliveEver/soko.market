@@ -2163,9 +2163,8 @@ export function OwnerApp() {
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
-  const [isSignupOpen, setIsSignupOpen] = useState(initialAuthenticationTarget === "signup");
-  const [isLoginOpen, setIsLoginOpen] = useState(
-    accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget === "login"
+  const [isAuthOpen, setIsAuthOpen] = useState(
+    accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
   );
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
@@ -2267,11 +2266,9 @@ export function OwnerApp() {
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
 
   const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
-  const shouldShowLogin = !authBootstrapPending && !isSignupOpen && isLoginOpen;
-  const setupComplete = business !== null && !shouldShowLogin && !authBootstrapPending;
-  const shouldShowSignup = isSignupOpen && session === null;
-  const isAuthScreen =
-    authBootstrapPending || shouldShowSignup || shouldShowLogin || isAccountRestorationOpen;
+  const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
+  const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
+  const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
   const activeImportJob =
@@ -2339,30 +2336,20 @@ export function OwnerApp() {
   }
 
   function requireMessagingSignIn() {
-    openLogin();
+    openAuth();
     setStatusMessage("Sign in to send end-to-end encrypted messages.");
   }
 
-  function openSignup() {
+  function openAuth() {
     sessionStorage.removeItem(guestBrowsingStorageKey);
     setIsBusinessSetupOpen(false);
-    setIsLoginOpen(false);
-    setIsSignupOpen(true);
-    setStatusMessage("Create your Soko account. Shop registration is a separate step.");
-  }
-
-  function openLogin() {
-    sessionStorage.removeItem(guestBrowsingStorageKey);
-    setIsBusinessSetupOpen(false);
-    setIsSignupOpen(false);
-    setIsLoginOpen(true);
-    setStatusMessage("Enter your email or phone number and PIN.");
+    setIsAuthOpen(true);
+    setStatusMessage("Enter your phone number to continue.");
   }
 
   function browseAsGuest() {
     sessionStorage.setItem(guestBrowsingStorageKey, "true");
-    setIsSignupOpen(false);
-    setIsLoginOpen(false);
+    setIsAuthOpen(false);
     setIsBusinessSetupOpen(false);
     setIsAccountRestorationOpen(false);
     setIsMessagingInboxOpen(false);
@@ -2378,11 +2365,7 @@ export function OwnerApp() {
       const target = readAuthenticationRouteHash(window.location.hash);
       if (target === null) return;
 
-      if (target === "signup") {
-        openSignup();
-      } else {
-        openLogin();
-      }
+      openAuth();
 
       window.history.replaceState(
         window.history.state,
@@ -3082,7 +3065,7 @@ export function OwnerApp() {
     saveCachedAuthSession(response);
     logAuthenticationLifecycle("frontend_session_stored", response);
     setAuthBootstrapState("authenticated");
-    setIsLoginOpen(false);
+    setIsAuthOpen(false);
   }
 
   function completePhoneFirstAuthentication(response: SessionResponse) {
@@ -3096,8 +3079,7 @@ export function OwnerApp() {
           : initialCountryCode
     };
     localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-    setIsSignupOpen(false);
-    setIsLoginOpen(false);
+    setIsAuthOpen(false);
     logAuthenticationLifecycle("redirect_issued", response);
     navigateToView("chat", { replace: true, mode: "marketplace" });
     setStatusMessage("Authentication complete");
@@ -3149,7 +3131,7 @@ export function OwnerApp() {
     localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
     localStorage.removeItem(setupDraftStorageKey);
     navigateToView("chat", { replace: true, mode: "marketplace" });
-    setIsSignupOpen(false);
+    setIsAuthOpen(false);
     setStatusMessage(
       `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.${networkStatus}`
     );
@@ -3168,7 +3150,7 @@ export function OwnerApp() {
       saveCachedAuthSession(nextSession);
       setAuthBootstrapState("authenticated");
       if (!accountDeletionIntent && !accountRestorationIntent) {
-        setIsLoginOpen(false);
+        setIsAuthOpen(false);
       }
       setStatusMessage("Session active");
       await loadMarketplaceIntroState();
@@ -3180,7 +3162,7 @@ export function OwnerApp() {
         setSession(cached);
         setBusiness(storedBusiness);
         setAuthBootstrapState("offline-authenticated");
-        setIsLoginOpen(false);
+        setIsAuthOpen(false);
         setStatusMessage("Offline workspace restored. Cloud data will refresh after reconnect.");
         return;
       }
@@ -3192,7 +3174,7 @@ export function OwnerApp() {
         if (storedBusiness === null) setBusiness(null);
         const browsingAsGuest = sessionStorage.getItem(guestBrowsingStorageKey) === "true";
         if (initialOwnerAuth !== null && !browsingAsGuest) {
-          setIsLoginOpen(true);
+          setIsAuthOpen(true);
           setStatusMessage("Sign in to continue");
         } else if (
           initialAuthenticationTarget === null &&
@@ -5823,8 +5805,7 @@ export function OwnerApp() {
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setIsWorkspacePanelOpen(false);
     setIsBusinessSetupOpen(false);
-    setIsSignupOpen(false);
-    setIsLoginOpen(false);
+    setIsAuthOpen(false);
     setIsAccountRestorationOpen(false);
     setStatusMessage(message);
   }
@@ -7259,7 +7240,7 @@ export function OwnerApp() {
               <span>
                 <strong>Soko.market</strong>
                 <span>{business.name}</span>
-                <small>{shouldShowLogin ? "Saved workspace loaded" : agentSettings.name}</small>
+                <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
                 <small>{business.sokoId}</small>
               </span>
             </button>
@@ -7349,7 +7330,7 @@ export function OwnerApp() {
                 type="button"
                 onClick={() => {
                   if (business === null) {
-                    openLogin();
+                    openAuth();
                   } else {
                     openAgentProfile();
                   }
@@ -7379,9 +7360,8 @@ export function OwnerApp() {
               agentSettings.name.trim().length > 0
             )}
           />
-        ) : shouldShowSignup || shouldShowLogin ? (
+        ) : shouldShowAuth ? (
           <PhoneFirstAuthentication
-            initialMode={shouldShowSignup ? "signup" : "login"}
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
             onCancel={browseAsGuest}
           />
@@ -7413,7 +7393,7 @@ export function OwnerApp() {
             onEditPhone={() => setBusinessSetupStep("phone")}
             onBackToLoginOptions={() => {
               setIsBusinessSetupOpen(false);
-              openLogin();
+              openAuth();
             }}
             onCancel={() => {
               setIsBusinessSetupOpen(false);
@@ -7548,8 +7528,7 @@ export function OwnerApp() {
               }
               onRequireSignIn={requireMessagingSignIn}
               onBrowseAsGuest={browseAsGuest}
-              onSignUp={openSignup}
-              onLogin={openLogin}
+              onSignIn={openAuth}
               onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
@@ -16609,8 +16588,7 @@ interface ChatSurfaceProps {
   onCreateConversation: (recipient: string, title: string) => void;
   onRequireSignIn: () => void;
   onBrowseAsGuest: () => void;
-  onSignUp: () => void;
-  onLogin: () => void;
+  onSignIn: () => void;
   onRefreshPublicStorefronts: () => void;
   onConversationPreference: (
     conversationId: string,
@@ -16702,8 +16680,7 @@ function ChatSurface({
   onCreateConversation,
   onRequireSignIn,
   onBrowseAsGuest,
-  onSignUp,
-  onLogin,
+  onSignIn,
   onRefreshPublicStorefronts,
   onConversationPreference,
   onEnableNotifications,
@@ -17166,11 +17143,8 @@ function ChatSurface({
                 ) : null}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
-                    <button type="button" onClick={onSignUp}>
-                      Sign up
-                    </button>
-                    <button className="secondary" type="button" onClick={onLogin}>
-                      Log in
+                    <button type="button" onClick={onSignIn}>
+                      Sign in
                     </button>
                     <button className="secondary" type="button" onClick={onBrowseAsGuest}>
                       Browse as guest

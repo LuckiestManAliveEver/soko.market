@@ -2025,6 +2025,56 @@ export class Cp2Store {
     return this.requireAnySession(session.id, now);
   }
 
+  continueWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const destination = normalizeDestination("phone", input.destination);
+    const pin = normalizePin(input.pin);
+    const attemptKey = `login:phone:${destination}`;
+    this.requirePinAttemptAllowed(attemptKey, now);
+    const accountId = this.accountByDestination.get(destinationAccountKey("phone", destination));
+
+    if (accountId === undefined) {
+      const session = this.signupWithPhonePin({ destination, pin, now });
+      return { ...session, isNewAccount: true };
+    }
+
+    const account = this.requireAccount(accountId);
+    const user = this.requireUser(this.userByAccount.get(account.id));
+    const pinHash = this.accountPinHashes.get(account.id);
+
+    if (pinHash === undefined) {
+      verifyPinHash("unknown-account", pin, dummyPinHash);
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw new Cp2Error(
+        401,
+        "pin_not_configured",
+        "This account signs in with a passkey or password. Use that, then set a PIN for faster sign-in next time."
+      );
+    }
+
+    if (!this.verifyStoredPin(account.id, pin, pinHash)) {
+      this.recordFailedPinAttempt(attemptKey, now);
+      throw invalidLoginCredentialsError();
+    }
+
+    this.failedPinAttempts.delete(attemptKey);
+    const session = this.createSession(account, user, now);
+    this.markSessionPinVerified(session.id, now);
+    this.recordAuditEvent({
+      type: "auth.pin_login",
+      aggregateType: "account",
+      aggregateId: account.id,
+      actorId: user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        channel: "phone",
+        destination
+      }
+    });
+
+    return { ...this.requireAnySession(session.id, now), isNewAccount: false };
+  }
+
   getAccountPinStatus(input: { sessionId: string | null; now?: Date }): { hasPin: boolean } {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
@@ -2916,6 +2966,38 @@ export class Cp2Store {
         now
       })
     };
+  }
+
+  updateOwnDisplayName(input: {
+    sessionId: string | null;
+    displayName: string;
+    now?: Date;
+  }): { user: UserSummary } {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const displayName = input.displayName.trim();
+
+    if (displayName.length < 2 || displayName.length > 100) {
+      throw new Cp2Error(
+        400,
+        "display_name_invalid",
+        "Enter a display name between 2 and 100 characters."
+      );
+    }
+
+    const current = this.requireUser(session.user.id);
+    const updated: UserSummary = { ...current, displayName };
+    this.users.set(updated.id, updated);
+    this.recordAuditEvent({
+      type: "user.display_name_updated",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+
+    return { user: updated };
   }
 
   listAccountShops(input: {
@@ -19622,7 +19704,9 @@ function documentImportSourceView(source: DocumentImportSourceRecord): DocumentI
 }
 
 function defaultDisplayName(destination: string): string {
-  return destination.includes("@") ? (destination.split("@")[0] ?? "Owner") : "Owner";
+  if (destination.includes("@")) return destination.split("@")[0] ?? "Owner";
+  const digits = destination.replace(/\D/gu, "");
+  return digits.length >= 4 ? `Trader ${digits.slice(-4)}` : "Owner";
 }
 
 function syncOriginCursor(accountId: string): string {

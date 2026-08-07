@@ -243,6 +243,7 @@ export interface AuthSessionView {
   account: AccountSummary;
   user: UserSummary;
   session: SessionSummary;
+  isNewAccount?: boolean;
 }
 
 export interface PasskeySummary {
