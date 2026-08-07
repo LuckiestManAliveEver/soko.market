@@ -528,13 +528,21 @@ describePostgres("CP2 Postgres store", () => {
 
       expect(afterUpdatedAt).toEqual(beforeUpdatedAt);
 
-      // Actually changing the product must still persist normally.
-      await app.inject({
+      // Actually changing the product must still persist normally. PATCH replaces the whole
+      // record (name is required by parseProductBody), not a partial merge.
+      const updateResponse = await app.inject({
         method: "PATCH",
         url: `/businesses/${business.id}/products/${product.id}`,
         headers: { ...jsonHeaders(), cookie: sessionCookie },
-        payload: JSON.stringify({ quantity: 6 })
+        payload: JSON.stringify({
+          name: "Untouched Rice",
+          quantity: 6,
+          unit: "kg",
+          buyingPrice: 90,
+          sellingPrice: 120
+        })
       });
+      expect(updateResponse.statusCode).toBe(200);
       await store.flush();
       const afterRealChangeUpdatedAt = await rowUpdatedAt(pool, "cp2_products", product.id);
       expect(afterRealChangeUpdatedAt).not.toEqual(beforeUpdatedAt);
@@ -557,7 +565,11 @@ describePostgres("CP2 Postgres store", () => {
     process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
     process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
     const store = await createPostgresCp2Store({ databaseUrl: connectionString });
-    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    // Deliberately not wiring mutationPersistenceFlush here: production requests do not block on
+    // persistence (see the Proxy at the bottom of postgres-store.ts), and this test needs the
+    // product-creation request itself to succeed while the triggered save fails in the background
+    // - that gap is exactly what the reverted-in-memory-state bug lived in.
+    const app = buildApi({ cp2: { store } });
     const pool = new Pool({ connectionString });
 
     try {
@@ -600,9 +612,11 @@ describePostgres("CP2 Postgres store", () => {
           "select 1 from cp2_products where entity_id = $1",
           [failingProduct.id]
         );
-        return result.rows.length > 0;
+        // Committed-and-visible-in-Postgres can momentarily lead clearing lastPersistenceError,
+        // since a few more in-process steps (unlock, snapshot bookkeeping) run after commit before
+        // the queue's success handler fires - wait for both, not just the row.
+        return result.rows.length > 0 && (await store.health()).persistenceError === null;
       });
-      expect((await store.health()).persistenceError).toBeNull();
     } finally {
       await pool
         .query("alter table cp2_products drop constraint if exists force_persistence_failure")

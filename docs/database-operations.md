@@ -135,12 +135,23 @@ DB_QUERY_TIMEOUT_MS=15000
 DB_STATEMENT_TIMEOUT_MS=15000
 DB_PERSISTENCE_QUEUE_WARN_MS=10000
 DB_SLOW_QUERY_MS=500
+DB_PERSISTENCE_RETRY_INITIAL_MS=2000
+DB_PERSISTENCE_RETRY_MAX_MS=60000
 ```
 
 Slow persistence operations are logged by the API when they exceed `DB_SLOW_QUERY_MS`.
 `GET /health/db` reports pending and queued persistence work, the active operation and its age,
 and the most recent queue wait/run durations. Database health becomes degraded when the oldest
 pending operation reaches `DB_PERSISTENCE_QUEUE_WARN_MS`.
+
+A failed persistence attempt does not revert application state; it retries automatically with
+exponential backoff starting at `DB_PERSISTENCE_RETRY_INITIAL_MS`, doubling up to
+`DB_PERSISTENCE_RETRY_MAX_MS`, until it succeeds. `GET /health/db`'s `persistenceError` field
+reports the most recent failure (`null` once a retry succeeds) - alert on it being non-null for an
+extended period, since that indicates Postgres has been unreachable long enough that in-memory and
+persisted state have diverged (see
+[`docs/single-instance-store-ceiling.md`](single-instance-store-ceiling.md) for what that means for
+a crash during the divergence window).
 
 ## Failover
 

@@ -76,6 +76,61 @@ async, which cascades through the auth-critical methods that call them
 real, scoped follow-up, but it touches security-critical code in a 20k-line file and deserves its
 own reviewed change, not a same-session addition alongside everything else in this pass.
 
+## Two more issues found and fixed in a later pass
+
+A review of database persistence and production readiness (separate from the single-instance
+question above) found two issues in `saveNormalizedSnapshot`/`enqueuePersistenceOperation` that
+were not previously documented anywhere. Both are fixed; neither required the multi-week rewrite
+described below.
+
+**Every mutation re-persisted every collection, not just the one that changed.** The Proxy at the
+bottom of `postgres-store.ts` calls `enqueueSave()` after *every* mutating method, and
+`saveNormalizedSnapshot` looped over all ~60 `normalizedCollections`, doing a full
+`select entity_id` scan plus a per-row `insert ... on conflict do update` for each one, every time
+- regardless of whether that collection had changed. A single product edit re-wrote every row in
+every collection. Fixed by passing the last successfully-persisted snapshot into
+`saveNormalizedSnapshot` and skipping `saveCollectionRecords` entirely for any collection whose
+serialized content is identical to last time (`collectionUnchanged`, `postgres-store.ts`). The
+comparison can only produce a false "changed" (falls back to the original behavior for that
+collection, which is safe by construction), never a false "unchanged," so it cannot skip work that
+was actually needed. `saveRelationalCoreRecords` (~20 hand-written table blocks, accounts/users/
+sessions/business_memberships/etc.) was deliberately **not** touched - applying the same technique
+there is a legitimate follow-up, but that function is exactly the kind of large,
+correctness-sensitive surface this document already argues against rewriting in one sitting.
+
+**A failed save reverted in-memory state for every tenant, not just the failing write.** On any
+persistence error, the old code called `store.hydrateSnapshot(lastPersistedSnapshot)` -
+unconditionally rolling the entire in-memory store back to the last successful save. A transient
+Postgres error (a dropped connection, a pool timeout) after a client had already received `200 OK`
+for, say, an invoice confirmation, could silently undo that confirmation - and every other tenant's
+mutations since the last successful save - moments later. The in-memory data was never actually
+invalid after an ordinary transient failure; discarding it was strictly worse than keeping it.
+Fixed: a failed save no longer reverts anything. It's recorded (`lastPersistenceError`, already
+surfaced via `health()`/`/health/db`) and a retry is scheduled with exponential backoff (capped,
+configurable via `DB_PERSISTENCE_RETRY_INITIAL_MS`/`DB_PERSISTENCE_RETRY_MAX_MS`). Because
+`enqueueSave` always takes a fresh `store.snapshot()` at run time, the retry naturally catches up
+everything accumulated since the failure, not just the operation that failed.
+
+Finding and fixing the second issue surfaced a real, pre-existing, unrelated bug: `ShopPresenceSummary`
+has no `id` field (it's keyed by `businessId`), but `recordEntityId`'s fallback case required one,
+so **every shop-presence update crashed with a 500 whenever the Postgres store persisted it** - which
+is what production runs. This had nothing to do with the two fixes above; it was found only because
+testing the failure/retry behavior required forcing a real save to fail, which surfaced how badly a
+save failure used to behave. Fixed with a one-line addition to `recordEntityId`'s special cases.
+
+All three fixes are covered by new tests in `tests/cp2-postgres-store.test.ts`, run against a real
+Postgres database (not mocked): "skips re-persisting a collection that has not changed since the
+last save," "does not discard in-memory mutations when a save fails, and recovers on its own," and
+"persists a shop presence update instead of failing (shopPresences has no id field)." The full
+existing Postgres-backed test suite (`cp2-postgres-store.test.ts`,
+`cp2-store-persistence.test.ts`, `postgres-persistence-boundary.test.ts`,
+`cp21-postgres-migration.test.ts`, `cp23-postgres-migration.test.ts`, `api-persistence-ack.test.ts`
+- 21 tests total) passes unmodified against the same database.
+
+None of this changes the single-instance/memory-bound conclusion above - it makes the existing
+single-instance store cheaper to run and safer under transient Postgres errors, not
+horizontally scalable.
+
 ## Why this isn't being rewritten in this pass
 
 - `store.ts` + `postgres-store.ts` together are ~24k lines, covering ~100 collections and ~150
