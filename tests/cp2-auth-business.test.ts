@@ -426,6 +426,50 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("rejects OTP sign-in for an email already attached to another account", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+
+    const start = await postJson<{ transactionId: string }>(app, "/auth/signup/start", {
+      type: "phone",
+      identifier: "+254700000051"
+    });
+    const completed = await app.inject({
+      method: "POST",
+      url: "/auth/signup/complete",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        transactionId: start.transactionId,
+        displayName: "Test User",
+        email: "owner@example.com",
+        termsAccepted: true,
+        privacyAccepted: true
+      })
+    });
+
+    expect(completed.statusCode).toBe(200);
+
+    const otpResponse = await postJson<OtpRequestResponse>(app, "/auth/otp/request", {
+      channel: "email",
+      destination: "owner@example.com"
+    });
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: "/auth/otp/verify",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        challengeId: otpResponse.challengeId,
+        code: otpResponse.devOtp
+      })
+    });
+
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({ code: "identity_in_use" });
+
+    await app.close();
+  });
+
   it("persists phone PIN hashes without a separate recovery credential", () => {
     const store = createCp2Store();
     store.signupWithPhonePin({

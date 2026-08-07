@@ -1477,7 +1477,7 @@ export class Cp2Store {
     const emailAccountId =
       normalizedEmail === null
         ? undefined
-        : this.accountByDestination.get(destinationAccountKey("email", normalizedEmail));
+        : this.resolveAnyIdentityAccount("email", normalizedEmail);
     const accountId =
       input.linkAccountId ??
       (linkedIdentityId === undefined
@@ -1487,6 +1487,10 @@ export class Cp2Store {
         ? undefined
         : this.userIdentities.get(emailIdentityId)?.accountId) ??
       emailAccountId;
+
+    if (normalizedEmail !== null && emailAccountId !== undefined && accountId !== emailAccountId) {
+      throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
+    }
     const primaryDestination =
       normalizedEmail ??
       `${input.provider}.${oauthEmailLocalPart(providerSubject)}@oauth.soko.local`;
@@ -1591,8 +1595,21 @@ export class Cp2Store {
       challenge.channel === "email"
         ? this.findIdentityByVerifiedEmail(challenge.destination)
         : undefined;
+    const existingIdentityAccountId = this.resolveAnyIdentityAccount(
+      challenge.channel,
+      challenge.destination
+    );
     const existingAccountId =
-      this.accountByDestination.get(destinationKey) ?? linkedIdentity?.accountId;
+      this.resolveIdentityAccount(challenge.channel, challenge.destination) ??
+      this.accountByDestination.get(destinationKey) ??
+      linkedIdentity?.accountId;
+
+    if (
+      existingIdentityAccountId !== undefined &&
+      existingIdentityAccountId !== existingAccountId
+    ) {
+      throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
+    }
 
     if (challenge.purpose === "recovery" && existingAccountId === undefined) {
       throw new Cp2Error(
@@ -12051,6 +12068,16 @@ export class Cp2Store {
         return mappedAccount;
     }
     return this.accountByDestination.get(destinationAccountKey(type, normalizedValue));
+  }
+
+  private resolveAnyIdentityAccount(
+    type: AuthChannel,
+    normalizedValue: string
+  ): string | undefined {
+    return (
+      this.identityAccountByValue.get(destinationAccountKey(type, normalizedValue)) ??
+      this.accountByDestination.get(destinationAccountKey(type, normalizedValue))
+    );
   }
 
   private requireAccountAuthenticationAllowed(account: AccountSummary): void {
