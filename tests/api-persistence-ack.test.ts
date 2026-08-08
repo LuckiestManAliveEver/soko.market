@@ -128,4 +128,34 @@ describe("API persistence acknowledgement barrier", () => {
     });
     await app.close();
   });
+
+  it("does not hold a login response open forever behind a stalled persistence queue", async () => {
+    process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS = "50";
+    try {
+      const store = createCp2Store();
+      const phone = "+254700200002";
+      store.signupWithPhonePin({ destination: phone, pin: "1234" });
+      // A flush that never settles models a stuck/backlogged persistence queue (see
+      // postgres-store.ts scheduleSaveRetry) - the response must not wait on it forever.
+      const app = buildApi({
+        cp2: { store },
+        mutationPersistenceFlush: () => new Promise<void>(() => {})
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/auth/pin/login",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.cookies.map((cookie) => cookie.name)).toEqual(
+        expect.arrayContaining(["soko_session", "soko_refresh"])
+      );
+      await app.close();
+    } finally {
+      delete process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS;
+    }
+  });
 });

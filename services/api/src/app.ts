@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import type { HealthResponse, RuntimeModelDiagnostic } from "@soko/shared-types";
@@ -123,8 +123,24 @@ export function buildApi(options: BuildApiOptions = {}) {
 
     persistenceBarrierRequests.add(request);
     try {
-      await options.mutationPersistenceFlush();
+      await withPersistenceFlushDeadline(options.mutationPersistenceFlush(), request);
     } catch (error) {
+      if (error instanceof PersistenceFlushDeadlineExceeded) {
+        // The write is still queued and will complete/retry in the background (see
+        // Cp2Store.flush()) - holding this response open until then would leave the caller's
+        // "Working..." state spinning for as long as the queue is backed up, with no bound. A
+        // request that already succeeded in memory should not wait forever on a best-effort
+        // durability sync.
+        request.log.warn(
+          {
+            event: "auth.persistence_flush_deadline_exceeded",
+            requestCorrelationId: request.id
+          },
+          "Persistence flush exceeded the response deadline; responding without waiting further."
+        );
+        return payload;
+      }
+
       const syncFailure = readAccountSyncFailure(error);
       if (syncFailure === null || reply.getHeader("set-cookie") === undefined) {
         throw error;
@@ -306,6 +322,50 @@ function readOAuthAllowedRedirectOrigins(fallback: string[]): string[] {
     .map((origin) => new URL(origin).origin);
 
   return origins.length > 0 ? [...new Set(origins)] : fallback;
+}
+
+class PersistenceFlushDeadlineExceeded extends Error {}
+
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+// Bounds how long a response can be held open waiting on the shared persistence queue
+// (Cp2Store.flush()). The queue's own retries are already timeout-bounded per attempt, but under
+// a sustained outage it keeps re-queueing (see postgres-store.ts scheduleSaveRetry), so a request
+// that lands behind a large backlog could otherwise wait indefinitely. This does not cancel the
+// underlying flush - it keeps running - it only stops this response from waiting on it forever.
+function withPersistenceFlushDeadline<T>(flush: Promise<T>, request: FastifyRequest): Promise<T> {
+  const deadlineMs = positiveIntegerFromEnv("PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS", 8_000);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new PersistenceFlushDeadlineExceeded());
+    }, deadlineMs);
+    timer.unref();
+    flush.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  }).catch((error) => {
+    if (error instanceof PersistenceFlushDeadlineExceeded) {
+      // Keep observing the original flush in the background so a later real failure is still
+      // logged (readAccountSyncFailure has already lost its chance to inform this response).
+      flush.catch((flushError) => {
+        request.log.error(
+          { event: "auth.persistence_flush_failed_after_deadline", error: flushError },
+          "Persistence flush failed after its response deadline had already elapsed."
+        );
+      });
+    }
+    throw error;
+  });
 }
 
 function readAccountSyncFailure(error: unknown): {

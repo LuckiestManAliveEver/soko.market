@@ -29,7 +29,31 @@ export type AuthenticationFailureCode =
 
 const refreshPath = "/auth/session/refresh";
 const deviceIdStorageKey = "soko.market.device-id.v1";
+const defaultRequestTimeoutMs = 20_000;
 let refreshInFlight: Promise<boolean> | null = null;
+
+// Every request (including login) must eventually settle so a caller's loading state can clear.
+// Without this, a request whose response never arrives - a stalled backend, a dropped connection -
+// leaves its awaiting promise pending forever and the UI stuck showing its busy state.
+function withRequestTimeout(externalSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException("The request took too long and was cancelled.", "TimeoutError"));
+  }, timeoutMs);
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+
+  if (externalSignal !== undefined) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      externalSignal.addEventListener("abort", () => controller.abort(externalSignal.reason), {
+        once: true
+      });
+    }
+  }
+
+  return controller.signal;
+}
 
 export function isRetryableApiRequestError(error: unknown): boolean {
   return (
@@ -105,7 +129,7 @@ export async function refreshAccountSession(
         method: "POST",
         credentials: "include",
         headers: { ...deviceSessionHeaders(), "x-request-id": createRequestId() },
-        ...(signal === undefined ? {} : { signal })
+        signal: withRequestTimeout(signal, defaultRequestTimeoutMs)
       });
       recordApiRequest("POST", `${baseUrl}${refreshPath}`, startedAt, response.status);
       return response.ok;
@@ -144,7 +168,7 @@ async function performFetch(
     const response = await fetch(url, {
       method,
       credentials: "include",
-      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      signal: withRequestTimeout(options?.signal, defaultRequestTimeoutMs),
       headers,
       ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) })
     });
