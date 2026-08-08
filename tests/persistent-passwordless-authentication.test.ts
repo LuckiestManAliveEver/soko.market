@@ -267,8 +267,10 @@ describe("persistent passwordless authentication", () => {
     expect(frontend).not.toContain('"/auth/signup/verify-phone"');
     expect(frontend).not.toContain('"verify-phone"');
     expect(frontend).toContain(" fallback (optional)");
-    expect(frontend).toContain("Create passkey");
-    expect(frontend).toContain("Skip for now");
+    // Sign up is a two-step phone/email/store-id + PIN flow (matching a native messaging app's
+    // login) - no third "add a passkey" nudge screen blocks getting into the app.
+    expect(frontend).not.toContain("Create passkey");
+    expect(frontend).not.toContain("Skip for now");
   });
 
   it("fails closed on unsafe production cookie and session configuration", () => {

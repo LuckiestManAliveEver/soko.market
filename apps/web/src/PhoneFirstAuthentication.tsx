@@ -1,9 +1,5 @@
 import { useState } from "react";
-import {
-  browserSupportsWebAuthn,
-  startAuthentication,
-  startRegistration
-} from "@simplewebauthn/browser";
+import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
 import type { AuthSessionView } from "@soko/shared-types";
 import { normalizePhoneInput, phoneNormalizationErrorMessage } from "@soko/shared-types";
 import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
@@ -12,18 +8,8 @@ import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
-type Stage =
-  | "entry"
-  | "pin"
-  | "name"
-  | "secure"
-  | "password"
-  | "mfa"
-  | "recovery-code"
-  | "reset-pin"
-  | "reset-password";
+type Stage = "entry" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
 type IdentifierType = "phone" | "email" | "store";
-type SecureOffer = "passkey" | "pin";
 
 interface Props {
   onAuthenticated: (session: AuthSessionView) => void;
@@ -41,9 +27,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [legacyPin, setLegacyPin] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [createdSession, setCreatedSession] = useState<AuthSessionView | null>(null);
-  const [secureOffer, setSecureOffer] = useState<SecureOffer>("passkey");
+  const [recoveryMfaCode, setRecoveryMfaCode] = useState("");
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
@@ -114,44 +98,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
               }
       }
     );
-    if (result.isNewAccount) {
-      setCreatedSession(result);
-      setDisplayName(result.user.displayName);
-      setStage("name");
-      setMessage("Welcome! What should we call you?");
-      return;
-    }
     onAuthenticated(result);
-  }
-
-  async function submitDisplayName() {
-    if (!createdSession) return;
-    const result = await apiFetch<{ user: AuthSessionView["user"] }>("/account/display-name", {
-      method: "PUT",
-      body: { displayName: displayName.trim() }
-    });
-    setCreatedSession({ ...createdSession, user: result.user });
-    setSecureOffer("passkey");
-    setStage("secure");
-    setMessage("Add a passkey for secure passwordless return access, or skip for now.");
-  }
-
-  async function afterAlternateAuthentication(session: AuthSessionView) {
-    try {
-      const status = await apiFetch<{ hasPin: boolean }>("/auth/pin/status");
-      if (!status.hasPin) {
-        setCreatedSession(session);
-        setSecureOffer("pin");
-        setPassword("");
-        setPasswordConfirmation("");
-        setStage("secure");
-        setMessage("Set a 4-digit PIN so next time you can sign in even faster.");
-        return;
-      }
-    } catch {
-      // The nudge is best-effort only; fall through to the authenticated state either way.
-    }
-    onAuthenticated(session);
   }
 
   async function login() {
@@ -182,7 +129,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
       setCode("");
       setMessage("Enter your second factor.");
     } else {
-      await afterAlternateAuthentication(result as AuthSessionView);
+      onAuthenticated(result as AuthSessionView);
     }
   }
 
@@ -191,15 +138,37 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
       method: "POST",
       body: { transactionId, factor: mfaFactor, code }
     });
-    await afterAlternateAuthentication(session);
+    onAuthenticated(session);
   }
 
+  // Step 1 of recovery: prove identity. Phone accounts have no SMS channel, so identity is
+  // proven with a passkey right here, before anything about a new credential is asked - the same
+  // "authenticate first" order a phone's biometric unlock uses. Email/store accounts prove
+  // identity with an emailed code instead, entered together with the new password in step 2.
   async function startRecovery() {
     if (identifierType === "phone") {
+      if (!browserSupportsWebAuthn()) {
+        setMessage(
+          "Passkey recovery isn't available in this browser. Try Chrome, Safari, or Edge, or contact support."
+        );
+        return;
+      }
+      const challenge = await apiFetch<{
+        ceremonyId: string;
+        options: Parameters<typeof startAuthentication>[0]["optionsJSON"];
+      }>("/auth/passkeys/login/options", {
+        method: "POST",
+        body: { purpose: "pin_recovery" }
+      });
+      const response = await startAuthentication({ optionsJSON: challenge.options });
+      await apiFetch<AuthSessionView>("/auth/passkeys/login/verify", {
+        method: "POST",
+        body: { ceremonyId: challenge.ceremonyId, response }
+      });
       setPassword("");
       setPasswordConfirmation("");
       setStage("reset-pin");
-      setMessage("Choose a new PIN, then verify your phone passkey to authorize the reset.");
+      setMessage("Identity verified. Choose a new PIN.");
       return;
     }
     const result = await apiFetch<{
@@ -212,46 +181,36 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
     });
     setTransactionId(result.transactionId);
     setCode(result.developmentCode ?? "");
-    setStage("recovery-code");
+    setPassword("");
+    setPasswordConfirmation("");
+    setRecoveryMfaCode("");
+    setStage("recovery-reset");
     setMessage(result.message);
   }
 
-  async function verifyRecovery() {
+  // Step 2 of recovery for email/store accounts: verify the emailed code and set the new
+  // password in one action, instead of two separate screens.
+  async function verifyAndResetPassword() {
     await apiFetch("/auth/recovery/verify", { method: "POST", body: { transactionId, code } });
-    setCode("");
-    setStage("reset-password");
-    setMessage("Identity verified. Choose a new password.");
-  }
-
-  async function resetPassword() {
     const session = await apiFetch<AuthSessionView>("/auth/recovery/reset-password", {
       method: "POST",
-      body: { transactionId, password, passwordConfirmation, ...(code ? { mfaCode: code } : {}) }
+      body: {
+        transactionId,
+        password,
+        passwordConfirmation,
+        ...(recoveryMfaCode ? { mfaCode: recoveryMfaCode } : {})
+      }
     });
     onAuthenticated(session);
   }
 
-  async function resetPinWithPasskey() {
+  // Step 2 of recovery for phone accounts: identity was already proven by the passkey in
+  // startRecovery, so this only sets the new PIN.
+  async function finishPinRecovery() {
     if (!/^\d{4}$/u.test(password) || password !== passwordConfirmation) {
       setMessage("Enter and confirm a new 4-digit PIN.");
       return;
     }
-    if (!browserSupportsWebAuthn()) {
-      setMessage("Passkeys are unavailable in this browser.");
-      return;
-    }
-    const challenge = await apiFetch<{
-      ceremonyId: string;
-      options: Parameters<typeof startAuthentication>[0]["optionsJSON"];
-    }>("/auth/passkeys/login/options", {
-      method: "POST",
-      body: { purpose: "pin_recovery" }
-    });
-    const response = await startAuthentication({ optionsJSON: challenge.options });
-    await apiFetch<AuthSessionView>("/auth/passkeys/login/verify", {
-      method: "POST",
-      body: { ceremonyId: challenge.ceremonyId, response }
-    });
     const session = await apiFetch<AuthSessionView>("/auth/pin/recover/passkey", {
       method: "POST",
       body: { pin: password }
@@ -273,31 +232,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
       method: "POST",
       body: { ceremonyId: challenge.ceremonyId, response }
     });
-    await afterAlternateAuthentication(session);
-  }
-
-  async function createPasskey() {
-    if (!createdSession) return;
-    if (!browserSupportsWebAuthn()) {
-      setMessage("Passkeys are unavailable in this browser. You can add one later in Security.");
-      return;
-    }
-    const challenge = await apiFetch<{
-      ceremonyId: string;
-      options: Parameters<typeof startRegistration>[0]["optionsJSON"];
-    }>("/auth/passkeys/register/options", { method: "POST", body: {} });
-    const response = await startRegistration({ optionsJSON: challenge.options });
-    await apiFetch("/auth/passkeys/register/verify", {
-      method: "POST",
-      body: { ceremonyId: challenge.ceremonyId, label: "Signup device", response }
-    });
-    onAuthenticated(createdSession);
-  }
-
-  async function setupPin() {
-    if (!createdSession) return;
-    await apiFetch("/auth/pin/setup", { method: "POST", body: { pin: password } });
-    onAuthenticated(createdSession);
+    onAuthenticated(session);
   }
 
   return (
@@ -454,8 +389,9 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
             ) : null}
           </>
         ) : null}
-        {stage === "recovery-code" ? (
+        {stage === "recovery-reset" ? (
           <>
+            <h2>Verify and choose a new password</h2>
             <label>
               Verification code
               <input
@@ -465,123 +401,6 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 onChange={(event) => setCode(event.target.value)}
               />
             </label>
-            <button
-              type="button"
-              disabled={busy || !code.trim()}
-              aria-busy={busy}
-              onClick={() => void run(verifyRecovery)}
-            >
-              {busy ? "Verifying…" : "Verify"}
-            </button>
-          </>
-        ) : null}
-        {stage === "name" ? (
-          <>
-            <h2>What should we call you?</h2>
-            <label>
-              Display name
-              <input
-                autoComplete="name"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              disabled={busy || !displayName.trim()}
-              aria-busy={busy}
-              onClick={() => void run(submitDisplayName)}
-            >
-              {busy ? "Saving…" : "Continue"}
-            </button>
-          </>
-        ) : null}
-        {stage === "secure" && createdSession ? (
-          <>
-            <h2>Make return access effortless</h2>
-            {secureOffer === "passkey" ? (
-              <>
-                <p>
-                  Create a passkey for this device. It works with your device unlock and provides
-                  passwordless return access.
-                </p>
-                <button type="button" disabled={busy} onClick={() => void run(createPasskey)}>
-                  Create passkey
-                </button>
-              </>
-            ) : (
-              <>
-                <p>Choose a 4-digit PIN so your next sign-in is even faster.</p>
-                <label>
-                  New PIN
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    autoComplete="new-password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value.replace(/\D/gu, ""))}
-                  />
-                </label>
-                <label>
-                  Confirm new PIN
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    autoComplete="new-password"
-                    value={passwordConfirmation}
-                    onChange={(event) =>
-                      setPasswordConfirmation(event.target.value.replace(/\D/gu, ""))
-                    }
-                  />
-                </label>
-                <button
-                  type="button"
-                  disabled={busy || !/^\d{4}$/u.test(password) || password !== passwordConfirmation}
-                  onClick={() => void run(setupPin)}
-                >
-                  Set PIN
-                </button>
-              </>
-            )}
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={() => onAuthenticated(createdSession)}
-            >
-              Skip for now
-            </button>
-          </>
-        ) : null}
-        {stage === "mfa" ? (
-          <>
-            <label>
-              Second factor
-              <select
-                value={mfaFactor}
-                onChange={(event) => setMfaFactor(event.target.value as typeof mfaFactor)}
-              >
-                <option value="totp">Authenticator app</option>
-                <option value="recovery_code">Recovery code</option>
-              </select>
-            </label>
-            <label>
-              Code
-              <input
-                autoComplete="one-time-code"
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
-              />
-            </label>
-            <button type="button" disabled={busy || !code} onClick={() => void run(verifyMfa)}>
-              Verify and sign in
-            </button>
-          </>
-        ) : null}
-        {stage === "reset-password" ? (
-          <>
             <PasswordFields
               password={password}
               confirmation={passwordConfirmation}
@@ -592,23 +411,26 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
               MFA code (if enabled)
               <input
                 autoComplete="one-time-code"
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
+                value={recoveryMfaCode}
+                onChange={(event) => setRecoveryMfaCode(event.target.value)}
               />
             </label>
             <button
               type="button"
-              disabled={busy || password.length < 10 || password !== passwordConfirmation}
-              onClick={() => void run(resetPassword)}
+              disabled={
+                busy || !code.trim() || password.length < 10 || password !== passwordConfirmation
+              }
+              aria-busy={busy}
+              onClick={() => void run(verifyAndResetPassword)}
             >
-              Reset password
+              {busy ? "Working…" : "Reset password"}
             </button>
           </>
         ) : null}
         {stage === "reset-pin" ? (
           <>
-            <h2>Reset legacy PIN</h2>
-            <p>Your phone passkey will verify your identity before the PIN is changed.</p>
+            <h2>Choose a new PIN</h2>
+            <p>Your identity is verified. Set the PIN you will sign in with from now on.</p>
             <label>
               New 4-digit PIN
               <input
@@ -636,9 +458,35 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
             <button
               type="button"
               disabled={busy || !/^\d{4}$/u.test(password) || password !== passwordConfirmation}
-              onClick={() => void run(resetPinWithPasskey)}
+              aria-busy={busy}
+              onClick={() => void run(finishPinRecovery)}
             >
-              Verify passkey and reset PIN
+              {busy ? "Working…" : "Save new PIN"}
+            </button>
+          </>
+        ) : null}
+        {stage === "mfa" ? (
+          <>
+            <label>
+              Second factor
+              <select
+                value={mfaFactor}
+                onChange={(event) => setMfaFactor(event.target.value as typeof mfaFactor)}
+              >
+                <option value="totp">Authenticator app</option>
+                <option value="recovery_code">Recovery code</option>
+              </select>
+            </label>
+            <label>
+              Code
+              <input
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+              />
+            </label>
+            <button type="button" disabled={busy || !code} onClick={() => void run(verifyMfa)}>
+              Verify and sign in
             </button>
           </>
         ) : null}

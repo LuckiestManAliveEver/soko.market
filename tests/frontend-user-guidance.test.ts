@@ -215,7 +215,7 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('"/auth/recovery/verify"');
     expect(phoneFirst).toContain('"/auth/recovery/reset-password"');
     expect(phoneFirst).toContain("Use a passkey");
-    expect(phoneFirst).toContain("Verify passkey and reset PIN");
+    expect(phoneFirst).toContain("Save new PIN");
     expect(phoneFirst).toContain('"/auth/pin/recover/passkey"');
     expect(phoneFirst).toContain('purpose: "pin_recovery"');
     expect(phoneFirst).not.toContain("Phone account recovery code");
