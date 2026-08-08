@@ -34,6 +34,7 @@ const { Pool } = requireApiDependency("pg") as {
 interface CreateBusinessResponse {
   business: {
     id: string;
+    sokoId: string;
   };
 }
 
@@ -299,6 +300,63 @@ describePostgres("CP2 Postgres store", () => {
 
     await restoredApp.close();
     await restoredStore.close();
+  }, 20_000);
+
+  // Regression test: continueWithChannelPin and loginWithSokoIdPin back the endpoints the actual
+  // product frontend calls for every sign up and log in (PhoneFirstAuthentication.tsx) - unlike
+  // the /auth/pin/signup fixture other tests in this file use to bootstrap accounts. Both were
+  // missing from postgres-store.ts's mutatingMethodNames allowlist, so calling them through the
+  // Postgres proxy never queued a save on its own. In production this gap is masked on the HTTP
+  // path because every auth route also calls setAuthSessionCookies -> store.prepareDeviceSession
+  // (already allowlisted) right after, and a save is always a full store.snapshot(), so that
+  // incidental call sweeps the account/session in too - which is exactly why this needs a store-
+  // level test that calls the store directly and skips that side effect, rather than a route-level
+  // test through app.inject(), to actually exercise the gap the allowlist entry closes.
+  it("queues a Postgres save for continueWithChannelPin and loginWithSokoIdPin on their own", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const suffix = Date.now().toString().slice(-7);
+    const phone = `+25470${suffix}`;
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const pool = new Pool({ connectionString });
+
+    try {
+      const signup = store.continueWithChannelPin({ channel: "phone", destination: phone, pin: "7421" });
+      expect(signup.isNewAccount).toBe(true);
+
+      await store.flush();
+      const accountRow = await pool.query("select id from accounts where id = $1", [
+        signup.account.id
+      ]);
+      expect(accountRow.rows).toHaveLength(1);
+
+      const login = store.continueWithChannelPin({ channel: "phone", destination: phone, pin: "7421" });
+      expect(login.isNewAccount).toBe(false);
+
+      await store.flush();
+      const loginSessionRow = await pool.query("select id from sessions where id = $1", [
+        login.session.id
+      ]);
+      expect(loginSessionRow.rows).toHaveLength(1);
+
+      const business = store.createBusiness({
+        sessionId: login.session.id,
+        name: "Continue Flow Shop",
+        language: "en"
+      });
+      await store.flush();
+
+      const storeLogin = store.loginWithSokoIdPin({ sokoId: business.business.sokoId, pin: "7421" });
+
+      await store.flush();
+      const storeLoginSessionRow = await pool.query("select id from sessions where id = $1", [
+        storeLogin.session.id
+      ]);
+      expect(storeLoginSessionRow.rows).toHaveLength(1);
+    } finally {
+      await pool.end();
+      await store.close();
+    }
   }, 20_000);
 
   it("completes phone PIN login with canonical, non-duplicated sync rows", async () => {
