@@ -22,6 +22,7 @@ import {
 } from "@soko/tool-core";
 import { Surface } from "@soko/ui";
 import type {
+  AccountShopSummary,
   AgentContextSource,
   AgentEvaluationPolicy,
   AgentEvaluationSummary,
@@ -57,6 +58,7 @@ import type {
   McpAccessScope,
   McpAccessTokenCreated,
   McpAccessTokenSummary,
+  MessageDeliveryAttemptSummary,
   NetworkInviteSummary,
   PasskeySummary,
   ProductFieldDefinition,
@@ -65,6 +67,8 @@ import type {
   PublicCustomerCareRequestSummary,
   PublicOrderSummary,
   PublicStorefrontMessageSummary,
+  SokoChatSurface,
+  SokoSessionContext,
   SyncMutationPayload,
   SyncMutationType
 } from "@soko/shared-types";
@@ -2131,6 +2135,7 @@ export function OwnerApp() {
   const initialCountryCode: CountryDialCode =
     initialOwnerAuth?.countryCode ?? initialSetupDraft?.countryCode ?? "+254";
   const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
+  const [sokoSessionContext, setSokoSessionContext] = useState<SokoSessionContext | null>(null);
   const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
     initialCachedSession === null ? "initializing" : "offline-authenticated"
   );
@@ -2204,6 +2209,7 @@ export function OwnerApp() {
     createDefaultProductFieldDefinitions()
   );
   const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
+  const [purchaseReceipts, setPurchaseReceipts] = useState<PurchaseReceiptSummary[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
@@ -2388,6 +2394,15 @@ export function OwnerApp() {
   useEffect(() => {
     setConnectivityAuthentication(session !== null);
   }, [session]);
+
+  useEffect(() => {
+    if (session === null) {
+      setSokoSessionContext(null);
+      return;
+    }
+    void loadSokoSessionContext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.account.id]);
 
   useEffect(() => {
     if (authBootstrapPending) return;
@@ -2889,7 +2904,7 @@ export function OwnerApp() {
       }
 
       if (view === "suppliers") {
-        refreshes.push(loadSuppliers(businessId));
+        refreshes.push(loadSuppliers(businessId), loadPurchaseReceipts(businessId));
       }
 
       if (view === "customers") {
@@ -3322,6 +3337,60 @@ export function OwnerApp() {
     setStatusMessage("Account restored. Shop access is active again.");
   }
 
+  // Server-authoritative record of which shop/mode/conversation this account was last active in,
+  // used to (a) list every shop the account belongs to for the shop switcher and (b) let a fresh
+  // device pick up where another device left off. Best-effort: local state (localStorage) remains
+  // authoritative and the app works the same if this never loads.
+  async function loadSokoSessionContext() {
+    try {
+      const context = await getJson<SokoSessionContext>("/v1/session/context");
+      setSokoSessionContext(context);
+      if (business === null && context.shops.length > 0) {
+        const activeShop =
+          context.shops.find((shop) => shop.business.id === context.activeShopId) ??
+          context.shops[0]!;
+        switchActiveBusiness(activeShop, { announce: false });
+      }
+    } catch {
+      // Session context sync is an enhancement, not a requirement - ignore failures.
+    }
+  }
+
+  async function patchSokoSessionContext(patch: {
+    mode?: SokoMode;
+    activeShopId?: string | null;
+    activeSurface?: SokoChatSurface;
+    conversationId?: string;
+  }) {
+    if (sokoSessionContext === null) return;
+    try {
+      const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
+        ...patch,
+        expectedSessionVersion: sokoSessionContext.sessionVersion
+      });
+      setSokoSessionContext(updated);
+    } catch {
+      // Best-effort background sync - a stale sessionVersion or offline device should not block
+      // switching shops locally.
+    }
+  }
+
+  function switchActiveBusiness(shop: AccountShopSummary, options?: { announce?: boolean }) {
+    const nextBusiness: ActiveBusiness = { ...shop.business, role: shop.membership.role };
+    const nextAgent = createDefaultAgent(nextBusiness);
+    setBusiness(nextBusiness);
+    setAgentSettings(nextAgent);
+    setMode("seller");
+    setView("chat");
+    localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
+    localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
+    navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
+    if (options?.announce !== false) {
+      setStatusMessage(`Switched to ${nextBusiness.name}.`);
+    }
+    void patchSokoSessionContext({ activeShopId: nextBusiness.id, mode: "seller" });
+  }
+
   async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
     if (session === null) {
       setStatusMessage("Your session has expired. Sign in again.");
@@ -3663,6 +3732,21 @@ export function OwnerApp() {
         await getJson<SupplierBusinessCardSummary[]>(
           `/businesses/${businessId}/suppliers`,
           setSuppliers
+        )
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  // Business-wide purchase history across every supplier, distinct from the per-supplier receipts
+  // already embedded in SupplierBusinessCardSummary - this is the flat ledger view.
+  async function loadPurchaseReceipts(businessId: string) {
+    try {
+      setPurchaseReceipts(
+        await getJson<PurchaseReceiptSummary[]>(
+          `/businesses/${businessId}/purchase-receipts`,
+          setPurchaseReceipts
         )
       );
     } catch (error) {
@@ -5088,6 +5172,7 @@ export function OwnerApp() {
             : "Marketplace mode restored. Tell me what you want to find, or explore a storefront below."
       }
     ]);
+    void patchSokoSessionContext({ mode: nextMode });
   }
 
   function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
@@ -6920,6 +7005,7 @@ export function OwnerApp() {
         return (
           <SupplierSurface
             suppliers={suppliers}
+            purchaseReceipts={purchaseReceipts}
             form={supplierForm}
             onFormChange={setSupplierForm}
             onSave={() => void runAction("supplier-save", saveSupplier)}
@@ -7410,6 +7496,8 @@ export function OwnerApp() {
             ownerLabel={userLabel}
             ownerUser={session?.user ?? null}
             storefrontUrl={publicStorefrontUrl}
+            shops={sokoSessionContext?.shops ?? []}
+            onSwitchBusiness={switchActiveBusiness}
             onAgentChange={setAgentSettings}
             onOwnerUserChange={(user) =>
               setSession((current) => (current === null ? current : { ...current, user }))
@@ -10381,6 +10469,7 @@ function CustomerSurface(props: CustomerSurfaceProps) {
 
 interface SupplierSurfaceProps {
   suppliers: SupplierBusinessCardSummary[];
+  purchaseReceipts: PurchaseReceiptSummary[];
   form: SupplierFormState;
   onFormChange: (form: SupplierFormState) => void;
   onSave: () => void;
@@ -10833,6 +10922,30 @@ function SupplierSurface(props: SupplierSurfaceProps) {
               </article>
             )
           )
+        )}
+      </section>
+
+      <section className="record-list" aria-label="All purchase receipts">
+        <div className="section-heading">
+          <p className="eyebrow">Purchase history</p>
+          <h3>All purchase receipts</h3>
+        </div>
+        {props.purchaseReceipts.length === 0 ? (
+          <div className="empty-record">
+            <h3>No purchase receipts yet</h3>
+            <p>Receipts confirmed from OCR uploads across every supplier appear here.</p>
+          </div>
+        ) : (
+          props.purchaseReceipts.map((receipt) => (
+            <article className="mini-card" key={receipt.id}>
+              <strong>{new Date(receipt.receiptDate).toLocaleDateString()}</strong>
+              <span>{receipt.supplierName}</span>
+              <span>{formatMoney(receipt.total)}</span>
+              <small>{receipt.salesAgentName ?? "No sales agent"}</small>
+              <small>{receipt.lineItems.length} line item(s)</small>
+              <small>Image stored: {receipt.imageStored ? "Yes" : "No"}</small>
+            </article>
+          ))
         )}
       </section>
     </div>
@@ -12121,6 +12234,8 @@ interface AgentProfileSurfaceProps {
   ownerLabel: string;
   ownerUser: SessionResponse["user"] | null;
   storefrontUrl: string;
+  shops: AccountShopSummary[];
+  onSwitchBusiness: (shop: AccountShopSummary) => void;
   onAgentChange: (agent: AgentSettings) => void;
   onOwnerUserChange: (user: SessionResponse["user"]) => void;
   onBack: () => void;
@@ -12145,6 +12260,8 @@ function AgentProfileSurface({
   ownerLabel,
   ownerUser,
   storefrontUrl,
+  shops,
+  onSwitchBusiness,
   onAgentChange,
   onOwnerUserChange,
   onBack,
@@ -12178,6 +12295,13 @@ function AgentProfileSurface({
   } | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
+  const [changePasswordCurrent, setChangePasswordCurrent] = useState("");
+  const [changePasswordNew, setChangePasswordNew] = useState("");
+  const [changePasswordConfirm, setChangePasswordConfirm] = useState("");
+  const [changePasswordMfaCode, setChangePasswordMfaCode] = useState("");
+  const [businessSocialAccounts, setBusinessSocialAccounts] = useState<
+    ConnectedSocialAccountSummary[]
+  >([]);
   const [deviceSessions, setDeviceSessions] = useState<DeviceSessionSummary[]>([]);
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
   const [mcpTokenName, setMcpTokenName] = useState("My integration");
@@ -12320,6 +12444,7 @@ function AgentProfileSurface({
   useEffect(() => {
     setInferencePreferences(readClientInferencePreferences(accountId, business.id));
     void loadConnectedSocialAccounts();
+    void loadBusinessSocialAccounts();
     void loadPasskeys();
     void loadMfaFactors();
     void loadDeviceSessions();
@@ -13412,6 +13537,32 @@ function AgentProfileSurface({
     }
   }
 
+  // Same account identities as loadConnectedSocialAccounts, gated by business:read on this shop
+  // instead of plain session ownership - useful for a staff member with shop access who needs to
+  // confirm which login methods are attached to the account without leaving the shop context.
+  async function loadBusinessSocialAccounts() {
+    try {
+      const response = await getJson<ConnectedSocialAccountsResponse>(
+        `/businesses/${business.id}/social-accounts`
+      );
+      setBusinessSocialAccounts(response.accounts);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function disconnectBusinessSocialAccount(identityId: string) {
+    try {
+      await deleteJson<{ disconnected: true; identityId: string }>(
+        `/businesses/${business.id}/social-accounts/${encodeURIComponent(identityId)}`
+      );
+      await loadBusinessSocialAccounts();
+      setProfileMessage("Social account disconnected.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
   async function loadPasskeys() {
     if (!browserSupportsWebAuthn()) {
       setPasskeys([]);
@@ -13479,6 +13630,19 @@ function AgentProfileSurface({
       setMfaCode("");
       await loadMfaFactors();
       setProfileMessage("MFA disabled.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function regenerateMfaRecoveryCodes() {
+    try {
+      const result = await postJson<{ recoveryCodes: string[] }>(
+        "/auth/mfa/recovery-codes/regenerate",
+        {}
+      );
+      setMfaRecoveryCodes(result.recoveryCodes);
+      setProfileMessage("New recovery codes generated. Save them - the old codes no longer work.");
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -13643,6 +13807,35 @@ function AgentProfileSurface({
       );
       await loadConnectedSocialAccounts();
       setProfileMessage("Social account disconnected.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function changeAccountPassword() {
+    if (changePasswordNew !== changePasswordConfirm) {
+      setProfileMessage("New password and confirmation do not match.");
+      return;
+    }
+    try {
+      const result = await postJson<{ changed: true; revokedSessions: number }>(
+        "/auth/password/change",
+        {
+          currentPassword: changePasswordCurrent,
+          password: changePasswordNew,
+          passwordConfirmation: changePasswordConfirm,
+          ...(changePasswordMfaCode.trim() ? { mfaCode: changePasswordMfaCode.trim() } : {})
+        }
+      );
+      setChangePasswordCurrent("");
+      setChangePasswordNew("");
+      setChangePasswordConfirm("");
+      setChangePasswordMfaCode("");
+      setProfileMessage(
+        result.revokedSessions > 0
+          ? `Password changed. ${result.revokedSessions} other device session(s) were signed out.`
+          : "Password changed."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -14052,6 +14245,33 @@ function AgentProfileSurface({
           )}
         </div>
       </section>
+
+      {shops.length > 1 ? (
+        <section className="record-form" aria-label="Your shops">
+          <div className="section-heading">
+            <p className="eyebrow">Account</p>
+            <h3>Your shops</h3>
+          </div>
+          <div className="connected-social-list" role="list">
+            {shops.map((shop) => (
+              <article className="connected-social-card" role="listitem" key={shop.business.id}>
+                <div>
+                  <span>{shop.business.sokoId}</span>
+                  <strong>{shop.business.name}</strong>
+                  <p>{shop.membership.role}</p>
+                </div>
+                {shop.business.id === business.id ? (
+                  <span className="shell-note">Current shop</span>
+                ) : (
+                  <button type="button" onClick={() => onSwitchBusiness(shop)}>
+                    Switch to this shop
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="agent-settings-grid">
         <div className="record-form">
@@ -15720,6 +15940,81 @@ function AgentProfileSurface({
                 <pre>{mfaRecoveryCodes.join("\n")}</pre>
               </div>
             ) : null}
+            {mfaFactors.length > 0 ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={pendingProfileAction !== null}
+                onClick={() =>
+                  void runProfileAction("mfa-recovery-codes-regenerate", regenerateMfaRecoveryCodes)
+                }
+              >
+                Regenerate recovery codes
+              </button>
+            ) : null}
+          </div>
+          <div className="record-form" role="group" aria-label="Change password">
+            <div className="section-heading">
+              <p className="eyebrow">Password fallback</p>
+              <h4>Change password</h4>
+              <p>Only applies if this account has a password set. PIN and passkey sign-in are unaffected.</p>
+            </div>
+            <label>
+              Current password
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={changePasswordCurrent}
+                onChange={(event) => setChangePasswordCurrent(event.target.value)}
+              />
+            </label>
+            <label>
+              New password
+              <input
+                type="password"
+                minLength={10}
+                maxLength={256}
+                autoComplete="new-password"
+                value={changePasswordNew}
+                onChange={(event) => setChangePasswordNew(event.target.value)}
+              />
+            </label>
+            <label>
+              Confirm new password
+              <input
+                type="password"
+                minLength={10}
+                maxLength={256}
+                autoComplete="new-password"
+                value={changePasswordConfirm}
+                onChange={(event) => setChangePasswordConfirm(event.target.value)}
+              />
+            </label>
+            <label>
+              MFA code (if enabled)
+              <input
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={changePasswordMfaCode}
+                onChange={(event) =>
+                  setChangePasswordMfaCode(event.target.value.replace(/\D/gu, ""))
+                }
+              />
+            </label>
+            <button
+              type="button"
+              disabled={
+                pendingProfileAction !== null ||
+                changePasswordCurrent.length === 0 ||
+                changePasswordNew.length < 10 ||
+                changePasswordNew !== changePasswordConfirm
+              }
+              aria-busy={pendingProfileAction === "password-change"}
+              onClick={() => void runProfileAction("password-change", changeAccountPassword)}
+            >
+              {pendingProfileAction === "password-change" ? "Saving…" : "Change password"}
+            </button>
           </div>
           <div className="connected-social-list">
             {oauthProviders
@@ -15791,6 +16086,46 @@ function AgentProfileSurface({
                   </article>
                 );
               })}
+          </div>
+          <div className="section-heading">
+            <p className="eyebrow">{business.name}</p>
+            <h4>Login methods visible to this shop</h4>
+            <p>
+              The same login accounts above, shown through this shop's access rather than your
+              personal session - useful when checking access from a shop-scoped view.
+            </p>
+          </div>
+          <div className="connected-social-list" role="list" aria-label="Shop-scoped login accounts">
+            {businessSocialAccounts.length === 0 ? (
+              <p className="form-hint">No connected login accounts for this shop yet.</p>
+            ) : (
+              businessSocialAccounts.map((account) => (
+                <article className="connected-social-card" role="listitem" key={account.id}>
+                  <div>
+                    <span>{account.providerName}</span>
+                    <strong>{account.displayName ?? account.email ?? "Connected"}</strong>
+                  </div>
+                  <div className="connected-social-meta">
+                    <span>Connected: {formatDate(account.connectedAt)}</span>
+                    <span>
+                      Last used: {account.lastUsedAt === null ? "—" : formatDate(account.lastUsedAt)}
+                    </span>
+                  </div>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null}
+                    onClick={() =>
+                      void runProfileAction("business-account-disconnect", () =>
+                        disconnectBusinessSocialAccount(account.id)
+                      )
+                    }
+                  >
+                    Disconnect
+                  </button>
+                </article>
+              ))
+            )}
           </div>
           {profileMessage.length > 0 ? (
             <p className="shell-note">
@@ -16726,6 +17061,37 @@ function ChatSurface({
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
+  const [openDeliveryAttemptsMessageId, setOpenDeliveryAttemptsMessageId] = useState<string | null>(
+    null
+  );
+  const [deliveryAttemptsByMessage, setDeliveryAttemptsByMessage] = useState<
+    Record<string, MessageDeliveryAttemptSummary[]>
+  >({});
+  const [deliveryAttemptsLoading, setDeliveryAttemptsLoading] = useState<string | null>(null);
+  const [deliveryAttemptsError, setDeliveryAttemptsError] = useState<string | null>(null);
+
+  async function toggleDeliveryAttempts(messageId: string) {
+    if (openDeliveryAttemptsMessageId === messageId) {
+      setOpenDeliveryAttemptsMessageId(null);
+      return;
+    }
+    setOpenDeliveryAttemptsMessageId(messageId);
+    if (activeConversationId === null || deliveryAttemptsByMessage[messageId] !== undefined) return;
+    setDeliveryAttemptsLoading(messageId);
+    setDeliveryAttemptsError(null);
+    try {
+      const response = await getJson<{ attempts: MessageDeliveryAttemptSummary[] }>(
+        `/v1/conversations/${encodeURIComponent(activeConversationId)}/messages/${encodeURIComponent(
+          messageId
+        )}/delivery-attempts`
+      );
+      setDeliveryAttemptsByMessage((current) => ({ ...current, [messageId]: response.attempts }));
+    } catch (error) {
+      setDeliveryAttemptsError(getErrorMessage(error));
+    } finally {
+      setDeliveryAttemptsLoading(null);
+    }
+  }
   const [forwardingMessageId, setForwardingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
@@ -17187,7 +17553,37 @@ function ChatSurface({
                   {message.author === "merchant" && message.status ? (
                     <span>{message.status}</span>
                   ) : null}
+                  {message.author === "merchant" && !message.id.startsWith("welcome") ? (
+                    <button type="button" onClick={() => void toggleDeliveryAttempts(message.id)}>
+                      {openDeliveryAttemptsMessageId === message.id
+                        ? "Hide delivery attempts"
+                        : "Delivery attempts"}
+                    </button>
+                  ) : null}
                 </div>
+                {openDeliveryAttemptsMessageId === message.id ? (
+                  <div className="message-context" aria-label="Delivery attempts">
+                    {deliveryAttemptsLoading === message.id ? (
+                      <small>Loading delivery attempts…</small>
+                    ) : deliveryAttemptsError !== null &&
+                      deliveryAttemptsByMessage[message.id] === undefined ? (
+                      <small>{deliveryAttemptsError}</small>
+                    ) : (deliveryAttemptsByMessage[message.id] ?? []).length === 0 ? (
+                      <small>No delivery attempts recorded for this message.</small>
+                    ) : (
+                      (deliveryAttemptsByMessage[message.id] ?? []).map((attempt) => (
+                        <small key={attempt.id}>
+                          #{attempt.attemptNumber} · {attempt.channel} via {attempt.provider} ·{" "}
+                          {attempt.result.replace(/_/gu, " ")}
+                          {attempt.normalizedFailureCode
+                            ? ` (${attempt.normalizedFailureCode})`
+                            : ""}{" "}
+                          · {formatMessageTime(attempt.requestedAt)}
+                        </small>
+                      ))
+                    )}
+                  </div>
+                ) : null}
                 {message.reactions?.length ? (
                   <div className="message-reactions" aria-label="Reactions">
                     {message.reactions.map((reaction) => (
