@@ -41,6 +41,7 @@ import type {
   LogisticsSummary,
   PaymentMethod,
   PaymentSummary,
+  CatalogueQueryResult,
   ProductImportDraft,
   ProductSummary,
   SupplierImportDraft,
@@ -288,6 +289,7 @@ export function permissionsForRole(role: BusinessRole): BusinessPermission[] {
 export interface ProductInput {
   name: string;
   sku?: string | null;
+  aliases?: string[];
   unit?: string | null;
   quantity?: number;
   buyingPrice?: number | null;
@@ -439,6 +441,7 @@ export interface DocumentImportSourceInput {
 export interface NormalizedProductInput {
   name: string;
   sku: string | null;
+  aliases: string[];
   unit: string;
   quantity: number;
   buyingPrice: number | null;
@@ -618,6 +621,21 @@ export function validateProductInput(input: ProductInput): ValidationResult {
 
   if (normalizeOptionalText(input.sku).length > 64) {
     errors.push("Product SKU must be 64 characters or fewer.");
+  }
+
+  if (input.aliases !== undefined) {
+    if (!Array.isArray(input.aliases) || input.aliases.length > 20) {
+      errors.push("Product aliases must contain at most 20 entries.");
+    } else if (
+      input.aliases.some(
+        (alias) =>
+          typeof alias !== "string" ||
+          normalizeRequiredText(alias).length === 0 ||
+          normalizeRequiredText(alias).length > 80
+      )
+    ) {
+      errors.push("Each product alias must be non-empty text no longer than 80 characters.");
+    }
   }
 
   return errors.length > 0 ? invalid(...errors) : valid();
@@ -1215,6 +1233,7 @@ export function normalizeProductInput(input: ProductInput): NormalizedProductInp
   return {
     name: normalizeRequiredText(input.name),
     sku: nullableText(input.sku),
+    aliases: normalizeProductAliases(input.aliases ?? []),
     unit: normalizeOptionalText(input.unit) || "unit",
     quantity: input.quantity ?? 0,
     buyingPrice:
@@ -1226,6 +1245,119 @@ export function normalizeProductInput(input: ProductInput): NormalizedProductInp
         ? null
         : roundMoney(input.sellingPrice)
   };
+}
+
+/**
+ * Queries only the supplied business catalogue. Callers are responsible for authorizing that
+ * business before obtaining/passing its products; this pure matcher cannot widen tenant scope.
+ */
+export function queryCatalogueProducts(input: {
+  businessId: string;
+  products: ProductSummary[];
+  query: string;
+  limit?: number;
+  imageForProduct?: (product: ProductSummary) => string | null;
+}): CatalogueQueryResult {
+  const query = normalizeCatalogueText(input.query).slice(0, 120);
+  const limit = Math.min(50, Math.max(1, input.limit ?? 20));
+  const queryTokens = catalogueTokens(query);
+  const products = input.products
+    .filter((product) => product.businessId === input.businessId)
+    .map((product) => ({ product, score: catalogueMatchScore(product, query, queryTokens) }))
+    .filter((candidate) => query.length === 0 || candidate.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.product.name.localeCompare(right.product.name)
+    )
+    .slice(0, limit)
+    .map(({ product }) => ({
+      productId: product.id,
+      businessId: product.businessId,
+      name: product.name,
+      unit: product.unit,
+      sellingPrice: product.sellingPrice,
+      availability: product.quantity > 0 ? ("available" as const) : ("unavailable" as const),
+      image: input.imageForProduct?.(product) ?? null
+    }));
+
+  return { query, products, total: products.length };
+}
+
+function normalizeProductAliases(aliases: string[]): string[] {
+  const normalized = aliases
+    .map((alias) => normalizeRequiredText(alias))
+    .filter((alias) => alias.length > 0);
+  return [...new Map(normalized.map((alias) => [normalizeCatalogueText(alias), alias])).values()];
+}
+
+function catalogueMatchScore(
+  product: ProductSummary,
+  query: string,
+  queryTokens: string[]
+): number {
+  if (query.length === 0) return 1;
+  const aliases = product.aliases ?? [];
+  const normalizedName = normalizeCatalogueText(product.name);
+  const normalizedSku = normalizeCatalogueText(product.sku ?? "");
+  const normalizedAliases = aliases.map(normalizeCatalogueText);
+  const names = [normalizedName, normalizedSku, ...normalizedAliases]
+    .map(normalizeCatalogueText)
+    .filter((value) => value.length > 0);
+
+  if (normalizedName === query) return 1_000;
+  if (normalizedSku === query) return 990;
+  if (normalizedAliases.some((alias) => alias === query)) return 980;
+
+  const candidateTokens = catalogueTokens(names.join(" "));
+  const tokenMatches = queryTokens.filter((token) =>
+    candidateTokens.some((candidate) => candidate === token || candidate.startsWith(token))
+  ).length;
+  if (queryTokens.length > 0 && tokenMatches === queryTokens.length) {
+    return 800 + tokenMatches;
+  }
+  if (names.some((value) => value.includes(query) || query.includes(value))) return 700;
+
+  const bestSimilarity = Math.max(
+    0,
+    ...names.map((value) => normalizedEditSimilarity(query, value))
+  );
+  return bestSimilarity >= 0.68 ? Math.round(bestSimilarity * 600) : 0;
+}
+
+function normalizeCatalogueText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^\p{L}\p{N}\s.-]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function catalogueTokens(value: string): string[] {
+  return normalizeCatalogueText(value).match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function normalizedEditSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  const maximum = Math.max(left.length, right.length);
+  if (maximum === 0) return 1;
+  if (Math.abs(left.length - right.length) > Math.max(3, Math.floor(maximum * 0.4))) return 0;
+
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitution = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] ?? 0) + 1,
+        (previous[rightIndex] ?? 0) + 1,
+        (previous[rightIndex - 1] ?? 0) + substitution
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return 1 - (previous[right.length] ?? maximum) / maximum;
 }
 
 export function normalizeContactRecordInput(
@@ -2895,7 +3027,16 @@ function mapProductRow(
     }
   }
 
-  return normalizeProductInput(mapped);
+  const normalized = normalizeProductInput(mapped);
+
+  return {
+    name: normalized.name,
+    sku: normalized.sku,
+    unit: normalized.unit,
+    quantity: normalized.quantity,
+    buyingPrice: normalized.buyingPrice,
+    sellingPrice: normalized.sellingPrice
+  };
 }
 
 function parseImportNumber(value: string): number | null {

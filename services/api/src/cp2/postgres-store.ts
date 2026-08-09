@@ -31,6 +31,10 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  { key: "platformIdentities", tableName: "platform_identities" },
+  { key: "conversationChannels", tableName: "conversation_channels" },
+  { key: "providerUpdateReceipts", tableName: "provider_update_receipts" },
+  { key: "customerRuntimeCapabilities", tableName: "customer_runtime_capabilities" },
   { key: "messageDeliveryAttempts", tableName: "cp2_message_delivery_attempts" },
   {
     key: "messageNotificationDeliveries",
@@ -51,6 +55,8 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
+  { key: "productMedia", tableName: "product_media" },
+  { key: "productCaptureJobs", tableName: "product_capture_jobs" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
   { key: "salesAgents", tableName: "cp2_sales_agents" },
@@ -342,7 +348,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql";
+const requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;
@@ -1259,17 +1265,19 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     business_id: string;
     name: string;
     sku: string | null;
+    aliases: string[];
     unit: string;
     quantity: string;
     buying_price: string | null;
     selling_price: string | null;
+    primary_media_id: string | null;
     created_at: Date;
     updated_at: Date;
   }>(
     pool,
     "load products",
     `
-      select id, business_id, name, sku, unit, quantity, buying_price, selling_price, created_at, updated_at
+      select id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price, primary_media_id, created_at, updated_at
       from products
       order by business_id, name, id
     `
@@ -1279,10 +1287,12 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     businessId: row.business_id,
     name: row.name,
     sku: row.sku,
+    aliases: row.aliases,
     unit: row.unit,
     quantity: numberFromDatabase(row.quantity),
     buyingPrice: nullableNumberFromDatabase(row.buying_price),
     sellingPrice: nullableNumberFromDatabase(row.selling_price),
+    primaryMediaId: row.primary_media_id,
     createdAt: timestampToIso(row.created_at),
     updatedAt: timestampToIso(row.updated_at)
   })) as Cp2Snapshot["products"];
@@ -2363,16 +2373,18 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     await client.query(
       `
         insert into products
-          (id, business_id, name, sku, unit, quantity, buying_price, selling_price, created_at, updated_at)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          (id, business_id, name, sku, aliases, unit, quantity, buying_price, selling_price, primary_media_id, created_at, updated_at)
+        values ($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12)
         on conflict (id) do update set
           business_id = excluded.business_id,
           name = excluded.name,
           sku = excluded.sku,
+          aliases = excluded.aliases,
           unit = excluded.unit,
           quantity = excluded.quantity,
           buying_price = excluded.buying_price,
           selling_price = excluded.selling_price,
+          primary_media_id = excluded.primary_media_id,
           updated_at = excluded.updated_at
       `,
       [
@@ -2380,10 +2392,12 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "businessId"),
         requiredText(record, "name"),
         firstText(record, ["sku"]),
+        Array.isArray(record.aliases) ? record.aliases : [],
         requiredText(record, "unit"),
         record.quantity,
         record.buyingPrice ?? null,
         record.sellingPrice ?? null,
+        firstText(record, ["primaryMediaId"]),
         requiredText(record, "createdAt"),
         requiredText(record, "updatedAt")
       ]
@@ -3470,6 +3484,10 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    platformIdentities: [],
+    conversationChannels: [],
+    providerUpdateReceipts: [],
+    customerRuntimeCapabilities: [],
     messageDeliveryAttempts: [],
     messageNotificationDeliveries: [],
     e2eeDevices: [],
@@ -3489,6 +3507,8 @@ function emptySnapshot(): Cp2Snapshot {
     mcpAccessTokens: [],
     productFieldSchemas: [],
     products: [],
+    productMedia: [],
+    productCaptureJobs: [],
     customers: [],
     suppliers: [],
     salesAgents: [],

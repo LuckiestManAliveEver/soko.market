@@ -784,7 +784,9 @@ describe("CP2 auth and business creation", () => {
           id: stockedProduct.id,
           name: "Soko Rice",
           unit: "2 kg bag",
-          available: true
+          available: true,
+          sellingPrice: 180,
+          image: null
         }
       ]
     });
@@ -795,7 +797,7 @@ describe("CP2 auth and business creation", () => {
     expect(publicResponse.json().products[0]).not.toHaveProperty("sku");
     expect(publicResponse.json().products[0]).not.toHaveProperty("quantity");
     expect(publicResponse.json().products[0]).not.toHaveProperty("buyingPrice");
-    expect(publicResponse.json().products[0]).not.toHaveProperty("sellingPrice");
+    expect(publicResponse.json().products[0]).toHaveProperty("sellingPrice", 180);
     expect(publicResponse.json().products[0]).not.toHaveProperty("createdAt");
     expect(publicResponse.json().products[0]).not.toHaveProperty("updatedAt");
 

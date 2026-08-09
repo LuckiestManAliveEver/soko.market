@@ -22,7 +22,7 @@ describe("browser inference assignment migration", () => {
     ]);
     expect(rollback).toContain("drop table if exists cp2_browser_inference_assignments");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
+      'requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql"'
     );
   });
 });

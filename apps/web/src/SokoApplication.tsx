@@ -499,6 +499,8 @@ interface PublicStorefrontProductSummary {
   name: string;
   unit: string;
   available: boolean;
+  sellingPrice: number | null;
+  image: string | null;
 }
 
 interface PublicStorefrontSummary {
@@ -553,6 +555,12 @@ interface PublicCustomerCareRequestResponse {
 interface PublicStorefrontMessageResponse {
   id: string;
   body: string;
+}
+
+interface PublicStorefrontSessionResponse {
+  conversationId: string;
+  capabilityToken: string;
+  expiresAt: string;
 }
 
 interface PublicOrderResponse {
@@ -9276,6 +9284,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
   const installPrompt = useInstallPrompt();
   const { isPending, runAction } = useAsyncActions();
   const [visitorId] = useState(readStorefrontVisitorId);
+  const [capabilityToken, setCapabilityToken] = useState("");
   const [storefront, setStorefront] = useState<PublicStorefrontSummary | null>(null);
   const [messages, setMessages] = useState<StorefrontChatMessage[]>([]);
   const [cart, setCart] = useState<StorefrontCartItem[]>([]);
@@ -9303,13 +9312,20 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
 
     setStatus("loading");
     setError("");
-    getJson<PublicStorefrontSummary>(`/public/storefronts/${encodeURIComponent(props.agentId)}`)
-      .then((nextStorefront) => {
+    Promise.all([
+      getJson<PublicStorefrontSummary>(`/public/storefronts/${encodeURIComponent(props.agentId)}`),
+      postJson<PublicStorefrontSessionResponse>(
+        `/public/storefronts/${encodeURIComponent(props.agentId)}/sessions`,
+        { visitorId, displayName: null }
+      )
+    ])
+      .then(([nextStorefront, session]) => {
         if (!isActive) {
           return;
         }
 
         setStorefront(nextStorefront);
+        setCapabilityToken(session.capabilityToken);
         setStatus("ready");
       })
       .catch((caught: unknown) => {
@@ -9324,7 +9340,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
     return () => {
       isActive = false;
     };
-  }, [props.agentId]);
+  }, [props.agentId, visitorId]);
 
   const products = storefront?.products ?? [];
   const activeProduct =
@@ -9445,7 +9461,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
       try {
         await postJson<PublicStorefrontMessageResponse>(
           `/public/storefronts/${encodeURIComponent(props.agentId)}/messages`,
-          { visitorId, body: `Attachment references: ${names}`, attachmentNames }
+          { capabilityToken, body: `Attachment references: ${names}`, attachmentNames }
         );
         appendMessage("customer", `Shared ${names}`);
         appendMessage(
@@ -9547,7 +9563,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
       try {
         return await postJson<PublicStorefrontMessageResponse>(
           `/public/storefronts/${encodeURIComponent(props.agentId)}/messages`,
-          { visitorId, body: message, attachmentNames: [] }
+          { capabilityToken, body: message, attachmentNames: [] }
         );
       } catch (caught) {
         appendMessage("agent", getErrorMessage(caught));
@@ -9671,7 +9687,7 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
         const order = await postJson<PublicOrderResponse>(
           `/public/storefronts/${encodeURIComponent(props.agentId)}/orders`,
           {
-            visitorId,
+            capabilityToken,
             customerName: checkoutDetails.name.trim(),
             phone: checkoutDetails.phone.trim(),
             note: checkoutDetails.note.trim() || null,
@@ -9830,6 +9846,9 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
 
             {activeProduct !== null ? (
               <section className="storefront-product-card" aria-label="Product details">
+                {activeProduct.image === null ? null : (
+                  <img src={activeProduct.image} alt={activeProduct.name} loading="lazy" />
+                )}
                 <div className="storefront-card-header">
                   <div>
                     <span>Product</span>
@@ -9840,7 +9859,10 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
                   </button>
                 </div>
                 <p>
-                  Sold by {storefront.businessName} · {activeProduct.unit}
+                  Sold by {storefront.businessName} · {activeProduct.unit} ·{" "}
+                  {activeProduct.sellingPrice === null
+                    ? "Ask for price"
+                    : formatMoney(activeProduct.sellingPrice)}
                 </p>
                 <button type="button" onClick={() => addProductToCart(activeProduct)}>
                   Add to receipt
@@ -9880,9 +9902,17 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
                   ) : (
                     products.map((product) => (
                       <article key={product.id} className="storefront-product-tile">
+                        {product.image === null ? null : (
+                          <img src={product.image} alt={product.name} loading="lazy" />
+                        )}
                         <div>
                           <strong>{product.name}</strong>
-                          <span>{product.unit}</span>
+                          <span>
+                            {product.unit} ·{" "}
+                            {product.sellingPrice === null
+                              ? "Ask for price"
+                              : formatMoney(product.sellingPrice)}
+                          </span>
                         </div>
                         <button
                           className="secondary"
@@ -15957,7 +15987,10 @@ function AgentProfileSurface({
             <div className="section-heading">
               <p className="eyebrow">Password fallback</p>
               <h4>Change password</h4>
-              <p>Only applies if this account has a password set. PIN and passkey sign-in are unaffected.</p>
+              <p>
+                Only applies if this account has a password set. PIN and passkey sign-in are
+                unaffected.
+              </p>
             </div>
             <label>
               Current password
@@ -16095,7 +16128,11 @@ function AgentProfileSurface({
               personal session - useful when checking access from a shop-scoped view.
             </p>
           </div>
-          <div className="connected-social-list" role="list" aria-label="Shop-scoped login accounts">
+          <div
+            className="connected-social-list"
+            role="list"
+            aria-label="Shop-scoped login accounts"
+          >
             {businessSocialAccounts.length === 0 ? (
               <p className="form-hint">No connected login accounts for this shop yet.</p>
             ) : (
@@ -16108,7 +16145,8 @@ function AgentProfileSurface({
                   <div className="connected-social-meta">
                     <span>Connected: {formatDate(account.connectedAt)}</span>
                     <span>
-                      Last used: {account.lastUsedAt === null ? "—" : formatDate(account.lastUsedAt)}
+                      Last used:{" "}
+                      {account.lastUsedAt === null ? "—" : formatDate(account.lastUsedAt)}
                     </span>
                   </div>
                   <button

@@ -64,11 +64,13 @@ import type {
   BusinessReportSummary,
   BusinessRole,
   BusinessSummary,
+  CatalogueQueryResult,
   ComplianceRetentionSummary,
   AgentRouteSummary,
   CountryTaxConfigSummary,
   ContactHashSummary,
   ConversationKind,
+  ConversationChannelSummary,
   ConversationInboxItem,
   ConversationMessageContent,
   ConversationMessageAuthor,
@@ -82,6 +84,8 @@ import type {
   ConversationSummary,
   ConversationTypingSummary,
   ConversationView,
+  PlatformIdentitySummary,
+  ProviderUpdateReceiptSummary,
   CustomerDebtSummary,
   CustomerSummary,
   DataExportBundle,
@@ -135,6 +139,9 @@ import type {
   ProductFieldInputType,
   ProductImportDraft,
   ProductSummary,
+  ProductCaptureField,
+  ProductCaptureJobSummary,
+  ProductMediaSummary,
   PreferredExecutionMode,
   PublicCustomerCareRequestSummary,
   PublicCustomerCareRequestType,
@@ -274,6 +281,7 @@ import {
   normalizeLogisticsStatusInput,
   normalizePaymentInput,
   normalizeProductInput,
+  queryCatalogueProducts,
   normalizeStockAdjustmentInput,
   normalizeVerificationTierInput,
   paymentRecordedEvent,
@@ -419,6 +427,8 @@ export interface PublicStorefrontProductSummary {
   name: string;
   unit: string;
   available: boolean;
+  sellingPrice: number | null;
+  image: string | null;
 }
 
 export interface PublicStorefrontSummary {
@@ -794,6 +804,10 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  platformIdentities?: PlatformIdentitySummary[];
+  conversationChannels?: ConversationChannelSummary[];
+  providerUpdateReceipts?: ProviderUpdateReceiptSummary[];
+  customerRuntimeCapabilities?: CustomerRuntimeCapabilityRecord[];
   messageDeliveryAttempts?: MessageDeliveryAttemptSummary[];
   messageNotificationDeliveries?: MessageNotificationDelivery[];
   e2eeDevices?: E2eeDeviceSummary[];
@@ -813,6 +827,8 @@ export interface Cp2Snapshot {
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
   products: ProductSummary[];
+  productMedia?: ProductMediaRecord[];
+  productCaptureJobs?: ProductCaptureJobSummary[];
   customers: CustomerSummary[];
   suppliers: SupplierSummary[];
   salesAgents: SalesAgentSummary[];
@@ -909,6 +925,27 @@ export interface AgentConversationMessageResult {
     errorCode: string | null;
     retryable: boolean;
   };
+}
+
+export interface PublicStorefrontSessionResult {
+  conversationId: string;
+  capabilityToken: string;
+  expiresAt: string;
+}
+
+export interface CustomerRuntimeCapabilityRecord {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  platformIdentityId: string;
+  tokenHash: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface ProductMediaRecord extends ProductMediaSummary {
+  contentBase64: string;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -1035,6 +1072,10 @@ export class Cp2Store {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly platformIdentities = new Map<string, PlatformIdentitySummary>();
+  private readonly conversationChannels = new Map<string, ConversationChannelSummary>();
+  private readonly providerUpdateReceipts = new Map<string, ProviderUpdateReceiptSummary>();
+  private readonly customerRuntimeCapabilities = new Map<string, CustomerRuntimeCapabilityRecord>();
   private readonly messageDeliveryAttempts = new Map<string, MessageDeliveryAttemptSummary>();
   private readonly messageNotificationDeliveries = new Map<string, MessageNotificationDelivery>();
   private readonly e2eeDevices = new Map<string, E2eeDeviceSummary>();
@@ -1071,6 +1112,8 @@ export class Cp2Store {
     Set<(event: SyncRealtimeChangesAvailableEvent) => void>
   >();
   private readonly products = new Map<string, ProductSummary>();
+  private readonly productMedia = new Map<string, ProductMediaRecord>();
+  private readonly productCaptureJobs = new Map<string, ProductCaptureJobSummary>();
   private readonly productFieldSchemas = new Map<string, ProductFieldSchemaSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
   private readonly suppliers = new Map<string, SupplierSummary>();
@@ -2030,7 +2073,12 @@ export class Cp2Store {
   }
 
   signupWithPhonePin(input: { destination: string; pin: string; now?: Date }): AuthSessionView {
-    return this.createAccountWithPin("phone", input.destination, input.pin, input.now ?? new Date());
+    return this.createAccountWithPin(
+      "phone",
+      input.destination,
+      input.pin,
+      input.now ?? new Date()
+    );
   }
 
   continueWithChannelPin(input: {
@@ -3047,11 +3095,9 @@ export class Cp2Store {
     };
   }
 
-  updateOwnDisplayName(input: {
-    sessionId: string | null;
-    displayName: string;
-    now?: Date;
-  }): { user: UserSummary } {
+  updateOwnDisplayName(input: { sessionId: string | null; displayName: string; now?: Date }): {
+    user: UserSummary;
+  } {
     const now = input.now ?? new Date();
     const session = this.requirePinVerifiedSession(input.sessionId, now);
     const displayName = input.displayName.trim();
@@ -3448,6 +3494,156 @@ export class Cp2Store {
       }
     });
     return this.conversationView(conversation);
+  }
+
+  createProviderConversation(input: {
+    sessionId: string | null;
+    businessId: string;
+    provider: "soko" | "telegram";
+    externalUserId: string;
+    externalConversationId: string;
+    displayName?: string | null;
+    metadata?: Record<string, string | number | boolean | null>;
+    now?: Date;
+  }): { identity: PlatformIdentitySummary; channel: ConversationChannelSummary } {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    let identity = [...this.platformIdentities.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalUserId === input.externalUserId
+    );
+    if (identity === undefined) {
+      identity = {
+        id: randomUUID(),
+        provider: input.provider,
+        externalUserId: normalizeRequiredBoundedText(input.externalUserId, "externalUserId", 200),
+        accountId: null,
+        businessId: input.businessId,
+        displayName: normalizeOptionalBoundedText(input.displayName ?? null, 120),
+        metadata: { ...(input.metadata ?? {}) },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.platformIdentities.set(identity.id, identity);
+    }
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalConversationId === input.externalConversationId
+    );
+    if (channel === undefined) {
+      const conversation = this.createAccountConversation({
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        kind: "storefront",
+        activeShopId: input.businessId,
+        title: `${input.provider} customer`,
+        now
+      });
+      const participantId = randomUUID();
+      this.conversationParticipants.set(participantId, {
+        id: participantId,
+        conversationId: conversation.id,
+        role: "external",
+        accountId: null,
+        businessId: input.businessId,
+        agentId: null,
+        externalIdentityId: identity.id,
+        displayName: identity.displayName,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: now.toISOString()
+      });
+      channel = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        businessId: input.businessId,
+        provider: input.provider,
+        externalConversationId: normalizeRequiredBoundedText(
+          input.externalConversationId,
+          "externalConversationId",
+          200
+        ),
+        platformIdentityId: identity.id,
+        metadata: { ...(input.metadata ?? {}) },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.conversationChannels.set(channel.id, channel);
+    }
+    return { identity, channel };
+  }
+
+  ingestProviderMessage(input: {
+    provider: "soko" | "telegram";
+    businessId: string;
+    externalConversationId: string;
+    externalUpdateId: string;
+    body: string;
+    providerMessageId?: string | null;
+    now?: Date;
+  }): { receipt: ProviderUpdateReceiptSummary; message: ConversationMessageSummary | null } {
+    const now = input.now ?? new Date();
+    const existing = [...this.providerUpdateReceipts.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.externalUpdateId === input.externalUpdateId
+    );
+    if (existing !== undefined) {
+      return {
+        receipt: existing,
+        message: existing.messageId
+          ? (this.conversationMessages.get(existing.messageId) ?? null)
+          : null
+      };
+    }
+    const channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalConversationId === input.externalConversationId
+    );
+    if (channel === undefined) {
+      throw new Cp2Error(
+        404,
+        "conversation_channel_not_found",
+        "Provider relationship was not found."
+      );
+    }
+    const message = this.persistExternalConversationMessage({
+      conversationId: channel.conversationId,
+      provider: input.provider,
+      author: "user",
+      authorId: channel.platformIdentityId,
+      body: normalizeRequiredBoundedText(input.body, "message", 4000),
+      attachmentNames: [],
+      idempotencyKey: `${input.provider}:update:${input.externalUpdateId}`,
+      providerMessageId: input.providerMessageId ?? null,
+      now
+    });
+    const receipt: ProviderUpdateReceiptSummary = {
+      id: randomUUID(),
+      provider: input.provider,
+      externalUpdateId: input.externalUpdateId,
+      businessId: input.businessId,
+      conversationChannelId: channel.id,
+      messageId: message.id,
+      status: "processed",
+      createdAt: now.toISOString(),
+      processedAt: now.toISOString()
+    };
+    this.providerUpdateReceipts.set(receipt.id, receipt);
+    return { receipt, message };
   }
 
   getMarketplaceIntroState(input: {
@@ -4693,7 +4889,8 @@ export class Cp2Store {
   private computeAgentRuntimeReadiness(businessId: string, now: Date): AgentRuntimeReadiness {
     const business = this.businesses.get(businessId);
     const profile = this.agentProfiles.get(businessId);
-    const effectiveProfile = business === undefined ? null : this.currentAgentProfile(businessId, now);
+    const effectiveProfile =
+      business === undefined ? null : this.currentAgentProfile(businessId, now);
     const issues: AgentRuntimeReadiness["issues"] = [];
     if (business === undefined || effectiveProfile === null) {
       issues.push({
@@ -5293,7 +5490,14 @@ export class Cp2Store {
       );
     }
     const selectedChannel = input.selectedChannel ?? "soko";
-    if (selectedChannel !== "soko") {
+    const externalChannel =
+      selectedChannel === "soko"
+        ? undefined
+        : [...this.conversationChannels.values()].find(
+            (channel) =>
+              channel.conversationId === conversation.id && channel.provider === selectedChannel
+          );
+    if (selectedChannel !== "soko" && externalChannel === undefined) {
       throw new Cp2Error(
         400,
         "message_channel_unavailable",
@@ -5360,16 +5564,16 @@ export class Cp2Store {
       author,
       authorId: author === "agent" ? `account-${session.account.id}-agent` : session.user.id,
       content: input.content,
-      status: "delivered",
-      queuedAt: input.queuedAt ?? null,
-      sentAt: now.toISOString(),
-      deliveredAt: now.toISOString(),
+      status: selectedChannel === "soko" ? "delivered" : "queued",
+      queuedAt: input.queuedAt ?? (selectedChannel === "soko" ? null : now.toISOString()),
+      sentAt: selectedChannel === "soko" ? now.toISOString() : null,
+      deliveredAt: selectedChannel === "soko" ? now.toISOString() : null,
       readAt: null,
-      failureCode: null,
+      failureCode: selectedChannel === "soko" ? null : "provider_adapter_unconfigured",
       retryCount: 0,
       nextRetryAt: null,
       selectedChannel,
-      actualChannel: "soko",
+      actualChannel: selectedChannel === "soko" ? "soko" : null,
       providerMessageId: null,
       importedSource: null,
       importedExternalId: null,
@@ -5390,13 +5594,13 @@ export class Cp2Store {
       accountId: conversation.accountId,
       conversationId: conversation.id,
       messageId: message.id,
-      channel: "soko",
-      provider: "soko",
+      channel: selectedChannel,
+      provider: selectedChannel,
       attemptNumber: 1,
       requestedAt: now.toISOString(),
-      respondedAt: now.toISOString(),
-      result: "succeeded",
-      normalizedFailureCode: null,
+      respondedAt: selectedChannel === "soko" ? now.toISOString() : null,
+      result: selectedChannel === "soko" ? "succeeded" : "transient_failure",
+      normalizedFailureCode: selectedChannel === "soko" ? null : "provider_adapter_unconfigured",
       providerResponseReference: null
     };
     this.messageDeliveryAttempts.set(attempt.id, attempt);
@@ -5930,6 +6134,23 @@ export class Cp2Store {
     return [...this.products.values()].filter((product) => product.businessId === input.businessId);
   }
 
+  queryCatalogue(input: {
+    sessionId: string | null;
+    businessId: string;
+    query: string;
+    limit?: number;
+    now?: Date;
+  }): CatalogueQueryResult {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    return queryCatalogueProducts({
+      businessId: input.businessId,
+      products: [...this.products.values()],
+      query: input.query,
+      imageForProduct: (product) => this.publicProductImage(product),
+      ...(input.limit === undefined ? {} : { limit: input.limit })
+    });
+  }
+
   getProductFieldSchema(input: {
     sessionId: string | null;
     businessId: string;
@@ -6211,33 +6432,153 @@ export class Cp2Store {
     return request;
   }
 
-  async createPublicStorefrontMessage(input: {
+  createPublicStorefrontSession(input: {
     agentId: string;
     visitorId: string;
+    displayName?: string | null;
+    now?: Date;
+  }): PublicStorefrontSessionResult {
+    const now = input.now ?? new Date();
+    const business = this.requirePublicStorefrontBusiness(input.agentId);
+    const externalUserId = normalizeRequiredBoundedText(input.visitorId, "visitorId", 100);
+    let identity = [...this.platformIdentities.values()].find(
+      (candidate) =>
+        candidate.provider === "soko" &&
+        candidate.businessId === business.id &&
+        candidate.externalUserId === externalUserId
+    );
+    if (identity === undefined) {
+      identity = {
+        id: randomUUID(),
+        provider: "soko",
+        externalUserId,
+        accountId: null,
+        businessId: business.id,
+        displayName: normalizeOptionalBoundedText(input.displayName ?? null, 120),
+        metadata: {},
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.platformIdentities.set(identity.id, identity);
+    }
+
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === "soko" &&
+        candidate.businessId === business.id &&
+        candidate.externalConversationId === externalUserId
+    );
+    if (channel === undefined) {
+      const ownerMembership = [...this.memberships.values()].find(
+        (membership) => membership.businessId === business.id && membership.role === "owner"
+      );
+      const ownerUser = ownerMembership ? this.users.get(ownerMembership.userId) : undefined;
+      if (ownerUser === undefined) {
+        throw new Cp2Error(409, "storefront_owner_missing", "Storefront owner is unavailable.");
+      }
+      const conversation = this.createAccountConversation({
+        accountId: ownerUser.accountId,
+        userId: ownerUser.id,
+        kind: "storefront",
+        activeShopId: business.id,
+        title: `${business.name} storefront customer`,
+        now
+      });
+      const participant: ConversationParticipantSummary = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "external",
+        accountId: null,
+        businessId: business.id,
+        agentId: null,
+        externalIdentityId: identity.id,
+        displayName: identity.displayName,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: now.toISOString()
+      };
+      this.conversationParticipants.set(participant.id, participant);
+      channel = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        businessId: business.id,
+        provider: "soko",
+        externalConversationId: externalUserId,
+        platformIdentityId: identity.id,
+        metadata: {},
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.conversationChannels.set(channel.id, channel);
+    }
+
+    for (const capability of this.customerRuntimeCapabilities.values()) {
+      if (capability.conversationId === channel.conversationId && capability.revokedAt === null) {
+        this.customerRuntimeCapabilities.set(capability.id, {
+          ...capability,
+          revokedAt: now.toISOString()
+        });
+      }
+    }
+    const capabilityToken = randomBytes(32).toString("base64url");
+    const capability: CustomerRuntimeCapabilityRecord = {
+      id: randomUUID(),
+      businessId: business.id,
+      conversationId: channel.conversationId,
+      platformIdentityId: identity.id,
+      tokenHash: hashCustomerCapability(capabilityToken),
+      expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      revokedAt: null,
+      createdAt: now.toISOString()
+    };
+    this.customerRuntimeCapabilities.set(capability.id, capability);
+    return {
+      conversationId: channel.conversationId,
+      capabilityToken,
+      expiresAt: capability.expiresAt
+    };
+  }
+
+  async createPublicStorefrontMessage(input: {
+    agentId: string;
+    capabilityToken: string;
     body: string;
     attachmentNames: string[];
     now?: Date;
-  }): Promise<PublicStorefrontMessageSummary & { agentReply: PublicStorefrontMessageSummary | null }> {
+  }): Promise<
+    PublicStorefrontMessageSummary & { agentReply: PublicStorefrontMessageSummary | null }
+  > {
     const now = input.now ?? new Date();
     const business = this.requirePublicStorefrontBusiness(input.agentId);
+    const principal = this.requireCustomerCapability(input.capabilityToken, business.id, now);
+    const identity = this.platformIdentities.get(principal.platformIdentityId);
+    if (identity === undefined) {
+      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
+    }
     if (input.attachmentNames.length > 10) {
       throw new Cp2Error(400, "attachments_limit", "A message can include up to 10 attachments.");
     }
-    const message: PublicStorefrontMessageSummary = {
-      id: randomUUID(),
-      businessId: business.id,
-      visitorId: normalizeRequiredBoundedText(input.visitorId, "visitorId", 100),
-      author: "customer",
-      body: normalizeRequiredBoundedText(input.body, "message", 4000),
-      attachmentNames: input.attachmentNames.map((name) =>
-        normalizeRequiredBoundedText(name, "attachment name", 255)
-      ),
-      createdAt: now.toISOString()
-    };
-    this.publicStorefrontMessages.set(message.id, message);
+    const body = normalizeRequiredBoundedText(input.body, "message", 4000);
+    const attachmentNames = input.attachmentNames.map((name) =>
+      normalizeRequiredBoundedText(name, "attachment name", 255)
+    );
+    const canonical = this.persistExternalConversationMessage({
+      conversationId: principal.conversationId,
+      provider: "soko",
+      author: "user",
+      authorId: identity.id,
+      body,
+      attachmentNames,
+      idempotencyKey: `soko-storefront:${principal.id}:${randomUUID()}`,
+      now
+    });
+    const message = this.publicMessageView(canonical, business.id, identity.externalUserId);
     const agentReply = await this.attemptPublicAgentReply({
       businessId: business.id,
-      visitorId: message.visitorId,
+      capability: principal,
+      visitorId: identity.externalUserId,
       body: message.body,
       now
     });
@@ -6259,17 +6600,53 @@ export class Cp2Store {
    */
   private async attemptPublicAgentReply(input: {
     businessId: string;
+    capability: CustomerRuntimeCapabilityRecord;
     visitorId: string;
     body: string;
     now: Date;
   }): Promise<PublicStorefrontMessageSummary | null> {
     const { businessId, visitorId, body, now } = input;
-    if (!this.computeAgentRuntimeReadiness(businessId, now).ready) return null;
     if (this.publicAgentReplyRateLimited(businessId, visitorId, now)) return null;
+
+    const catalogueRuntime = this.createCustomerCatalogueRuntimeTurn({
+      capability: input.capability,
+      message: body,
+      now
+    });
+    if (catalogueRuntime !== null) {
+      const canonical = this.persistExternalConversationMessage({
+        conversationId: input.capability.conversationId,
+        provider: "soko",
+        author: "agent",
+        authorId: `shop-${businessId}-agent`,
+        body: catalogueRuntime.turn.response,
+        attachmentNames: [],
+        idempotencyKey: `soko-agent-runtime:${catalogueRuntime.turn.id}`,
+        now
+      });
+      const result = catalogueRuntime.turn.toolResult as CatalogueQueryResult;
+      for (const product of result.products) {
+        this.persistExternalProductCard({
+          conversationId: input.capability.conversationId,
+          provider: "soko",
+          product,
+          runtimeTurnId: catalogueRuntime.turn.id,
+          now
+        });
+      }
+      return this.publicMessageView(canonical, businessId, visitorId);
+    }
+
+    if (!this.computeAgentRuntimeReadiness(businessId, now).ready) return null;
 
     const storedAgentProfile = this.currentAgentProfile(businessId, now);
     const { activeModelId } = this.resolveActiveRuntimeModelId(businessId, storedAgentProfile);
-    const shopRuntime = this.buildShopAgentRuntime(storedAgentProfile, now, "customer", activeModelId);
+    const shopRuntime = this.buildShopAgentRuntime(
+      storedAgentProfile,
+      now,
+      "customer",
+      activeModelId
+    );
     const { provider } = this.resolveRuntimeModelProvider(shopRuntime, activeModelId);
     if (provider === undefined) return null;
 
@@ -6308,17 +6685,218 @@ export class Cp2Store {
     const replyText = publicAgentReplyText(parseRuntimeModelOutput(completion.outputText));
     if (replyText === null) return null;
 
-    const reply: PublicStorefrontMessageSummary = {
-      id: randomUUID(),
-      businessId,
-      visitorId,
+    const canonical = this.persistExternalConversationMessage({
+      conversationId: input.capability.conversationId,
+      provider: "soko",
       author: "agent",
+      authorId: `shop-${businessId}-agent`,
       body: normalizeRequiredBoundedText(replyText, "message", 4000),
       attachmentNames: [],
-      createdAt: now.toISOString()
+      idempotencyKey: `soko-agent-reply:${input.capability.conversationId}:${randomUUID()}`,
+      now
+    });
+    return this.publicMessageView(canonical, businessId, visitorId);
+  }
+
+  private requireCustomerCapability(
+    token: string,
+    businessId: string,
+    now: Date
+  ): CustomerRuntimeCapabilityRecord {
+    const tokenHash = hashCustomerCapability(
+      normalizeRequiredBoundedText(token, "capabilityToken", 200)
+    );
+    const capability = [...this.customerRuntimeCapabilities.values()].find(
+      (candidate) => candidate.tokenHash === tokenHash
+    );
+    if (
+      capability === undefined ||
+      capability.businessId !== businessId ||
+      capability.revokedAt !== null ||
+      Date.parse(capability.expiresAt) <= now.getTime()
+    ) {
+      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
+    }
+    return capability;
+  }
+
+  private persistExternalConversationMessage(input: {
+    conversationId: string;
+    provider: "soko" | "telegram";
+    author: "user" | "agent";
+    authorId: string;
+    body: string;
+    attachmentNames: string[];
+    idempotencyKey: string;
+    providerMessageId?: string | null;
+    now: Date;
+  }): ConversationMessageSummary {
+    const conversation = this.conversations.get(input.conversationId);
+    if (conversation === undefined) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const existingId = this.messageByIdempotencyKey.get(
+      `${conversation.id}:${input.idempotencyKey}`
+    );
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+    const attachments = input.attachmentNames.map((name) => ({
+      id: randomUUID(),
+      name,
+      mimeType: "application/octet-stream",
+      size: 0,
+      category: "other" as const,
+      url: `https://soko.market/attachment-reference/${encodeURIComponent(name)}`
+    }));
+    const content: ConversationMessageContent = {
+      type: "text",
+      text: input.body,
+      ...(attachments.length === 0 ? {} : { attachments })
     };
-    this.publicStorefrontMessages.set(reply.id, reply);
-    return reply;
+    validateConversationMessageContent(content);
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId: `${input.provider}-${randomUUID()}`,
+      idempotencyKey: input.idempotencyKey,
+      author: input.author,
+      authorId: input.authorId,
+      content,
+      status: "delivered",
+      queuedAt: null,
+      sentAt: input.now.toISOString(),
+      deliveredAt: input.now.toISOString(),
+      readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel: input.provider,
+      actualChannel: input.provider,
+      providerMessageId: input.providerMessageId ?? null,
+      importedSource: input.provider,
+      importedExternalId: input.providerMessageId ?? null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: null,
+      forwardedFromMessageId: null,
+      reactions: [],
+      clientTimestamp: null,
+      createdAt: input.now.toISOString()
+    };
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(`${conversation.id}:${message.clientMessageId}`, message.id);
+    this.messageByIdempotencyKey.set(`${conversation.id}:${message.idempotencyKey}`, message.id);
+    this.conversations.set(conversation.id, {
+      ...conversation,
+      updatedAt: input.now.toISOString()
+    });
+    const attempt: MessageDeliveryAttemptSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: message.id,
+      channel: input.provider,
+      provider: input.provider,
+      attemptNumber: 1,
+      requestedAt: input.now.toISOString(),
+      respondedAt: input.now.toISOString(),
+      result: "succeeded",
+      normalizedFailureCode: null,
+      providerResponseReference: input.providerMessageId ?? null
+    };
+    this.messageDeliveryAttempts.set(attempt.id, attempt);
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      input.now
+    );
+    if (input.author === "user") {
+      this.enqueueConversationNotifications(conversation, message, "external", input.now);
+    }
+    return message;
+  }
+
+  private persistExternalProductCard(input: {
+    conversationId: string;
+    provider: "soko" | "telegram";
+    product: CatalogueQueryResult["products"][number];
+    runtimeTurnId: string;
+    now: Date;
+  }): ConversationMessageSummary {
+    const conversation = this.conversations.get(input.conversationId);
+    if (conversation === undefined) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const idempotencyKey = `product-card:${input.runtimeTurnId}:${input.product.productId}`;
+    const existingId = this.messageByIdempotencyKey.get(`${conversation.id}:${idempotencyKey}`);
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId: `${input.provider}-product-${randomUUID()}`,
+      idempotencyKey,
+      author: "agent",
+      authorId: `shop-${input.product.businessId}-agent`,
+      content: { type: "product-card", product: input.product },
+      status: "delivered",
+      queuedAt: null,
+      sentAt: input.now.toISOString(),
+      deliveredAt: input.now.toISOString(),
+      readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel: input.provider,
+      actualChannel: input.provider,
+      providerMessageId: null,
+      importedSource: input.provider,
+      importedExternalId: null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: null,
+      forwardedFromMessageId: null,
+      reactions: [],
+      clientTimestamp: null,
+      createdAt: input.now.toISOString()
+    };
+    validateConversationMessageContent(message.content);
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(`${conversation.id}:${message.clientMessageId}`, message.id);
+    this.messageByIdempotencyKey.set(`${conversation.id}:${idempotencyKey}`, message.id);
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      input.now
+    );
+    return message;
+  }
+
+  private publicMessageView(
+    message: ConversationMessageSummary,
+    businessId: string,
+    visitorId: string
+  ): PublicStorefrontMessageSummary {
+    const content =
+      message.content.type === "text" ? message.content : { text: "", attachments: [] };
+    return {
+      id: message.id,
+      conversationId: message.conversationId,
+      businessId,
+      visitorId,
+      author: message.author === "agent" ? "agent" : "customer",
+      body: content.text,
+      attachmentNames: content.attachments?.map((attachment) => attachment.name) ?? [],
+      createdAt: message.createdAt
+    };
   }
 
   private publicAgentReplyRateLimited(businessId: string, visitorId: string, now: Date): boolean {
@@ -6335,7 +6913,7 @@ export class Cp2Store {
 
   createPublicOrder(input: {
     agentId: string;
-    visitorId: string;
+    capabilityToken: string;
     customerName: string;
     phone: string;
     note: string | null;
@@ -6344,10 +6922,15 @@ export class Cp2Store {
   }): PublicOrderSummary {
     const now = input.now ?? new Date();
     const business = this.requirePublicStorefrontBusiness(input.agentId);
+    const principal = this.requireCustomerCapability(input.capabilityToken, business.id, now);
+    const identity = this.platformIdentities.get(principal.platformIdentityId);
+    if (identity === undefined) {
+      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
+    }
     if (input.items.length === 0 || input.items.length > 100) {
       throw new Cp2Error(400, "order_items_invalid", "An order needs between 1 and 100 items.");
     }
-    const items = input.items.map((item) => {
+    const resolvedItems = input.items.map((item) => {
       const product = this.products.get(item.productId);
       if (product === undefined || product.businessId !== business.id || product.quantity <= 0) {
         throw new Cp2Error(404, "order_product_unavailable", "An order product is unavailable.");
@@ -6359,33 +6942,68 @@ export class Cp2Store {
       ) {
         throw new Cp2Error(400, "order_quantity_invalid", `Invalid quantity for ${product.name}.`);
       }
-      return {
-        productId: product.id,
-        productName: product.name,
-        unit: product.unit,
-        quantity: item.quantity
-      };
+      if (product.sellingPrice === null) {
+        throw new Cp2Error(
+          409,
+          "order_price_unavailable",
+          `Price is unavailable for ${product.name}.`
+        );
+      }
+      return { product, quantity: item.quantity };
     });
+    const invoice = this.buildStoredInvoice({
+      businessId: business.id,
+      invoiceId: randomUUID(),
+      invoiceNumber: this.nextInvoiceNumber(business.id),
+      input: {
+        customerId: null,
+        customerName: normalizeRequiredBoundedText(input.customerName, "customer name", 120),
+        taxRate: 0,
+        items: resolvedItems.map(({ product, quantity }) => ({
+          productId: product.id,
+          quantity,
+          unitPrice: product.sellingPrice as number
+        }))
+      },
+      status: "draft",
+      confirmedAt: null,
+      now
+    });
+    this.invoices.set(invoice.id, invoice);
+    const items = resolvedItems.map(({ product, quantity }) => ({
+      productId: product.id,
+      productName: product.name,
+      unit: product.unit,
+      quantity
+    }));
     const order: PublicOrderSummary = {
       id: randomUUID(),
       businessId: business.id,
-      visitorId: normalizeRequiredBoundedText(input.visitorId, "visitorId", 100),
-      customerName: normalizeRequiredBoundedText(input.customerName, "customer name", 120),
+      visitorId: identity.externalUserId,
+      customerName: invoice.customerName as string,
       phone: normalizeRequiredBoundedText(input.phone, "phone", 40),
       note: normalizeOptionalBoundedText(input.note, 2000),
       items,
       status: "requested",
+      conversationId: principal.conversationId,
+      invoiceId: invoice.id,
+      payment: this.buildInvoicePaymentSummary(invoice),
       createdAt: now.toISOString(),
       updatedAt: now.toISOString()
     };
     this.publicOrders.set(order.id, order);
     this.recordAuditEvent({
       type: "storefront.order_requested",
-      aggregateType: "public_order",
+      aggregateType: "invoice",
       aggregateId: order.id,
       actorId: "public-storefront",
       occurredAt: now.toISOString(),
-      payload: { businessId: business.id, itemCount: order.items.length }
+      payload: {
+        businessId: business.id,
+        conversationId: principal.conversationId,
+        invoiceId: invoice.id,
+        itemCount: order.items.length
+      }
     });
     return order;
   }
@@ -6407,9 +7025,28 @@ export class Cp2Store {
     now?: Date;
   }): PublicStorefrontMessageSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
-    return [...this.publicStorefrontMessages.values()].filter(
-      (message) => message.businessId === input.businessId
+    const channels = [...this.conversationChannels.values()].filter(
+      (channel) => channel.businessId === input.businessId
     );
+    const channelByConversation = new Map(
+      channels.map((channel) => [channel.conversationId, channel])
+    );
+    return [...this.conversationMessages.values()]
+      .filter(
+        (message) =>
+          channelByConversation.has(message.conversationId) && message.content.type === "text"
+      )
+      .map((message) => {
+        const channel = channelByConversation.get(
+          message.conversationId
+        ) as ConversationChannelSummary;
+        const identity = this.platformIdentities.get(channel.platformIdentityId);
+        return this.publicMessageView(
+          message,
+          input.businessId,
+          identity?.externalUserId ?? "external"
+        );
+      });
   }
 
   listPublicOrders(input: {
@@ -6419,6 +7056,353 @@ export class Cp2Store {
   }): PublicOrderSummary[] {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
     return [...this.publicOrders.values()].filter((order) => order.businessId === input.businessId);
+  }
+
+  createProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    sourceFileName: string;
+    contentType: ProductMediaSummary["contentType"];
+    contentBase64: string;
+    sourceChecksum: string;
+    extractedText: string;
+    averageConfidence?: number | null;
+    now?: Date;
+  }): ProductCaptureJobSummary {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:write",
+      now
+    );
+    const confidence =
+      input.averageConfidence === null || input.averageConfidence === undefined
+        ? null
+        : Math.min(1, Math.max(0, input.averageConfidence));
+    const mediaId = randomUUID();
+    const byteLength = Buffer.from(input.contentBase64, "base64").byteLength;
+    this.productMedia.set(mediaId, {
+      id: mediaId,
+      businessId: input.businessId,
+      productId: null,
+      contentType: input.contentType,
+      fileName: normalizeRequiredBoundedText(input.sourceFileName, "fileName", 255),
+      checksum: input.sourceChecksum,
+      byteLength,
+      publicUrl: `/public/product-media/${mediaId}`,
+      createdBy: auth.user.id,
+      createdAt: now.toISOString(),
+      contentBase64: input.contentBase64
+    });
+    const text = input.extractedText.trim();
+    const title = firstProductCaptureTitle(text);
+    const visiblePrice = visibleProductCapturePrice(text);
+    const historyStatuses = [
+      "UPLOADED",
+      "QUEUED",
+      "VALIDATING",
+      "PREPROCESSING",
+      "EXTRACTION_RUNNING"
+    ] as const;
+    const statusHistory: ProductCaptureJobSummary["statusHistory"] = historyStatuses.map(
+      (status) => ({ status, at: now.toISOString() })
+    );
+    if (text.length > 0) {
+      statusHistory.push(
+        { status: "FIELDS_EXTRACTED", at: now.toISOString() },
+        { status: "DUPLICATE_CHECK", at: now.toISOString() },
+        { status: "REVIEW_REQUIRED", at: now.toISOString() }
+      );
+    } else {
+      statusHistory.push({ status: "EXTRACTION_FAILED", at: now.toISOString() });
+    }
+    const duplicates =
+      title === null
+        ? []
+        : queryCatalogueProducts({
+            businessId: input.businessId,
+            products: [...this.products.values()],
+            query: title,
+            limit: 5
+          }).products.map((product) => product.productId);
+    const job: ProductCaptureJobSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      uploadedBy: auth.user.id,
+      status: text.length > 0 ? "REVIEW_REQUIRED" : "EXTRACTION_FAILED",
+      statusHistory,
+      sourceFileName: input.sourceFileName,
+      contentType: input.contentType,
+      sourceChecksum: input.sourceChecksum,
+      temporaryMediaId: mediaId,
+      fields: {
+        title: captureField(title, confidence),
+        category: captureField<string>(null, null),
+        description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
+        visiblePrice: captureField(visiblePrice, visiblePrice === null ? null : confidence)
+      },
+      possibleDuplicateProductIds: duplicates,
+      failureCode: text.length > 0 ? null : "product_capture_text_missing",
+      failureMessage:
+        text.length > 0
+          ? null
+          : "No reliable product text was extracted. Retry, enter details manually, or cancel.",
+      retryCount: 0,
+      publishedProductId: null,
+      keepImageAsProductMedia: false,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      confirmedAt: null,
+      publishedAt: null,
+      cancelledAt: null
+    };
+    this.productCaptureJobs.set(job.id, job);
+    return job;
+  }
+
+  getProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    captureJobId: string;
+    now?: Date;
+  }): ProductCaptureJobSummary {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    return this.requireProductCaptureJob(input.businessId, input.captureJobId);
+  }
+
+  reviewProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    captureJobId: string;
+    title: string;
+    category?: string | null;
+    description?: string | null;
+    visiblePrice?: number | null;
+    keepImageAsProductMedia: boolean;
+    now?: Date;
+  }): ProductCaptureJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:write", now);
+    const current = this.requireProductCaptureJob(input.businessId, input.captureJobId);
+    if (!["REVIEW_REQUIRED", "EXTRACTION_FAILED"].includes(current.status)) {
+      throw new Cp2Error(409, "product_capture_not_reviewable", "Capture is not reviewable.");
+    }
+    const title = normalizeRequiredBoundedText(input.title, "title", 160);
+    const duplicates = queryCatalogueProducts({
+      businessId: input.businessId,
+      products: [...this.products.values()],
+      query: title,
+      limit: 5
+    }).products.map((product) => product.productId);
+    const updated: ProductCaptureJobSummary = {
+      ...current,
+      status: "REVIEW_REQUIRED",
+      statusHistory:
+        current.status === "REVIEW_REQUIRED"
+          ? current.statusHistory
+          : [...current.statusHistory, { status: "REVIEW_REQUIRED", at: now.toISOString() }],
+      fields: {
+        title: sellerCaptureField(title),
+        category: sellerCaptureField(normalizeOptionalBoundedText(input.category ?? null, 120)),
+        description: sellerCaptureField(
+          normalizeOptionalBoundedText(input.description ?? null, 2000)
+        ),
+        visiblePrice: sellerCaptureField(input.visiblePrice ?? null)
+      },
+      possibleDuplicateProductIds: duplicates,
+      failureCode: null,
+      failureMessage: null,
+      keepImageAsProductMedia: input.keepImageAsProductMedia,
+      updatedAt: now.toISOString()
+    };
+    this.productCaptureJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  retryProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    captureJobId: string;
+    extractedText: string;
+    averageConfidence?: number | null;
+    now?: Date;
+  }): ProductCaptureJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:write", now);
+    const current = this.requireProductCaptureJob(input.businessId, input.captureJobId);
+    if (current.status !== "EXTRACTION_FAILED") {
+      throw new Cp2Error(409, "product_capture_retry_invalid", "Only failed captures can retry.");
+    }
+    const text = input.extractedText.trim();
+    const title = firstProductCaptureTitle(text);
+    const price = visibleProductCapturePrice(text);
+    const confidence = input.averageConfidence ?? null;
+    const finalStatus = text.length > 0 ? "REVIEW_REQUIRED" : "EXTRACTION_FAILED";
+    const statusHistory: ProductCaptureJobSummary["statusHistory"] = [
+      ...current.statusHistory,
+      { status: "QUEUED", at: now.toISOString() },
+      { status: "VALIDATING", at: now.toISOString() },
+      { status: "PREPROCESSING", at: now.toISOString() },
+      { status: "EXTRACTION_RUNNING", at: now.toISOString() }
+    ];
+    if (text.length > 0) {
+      statusHistory.push(
+        { status: "FIELDS_EXTRACTED", at: now.toISOString() },
+        { status: "DUPLICATE_CHECK", at: now.toISOString() },
+        { status: "REVIEW_REQUIRED", at: now.toISOString() }
+      );
+    } else statusHistory.push({ status: "EXTRACTION_FAILED", at: now.toISOString() });
+    const updated: ProductCaptureJobSummary = {
+      ...current,
+      status: finalStatus,
+      statusHistory,
+      fields: {
+        title: captureField(title, confidence),
+        category: captureField<string>(null, null),
+        description: captureField(text.length > 0 ? text.slice(0, 1000) : null, confidence),
+        visiblePrice: captureField(price, price === null ? null : confidence)
+      },
+      possibleDuplicateProductIds:
+        title === null
+          ? []
+          : queryCatalogueProducts({
+              businessId: input.businessId,
+              products: [...this.products.values()],
+              query: title,
+              limit: 5
+            }).products.map((product) => product.productId),
+      failureCode: text.length > 0 ? null : "product_capture_text_missing",
+      failureMessage:
+        text.length > 0
+          ? null
+          : "No reliable product text was extracted. Retry, enter details manually, or cancel.",
+      retryCount: current.retryCount + 1,
+      updatedAt: now.toISOString()
+    };
+    this.productCaptureJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  cancelProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    captureJobId: string;
+    now?: Date;
+  }): ProductCaptureJobSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:write", now);
+    const current = this.requireProductCaptureJob(input.businessId, input.captureJobId);
+    if (["PUBLISHED", "CANCELLED"].includes(current.status)) return current;
+    if (current.temporaryMediaId !== null) this.productMedia.delete(current.temporaryMediaId);
+    const updated: ProductCaptureJobSummary = {
+      ...current,
+      status: "CANCELLED",
+      statusHistory: [...current.statusHistory, { status: "CANCELLED", at: now.toISOString() }],
+      temporaryMediaId: null,
+      updatedAt: now.toISOString(),
+      cancelledAt: now.toISOString()
+    };
+    this.productCaptureJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  confirmProductCaptureJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    captureJobId: string;
+    existingProductId?: string | null;
+    unit?: string | null;
+    quantity?: number;
+    aliases?: string[];
+    now?: Date;
+  }): { job: ProductCaptureJobSummary; product: ProductSummary } {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:write", now);
+    const current = this.requireProductCaptureJob(input.businessId, input.captureJobId);
+    if (current.status !== "REVIEW_REQUIRED") {
+      throw new Cp2Error(409, "product_capture_confirmation_invalid", "Review is required first.");
+    }
+    const title = current.fields.title.value;
+    if (title === null) {
+      throw new Cp2Error(400, "product_capture_title_required", "A confirmed title is required.");
+    }
+    const existing =
+      input.existingProductId === undefined || input.existingProductId === null
+        ? null
+        : this.requireProduct(input.businessId, input.existingProductId);
+    const productInput: ProductInput = {
+      name: title,
+      sku: existing?.sku ?? null,
+      aliases: input.aliases ?? existing?.aliases ?? [],
+      unit: input.unit ?? existing?.unit ?? "unit",
+      quantity: input.quantity ?? existing?.quantity ?? 0,
+      buyingPrice: existing?.buyingPrice ?? null,
+      sellingPrice: current.fields.visiblePrice.value ?? existing?.sellingPrice ?? null
+    };
+    const product =
+      existing === null
+        ? this.createProduct({
+            sessionId: input.sessionId,
+            businessId: input.businessId,
+            product: productInput,
+            now
+          })
+        : this.updateProduct({
+            sessionId: input.sessionId,
+            businessId: input.businessId,
+            productId: existing.id,
+            product: productInput,
+            now
+          });
+    let publishedProduct = product;
+    if (current.temporaryMediaId !== null) {
+      if (current.keepImageAsProductMedia) {
+        const media = this.productMedia.get(current.temporaryMediaId);
+        if (media !== undefined) {
+          this.productMedia.set(media.id, { ...media, productId: product.id });
+          publishedProduct = { ...product, primaryMediaId: media.id, updatedAt: now.toISOString() };
+          this.products.set(product.id, publishedProduct);
+        }
+      } else {
+        this.productMedia.delete(current.temporaryMediaId);
+      }
+    }
+    const updated: ProductCaptureJobSummary = {
+      ...current,
+      status: "PUBLISHED",
+      statusHistory: [
+        ...current.statusHistory,
+        { status: "CONFIRMED", at: now.toISOString() },
+        { status: "PUBLISHED", at: now.toISOString() }
+      ],
+      temporaryMediaId: current.keepImageAsProductMedia ? current.temporaryMediaId : null,
+      publishedProductId: publishedProduct.id,
+      updatedAt: now.toISOString(),
+      confirmedAt: now.toISOString(),
+      publishedAt: now.toISOString()
+    };
+    this.productCaptureJobs.set(updated.id, updated);
+    return { job: updated, product: publishedProduct };
+  }
+
+  getPublicProductMedia(input: { mediaId: string }): ProductMediaRecord {
+    const media = this.productMedia.get(input.mediaId);
+    if (media === undefined || media.productId === null) {
+      throw new Cp2Error(404, "product_media_not_found", "Product image was not found.");
+    }
+    return media;
+  }
+
+  private requireProductCaptureJob(
+    businessId: string,
+    captureJobId: string
+  ): ProductCaptureJobSummary {
+    const job = this.productCaptureJobs.get(captureJobId);
+    if (job === undefined || job.businessId !== businessId) {
+      throw new Cp2Error(404, "product_capture_not_found", "Product capture was not found.");
+    }
+    return job;
   }
 
   createProduct(input: {
@@ -6441,6 +7425,8 @@ export class Cp2Store {
       businessId: input.businessId,
       name: normalized.name,
       sku: normalized.sku,
+      aliases: normalized.aliases,
+      primaryMediaId: null,
       unit: normalized.unit,
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
@@ -6495,6 +7481,8 @@ export class Cp2Store {
       ...existing,
       name: normalized.name,
       sku: normalized.sku,
+      aliases: input.product.aliases === undefined ? (existing.aliases ?? []) : normalized.aliases,
+      primaryMediaId: existing.primaryMediaId ?? null,
       unit: normalized.unit,
       quantity: normalized.quantity,
       buyingPrice: normalized.buyingPrice,
@@ -10552,6 +11540,165 @@ export class Cp2Store {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
+  private createCustomerCatalogueRuntimeTurn(input: {
+    capability: CustomerRuntimeCapabilityRecord;
+    message: string;
+    now: Date;
+  }): RuntimeTurnResult | null {
+    const match = parseProductContextScriptCommand({
+      message: input.message,
+      tenantId: input.capability.businessId
+    });
+    if (match === null) return null;
+    const proposal = createRuntimeToolProposalFromProductContextScript(match);
+    if (proposal.toolName !== "products.list") return null;
+    const runtimeSession =
+      [...this.runtimeSessions.values()].find(
+        (candidate) =>
+          candidate.businessId === input.capability.businessId &&
+          candidate.userId === `external:${input.capability.platformIdentityId}` &&
+          candidate.status === "active" &&
+          candidate.turnCount < maxRuntimeTurnsPerSession
+      ) ??
+      this.createCustomerRuntimeSession({
+        businessId: input.capability.businessId,
+        actorId: `external:${input.capability.platformIdentityId}`,
+        now: input.now
+      });
+    const query =
+      typeof proposal.input.query === "string" ? proposal.input.query : input.message.trim();
+    const result = queryCatalogueProducts({
+      businessId: input.capability.businessId,
+      products: [...this.products.values()],
+      query,
+      imageForProduct: (product) => this.publicProductImage(product)
+    });
+    const plan = createRuntimePlan({
+      toolName: "products.list",
+      input: { query },
+      validationErrors: [],
+      confirmationToken: null,
+      status: "safe_to_execute"
+    });
+    plan.executedAt = input.now.toISOString();
+    const verification = createRuntimeVerification({
+      requiresConfirmation: false,
+      confirmationSatisfied: false,
+      roleAllowed: true,
+      rateLimited: false,
+      errors: []
+    });
+    const context = this.buildCustomerRuntimeContext(
+      input.capability.businessId,
+      `external:${input.capability.platformIdentityId}`
+    );
+    const turnId = randomUUID();
+    const telemetry: RuntimeTelemetryEvent[] = [
+      {
+        id: randomUUID(),
+        sessionId: runtimeSession.id,
+        turnId,
+        state: "turn.received",
+        occurredAt: input.now.toISOString(),
+        toolName: null,
+        risk: null,
+        status: "completed",
+        metadata: { principal: "customer_capability" }
+      },
+      {
+        id: randomUUID(),
+        sessionId: runtimeSession.id,
+        turnId,
+        state: "tool.executed",
+        occurredAt: input.now.toISOString(),
+        toolName: "products.list",
+        risk: "low",
+        status: "completed",
+        metadata: { resultCount: result.total }
+      }
+    ];
+    return this.storeRuntimeTurn({
+      runtimeSession,
+      turn: {
+        id: turnId,
+        sessionId: runtimeSession.id,
+        businessId: input.capability.businessId,
+        actorId: `external:${input.capability.platformIdentityId}`,
+        message: input.message,
+        normalizedInput: input.message.trim().toLowerCase(),
+        parserIntent: "show_products",
+        parserConfidence: match.confidence,
+        status: "completed",
+        context,
+        plan,
+        verification,
+        model: null,
+        response: createRuntimeResponse({
+          plan,
+          proposalReason: proposal.reason,
+          toolResult: result,
+          verification
+        }),
+        toolResult: result,
+        telemetry,
+        runtimeVersion: this.currentAgentProfile(input.capability.businessId, input.now)
+          .runtimeVersion,
+        createdAt: input.now.toISOString()
+      },
+      now: input.now
+    });
+  }
+
+  private createCustomerRuntimeSession(input: {
+    businessId: string;
+    actorId: string;
+    now: Date;
+  }): RuntimeSessionSummary {
+    const session: RuntimeSessionSummary = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      userId: input.actorId,
+      status: "active",
+      turnCount: 0,
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+    this.runtimeSessions.set(session.id, session);
+    return session;
+  }
+
+  private buildCustomerRuntimeContext(businessId: string, actorId: string): RuntimeContextSummary {
+    return {
+      businessId,
+      userId: actorId,
+      role: "view_only",
+      productCount: this.productsForBusiness(businessId).length,
+      customerCount: 0,
+      supplierCount: 0,
+      invoiceCount: 0,
+      openInvoiceCount: 0,
+      paymentCount: 0,
+      importJobCount: 0,
+      logisticsCount: 0,
+      activeLogisticsCount: 0,
+      complianceExportCount: 0,
+      scheduledDeletionCount: 0,
+      verificationTier: "unverified",
+      deviceTrustLevel: "unknown",
+      betaAccessStatus: "not_invited",
+      betaReadinessStatus: "blocked",
+      openSupportTicketCount: 0,
+      crashFreeSessionRate: 1,
+      publicLaunchStatus: "closed",
+      launchReadinessStatus: "blocked",
+      openLaunchIncidentCount: 0,
+      lowStockCount: 0,
+      outstandingDebtTotal: 0,
+      unreadNotificationCount: 0,
+      knowledgeFactCount: 0
+    };
+  }
+
   async createRuntimeTurn(input: {
     sessionId: string | null;
     businessId: string;
@@ -11273,6 +12420,10 @@ export class Cp2Store {
       conversations: [...this.conversations.values()],
       conversationParticipants: [...this.conversationParticipants.values()],
       conversationMessages: [...this.conversationMessages.values()],
+      platformIdentities: [...this.platformIdentities.values()],
+      conversationChannels: [...this.conversationChannels.values()],
+      providerUpdateReceipts: [...this.providerUpdateReceipts.values()],
+      customerRuntimeCapabilities: [...this.customerRuntimeCapabilities.values()],
       messageDeliveryAttempts: [...this.messageDeliveryAttempts.values()],
       messageNotificationDeliveries: [...this.messageNotificationDeliveries.values()],
       e2eeDevices: [...this.e2eeDevices.values()],
@@ -11301,6 +12452,8 @@ export class Cp2Store {
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
       productFieldSchemas: [...this.productFieldSchemas.values()],
       products: [...this.products.values()],
+      productMedia: [...this.productMedia.values()],
+      productCaptureJobs: [...this.productCaptureJobs.values()],
       customers: [...this.customers.values()],
       suppliers: [...this.suppliers.values()],
       salesAgents: [...this.salesAgents.values()],
@@ -11380,6 +12533,10 @@ export class Cp2Store {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.platformIdentities.clear();
+    this.conversationChannels.clear();
+    this.providerUpdateReceipts.clear();
+    this.customerRuntimeCapabilities.clear();
     this.messageDeliveryAttempts.clear();
     this.messageNotificationDeliveries.clear();
     this.e2eeDevices.clear();
@@ -11403,6 +12560,8 @@ export class Cp2Store {
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
     this.products.clear();
+    this.productMedia.clear();
+    this.productCaptureJobs.clear();
     this.productFieldSchemas.clear();
     this.customers.clear();
     this.suppliers.clear();
@@ -11551,6 +12710,19 @@ export class Cp2Store {
       );
     }
 
+    for (const identity of snapshot.platformIdentities ?? []) {
+      this.platformIdentities.set(identity.id, identity);
+    }
+    for (const channel of snapshot.conversationChannels ?? []) {
+      this.conversationChannels.set(channel.id, channel);
+    }
+    for (const receipt of snapshot.providerUpdateReceipts ?? []) {
+      this.providerUpdateReceipts.set(receipt.id, receipt);
+    }
+    for (const capability of snapshot.customerRuntimeCapabilities ?? []) {
+      this.customerRuntimeCapabilities.set(capability.id, capability);
+    }
+
     for (const attempt of snapshot.messageDeliveryAttempts ?? []) {
       this.messageDeliveryAttempts.set(attempt.id, attempt);
     }
@@ -11634,8 +12806,14 @@ export class Cp2Store {
     }
 
     for (const product of snapshot.products) {
-      this.products.set(product.id, product);
+      this.products.set(product.id, {
+        ...product,
+        aliases: product.aliases ?? [],
+        primaryMediaId: product.primaryMediaId ?? null
+      });
     }
+    for (const media of snapshot.productMedia ?? []) this.productMedia.set(media.id, media);
+    for (const job of snapshot.productCaptureJobs ?? []) this.productCaptureJobs.set(job.id, job);
 
     for (const schema of snapshot.productFieldSchemas ?? []) {
       this.productFieldSchemas.set(schema.businessId, {
@@ -13644,9 +14822,19 @@ export class Cp2Store {
           id: product.id,
           name: product.name,
           unit: product.unit,
-          available: true
+          available: true,
+          sellingPrice: product.sellingPrice,
+          image: this.publicProductImage(product)
         }))
     };
+  }
+
+  private publicProductImage(product: ProductSummary): string | null {
+    if (product.primaryMediaId === null || product.primaryMediaId === undefined) return null;
+    const media = this.productMedia.get(product.primaryMediaId);
+    return media?.productId === product.id && media.businessId === product.businessId
+      ? media.publicUrl
+      : null;
   }
 
   private shopPresenceForBusiness(businessId: string): ShopPresenceSummary {
@@ -14040,11 +15228,19 @@ export class Cp2Store {
   }): unknown {
     switch (input.action.toolName) {
       case "products.list":
-        return this.listProducts({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        });
+        return typeof input.action.input.query === "string" &&
+          input.action.input.query.trim() !== ""
+          ? this.queryCatalogue({
+              sessionId: input.sessionId,
+              businessId: input.businessId,
+              query: input.action.input.query,
+              now: input.now
+            })
+          : this.listProducts({
+              sessionId: input.sessionId,
+              businessId: input.businessId,
+              now: input.now
+            });
 
       case "invoices.list":
         return this.listInvoices({
@@ -16924,7 +18120,10 @@ export class Cp2Store {
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
   }> {
-    const { provider, binding } = this.resolveRuntimeModelProvider(input.shopRuntime, input.modelId);
+    const { provider, binding } = this.resolveRuntimeModelProvider(
+      input.shopRuntime,
+      input.modelId
+    );
 
     if (provider === undefined) {
       if (binding !== null) {
@@ -18523,11 +19722,28 @@ function createRuntimeResponse(input: {
     return `I prepared ${input.plan.toolName}. Confirm before I run it.`;
   }
 
+  if (input.plan.toolName === "products.list" && isCatalogueQueryResult(input.toolResult)) {
+    if (input.toolResult.total === 0) {
+      return `No catalogue products matched "${input.toolResult.query}" in this shop.`;
+    }
+    return `Found ${input.toolResult.total} verified catalogue ${input.toolResult.total === 1 ? "product" : "products"} for "${input.toolResult.query}".`;
+  }
+
   if (input.toolResult !== null) {
     return `${input.proposalReason} Done.`;
   }
 
   return input.proposalReason;
+}
+
+function isCatalogueQueryResult(value: unknown): value is CatalogueQueryResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.query === "string" &&
+    Number.isInteger(record.total) &&
+    Array.isArray(record.products)
+  );
 }
 
 /**
@@ -19288,6 +20504,15 @@ function validateConversationMessageContent(content: ConversationMessageContent)
     case "owner-controls":
       if (content.shopId.trim().length === 0) {
         throw new Cp2Error(400, "message_content_invalid", "shopId is required.");
+      }
+      return;
+    case "product-card":
+      if (
+        content.product.productId.trim().length === 0 ||
+        content.product.businessId.trim().length === 0 ||
+        content.product.name.trim().length === 0
+      ) {
+        throw new Cp2Error(400, "message_content_invalid", "Product card is invalid.");
       }
       return;
     case "confirmation":
@@ -21004,6 +22229,47 @@ function normalizeOptionalBoundedText(value: string | null, maximumLength: numbe
     );
   }
   return normalized;
+}
+
+function hashCustomerCapability(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function captureField<T>(value: T | null, confidence: number | null): ProductCaptureField<T> {
+  return {
+    value,
+    source: value === null ? "not_detected" : "vision_extraction",
+    confidence: value === null ? null : confidence
+  };
+}
+
+function sellerCaptureField<T>(value: T | null): ProductCaptureField<T> {
+  return {
+    value,
+    source: value === null ? "not_detected" : "seller",
+    confidence: value === null ? null : 1
+  };
+}
+
+function firstProductCaptureTitle(text: string): string | null {
+  const firstUsefulLine = text
+    .split(/\r?\n/u)
+    .map((line) => line.trim().replace(/\s+/gu, " "))
+    .find(
+      (line) =>
+        line.length > 1 && !/^(?:ksh|kes|usd|tzs|ugx|zar|eur|gbp|\$|€|£)\s*[\d,.]+$/iu.test(line)
+    );
+  return firstUsefulLine === undefined ? null : firstUsefulLine.slice(0, 160);
+}
+
+function visibleProductCapturePrice(text: string): number | null {
+  const match = text.match(
+    /(?:\b(?:ksh|kes|usd|tzs|ugx|zar|eur|gbp)\b|[$€£])\s*([0-9]+(?:[,.][0-9]{1,3})*)/iu
+  );
+  if (match?.[1] === undefined) return null;
+  const normalized = match[1].replace(/,/gu, "");
+  const price = Number(normalized);
+  return Number.isFinite(price) && price >= 0 ? price : null;
 }
 
 function assertValid(result: { ok: boolean; errors: string[] }): void {

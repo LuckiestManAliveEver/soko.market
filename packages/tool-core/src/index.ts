@@ -290,6 +290,21 @@ const defaultProductVocabularyDefinitions: Array<{
   cardinality?: ProductContextScriptCardinality;
 }> = [
   {
+    intent: "PRODUCT_LOOKUP",
+    entity: "product",
+    phrases: {
+      en: [
+        "find product",
+        "find products",
+        "search product",
+        "search products",
+        "look up product",
+        "look up products"
+      ],
+      sw: ["tafuta bidhaa"]
+    }
+  },
+  {
     intent: "PRODUCT_LIST",
     entity: "product",
     phrases: {
@@ -305,12 +320,6 @@ const defaultProductVocabularyDefinitions: Array<{
         "catalog",
         "menu",
         "inventory",
-        "find product",
-        "find products",
-        "search product",
-        "search products",
-        "look up product",
-        "look up products",
         "show product",
         "show products",
         "show stock",
@@ -320,14 +329,7 @@ const defaultProductVocabularyDefinitions: Array<{
         "available products",
         "what do I sell"
       ],
-      sw: [
-        "bidhaa",
-        "bidhaa zangu",
-        "tafuta bidhaa",
-        "onyesha bidhaa",
-        "orodha ya bidhaa",
-        "bidhaa zilizopo"
-      ],
+      sw: ["bidhaa", "bidhaa zangu", "onyesha bidhaa", "orodha ya bidhaa", "bidhaa zilizopo"],
       sheng: ["stock iko aje"]
     }
   },
@@ -727,6 +729,9 @@ export function createRuntimeToolProposalFromProductContextScript(
       return {
         toolName: "products.list",
         input: {
+          ...(match.entities.productName === undefined
+            ? {}
+            : { query: match.entities.productName }),
           cardinality: match.cardinality,
           source: match.source
         },
@@ -1669,18 +1674,22 @@ function matchProductVocabulary(
       position,
       candidate.normalizedPhrase
     );
+    const resolvedIntent =
+      candidate.entry.intent === "PRODUCT_LOOKUP" && remainingText.length === 0
+        ? "PRODUCT_LIST"
+        : candidate.entry.intent;
     const cardinality =
       detectCardinality(normalizedMessage, candidate.entry.phrase) ?? candidate.entry.cardinality;
     const entities = extractProductContextEntities(
       remainingText,
-      candidate.entry.intent,
+      resolvedIntent,
       candidate.entry.entity
     );
 
     return {
       matched: true,
       scriptId: "product-vocabulary",
-      intent: candidate.entry.intent,
+      intent: resolvedIntent,
       entity: candidate.entry.entity,
       cardinality,
       confidence: candidate.entry.source === "custom" ? 0.98 : 0.96,
@@ -1688,8 +1697,8 @@ function matchProductVocabulary(
       remainingText,
       entities,
       source: "context_script",
-      requiresConfirmation: productContextRequiresConfirmation(candidate.entry.intent),
-      clarificationRequired: productContextNeedsClarification(candidate.entry.intent, entities),
+      requiresConfirmation: productContextRequiresConfirmation(resolvedIntent),
+      clarificationRequired: productContextNeedsClarification(resolvedIntent, entities),
       fallbackReason: null
     };
   }
@@ -1960,7 +1969,7 @@ function extractProductContextEntities(
     return entities;
   }
 
-  if (cleaned.length > 0 && !["PRODUCT_LIST", "PRODUCT_LOOKUP"].includes(intent)) {
+  if (cleaned.length > 0 && intent !== "PRODUCT_LIST") {
     entities.productName = cleaned;
   }
 

@@ -165,6 +165,22 @@ function mcpToolsForPrincipal(principal: McpPrincipal) {
           }
         },
         annotations: { readOnlyHint: true, destructiveHint: false }
+      },
+      {
+        name: "soko.query_catalogue",
+        description:
+          "Query canonical products in one authorized shop. Returns authoritative selling price, availability, and product IDs.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["shopId", "query"],
+          properties: {
+            shopId: { type: "string", format: "uuid" },
+            query: { type: "string", minLength: 1, maxLength: 120 },
+            limit: { type: "integer", minimum: 1, maximum: 50 }
+          }
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false }
       }
     );
   }
@@ -221,6 +237,16 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
       result = store.pullSyncChanges({
         sessionId: principal.sessionId,
         cursor: optionalStringValue(args.cursor, "cursor"),
+        ...(limit === undefined ? {} : { limit })
+      });
+    } else if (name === "soko.query_catalogue") {
+      requireScope(principal, "mcp:read");
+      const shopId = requiredShop(principal, args.shopId);
+      const limit = optionalIntegerValue(args.limit, "limit");
+      result = store.queryCatalogue({
+        sessionId: principal.sessionId,
+        businessId: shopId,
+        query: stringValue(args.query, "query"),
         ...(limit === undefined ? {} : { limit })
       });
     } else if (name === "soko.runtime_turn") {

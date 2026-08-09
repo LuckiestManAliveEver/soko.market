@@ -293,6 +293,7 @@ export const conversationParticipants = pgTable(
     accountId: uuid("account_id").references(() => accounts.id),
     businessId: uuid("business_id").references(() => businesses.id),
     agentId: text("agent_id"),
+    externalIdentityId: text("external_identity_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull()
   },
   (table) => ({
@@ -503,10 +504,12 @@ export const products = pgTable(
       .references(() => businesses.id),
     name: text("name").notNull(),
     sku: text("sku"),
+    aliases: text("aliases").array().notNull().default([]),
     unit: text("unit").notNull(),
     quantity: numeric("quantity").notNull(),
     buyingPrice: numeric("buying_price"),
     sellingPrice: numeric("selling_price"),
+    primaryMediaId: text("primary_media_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
   },
@@ -518,6 +521,27 @@ export const products = pgTable(
     businessUpdated: index("products_business_updated_idx").on(table.businessId, table.updatedAt)
   })
 );
+
+function platformCommerceRecordTable(name: string) {
+  return pgTable(name, {
+    entityId: text("entity_id").primaryKey(),
+    businessId: text("business_id"),
+    accountId: text("account_id"),
+    userId: text("user_id"),
+    parentId: text("parent_id"),
+    record: jsonb("record").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  });
+}
+
+export const platformIdentities = platformCommerceRecordTable("platform_identities");
+export const conversationChannels = platformCommerceRecordTable("conversation_channels");
+export const providerUpdateReceipts = platformCommerceRecordTable("provider_update_receipts");
+export const customerRuntimeCapabilities = platformCommerceRecordTable(
+  "customer_runtime_capabilities"
+);
+export const productMedia = platformCommerceRecordTable("product_media");
+export const productCaptureJobs = platformCommerceRecordTable("product_capture_jobs");
 
 export const customers = pgTable(
   "customers",

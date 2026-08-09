@@ -523,17 +523,45 @@ interface PublicCustomerCareBody {
 }
 
 interface PublicStorefrontMessageBody {
-  visitorId?: string;
+  capabilityToken?: string;
   body?: string;
   attachmentNames?: string[];
 }
 
 interface PublicOrderBody {
-  visitorId?: string;
+  capabilityToken?: string;
   customerName?: string;
   phone?: string;
   note?: string | null;
   items?: Array<{ productId?: string; quantity?: number }>;
+}
+
+interface PublicStorefrontSessionBody {
+  visitorId?: string;
+  displayName?: string | null;
+}
+
+interface ProductCaptureParams extends BusinessParams {
+  captureJobId: string;
+}
+
+interface ProductCaptureBody extends ProductCatalogueImportBody {
+  extractedText?: string;
+}
+
+interface ProductCaptureReviewBody {
+  title?: string;
+  category?: string | null;
+  description?: string | null;
+  visiblePrice?: number | null;
+  keepImageAsProductMedia?: boolean;
+}
+
+interface ProductCaptureConfirmBody {
+  existingProductId?: string | null;
+  unit?: string | null;
+  quantity?: number;
+  aliases?: string[];
 }
 
 interface ProductParams extends BusinessParams {
@@ -599,6 +627,7 @@ interface PaymentParams extends BusinessParams {
 interface ProductBody {
   name?: string;
   sku?: string | null;
+  aliases?: unknown[];
   unit?: string | null;
   quantity?: number;
   buyingPrice?: number | null;
@@ -4052,6 +4081,24 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
+    "/public/storefronts/:agentId/sessions",
+    async (
+      request: FastifyRequest<{ Params: StorefrontParams; Body: PublicStorefrontSessionBody }>,
+      reply
+    ) => {
+      try {
+        return store.createPublicStorefrontSession({
+          agentId: parseString(request.params.agentId, "agentId"),
+          visitorId: parseString(request.body.visitorId, "visitorId"),
+          displayName: parseNullableString(request.body.displayName)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/public/storefronts/:agentId/messages",
     async (
       request: FastifyRequest<{ Params: StorefrontParams; Body: PublicStorefrontMessageBody }>,
@@ -4060,7 +4107,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       try {
         return await store.createPublicStorefrontMessage({
           agentId: parseString(request.params.agentId, "agentId"),
-          visitorId: parseString(request.body.visitorId, "visitorId"),
+          capabilityToken: parseString(request.body.capabilityToken, "capabilityToken"),
           body: parseString(request.body.body, "body"),
           attachmentNames: parseStringArray(request.body.attachmentNames, "attachmentNames", 10)
         });
@@ -4076,12 +4123,28 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       try {
         return store.createPublicOrder({
           agentId: parseString(request.params.agentId, "agentId"),
-          visitorId: parseString(request.body.visitorId, "visitorId"),
+          capabilityToken: parseString(request.body.capabilityToken, "capabilityToken"),
           customerName: parseString(request.body.customerName, "customerName"),
           phone: parseString(request.body.phone, "phone"),
           note: parseNullableString(request.body.note),
           items: parsePublicOrderItems(request.body.items)
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/public/product-media/:mediaId",
+    async (request: FastifyRequest<{ Params: { mediaId: string } }>, reply) => {
+      try {
+        const media = store.getPublicProductMedia({
+          mediaId: parseString(request.params.mediaId, "mediaId")
+        });
+        reply.header("content-type", media.contentType);
+        reply.header("cache-control", "public, max-age=86400, immutable");
+        return reply.send(Buffer.from(media.contentBase64, "base64"));
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -5634,6 +5697,185 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/product-captures",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ProductCaptureBody }>,
+      reply
+    ) => {
+      try {
+        const sessionId = readSessionCookie(request.headers.cookie);
+        store.assertDocumentImportWriteAccess({
+          sessionId,
+          businessId: request.params.businessId
+        });
+        const upload = parseDocumentImportBody(request.body);
+        if (upload.contentBase64 === undefined) {
+          throw new Cp2Error(
+            400,
+            "product_capture_content_required",
+            "A product image is required."
+          );
+        }
+        const contentType = upload.contentType?.trim() || "application/octet-stream";
+        if (!["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
+          throw new Cp2Error(415, "product_capture_type_unsupported", "Use JPEG, PNG, or WebP.");
+        }
+        const binary = decodeReceiptBase64(upload.contentBase64);
+        if (binary.byteLength > 10 * 1024 * 1024) {
+          throw new Cp2Error(
+            413,
+            "product_capture_too_large",
+            "Product images must be 10 MB or smaller."
+          );
+        }
+        assertDocumentOcrSignature(contentType, binary);
+        await binaryUploadPipeline?.process(
+          {
+            businessId: request.params.businessId,
+            fileName: upload.fileName,
+            contentType,
+            bytes: binary
+          },
+          { retain: false }
+        );
+        let extractedText =
+          typeof request.body.extractedText === "string" ? request.body.extractedText : "";
+        let averageConfidence: number | null = null;
+        if (extractedText.trim().length === 0 && receiptOCRProcessor !== undefined) {
+          const extraction = await receiptOCRProcessor.process({
+            fileName: upload.fileName,
+            contentType,
+            contentBase64: binary.toString("base64")
+          });
+          extractedText = extraction.fullText;
+          averageConfidence = extraction.averageConfidence;
+        }
+        return store.createProductCaptureJob({
+          sessionId,
+          businessId: request.params.businessId,
+          sourceFileName: upload.fileName,
+          contentType: contentType as "image/jpeg" | "image/png" | "image/webp",
+          contentBase64: binary.toString("base64"),
+          sourceChecksum: createHash("sha256").update(binary).digest("hex"),
+          extractedText,
+          averageConfidence
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/product-captures/:captureJobId",
+    async (request: FastifyRequest<{ Params: ProductCaptureParams }>, reply) => {
+      try {
+        return store.getProductCaptureJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/product-captures/:captureJobId/review",
+    async (
+      request: FastifyRequest<{ Params: ProductCaptureParams; Body: ProductCaptureReviewBody }>,
+      reply
+    ) => {
+      try {
+        return store.reviewProductCaptureJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId,
+          title: parseString(request.body.title, "title"),
+          category: parseNullableString(request.body.category),
+          description: parseNullableString(request.body.description),
+          visiblePrice:
+            request.body.visiblePrice === undefined
+              ? null
+              : parseNullableNumber(request.body.visiblePrice, "visiblePrice"),
+          keepImageAsProductMedia:
+            request.body.keepImageAsProductMedia === undefined
+              ? false
+              : parseBoolean(request.body.keepImageAsProductMedia, "keepImageAsProductMedia")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/product-captures/:captureJobId/retry",
+    async (
+      request: FastifyRequest<{ Params: ProductCaptureParams; Body: { extractedText?: string } }>,
+      reply
+    ) => {
+      try {
+        return store.retryProductCaptureJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId,
+          extractedText:
+            typeof request.body.extractedText === "string" ? request.body.extractedText : ""
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/product-captures/:captureJobId/cancel",
+    async (request: FastifyRequest<{ Params: ProductCaptureParams }>, reply) => {
+      try {
+        return store.cancelProductCaptureJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/product-captures/:captureJobId/confirm",
+    async (
+      request: FastifyRequest<{ Params: ProductCaptureParams; Body: ProductCaptureConfirmBody }>,
+      reply
+    ) => {
+      try {
+        const quantity =
+          request.body.quantity === undefined
+            ? undefined
+            : parseNumber(request.body.quantity, "quantity");
+        const aliases =
+          request.body.aliases === undefined
+            ? undefined
+            : parseStringArray(request.body.aliases, "aliases", 20);
+        return store.confirmProductCaptureJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId,
+          existingProductId: parseNullableString(request.body.existingProductId),
+          unit: parseNullableString(request.body.unit),
+          ...(quantity === undefined ? {} : { quantity }),
+          ...(aliases === undefined ? {} : { aliases })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   async function prepareDocumentUpload(
     input: DocumentUploadInput,
     businessId: string,
@@ -6271,6 +6513,9 @@ function parseProductBody(body: ProductBody | null | undefined) {
   return {
     name: parseString(record.name, "name"),
     sku: parseNullableString(record.sku),
+    ...(record.aliases === undefined
+      ? {}
+      : { aliases: parseStringArray(record.aliases, "aliases", 20) }),
     unit: parseNullableString(record.unit),
     quantity: record.quantity === undefined ? 0 : parseNumber(record.quantity, "quantity"),
     buyingPrice:

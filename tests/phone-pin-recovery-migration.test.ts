@@ -20,7 +20,7 @@ describe("phone PIN recovery migration", () => {
     expect(schema).not.toContain('recoveryCodeHash: text("recovery_code_hash")');
     expect(postgresStore).not.toContain("recovery_code_hash");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
+      'requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql"'
     );
   });
 });

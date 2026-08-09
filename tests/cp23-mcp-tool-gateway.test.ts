@@ -67,6 +67,7 @@ describe("CP23 MCP tool gateway", () => {
     expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "soko.list_shops",
       "soko.get_sync_changes",
+      "soko.query_catalogue",
       "soko.runtime_turn",
       "soko.confirm_runtime_action"
     ]);
@@ -136,6 +137,12 @@ describe("CP23 MCP tool gateway", () => {
       { name: "Other Shop", language: "en" },
       cookie
     );
+    const product = await postJson<{ id: string }>(
+      app,
+      `/businesses/${first.business.id}/products`,
+      { name: "Fresh Tomatoes", aliases: ["nyanya"], unit: "kg", quantity: 3, sellingPrice: 120 },
+      cookie
+    );
     const readOnlyToken = await postJson<McpTokenResponse>(
       app,
       "/v1/mcp/tokens",
@@ -152,8 +159,44 @@ describe("CP23 MCP tool gateway", () => {
     );
     expect(readListed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "soko.list_shops",
-      "soko.get_sync_changes"
+      "soko.get_sync_changes",
+      "soko.query_catalogue"
     ]);
+    const catalogue = await mcpPost(
+      app,
+      readOnlyToken.accessToken,
+      toolCall(3, "soko.query_catalogue", {
+        shopId: first.business.id,
+        query: "nyanya"
+      }),
+      String(readInitialized.headers["mcp-session-id"])
+    );
+    expect(catalogue.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        products: [
+          {
+            productId: product.id,
+            businessId: first.business.id,
+            sellingPrice: 120,
+            availability: "available"
+          }
+        ]
+      }
+    });
+    const crossBusinessCatalogue = await mcpPost(
+      app,
+      readOnlyToken.accessToken,
+      toolCall(4, "soko.query_catalogue", {
+        shopId: second.business.id,
+        query: "tomatoes"
+      }),
+      String(readInitialized.headers["mcp-session-id"])
+    );
+    expect(crossBusinessCatalogue.json().result).toMatchObject({
+      isError: true,
+      structuredContent: { code: "mcp_shop_forbidden" }
+    });
     const token = await postJson<McpTokenResponse>(
       app,
       "/v1/mcp/tokens",
@@ -176,6 +219,7 @@ describe("CP23 MCP tool gateway", () => {
     expect(listed.json().result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "soko.list_shops",
       "soko.get_sync_changes",
+      "soko.query_catalogue",
       "soko.runtime_turn",
       "soko.confirm_runtime_action"
     ]);

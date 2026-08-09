@@ -19,7 +19,7 @@ describe("agent business runtime migration", () => {
     expect(sql).toContain("business_version_idx");
     expect(sql).toContain("business_created_idx");
     expect(store).toContain(
-      'requiredMigrationFilename = "047_remove_phone_pin_recovery_codes.sql"'
+      'requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql"'
     );
   });
 

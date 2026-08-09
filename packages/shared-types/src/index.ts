@@ -263,7 +263,9 @@ export type SokoChatSurface =
 
 export type ConversationKind = "personal" | "storefront" | "order";
 
-export type ConversationParticipantRole = "account" | "shop" | "agent";
+export type ConversationParticipantRole = "account" | "shop" | "agent" | "external";
+
+export type ConversationProvider = "soko" | "telegram";
 
 export type ConversationMessageAuthor = "user" | "agent" | "system";
 
@@ -367,6 +369,7 @@ export interface EncryptedMessageEnvelope {
 
 export type ConversationMessageContent =
   | { type: "text"; text: string; attachments?: ConversationAttachment[] }
+  | { type: "product-card"; product: CatalogueProductSummary }
   | {
       type: "encrypted";
       envelopes: EncryptedMessageEnvelope[];
@@ -390,12 +393,49 @@ export interface ConversationParticipantSummary {
   accountId: string | null;
   businessId: string | null;
   agentId: string | null;
+  externalIdentityId?: string | null;
   displayName?: string | null;
   lastReadAt?: string | null;
   archivedAt?: string | null;
   mutedUntil?: string | null;
   pinnedAt?: string | null;
   createdAt: string;
+}
+
+export interface PlatformIdentitySummary {
+  id: string;
+  provider: ConversationProvider;
+  externalUserId: string;
+  accountId: string | null;
+  businessId: string;
+  displayName: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationChannelSummary {
+  id: string;
+  conversationId: string;
+  businessId: string;
+  provider: ConversationProvider;
+  externalConversationId: string;
+  platformIdentityId: string;
+  metadata: Record<string, string | number | boolean | null>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProviderUpdateReceiptSummary {
+  id: string;
+  provider: ConversationProvider;
+  externalUpdateId: string;
+  businessId: string;
+  conversationChannelId: string;
+  messageId: string | null;
+  status: "received" | "processed" | "failed";
+  createdAt: string;
+  processedAt: string | null;
 }
 
 export interface ConversationSummary {
@@ -828,12 +868,99 @@ export interface ProductSummary {
   businessId: string;
   name: string;
   sku: string | null;
+  /** Explicit seller-managed lexical aliases (for example, "nyanya" for tomatoes). */
+  aliases?: string[];
+  primaryMediaId?: string | null;
   unit: string;
   quantity: number;
   buyingPrice: number | null;
   sellingPrice: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type CatalogueAvailability = "available" | "unavailable";
+
+/**
+ * Public-safe projection of one canonical product for chat and provider renderers. Buying cost and
+ * raw stock quantity are intentionally excluded.
+ */
+export interface CatalogueProductSummary {
+  productId: string;
+  businessId: string;
+  name: string;
+  unit: string;
+  sellingPrice: number | null;
+  availability: CatalogueAvailability;
+  image: string | null;
+}
+
+export interface ProductMediaSummary {
+  id: string;
+  businessId: string;
+  productId: string | null;
+  contentType: "image/jpeg" | "image/png" | "image/webp";
+  fileName: string;
+  checksum: string;
+  byteLength: number;
+  publicUrl: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export type ProductCaptureStatus =
+  | "UPLOADED"
+  | "QUEUED"
+  | "VALIDATING"
+  | "PREPROCESSING"
+  | "EXTRACTION_RUNNING"
+  | "FIELDS_EXTRACTED"
+  | "DUPLICATE_CHECK"
+  | "REVIEW_REQUIRED"
+  | "EXTRACTION_FAILED"
+  | "CONFIRMED"
+  | "PUBLISHED"
+  | "CANCELLED";
+
+export interface ProductCaptureField<T> {
+  value: T | null;
+  source: "vision_extraction" | "seller" | "not_detected";
+  confidence: number | null;
+}
+
+export interface ProductCaptureJobSummary {
+  id: string;
+  businessId: string;
+  uploadedBy: string;
+  status: ProductCaptureStatus;
+  statusHistory: Array<{ status: ProductCaptureStatus; at: string }>;
+  sourceFileName: string;
+  contentType: string;
+  sourceChecksum: string;
+  temporaryMediaId: string | null;
+  fields: {
+    title: ProductCaptureField<string>;
+    category: ProductCaptureField<string>;
+    description: ProductCaptureField<string>;
+    visiblePrice: ProductCaptureField<number>;
+  };
+  possibleDuplicateProductIds: string[];
+  failureCode: string | null;
+  failureMessage: string | null;
+  retryCount: number;
+  publishedProductId: string | null;
+  keepImageAsProductMedia: boolean;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+  publishedAt: string | null;
+  cancelledAt: string | null;
+}
+
+export interface CatalogueQueryResult {
+  query: string;
+  products: CatalogueProductSummary[];
+  total: number;
 }
 
 export type ProductFieldInputType = "text" | "number" | "select" | "textarea" | "yes_no";
@@ -1529,6 +1656,7 @@ export interface PublicCustomerCareRequestSummary {
 
 export interface PublicStorefrontMessageSummary {
   id: string;
+  conversationId: string;
   businessId: string;
   visitorId: string;
   author: "customer" | "agent";
@@ -1553,6 +1681,9 @@ export interface PublicOrderSummary {
   note: string | null;
   items: PublicOrderItemSummary[];
   status: "requested" | "accepted" | "rejected" | "completed" | "cancelled";
+  conversationId: string;
+  invoiceId: string;
+  payment: InvoicePaymentSummary;
   createdAt: string;
   updatedAt: string;
 }

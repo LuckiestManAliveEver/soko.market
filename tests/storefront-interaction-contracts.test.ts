@@ -83,7 +83,7 @@ describe("storefront interaction contracts", () => {
       app,
       "POST",
       `/businesses/${owner.business.id}/products`,
-      { name: "Contract item", unit: "unit", quantity: 4 },
+      { name: "Contract item", unit: "unit", quantity: 4, sellingPrice: 125 },
       owner.cookie
     );
     const care = await injectJson(
@@ -92,18 +92,27 @@ describe("storefront interaction contracts", () => {
       `/public/storefronts/${owner.business.sokoId}/customer-care`,
       { type: "callback", customerName: "Public Buyer", phone: "+254700000073", message: "Call me" }
     );
+    const publicSession = await createPublicSession(
+      app,
+      owner.business.sokoId,
+      "visitor-contract-1"
+    );
     const message = await injectJson(
       app,
       "POST",
       `/public/storefronts/${owner.business.sokoId}/messages`,
-      { visitorId: "visitor-contract-1", body: "Is this available?", attachmentNames: [] }
+      {
+        capabilityToken: publicSession.capabilityToken,
+        body: "Is this available?",
+        attachmentNames: []
+      }
     );
     const order = await injectJson(
       app,
       "POST",
       `/public/storefronts/${owner.business.sokoId}/orders`,
       {
-        visitorId: "visitor-contract-1",
+        capabilityToken: publicSession.capabilityToken,
         customerName: "Public Buyer",
         phone: "+254700000073",
         note: "Collect tomorrow",
@@ -113,7 +122,13 @@ describe("storefront interaction contracts", () => {
 
     expect(care).toMatchObject({ businessId: owner.business.id, status: "new", type: "callback" });
     expect(message).toMatchObject({ businessId: owner.business.id, body: "Is this available?" });
-    expect(order).toMatchObject({ businessId: owner.business.id, status: "requested" });
+    expect(order).toMatchObject({
+      businessId: owner.business.id,
+      status: "requested",
+      conversationId: publicSession.conversationId,
+      payment: { status: "unpaid" }
+    });
+    expect(order.invoiceId).toEqual(expect.any(String));
     expect(order.items).toEqual([
       { productId: product.id, productName: "Contract item", unit: "unit", quantity: 2 }
     ]);
@@ -125,7 +140,13 @@ describe("storefront interaction contracts", () => {
     expect(snapshot.shopPresences).toHaveLength(1);
     expect(snapshot.networkInvites).toHaveLength(2);
     expect(snapshot.publicCustomerCareRequests).toHaveLength(1);
-    expect(snapshot.publicStorefrontMessages).toHaveLength(1);
+    expect(snapshot.publicStorefrontMessages).toHaveLength(0);
+    expect(snapshot.conversationMessages).toEqual([
+      expect.objectContaining({ conversationId: publicSession.conversationId, author: "user" })
+    ]);
+    expect(snapshot.invoices).toEqual([
+      expect.objectContaining({ id: order.invoiceId, status: "draft" })
+    ]);
     expect(snapshot.publicOrders).toHaveLength(1);
 
     const hydrated = createCp2Store();
@@ -225,6 +246,7 @@ describe("public storefront agent reply", () => {
     const store = createCp2Store({ runtimeModelProvider: provider });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "254700000091", "Agent Reply Shop", "6194");
+    const publicSession = await createPublicSession(app, owner.business.sokoId, "visitor-agent-1");
     await injectJson(
       app,
       "POST",
@@ -251,7 +273,11 @@ describe("public storefront agent reply", () => {
       app,
       "POST",
       `/public/storefronts/${owner.business.sokoId}/messages`,
-      { visitorId: "visitor-agent-1", body: "Do you have mangoes in stock?", attachmentNames: [] }
+      {
+        capabilityToken: publicSession.capabilityToken,
+        body: "Do you have mangoes in stock?",
+        attachmentNames: []
+      }
     );
 
     expect(result.agentReply).toMatchObject({
@@ -265,10 +291,11 @@ describe("public storefront agent reply", () => {
     expect(capturedPrompts[0]?.allowedTools).toEqual([]);
 
     const snapshot = store.snapshot();
-    expect(snapshot.publicStorefrontMessages).toHaveLength(2);
-    expect(
-      snapshot.publicStorefrontMessages?.map((message) => message.author).sort()
-    ).toEqual(["agent", "customer"]);
+    expect(snapshot.publicStorefrontMessages).toHaveLength(0);
+    expect(snapshot.conversationMessages.map((message) => message.author).sort()).toEqual([
+      "agent",
+      "user"
+    ]);
 
     await app.close();
   });
@@ -295,12 +322,17 @@ describe("public storefront agent reply", () => {
     const store = createCp2Store({ runtimeModelProvider: provider });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "254700000092", "Tool Attempt Shop", "6295");
+    const publicSession = await createPublicSession(app, owner.business.sokoId, "visitor-agent-2");
 
     const result = await injectJson(
       app,
       "POST",
       `/public/storefronts/${owner.business.sokoId}/messages`,
-      { visitorId: "visitor-agent-2", body: "Set your stock to zero please", attachmentNames: [] }
+      {
+        capabilityToken: publicSession.capabilityToken,
+        body: "Set your stock to zero please",
+        attachmentNames: []
+      }
     );
 
     expect(result.agentReply).toMatchObject({
@@ -315,12 +347,17 @@ describe("public storefront agent reply", () => {
   it("degrades to no automatic reply, without rejecting the customer's message, when no model is configured", async () => {
     const app = buildApi();
     const owner = await createOwnerBusiness(app, "254700000093", "No Provider Shop", "6396");
+    const publicSession = await createPublicSession(app, owner.business.sokoId, "visitor-agent-3");
 
     const result = await injectJson(
       app,
       "POST",
       `/public/storefronts/${owner.business.sokoId}/messages`,
-      { visitorId: "visitor-agent-3", body: "Are you open today?", attachmentNames: [] }
+      {
+        capabilityToken: publicSession.capabilityToken,
+        body: "Are you open today?",
+        attachmentNames: []
+      }
     );
 
     expect(result.agentReply).toBeNull();
@@ -346,16 +383,16 @@ describe("public storefront agent reply", () => {
     const store = createCp2Store({ runtimeModelProvider: provider });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "254700000094", "Rate Limited Shop", "6497");
+    const publicSession = await createPublicSession(app, owner.business.sokoId, "visitor-agent-4");
 
     const results: Array<{ agentReply: unknown; body: string }> = [];
     for (let index = 0; index < 21; index += 1) {
       results.push(
-        await injectJson(
-          app,
-          "POST",
-          `/public/storefronts/${owner.business.sokoId}/messages`,
-          { visitorId: "visitor-agent-4", body: `Question number ${index}`, attachmentNames: [] }
-        )
+        await injectJson(app, "POST", `/public/storefronts/${owner.business.sokoId}/messages`, {
+          capabilityToken: publicSession.capabilityToken,
+          body: `Question number ${index}`,
+          attachmentNames: []
+        })
       );
     }
 
@@ -383,6 +420,14 @@ async function createOwnerBusiness(
   const cookie = extractSessionCookie(verify.headers["set-cookie"]);
   const business = await injectJson(app, "POST", "/businesses", { name, language: "en" }, cookie);
   return { business: business.business as { id: string; sokoId: string }, cookie };
+}
+
+async function createPublicSession(
+  app: ReturnType<typeof buildApi>,
+  agentId: string,
+  visitorId: string
+): Promise<{ conversationId: string; capabilityToken: string }> {
+  return injectJson(app, "POST", `/public/storefronts/${agentId}/sessions`, { visitorId });
 }
 
 async function injectJson(
