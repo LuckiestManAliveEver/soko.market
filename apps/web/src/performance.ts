@@ -89,6 +89,19 @@ export function recordRouteRender(route: string): void {
   logPerformance("route-render", { route });
 }
 
+export function recordOnboardingEvent(
+  event:
+    | "first_launch_viewed"
+    | "continue_clicked"
+    | "device_account_created"
+    | "first_chat_loaded"
+    | "identity_upgrade_started"
+    | "continue_failed"
+): void {
+  if (!performanceLoggingEnabled) return;
+  logPerformance(event, {});
+}
+
 export function recordComponentRender(
   component: string,
   phase: "mount" | "update" | "nested-update",

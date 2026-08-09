@@ -1016,6 +1016,35 @@ button:disabled {
   padding: clamp(18px, 5vw, 28px);
 }
 
+.progressive-auth-card {
+  align-self: center;
+  text-align: center;
+}
+
+.panel .progressive-continue-button {
+  border-radius: 14px;
+  font-size: 17px;
+  min-height: 56px;
+  width: 100%;
+}
+
+.progressive-sign-in {
+  align-items: center;
+  color: #516258;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 14px;
+  gap: 8px;
+  justify-content: center;
+}
+
+.panel .progressive-sign-in button {
+  background: transparent;
+  color: #117a4f;
+  min-height: 40px;
+  padding: 6px 10px;
+}
+
 .section-heading {
   display: grid;
   gap: 2px;

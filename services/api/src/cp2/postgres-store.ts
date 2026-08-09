@@ -25,6 +25,8 @@ interface NormalizedCollection {
 const normalizedCollections: NormalizedCollection[] = [
   { key: "accounts", tableName: "cp2_accounts" },
   { key: "users", tableName: "cp2_users" },
+  { key: "deviceAccountBootstraps", tableName: "cp2_device_account_bootstraps" },
+  { key: "deviceRecoveryCredentials", tableName: "cp2_device_recovery_credentials" },
   { key: "businesses", tableName: "cp2_businesses" },
   { key: "memberships", tableName: "cp2_memberships" },
   { key: "sessionContexts", tableName: "cp2_session_contexts" },
@@ -122,13 +124,19 @@ const mutatingMethodNames = new Set([
   "approveAgentRoute",
   "authenticateSocialProfile",
   "beginOAuthSession",
+  "beginEmailIdentityUpgrade",
+  "beginEmailIdentityMerge",
   "completeOAuthCallback",
   "completePasskeyAuthentication",
   "completePasskeyRegistration",
   "beginPhoneSignup",
   "completePhoneSignup",
+  "continueWithDevice",
+  "recoverWithDeviceCredential",
   "continueWithChannelPin",
   "loginWithPassword",
+  "mergeCurrentDeviceAccountWithPin",
+  "verifyEmailIdentityMerge",
   "setupTotp",
   "confirmTotp",
   "verifyMfa",
@@ -1153,18 +1161,20 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: string;
     primary_auth_channel: string;
     primary_auth_destination: string;
+    identity_level: "device" | "verified_contact" | "strong";
     status: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
     deleted_at: Date | null;
     created_at: Date;
   }>(
     pool,
     "load accounts",
-    "select id, primary_auth_channel, primary_auth_destination, status, deleted_at, created_at from accounts order by id"
+    "select id, primary_auth_channel, primary_auth_destination, identity_level, status, deleted_at, created_at from accounts order by id"
   );
   snapshot.accounts = accountsResult.rows.map((row) => ({
     id: row.id,
     primaryAuthChannel: row.primary_auth_channel,
     primaryAuthDestination: row.primary_auth_destination,
+    identityLevel: row.identity_level,
     status: row.status,
     deletedAt: row.deleted_at === null ? null : timestampToIso(row.deleted_at),
     createdAt: timestampToIso(row.created_at)
@@ -2260,11 +2270,15 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.accounts)) {
     await client.query(
       `
-        insert into accounts (id, primary_auth_channel, primary_auth_destination, status, deleted_at, created_at)
-        values ($1, $2, $3, $4, $5, $6)
+        insert into accounts (
+          id, primary_auth_channel, primary_auth_destination, identity_level,
+          status, deleted_at, created_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
         on conflict (id) do update set
           primary_auth_channel = excluded.primary_auth_channel,
           primary_auth_destination = excluded.primary_auth_destination,
+          identity_level = excluded.identity_level,
           status = excluded.status,
           deleted_at = excluded.deleted_at
       `,
@@ -2272,6 +2286,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "id"),
         requiredText(record, "primaryAuthChannel"),
         requiredText(record, "primaryAuthDestination"),
+        firstText(record, ["identityLevel"]) ?? "strong",
         firstText(record, ["status"]) ?? "active",
         firstText(record, ["deletedAt"]),
         now

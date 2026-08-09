@@ -32,6 +32,8 @@ interface PublicStorefrontResponse {
     name: string;
     unit: string;
     available: boolean;
+    sellingPrice: number | null;
+    image: string | null;
   }>;
 }
 
@@ -96,14 +98,15 @@ describe("CP18 Global Shop ID", () => {
           id: stockedProduct.id,
           name: "Tilapia pack",
           unit: "box",
-          available: true
+          available: true,
+          sellingPrice: 500,
+          image: null
         }
       ]
     });
     expect(rawStorefront.json<PublicStorefrontResponse>().sokoId).toBe(first.business.sokoId);
     expect(storefront.json().products[0]).not.toHaveProperty("sku");
     expect(storefront.json().products[0]).not.toHaveProperty("buyingPrice");
-    expect(storefront.json().products[0]).not.toHaveProperty("sellingPrice");
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
       expect.arrayContaining(["business.global_shop_id_created"])
     );

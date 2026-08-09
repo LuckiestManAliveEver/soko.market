@@ -199,6 +199,7 @@ import {
 import { detectCapabilitySettings } from "./capability-profile";
 import {
   markNavigationCommitted,
+  recordOnboardingEvent,
   recordReadiness,
   startNavigationMeasurement
 } from "./performance";
@@ -221,7 +222,9 @@ import {
 } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
+import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
 import { PhoneFirstAuthentication } from "./PhoneFirstAuthentication";
+import { ProgressiveAuthentication } from "./ProgressiveAuthentication";
 import {
   ModelActivationCoordinator,
   ModelActivationError,
@@ -237,7 +240,7 @@ import {
   saveCachedAuthSession
 } from "./auth-bootstrap";
 
-type AuthChannel = "phone" | "email";
+type AuthChannel = "phone" | "email" | "device";
 type SupportedLanguage = "en" | "sw";
 type ShopPresenceStatus = "online" | "private" | "offline";
 type SocialSignupProvider =
@@ -339,6 +342,7 @@ interface SessionResponse {
     id: string;
     primaryAuthChannel: AuthChannel;
     primaryAuthDestination: string;
+    identityLevel: "device" | "verified_contact" | "strong";
   };
   user: {
     id: string;
@@ -2179,6 +2183,9 @@ export function OwnerApp() {
   const [isAuthOpen, setIsAuthOpen] = useState(
     accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
   );
+  const [authenticationView, setAuthenticationView] = useState<"continue" | "sign-in">(
+    initialAuthenticationTarget !== null || initialOwnerAuth !== null ? "sign-in" : "continue"
+  );
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
   const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
@@ -2358,7 +2365,8 @@ export function OwnerApp() {
     sessionStorage.removeItem(guestBrowsingStorageKey);
     setIsBusinessSetupOpen(false);
     setIsAuthOpen(true);
-    setStatusMessage("Enter your phone number to continue.");
+    setAuthenticationView("sign-in");
+    setStatusMessage("Sign in to your existing account.");
   }
 
   function browseAsGuest() {
@@ -2409,7 +2417,6 @@ export function OwnerApp() {
       return;
     }
     void loadSokoSessionContext();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.account.id]);
 
   useEffect(() => {
@@ -3108,6 +3115,13 @@ export function OwnerApp() {
     setStatusMessage("Authentication complete");
   }
 
+  function completeProgressiveAuthentication(response: SessionResponse) {
+    acceptAuthenticatedSession(response);
+    navigateToView("chat", { replace: true, mode: "marketplace" });
+    setStatusMessage("Soko is ready.");
+    recordOnboardingEvent("first_chat_loaded");
+  }
+
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     acceptAuthenticatedSession(response);
@@ -3191,23 +3205,38 @@ export function OwnerApp() {
       }
 
       if (isDefinitiveAuthenticationError(error)) {
+        try {
+          const recovered = await recoverDeviceAccount();
+          if (recovered !== null) {
+            logAuthenticationLifecycle("device_account_recovered", recovered);
+            setSession(recovered);
+            saveCachedAuthSession(recovered);
+            setAuthBootstrapState("authenticated");
+            setIsAuthOpen(false);
+            setStatusMessage("Soko restored this device account.");
+            await loadMarketplaceIntroState();
+            await validateStoredBusiness();
+            return;
+          }
+        } catch (recoveryError) {
+          if (isRetryableApiRequestError(recoveryError)) {
+            setAuthBootstrapState("failed");
+            setStatusMessage(
+              "Soko could not restore this device. Check your connection and retry."
+            );
+            return;
+          }
+        }
         setSession(null);
         clearCachedAuthSession();
         setAuthBootstrapState("reauthentication-required");
         if (storedBusiness === null) setBusiness(null);
-        const browsingAsGuest = sessionStorage.getItem(guestBrowsingStorageKey) === "true";
-        if (initialOwnerAuth !== null && !browsingAsGuest) {
+        if (!accountDeletionIntent && !accountRestorationIntent) {
           setIsAuthOpen(true);
-          setStatusMessage("Sign in to continue");
-        } else if (
-          initialAuthenticationTarget === null &&
-          !accountDeletionIntent &&
-          !accountRestorationIntent
-        ) {
-          setMode("marketplace");
-          setView("chat");
-          navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
-          setStatusMessage("Browse the marketplace as a guest. No account is required.");
+          setAuthenticationView(initialOwnerAuth === null ? "continue" : "sign-in");
+          setStatusMessage(
+            initialOwnerAuth === null ? "Continue once to open Soko." : "Sign in to continue"
+          );
         }
         return;
       }
@@ -3215,6 +3244,10 @@ export function OwnerApp() {
       if (cached !== null) setSession(cached);
       if (storedBusiness !== null) setBusiness(storedBusiness);
       setAuthBootstrapState("failed");
+      if (cached === null) {
+        setIsAuthOpen(true);
+        setAuthenticationView("continue");
+      }
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
     } finally {
       sessionRefreshInFlightRef.current = false;
@@ -5822,6 +5855,7 @@ export function OwnerApp() {
       clearMessagingOutbox(accountId);
     }
     await clearPersistentApiRequestCache();
+    await clearDeviceRecoveryCredential().catch(() => undefined);
     clearCachedAuthSession();
     clearOwnerNavigationSession(accountId);
     clearOwnerNavigationSession(null);
@@ -5832,6 +5866,7 @@ export function OwnerApp() {
     localStorage.removeItem(ownerAuthStorageKey);
     localStorage.removeItem(setupDraftStorageKey);
     sessionStorage.removeItem(pendingOAuthStorageKey);
+    sessionStorage.removeItem(guestBrowsingStorageKey);
     setSession(null);
     setBusiness(null);
     setAgentSettings(createDefaultAgent(null));
@@ -5898,7 +5933,8 @@ export function OwnerApp() {
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setIsWorkspacePanelOpen(false);
     setIsBusinessSetupOpen(false);
-    setIsAuthOpen(false);
+    setIsAuthOpen(true);
+    setAuthenticationView("continue");
     setIsAccountRestorationOpen(false);
     setStatusMessage(message);
   }
@@ -7454,10 +7490,21 @@ export function OwnerApp() {
               agentSettings.name.trim().length > 0
             )}
           />
+        ) : shouldShowAuth && authenticationView === "continue" ? (
+          <ProgressiveAuthentication
+            onAuthenticated={(response) => completeProgressiveAuthentication(response)}
+            onSignIn={() => {
+              setAuthenticationView("sign-in");
+              setStatusMessage("Sign in to your existing account.");
+            }}
+          />
         ) : shouldShowAuth ? (
           <PhoneFirstAuthentication
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
-            onCancel={browseAsGuest}
+            onCancel={() => {
+              setAuthenticationView("continue");
+              setStatusMessage("Continue once to open Soko.");
+            }}
           />
         ) : isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
@@ -7499,6 +7546,7 @@ export function OwnerApp() {
           <AgentProfileSurface
             agent={agentSettings}
             accountId={session?.account.id ?? ""}
+            identityLevel={session?.account.identityLevel ?? "device"}
             business={business}
             oauthProviders={oauthProviders}
             ownerLabel={userLabel}
@@ -7507,6 +7555,17 @@ export function OwnerApp() {
             shops={sokoSessionContext?.shops ?? []}
             onSwitchBusiness={switchActiveBusiness}
             onAgentChange={setAgentSettings}
+            onIdentityLevelChange={(identityLevel) =>
+              setSession((current) =>
+                current === null
+                  ? current
+                  : { ...current, account: { ...current.account, identityLevel } }
+              )
+            }
+            onAccountMerged={(response) => {
+              acceptAuthenticatedSession(response);
+              setStatusMessage("Accounts joined after identity verification.");
+            }}
             onOwnerUserChange={(user) =>
               setSession((current) => (current === null ? current : { ...current, user }))
             }
@@ -12258,6 +12317,7 @@ function NotificationsSurface({
 
 interface AgentProfileSurfaceProps {
   accountId: string;
+  identityLevel: SessionResponse["account"]["identityLevel"];
   agent: AgentSettings;
   business: ActiveBusiness;
   oauthProviders: OAuthProviderSummary[];
@@ -12267,6 +12327,8 @@ interface AgentProfileSurfaceProps {
   shops: AccountShopSummary[];
   onSwitchBusiness: (shop: AccountShopSummary) => void;
   onAgentChange: (agent: AgentSettings) => void;
+  onIdentityLevelChange: (identityLevel: SessionResponse["account"]["identityLevel"]) => void;
+  onAccountMerged: (session: SessionResponse) => void;
   onOwnerUserChange: (user: SessionResponse["user"]) => void;
   onBack: () => void;
   onDisableNotifications: () => Promise<void>;
@@ -12284,6 +12346,7 @@ interface AgentProfileSurfaceProps {
 
 function AgentProfileSurface({
   accountId,
+  identityLevel,
   agent,
   business,
   oauthProviders,
@@ -12293,6 +12356,8 @@ function AgentProfileSurface({
   shops,
   onSwitchBusiness,
   onAgentChange,
+  onIdentityLevelChange,
+  onAccountMerged,
   onOwnerUserChange,
   onBack,
   onDisableNotifications,
@@ -12355,6 +12420,12 @@ function AgentProfileSurface({
   );
   const [ownerPhoneNumber, setOwnerPhoneNumber] = useState(ownerUser?.phoneNumberE164 ?? "");
   const [ownerPhoneError, setOwnerPhoneError] = useState("");
+  const [ownerPhoneMergeRequired, setOwnerPhoneMergeRequired] = useState(false);
+  const [ownerPhoneMergePin, setOwnerPhoneMergePin] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
+  const [emailChallengeId, setEmailChallengeId] = useState("");
+  const [emailVerificationCode, setEmailVerificationCode] = useState("");
+  const [emailMergeRequired, setEmailMergeRequired] = useState(false);
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [visibleAiModels, setVisibleAiModels] = useState<AiModelSummary[]>([]);
@@ -13714,12 +13785,81 @@ function AgentProfileSurface({
       onOwnerUserChange(response.user);
       setOwnerPhoneNumber(response.user.phoneNumberE164 ?? normalizedPhone);
       setOwnerPhoneError("");
+      setOwnerPhoneMergeRequired(false);
+      setOwnerPhoneMergePin("");
       setProfileMessage("Private owner phone number updated. Verification status: unverified.");
     } catch (error) {
+      if (error instanceof ApiRequestError && error.code === "PHONE_ALREADY_IN_USE") {
+        setOwnerPhoneMergeRequired(true);
+        setOwnerPhoneError("");
+        setProfileMessage(
+          "That number belongs to your existing Soko account. Enter its PIN to verify ownership and join both accounts without losing data."
+        );
+        return;
+      }
       const message = getErrorMessage(error);
       setOwnerPhoneError(message);
       setProfileMessage(message);
     }
+  }
+
+  async function mergeOwnerPhoneAccount() {
+    const selectedCountry = getCountryDialCode(ownerPhoneCountryCode);
+    const normalizedPhone = normalizeOwnerPhoneInput(ownerPhoneNumber, selectedCountry.countryCode);
+    const response = await postJson<SessionResponse>("/auth/identity/merge/pin", {
+      method: "phone",
+      contact: normalizedPhone,
+      pin: ownerPhoneMergePin
+    });
+    setOwnerPhoneMergeRequired(false);
+    setOwnerPhoneMergePin("");
+    onAccountMerged(response);
+    setProfileMessage("Identity verified. Both accounts and their Soko data are now joined.");
+  }
+
+  async function startEmailIdentityUpgrade() {
+    recordOnboardingEvent("identity_upgrade_started");
+    const response = await postJson<{
+      challengeId: string;
+      developmentCode?: string;
+      mergeRequired: boolean;
+    }>("/auth/identity/email/start", { email: ownerEmail });
+    setEmailChallengeId(response.challengeId);
+    setEmailVerificationCode(response.developmentCode ?? "");
+    setEmailMergeRequired(response.mergeRequired);
+    setProfileMessage(
+      response.mergeRequired
+        ? "That email belongs to your existing Soko account. Enter the emailed code to verify ownership and join both accounts."
+        : "Check your email for the verification code."
+    );
+  }
+
+  async function verifyEmailIdentityUpgrade() {
+    if (emailMergeRequired) {
+      const merged = await postJson<SessionResponse>("/auth/identity/email/merge/verify", {
+        challengeId: emailChallengeId,
+        code: emailVerificationCode
+      });
+      onAccountMerged(merged);
+      setEmailChallengeId("");
+      setEmailVerificationCode("");
+      setEmailMergeRequired(false);
+      setProfileMessage("Email verified. Both accounts and their Soko data are now joined.");
+      return;
+    }
+    const result = await postJson<{
+      verified: true;
+      accountId: string;
+      identityLevel: "verified_contact" | "strong";
+    }>("/auth/identity/email/verify", {
+      challengeId: emailChallengeId,
+      code: emailVerificationCode
+    });
+    onIdentityLevelChange(result.identityLevel);
+    setEmailChallengeId("");
+    setEmailVerificationCode("");
+    setEmailMergeRequired(false);
+    setProfileMessage("Email verified. Your existing Soko account is now recoverable by email.");
   }
 
   async function registerPasskey() {
@@ -15802,6 +15942,7 @@ function AgentProfileSurface({
               Passkeys use your device unlock and keep biometric data on the device. Email, social
               login, and your private recovery contact remain available if your passkey is lost.
             </p>
+            <p className="shell-note">Identity strength: {identityLevel.replace("_", " ")}</p>
           </div>
           <div className="record-form">
             <div className="section-heading">
@@ -15840,6 +15981,87 @@ function AgentProfileSurface({
                 Status: {ownerUser?.phoneVerificationStatus ?? "unverified"} · Public display: off
               </span>
             </div>
+            {ownerPhoneMergeRequired ? (
+              <div className="record-form" role="group" aria-label="Join existing phone account">
+                <p className="shell-note">
+                  Verify the PIN for this phone number. Soko will move this device account’s chats,
+                  shops, and records into the verified account and keep this device signed in.
+                </p>
+                <label>
+                  Existing account PIN
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="current-password"
+                    value={ownerPhoneMergePin}
+                    onChange={(event) => setOwnerPhoneMergePin(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void runProfileAction("owner-phone-merge", mergeOwnerPhoneAccount)}
+                  disabled={ownerPhoneMergePin.trim().length < 4 || pendingProfileAction !== null}
+                >
+                  {pendingProfileAction === "owner-phone-merge"
+                    ? "Verifying…"
+                    : "Verify and join accounts"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="record-form">
+            <div className="section-heading">
+              <p className="eyebrow">Recovery identity</p>
+              <h4>Email address</h4>
+              <p>Add and verify email without changing this account or any of its data.</p>
+              {emailMergeRequired ? (
+                <p className="shell-note">
+                  Verification will join this device account’s chats, shops, and records to the
+                  existing email account.
+                </p>
+              ) : null}
+            </div>
+            <label>
+              Email address
+              <input
+                type="email"
+                autoComplete="email"
+                value={ownerEmail}
+                onChange={(event) => setOwnerEmail(event.target.value)}
+                placeholder="you@example.com"
+              />
+            </label>
+            {emailChallengeId ? (
+              <label>
+                Verification code
+                <input
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={emailVerificationCode}
+                  onChange={(event) => setEmailVerificationCode(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <button
+              type="button"
+              onClick={() =>
+                void runProfileAction(
+                  "owner-email-upgrade",
+                  emailChallengeId ? verifyEmailIdentityUpgrade : startEmailIdentityUpgrade
+                )
+              }
+              disabled={
+                ownerEmail.trim().length === 0 ||
+                pendingProfileAction !== null ||
+                (emailChallengeId.length > 0 && emailVerificationCode.trim().length === 0)
+              }
+            >
+              {pendingProfileAction === "owner-email-upgrade"
+                ? "Working…"
+                : emailChallengeId
+                  ? "Verify email"
+                  : "Add email"}
+            </button>
           </div>
           <div className="connected-social-list" role="group" aria-label="Passkeys">
             {passkeys.map((passkey) => (

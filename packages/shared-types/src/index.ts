@@ -152,6 +152,8 @@ export interface FeatureFlag {
 }
 
 export type AuthChannel = "email" | "phone";
+export type AccountPrimaryAuthChannel = AuthChannel | "device";
+export type AccountIdentityLevel = "device" | "verified_contact" | "strong";
 
 export type OAuthProvider =
   "google" | "facebook" | "apple" | "github" | "microsoft" | "linkedin" | "x" | "tiktok";
@@ -162,8 +164,9 @@ export type SupportedLanguage = "en" | "sw";
 
 export interface AccountSummary {
   id: string;
-  primaryAuthChannel: AuthChannel;
+  primaryAuthChannel: AccountPrimaryAuthChannel;
   primaryAuthDestination: string;
+  identityLevel: AccountIdentityLevel;
   status?: "active" | "locked" | "suspended" | "pending_deletion" | "deleted";
   deletedAt?: string | null;
 }
@@ -244,6 +247,7 @@ export interface AuthSessionView {
   user: UserSummary;
   session: SessionSummary;
   isNewAccount?: boolean;
+  deviceRecoveryCredentialId?: string;
 }
 
 export interface PasskeySummary {

@@ -46,6 +46,7 @@ export const accounts = pgTable("accounts", {
   id: uuid("id").primaryKey(),
   primaryAuthChannel: text("primary_auth_channel").notNull(),
   primaryAuthDestination: text("primary_auth_destination").notNull(),
+  identityLevel: text("identity_level").notNull().default("strong"),
   status: text("status").notNull().default("active"),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()

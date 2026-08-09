@@ -32,6 +32,9 @@ existing implementation instead of adding an overlapping auth framework.
 - User identity and OAuth session relational tables.
 - PIN setup/login/recovery.
 - Connected social account display and disconnect flow.
+- One-tap device account creation with progressive phone/email/PIN/passkey strengthening,
+  cookie-loss recovery through a device-bound signing key, and proof-gated identity-collision
+  merging; see `docs/authentication/progressive-identity.md`.
 
 ## Implemented social-login additions
 

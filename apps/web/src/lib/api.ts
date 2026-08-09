@@ -35,10 +35,15 @@ let refreshInFlight: Promise<boolean> | null = null;
 // Every request (including login) must eventually settle so a caller's loading state can clear.
 // Without this, a request whose response never arrives - a stalled backend, a dropped connection -
 // leaves its awaiting promise pending forever and the UI stuck showing its busy state.
-function withRequestTimeout(externalSignal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+function withRequestTimeout(
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number
+): AbortSignal {
   const controller = new AbortController();
   const timer = setTimeout(() => {
-    controller.abort(new DOMException("The request took too long and was cancelled.", "TimeoutError"));
+    controller.abort(
+      new DOMException("The request took too long and was cancelled.", "TimeoutError")
+    );
   }, timeoutMs);
   controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
 
@@ -199,6 +204,8 @@ function isAuthenticationEntryPoint(pathOrUrl: string): boolean {
     const pathname = pathOrUrl.startsWith("http") ? new URL(pathOrUrl).pathname : pathOrUrl;
     return (
       pathname === refreshPath ||
+      pathname === "/auth/continue" ||
+      pathname === "/auth/device/recover" ||
       pathname.startsWith("/auth/signup/") ||
       pathname.startsWith("/auth/login/") ||
       pathname.startsWith("/auth/recovery/") ||

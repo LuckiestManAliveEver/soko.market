@@ -1337,6 +1337,46 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   });
 
   app.post(
+    "/auth/identity/email/start",
+    async (request: FastifyRequest<{ Body: { email?: string } }>, reply) => {
+      try {
+        enforceAuthIpRate(request, "identity_email_start", 10);
+        const upgrade = store.beginEmailIdentityUpgrade({
+          sessionId: readSessionCookie(request.headers.cookie),
+          email: parseString(request.body.email, "email")
+        });
+        const otp = store.requestOtp({
+          channel: "email",
+          destination: upgrade.kind === "link" ? upgrade.identity.normalizedValue : upgrade.email,
+          purpose: upgrade.kind === "merge" ? "recovery" : "signup"
+        });
+        if (upgrade.kind === "merge") {
+          store.beginEmailIdentityMerge({
+            sessionId: readSessionCookie(request.headers.cookie),
+            email: upgrade.email,
+            targetAccountId: upgrade.targetAccountId,
+            challengeId: otp.challengeId
+          });
+        }
+        await emailProvider.sendOtp({
+          challengeId: otp.challengeId,
+          code: otp.devOtp,
+          expiresAt: otp.expiresAt,
+          to: otp.destination
+        });
+        return {
+          challengeId: otp.challengeId,
+          expiresAt: otp.expiresAt,
+          mergeRequired: upgrade.kind === "merge",
+          ...(emailProvider.exposesDevOtp ? { developmentCode: otp.devOtp } : {})
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/auth/email/verification/verify",
     async (request: FastifyRequest<{ Body: { challengeId?: string; code?: string } }>, reply) => {
       try {
@@ -1345,6 +1385,72 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           challengeId: parseString(request.body.challengeId, "challengeId"),
           code: parseString(request.body.code, "code")
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/identity/email/verify",
+    async (request: FastifyRequest<{ Body: { challengeId?: string; code?: string } }>, reply) => {
+      try {
+        return store.verifyPendingEmail({
+          sessionId: readSessionCookie(request.headers.cookie),
+          challengeId: parseString(request.body.challengeId, "challengeId"),
+          code: parseString(request.body.code, "code")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/identity/merge/pin",
+    async (
+      request: FastifyRequest<{
+        Body: { method?: string; contact?: string; pin?: string };
+      }>,
+      reply
+    ) => {
+      try {
+        enforceAuthIpRate(request, "identity_merge_pin", 10);
+        const result = store.mergeCurrentDeviceAccountWithPin({
+          sessionId: readSessionCookie(request.headers.cookie),
+          channel: parseAuthChannel(request.body.method ?? "phone"),
+          destination: parseString(request.body.contact, "contact"),
+          pin: parseString(request.body.pin, "pin")
+        });
+        const { refreshToken, ...session } = result;
+        store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
+        reply.header("set-cookie", [
+          serializeSessionCookie(session.session.id),
+          serializeRefreshCookie(refreshToken)
+        ]);
+        return session;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/identity/email/merge/verify",
+    async (request: FastifyRequest<{ Body: { challengeId?: string; code?: string } }>, reply) => {
+      try {
+        const result = store.verifyEmailIdentityMerge({
+          sessionId: readSessionCookie(request.headers.cookie),
+          challengeId: parseString(request.body.challengeId, "challengeId"),
+          code: parseString(request.body.code, "code")
+        });
+        const { refreshToken, ...session } = result;
+        store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
+        reply.header("set-cookie", [
+          serializeSessionCookie(session.session.id),
+          serializeRefreshCookie(refreshToken)
+        ]);
+        return session;
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -2102,6 +2208,99 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
+
+  app.post(
+    "/auth/continue",
+    async (
+      request: FastifyRequest<{ Body: { devicePublicKeyJwk?: unknown } | undefined }>,
+      reply
+    ) => {
+      try {
+        enforceAuthIpRate(request, "device_continue", 10);
+        const result = store.continueWithDevice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          idempotencyKey: readHeader(request, "idempotency-key"),
+          devicePublicKeyJwk: request.body?.devicePublicKeyJwk
+        });
+        const { refreshToken, ...session } = result;
+        if (refreshToken !== null) {
+          store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
+          reply.header("set-cookie", [
+            serializeSessionCookie(session.session.id),
+            serializeRefreshCookie(refreshToken)
+          ]);
+        }
+        request.log.info(
+          {
+            event: session.isNewAccount
+              ? "auth.device_account_created"
+              : "auth.device_account_restored",
+            accountId: session.account.id,
+            sessionId: session.session.id,
+            requestCorrelationId: request.id
+          },
+          "One-tap Soko access completed."
+        );
+        return session;
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "auth.device_continue_failed",
+            code: error instanceof Cp2Error ? error.code : "device_continue_failed",
+            requestCorrelationId: request.id
+          },
+          "One-tap Soko access failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/auth/device/recover",
+    async (
+      request: FastifyRequest<{
+        Body: { credentialId?: string; nonce?: string; issuedAt?: number; signature?: string };
+      }>,
+      reply
+    ) => {
+      try {
+        enforceAuthIpRate(request, "device_recover", 10);
+        const result = store.recoverWithDeviceCredential({
+          credentialId: parseString(request.body.credentialId, "credentialId"),
+          nonce: parseString(request.body.nonce, "nonce"),
+          issuedAt: request.body.issuedAt ?? Number.NaN,
+          signature: parseString(request.body.signature, "signature")
+        });
+        const { refreshToken, ...session } = result;
+        store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
+        reply.header("set-cookie", [
+          serializeSessionCookie(session.session.id),
+          serializeRefreshCookie(refreshToken)
+        ]);
+        request.log.info(
+          {
+            event: "auth.device_recovered",
+            accountId: session.account.id,
+            sessionId: session.session.id,
+            requestCorrelationId: request.id
+          },
+          "Device-bound Soko account recovered."
+        );
+        return session;
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "auth.device_recovery_failed",
+            code: error instanceof Cp2Error ? error.code : "device_recovery_failed",
+            requestCorrelationId: request.id
+          },
+          "Device-bound Soko account recovery failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
 
   app.post("/auth/pin/signup", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
