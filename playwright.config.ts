@@ -16,6 +16,10 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm --filter @soko/web dev",
+    env: {
+      VITE_INFERENCE_CLIENT_FIRST: "true",
+      VITE_INFERENCE_CLOUD_FALLBACK_ENABLED: "true"
+    },
     url: "http://127.0.0.1:5173",
     reuseExistingServer: false,
     stdout: "pipe",

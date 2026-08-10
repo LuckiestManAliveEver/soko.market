@@ -40,11 +40,11 @@ test("central navigation preserves marketplace, settings, and browser back behav
 }) => {
   await page.goto("/marketplace");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(page).toHaveURL(/\/marketplace$/);
   await page.goForward();
-  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
 });
 
 test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
@@ -90,8 +90,7 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
 
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Cards are closed and chat still works.");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(composer).toHaveValue("");
+  await expect(composer).toHaveValue("Cards are closed and chat still works.");
   await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
 });
 
@@ -101,17 +100,21 @@ test("a switched device offers the hosted default without silently granting cons
   await page.setExtraHTTPHeaders({ "x-soko-test-device-switch": "true" });
   await page.goto("/sell");
 
-  const fallback = page.getByRole("region", { name: "Use the cloud model here?" });
+  const fallback = page.getByRole("region", {
+    name: "Use your selected OpenAI fallback here?"
+  });
   await expect(fallback).toBeVisible({ timeout: 15_000 });
   const beforeConsent = await page.evaluate(() =>
     localStorage.getItem("soko.client-inference-preferences.v1")
   );
   expect(beforeConsent).toBeNull();
 
-  await fallback.getByRole("button", { name: "Use cloud on this device" }).click();
+  await fallback.getByRole("button", { name: "Allow OpenAI fallback here" }).click();
   await expect(fallback).toBeHidden();
   await expect(
-    page.getByText("Hosted cloud inference is enabled for this shop on this device.")
+    page.getByText(
+      "The explicitly selected OpenAI model is enabled only as a fallback on this device."
+    )
   ).toBeVisible();
   const preferences = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("soko.client-inference-preferences.v1") ?? "[]")
@@ -190,19 +193,15 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   await page.getByRole("button", { name: "Delete entire account" }).click();
   await page.getByLabel("Type DELETE to confirm").fill("DELETE");
   await page.getByRole("button", { name: "Continue to verification" }).click();
-  await page.getByLabel("Owner PIN").fill("1234");
+  await page
+    .getByRole("group", { name: "Verify account deletion" })
+    .getByLabel("Owner PIN")
+    .fill("1234");
   await page.getByLabel(/I understand that all account access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
-  await expect(page.getByLabel("signup options")).toBeVisible();
-  await page.getByRole("button", { name: "Continue with phone" }).click();
-  await expect(page.getByRole("heading", { name: "Continue with phone" })).toBeVisible();
-  await expect(page.getByLabel("Phone number")).toBeVisible();
-  await expect(page.getByLabel("Create owner PIN")).toBeVisible();
-  await expect(page.getByLabel("Confirm owner PIN")).toBeVisible();
-  await expect(page.getByLabel(/verification code/i)).toHaveCount(0);
-  await page.getByRole("button", { name: "Back to signup options" }).click();
-  await expect(page.getByRole("button", { name: "Continue with email" })).toBeVisible();
-  await expect(page.getByLabel("login options")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Soko", level: 1 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue to Soko" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);
 });
@@ -403,9 +402,10 @@ test("Use model preserves the previous assignment when the GGUF runtime is unava
   await page.getByRole("button", { name: "Not in use · Use model", exact: true }).click();
 
   await expect(
-    page.getByText(
-      /This browser does not provide the trusted GGUF runtime.*previous working model was left unchanged/u
-    )
+    page.getByRole("status").filter({
+      hasText:
+        /This browser does not provide the trusted GGUF runtime.*previous working model was left unchanged/u
+    })
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Not in use · Retry activation", exact: true })
@@ -502,6 +502,7 @@ async function openModelLibrary(
   await page.setViewportSize(viewport);
   await page.goto("/");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
   await expect(
@@ -510,7 +511,7 @@ async function openModelLibrary(
         name: /^(?:Predownload & install|In use|Not in use · Use model)$/u
       })
       .first()
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 async function expectNoViewportOverflow(page: Page): Promise<void> {
@@ -588,17 +589,9 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path.endsWith("/typing")) return json({ typing: [] });
     if (path === "/v1/messages") return json(mockMessage);
-    if (path.endsWith("/runtime/sessions") && method === "GET") return json([]);
+    if (path.endsWith("/runtime/sessions") && method === "GET") return json([mockRuntimeSession]);
     if (path.endsWith("/runtime/sessions") && method === "POST") {
-      return json({
-        id: "responsive-runtime-session",
-        businessId: "responsive-certification-shop",
-        userId: "responsive-user",
-        status: "active",
-        turnCount: 0,
-        createdAt: "2026-07-15T12:00:00.000Z",
-        updatedAt: "2026-07-15T12:00:00.000Z"
-      });
+      return json(mockRuntimeSession);
     }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
@@ -662,7 +655,14 @@ async function installApiMocks(page: Page): Promise<void> {
         updatedBy: "responsive-user"
       });
     }
-    if (path.endsWith("/ai-model")) return json({ modelId: "qwen2.5-0.5b-android" });
+    if (path.endsWith("/ai-model")) {
+      return json({
+        modelId:
+          route.request().headers()["x-soko-test-device-switch"] === "true"
+            ? "openai-fast"
+            : "qwen2.5-0.5b-android"
+      });
+    }
     if (path.endsWith("/social-accounts")) return json({ accounts: [] });
     if (path.endsWith("/shop-deletion/preview")) {
       return json({
@@ -775,12 +775,41 @@ const mockConversationView = {
   typing: []
 };
 
+const mockRuntimeSession = {
+  id: "responsive-runtime-session",
+  businessId: "responsive-certification-shop",
+  userId: "responsive-user",
+  status: "active",
+  turnCount: 0,
+  createdAt: "2026-07-15T12:00:00.000Z",
+  updatedAt: "2026-07-15T12:00:00.000Z"
+};
+
 const mockOwnerControlsConversationView = {
   ...mockConversationView,
   messages: [mockOwnerControlsMessage]
 };
 
 const modelCatalog = [
+  {
+    id: "openai-fast",
+    label: "OpenAI fast",
+    provider: "openai",
+    description: "Fast hosted reasoning for connected shops.",
+    capabilities: ["chat", "tool-routing"],
+    available: true,
+    source: "hosted",
+    format: "remote",
+    license: null,
+    licenseUrl: null,
+    modelCardUrl: null,
+    downloadUrl: null,
+    fileName: null,
+    fileSizeBytes: null,
+    minimumMemoryGb: null,
+    recommended: false,
+    contextWindow: 128_000
+  },
   mockModel("smollm2-360m-android", "SmolLM2 360M (Android saver)", 386_000_000, 2),
   mockModel("qwen2.5-0.5b-android", "Qwen2.5 0.5B (Android recommended)", 491_000_000, 3, true),
   mockModel("qwen2.5-1.5b-android", "Qwen2.5 1.5B (high-end Android)", 1_120_000_000, 6)

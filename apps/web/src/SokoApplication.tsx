@@ -2793,8 +2793,10 @@ export function OwnerApp() {
       void restoreDeviceModelForLaunch(businessId)
         .then(async (restoredAssignment) => {
           const modelId = restoredAssignment.modelId;
-          if (cancelled || modelId === null) return;
-          setAgentSettings((current) => ({ ...current, model: modelId }));
+          if (cancelled) return;
+          if (modelId !== null) {
+            setAgentSettings((current) => ({ ...current, model: modelId }));
+          }
           if (
             restoredAssignment.activeModelInstallationId !== null &&
             restoredAssignment.readinessStatus === "READY"
@@ -14914,12 +14916,12 @@ function AgentProfileSurface({
             <span>{evaluationSummary?.blocked ?? 0} policy-blocked</span>
             <span>{evaluationSummary?.failure ?? 0} failed</span>
           </div>
-          <div className="runtime-context-list" aria-label="Recent agent issues">
+          <div className="runtime-context-list" role="list" aria-label="Recent agent issues">
             {evaluationSummary?.recentEvents
               .filter((event) => event.outcome === "failure" || event.outcome === "blocked")
               .slice(0, 5)
               .map((event) => (
-                <article key={event.id}>
+                <article key={event.id} role="listitem">
                   <div>
                     <strong>{event.eventType.replaceAll("_", " ")}</strong>
                     <small>
@@ -16362,7 +16364,9 @@ function AgentProfileSurface({
             aria-label="Shop-scoped login accounts"
           >
             {businessSocialAccounts.length === 0 ? (
-              <p className="form-hint">No connected login accounts for this shop yet.</p>
+              <p className="form-hint" role="listitem">
+                No connected login accounts for this shop yet.
+              </p>
             ) : (
               businessSocialAccounts.map((account) => (
                 <article className="connected-social-card" role="listitem" key={account.id}>

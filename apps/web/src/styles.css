@@ -38,6 +38,7 @@ textarea {
 button {
   border: 0;
   cursor: pointer;
+  min-height: 24px;
 }
 
 button:disabled {
@@ -4852,24 +4853,7 @@ details.nested-form-section summary {
   }
 }
 
-@media (max-width: 759px) {
-  .runtime-field-grid,
-  .runtime-policy-toggles,
-  .runtime-skill-list {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .runtime-version-list article,
-  .runtime-context-list article,
-  .runtime-correction-list article {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .agent-model-panel > .ai-model-card-actions > button {
-    width: 100%;
-  }
-
+@media (max-width: 900px) {
   .top-bar {
     display: grid;
     gap: 8px;
@@ -4889,6 +4873,25 @@ details.nested-form-section summary {
 
   .header-action-button {
     flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 759px) {
+  .runtime-field-grid,
+  .runtime-policy-toggles,
+  .runtime-skill-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .runtime-version-list article,
+  .runtime-context-list article,
+  .runtime-correction-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agent-model-panel > .ai-model-card-actions > button {
+    width: 100%;
   }
 }
 
