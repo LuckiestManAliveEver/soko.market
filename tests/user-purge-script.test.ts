@@ -46,7 +46,7 @@ describe("registered-user purge script", () => {
     const script = await readFile(purgeScriptPath, "utf8");
 
     expect(script).toContain("\\set execute_purge 'NO'");
-    expect(script).toContain("050_progressive_device_identity.sql");
+    expect(script).toContain("051_single_identity_single_store.sql");
     expect(script).toContain("purge_unclassified_tables");
     expect(script).toContain("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE");
     expect(script).toContain("ACCESS EXCLUSIVE MODE");

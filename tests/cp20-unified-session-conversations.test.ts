@@ -159,16 +159,20 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     expect(missingShop.json().code).toBe("active_shop_required");
 
     const firstShop = await createBusiness(app, sessionCookie, "Jane Cereals");
-    const secondShop = await createBusiness(app, sessionCookie, "Jane Shoes");
+    const duplicateShop = await postResponse(
+      app,
+      "/businesses",
+      { name: "Jane Shoes", language: "en" },
+      sessionCookie
+    );
+    expect(duplicateShop.statusCode).toBe(409);
+    expect(duplicateShop.json().code).toBe("store_already_registered");
     const shops = await getJson<{ shops: Array<{ business: { id: string } }> }>(
       app,
       "/v1/shops",
       sessionCookie
     );
-    expect(shops.shops.map((shop) => shop.business.id)).toEqual([
-      firstShop.business.id,
-      secondShop.business.id
-    ]);
+    expect(shops.shops.map((shop) => shop.business.id)).toEqual([firstShop.business.id]);
 
     const sellerContextResponse = await patchJson(
       app,

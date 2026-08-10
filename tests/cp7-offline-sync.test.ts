@@ -77,15 +77,11 @@ describe("CP7 offline local data and sync queue", () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
-    const secondBusiness = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Second Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
+    const { businessId: secondBusinessId, sessionCookie: secondSessionCookie } =
+      await createOwnerBusiness(app, {
+        contact: "254700000107",
+        businessName: "Second Shop"
+      });
     const existingProduct = await postJson<ProductResponse>(
       app,
       `/businesses/${businessId}/products`,
@@ -154,17 +150,17 @@ describe("CP7 offline local data and sync queue", () => {
 
     const secondBusinessQueue = await getJson<SyncQueueResponse>(
       app,
-      `/businesses/${secondBusiness.business.id}/sync-queue`,
-      sessionCookie
+      `/businesses/${secondBusinessId}/sync-queue`,
+      secondSessionCookie
     );
     expect(secondBusinessQueue.items).toHaveLength(0);
 
     const crossBusinessReplay = await app.inject({
       method: "POST",
-      url: `/businesses/${secondBusiness.business.id}/sync-queue/${productQueueItem.id}/replay`,
+      url: `/businesses/${secondBusinessId}/sync-queue/${productQueueItem.id}/replay`,
       headers: {
         ...jsonHeaders(),
-        cookie: sessionCookie
+        cookie: secondSessionCookie
       },
       payload: JSON.stringify({})
     });
@@ -341,14 +337,17 @@ describe("CP7 offline local data and sync queue", () => {
   });
 });
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  options: { contact?: string; businessName?: string } = {}
+) {
   const verifyResponse = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
       method: "phone",
-      contact: "254700000007",
+      contact: options.contact ?? "254700000007",
       pin: "1234"
     })
   });
@@ -358,7 +357,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: options.businessName ?? "Jane's Shop",
       language: "en"
     },
     sessionCookie

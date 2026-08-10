@@ -37,10 +37,10 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1
     FROM public.soko_schema_migrations
-    WHERE filename = '050_progressive_device_identity.sql'
+    WHERE filename = '051_single_identity_single_store.sql'
   ) THEN
     RAISE EXCEPTION
-      'Migration 050_progressive_device_identity.sql is not applied; migrate the current schema before auditing or purging.';
+      'Migration 051_single_identity_single_store.sql is not applied; migrate the current schema before auditing or purging.';
   END IF;
 END $$;
 

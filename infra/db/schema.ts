@@ -72,6 +72,7 @@ export const users = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull()
   },
   (table) => ({
+    accountUnique: uniqueIndex("users_account_id_unique_idx").on(table.accountId),
     phoneNumberUnique: uniqueIndex("users_phone_number_e164_unique_idx")
       .on(table.phoneNumberE164)
       .where(sql`${table.phoneNumberE164} is not null`)
@@ -143,17 +144,25 @@ export const businesses = pgTable(
   })
 );
 
-export const businessMemberships = pgTable("business_memberships", {
-  id: uuid("id").primaryKey(),
-  businessId: uuid("business_id")
-    .notNull()
-    .references(() => businesses.id),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id),
-  role: text("role").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull()
-});
+export const businessMemberships = pgTable(
+  "business_memberships",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull()
+  },
+  (table) => ({
+    oneOwnedStorePerUser: uniqueIndex("business_memberships_owner_user_unique_idx")
+      .on(table.userId)
+      .where(sql`${table.role} = 'owner'`)
+  })
+);
 
 export const otpChallenges = pgTable("otp_challenges", {
   id: uuid("id").primaryKey(),

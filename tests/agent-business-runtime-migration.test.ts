@@ -18,9 +18,7 @@ describe("agent business runtime migration", () => {
     }
     expect(sql).toContain("business_version_idx");
     expect(sql).toContain("business_created_idx");
-    expect(store).toContain(
-      'requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql"'
-    );
+    expect(store).toContain('requiredMigrationFilename = "051_single_identity_single_store.sql"');
   });
 
   it("provides a scoped rollback for only the new runtime tables", async () => {

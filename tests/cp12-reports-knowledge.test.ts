@@ -220,22 +220,18 @@ describe("CP12 reports notifications and knowledge", () => {
     expect(JSON.stringify(knowledge)).not.toContain(customer.name);
     expect(JSON.stringify(knowledge)).not.toContain(invoice.id);
 
-    const secondBusiness = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Second Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
+    const { businessId: secondBusinessId, sessionCookie: secondSessionCookie } =
+      await createOwnerBusiness(app, {
+        contact: "254700000112",
+        businessName: "Second Shop"
+      });
     const secondReport = await getJson<BusinessReportResponse>(
       app,
-      `/businesses/${secondBusiness.business.id}/reports/summary`,
-      sessionCookie
+      `/businesses/${secondBusinessId}/reports/summary`,
+      secondSessionCookie
     );
     expect(secondReport).toMatchObject({
-      businessId: secondBusiness.business.id,
+      businessId: secondBusinessId,
       sales: {
         grossSales: 0
       },
@@ -438,14 +434,17 @@ async function seedReportData(
   };
 }
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  options: { contact?: string; businessName?: string } = {}
+) {
   const verifyResponse = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
       method: "phone",
-      contact: "254700000012",
+      contact: options.contact ?? "254700000012",
       pin: "1234"
     })
   });
@@ -455,7 +454,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: options.businessName ?? "Jane's Shop",
       language: "en"
     },
     sessionCookie

@@ -131,11 +131,12 @@ describe("CP23 MCP tool gateway", () => {
       { name: "Bound Shop", language: "en" },
       cookie
     );
+    const secondCookie = await createSession(app, "254700000233");
     const second = await postJson<{ business: { id: string } }>(
       app,
       "/businesses",
       { name: "Other Shop", language: "en" },
-      cookie
+      secondCookie
     );
     const product = await postJson<{ id: string }>(
       app,

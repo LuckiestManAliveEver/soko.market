@@ -1860,6 +1860,18 @@ export class Cp2Store {
     }
 
     const nextUser = this.requireUser(user.id);
+    if (normalizedEmail !== null) {
+      this.addAccountIdentity(
+        account,
+        nextUser,
+        "email",
+        normalizedEmail,
+        account.primaryAuthChannel === "email" &&
+          account.primaryAuthDestination === normalizedEmail,
+        now,
+        true
+      );
+    }
     const identity = this.upsertUserIdentity({
       account,
       user: nextUser,
@@ -1973,6 +1985,16 @@ export class Cp2Store {
         ? this.createAccount(challenge.channel, challenge.destination, now)
         : this.requireAccount(existingAccountId);
     const user = this.requireUser(this.userByAccount.get(account.id));
+    this.addAccountIdentity(
+      account,
+      user,
+      challenge.channel,
+      challenge.destination,
+      account.primaryAuthChannel === challenge.channel &&
+        account.primaryAuthDestination === challenge.destination,
+      now,
+      true
+    );
     const session = this.createSession(account, user, now);
 
     this.recordAuditEvent({
@@ -3362,6 +3384,17 @@ export class Cp2Store {
         400,
         "business_name_invalid",
         "Business name must be at least 2 characters."
+      );
+    }
+
+    const existingOwnedStore = [...this.memberships.values()].find(
+      (membership) => membership.userId === session.user.id && membership.role === "owner"
+    );
+    if (existingOwnedStore !== undefined) {
+      throw new Cp2Error(
+        409,
+        "store_already_registered",
+        "This account has already registered a store."
       );
     }
 
@@ -14066,6 +14099,25 @@ export class Cp2Store {
     if (existingAccount !== undefined && existingAccount !== account.id) {
       throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
     }
+    const existingIdentity = [...this.accountIdentities.values()].find(
+      (identity) =>
+        identity.accountId === account.id &&
+        identity.type === type &&
+        identity.normalizedValue === value
+    );
+    if (existingIdentity !== undefined) {
+      const updated: AccountIdentityRecord = {
+        ...existingIdentity,
+        isPrimary: existingIdentity.isPrimary || isPrimary,
+        verifiedAt:
+          existingIdentity.verifiedAt ??
+          (verified ? now.toISOString() : existingIdentity.verifiedAt),
+        updatedAt: now.toISOString()
+      };
+      this.accountIdentities.set(updated.id, updated);
+      this.identityAccountByValue.set(key, account.id);
+      return updated;
+    }
     const record: AccountIdentityRecord = {
       id: randomUUID(),
       accountId: account.id,
@@ -14183,6 +14235,17 @@ export class Cp2Store {
     now: Date,
     identityLevel: AccountSummary["identityLevel"] = "strong"
   ): AccountSummary {
+    const existingAccountId =
+      channel === "phone" || channel === "email"
+        ? this.resolveAnyIdentityAccount(channel, destination)
+        : undefined;
+    if (existingAccountId !== undefined) {
+      throw new Cp2Error(
+        409,
+        "account_exists",
+        `An account already exists for this ${channel === "phone" ? "phone number" : channel === "email" ? "email address" : "identity"}. Sign in instead.`
+      );
+    }
     const account: AccountSummary = {
       id: randomUUID(),
       primaryAuthChannel: channel,
@@ -14218,6 +14281,9 @@ export class Cp2Store {
     this.accountByDestination.set(destinationAccountKey(channel, destination), account.id);
     this.users.set(user.id, user);
     this.userByAccount.set(account.id, user.id);
+    if (channel === "phone" || channel === "email") {
+      this.addAccountIdentity(account, user, channel, destination, true, now, false);
+    }
 
     this.recordAuditEvent({
       type: "user.created",

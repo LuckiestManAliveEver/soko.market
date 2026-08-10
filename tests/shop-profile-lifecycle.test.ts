@@ -147,11 +147,13 @@ describe("Shop profile lifecycle", () => {
       { name: "Delete Me", language: "en" },
       ownerCookie
     );
+    const secondOwner = await verifyOtp(app, "phone", "254700000703");
+    const secondOwnerCookie = extractSessionCookie(secondOwner.setCookie);
     const secondShop = await postJson<BusinessResponse>(
       app,
       "/businesses",
       { name: "Keep Me", language: "en" },
-      ownerCookie
+      secondOwnerCookie
     );
     await postJson<ProductResponse>(
       app,
@@ -163,7 +165,7 @@ describe("Shop profile lifecycle", () => {
       app,
       `/businesses/${secondShop.business.id}/products`,
       { name: "Rice", unit: "kg", quantity: 2 },
-      ownerCookie
+      secondOwnerCookie
     );
 
     const nonOwner = await verifyOtp(app, "phone", "254700000702");
@@ -239,7 +241,13 @@ describe("Shop profile lifecycle", () => {
       "/v1/shops",
       ownerCookie
     );
-    expect(shopsWhileQuarantined.shops.map((shop) => shop.business.id)).toEqual([
+    expect(shopsWhileQuarantined.shops).toEqual([]);
+    const secondOwnerShops = await getJson<{ shops: Array<{ business: { id: string } }> }>(
+      app,
+      "/v1/shops",
+      secondOwnerCookie
+    );
+    expect(secondOwnerShops.shops.map((shop) => shop.business.id)).toEqual([
       secondShop.business.id
     ]);
 
@@ -255,9 +263,9 @@ describe("Shop profile lifecycle", () => {
       "/v1/shops",
       ownerCookie
     );
-    expect(shopsAfterRestore.shops.map((shop) => shop.business.id)).toEqual(
-      expect.arrayContaining([firstShop.business.id, secondShop.business.id])
-    );
+    expect(shopsAfterRestore.shops.map((shop) => shop.business.id)).toEqual([
+      firstShop.business.id
+    ]);
 
     await app.close();
   });

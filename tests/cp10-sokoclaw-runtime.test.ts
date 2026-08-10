@@ -318,16 +318,13 @@ describe("CP10 Sokoclaw runtime", () => {
   it("does not leak runtime context or read results across businesses", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
-    const { businessId: firstBusinessId, sessionCookie } = await createOwnerBusiness(app);
-    const secondBusiness = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Second Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
+    const { businessId: firstBusinessId, sessionCookie: firstSessionCookie } =
+      await createOwnerBusiness(app);
+    const { businessId: secondBusinessId, sessionCookie: secondSessionCookie } =
+      await createOwnerBusiness(app, {
+        contact: "254700000010",
+        businessName: "Second Shop"
+      });
     await postJson<ProductResponse>(
       app,
       `/businesses/${firstBusinessId}/products`,
@@ -336,20 +333,20 @@ describe("CP10 Sokoclaw runtime", () => {
         unit: "unit",
         quantity: 2
       },
-      sessionCookie
+      firstSessionCookie
     );
 
     const turn = await postJson<RuntimeTurnResponse>(
       app,
-      `/businesses/${secondBusiness.business.id}/runtime/turns`,
+      `/businesses/${secondBusinessId}/runtime/turns`,
       {
         message: "show products"
       },
-      sessionCookie
+      secondSessionCookie
     );
 
     expect(turn.turn.context).toMatchObject({
-      businessId: secondBusiness.business.id,
+      businessId: secondBusinessId,
       productCount: 0
     });
     expect(turn.turn.toolResult).toEqual([]);
@@ -406,14 +403,17 @@ describe("CP10 Sokoclaw runtime", () => {
   });
 });
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  options: { contact?: string; businessName?: string } = {}
+) {
   const verifyResponse = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
       method: "phone",
-      contact: "254700000009",
+      contact: options.contact ?? "254700000009",
       pin: "1234"
     })
   });
@@ -423,7 +423,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: options.businessName ?? "Jane's Shop",
       language: "en"
     },
     sessionCookie

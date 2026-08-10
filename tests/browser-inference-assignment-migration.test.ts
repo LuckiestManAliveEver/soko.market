@@ -22,7 +22,7 @@ describe("browser inference assignment migration", () => {
     ]);
     expect(rollback).toContain("drop table if exists cp2_browser_inference_assignments");
     expect(postgresStore).toContain(
-      'requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql"'
+      'requiredMigrationFilename = "051_single_identity_single_store.sql"'
     );
   });
 });

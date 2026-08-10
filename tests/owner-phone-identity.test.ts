@@ -44,8 +44,14 @@ describe("compulsory owner phone identity", () => {
     ).toHaveLength(1);
 
     const firstShop = await createShop(app, firstOwner.cookie, "Private Phone Shop");
-    const secondShop = await createShop(app, firstOwner.cookie, "Same Owner Second Shop");
-    expect(firstShop.business.id).not.toBe(secondShop.business.id);
+    const secondShop = await app.inject({
+      method: "POST",
+      url: "/businesses",
+      headers: { ...jsonHeaders(), cookie: firstOwner.cookie },
+      payload: JSON.stringify({ name: "Same Owner Second Shop", language: "en" })
+    });
+    expect(secondShop.statusCode).toBe(409);
+    expect(secondShop.json()).toMatchObject({ code: "store_already_registered" });
 
     const publicShop = await app.inject({
       method: "GET",

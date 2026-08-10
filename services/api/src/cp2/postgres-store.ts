@@ -356,7 +356,7 @@ export interface PostgresStoreHealth {
   };
 }
 
-const requiredMigrationFilename = "049_platform_chat_commerce_foundation.sql";
+const requiredMigrationFilename = "051_single_identity_single_store.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;

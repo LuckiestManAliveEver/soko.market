@@ -368,16 +368,13 @@ describe("CP5 business core records", () => {
   it("keeps CP5 records scoped to their owning business", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
-    const { businessId: firstBusinessId, sessionCookie } = await createOwnerBusiness(app);
-    const secondBusiness = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Second Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
+    const { businessId: firstBusinessId, sessionCookie: firstSessionCookie } =
+      await createOwnerBusiness(app);
+    const { businessId: secondBusinessId, sessionCookie: secondSessionCookie } =
+      await createOwnerBusiness(app, {
+        contact: "254700000105",
+        businessName: "Second Shop"
+      });
 
     const product = await postJson<ProductResponse>(
       app,
@@ -386,23 +383,23 @@ describe("CP5 business core records", () => {
         name: "Rice",
         quantity: 5
       },
-      sessionCookie
+      firstSessionCookie
     );
 
     const productsForSecondBusiness = await getJson<ProductResponse[]>(
       app,
-      `/businesses/${secondBusiness.business.id}/products`,
-      sessionCookie
+      `/businesses/${secondBusinessId}/products`,
+      secondSessionCookie
     );
 
     expect(productsForSecondBusiness).toEqual([]);
 
     const crossBusinessStockAdjustment = await app.inject({
       method: "POST",
-      url: `/businesses/${secondBusiness.business.id}/products/${product.id}/stock-adjustments`,
+      url: `/businesses/${secondBusinessId}/products/${product.id}/stock-adjustments`,
       headers: {
         ...jsonHeaders(),
-        cookie: sessionCookie
+        cookie: secondSessionCookie
       },
       payload: JSON.stringify({
         quantityAfter: 7
@@ -418,14 +415,17 @@ describe("CP5 business core records", () => {
   });
 });
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  options: { contact?: string; businessName?: string } = {}
+) {
   const verifyResponse = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
       method: "phone",
-      contact: "254700000005",
+      contact: options.contact ?? "254700000005",
       pin: "1234"
     })
   });
@@ -435,7 +435,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: options.businessName ?? "Jane's Shop",
       language: "en"
     },
     sessionCookie

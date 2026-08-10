@@ -247,24 +247,20 @@ describe("CP13 logistics", () => {
       afterSnapshot.auditEvents.filter((event) => event.type === "logistics.status_updated")
     ).toHaveLength(3);
 
-    const secondBusiness = await postJson<CreateBusinessResponse>(
-      app,
-      "/businesses",
-      {
-        name: "Second Shop",
-        language: "en"
-      },
-      sessionCookie
-    );
+    const { businessId: secondBusinessId, sessionCookie: secondSessionCookie } =
+      await createOwnerBusiness(app, {
+        contact: "254700000113",
+        businessName: "Second Shop"
+      });
     const secondLogistics = await getJson<LogisticsResponse[]>(
       app,
-      `/businesses/${secondBusiness.business.id}/logistics`,
-      sessionCookie
+      `/businesses/${secondBusinessId}/logistics`,
+      secondSessionCookie
     );
     const crossBusinessUpdate = await app.inject({
       method: "PATCH",
-      url: `/businesses/${secondBusiness.business.id}/logistics/${logistics.id}`,
-      headers: { ...jsonHeaders(), cookie: sessionCookie },
+      url: `/businesses/${secondBusinessId}/logistics/${logistics.id}`,
+      headers: { ...jsonHeaders(), cookie: secondSessionCookie },
       payload: JSON.stringify({
         status: "ready"
       })
@@ -477,14 +473,17 @@ async function createDraftInvoice(
   );
 }
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  options: { contact?: string; businessName?: string } = {}
+) {
   const verifyResponse = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
     headers: jsonHeaders(),
     payload: JSON.stringify({
       method: "phone",
-      contact: "254700000013",
+      contact: options.contact ?? "254700000013",
       pin: "1234"
     })
   });
@@ -494,7 +493,7 @@ async function createOwnerBusiness(app: ReturnType<typeof buildApi>) {
     app,
     "/businesses",
     {
-      name: "Jane's Shop",
+      name: options.businessName ?? "Jane's Shop",
       language: "en"
     },
     sessionCookie

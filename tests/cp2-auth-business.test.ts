@@ -193,6 +193,78 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 
+  it("allows only one store registration per account under concurrent requests", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await app.inject({
+      method: "POST",
+      url: "/auth/pin/signup",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({
+        method: "phone",
+        contact: "+254700000099",
+        pin: "1234"
+      })
+    });
+    const sessionCookie = extractSessionCookie(signup.headers["set-cookie"]);
+    const create = (name: string) =>
+      app.inject({
+        method: "POST",
+        url: "/businesses",
+        headers: { ...jsonHeaders(), cookie: sessionCookie },
+        payload: JSON.stringify({ name, language: "en" })
+      });
+
+    const responses = await Promise.all([create("Only Store"), create("Blocked Store")]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    expect(responses.find((response) => response.statusCode === 409)?.json()).toMatchObject({
+      code: "store_already_registered"
+    });
+    expect(store.snapshot().businesses).toHaveLength(1);
+    expect(store.snapshot().memberships).toEqual([expect.objectContaining({ role: "owner" })]);
+
+    await app.close();
+  });
+
+  it("keeps a verified OAuth email on one account across providers and restarts", () => {
+    const store = createCp2Store();
+    const google = store.completeOAuthProfileAuthentication({
+      provider: "google",
+      profile: {
+        providerSubject: "google-one-store-owner",
+        email: "Owner@One-Store.Example",
+        emailVerified: true,
+        displayName: "Store Owner"
+      },
+      tokens: {}
+    });
+    const restored = createCp2Store();
+    restored.hydrateSnapshot(store.snapshot());
+    const microsoft = restored.completeOAuthProfileAuthentication({
+      provider: "microsoft",
+      profile: {
+        providerSubject: "microsoft-one-store-owner",
+        email: "owner@one-store.example",
+        emailVerified: true,
+        displayName: "Store Owner"
+      },
+      tokens: {}
+    });
+    const emailIdentities = restored
+      .snapshot()
+      .accountIdentities.filter((identity) => identity.type === "email");
+
+    expect(microsoft.account.id).toBe(google.account.id);
+    expect(restored.snapshot().accounts).toHaveLength(1);
+    expect(emailIdentities).toEqual([
+      expect.objectContaining({
+        accountId: google.account.id,
+        normalizedValue: "owner@one-store.example",
+        verifiedAt: expect.any(String)
+      })
+    ]);
+  });
+
   it("rejects invalid OTPs and unauthenticated business creation", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

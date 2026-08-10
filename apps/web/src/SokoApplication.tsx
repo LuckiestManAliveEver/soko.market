@@ -3460,6 +3460,12 @@ export function OwnerApp() {
   }
 
   async function createBusiness() {
+    if (business !== null) {
+      setIsBusinessSetupOpen(false);
+      setStatusMessage("This account has already registered a store.");
+      return;
+    }
+
     if (businessName.trim().length === 0) {
       setStatusMessage("Business name is required");
       return;
