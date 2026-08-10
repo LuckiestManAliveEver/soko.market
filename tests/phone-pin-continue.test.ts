@@ -149,7 +149,11 @@ describe("unified email + PIN continue flow", () => {
 
   it("rejects an email account signup attempt when one already exists with the wrong PIN", async () => {
     const app = buildApi({ cp2: { store: createCp2Store() } });
-    await post(app, "/auth/pin/continue", { method: "email", contact: "owner2@example.com", pin: "1111" });
+    await post(app, "/auth/pin/continue", {
+      method: "email",
+      contact: "owner2@example.com",
+      pin: "1111"
+    });
     const wrongPin = await post(app, "/auth/pin/continue", {
       method: "email",
       contact: "owner2@example.com",

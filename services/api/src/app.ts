@@ -51,9 +51,7 @@ export function buildApi(options: BuildApiOptions = {}) {
     keyGenerator: (request) => request.ip,
     allowList: (request) => request.url.startsWith("/health"),
     skipOnError: true,
-    ...(options.rateLimitRedisClient === undefined
-      ? {}
-      : { redis: options.rateLimitRedisClient }),
+    ...(options.rateLimitRedisClient === undefined ? {} : { redis: options.rateLimitRedisClient }),
     errorResponseBuilder: (_request, context) => ({
       code: "rate_limited",
       message: `Too many requests. Please retry after ${context.after}.`

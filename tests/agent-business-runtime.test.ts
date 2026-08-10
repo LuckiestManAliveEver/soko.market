@@ -661,7 +661,12 @@ describe("audience enforcement at the runtime-turn endpoint", () => {
       ...snapshot,
       memberships: [
         ...snapshot.memberships,
-        { id: "membership-staff-1", businessId: owner.businessId, userId: staff.userId, role: "cashier" }
+        {
+          id: "membership-staff-1",
+          businessId: owner.businessId,
+          userId: staff.userId,
+          role: "cashier"
+        }
       ],
       agentContextSources: [...(snapshot.agentContextSources ?? []), ownerOnlySource]
     });
@@ -703,7 +708,11 @@ function makeContextSource(overrides: {
     title: overrides.title,
     status: "active",
     sensitivity: "internal",
-    accessRules: { audiences: ["owner", "staff", "customer"], requiredPermission: null, customerVisible: true },
+    accessRules: {
+      audiences: ["owner", "staff", "customer"],
+      requiredPermission: null,
+      customerVisible: true
+    },
     freshnessTimestamp: now,
     version: 1,
     retrievalMetadata: { keywords: [], sourceRecordId: null, content: overrides.content },

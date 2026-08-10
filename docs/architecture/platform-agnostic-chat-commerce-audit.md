@@ -26,8 +26,7 @@ The five repository blockers found by this audit are now closed:
 - camera capture now has persisted extraction, review, retry, manual fallback, cancellation,
   cleanup, confirmation, and publication states; publication alone creates/updates the product;
 - provider-neutral platform identities, conversation channels, external participants, durable
-  update receipts, inbound normalization, and outbound delivery state are persisted by migration
-  049.
+  update receipts, inbound normalization, and outbound delivery state are persisted by migration 049.
 
 The remaining small gaps are transport-specific: there is no Telegram webhook/secret verifier,
 deep-link grant flow, Telegram renderer/sender, or live bot validation. Those gaps belong to the

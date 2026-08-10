@@ -321,7 +321,11 @@ describePostgres("CP2 Postgres store", () => {
     const pool = new Pool({ connectionString });
 
     try {
-      const signup = store.continueWithChannelPin({ channel: "phone", destination: phone, pin: "7421" });
+      const signup = store.continueWithChannelPin({
+        channel: "phone",
+        destination: phone,
+        pin: "7421"
+      });
       expect(signup.isNewAccount).toBe(true);
 
       await store.flush();
@@ -330,7 +334,11 @@ describePostgres("CP2 Postgres store", () => {
       ]);
       expect(accountRow.rows).toHaveLength(1);
 
-      const login = store.continueWithChannelPin({ channel: "phone", destination: phone, pin: "7421" });
+      const login = store.continueWithChannelPin({
+        channel: "phone",
+        destination: phone,
+        pin: "7421"
+      });
       expect(login.isNewAccount).toBe(false);
 
       await store.flush();
@@ -346,7 +354,10 @@ describePostgres("CP2 Postgres store", () => {
       });
       await store.flush();
 
-      const storeLogin = store.loginWithSokoIdPin({ sokoId: business.business.sokoId, pin: "7421" });
+      const storeLogin = store.loginWithSokoIdPin({
+        sokoId: business.business.sokoId,
+        pin: "7421"
+      });
 
       await store.flush();
       const storeLoginSessionRow = await pool.query("select id from sessions where id = $1", [
@@ -644,7 +655,13 @@ describePostgres("CP2 Postgres store", () => {
       const failingProduct = await postJson<ProductResponse>(
         app,
         `/businesses/${business.id}/products`,
-        { name: "Race Condition Beans", quantity: 3, unit: "kg", buyingPrice: 50, sellingPrice: 70 },
+        {
+          name: "Race Condition Beans",
+          quantity: 3,
+          unit: "kg",
+          buyingPrice: 50,
+          sellingPrice: 70
+        },
         sessionCookie
       );
 
@@ -657,19 +674,17 @@ describePostgres("CP2 Postgres store", () => {
       );
       const healthDuringFailure = await store.health();
       expect(healthDuringFailure.persistenceError).not.toBeNull();
-      const notYetPersisted = await pool.query(
-        "select 1 from cp2_products where entity_id = $1",
-        [failingProduct.id]
-      );
+      const notYetPersisted = await pool.query("select 1 from cp2_products where entity_id = $1", [
+        failingProduct.id
+      ]);
       expect(notYetPersisted.rows).toHaveLength(0);
 
       // Fix the underlying problem and let the scheduled retry (no further mutation needed) catch up.
       await pool.query("alter table cp2_products drop constraint force_persistence_failure");
       await waitUntil(async () => {
-        const result = await pool.query(
-          "select 1 from cp2_products where entity_id = $1",
-          [failingProduct.id]
-        );
+        const result = await pool.query("select 1 from cp2_products where entity_id = $1", [
+          failingProduct.id
+        ]);
         // Committed-and-visible-in-Postgres can momentarily lead clearing lastPersistenceError,
         // since a few more in-process steps (unlock, snapshot bookkeeping) run after commit before
         // the queue's success handler fires - wait for both, not just the row.

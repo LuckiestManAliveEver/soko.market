@@ -312,7 +312,9 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
               }
               aria-busy={busy}
               onClick={() =>
-                void run(stage === "password" ? login : stage === "pin" ? submitPin : continueIdentifier)
+                void run(
+                  stage === "password" ? login : stage === "pin" ? submitPin : continueIdentifier
+                )
               }
             >
               {busy ? "Working…" : stage === "password" ? "Sign in" : "Continue"}
@@ -341,7 +343,11 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 type="button"
                 onClick={() => {
                   setIdentifierType(
-                    identifierType === "phone" ? "email" : identifierType === "email" ? "store" : "phone"
+                    identifierType === "phone"
+                      ? "email"
+                      : identifierType === "email"
+                        ? "store"
+                        : "phone"
                   );
                   setIdentifier("");
                   setStage("entry");

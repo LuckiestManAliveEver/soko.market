@@ -98,17 +98,17 @@ flowchart LR
 
 ## Context domains → source types
 
-| Domain | `AgentContextSourceType` |
-|---|---|
-| Business/catalogue | `catalogue`, `inventory` |
-| Customers | `customer` |
-| Suppliers | `supplier` |
-| Financial records | `receipt`, `order` |
-| Policy | `policy` |
-| Documents | `document` |
-| Conversation history | `conversation` |
-| Owner-authored scripts | `context_script` |
-| Free-form notes | `owner_note` |
+| Domain                 | `AgentContextSourceType` |
+| ---------------------- | ------------------------ |
+| Business/catalogue     | `catalogue`, `inventory` |
+| Customers              | `customer`               |
+| Suppliers              | `supplier`               |
+| Financial records      | `receipt`, `order`       |
+| Policy                 | `policy`                 |
+| Documents              | `document`               |
+| Conversation history   | `conversation`           |
+| Owner-authored scripts | `context_script`         |
+| Free-form notes        | `owner_note`             |
 
 ## Deterministic task-to-context planning (added)
 

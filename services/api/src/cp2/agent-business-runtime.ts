@@ -391,7 +391,8 @@ export function sanitizeUntrustedContext(value: string): string {
   // truncation happened so the model never treats a cut string as complete content.
   const truncated = neutralized.slice(0, maxUntrustedContextLength);
   const lastBreak = Math.max(truncated.lastIndexOf(" "), truncated.lastIndexOf("\n"));
-  const boundary = lastBreak > maxUntrustedContextLength * 0.5 ? lastBreak : maxUntrustedContextLength;
+  const boundary =
+    lastBreak > maxUntrustedContextLength * 0.5 ? lastBreak : maxUntrustedContextLength;
   return `${truncated.slice(0, boundary).trimEnd()}\n[content truncated]`;
 }
 

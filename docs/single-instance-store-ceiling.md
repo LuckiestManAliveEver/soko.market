@@ -26,7 +26,7 @@ Consequences:
   will eventually stop being fine as data grows, with no natural early warning besides an OOM crash.
 - **Single-instance only**: a second API instance would boot its own independent in-memory
   snapshot and diverge from the first the moment either one accepts a write. Postgres `LISTEN`/
-  `NOTIFY` (`realtimeChannel` in `postgres-store.ts`) fans out change *notifications* between
+  `NOTIFY` (`realtimeChannel` in `postgres-store.ts`) fans out change _notifications_ between
   instances for the sync protocol, but does not make two in-memory copies of the same mutable
   state consistent. Do not add a second `soko-market-api` instance (or Render autoscaling) until
   this is resolved.
@@ -38,9 +38,9 @@ Consequences:
 ## This is not the same problem as the CP2 retirement plan
 
 [`docs/cp2-compatibility-retirement-plan.md`](./cp2-compatibility-retirement-plan.md) retires the
-`cp2_*` JSONB compatibility tables in favor of proper relational tables as the *persisted* schema.
+`cp2_*` JSONB compatibility tables in favor of proper relational tables as the _persisted_ schema.
 That work is real progress and mostly landed (core business collections and phase 1 auth tables
-already read from relational tables). But it changes what `loadNormalizedSnapshot` reads *from* -
+already read from relational tables). But it changes what `loadNormalizedSnapshot` reads _from_ -
 it does not change the fact that the whole dataset still gets loaded into one process's memory at
 boot and mutated in-process. Finishing that plan does not, by itself, remove the single-instance
 ceiling described here.
@@ -63,7 +63,7 @@ store wouldn't be.
 **What's already fixed (this pass):** HTTP-level request throttling is now handled by
 `@fastify/rate-limit`, backed by a shared Redis instance (`soko-market-rate-limit-cache` in
 `render.yaml`, wired via `REDIS_URL`) in both `services/api` and `services/ai-runtime`. This is a
-coarse, additive backstop across the *entire* request surface (previously there was none at all
+coarse, additive backstop across the _entire_ request surface (previously there was none at all
 outside a handful of specific auth routes) and survives restarts/would work correctly if these
 services ever run more than one instance. It does not replace the three counters above, which stay
 as the precise, purpose-specific brute-force limits they already were.
@@ -84,19 +84,20 @@ were not previously documented anywhere. Both are fixed; neither required the mu
 described below.
 
 **Every mutation re-persisted every collection, not just the one that changed.** The Proxy at the
-bottom of `postgres-store.ts` calls `enqueueSave()` after *every* mutating method, and
+bottom of `postgres-store.ts` calls `enqueueSave()` after _every_ mutating method, and
 `saveNormalizedSnapshot` looped over all ~60 `normalizedCollections`, doing a full
 `select entity_id` scan plus a per-row `insert ... on conflict do update` for each one, every time
+
 - regardless of whether that collection had changed. A single product edit re-wrote every row in
-every collection. Fixed by passing the last successfully-persisted snapshot into
-`saveNormalizedSnapshot` and skipping `saveCollectionRecords` entirely for any collection whose
-serialized content is identical to last time (`collectionUnchanged`, `postgres-store.ts`). The
-comparison can only produce a false "changed" (falls back to the original behavior for that
-collection, which is safe by construction), never a false "unchanged," so it cannot skip work that
-was actually needed. `saveRelationalCoreRecords` (~20 hand-written table blocks, accounts/users/
-sessions/business_memberships/etc.) was deliberately **not** touched - applying the same technique
-there is a legitimate follow-up, but that function is exactly the kind of large,
-correctness-sensitive surface this document already argues against rewriting in one sitting.
+  every collection. Fixed by passing the last successfully-persisted snapshot into
+  `saveNormalizedSnapshot` and skipping `saveCollectionRecords` entirely for any collection whose
+  serialized content is identical to last time (`collectionUnchanged`, `postgres-store.ts`). The
+  comparison can only produce a false "changed" (falls back to the original behavior for that
+  collection, which is safe by construction), never a false "unchanged," so it cannot skip work that
+  was actually needed. `saveRelationalCoreRecords` (~20 hand-written table blocks, accounts/users/
+  sessions/business_memberships/etc.) was deliberately **not** touched - applying the same technique
+  there is a legitimate follow-up, but that function is exactly the kind of large,
+  correctness-sensitive surface this document already argues against rewriting in one sitting.
 
 **A failed save reverted in-memory state for every tenant, not just the failing write.** On any
 persistence error, the old code called `store.hydrateSnapshot(lastPersistedSnapshot)` -
@@ -125,6 +126,7 @@ last save," "does not discard in-memory mutations when a save fails, and recover
 existing Postgres-backed test suite (`cp2-postgres-store.test.ts`,
 `cp2-store-persistence.test.ts`, `postgres-persistence-boundary.test.ts`,
 `cp21-postgres-migration.test.ts`, `cp23-postgres-migration.test.ts`, `api-persistence-ack.test.ts`
+
 - 21 tests total) passes unmodified against the same database.
 
 None of this changes the single-instance/memory-bound conclusion above - it makes the existing

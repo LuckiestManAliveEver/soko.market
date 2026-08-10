@@ -68,9 +68,7 @@ export function buildAiRuntime(
     keyGenerator: (request) => request.ip,
     allowList: (request) => request.url === "/health/live",
     skipOnError: true,
-    ...(options.rateLimitRedisClient === undefined
-      ? {}
-      : { redis: options.rateLimitRedisClient }),
+    ...(options.rateLimitRedisClient === undefined ? {} : { redis: options.rateLimitRedisClient }),
     errorResponseBuilder: (_request, context) => ({
       ok: false,
       error: {
