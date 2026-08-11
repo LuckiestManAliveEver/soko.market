@@ -176,8 +176,7 @@ button:disabled {
   cursor: pointer;
   font-weight: 800;
   pointer-events: auto;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
 }
 
 .top-bar {
