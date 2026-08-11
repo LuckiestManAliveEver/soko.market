@@ -12,11 +12,18 @@ type Stage = "entry" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pi
 type IdentifierType = "phone" | "email" | "store";
 
 interface Props {
+  intent: "signup" | "login";
   onAuthenticated: (session: AuthSessionView) => void;
+  onIntentChange: (intent: "signup" | "login") => void;
   onCancel: () => void;
 }
 
-export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
+export function PhoneFirstAuthentication({
+  intent,
+  onAuthenticated,
+  onIntentChange,
+  onCancel
+}: Props) {
   const [identifierType, setIdentifierType] = useState<IdentifierType>("phone");
   const [country, setCountry] = useState<CountryCode>("KE");
   const [identifier, setIdentifier] = useState("");
@@ -31,7 +38,9 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
-    "Phone can be your Soko.market identifier. SMS verification is not used."
+    intent === "signup"
+      ? "Sign up with your phone number and a 4-digit PIN. SMS verification is not used."
+      : "Log in with your phone number and 4-digit PIN."
   );
 
   const identifierBody = () => {
@@ -75,16 +84,22 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
     setPin("");
     setStage("pin");
     setMessage(
-      identifierType === "store"
-        ? "Enter the store owner's PIN to continue."
-        : "Enter your PIN. New here? This creates one. Already have an account? Enter your existing PIN."
+      intent === "signup"
+        ? "Choose the 4-digit PIN you will use to log in on this and your other devices."
+        : identifierType === "store"
+          ? "Enter the store owner's PIN to continue."
+          : "Enter the PIN for your existing Soko account."
     );
   }
 
   async function submitPin() {
     const normalized = identifierBody();
     const result = await apiFetch<AuthSessionView>(
-      identifierType === "store" ? "/auth/pin/store-login" : "/auth/pin/continue",
+      intent === "signup"
+        ? "/auth/pin/signup"
+        : identifierType === "store"
+          ? "/auth/pin/store-login"
+          : "/auth/pin/login",
       {
         method: "POST",
         body:
@@ -241,7 +256,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
         <div className="section-heading">
           <AppIcon className="auth-brand-icon" />
           <p className="eyebrow">SECURE ACCOUNT ACCESS</p>
-          <h1>Welcome to soko.market</h1>
+          <h1>{intent === "signup" ? "Create your Soko account" : "Log in to Soko"}</h1>
         </div>
         {stage === "entry" || stage === "password" || stage === "pin" ? (
           <>
@@ -317,7 +332,17 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 )
               }
             >
-              {busy ? "Working…" : stage === "password" ? "Sign in" : "Continue"}
+              {busy
+                ? "Working…"
+                : stage === "password"
+                  ? "Log in"
+                  : stage === "pin"
+                    ? intent === "signup"
+                      ? "Sign up"
+                      : "Log in"
+                    : intent === "signup"
+                      ? "Continue to sign up"
+                      : "Continue to log in"}
             </button>
             {stage === "pin" ? (
               <p className="setup-status">
@@ -337,7 +362,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 {legacyPin ? "Use password" : "Use legacy PIN"}
               </button>
             ) : null}
-            {stage !== "password" ? (
+            {intent === "login" && stage !== "password" ? (
               <button
                 className="secondary"
                 type="button"
@@ -360,7 +385,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                     : "Use phone instead"}
               </button>
             ) : null}
-            {identifierType !== "store" ? (
+            {intent === "login" && identifierType !== "store" ? (
               <button
                 className="secondary"
                 type="button"
@@ -370,7 +395,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 Use a passkey instead
               </button>
             ) : null}
-            {stage !== "password" && identifierType !== "store" ? (
+            {intent === "login" && stage !== "password" && identifierType !== "store" ? (
               <button
                 className="secondary"
                 type="button"
@@ -383,7 +408,7 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
                 Use a password instead
               </button>
             ) : null}
-            {identifierType !== "store" ? (
+            {intent === "login" && identifierType !== "store" ? (
               <button
                 className="secondary"
                 type="button"
@@ -499,6 +524,17 @@ export function PhoneFirstAuthentication({ onAuthenticated, onCancel }: Props) {
         <p className="setup-status" role="status" aria-live="polite">
           {message}
         </p>
+        <div className="auth-intent-switch">
+          <span>{intent === "signup" ? "Already have an account?" : "New to Soko?"}</span>
+          <button
+            className="secondary"
+            type="button"
+            disabled={busy}
+            onClick={() => onIntentChange(intent === "signup" ? "login" : "signup")}
+          >
+            {intent === "signup" ? "Log in" : "Sign up"}
+          </button>
+        </div>
         <button className="secondary" type="button" onClick={onCancel}>
           Browse marketplace without an account
         </button>

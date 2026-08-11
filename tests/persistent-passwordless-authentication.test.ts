@@ -262,13 +262,15 @@ describe("persistent passwordless authentication", () => {
     );
 
     const frontend = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
-    expect(frontend).toContain('"/auth/pin/continue"');
+    expect(frontend).toContain('"/auth/pin/signup"');
+    expect(frontend).toContain('"/auth/pin/login"');
+    expect(frontend).not.toContain('"/auth/pin/continue"');
     expect(frontend).not.toContain('"/auth/identify"');
     expect(frontend).not.toContain('"/auth/signup/verify-phone"');
     expect(frontend).not.toContain('"verify-phone"');
     expect(frontend).toContain(" fallback (optional)");
-    // Sign up is a two-step phone/email/store-id + PIN flow (matching a native messaging app's
-    // login) - no third "add a passkey" nudge screen blocks getting into the app.
+    // Sign up is a two-step phone + PIN flow (matching a native messaging app's login), while
+    // returning users can log in by phone/email/store ID. No third passkey screen blocks entry.
     expect(frontend).not.toContain("Create passkey");
     expect(frontend).not.toContain("Skip for now");
   });

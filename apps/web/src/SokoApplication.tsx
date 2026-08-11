@@ -2184,8 +2184,8 @@ export function OwnerApp() {
   const [isAuthOpen, setIsAuthOpen] = useState(
     accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
   );
-  const [authenticationView, setAuthenticationView] = useState<"continue" | "sign-in">(
-    initialAuthenticationTarget !== null || initialOwnerAuth !== null ? "sign-in" : "continue"
+  const [authenticationView, setAuthenticationView] = useState<"continue" | "signup" | "login">(
+    initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "continue")
   );
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
@@ -2362,12 +2362,12 @@ export function OwnerApp() {
     setStatusMessage("Sign in to send end-to-end encrypted messages.");
   }
 
-  function openAuth() {
+  function openAuth(intent: "signup" | "login" = "login") {
     sessionStorage.removeItem(guestBrowsingStorageKey);
     setIsBusinessSetupOpen(false);
     setIsAuthOpen(true);
-    setAuthenticationView("sign-in");
-    setStatusMessage("Sign in to your existing account.");
+    setAuthenticationView(intent);
+    setStatusMessage(intent === "signup" ? "Create your Soko account." : "Log in to your account.");
   }
 
   function browseAsGuest() {
@@ -2388,7 +2388,7 @@ export function OwnerApp() {
       const target = readAuthenticationRouteHash(window.location.hash);
       if (target === null) return;
 
-      openAuth();
+      openAuth(target);
 
       window.history.replaceState(
         window.history.state,
@@ -3265,7 +3265,7 @@ export function OwnerApp() {
         if (storedBusiness === null) setBusiness(null);
         if (!accountDeletionIntent && !accountRestorationIntent) {
           setIsAuthOpen(true);
-          setAuthenticationView(initialOwnerAuth === null ? "continue" : "sign-in");
+          setAuthenticationView(initialOwnerAuth === null ? "continue" : "login");
           setStatusMessage(
             initialOwnerAuth === null ? "Continue once to open Soko." : "Sign in to continue"
           );
@@ -7508,9 +7508,24 @@ export function OwnerApp() {
                 {mode === "seller" ? "Shop" : "Sell"}
               </button>
               {session === null ? (
-                <span className="guest-mode-badge" aria-label="Browsing without an account">
-                  Guest
-                </span>
+                <>
+                  <button
+                    className="header-auth-button secondary"
+                    type="button"
+                    data-testid="header-signup-button"
+                    onClick={() => openAuth("signup")}
+                  >
+                    Sign up
+                  </button>
+                  <button
+                    className="header-auth-button"
+                    type="button"
+                    data-testid="header-login-button"
+                    onClick={() => openAuth("login")}
+                  >
+                    Log in
+                  </button>
+                </>
               ) : null}
               {business !== null && mode === "seller" ? (
                 <button
@@ -7560,14 +7575,26 @@ export function OwnerApp() {
         ) : shouldShowAuth && authenticationView === "continue" ? (
           <ProgressiveAuthentication
             onAuthenticated={(response) => completeProgressiveAuthentication(response)}
-            onSignIn={() => {
-              setAuthenticationView("sign-in");
-              setStatusMessage("Sign in to your existing account.");
+            onSignUp={() => {
+              setAuthenticationView("signup");
+              setStatusMessage("Create your Soko account.");
+            }}
+            onLogIn={() => {
+              setAuthenticationView("login");
+              setStatusMessage("Log in to your account.");
             }}
           />
         ) : shouldShowAuth ? (
           <PhoneFirstAuthentication
+            key={authenticationView}
+            intent={authenticationView === "signup" ? "signup" : "login"}
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
+            onIntentChange={(intent) => {
+              setAuthenticationView(intent);
+              setStatusMessage(
+                intent === "signup" ? "Create your Soko account." : "Log in to your account."
+              );
+            }}
             onCancel={() => {
               setAuthenticationView("continue");
               setStatusMessage("Continue once to open Soko.");
@@ -7750,7 +7777,8 @@ export function OwnerApp() {
               }
               onRequireSignIn={requireMessagingSignIn}
               onBrowseAsGuest={browseAsGuest}
-              onSignIn={openAuth}
+              onSignUp={() => openAuth("signup")}
+              onLogIn={() => openAuth("login")}
               onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
               onConversationPreference={(conversationId, preference) =>
                 void runAction("conversation-preference", () =>
@@ -17252,7 +17280,8 @@ interface ChatSurfaceProps {
   onCreateConversation: (recipient: string, title: string) => void;
   onRequireSignIn: () => void;
   onBrowseAsGuest: () => void;
-  onSignIn: () => void;
+  onSignUp: () => void;
+  onLogIn: () => void;
   onRefreshPublicStorefronts: () => void;
   onConversationPreference: (
     conversationId: string,
@@ -17344,7 +17373,8 @@ function ChatSurface({
   onCreateConversation,
   onRequireSignIn,
   onBrowseAsGuest,
-  onSignIn,
+  onSignUp,
+  onLogIn,
   onRefreshPublicStorefronts,
   onConversationPreference,
   onEnableNotifications,
@@ -17838,8 +17868,11 @@ function ChatSurface({
                 ) : null}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
-                    <button type="button" onClick={onSignIn}>
-                      Sign in
+                    <button type="button" onClick={onSignUp}>
+                      Sign up
+                    </button>
+                    <button className="secondary" type="button" onClick={onLogIn}>
+                      Log in
                     </button>
                     <button className="secondary" type="button" onClick={onBrowseAsGuest}>
                       Browse as guest

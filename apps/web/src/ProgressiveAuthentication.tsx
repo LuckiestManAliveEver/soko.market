@@ -10,10 +10,11 @@ const continueRequestKeyTtlMs = 10 * 60 * 1000;
 
 interface Props {
   onAuthenticated: (session: AuthSessionView) => void;
-  onSignIn: () => void;
+  onSignUp: () => void;
+  onLogIn: () => void;
 }
 
-export function ProgressiveAuthentication({ onAuthenticated, onSignIn }: Props) {
+export function ProgressiveAuthentication({ onAuthenticated, onSignUp, onLogIn }: Props) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [message, setMessage] = useState("");
@@ -77,10 +78,12 @@ export function ProgressiveAuthentication({ onAuthenticated, onSignIn }: Props) 
             {message}
           </p>
         ) : null}
-        <div className="progressive-sign-in">
-          <span>Already have an account?</span>
-          <button type="button" className="secondary" disabled={busy} onClick={onSignIn}>
-            Sign in
+        <div className="progressive-account-actions" aria-label="Account access">
+          <button type="button" disabled={busy} onClick={onSignUp}>
+            Sign up
+          </button>
+          <button type="button" className="secondary" disabled={busy} onClick={onLogIn}>
+            Log in
           </button>
         </div>
         <p className="auth-legal">

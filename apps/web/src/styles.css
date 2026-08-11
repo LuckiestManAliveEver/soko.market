@@ -264,6 +264,23 @@ button:disabled {
   min-width: 0;
 }
 
+.header-auth-button {
+  background: #117a4f;
+  border: 1px solid #117a4f;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 38px;
+  padding: 7px 13px;
+  white-space: nowrap;
+}
+
+.header-auth-button.secondary {
+  background: #ffffff;
+  color: #117a4f;
+}
+
 .guest-mode-badge {
   background: #fff8df;
   border: 1px solid #e4cf88;
@@ -1029,17 +1046,26 @@ button:disabled {
   width: 100%;
 }
 
-.progressive-sign-in {
+.progressive-account-actions,
+.auth-intent-switch {
   align-items: center;
-  color: #516258;
   display: flex;
   flex-wrap: wrap;
-  font-size: 14px;
   gap: 8px;
   justify-content: center;
 }
 
-.panel .progressive-sign-in button {
+.panel .progressive-account-actions button {
+  flex: 1 1 140px;
+  min-height: 48px;
+}
+
+.auth-intent-switch {
+  color: #516258;
+  font-size: 14px;
+}
+
+.panel .auth-intent-switch button {
   background: transparent;
   color: #117a4f;
   min-height: 40px;

@@ -10,8 +10,10 @@ describe("progressive onboarding UI", () => {
 
     expect(source).toContain("Continue to Soko");
     expect(source).toContain("Opening Soko…");
-    expect(source).toContain("Already have an account?");
-    expect(source).toContain("Sign in");
+    expect(source).toContain("onClick={onSignUp}");
+    expect(source).toContain("Sign up");
+    expect(source).toContain("onClick={onLogIn}");
+    expect(source).toContain("Log in");
     expect(source).toContain('"/auth/continue"');
     expect(source).not.toMatch(/<input|<select|<textarea/u);
     expect(source).not.toContain("contacts");
