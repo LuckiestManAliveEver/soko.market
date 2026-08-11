@@ -28,6 +28,7 @@ export async function executeInferenceRoute(input: {
   request: InferenceRequest;
   onChunk?: (chunk: InferenceChunk) => void;
   onAttempt?: (provider: InferenceProvider, fallbackCount: number) => void;
+  onFailure?: (provider: InferenceProvider, state: InferenceUserState) => void;
 }): Promise<InferenceExecutionResult> {
   const providers = new Map(input.providers.map((provider) => [provider.id, provider]));
   const attempts = [input.decision.providerId, ...input.decision.fallbackProviderIds];
@@ -61,7 +62,9 @@ export async function executeInferenceRoute(input: {
       };
     } catch (error) {
       await provider.cancel?.(input.request.requestId).catch(() => undefined);
-      failures.push({ providerId, state: mapInferenceError(error) });
+      const state = mapInferenceError(error);
+      failures.push({ providerId, state });
+      input.onFailure?.(provider, state);
     }
   }
 

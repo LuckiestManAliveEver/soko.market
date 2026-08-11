@@ -102,6 +102,13 @@ export interface InferenceRouteDecision {
   fallbackProviderIds: string[];
 }
 
+/** Privacy-bounded signal that an authorized cloud turn follows a failed local attempt. */
+export interface RuntimeRecallEscalation {
+  reason: string;
+  localRuntime: Exclude<InferenceRuntime, "cloud-fallback"> | "server-local";
+  localModelId?: string;
+}
+
 export interface InferenceRoutingPolicy {
   priority: InferenceRuntime[];
   maximumFallbacks: number;
@@ -2538,6 +2545,13 @@ export type RuntimeTelemetryState =
   | "model.completed"
   | "model.fallback"
   | "model.fallback_completed"
+  | "recall.candidate_generated"
+  | "recall.candidate_rejected"
+  | "recall.deduplicated"
+  | "recall.persisted"
+  | "recall.retrieved"
+  | "recall.applied"
+  | "recall.persistence_failed"
   | "intent.routed"
   | "plan.created"
   | "verification.completed"
@@ -2728,7 +2742,8 @@ export type AgentContextSourceType =
   | "document"
   | "conversation"
   | "context_script"
-  | "owner_note";
+  | "owner_note"
+  | "recall";
 
 export interface AgentIdentity {
   agentName: string;
@@ -2929,6 +2944,7 @@ export type AgentEvaluationEventType =
   | "hallucinated_product_or_price"
   | "invalid_discount_attempt"
   | "customer_satisfaction"
+  | "recall_effectiveness"
   | "owner_feedback";
 
 export interface AgentEvaluationEvent {

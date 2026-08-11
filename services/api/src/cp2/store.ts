@@ -160,6 +160,7 @@ import type {
   RuntimeModelProvider,
   RuntimeModelTrace,
   RuntimePlannedAction,
+  RuntimeRecallEscalation,
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
   RuntimeTurnResult,
@@ -215,6 +216,17 @@ import {
   enforceAgentPolicy,
   retrieveAgentContext
 } from "./agent-business-runtime.js";
+import {
+  decideRecallPersistence,
+  parseRecallCandidateFromModelOutput,
+  parseRecallEntry,
+  recallSearchText,
+  serializeRecallEntry,
+  withRecallDistillationInstruction,
+  type RecallCandidate,
+  type RecallEntry,
+  type RecallEscalationSignal
+} from "./recall-distillation.js";
 import {
   createSyncQueueItem,
   markSyncProcessing,
@@ -5472,6 +5484,130 @@ export class Cp2Store {
     return cloneAgentContextSource(source);
   }
 
+  private persistRecallCandidate(input: {
+    businessId: string;
+    candidate: RecallCandidate;
+    profile: BusinessAgentProfileSummary;
+    now: Date;
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void;
+  }): void {
+    if (!input.profile.memoryPolicy.reusableWorkflowMemoryEnabled) {
+      input.appendTelemetry("recall.candidate_rejected", "completed", null, null, {
+        reason: "reusable_workflow_memory_disabled"
+      });
+      return;
+    }
+    const nowIso = input.now.toISOString();
+    const retentionBoundary =
+      input.now.getTime() - input.profile.memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
+    const activeSources = [...this.agentContextSources.values()].filter(
+      (source) =>
+        source.shopId === input.businessId &&
+        source.type === "recall" &&
+        source.status === "active" &&
+        source.deletedAt === null
+    );
+    for (const source of activeSources) {
+      if (Date.parse(source.updatedAt) < retentionBoundary) {
+        this.agentContextSources.set(source.id, {
+          ...source,
+          status: "archived",
+          updatedAt: nowIso,
+          deletedAt: nowIso
+        });
+      }
+    }
+    const existing = activeSources
+      .filter((source) => Date.parse(source.updatedAt) >= retentionBoundary)
+      .map((source) => ({
+        source,
+        entry: parseRecallEntry(source.retrievalMetadata.content ?? "")
+      }))
+      .filter(
+        (item): item is { source: AgentContextSource; entry: RecallEntry } => item.entry !== null
+      );
+    const decision = decideRecallPersistence({
+      candidate: input.candidate,
+      existing: existing.map((item) => item.entry),
+      now: nowIso,
+      createId: randomUUID
+    });
+    input.appendTelemetry("recall.deduplicated", "completed", null, null, {
+      outcome: decision.outcome,
+      existingCount: existing.length,
+      replacedEntryId: decision.replacedEntryId
+    });
+    if (decision.outcome === "IGNORE" || decision.entry === null) return;
+
+    if (decision.replacedEntryId !== null) {
+      const replaced = existing.find((item) => item.entry.id === decision.replacedEntryId)?.source;
+      if (replaced !== undefined) {
+        this.agentContextSources.set(replaced.id, {
+          ...replaced,
+          status: "archived",
+          updatedAt: nowIso,
+          deletedAt: nowIso
+        });
+      }
+    }
+    const content = serializeRecallEntry(decision.entry);
+    const source: AgentContextSource = {
+      id: randomUUID(),
+      tenantId: input.businessId,
+      shopId: input.businessId,
+      type: "recall",
+      title: `recall.md — ${decision.entry.title}`,
+      status: "active",
+      sensitivity: "internal",
+      accessRules: {
+        audiences: ["owner", "staff"],
+        requiredPermission: "business:read",
+        customerVisible: false
+      },
+      freshnessTimestamp: nowIso,
+      version: decision.entry.version,
+      retrievalMetadata: {
+        keywords: contextKeywords(recallSearchText(decision.entry)),
+        sourceRecordId: decision.entry.id,
+        content
+      },
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      deletedAt: null
+    };
+    this.agentContextSources.set(source.id, source);
+
+    const retained = [...this.agentContextSources.values()]
+      .filter(
+        (candidate) =>
+          candidate.shopId === input.businessId &&
+          candidate.type === "recall" &&
+          candidate.status === "active" &&
+          candidate.deletedAt === null
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    for (const overflow of retained.slice(input.profile.memoryPolicy.maximumItemsPerScope)) {
+      this.agentContextSources.set(overflow.id, {
+        ...overflow,
+        status: "archived",
+        updatedAt: nowIso,
+        deletedAt: nowIso
+      });
+    }
+    input.appendTelemetry("recall.persisted", "completed", null, null, {
+      outcome: decision.outcome,
+      recallId: decision.entry.id,
+      version: decision.entry.version,
+      retainedCount: Math.min(retained.length, input.profile.memoryPolicy.maximumItemsPerScope)
+    });
+  }
+
   listAgentOwnerCorrections(input: {
     sessionId: string | null;
     businessId: string;
@@ -5625,6 +5761,67 @@ export class Cp2Store {
       metadata: { correct: input.correct },
       sessionId: null,
       messageId: input.messageId ?? null,
+      now
+    });
+  }
+
+  recordRecallEffectiveness(input: {
+    sessionId: string | null;
+    businessId: string;
+    sourceIds: string[];
+    outcome: "local_success" | "cloud_fallback";
+    localRuntime: RuntimeRecallEscalation["localRuntime"];
+    modelId: string;
+    now?: Date;
+  }): AgentEvaluationEvent {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
+    if (input.sourceIds.length === 0 || input.sourceIds.length > 3) {
+      throw new Cp2Error(
+        400,
+        "recall_effectiveness_invalid",
+        "Recall effectiveness requires between one and three source IDs."
+      );
+    }
+    const sourceIds = [...new Set(input.sourceIds)];
+    const validSourceIds = new Set(
+      [...this.agentContextSources.values()]
+        .filter(
+          (source) =>
+            source.shopId === input.businessId &&
+            source.type === "recall" &&
+            source.status === "active" &&
+            source.deletedAt === null
+        )
+        .map((source) => source.id)
+    );
+    if (!sourceIds.every((sourceId) => validSourceIds.has(sourceId))) {
+      throw new Cp2Error(
+        400,
+        "recall_effectiveness_invalid",
+        "Recall effectiveness source IDs must identify active recall for this shop."
+      );
+    }
+    const profile = this.currentAgentProfile(input.businessId, now);
+    return this.recordAgentEvaluationEvent({
+      businessId: input.businessId,
+      runtimeVersion: profile.runtimeVersion,
+      modelId: normalizeRequiredBoundedText(input.modelId, "recall model ID", 180),
+      eventType: "recall_effectiveness",
+      outcome: input.outcome === "local_success" ? "success" : "partial",
+      score: input.outcome === "local_success" ? 1 : 0,
+      reason:
+        input.outcome === "local_success"
+          ? "Relevant recall accompanied a successful local inference."
+          : "Relevant recall was present but the request still required cloud fallback.",
+      metadata: {
+        recallCount: sourceIds.length,
+        recallSourceIds: sourceIds.join(","),
+        localRuntime: input.localRuntime,
+        outcome: input.outcome
+      },
+      sessionId: null,
+      messageId: null,
       now
     });
   }
@@ -12133,6 +12330,7 @@ export class Cp2Store {
     conversationHistory?: RuntimeModelConversationMessage[];
     agentProfile?: RuntimeAgentProfile;
     confirmationToken?: string;
+    recallEscalation?: RuntimeRecallEscalation;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
     const now = input.now ?? new Date();
@@ -12320,6 +12518,13 @@ export class Cp2Store {
       intent: parserResult.intent,
       characterBudget: contextCharacterBudgetForModel(activeModelId)
     });
+    const retrievedRecallCount = retrievedContext.filter((item) => item.type === "recall").length;
+    if (retrievedRecallCount > 0) {
+      appendTelemetry("recall.retrieved", "completed", null, null, {
+        count: retrievedRecallCount,
+        intent: parserResult.intent
+      });
+    }
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
           .filter((correction) => correction.status === "active")
@@ -12340,11 +12545,15 @@ export class Cp2Store {
             shopRuntime,
             retrievedContext,
             memory: runtimeMemory,
-            intent: parserResult.intent
+            intent: parserResult.intent,
+            ...(input.recallEscalation === undefined
+              ? {}
+              : { recallEscalation: input.recallEscalation })
           })
         : {
             proposal: null,
-            trace: null
+            trace: null,
+            recallCandidate: null
           };
     if (
       activeBinding !== null &&
@@ -12468,6 +12677,34 @@ export class Cp2Store {
     }
 
     const status = runtimeStatusFromPlan(plan, verification);
+    if (retrievedRecallCount > 0 && modelRoute.trace?.status === "available") {
+      appendTelemetry("recall.applied", status, plan.toolName, plan.risk, {
+        count: retrievedRecallCount,
+        advisoryOnly: true,
+        cloudFallbackUsed: modelRoute.trace.fallbackUsed
+      });
+    }
+    if (modelRoute.recallCandidate !== null) {
+      if (status === "completed" && verification.ok) {
+        try {
+          this.persistRecallCandidate({
+            businessId: input.businessId,
+            candidate: modelRoute.recallCandidate,
+            profile: storedAgentProfile,
+            now,
+            appendTelemetry
+          });
+        } catch {
+          appendTelemetry("recall.persistence_failed", "completed", plan.toolName, plan.risk, {
+            isolated: true
+          });
+        }
+      } else {
+        appendTelemetry("recall.candidate_rejected", status, plan.toolName, plan.risk, {
+          reason: "cloud_result_not_successful"
+        });
+      }
+    }
     appendTelemetry("response.generated", status, plan.toolName, plan.risk, {
       actionId: plan.id
     });
@@ -18530,8 +18767,17 @@ export class Cp2Store {
 
   private contextSourcesForRuntime(profile: BusinessAgentProfileSummary): AgentContextSource[] {
     const businessId = profile.businessId;
+    const recallRetentionBoundary =
+      Date.now() - profile.memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
     const sources = [...this.agentContextSources.values()]
-      .filter((source) => source.shopId === businessId && source.deletedAt === null)
+      .filter(
+        (source) =>
+          source.shopId === businessId &&
+          source.deletedAt === null &&
+          (source.type !== "recall" ||
+            (profile.memoryPolicy.reusableWorkflowMemoryEnabled &&
+              Date.parse(source.updatedAt) >= recallRetentionBoundary))
+      )
       .map(cloneAgentContextSource);
     if (!sources.some((source) => source.type === "context_script")) {
       sources.push(
@@ -18824,6 +19070,7 @@ export class Cp2Store {
     retrievedContext: ReturnType<typeof retrieveAgentContext>;
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
+    recallEscalation?: RuntimeRecallEscalation;
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
@@ -18835,6 +19082,7 @@ export class Cp2Store {
   }): Promise<{
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
+    recallCandidate: RecallCandidate | null;
   }> {
     const { provider, binding } = this.resolveRuntimeModelProvider(
       input.shopRuntime,
@@ -18857,6 +19105,7 @@ export class Cp2Store {
       }
       return {
         proposal: null,
+        recallCandidate: null,
         trace: {
           provider: null,
           status: "disabled",
@@ -18883,8 +19132,18 @@ export class Cp2Store {
       allowedTools,
       memory: input.memory
     });
+    const clientCloudEscalation =
+      input.recallEscalation !== undefined &&
+      (binding?.executionTarget === "openai" || provider.name === "openai")
+        ? input.recallEscalation
+        : null;
     const prompt = buildRuntimeModelPrompt(
-      assembled.message,
+      clientCloudEscalation === null
+        ? assembled.message
+        : withRecallDistillationInstruction(assembled.message, {
+            intent: input.intent,
+            escalation: clientCloudEscalation
+          }),
       input.context,
       input.conversationHistory,
       {
@@ -18916,6 +19175,7 @@ export class Cp2Store {
     let fallbackReason: string | null = null;
     let resolvedModelId = binding?.modelId ?? input.modelId;
     let resolvedExecutionTarget = binding?.executionTarget;
+    let recallEscalation: RecallEscalationSignal | null = clientCloudEscalation;
 
     try {
       input.appendTelemetry("model.inference_started", "completed", null, null, {
@@ -18940,6 +19200,7 @@ export class Cp2Store {
 
       return {
         proposal: null,
+        recallCandidate: null,
         trace: {
           provider: provider.name,
           status: "error",
@@ -19001,7 +19262,18 @@ export class Cp2Store {
             shopId: binding.shopId
           }
         });
-        const fallbackCompletion = await fallbackProvider.complete(prompt);
+        const serverFallbackEscalation: RecallEscalationSignal = {
+          reason: fallbackReason,
+          localRuntime: "server-local",
+          localModelId: binding.modelId
+        };
+        const fallbackCompletion = await fallbackProvider.complete({
+          ...prompt,
+          message: withRecallDistillationInstruction(assembled.message, {
+            intent: input.intent,
+            escalation: serverFallbackEscalation
+          })
+        });
         input.appendTelemetry(
           "model.fallback_completed",
           fallbackCompletion.status === "available" ? "completed" : "blocked",
@@ -19020,6 +19292,7 @@ export class Cp2Store {
           fallbackUsed = true;
           resolvedModelId = binding.fallbackModelId;
           resolvedExecutionTarget = "openai";
+          recallEscalation = serverFallbackEscalation;
         }
       }
     }
@@ -19033,6 +19306,7 @@ export class Cp2Store {
 
       return {
         proposal: null,
+        recallCandidate: null,
         trace: {
           ...modelTraceFromCompletion(completion, true, null),
           ...(binding === null
@@ -19059,6 +19333,7 @@ export class Cp2Store {
 
       return {
         proposal: null,
+        recallCandidate: null,
         trace: {
           provider: completion.provider,
           status: "malformed",
@@ -19078,8 +19353,28 @@ export class Cp2Store {
       };
     }
 
+    const recallResult =
+      recallEscalation === null
+        ? null
+        : parseRecallCandidateFromModelOutput(completion.outputText, {
+            intent: input.intent,
+            fallbackReason: recallEscalation.reason
+          });
+    if (recallResult?.candidate !== null && recallResult?.candidate !== undefined) {
+      input.appendTelemetry("recall.candidate_generated", "completed", null, null, {
+        taskType: recallResult.candidate.taskType,
+        confidence: recallResult.candidate.confidence,
+        localRuntime: recallEscalation?.localRuntime ?? null
+      });
+    } else if (recallResult !== null && recallResult.reason !== "candidate_omitted") {
+      input.appendTelemetry("recall.candidate_rejected", "completed", null, null, {
+        reason: recallResult.reason,
+        localRuntime: recallEscalation?.localRuntime ?? null
+      });
+    }
     return {
       proposal: parsed.output.proposal,
+      recallCandidate: recallResult?.candidate ?? null,
       trace: {
         ...modelTraceFromCompletion(completion, fallbackUsed, parsed.output.kind),
         ...(binding === null

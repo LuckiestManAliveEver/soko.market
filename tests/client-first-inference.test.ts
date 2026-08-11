@@ -179,6 +179,7 @@ describe("client-first inference", () => {
       messages: [{ role: "user", content: "Hello" }]
     };
     const attempts: string[] = [];
+    const failures: Array<{ id: string; state: string }> = [];
     const failing: InferenceProvider = {
       id: "native",
       runtime: "native-llama-cpp",
@@ -222,7 +223,8 @@ describe("client-first inference", () => {
         },
         providers: [browser, failing],
         request,
-        onAttempt: (candidate) => attempts.push(candidate.id)
+        onAttempt: (candidate) => attempts.push(candidate.id),
+        onFailure: (candidate, state) => failures.push({ id: candidate.id, state })
       })
     ).resolves.toMatchObject({
       providerId: "browser",
@@ -231,5 +233,6 @@ describe("client-first inference", () => {
       fallbackCount: 1
     });
     expect(attempts).toEqual(["native", "browser"]);
+    expect(failures).toEqual([{ id: "native", state: "inference-unavailable" }]);
   });
 });

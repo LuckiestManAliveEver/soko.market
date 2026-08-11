@@ -380,6 +380,7 @@ export async function testAgentModelRuntime(
 export function buildLocalAgentPrompt(input: {
   role: string;
   instructions: string;
+  relevantRecall?: string;
   message: string;
   recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
 }): string {
@@ -391,6 +392,7 @@ export function buildLocalAgentPrompt(input: {
     `You are Soko's ${input.role}.`,
     input.instructions,
     "Respond directly, briefly, and accurately. Do not claim to have used tools you cannot access.",
+    ...(input.relevantRecall === undefined ? [] : [input.relevantRecall]),
     ...(history.length === 0 ? [] : [`Recent conversation:\n${history}`]),
     `User: ${input.message}`,
     "Assistant:"

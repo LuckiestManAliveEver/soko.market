@@ -61,6 +61,7 @@ import type {
   SyncRealtimeReadyEvent,
   InferenceRequest,
   OwnerInferenceNodeMessage,
+  RuntimeRecallEscalation,
   VerificationTier
 } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
@@ -809,6 +810,14 @@ interface RuntimeTurnBody {
   runtimeSessionId?: string;
   message?: string;
   confirmationToken?: string;
+  recallEscalation?: RuntimeRecallEscalation;
+}
+
+interface RecallEffectivenessBody {
+  sourceIds?: unknown;
+  outcome?: unknown;
+  localRuntime?: unknown;
+  modelId?: unknown;
 }
 
 interface NotificationStatusBody {
@@ -3558,6 +3567,25 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       try {
         const body = parseAgentFeedbackBody(request.body);
         return store.submitAgentFeedback({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ...body
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/agent-runtime/recall/effectiveness",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: RecallEffectivenessBody }>,
+      reply
+    ) => {
+      try {
+        const body = parseRecallEffectivenessBody(request.body);
+        return store.recordRecallEffectiveness({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           ...body
@@ -7063,6 +7091,7 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   runtimeSessionId?: string;
   message: string;
   confirmationToken?: string;
+  recallEscalation?: RuntimeRecallEscalation;
 } {
   const record = parseRequestBody(body);
   const runtimeSessionId =
@@ -7073,13 +7102,76 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
     record.confirmationToken === undefined || record.confirmationToken === null
       ? undefined
       : parseString(record.confirmationToken, "confirmationToken");
+  const recallEscalation =
+    record.recallEscalation === undefined || record.recallEscalation === null
+      ? undefined
+      : parseRuntimeRecallEscalation(record.recallEscalation);
   const parsed = {
     message: parseString(record.message, "message")
   };
   return {
     ...parsed,
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
-    ...(confirmationToken === undefined ? {} : { confirmationToken })
+    ...(confirmationToken === undefined ? {} : { confirmationToken }),
+    ...(recallEscalation === undefined ? {} : { recallEscalation })
+  };
+}
+
+function parseRuntimeRecallEscalation(value: unknown): RuntimeRecallEscalation {
+  const record = parseRequestBody(value);
+  const localRuntime = parseString(record.localRuntime, "recallEscalation.localRuntime");
+  if (
+    localRuntime !== "browser-webgpu" &&
+    localRuntime !== "browser-wasm" &&
+    localRuntime !== "native-llama-cpp" &&
+    localRuntime !== "owner-node" &&
+    localRuntime !== "server-local"
+  ) {
+    throw new Cp2Error(
+      400,
+      "recall_escalation_invalid",
+      "recallEscalation.localRuntime is not supported."
+    );
+  }
+  const reason = parseString(record.reason, "recallEscalation.reason");
+  if (reason.length > 80 || !/^[A-Za-z0-9_.-]+$/u.test(reason)) {
+    throw new Cp2Error(
+      400,
+      "recall_escalation_invalid",
+      "recallEscalation.reason must be a bounded reason code."
+    );
+  }
+  const localModelId =
+    record.localModelId === undefined || record.localModelId === null
+      ? undefined
+      : parseString(record.localModelId, "recallEscalation.localModelId").slice(0, 120);
+  return { localRuntime, reason, ...(localModelId === undefined ? {} : { localModelId }) };
+}
+
+function parseRecallEffectivenessBody(body: RecallEffectivenessBody | null | undefined): {
+  sourceIds: string[];
+  outcome: "local_success" | "cloud_fallback";
+  localRuntime: RuntimeRecallEscalation["localRuntime"];
+  modelId: string;
+} {
+  const record = parseRequestBody(body);
+  const outcome = parseString(record.outcome, "outcome");
+  if (outcome !== "local_success" && outcome !== "cloud_fallback") {
+    throw new Cp2Error(
+      400,
+      "recall_effectiveness_invalid",
+      "Recall effectiveness outcome is not supported."
+    );
+  }
+  const localRuntime = parseRuntimeRecallEscalation({
+    reason: "effectiveness",
+    localRuntime: record.localRuntime
+  }).localRuntime;
+  return {
+    sourceIds: parseStringArray(record.sourceIds, "sourceIds", 3),
+    outcome,
+    localRuntime,
+    modelId: parseString(record.modelId, "modelId")
   };
 }
 
