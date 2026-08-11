@@ -13,3 +13,4 @@ backups/
 mongodb/*.env
 *.log
 .DS_Store
+/commit.md

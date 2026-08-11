@@ -422,9 +422,9 @@ export const mcpAccessTokens = pgTable(
 );
 
 export const sokoSessionContexts = pgTable("soko_session_contexts", {
-  sessionId: uuid("session_id")
+  accountId: uuid("account_id")
     .primaryKey()
-    .references(() => sessions.id, { onDelete: "cascade" }),
+    .references(() => accounts.id, { onDelete: "cascade" }),
   conversationId: uuid("conversation_id")
     .notNull()
     .references(() => conversations.id),

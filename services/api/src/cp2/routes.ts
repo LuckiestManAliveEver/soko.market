@@ -2652,11 +2652,14 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           "expectedSessionVersion"
         );
         const conversationId = parseOptionalString(request.body.conversationId);
+        const mode = parseOptionalSokoMode(request.body.mode);
+        const activeShopId = parseOptionalNullableString(request.body.activeShopId);
+        const activeSurface = parseOptionalSokoChatSurface(request.body.activeSurface);
         return store.updateSokoSessionContext({
           sessionId: readSessionCookie(request.headers.cookie),
-          mode: parseSokoMode(request.body.mode),
-          activeShopId: parseNullableString(request.body.activeShopId),
-          activeSurface: parseSokoChatSurface(request.body.activeSurface),
+          ...(mode === undefined ? {} : { mode }),
+          ...(activeShopId === undefined ? {} : { activeShopId }),
+          ...(activeSurface === undefined ? {} : { activeSurface }),
           ...(conversationId === undefined ? {} : { conversationId }),
           ...(expectedSessionVersion === undefined ? {} : { expectedSessionVersion })
         });
@@ -7660,6 +7663,10 @@ function parseSokoMode(value: unknown): SokoMode {
   throw new Cp2Error(400, "mode_invalid", "mode must be marketplace or seller.");
 }
 
+function parseOptionalSokoMode(value: unknown): SokoMode | undefined {
+  return value === undefined ? undefined : parseSokoMode(value);
+}
+
 function parseSokoChatSurface(value: unknown): SokoChatSurface {
   if (
     value === "conversation" ||
@@ -7674,6 +7681,14 @@ function parseSokoChatSurface(value: unknown): SokoChatSurface {
   }
 
   throw new Cp2Error(400, "surface_invalid", "activeSurface is not supported.");
+}
+
+function parseOptionalSokoChatSurface(value: unknown): SokoChatSurface | undefined {
+  return value === undefined ? undefined : parseSokoChatSurface(value);
+}
+
+function parseOptionalNullableString(value: unknown): string | null | undefined {
+  return value === undefined ? undefined : parseNullableString(value);
 }
 
 function parseConversationKind(value: unknown): ConversationKind {

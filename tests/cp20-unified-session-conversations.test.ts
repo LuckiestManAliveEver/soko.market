@@ -217,6 +217,87 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     await app.close();
   });
 
+  it("restores one account-wide working context on every device", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const phone = "254700000023";
+    const firstDeviceCookie = await createAccountSession(app, phone);
+    const firstShop = await createBusiness(app, firstDeviceCookie, "Everywhere Shop");
+    const initial = await getJson<SokoSessionContext>(
+      app,
+      "/v1/session/context",
+      firstDeviceCookie
+    );
+
+    const firstUpdate = await patchJson(
+      app,
+      "/v1/session/context",
+      {
+        mode: "seller",
+        activeShopId: firstShop.business.id,
+        activeSurface: "owner-controls",
+        expectedSessionVersion: initial.sessionVersion
+      },
+      firstDeviceCookie
+    );
+    expect(firstUpdate.statusCode).toBe(200);
+
+    const secondLogin = await postResponse(app, "/auth/pin/login", {
+      method: "phone",
+      contact: phone,
+      pin: "1234"
+    });
+    expect(secondLogin.statusCode).toBe(200);
+    const secondDeviceCookie = extractSessionCookie(secondLogin.headers["set-cookie"]);
+    const restored = await getJson<SokoSessionContext>(
+      app,
+      "/v1/session/context",
+      secondDeviceCookie
+    );
+    expect(restored).toMatchObject({
+      accountId: initial.accountId,
+      activeShopId: firstShop.business.id,
+      mode: "seller",
+      activeSurface: "owner-controls",
+      conversationId: initial.conversationId,
+      sessionVersion: initial.sessionVersion + 1
+    });
+    expect(restored.sessionId).not.toBe(initial.sessionId);
+
+    const partialUpdate = await patchJson(
+      app,
+      "/v1/session/context",
+      {
+        activeSurface: "catalogue",
+        expectedSessionVersion: restored.sessionVersion
+      },
+      secondDeviceCookie
+    );
+    expect(partialUpdate.statusCode).toBe(200);
+    expect(partialUpdate.json<SokoSessionContext>()).toMatchObject({
+      activeShopId: firstShop.business.id,
+      mode: "seller",
+      activeSurface: "catalogue",
+      conversationId: initial.conversationId,
+      sessionVersion: restored.sessionVersion + 1
+    });
+
+    const visibleOnFirstDevice = await getJson<SokoSessionContext>(
+      app,
+      "/v1/session/context",
+      firstDeviceCookie
+    );
+    expect(visibleOnFirstDevice).toMatchObject({
+      activeSurface: "catalogue",
+      sessionVersion: restored.sessionVersion + 1
+    });
+    expect(store.snapshot().sessionContexts).toEqual([
+      expect.objectContaining({ accountId: initial.accountId })
+    ]);
+
+    await app.close();
+  });
+
   it("keeps conversations account-scoped and messages idempotent across persistence", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

@@ -2187,10 +2187,6 @@ export class Cp2Store {
     replacementRecord.lastUsedAt = now.toISOString();
     replacementRecord.rotatedAt = null;
 
-    const previousContext = this.sessionContexts.get(matched.id);
-    if (previousContext !== undefined) {
-      this.sessionContexts.set(replacement.id, { ...previousContext, sessionId: replacement.id });
-    }
     matched.revokedAt = now.toISOString();
     matched.rotatedAt = now.toISOString();
     matched.revocationReason = "rotated";
@@ -2423,7 +2419,7 @@ export class Cp2Store {
     snapshot.users = snapshot.users.filter((user) => user.id !== sourceUserId);
     snapshot.sessions = snapshot.sessions.filter((session) => !sourceSessionIds.has(session.id));
     snapshot.sessionContexts = snapshot.sessionContexts.filter(
-      (context) => !sourceSessionIds.has(context.sessionId)
+      (context) => context.accountId !== sourceAccountId
     );
     snapshot.accountPinHashes = snapshot.accountPinHashes?.filter(
       (credential) => credential.accountId !== sourceAccountId
@@ -3785,9 +3781,9 @@ export class Cp2Store {
 
   updateSokoSessionContext(input: {
     sessionId: string | null;
-    mode: SokoMode;
-    activeShopId: string | null;
-    activeSurface: SokoChatSurface;
+    mode?: SokoMode;
+    activeShopId?: string | null;
+    activeSurface?: SokoChatSurface;
     conversationId?: string;
     expectedSessionVersion?: number;
     now?: Date;
@@ -3796,6 +3792,10 @@ export class Cp2Store {
     const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountNotPendingDeletion(session.account.id, now);
     const current = this.ensureSokoSessionContext(session, now);
+    const mode = input.mode ?? current.mode;
+    const activeShopId =
+      input.activeShopId === undefined ? current.activeShopId : input.activeShopId;
+    const activeSurface = input.activeSurface ?? current.activeSurface;
 
     if (
       input.expectedSessionVersion !== undefined &&
@@ -3808,15 +3808,15 @@ export class Cp2Store {
       );
     }
 
-    if (input.activeShopId !== null) {
-      this.requireMembership(input.activeShopId, session.user.id);
+    if (activeShopId !== null) {
+      this.requireMembership(activeShopId, session.user.id);
     }
 
-    if (input.mode === "seller" && input.activeShopId === null) {
+    if (mode === "seller" && activeShopId === null) {
       throw new Cp2Error(409, "active_shop_required", "Seller mode requires an active shop.");
     }
 
-    if (sellerOnlySurfaces.has(input.activeSurface) && input.mode !== "seller") {
+    if (sellerOnlySurfaces.has(activeSurface) && mode !== "seller") {
       throw new Cp2Error(
         400,
         "surface_mode_invalid",
@@ -3828,18 +3828,19 @@ export class Cp2Store {
     this.requireAccountConversation(conversationId, session.account.id);
     const next: StoredSokoSessionContext = {
       ...current,
-      activeShopId: input.activeShopId,
-      activeSurface: input.activeSurface,
+      accountId: session.account.id,
+      activeShopId,
+      activeSurface,
       conversationId,
-      mode: input.mode,
+      mode,
       sessionVersion: current.sessionVersion + 1,
       updatedAt: now.toISOString()
     };
-    this.sessionContexts.set(session.session.id, next);
+    this.sessionContexts.set(session.account.id, next);
     this.recordSyncChange({
       accountId: session.account.id,
       collection: "session_context",
-      entityId: session.session.id,
+      entityId: session.account.id,
       operation: "upsert",
       shopId: next.activeShopId,
       entity: next,
@@ -13101,7 +13102,15 @@ export class Cp2Store {
     }
 
     for (const context of snapshot.sessionContexts ?? []) {
-      this.sessionContexts.set(context.sessionId, context);
+      const legacySessionId = context.sessionId;
+      const accountId =
+        (context as StoredSokoSessionContext & { accountId?: string }).accountId ??
+        (legacySessionId === undefined ? undefined : this.sessions.get(legacySessionId)?.accountId);
+      if (accountId !== undefined) {
+        const accountContext = { ...context, accountId };
+        delete accountContext.sessionId;
+        this.sessionContexts.set(accountId, accountContext);
+      }
     }
 
     for (const conversation of snapshot.conversations ?? []) {
@@ -14410,26 +14419,28 @@ export class Cp2Store {
       userId: user.id,
       now
     });
-    const context: StoredSokoSessionContext = {
-      sessionId: session.id,
-      conversationId: conversation.id,
-      activeShopId: null,
-      activeModelId: "sokoclaw-runtime",
-      mode: "marketplace",
-      activeSurface: "conversation",
-      sessionVersion: 1,
-      updatedAt: now.toISOString()
-    };
-    this.sessionContexts.set(session.id, context);
-    this.recordSyncChange({
-      accountId: account.id,
-      collection: "session_context",
-      entityId: session.id,
-      operation: "upsert",
-      shopId: null,
-      entity: context,
-      now
-    });
+    if (!this.sessionContexts.has(account.id)) {
+      const context: StoredSokoSessionContext = {
+        accountId: account.id,
+        conversationId: conversation.id,
+        activeShopId: null,
+        activeModelId: "sokoclaw-runtime",
+        mode: "marketplace",
+        activeSurface: "conversation",
+        sessionVersion: 1,
+        updatedAt: now.toISOString()
+      };
+      this.sessionContexts.set(account.id, context);
+      this.recordSyncChange({
+        accountId: account.id,
+        collection: "session_context",
+        entityId: account.id,
+        operation: "upsert",
+        shopId: null,
+        entity: context,
+        now
+      });
+    }
     this.recordAuditEvent({
       type: "auth.session_created",
       aggregateType: "session",
@@ -14445,7 +14456,7 @@ export class Cp2Store {
   }
 
   private ensureSokoSessionContext(session: AuthSessionView, now: Date): StoredSokoSessionContext {
-    const existing = this.sessionContexts.get(session.session.id);
+    const existing = this.sessionContexts.get(session.account.id);
 
     if (existing !== undefined) {
       return existing;
@@ -14457,7 +14468,7 @@ export class Cp2Store {
       now
     });
     const context: StoredSokoSessionContext = {
-      sessionId: session.session.id,
+      accountId: session.account.id,
       conversationId: conversation.id,
       activeShopId: null,
       activeModelId: "sokoclaw-runtime",
@@ -14466,11 +14477,11 @@ export class Cp2Store {
       sessionVersion: 1,
       updatedAt: now.toISOString()
     };
-    this.sessionContexts.set(session.session.id, context);
+    this.sessionContexts.set(session.account.id, context);
     this.recordSyncChange({
       accountId: session.account.id,
       collection: "session_context",
-      entityId: session.session.id,
+      entityId: session.account.id,
       operation: "upsert",
       shopId: null,
       entity: context,
@@ -14619,14 +14630,10 @@ export class Cp2Store {
     }
 
     for (const context of this.sessionContexts.values()) {
-      const session = this.sessions.get(context.sessionId);
-      if (session === undefined) {
-        continue;
-      }
       this.recordSyncChange({
-        accountId: session.accountId,
+        accountId: context.accountId,
         collection: "session_context",
-        entityId: context.sessionId,
+        entityId: context.accountId,
         operation: "upsert",
         shopId: context.activeShopId,
         entity: context,

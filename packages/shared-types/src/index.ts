@@ -825,7 +825,8 @@ export interface SokoSessionContext {
 }
 
 export interface StoredSokoSessionContext {
-  sessionId: string;
+  accountId: string;
+  sessionId?: string;
   conversationId: string;
   activeShopId: string | null;
   activeModelId: string;

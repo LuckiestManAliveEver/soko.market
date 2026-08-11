@@ -3613,7 +3613,7 @@ function snapshotRecords(value: unknown): SnapshotRecord[] {
 
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {
   if (key === "sessionContexts") {
-    return requiredText(record, "sessionId");
+    return firstText(record, ["accountId"]) ?? requiredText(record, "sessionId");
   }
 
   if (key === "accountPinHashes") {

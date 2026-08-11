@@ -183,6 +183,7 @@ import {
   scheduleOwnerNavigationSessionWrite
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
   ApiRequestError,
@@ -2420,6 +2421,35 @@ export function OwnerApp() {
   }, [session?.account.id]);
 
   useEffect(() => {
+    if (session === null || sokoSessionContext === null) return;
+    if (mode === "seller" && business === null) return;
+
+    const activeSurface = surfaceForShellView(view, mode);
+    const activeShopId = business?.id ?? null;
+    const conversationId = activeConversationId ?? sokoSessionContext.conversationId;
+    if (
+      sokoSessionContext.mode === mode &&
+      sokoSessionContext.activeShopId === activeShopId &&
+      sokoSessionContext.activeSurface === activeSurface &&
+      sokoSessionContext.conversationId === conversationId
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void patchSokoSessionContext({ mode, activeShopId, activeSurface, conversationId });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeConversationId,
+    business?.id,
+    mode,
+    session?.account.id,
+    sokoSessionContext?.sessionVersion,
+    view
+  ]);
+
+  useEffect(() => {
     if (authBootstrapPending) return;
     void loadPublicStorefronts();
   }, [authBootstrapPending]);
@@ -3380,22 +3410,44 @@ export function OwnerApp() {
     setStatusMessage("Account restored. Shop access is active again.");
   }
 
-  // Server-authoritative record of which shop/mode/conversation this account was last active in,
-  // used to (a) list every shop the account belongs to for the shop switcher and (b) let a fresh
-  // device pick up where another device left off. Best-effort: local state (localStorage) remains
-  // authoritative and the app works the same if this never loads.
+  // Account-authoritative record of where the owner last worked. Device-only state such as model
+  // downloads, E2EE private keys, and unsent drafts deliberately stays in browser storage.
   async function loadSokoSessionContext() {
     try {
-      const context = await getJson<SokoSessionContext>("/v1/session/context");
+      const context = await apiFetch<SokoSessionContext>("/v1/session/context");
       setSokoSessionContext(context);
-      if (business === null && context.shops.length > 0) {
-        const activeShop =
-          context.shops.find((shop) => shop.business.id === context.activeShopId) ??
-          context.shops[0]!;
-        switchActiveBusiness(activeShop, { announce: false });
+      const activeShop =
+        context.shops.find((shop) => shop.business.id === context.activeShopId) ?? context.shops[0];
+      const restoredMode =
+        context.mode === "seller" && activeShop === undefined ? "marketplace" : context.mode;
+      const restoredView = shellViewForSurface(context.activeSurface, restoredMode);
+
+      if (activeShop !== undefined) {
+        const nextBusiness: ActiveBusiness = {
+          ...activeShop.business,
+          role: activeShop.membership.role
+        };
+        const nextAgent = createDefaultAgent(nextBusiness);
+        setBusiness(nextBusiness);
+        setAgentSettings(nextAgent);
+        localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
+        localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
       }
+
+      setMode(restoredMode);
+      setView(restoredView);
+      setActiveConversationId(context.conversationId);
+      localStorage.setItem(activeModeStorageKey, restoredMode);
+      navigateToOwnerRoute(
+        {
+          mode: restoredMode,
+          view: restoredView,
+          ...(restoredView === "chat" ? { conversationId: context.conversationId } : {})
+        },
+        { replace: true }
+      );
     } catch {
-      // Session context sync is an enhancement, not a requirement - ignore failures.
+      // Offline launch continues from the device cache and catches up after reconnecting.
     }
   }
 
@@ -3412,9 +3464,18 @@ export function OwnerApp() {
         expectedSessionVersion: sokoSessionContext.sessionVersion
       });
       setSokoSessionContext(updated);
-    } catch {
-      // Best-effort background sync - a stale sessionVersion or offline device should not block
-      // switching shops locally.
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.code !== "session_context_conflict") return;
+      try {
+        const latest = await apiFetch<SokoSessionContext>("/v1/session/context");
+        const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
+          ...patch,
+          expectedSessionVersion: latest.sessionVersion
+        });
+        setSokoSessionContext(updated);
+      } catch {
+        // Offline navigation remains available; the next connected state change retries sync.
+      }
     }
   }
 
@@ -3431,7 +3492,6 @@ export function OwnerApp() {
     if (options?.announce !== false) {
       setStatusMessage(`Switched to ${nextBusiness.name}.`);
     }
-    void patchSokoSessionContext({ activeShopId: nextBusiness.id, mode: "seller" });
   }
 
   async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
@@ -5221,7 +5281,6 @@ export function OwnerApp() {
             : "Marketplace mode restored. Tell me what you want to find, or explore a storefront below."
       }
     ]);
-    void patchSokoSessionContext({ mode: nextMode });
   }
 
   function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
