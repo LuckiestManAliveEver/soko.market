@@ -234,7 +234,7 @@ import {
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
-import { PhoneFirstAuthentication, type RememberedAccount } from "./PhoneFirstAuthentication";
+import type { RememberedAccount } from "./PhoneFirstAuthentication";
 import { ProgressiveAuthentication } from "./ProgressiveAuthentication";
 import {
   ModelActivationCoordinator,
@@ -260,6 +260,11 @@ type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const clientInferenceFeatureFlags = readClientInferenceFeatureFlags();
+const PhoneFirstAuthentication = lazy(() =>
+  import("./PhoneFirstAuthentication").then((module) => ({
+    default: module.PhoneFirstAuthentication
+  }))
+);
 const ProductCapturePanel = lazy(() => import("./ProductCapturePanel"));
 const AccountBackendControls = lazy(() => import("./AccountBackendControls"));
 
