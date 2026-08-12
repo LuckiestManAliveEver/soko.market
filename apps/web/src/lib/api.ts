@@ -173,7 +173,10 @@ async function performFetch(
   options?: { body?: unknown; signal?: AbortSignal }
 ): Promise<Response> {
   const startedAt = performance.now();
-  const { signal: timedSignal, cleanup } = withRequestTimeout(options?.signal, defaultRequestTimeoutMs);
+  const { signal: timedSignal, cleanup } = withRequestTimeout(
+    options?.signal,
+    defaultRequestTimeoutMs
+  );
 
   try {
     const response = await fetch(url, {

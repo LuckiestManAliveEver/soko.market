@@ -41,7 +41,9 @@ export function PhoneFirstAuthentication({
   const [usingRemembered, setUsingRemembered] = useState(startsWithRemembered);
   const [identifierType, setIdentifierType] = useState<IdentifierType>(remembered?.type ?? "phone");
   const [country, setCountry] = useState<CountryCode>("KE");
-  const [identifier, setIdentifier] = useState(startsWithRemembered ? (remembered?.identifier ?? "") : "");
+  const [identifier, setIdentifier] = useState(
+    startsWithRemembered ? (remembered?.identifier ?? "") : ""
+  );
   const [stage, setStage] = useState<Stage>(startsWithRemembered ? "pin" : "entry");
   const [transactionId, setTransactionId] = useState("");
   const [code, setCode] = useState("");
@@ -121,9 +123,7 @@ export function PhoneFirstAuthentication({
     // A remembered identifier is already normalized (it came straight from the account's
     // primaryAuthDestination on a previous successful login), so it skips identifierBody()'s
     // phone parsing, which needs a country hint this screen no longer collects.
-    const normalized = usingRemembered
-      ? { identifier: remembered!.identifier }
-      : identifierBody();
+    const normalized = usingRemembered ? { identifier: remembered!.identifier } : identifierBody();
     const result = await apiFetch<AuthSessionView>(
       intent === "signup"
         ? "/auth/pin/signup"

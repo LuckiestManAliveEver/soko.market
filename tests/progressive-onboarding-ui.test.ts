@@ -38,8 +38,10 @@ describe("progressive onboarding UI", () => {
       applicationSource.indexOf("if (isDefinitiveAuthenticationError(error))"),
       applicationSource.indexOf("if (cached !== null) setSession(cached)")
     );
-    expect(recoveryBranch.indexOf("recoverDeviceAccount()")).toBeLessThan(
-      recoveryBranch.indexOf('setAuthenticationView(initialOwnerAuth === null ? "continue"')
-    );
+    const recoveryIndex = recoveryBranch.indexOf("recoverDeviceAccount()");
+    const onboardingIndex = recoveryBranch.indexOf("setAuthenticationView(nextAuthenticationView)");
+    expect(recoveryIndex).toBeGreaterThanOrEqual(0);
+    expect(onboardingIndex).toBeGreaterThanOrEqual(0);
+    expect(recoveryIndex).toBeLessThan(onboardingIndex);
   });
 });

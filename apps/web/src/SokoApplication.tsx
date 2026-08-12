@@ -2393,7 +2393,7 @@ export function OwnerApp() {
     setIsAuthOpen(true);
     setAuthenticationView(intent);
     setStatusMessage(intent === "signup" ? "Create your Soko account." : "Log in to your account.");
-    window.history.pushState(window.history.state, "", authenticationRoute(intent));
+    navigateToBrowserUrl(authenticationRoute(intent), { state: window.history.state });
   }
 
   function forgetRememberedOwnerAuth() {
