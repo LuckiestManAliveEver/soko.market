@@ -14,6 +14,8 @@ describe("progressive onboarding UI", () => {
     expect(source).toContain("Sign up");
     expect(source).toContain("onClick={onLogIn}");
     expect(source).toContain("Log in");
+    expect(source).toContain("onClick={onBrowseAsGuest}");
+    expect(source).toContain("Browse marketplace as guest");
     expect(source).toContain('"/auth/continue"');
     expect(source).not.toMatch(/<input|<select|<textarea/u);
     expect(source).not.toContain("contacts");

@@ -2313,6 +2313,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/pin/signup", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
+      enforceAuthIpRate(request, "pin_signup", 10);
       const channel = parseAuthChannel(request.body.method ?? request.body.channel ?? "phone");
 
       if (channel !== "phone") {
@@ -2416,6 +2417,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/pin/login", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
+      enforceAuthIpRate(request, "pin_login", 30);
       const channel = parseAuthChannel(request.body.method ?? request.body.channel);
       const rawDestination = parseString(
         request.body.contact ?? request.body.destination,

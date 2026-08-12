@@ -2525,6 +2525,7 @@ export class Cp2Store {
     }
 
     const account = this.requireAccount(accountId);
+    this.requireAccountAuthenticationAllowed(account);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const pinHash = this.accountPinHashes.get(account.id);
 
@@ -2590,6 +2591,7 @@ export class Cp2Store {
 
     const user = this.requireUser(membership.userId);
     const account = this.requireAccount(user.accountId);
+    this.requireAccountAuthenticationAllowed(account);
     const pinHash = this.accountPinHashes.get(account.id);
 
     if (pinHash === undefined) {
@@ -2769,6 +2771,7 @@ export class Cp2Store {
     }
 
     const account = this.requireAccount(accountId);
+    this.requireAccountAuthenticationAllowed(account);
     const user = this.requireUser(this.userByAccount.get(account.id));
     const pinHash = this.accountPinHashes.get(account.id);
 

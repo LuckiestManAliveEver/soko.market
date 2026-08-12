@@ -311,7 +311,7 @@ export function PhoneFirstAuthentication({
                   type="password"
                   inputMode="numeric"
                   maxLength={4}
-                  autoComplete="one-time-code"
+                  autoComplete={intent === "signup" ? "new-password" : "current-password"}
                   value={pin}
                   onChange={(event) => setPin(event.target.value.replace(/\D/gu, ""))}
                 />

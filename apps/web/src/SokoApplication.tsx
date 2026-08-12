@@ -7623,6 +7623,7 @@ export function OwnerApp() {
               setAuthenticationView("login");
               setStatusMessage("Log in to your account.");
             }}
+            onBrowseAsGuest={browseAsGuest}
           />
         ) : shouldShowAuth ? (
           <PhoneFirstAuthentication
@@ -7635,10 +7636,7 @@ export function OwnerApp() {
                 intent === "signup" ? "Create your Soko account." : "Log in to your account."
               );
             }}
-            onCancel={() => {
-              setAuthenticationView("continue");
-              setStatusMessage("Continue once to open Soko.");
-            }}
+            onCancel={browseAsGuest}
           />
         ) : isAccountRestorationOpen && session !== null ? (
           <AccountRestorationPanel
@@ -17908,10 +17906,15 @@ function ChatSurface({
                 ) : null}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
-                    <button type="button" onClick={onSignUp}>
+                    <button type="button" data-testid="welcome-signup-button" onClick={onSignUp}>
                       Sign up
                     </button>
-                    <button className="secondary" type="button" onClick={onLogIn}>
+                    <button
+                      className="secondary"
+                      type="button"
+                      data-testid="welcome-login-button"
+                      onClick={onLogIn}
+                    >
                       Log in
                     </button>
                     <button className="secondary" type="button" onClick={onBrowseAsGuest}>

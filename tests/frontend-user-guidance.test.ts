@@ -277,6 +277,8 @@ describe("frontend user guidance", () => {
 
     expect(application).toContain('data-testid={message.id === "welcome"');
     expect(application).toContain('<div className="welcome-auth-actions"');
+    expect(application).toContain('data-testid="welcome-signup-button"');
+    expect(application).toContain('data-testid="welcome-login-button"');
     expect(application).toContain('data-testid="header-signup-button"');
     expect(application).toContain('data-testid="header-login-button"');
     expect(application).toContain("onClick={onSignUp}");
@@ -286,6 +288,9 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('intent === "signup"');
     expect(phoneFirst).toContain('"/auth/pin/signup"');
     expect(phoneFirst).toContain('"/auth/pin/login"');
+    expect(phoneFirst).toContain(
+      'autoComplete={intent === "signup" ? "new-password" : "current-password"}'
+    );
     expect(phoneFirst).not.toContain('"/auth/pin/continue"');
     expect(welcomeMessage).toContain("Sign up or log in");
   });

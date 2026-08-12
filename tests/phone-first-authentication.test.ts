@@ -86,6 +86,56 @@ describe("phone-first authentication", () => {
     await app.close();
   });
 
+  it("throttles repeated PIN signups from one IP", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+
+    for (let index = 0; index < 10; index += 1) {
+      const response = await post(app, "/auth/pin/signup", {
+        method: "phone",
+        contact: `07123458${String(index).padStart(2, "0")}`,
+        country: "KE",
+        pin: "1234"
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const throttled = await post(app, "/auth/pin/signup", {
+      method: "phone",
+      contact: "0712345899",
+      country: "KE",
+      pin: "1234"
+    });
+    expect(throttled.statusCode).toBe(429);
+    expect(throttled.json()).toMatchObject({ code: "auth_rate_limited" });
+    await app.close();
+  });
+
+  it("does not let a suspended account create a new session with its PIN", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const signup = await post(app, "/auth/pin/signup", {
+      method: "phone",
+      contact: "0712345898",
+      country: "KE",
+      pin: "1234"
+    });
+    expect(signup.statusCode).toBe(200);
+
+    const snapshot = store.snapshot();
+    snapshot.accounts[0]!.status = "suspended";
+    store.hydrateSnapshot(snapshot);
+
+    const login = await post(app, "/auth/pin/login", {
+      method: "phone",
+      contact: "0712345898",
+      country: "KE",
+      pin: "1234"
+    });
+    expect(login.statusCode).toBe(403);
+    expect(login.json()).toMatchObject({ code: "account_suspended" });
+    await app.close();
+  });
+
   it("creates a password account with a normalized, unverified phone identifier", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

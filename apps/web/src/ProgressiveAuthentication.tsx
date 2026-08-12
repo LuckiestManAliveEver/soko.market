@@ -12,9 +12,15 @@ interface Props {
   onAuthenticated: (session: AuthSessionView) => void;
   onSignUp: () => void;
   onLogIn: () => void;
+  onBrowseAsGuest: () => void;
 }
 
-export function ProgressiveAuthentication({ onAuthenticated, onSignUp, onLogIn }: Props) {
+export function ProgressiveAuthentication({
+  onAuthenticated,
+  onSignUp,
+  onLogIn,
+  onBrowseAsGuest
+}: Props) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [message, setMessage] = useState("");
@@ -86,6 +92,9 @@ export function ProgressiveAuthentication({ onAuthenticated, onSignUp, onLogIn }
             Log in
           </button>
         </div>
+        <button type="button" className="secondary" disabled={busy} onClick={onBrowseAsGuest}>
+          Browse marketplace as guest
+        </button>
         <p className="auth-legal">
           By continuing, you agree to the <a href="/terms">Terms</a> and acknowledge the{" "}
           <a href="/privacy">Privacy Policy</a>.
