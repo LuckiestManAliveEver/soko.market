@@ -81,12 +81,16 @@ test("signs up and later logs in from the welcome message with phone and PIN", a
   await expect(page.getByTestId("welcome-login-button")).toBeVisible();
 
   await page.getByTestId("welcome-signup-button").click();
-  await expect(page.getByRole("heading", { name: "Create your Soko account" })).toBeVisible();
-  await page.getByLabel("Phone number").fill("712345678");
-  await page.getByRole("button", { name: "Continue to sign up" }).click();
-  await expect(page.getByLabel("4-digit PIN")).toHaveAttribute("autocomplete", "new-password");
-  await page.getByLabel("4-digit PIN").fill(pin);
-  await page.getByRole("button", { name: "Sign up", exact: true }).click();
+  await expect(page).toHaveURL(/\/signup$/u);
+  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+  await page.getByLabel("Phone number", { exact: true }).fill("712345678");
+  await expect(page.getByLabel("4-digit PIN", { exact: true })).toHaveAttribute(
+    "autocomplete",
+    "new-password"
+  );
+  await page.getByLabel("4-digit PIN", { exact: true }).fill(pin);
+  await page.getByLabel("Confirm 4-digit PIN").fill(pin);
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
 
   await expect.poll(() => signupCount).toBe(1);
   await expect(page.getByText("Authentication complete", { exact: true })).toBeVisible();
@@ -95,8 +99,9 @@ test("signs up and later logs in from the welcome message with phone and PIN", a
   await page.evaluate(() => localStorage.removeItem("soko.market.auth-bootstrap.v1"));
   await page.reload();
 
-  await expect(page.getByRole("heading", { name: "Log in to Soko" })).toBeVisible();
-  await page.getByLabel("Phone number").fill("712345678");
+  await expect(page).toHaveURL(/\/login$/u);
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+  await page.getByLabel("Phone number", { exact: true }).fill("712345678");
   await page.getByRole("button", { name: "Continue to log in" }).click();
   await expect(page.getByLabel("4-digit PIN")).toHaveAttribute("autocomplete", "current-password");
   await page.getByLabel("4-digit PIN").fill(pin);

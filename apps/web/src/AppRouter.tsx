@@ -6,7 +6,7 @@ import {
   subscribeToBrowserNavigation
 } from "./browser-navigation";
 import { recordComponentRender, recordRouteRender } from "./performance";
-import { readOwnerRoute, routes } from "./routes";
+import { readAuthenticationRoutePath, readOwnerRoute, routes } from "./routes";
 
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
 const PrivacyPolicyPage = lazy(() => import("./legal/PrivacyPolicyPage"));
@@ -54,6 +54,7 @@ export function AppRouter() {
 
   if (
     readOwnerRoute(window.location.pathname) === null &&
+    readAuthenticationRoutePath(window.location.pathname) === null &&
     window.location.pathname !== routes.oauthCallback
   ) {
     return (

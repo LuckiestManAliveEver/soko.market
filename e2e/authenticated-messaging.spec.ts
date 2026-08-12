@@ -39,10 +39,12 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
   await expect(page.locator('input[autocomplete="one-time-code"]')).toHaveCount(0);
 
   await page.getByTestId("welcome-signup-button").click();
-  await expect(page.getByRole("heading", { name: "Create your Soko account" })).toBeVisible();
-  await page.getByRole("button", { name: "Browse marketplace without an account" }).click();
+  await expect(page).toHaveURL(/\/signup$/u);
+  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+  await page.getByRole("button", { name: "Back" }).click();
   await expect(welcome).toBeVisible();
 
   await page.getByTestId("welcome-login-button").click();
-  await expect(page.getByRole("heading", { name: "Log in to Soko" })).toBeVisible();
+  await expect(page).toHaveURL(/\/login$/u);
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
 });

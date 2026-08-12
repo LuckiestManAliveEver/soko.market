@@ -114,7 +114,7 @@ describe("PWA installability", () => {
     expect(icon).toContain('viewBox="100 50 480 480"');
     expect(iconComponent).toContain('src="/icons/soko-icon.svg"');
     expect(application).toContain('<AppIcon className="logo-mark" />');
-    expect(phoneFirst).toContain('<AppIcon className="auth-brand-icon" />');
+    expect(phoneFirst).toContain('<AppIcon className="auth-wordmark-icon" />');
     expect(router).toContain('<AppIcon className="route-brand-icon" />');
     for (const legalPage of legalPages) {
       expect(legalPage).toContain('<AppIcon className="legal-brand-icon" />');

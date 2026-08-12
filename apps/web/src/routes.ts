@@ -38,6 +38,8 @@ export const routes = {
   reports: "/reports",
   notifications: "/notifications",
   settings: "/settings",
+  signup: "/signup",
+  login: "/login",
   accountDeletion: "/account-deletion",
   terms: "/terms",
   privacy: "/privacy",
@@ -47,7 +49,14 @@ export const routes = {
 export type AuthenticationRouteTarget = "login" | "signup";
 
 export function authenticationRoute(target: AuthenticationRouteTarget): string {
-  return `${routes.marketplace}#${target}`;
+  return target === "signup" ? routes.signup : routes.login;
+}
+
+export function readAuthenticationRoutePath(pathname: string): AuthenticationRouteTarget | null {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === routes.signup) return "signup";
+  if (path === routes.login) return "login";
+  return null;
 }
 
 export function readAuthenticationRouteHash(hash: string): AuthenticationRouteTarget | null {

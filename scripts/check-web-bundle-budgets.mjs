@@ -15,9 +15,9 @@ for (const bootstrapImport of entry.dynamicImports ?? []) {
 }
 const initialJavaScriptGzip = sumGzip([...initialFiles].filter((file) => file.endsWith(".js")));
 const initialCssGzip = sumGzip([...initialFiles].filter((file) => file.endsWith(".css")));
-const ownerRoute = Object.entries(manifest).find(([key]) =>
-  key.endsWith("src/SokoApplication.tsx")
-)?.[1];
+const ownerRoute = Object.values(manifest).find(
+  (item) => item.src?.endsWith("src/SokoApplication.tsx") || item.name === "SokoApplication"
+);
 const ownerRouteGzip = ownerRoute ? gzipBytes(ownerRoute.file) : 0;
 
 const budgets = {

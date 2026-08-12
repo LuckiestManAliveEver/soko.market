@@ -160,7 +160,9 @@ export function PhoneNumberField({
               onValueChange(pasted);
               evaluate(pasted);
             }}
-            onBlur={() => evaluate()}
+            onBlur={() => {
+              if (value.trim()) evaluate();
+            }}
             placeholder="e.g. 0712 345 678"
             aria-invalid={validationState === "invalid" || Boolean(externalError)}
             aria-describedby={

@@ -1,5 +1,6 @@
 import {
   Fragment,
+  lazy,
   useEffect,
   useRef,
   useState,
@@ -169,7 +170,14 @@ import {
   type DecryptedMessage,
   type E2eeIdentity
 } from "./e2ee";
-import { pathForOwnerView, readAuthenticationRouteHash, readOwnerRoute, routes } from "./routes";
+import {
+  authenticationRoute,
+  pathForOwnerView,
+  readAuthenticationRouteHash,
+  readAuthenticationRoutePath,
+  readOwnerRoute,
+  routes
+} from "./routes";
 import {
   canNavigateBackWithinApp,
   initializeOwnerHistory,
@@ -226,7 +234,7 @@ import {
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
-import { PhoneFirstAuthentication } from "./PhoneFirstAuthentication";
+import { PhoneFirstAuthentication, type RememberedAccount } from "./PhoneFirstAuthentication";
 import { ProgressiveAuthentication } from "./ProgressiveAuthentication";
 import {
   ModelActivationCoordinator,
@@ -252,6 +260,8 @@ type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const clientInferenceFeatureFlags = readClientInferenceFeatureFlags();
+const ProductCapturePanel = lazy(() => import("./ProductCapturePanel"));
+const AccountBackendControls = lazy(() => import("./AccountBackendControls"));
 
 const chatAttachmentAccept = [
   "image/*",
@@ -2138,10 +2148,23 @@ export function OwnerApp() {
     new URLSearchParams(window.location.search).get("intent") === "account-deletion";
   const accountRestorationIntent =
     new URLSearchParams(window.location.search).get("intent") === "account-restoration";
-  const initialAuthenticationTarget = readAuthenticationRouteHash(window.location.hash);
+  const initialAuthenticationTarget =
+    readAuthenticationRoutePath(window.location.pathname) ??
+    readAuthenticationRouteHash(window.location.hash);
   const initialSetupDraft = readSetupDraft();
   const initialBusiness = readStoredBusiness();
   const initialOwnerAuth = readStoredOwnerAuth();
+  // A PIN-based account remembered from a prior successful login on this browser. Excludes
+  // social/OAuth logins (no PIN to enter) so the login screen only skips identifier entry when
+  // a PIN attempt actually makes sense.
+  const rememberedAccount: RememberedAccount | null =
+    initialOwnerAuth !== null && initialOwnerAuth.provider === undefined
+      ? {
+          type: initialOwnerAuth.contact.includes("@") ? "email" : "phone",
+          identifier: initialOwnerAuth.contact,
+          label: initialOwnerAuth.contact
+        }
+      : null;
   const initialCachedSession = readCachedAuthSession();
   const initialOwnerRoute = readOwnerRoute(window.location.pathname);
   const initialNavigationSession = readOwnerNavigationSession(
@@ -2370,6 +2393,11 @@ export function OwnerApp() {
     setIsAuthOpen(true);
     setAuthenticationView(intent);
     setStatusMessage(intent === "signup" ? "Create your Soko account." : "Log in to your account.");
+    window.history.pushState(window.history.state, "", authenticationRoute(intent));
+  }
+
+  function forgetRememberedOwnerAuth() {
+    localStorage.removeItem(ownerAuthStorageKey);
   }
 
   function browseAsGuest() {
@@ -3222,6 +3250,9 @@ export function OwnerApp() {
       setAuthBootstrapState("authenticated");
       if (!accountDeletionIntent && !accountRestorationIntent) {
         setIsAuthOpen(false);
+        if (initialAuthenticationTarget !== null) {
+          navigateToView("chat", { replace: true, mode: "marketplace" });
+        }
       }
       setStatusMessage("Session active");
       await loadMarketplaceIntroState();
@@ -3266,10 +3297,23 @@ export function OwnerApp() {
         setAuthBootstrapState("reauthentication-required");
         if (storedBusiness === null) setBusiness(null);
         if (!accountDeletionIntent && !accountRestorationIntent) {
+          const nextAuthenticationView =
+            initialAuthenticationTarget ?? (initialOwnerAuth === null ? "continue" : "login");
           setIsAuthOpen(true);
-          setAuthenticationView(initialOwnerAuth === null ? "continue" : "login");
+          setAuthenticationView(nextAuthenticationView);
+          if (nextAuthenticationView !== "continue") {
+            window.history.replaceState(
+              window.history.state,
+              "",
+              authenticationRoute(nextAuthenticationView)
+            );
+          }
           setStatusMessage(
-            initialOwnerAuth === null ? "Continue once to open Soko." : "Sign in to continue"
+            nextAuthenticationView === "continue"
+              ? "Continue once to open Soko."
+              : nextAuthenticationView === "signup"
+                ? "Create your Soko account."
+                : "Sign in to continue"
           );
         }
         return;
@@ -3280,7 +3324,7 @@ export function OwnerApp() {
       setAuthBootstrapState("failed");
       if (cached === null) {
         setIsAuthOpen(true);
-        setAuthenticationView("continue");
+        setAuthenticationView(initialAuthenticationTarget ?? "continue");
       }
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
     } finally {
@@ -7121,6 +7165,7 @@ export function OwnerApp() {
       case "products":
         return (
           <ProductSurface
+            businessId={business.id}
             products={products}
             form={productForm}
             stockProductId={stockProductId}
@@ -7147,6 +7192,7 @@ export function OwnerApp() {
             onStockQuantityAfterChange={setStockQuantityAfter}
             onStockReasonChange={setStockReason}
             onAdjustStock={() => void runAction("stock-adjust", adjustStock)}
+            onPublished={() => loadProducts(business.id)}
             onRemove={(productId) =>
               void runAction("product-delete", () => deleteProduct(productId))
             }
@@ -7629,13 +7675,12 @@ export function OwnerApp() {
           <PhoneFirstAuthentication
             key={authenticationView}
             intent={authenticationView === "signup" ? "signup" : "login"}
+            remembered={rememberedAccount}
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
             onIntentChange={(intent) => {
-              setAuthenticationView(intent);
-              setStatusMessage(
-                intent === "signup" ? "Create your Soko account." : "Log in to your account."
-              );
+              openAuth(intent);
             }}
+            onForgetRemembered={forgetRememberedOwnerAuth}
             onCancel={browseAsGuest}
           />
         ) : isAccountRestorationOpen && session !== null ? (
@@ -9455,6 +9500,7 @@ function LogisticsSurface(props: LogisticsSurfaceProps) {
 }
 
 interface ProductSurfaceProps {
+  businessId: string;
   products: ProductSummary[];
   form: ProductFormState;
   stockProductId: string;
@@ -9470,6 +9516,7 @@ interface ProductSurfaceProps {
   onStockQuantityAfterChange: (quantity: string) => void;
   onStockReasonChange: (reason: string) => void;
   onAdjustStock: () => void;
+  onPublished: () => Promise<void>;
 }
 
 export function PublicStorefrontChat(props: { agentId: string; productId?: string | null }) {
@@ -10429,6 +10476,11 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
 function ProductSurface(props: ProductSurfaceProps) {
   return (
     <div className="records-surface product-business-card-surface">
+      <ProductCapturePanel
+        businessId={props.businessId}
+        products={props.products}
+        onPublished={props.onPublished}
+      />
       <section className="record-form business-card-editor" aria-label="Product form">
         <div className="business-card-editor-header">
           <div className="section-heading">
@@ -16077,6 +16129,13 @@ function AgentProfileSurface({
             </p>
             <p className="shell-note">Identity strength: {identityLevel.replace("_", " ")}</p>
           </div>
+          <AccountBackendControls
+            accountId={accountId}
+            displayName={ownerUser?.displayName ?? ""}
+            onDisplayNameChanged={(displayName) =>
+              ownerUser === null ? undefined : onOwnerUserChange({ ...ownerUser, displayName })
+            }
+          />
           <div className="record-form">
             <div className="section-heading">
               <p className="eyebrow">Private identity contact</p>

@@ -7,7 +7,11 @@ import {
   getResponseErrorMessage,
   getUserFacingErrorMessage
 } from "../apps/web/src/user-facing-error";
-import { authenticationRoute, readAuthenticationRouteHash } from "../apps/web/src/routes";
+import {
+  authenticationRoute,
+  readAuthenticationRouteHash,
+  readAuthenticationRoutePath
+} from "../apps/web/src/routes";
 
 describe("frontend user guidance", () => {
   it("explains the actual issue instead of standardizing every error", async () => {
@@ -288,6 +292,10 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('intent === "signup"');
     expect(phoneFirst).toContain('"/auth/pin/signup"');
     expect(phoneFirst).toContain('"/auth/pin/login"');
+    expect(phoneFirst).toContain("Confirm 4-digit PIN");
+    expect(phoneFirst).toContain('stage === "entry" &&');
+    expect(phoneFirst).not.toContain('"confirm-pin"');
+    expect(phoneFirst).toContain('{intent === "login" ? (');
     expect(phoneFirst).toContain(
       'autoComplete={intent === "signup" ? "new-password" : "current-password"}'
     );
@@ -318,8 +326,11 @@ describe("frontend user guidance", () => {
     expect(getAuthenticationPromptTarget("Account registration is required.")).toBe("signup");
     expect(getAuthenticationPromptTarget("Login PIN is invalid.")).toBeNull();
     expect(getAuthenticationPromptTarget("Product could not be found.")).toBeNull();
-    expect(authenticationRoute("login")).toBe("/marketplace#login");
-    expect(authenticationRoute("signup")).toBe("/marketplace#signup");
+    expect(authenticationRoute("login")).toBe("/login");
+    expect(authenticationRoute("signup")).toBe("/signup");
+    expect(readAuthenticationRoutePath("/login")).toBe("login");
+    expect(readAuthenticationRoutePath("/signup/")).toBe("signup");
+    expect(readAuthenticationRoutePath("/marketplace")).toBeNull();
     expect(readAuthenticationRouteHash("#LOGIN")).toBe("login");
     expect(readAuthenticationRouteHash("#signup")).toBe("signup");
     expect(readAuthenticationRouteHash("#catalogue")).toBeNull();
@@ -327,7 +338,9 @@ describe("frontend user guidance", () => {
     expect(actionMessage).toContain("href={authenticationRoute(target)}");
     expect(application).toContain("<AuthenticationActionMessage message={statusMessage} />");
     expect(application).toContain("readAuthenticationRouteHash(window.location.hash)");
-    expect(phoneFirst).toContain('className="setup-grid auth-landing-grid"');
+    expect(phoneFirst).toContain('className="auth-onboarding"');
+    expect(styles).toContain(".app-frame.auth-frame > .auth-top-bar");
+    expect(styles).toContain(".auth-onboarding-card");
     expect(styles).toContain(".authentication-required-link");
     expect(styles).toContain("pointer-events: auto");
   });
@@ -347,7 +360,7 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       "marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}"
     );
-    expect(phoneFirst).toContain("Browse marketplace without an account");
+    expect(phoneFirst).toContain("Continue to marketplace as guest");
     expect(apiRoutes).toContain('"/public/storefronts"');
   });
 
@@ -374,7 +387,7 @@ describe("frontend user guidance", () => {
       "Account deactivated and deletion scheduled. You have been returned to startup."
     );
     expect(application).toContain("<PhoneFirstAuthentication");
-    expect(phoneFirst).toContain("Use phone instead");
+    expect(phoneFirst).toContain('role="tablist"');
     expect(phoneFirst).toContain("Use legacy PIN");
   });
 
