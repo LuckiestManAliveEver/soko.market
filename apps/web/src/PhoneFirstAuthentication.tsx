@@ -8,8 +8,16 @@ import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
-type Stage = "entry" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
+type Stage = "entry" | "methods" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
 type IdentifierType = "phone" | "email" | "store";
+
+interface LoginMethods {
+  preferred: "passkey";
+  passkeyAvailable: boolean;
+  passwordFallback: boolean;
+  recoveryAvailable: boolean;
+  smsLogin: false;
+}
 
 export interface RememberedAccount {
   type: "phone" | "email";
@@ -18,51 +26,48 @@ export interface RememberedAccount {
 }
 
 interface Props {
-  intent: "signup" | "login";
   remembered: RememberedAccount | null;
   onAuthenticated: (session: AuthSessionView) => void;
-  onIntentChange: (intent: "signup" | "login") => void;
+  onSignUp: () => void;
   onForgetRemembered: () => void;
   onCancel: () => void;
 }
 
 export function PhoneFirstAuthentication({
-  intent,
   remembered,
   onAuthenticated,
-  onIntentChange,
+  onSignUp,
   onForgetRemembered,
   onCancel
 }: Props) {
-  // A returning visit on this browser, for the same account, skips straight to a PIN-only
-  // screen - no need to retype the phone/email that already got them here once. "Not you?"
-  // (further down) drops back to normal identifier entry within the same mount.
-  const startsWithRemembered = intent === "login" && remembered !== null;
+  // A returning visit does not need the identifier again, but still goes through the backend's
+  // enumeration-safe method discovery instead of assuming that the account uses a legacy PIN.
+  const startsWithRemembered = remembered !== null;
   const [usingRemembered, setUsingRemembered] = useState(startsWithRemembered);
   const [identifierType, setIdentifierType] = useState<IdentifierType>(remembered?.type ?? "phone");
   const [country, setCountry] = useState<CountryCode>("KE");
   const [identifier, setIdentifier] = useState(
     startsWithRemembered ? (remembered?.identifier ?? "") : ""
   );
-  const [stage, setStage] = useState<Stage>(startsWithRemembered ? "pin" : "entry");
+  const [stage, setStage] = useState<Stage>("entry");
+  const [loginMethods, setLoginMethods] = useState<LoginMethods | null>(null);
   const [transactionId, setTransactionId] = useState("");
   const [code, setCode] = useState("");
   const [pin, setPin] = useState("");
-  const [pinConfirmation, setPinConfirmation] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
-  const [legacyPin, setLegacyPin] = useState(false);
   const [recoveryMfaCode, setRecoveryMfaCode] = useState("");
   const [mfaFactor, setMfaFactor] = useState<"totp" | "recovery_code">("totp");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(
-    startsWithRemembered ? "Enter the PIN for your existing Soko account." : ""
+    startsWithRemembered ? "Choose a secure way to return to this account." : ""
   );
 
   function useDifferentAccount() {
     setUsingRemembered(false);
     setIdentifier("");
     setPin("");
+    setLoginMethods(null);
     setStage("entry");
     setMessage("");
     onForgetRemembered();
@@ -92,6 +97,12 @@ export function PhoneFirstAuthentication({
     return { type: identifierType, identifier: normalized.e164, country: normalized.country };
   };
 
+  function currentIdentifierBody() {
+    return usingRemembered
+      ? { type: remembered!.type, identifier: remembered!.identifier }
+      : identifierBody();
+  }
+
   async function run(action: () => Promise<void>) {
     if (busy) return;
     setBusy(true);
@@ -105,31 +116,34 @@ export function PhoneFirstAuthentication({
   }
 
   async function continueIdentifier() {
-    identifierBody();
-    setPin("");
-    setStage("pin");
+    if (identifierType === "store") {
+      identifierBody();
+      setPin("");
+      setStage("pin");
+      setMessage("Enter the store owner's PIN to continue.");
+      return;
+    }
+    const methods = await apiFetch<LoginMethods>("/auth/login/methods", {
+      method: "POST",
+      body: currentIdentifierBody(),
+      skipAuthRefresh: true
+    });
+    setLoginMethods(methods);
+    setStage("methods");
     setMessage(
-      identifierType === "store"
-        ? "Enter the store owner's PIN to continue."
-        : "Enter the PIN for your existing Soko account."
+      methods.passkeyAvailable
+        ? "Passkey is the preferred sign-in method."
+        : "Choose an available sign-in method."
     );
   }
 
   async function submitPin() {
-    if (intent === "signup" && pin !== pinConfirmation) {
-      setMessage("The PINs do not match. Enter the same 4 digits again.");
-      return;
-    }
     // A remembered identifier is already normalized (it came straight from the account's
     // primaryAuthDestination on a previous successful login), so it skips identifierBody()'s
     // phone parsing, which needs a country hint this screen no longer collects.
-    const normalized = usingRemembered ? { identifier: remembered!.identifier } : identifierBody();
+    const normalized = currentIdentifierBody();
     const result = await apiFetch<AuthSessionView>(
-      intent === "signup"
-        ? "/auth/pin/signup"
-        : identifierType === "store"
-          ? "/auth/pin/store-login"
-          : "/auth/pin/login",
+      identifierType === "store" ? "/auth/pin/store-login" : "/auth/pin/login",
       {
         method: "POST",
         body:
@@ -146,50 +160,12 @@ export function PhoneFirstAuthentication({
     onAuthenticated(result);
   }
 
-  // Lets someone who landed on the signup screen but already has an account log in without
-  // losing what they typed - same identifier field, a second button instead of navigating away
-  // (which would otherwise reset this form, per the `key={authenticationView}` remount at the
-  // call site).
-  async function loginInsteadOfSignup() {
-    const normalized = identifierBody();
-    const result = await apiFetch<AuthSessionView>(
-      identifierType === "store" ? "/auth/pin/store-login" : "/auth/pin/login",
-      {
-        method: "POST",
-        body:
-          identifierType === "store"
-            ? { sokoId: normalized.identifier, pin }
-            : {
-                method: identifierType,
-                contact: normalized.identifier,
-                ...(identifierType === "phone" ? { country } : {}),
-                pin
-              }
-      }
-    );
-    onAuthenticated(result);
-  }
-
   async function login() {
-    if (legacyPin) {
-      const normalizedBody = identifierBody();
-      const session = await apiFetch<AuthSessionView>("/auth/pin/login", {
-        method: "POST",
-        body: {
-          method: identifierType,
-          contact: normalizedBody.identifier,
-          ...(identifierType === "phone" ? { country } : {}),
-          pin: password
-        }
-      });
-      onAuthenticated(session);
-      return;
-    }
     const result = await apiFetch<AuthSessionView | { mfaRequired: true; transactionId: string }>(
       "/auth/login/password",
       {
         method: "POST",
-        body: { ...identifierBody(), password }
+        body: { ...currentIdentifierBody(), password }
       }
     );
     if ("mfaRequired" in result && result.mfaRequired) {
@@ -246,7 +222,7 @@ export function PhoneFirstAuthentication({
       message: string;
     }>("/auth/recovery/start", {
       method: "POST",
-      body: identifierBody()
+      body: currentIdentifierBody()
     });
     setTransactionId(result.transactionId);
     setCode(result.developmentCode ?? "");
@@ -314,7 +290,11 @@ export function PhoneFirstAuthentication({
       setStage("password");
       return;
     }
-    setStage("entry");
+    if (stage === "methods" || identifierType === "store") {
+      setStage("entry");
+      return;
+    }
+    setStage("methods");
   }
 
   const isCredentialEntry = stage === "entry" || stage === "password" || stage === "pin";
@@ -322,18 +302,18 @@ export function PhoneFirstAuthentication({
   const stepTotal = 2;
   const heading =
     stage === "entry"
-      ? intent === "signup"
-        ? "Create your account"
-        : "Welcome back"
-      : stage === "pin"
-        ? "Enter your PIN"
-        : stage === "password"
-          ? "Log in with password"
-          : stage === "mfa"
-            ? "Security check"
-            : stage === "reset-pin"
-              ? "Choose a new PIN"
-              : "Recover your account";
+      ? "Welcome back"
+      : stage === "methods"
+        ? "Choose how to log in"
+        : stage === "pin"
+          ? "Use your legacy PIN"
+          : stage === "password"
+            ? "Log in with password"
+            : stage === "mfa"
+              ? "Security check"
+              : stage === "reset-pin"
+                ? "Choose a new PIN"
+                : "Recover your account";
 
   return (
     <main className="auth-onboarding" aria-busy={busy}>
@@ -350,26 +330,25 @@ export function PhoneFirstAuthentication({
         </header>
 
         <div className="auth-onboarding-content">
-          {intent === "login" ? (
-            <div className="auth-progress" aria-label={`Step ${stepNumber} of ${stepTotal}`}>
-              {Array.from({ length: stepTotal }, (_, index) => (
-                <span className={index < stepNumber ? "complete" : ""} key={index} />
-              ))}
-            </div>
-          ) : null}
+          <div
+            className="auth-progress auth-progress-two"
+            aria-label={`Step ${stepNumber} of ${stepTotal}`}
+          >
+            {Array.from({ length: stepTotal }, (_, index) => (
+              <span className={index < stepNumber ? "complete" : ""} key={index} />
+            ))}
+          </div>
           <div className="auth-onboarding-heading">
-            <p className="eyebrow">{intent === "signup" ? "CREATE YOUR ACCOUNT" : "LOG IN"}</p>
+            <p className="eyebrow">LOG IN</p>
             <h1 id="auth-onboarding-title">{heading}</h1>
             <p>
               {stage === "entry"
-                ? intent === "signup"
-                  ? "Enter your phone number and choose the 4-digit PIN you will use to log in. SMS verification is not used."
-                  : "Use your phone number, email, or Soko ID to get back to your conversations."
+                ? "Use your phone number, email, or Soko ID to get back to your conversations."
                 : message}
             </p>
           </div>
 
-          {intent === "login" && stage === "entry" ? (
+          {stage === "entry" && !usingRemembered ? (
             <div className="auth-method-tabs" role="tablist" aria-label="Login method">
               {(["phone", "email", "store"] as const).map((method) => (
                 <button
@@ -381,6 +360,7 @@ export function PhoneFirstAuthentication({
                   onClick={() => {
                     setIdentifierType(method);
                     setIdentifier("");
+                    setLoginMethods(null);
                     setMessage("");
                   }}
                 >
@@ -438,19 +418,18 @@ export function PhoneFirstAuthentication({
               )}
               {stage === "password" ? (
                 <label>
-                  {legacyPin ? "Legacy 4-digit PIN" : "Password"}
+                  Password
                   <input
                     autoFocus
                     type="password"
-                    inputMode={legacyPin ? "numeric" : undefined}
-                    maxLength={legacyPin ? 4 : 256}
+                    maxLength={256}
                     autoComplete="current-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                   />
                 </label>
               ) : null}
-              {stage === "pin" || (intent === "signup" && stage === "entry") ? (
+              {stage === "pin" ? (
                 <label className="auth-pin-field">
                   4-digit PIN
                   <input
@@ -459,7 +438,7 @@ export function PhoneFirstAuthentication({
                     inputMode="numeric"
                     maxLength={4}
                     pattern="[0-9]*"
-                    autoComplete={intent === "signup" ? "new-password" : "current-password"}
+                    autoComplete="current-password"
                     value={pin}
                     onChange={(event) => setPin(event.target.value.replace(/\D/gu, ""))}
                   />
@@ -470,37 +449,13 @@ export function PhoneFirstAuthentication({
                   </span>
                 </label>
               ) : null}
-              {intent === "signup" && stage === "entry" ? (
-                <label className="auth-pin-field">
-                  Confirm 4-digit PIN
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    pattern="[0-9]*"
-                    autoComplete="new-password"
-                    value={pinConfirmation}
-                    onChange={(event) => setPinConfirmation(event.target.value.replace(/\D/gu, ""))}
-                  />
-                  <span className="auth-pin-dots" aria-hidden="true">
-                    {[0, 1, 2, 3].map((index) => (
-                      <i className={index < pinConfirmation.length ? "filled" : ""} key={index} />
-                    ))}
-                  </span>
-                </label>
-              ) : null}
-              <div
-                className={intent === "signup" && stage === "entry" ? "auth-button-row" : undefined}
-              >
+              <div>
                 <button
                   className="auth-primary-button"
                   type="button"
                   disabled={
                     busy ||
                     !identifier.trim() ||
-                    (intent === "signup" &&
-                      stage === "entry" &&
-                      (pin.length !== 4 || pinConfirmation.length !== 4)) ||
                     (stage === "password" && !password) ||
                     (stage === "pin" && pin.length !== 4)
                   }
@@ -511,9 +466,7 @@ export function PhoneFirstAuthentication({
                         ? login
                         : stage === "pin"
                           ? submitPin
-                          : intent === "signup"
-                            ? submitPin
-                            : continueIdentifier
+                          : continueIdentifier
                     )
                   }
                 >
@@ -523,71 +476,63 @@ export function PhoneFirstAuthentication({
                       ? "Log in"
                       : stage === "pin"
                         ? "Log in"
-                        : intent === "signup"
-                          ? "Create account"
-                          : "Continue to log in"}
+                        : "Continue to log in"}
                 </button>
-                {intent === "signup" && stage === "entry" ? (
-                  <button
-                    className="auth-secondary-button"
-                    type="button"
-                    disabled={busy || !identifier.trim() || pin.length !== 4}
-                    aria-busy={busy}
-                    onClick={() => void run(loginInsteadOfSignup)}
-                  >
-                    Log in instead
-                  </button>
-                ) : null}
               </div>
-              {stage === "password" ? (
-                <button
-                  className="auth-text-button"
-                  type="button"
-                  onClick={() => {
-                    setLegacyPin((current) => !current);
-                    setPassword("");
-                  }}
-                >
-                  {legacyPin ? "Use password" : "Use legacy PIN"}
-                </button>
-              ) : null}
             </div>
           ) : null}
 
-          {intent === "signup" && stage === "entry" ? (
-            <p className="auth-legal">
-              By creating an account, you agree to our <a href="/terms">Terms of Service</a> and{" "}
-              <a href="/privacy">Privacy Policy</a>.
-            </p>
-          ) : null}
-
-          {intent === "login" && (stage === "entry" || stage === "pin") ? (
-            <div className="auth-alternatives">
-              {identifierType !== "store" ? (
-                <button type="button" disabled={busy} onClick={() => void run(usePasskey)}>
-                  Use a passkey
+          {stage === "methods" ? (
+            <div className="auth-fields auth-login-methods" aria-label="Available login methods">
+              {loginMethods?.passkeyAvailable ? (
+                <button
+                  className="auth-primary-button"
+                  type="button"
+                  disabled={busy}
+                  aria-busy={busy}
+                  onClick={() => void run(usePasskey)}
+                >
+                  {busy ? "Opening passkey…" : "Continue with a passkey"}
                 </button>
               ) : null}
-              {stage === "entry" && identifierType !== "store" ? (
+              {loginMethods?.passwordFallback ? (
                 <button
+                  className={loginMethods.passkeyAvailable ? "secondary" : "auth-primary-button"}
                   type="button"
+                  disabled={busy}
                   onClick={() => {
                     setPassword("");
                     setStage("password");
-                    setMessage("Use your password fallback if this account has one.");
+                    setMessage("Enter the recovery password for this account.");
                   }}
                 >
                   Use a password
                 </button>
               ) : null}
-              {identifierType !== "store" ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setPin("");
+                  setStage("pin");
+                  setMessage("PIN access is retained for accounts created with the legacy flow.");
+                }}
+              >
+                Use legacy PIN
+              </button>
+              {loginMethods?.recoveryAvailable ? (
                 <button
+                  className="auth-text-button"
                   type="button"
-                  disabled={!identifier.trim() || busy}
+                  disabled={busy}
                   onClick={() => void run(startRecovery)}
                 >
                   Trouble logging in?
                 </button>
+              ) : null}
+              {!loginMethods?.passkeyAvailable && !loginMethods?.passwordFallback ? (
+                <p className="form-hint">Use a legacy PIN or account recovery to continue.</p>
               ) : null}
             </div>
           ) : null}
@@ -703,24 +648,15 @@ export function PhoneFirstAuthentication({
               {message}
             </p>
           ) : null}
-          {intent === "login" ? (
-            <>
-              <div className="auth-intent-switch">
-                <span>New to Soko?</span>
-                <button
-                  className="auth-text-button"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onIntentChange("signup")}
-                >
-                  Create an account
-                </button>
-              </div>
-              <button className="auth-guest-button" type="button" onClick={onCancel}>
-                Continue to marketplace as guest
-              </button>
-            </>
-          ) : null}
+          <div className="auth-intent-switch">
+            <span>New to Soko?</span>
+            <button className="auth-text-button" type="button" disabled={busy} onClick={onSignUp}>
+              Create an account
+            </button>
+          </div>
+          <button className="auth-guest-button" type="button" onClick={onCancel}>
+            Continue to marketplace as guest
+          </button>
         </div>
       </section>
     </main>

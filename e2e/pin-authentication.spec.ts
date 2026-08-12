@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-test("signs up and later logs in from the welcome message with phone and PIN", async ({ page }) => {
+test("signs up with a profile and later logs in from the welcome message", async ({ page }) => {
   const phone = "+254712345678";
-  const pin = "2468";
+  const password = "a secure recovery password";
   let sessionActive = false;
-  let signupCount = 0;
+  let signupStartCount = 0;
+  let signupCompleteCount = 0;
   let loginCount = 0;
 
   const session = {
@@ -34,23 +35,48 @@ test("signs up and later logs in from the welcome message with phone and PIN", a
         : json({ code: "auth_session_expired", message: "Authentication is required." }, 401);
     }
     if (path === "/v1/marketplace-intro") return json({ completedAt: null });
-    if (path === "/auth/pin/signup" && request.method() === "POST") {
+    if (path === "/auth/signup/start" && request.method() === "POST") {
       expect(request.postDataJSON()).toEqual({
-        method: "phone",
-        contact: phone,
-        country: "KE",
-        pin
+        type: "phone",
+        identifier: phone,
+        country: "KE"
       });
-      signupCount += 1;
+      signupStartCount += 1;
+      return json({
+        transactionId: "signup-transaction",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        verificationRequired: false
+      });
+    }
+    if (path === "/auth/signup/complete" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({
+        transactionId: "signup-transaction",
+        displayName: "Jane Trader",
+        email: "jane@example.com",
+        password,
+        passwordConfirmation: password,
+        termsAccepted: true,
+        privacyAccepted: true
+      });
+      signupCompleteCount += 1;
       sessionActive = true;
       return json(session);
     }
-    if (path === "/auth/pin/login" && request.method() === "POST") {
+    if (path === "/auth/login/methods" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({ type: "phone", identifier: phone });
+      return json({
+        preferred: "passkey",
+        passkeyAvailable: true,
+        passwordFallback: true,
+        recoveryAvailable: true,
+        smsLogin: false
+      });
+    }
+    if (path === "/auth/login/password" && request.method() === "POST") {
       expect(request.postDataJSON()).toEqual({
-        method: "phone",
-        contact: phone,
-        country: "KE",
-        pin
+        type: "phone",
+        identifier: phone,
+        password
       });
       loginCount += 1;
       sessionActive = true;
@@ -82,17 +108,23 @@ test("signs up and later logs in from the welcome message with phone and PIN", a
 
   await page.getByTestId("welcome-signup-button").click();
   await expect(page).toHaveURL(/\/signup$/u);
-  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Start with your phone" })).toBeVisible();
   await page.getByLabel("Phone number", { exact: true }).fill("712345678");
-  await expect(page.getByLabel("4-digit PIN", { exact: true })).toHaveAttribute(
-    "autocomplete",
-    "new-password"
-  );
-  await page.getByLabel("4-digit PIN", { exact: true }).fill(pin);
-  await page.getByLabel("Confirm 4-digit PIN").fill(pin);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect.poll(() => signupStartCount).toBe(1);
+  await expect(page.getByRole("heading", { name: "Finish your profile" })).toBeVisible();
+  await page.getByLabel("Display name").fill("Jane Trader");
+  await page.getByLabel(/Email address/u).fill("jane@example.com");
+  await page.getByLabel(/Add a recovery password/u).check();
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password").fill(password);
+  await page.getByLabel(/I agree to the Terms of Service/u).check();
+  await page.getByLabel(/I acknowledge the Privacy Policy/u).check();
   await page.getByRole("button", { name: "Create account", exact: true }).click();
 
-  await expect.poll(() => signupCount).toBe(1);
+  await expect.poll(() => signupCompleteCount).toBe(1);
+  await expect(page.getByRole("heading", { name: "Secure your account" })).toBeVisible();
+  await page.getByRole("button", { name: "Do this later" }).click();
   await expect(page.getByText("Authentication complete", { exact: true })).toBeVisible();
 
   sessionActive = false;
@@ -100,11 +132,11 @@ test("signs up and later logs in from the welcome message with phone and PIN", a
   await page.reload();
 
   await expect(page).toHaveURL(/\/login$/u);
-  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
-  await page.getByLabel("Phone number", { exact: true }).fill("712345678");
+  await expect(page.getByText(`Continuing as ${phone}`)).toBeVisible();
   await page.getByRole("button", { name: "Continue to log in" }).click();
-  await expect(page.getByLabel("4-digit PIN")).toHaveAttribute("autocomplete", "current-password");
-  await page.getByLabel("4-digit PIN").fill(pin);
+  await expect(page.getByRole("heading", { name: "Choose how to log in" })).toBeVisible();
+  await page.getByRole("button", { name: "Use a password" }).click();
+  await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Log in", exact: true }).click();
 
   await expect.poll(() => loginCount).toBe(1);

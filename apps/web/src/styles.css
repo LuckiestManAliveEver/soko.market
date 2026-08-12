@@ -16,12 +16,6 @@
   box-sizing: border-box;
 }
 
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 160ms;
-  animation-timing-function: ease-out;
-}
-
 body {
   min-height: 100vh;
   margin: 0;
@@ -52,11 +46,15 @@ button:disabled {
   *::after {
     scroll-behavior: auto !important;
   }
+}
 
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none;
-  }
+.inline-loading-card {
+  background: #f7f9f7;
+  border: 1px solid #dbe4dc;
+  border-radius: 8px;
+  color: #516258;
+  min-height: 52px;
+  padding: 14px;
 }
 
 .visually-hidden {
@@ -1121,6 +1119,10 @@ button:disabled {
   width: 100%;
 }
 
+.auth-progress-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .auth-progress:has(> span:nth-child(2):last-child) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1350,6 +1352,80 @@ button:disabled {
   font-weight: 700;
   padding: 10px 12px;
   text-align: center;
+}
+
+.auth-feedback p {
+  margin: 0;
+}
+
+.auth-optional-label {
+  color: #718078;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.auth-fields .auth-option-row {
+  align-items: start;
+  border: 1px solid #dfe7e1;
+  border-radius: 12px;
+  display: grid;
+  font-weight: 600;
+  gap: 10px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  padding: 12px;
+}
+
+.auth-fields .auth-option-row input {
+  min-height: 20px;
+  padding: 0;
+}
+
+.auth-option-row span {
+  display: grid;
+  gap: 3px;
+}
+
+.auth-option-row small {
+  color: #718078;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.auth-consent-group {
+  border: 0;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.auth-consent-group legend {
+  color: #35483d;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.auth-security-summary {
+  background: #eff7f2;
+  border: 1px solid #cfe4d6;
+  border-radius: 14px;
+  color: #244535;
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+}
+
+.auth-security-summary p {
+  color: #5b6f63;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.auth-login-methods > .secondary {
+  min-height: 50px;
+  width: 100%;
 }
 
 .progressive-auth-card {

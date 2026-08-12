@@ -8,15 +8,32 @@ import {
 import { recordComponentRender, recordRouteRender } from "./performance";
 import { readAuthenticationRoutePath, readOwnerRoute, routes } from "./routes";
 
+const initialPathname = window.location.pathname;
+const initialSokoApplicationModule = shouldWarmOwnerRoute(initialPathname)
+  ? import("./SokoApplication")
+  : null;
+
 const TermsOfServicePage = lazy(() => import("./legal/TermsOfServicePage"));
 const PrivacyPolicyPage = lazy(() => import("./legal/PrivacyPolicyPage"));
 const AccountDeletionPage = lazy(() => import("./legal/AccountDeletionPage"));
-const OwnerApp = lazy(() =>
-  import("./SokoApplication").then((module) => ({ default: module.OwnerApp }))
-);
+const OwnerApp = lazy(() => loadSokoApplication().then((module) => ({ default: module.OwnerApp })));
 const PublicStorefront = lazy(() =>
-  import("./SokoApplication").then((module) => ({ default: module.PublicStorefrontChat }))
+  loadSokoApplication().then((module) => ({ default: module.PublicStorefrontChat }))
 );
+
+function loadSokoApplication() {
+  return initialSokoApplicationModule ?? import("./SokoApplication");
+}
+
+function shouldWarmOwnerRoute(pathname: string): boolean {
+  return (
+    readOwnerRoute(pathname) !== null ||
+    readAuthenticationRoutePath(pathname) !== null ||
+    pathname === routes.oauthCallback ||
+    /^\/(?:agent|shop|shops|soko)\//u.test(pathname) ||
+    /^\/(?:\+?\d{1,3}-?[A-Za-z]\d{8})\/?$/u.test(pathname)
+  );
+}
 
 export function AppRouter() {
   useSyncExternalStore(

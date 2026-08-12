@@ -38,7 +38,7 @@ test("primary navigation remains local while data refreshes slowly", async ({ pa
     const duration = await clickToSecondPaint(page, destination.label);
     timings[destination.path] = Math.round(duration * 10) / 10;
     await expect(page).toHaveURL(new RegExp(`${destination.path}$`));
-    expect(duration, `${destination.label} navigation`).toBeLessThan(500);
+    expect(duration, `${destination.label} navigation`).toBeLessThan(300);
     expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
   }
   console.log("[SOKO_NAV_BENCH]", JSON.stringify(timings));

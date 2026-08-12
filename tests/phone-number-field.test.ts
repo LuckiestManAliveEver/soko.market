@@ -16,8 +16,10 @@ describe("shared phone-number field", () => {
 
   it("is reused by every authentication and owner identity surface", () => {
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
+    const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     expect(phoneFirst).toContain("<PhoneNumberField");
+    expect(phoneSignup).toContain("<PhoneNumberField");
     expect(application.match(/<PhoneNumberField/gu)).toHaveLength(2);
     expect(application).not.toContain("function SetupPanel");
     expect(application).not.toContain("function LoginPanel");

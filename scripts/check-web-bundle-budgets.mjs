@@ -9,10 +9,6 @@ if (!entry) throw new Error("The web build manifest has no entry chunk.");
 
 const initialFiles = new Set();
 collectStaticFiles(entry, initialFiles);
-for (const bootstrapImport of entry.dynamicImports ?? []) {
-  const imported = manifest[bootstrapImport];
-  if (imported) collectStaticFiles(imported, initialFiles);
-}
 const initialJavaScriptGzip = sumGzip([...initialFiles].filter((file) => file.endsWith(".js")));
 const initialCssGzip = sumGzip([...initialFiles].filter((file) => file.endsWith(".css")));
 const ownerRoute = Object.values(manifest).find(

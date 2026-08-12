@@ -5,6 +5,7 @@ import {
   getCachedJson,
   invalidateApiCacheForMutation
 } from "../apps/web/src/api-request-cache";
+import { likelyNextOwnerViews } from "../apps/web/src/prefetch";
 
 afterEach(() => {
   clearApiRequestCache();
@@ -65,6 +66,15 @@ describe("frontend navigation performance contracts", () => {
     expect(performanceSource).toContain('"longtask"');
   });
 
+  it("boots directly without a second entrypoint request waterfall", () => {
+    const html = readFileSync("apps/web/index.html", "utf8");
+    const budgetCheck = readFileSync("scripts/check-web-bundle-budgets.mjs", "utf8");
+
+    expect(html).toContain('src="/src/main.tsx"');
+    expect(html).not.toContain('src="/src/bootstrap.ts"');
+    expect(budgetCheck).not.toContain("bootstrapImport");
+  });
+
   it("batches streamed model tokens to animation frames", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const start = application.indexOf("const updateStreamingMessage");
@@ -76,6 +86,17 @@ describe("frontend navigation performance contracts", () => {
     expect(streamingBlock).not.toContain(
       "browserTokenListener = (token) => {\n        setStatusMessage"
     );
+  });
+
+  it("warms likely follow-up screens without keeping message-heavy chat UI mounted", () => {
+    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+
+    expect(likelyNextOwnerViews("chat")).toEqual(["products", "invoices"]);
+    expect(likelyNextOwnerViews("invoices")).toEqual(["payments", "logistics"]);
+    expect(application).toContain('const showMessageThread = activeView === "chat"');
+    expect(application).toContain("const visibleConversations = showMessageThread");
+    expect(application).toContain("showMessageThread && isInboxOpen");
+    expect(application).toContain('behavior: "auto"');
   });
 
   it("invalidates related active-model reads after either model selection changes", async () => {

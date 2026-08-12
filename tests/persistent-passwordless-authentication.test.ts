@@ -261,18 +261,22 @@ describe("persistent passwordless authentication", () => {
       "drop function if exists reject_phone_verification_challenge()"
     );
 
-    const frontend = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
-    expect(frontend).toContain('"/auth/pin/signup"');
-    expect(frontend).toContain('"/auth/pin/login"');
-    expect(frontend).not.toContain('"/auth/pin/continue"');
-    expect(frontend).not.toContain('"/auth/identify"');
-    expect(frontend).not.toContain('"/auth/signup/verify-phone"');
-    expect(frontend).not.toContain('"verify-phone"');
-    expect(frontend).toContain(" fallback (optional)");
-    // Sign up is a two-step phone + PIN flow (matching a native messaging app's login), while
-    // returning users can log in by phone/email/store ID. No third passkey screen blocks entry.
-    expect(frontend).not.toContain("Create passkey");
-    expect(frontend).not.toContain("Skip for now");
+    const signup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
+    const login = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
+    expect(signup).toContain('"/auth/signup/start"');
+    expect(signup).toContain('"/auth/signup/complete"');
+    expect(signup).toContain('"/auth/passkeys/register/options"');
+    expect(signup).toContain('"/auth/passkeys/register/verify"');
+    expect(signup).toContain("Add a recovery password");
+    expect(login).toContain('"/auth/login/methods"');
+    expect(login).toContain('"/auth/pin/login"');
+    expect(signup).not.toContain('"/auth/pin/continue"');
+    expect(signup).not.toContain('"/auth/identify"');
+    expect(signup).not.toContain('"/auth/signup/verify-phone"');
+    expect(signup).not.toContain('"verify-phone"');
+    expect(signup).toContain("Create a passkey");
+    expect(signup).toContain("Do this later");
+    expect(signup).toContain("addPassword && createdSession !== null");
   });
 
   it("fails closed on unsafe production cookie and session configuration", () => {

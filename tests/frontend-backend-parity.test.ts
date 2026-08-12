@@ -4,10 +4,36 @@ import { describe, expect, it } from "vitest";
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
 const productCapture = readFileSync("apps/web/src/ProductCapturePanel.tsx", "utf8");
 const accountControls = readFileSync("apps/web/src/AccountBackendControls.tsx", "utf8");
+const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
+const phoneLogin = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
 
 describe("frontend coverage for backend-owned lifecycles", () => {
+  it("renders the staged backend signup transaction as a dedicated frontend flow", () => {
+    expect(application).toContain('import("./PhoneSignup")');
+    expect(application).toContain("<PhoneSignup");
+    expect(phoneSignup).toContain('"/auth/signup/start"');
+    expect(phoneSignup).toContain('"/auth/signup/complete"');
+    expect(phoneSignup).toContain("Display name");
+    expect(phoneSignup).toContain("Add a recovery password");
+    expect(phoneSignup).toContain("termsAccepted");
+    expect(phoneSignup).toContain("privacyAccepted");
+    expect(phoneSignup).toContain('"/auth/passkeys/register/options"');
+    expect(phoneSignup).toContain('"/auth/passkeys/register/verify"');
+    expect(phoneSignup).toContain("addPassword && createdSession !== null");
+  });
+
+  it("uses backend method discovery and presents passkey-first return access", () => {
+    expect(phoneLogin).toContain('"/auth/login/methods"');
+    expect(phoneLogin).toContain("loginMethods?.passkeyAvailable");
+    expect(phoneLogin).toContain("Continue with a passkey");
+    expect(phoneLogin).toContain("loginMethods?.passwordFallback");
+    expect(phoneLogin).toContain("loginMethods?.recoveryAvailable");
+    expect(phoneLogin).toContain("Use legacy PIN");
+    expect(phoneLogin).not.toContain('"/auth/identify"');
+  });
+
   it("completes the camera catalogue capture lifecycle", () => {
-    expect(application).toContain('lazy(() => import("./ProductCapturePanel"))');
+    expect(application).toContain('import("./ProductCapturePanel")');
     expect(productCapture).toContain("function ProductCapturePanel");
     expect(productCapture).toContain('capture="environment"');
     expect(productCapture).toContain("/product-captures`");
@@ -20,7 +46,7 @@ describe("frontend coverage for backend-owned lifecycles", () => {
   });
 
   it("lets owners update the account name exposed by the backend", () => {
-    expect(application).toContain('lazy(() => import("./AccountBackendControls"))');
+    expect(application).toContain('import("./AccountBackendControls")');
     expect(accountControls).toContain('"/account/display-name"');
     expect(accountControls).toContain('aria-label="Account display name"');
     expect(application).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
@@ -35,5 +61,16 @@ describe("frontend coverage for backend-owned lifecycles", () => {
     expect(accountControls).toContain(
       'disabled={isCurrent || isPending("encryption-device-revoke")}'
     );
+  });
+
+  it("uses structured backend agent controls instead of editable compatibility fields", () => {
+    expect(application).toContain("draftAgent.personalityConfig.tone");
+    expect(application).toContain("draftAgent.instructionPolicy.maximumDiscountPercent");
+    expect(application).toContain("draftAgent.skillBindings.map");
+    expect(application).toContain("draftAgent.memoryPolicy.ownerCorrectionsEnabled");
+    expect(application).not.toContain("Compatibility fields");
+    expect(application).not.toContain("Advanced knowledge and integration labels");
+    expect(application).not.toContain("value={draftAgent.tools.join");
+    expect(application).not.toContain("value={draftAgent.integrations.join");
   });
 });

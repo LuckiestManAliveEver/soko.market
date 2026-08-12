@@ -22,6 +22,18 @@ describe("progressive onboarding UI", () => {
     expect(source).not.toContain("Notification.requestPermission");
   });
 
+  it("routes explicit account actions into the dedicated signup and login screens", async () => {
+    const applicationSource = await readFile(
+      new URL("../apps/web/src/SokoApplication.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(applicationSource).toContain('onSignUp={() => openAuth("signup")}');
+    expect(applicationSource).toContain('onLogIn={() => openAuth("login")}');
+    expect(applicationSource).toContain('authenticationView === "signup"');
+    expect(applicationSource).toContain("<PhoneSignup");
+  });
+
   it("recovers a device account from its device-bound signing key before onboarding", async () => {
     const [recoverySource, applicationSource] = await Promise.all([
       readFile(new URL("../apps/web/src/device-recovery.ts", import.meta.url), "utf8"),

@@ -1,6 +1,7 @@
 import {
   Fragment,
   lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -214,7 +215,7 @@ import {
   recordReadiness,
   startNavigationMeasurement
 } from "./performance";
-import { prefetchOwnerView } from "./prefetch";
+import { likelyNextOwnerViews, prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
 import { createScreenStateCache, restoreScreenScroll } from "./screen-state-cache";
 import { setConnectivityAuthentication } from "./connectivity";
 import { RuntimeManager } from "./runtime-manager";
@@ -260,13 +261,30 @@ type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const clientInferenceFeatureFlags = readClientInferenceFeatureFlags();
+const initialAuthenticationModuleTarget =
+  readAuthenticationRoutePath(window.location.pathname) ??
+  readAuthenticationRouteHash(window.location.hash);
+const initialPhoneLoginModule =
+  initialAuthenticationModuleTarget === "login" ? import("./PhoneFirstAuthentication") : null;
+const initialPhoneSignupModule =
+  initialAuthenticationModuleTarget === "signup" ? import("./PhoneSignup") : null;
+const initialOwnerModuleView = readOwnerRoute(window.location.pathname)?.view ?? null;
+const initialProductCaptureModule =
+  initialOwnerModuleView === "products" ? import("./ProductCapturePanel") : null;
+const initialAccountControlsModule =
+  initialOwnerModuleView === "agent" ? import("./AccountBackendControls") : null;
 const PhoneFirstAuthentication = lazy(() =>
-  import("./PhoneFirstAuthentication").then((module) => ({
+  (initialPhoneLoginModule ?? import("./PhoneFirstAuthentication")).then((module) => ({
     default: module.PhoneFirstAuthentication
   }))
 );
-const ProductCapturePanel = lazy(() => import("./ProductCapturePanel"));
-const AccountBackendControls = lazy(() => import("./AccountBackendControls"));
+const PhoneSignup = lazy(() => initialPhoneSignupModule ?? import("./PhoneSignup"));
+const ProductCapturePanel = lazy(
+  () => initialProductCaptureModule ?? import("./ProductCapturePanel")
+);
+const AccountBackendControls = lazy(
+  () => initialAccountControlsModule ?? import("./AccountBackendControls")
+);
 
 const chatAttachmentAccept = [
   "image/*",
@@ -3079,6 +3097,13 @@ export function OwnerApp() {
   }, [business?.id, session?.account.id, setupComplete, view]);
 
   useEffect(() => {
+    if (!setupComplete || business === null) return;
+    const likelyViews = likelyNextOwnerViews(view);
+    if (likelyViews.length === 0) return;
+    return scheduleIdleOwnerPrefetch(likelyViews, business.id);
+  }, [business?.id, setupComplete, view]);
+
+  useEffect(() => {
     if (!setupComplete || view !== "chat" || business === null) return;
     let cancelled = false;
     const hydrate = () => {
@@ -5313,14 +5338,12 @@ export function OwnerApp() {
 
     const nextPath = pathForOwnerView("chat", nextMode);
     const measurement = startNavigationMeasurement(nextPath);
-    runViewTransition(() => {
-      setMode(nextMode);
-      navigateToOwnerRoute({ mode: nextMode, view: "chat" });
-      setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
-      setView("chat");
-      setIsWorkspacePanelOpen(false);
-      markNavigationCommitted(measurement);
-    });
+    setMode(nextMode);
+    navigateToOwnerRoute({ mode: nextMode, view: "chat" });
+    setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
+    setView("chat");
+    setIsWorkspacePanelOpen(false);
+    markNavigationCommitted(measurement);
     setChatMessages((messages) => [
       ...messages,
       {
@@ -7523,6 +7546,8 @@ export function OwnerApp() {
               className="brand-lockup"
               type="button"
               onClick={() => setupComplete && openAgentProfile()}
+              onPointerEnter={() => prefetchOwnerView("agent", business.id)}
+              onFocus={() => prefetchOwnerView("agent", business.id)}
             >
               <AppIcon className="logo-mark" />
               <span>
@@ -7640,6 +7665,8 @@ export function OwnerApp() {
                 }}
                 aria-label={business === null ? "Owner login" : "Account and agent settings"}
                 data-testid={business === null ? undefined : "agent-profile-link"}
+                onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
+                onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
               >
                 <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
               </button>
@@ -7666,25 +7693,22 @@ export function OwnerApp() {
         ) : shouldShowAuth && authenticationView === "continue" ? (
           <ProgressiveAuthentication
             onAuthenticated={(response) => completeProgressiveAuthentication(response)}
-            onSignUp={() => {
-              setAuthenticationView("signup");
-              setStatusMessage("Create your Soko account.");
-            }}
-            onLogIn={() => {
-              setAuthenticationView("login");
-              setStatusMessage("Log in to your account.");
-            }}
+            onSignUp={() => openAuth("signup")}
+            onLogIn={() => openAuth("login")}
             onBrowseAsGuest={browseAsGuest}
+          />
+        ) : shouldShowAuth && authenticationView === "signup" ? (
+          <PhoneSignup
+            onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
+            onLogIn={() => openAuth("login")}
+            onCancel={browseAsGuest}
           />
         ) : shouldShowAuth ? (
           <PhoneFirstAuthentication
             key={authenticationView}
-            intent={authenticationView === "signup" ? "signup" : "login"}
             remembered={rememberedAccount}
             onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
-            onIntentChange={(intent) => {
-              openAuth(intent);
-            }}
+            onSignUp={() => openAuth("signup")}
             onForgetRemembered={forgetRememberedOwnerAuth}
             onCancel={browseAsGuest}
           />
@@ -7999,6 +8023,7 @@ function PrimaryNavigation({
           onClick={() => onNavigate(item.view)}
           onPointerDown={() => onPrefetch(item.view)}
           onPointerEnter={() => onPrefetch(item.view)}
+          onFocus={() => onPrefetch(item.view)}
         >
           <span className="primary-navigation-icon" aria-hidden="true">
             {item.shortLabel.slice(0, 1)}
@@ -10481,11 +10506,13 @@ export function PublicStorefrontChat(props: { agentId: string; productId?: strin
 function ProductSurface(props: ProductSurfaceProps) {
   return (
     <div className="records-surface product-business-card-surface">
-      <ProductCapturePanel
-        businessId={props.businessId}
-        products={props.products}
-        onPublished={props.onPublished}
-      />
+      <Suspense fallback={<div className="inline-loading-card">Opening quick capture…</div>}>
+        <ProductCapturePanel
+          businessId={props.businessId}
+          products={props.products}
+          onPublished={props.onPublished}
+        />
+      </Suspense>
       <section className="record-form business-card-editor" aria-label="Product form">
         <div className="business-card-editor-header">
           <div className="section-heading">
@@ -16134,13 +16161,15 @@ function AgentProfileSurface({
             </p>
             <p className="shell-note">Identity strength: {identityLevel.replace("_", " ")}</p>
           </div>
-          <AccountBackendControls
-            accountId={accountId}
-            displayName={ownerUser?.displayName ?? ""}
-            onDisplayNameChanged={(displayName) =>
-              ownerUser === null ? undefined : onOwnerUserChange({ ...ownerUser, displayName })
-            }
-          />
+          <Suspense fallback={<div className="inline-loading-card">Opening account security…</div>}>
+            <AccountBackendControls
+              accountId={accountId}
+              displayName={ownerUser?.displayName ?? ""}
+              onDisplayNameChanged={(displayName) =>
+                ownerUser === null ? undefined : onOwnerUserChange({ ...ownerUser, displayName })
+              }
+            />
+          </Suspense>
           <div className="record-form">
             <div className="section-heading">
               <p className="eyebrow">Private identity contact</p>
@@ -17091,64 +17120,6 @@ function AgentProfileSurface({
           ) : null}
         </div>
 
-        <div className="record-form">
-          <div className="section-heading">
-            <p className="eyebrow">Compatibility fields</p>
-            <h3>Advanced owner guidance</h3>
-          </div>
-          <label>
-            Personality
-            <input
-              value={draftAgent.personality}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ personality: event.target.value })}
-            />
-          </label>
-          <label>
-            Instructions
-            <textarea
-              value={draftAgent.instructions}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ instructions: event.target.value })}
-              rows={5}
-            />
-          </label>
-        </div>
-
-        <div className="record-form">
-          <div className="section-heading">
-            <p className="eyebrow">Display labels</p>
-            <h3>Advanced knowledge and integration labels</h3>
-          </div>
-          <label>
-            Knowledge
-            <textarea
-              value={draftAgent.knowledge}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ knowledge: event.target.value })}
-              rows={4}
-            />
-          </label>
-          <label>
-            Tools
-            <input
-              value={draftAgent.tools.join(", ")}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ tools: splitListInput(event.target.value) })}
-            />
-          </label>
-          <label>
-            Integrations
-            <input
-              value={draftAgent.integrations.join(", ")}
-              disabled={!isEditing}
-              onChange={(event) =>
-                updateAgent({ integrations: splitListInput(event.target.value) })
-              }
-            />
-          </label>
-        </div>
-
         <div className="record-form agent-context-window advanced-context-window">
           <div className="section-heading">
             <p className="eyebrow">Advanced features</p>
@@ -17573,20 +17544,25 @@ function ChatSurface({
     | "networkSync"
     | "storefrontPreview"
   >("cards");
+  const showMessageThread = activeView === "chat" || activeView === "home";
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === activeConversationId
   );
-  const visibleConversations = conversations.filter((conversation) => {
-    const query = inboxSearch.trim().toLowerCase();
-    if (!query) return true;
-    return (
-      (conversation.title ?? "Soko agent").toLowerCase().includes(query) ||
-      (conversation.lastMessage === null
-        ? false
-        : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
-    );
-  });
-  const visibleMessages = messages.filter((message) => !isRedundantAgentErrorMessage(message.body));
+  const visibleConversations = showMessageThread
+    ? conversations.filter((conversation) => {
+        const query = inboxSearch.trim().toLowerCase();
+        if (!query) return true;
+        return (
+          (conversation.title ?? "Soko agent").toLowerCase().includes(query) ||
+          (conversation.lastMessage === null
+            ? false
+            : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
+        );
+      })
+    : [];
+  const visibleMessages = showMessageThread
+    ? messages.filter((message) => !isRedundantAgentErrorMessage(message.body))
+    : [];
   const hiddenMessageCount = Math.max(0, visibleMessages.length - messageWindowSize);
   const windowedMessages = visibleMessages.slice(hiddenMessageCount);
 
@@ -17736,164 +17712,172 @@ function ChatSurface({
   }, []);
 
   useEffect(() => {
+    if (!showMessageThread) return;
     const frameId = window.requestAnimationFrame(() => {
       messageListRef.current?.scrollTo({
         top: messageListRef.current.scrollHeight,
-        behavior: "smooth"
+        behavior: "auto"
       });
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeConversationId, messages.length, workspaceCardView]);
+  }, [activeConversationId, messages.length, showMessageThread, workspaceCardView]);
 
   return (
-    <div className={`chat-surface ${isInboxOpen ? "inbox-open" : ""}`}>
-      <aside className={`messenger-inbox ${isInboxOpen ? "open" : ""}`} aria-label="Conversations">
-        <div className="messenger-inbox-heading">
-          <h2>Messages</h2>
-          <button
-            type="button"
-            onClick={() =>
-              isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
-            }
-          >
-            New
-          </button>
-        </div>
-        <div className="messenger-inbox-tools">
-          <label>
-            <span className="visually-hidden">Search conversations</span>
-            <input
-              type="search"
-              value={inboxSearch}
-              onChange={(event) => setInboxSearch(event.target.value)}
-              placeholder="Search messages"
-            />
-          </label>
-          <button
-            className="secondary"
-            type="button"
-            onClick={isAuthenticated ? onEnableNotifications : onRequireSignIn}
-          >
-            Notifications
-          </button>
-        </div>
-        {isNewConversationOpen ? (
-          <form
-            className="new-conversation-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onCreateConversation(newRecipient, newConversationTitle);
-              setNewRecipient("");
-              setNewConversationTitle("");
-              setIsNewConversationOpen(false);
-            }}
-          >
-            <label>
-              Phone number or email
-              <input
-                required
-                value={newRecipient}
-                onChange={(event) => setNewRecipient(event.target.value)}
-                placeholder="+254 700 000 000 or name@example.com"
-              />
-            </label>
-            <label>
-              Name
-              <input
-                value={newConversationTitle}
-                onChange={(event) => setNewConversationTitle(event.target.value)}
-                placeholder="Conversation name"
-              />
-            </label>
-            <small>
-              Soko chats require a registered user and are end-to-end encrypted. SMS and external
-              apps use their own privacy and delivery rules.
-            </small>
-            <div className="new-conversation-actions">
-              <button type="submit">Start encrypted chat</button>
-              <button
-                className="secondary"
-                type="button"
-                disabled={newRecipient.trim().length === 0 || liveDraft.trim().length === 0}
-                onClick={() => openSmsHandoff(newRecipient, newConversationTitle)}
-              >
-                Send as SMS
-              </button>
-              <button
-                className="secondary"
-                type="button"
-                disabled={liveDraft.trim().length === 0}
-                onClick={() => void openPlatformHandoff(newConversationTitle)}
-              >
-                Share to apps
-              </button>
-            </div>
-          </form>
-        ) : null}
-        <div className="conversation-list">
-          {visibleConversations.map((conversation) => (
-            <article
-              className={`conversation-item ${conversation.id === activeConversationId ? "active" : ""}`}
-              key={conversation.id}
+    <div className={`chat-surface ${showMessageThread && isInboxOpen ? "inbox-open" : ""}`}>
+      {showMessageThread ? (
+        <aside
+          className={`messenger-inbox ${isInboxOpen ? "open" : ""}`}
+          aria-label="Conversations"
+        >
+          <div className="messenger-inbox-heading">
+            <h2>Messages</h2>
+            <button
+              type="button"
+              onClick={() =>
+                isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
+              }
             >
-              <button
-                className="conversation-select"
-                type="button"
-                onClick={() => {
-                  onSelectConversation(conversation.id);
-                  onInboxOpenChange(false);
-                }}
-              >
-                <span>
-                  <strong>{conversation.title ?? "Soko agent"}</strong>
-                  <small>
-                    {conversation.lastMessage === null
-                      ? "No messages yet"
-                      : conversationMessageText(conversation.lastMessage)}
-                  </small>
-                </span>
-                {conversation.unreadCount > 0 ? (
-                  <b aria-label={`${conversation.unreadCount} unread`}>
-                    {conversation.unreadCount}
-                  </b>
-                ) : null}
-              </button>
-              <div className="conversation-actions" aria-label="Conversation actions">
+              New
+            </button>
+          </div>
+          <div className="messenger-inbox-tools">
+            <label>
+              <span className="visually-hidden">Search conversations</span>
+              <input
+                type="search"
+                value={inboxSearch}
+                onChange={(event) => setInboxSearch(event.target.value)}
+                placeholder="Search messages"
+              />
+            </label>
+            <button
+              className="secondary"
+              type="button"
+              onClick={isAuthenticated ? onEnableNotifications : onRequireSignIn}
+            >
+              Notifications
+            </button>
+          </div>
+          {isNewConversationOpen ? (
+            <form
+              className="new-conversation-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onCreateConversation(newRecipient, newConversationTitle);
+                setNewRecipient("");
+                setNewConversationTitle("");
+                setIsNewConversationOpen(false);
+              }}
+            >
+              <label>
+                Phone number or email
+                <input
+                  required
+                  value={newRecipient}
+                  onChange={(event) => setNewRecipient(event.target.value)}
+                  placeholder="+254 700 000 000 or name@example.com"
+                />
+              </label>
+              <label>
+                Name
+                <input
+                  value={newConversationTitle}
+                  onChange={(event) => setNewConversationTitle(event.target.value)}
+                  placeholder="Conversation name"
+                />
+              </label>
+              <small>
+                Soko chats require a registered user and are end-to-end encrypted. SMS and external
+                apps use their own privacy and delivery rules.
+              </small>
+              <div className="new-conversation-actions">
+                <button type="submit">Start encrypted chat</button>
                 <button
+                  className="secondary"
                   type="button"
-                  onClick={() => onConversationPreference(conversation.id, "pin")}
+                  disabled={newRecipient.trim().length === 0 || liveDraft.trim().length === 0}
+                  onClick={() => openSmsHandoff(newRecipient, newConversationTitle)}
                 >
-                  {conversation.participant.pinnedAt ? "Unpin" : "Pin"}
+                  Send as SMS
                 </button>
                 <button
+                  className="secondary"
                   type="button"
-                  onClick={() => onConversationPreference(conversation.id, "mute")}
+                  disabled={liveDraft.trim().length === 0}
+                  onClick={() => void openPlatformHandoff(newConversationTitle)}
                 >
-                  {conversation.participant.mutedUntil ? "Unmute" : "Mute"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onConversationPreference(conversation.id, "archive")}
-                >
-                  Archive
+                  Share to apps
                 </button>
               </div>
-            </article>
-          ))}
-          {visibleConversations.length === 0 ? <p>No matching conversations.</p> : null}
-        </div>
-      </aside>
-      <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
-        <header className="messenger-thread-header">
-          <div>
-            <strong>{selectedConversation?.title ?? agent.name}</strong>
-            <small>{isContactTyping ? "typing…" : securityLabel}</small>
+            </form>
+          ) : null}
+          <div className="conversation-list">
+            {visibleConversations.map((conversation) => (
+              <article
+                className={`conversation-item ${conversation.id === activeConversationId ? "active" : ""}`}
+                key={conversation.id}
+              >
+                <button
+                  className="conversation-select"
+                  type="button"
+                  onClick={() => {
+                    onSelectConversation(conversation.id);
+                    onInboxOpenChange(false);
+                  }}
+                >
+                  <span>
+                    <strong>{conversation.title ?? "Soko agent"}</strong>
+                    <small>
+                      {conversation.lastMessage === null
+                        ? "No messages yet"
+                        : conversationMessageText(conversation.lastMessage)}
+                    </small>
+                  </span>
+                  {conversation.unreadCount > 0 ? (
+                    <b aria-label={`${conversation.unreadCount} unread`}>
+                      {conversation.unreadCount}
+                    </b>
+                  ) : null}
+                </button>
+                <div className="conversation-actions" aria-label="Conversation actions">
+                  <button
+                    type="button"
+                    onClick={() => onConversationPreference(conversation.id, "pin")}
+                  >
+                    {conversation.participant.pinnedAt ? "Unpin" : "Pin"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onConversationPreference(conversation.id, "mute")}
+                  >
+                    {conversation.participant.mutedUntil ? "Unmute" : "Mute"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onConversationPreference(conversation.id, "archive")}
+                  >
+                    Archive
+                  </button>
+                </div>
+              </article>
+            ))}
+            {visibleConversations.length === 0 ? <p>No matching conversations.</p> : null}
           </div>
-          <button className="secondary" type="button" onClick={onRetryMessages}>
-            Retry failed
-          </button>
-        </header>
+        </aside>
+      ) : null}
+      <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
+        {showMessageThread ? (
+          <header className="messenger-thread-header">
+            <div>
+              <strong>{selectedConversation?.title ?? agent.name}</strong>
+              <small>{isContactTyping ? "typing…" : securityLabel}</small>
+            </div>
+            <button className="secondary" type="button" onClick={onRetryMessages}>
+              Retry failed
+            </button>
+          </header>
+        ) : null}
         <div className="message-list" aria-live="polite" ref={messageListRef}>
           {hiddenMessageCount > 0 ? (
             <button
@@ -20472,13 +20456,6 @@ async function copyTextToClipboard(value: string): Promise<void> {
   document.body.removeChild(textArea);
 }
 
-function splitListInput(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-}
-
 function splitMultilineInput(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -21253,20 +21230,6 @@ function isBinaryImportDocument(fileName: string, contentType: string): boolean 
 function dataUrlPayload(dataUrl: string): string {
   const separatorIndex = dataUrl.indexOf(",");
   return separatorIndex === -1 ? dataUrl : dataUrl.slice(separatorIndex + 1);
-}
-
-function runViewTransition(update: () => void): void {
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const transitionDocument = document as Document & {
-    startViewTransition?: (callback: () => void) => unknown;
-  };
-
-  if (!reducedMotion && transitionDocument.startViewTransition !== undefined) {
-    transitionDocument.startViewTransition(update);
-    return;
-  }
-
-  update();
 }
 
 function runtimeManagerKey(accountId: string, businessId: string): string {

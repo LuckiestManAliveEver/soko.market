@@ -63,7 +63,6 @@ describe("PWA installability", () => {
 
   it("links the manifest and Apple touch icon and registers a service worker", () => {
     const html = readFileSync("apps/web/index.html", "utf8");
-    const bootstrap = readFileSync("apps/web/src/bootstrap.ts", "utf8");
     const entrypoint = readFileSync("apps/web/src/main.tsx", "utf8");
     const serviceWorkerRegistration = readFileSync("apps/web/src/service-worker.ts", "utf8");
     const serviceWorker = readFileSync("apps/web/public/sw.js", "utf8");
@@ -73,9 +72,8 @@ describe("PWA installability", () => {
     expect(html).toContain('rel="icon" href="/icons/soko-icon-32.png"');
     expect(html).toContain('rel="shortcut icon" href="/favicon.ico"');
     expect(html).toContain('rel="apple-touch-icon"');
-    expect(html).toContain('<script type="module" src="/src/bootstrap.ts"></script>');
+    expect(html).toContain('<script type="module" src="/src/main.tsx"></script>');
     expect(html).not.toContain('<script type="module">');
-    expect(bootstrap).toContain('await import("./main")');
     expect(existsSync(`${publicDirectory}/favicon.ico`)).toBe(true);
     expect(existsSync(`${publicDirectory}/icons/soko-icon-32.png`)).toBe(true);
     expect(entrypoint).toContain("registerAppServiceWorker()");
