@@ -201,7 +201,7 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   await page.getByTestId("delete-account-confirm").click();
   await expect(page.getByRole("heading", { name: "Soko", level: 1 })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue to Soko" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Log in", exact: true })).toBeVisible();
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);
 });
