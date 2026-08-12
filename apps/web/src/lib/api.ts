@@ -35,17 +35,20 @@ let refreshInFlight: Promise<boolean> | null = null;
 // Every request (including login) must eventually settle so a caller's loading state can clear.
 // Without this, a request whose response never arrives - a stalled backend, a dropped connection -
 // leaves its awaiting promise pending forever and the UI stuck showing its busy state.
+//
+// Returns a cleanup function the caller MUST invoke once the fetch settles (success or failure),
+// e.g. in a `finally` block - otherwise the timer keeps running and fires a pointless abort() on
+// an already-finished request once timeoutMs elapses.
 function withRequestTimeout(
   externalSignal: AbortSignal | undefined,
   timeoutMs: number
-): AbortSignal {
+): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort(
       new DOMException("The request took too long and was cancelled.", "TimeoutError")
     );
   }, timeoutMs);
-  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
 
   if (externalSignal !== undefined) {
     if (externalSignal.aborted) {
@@ -57,7 +60,7 @@ function withRequestTimeout(
     }
   }
 
-  return controller.signal;
+  return { signal: controller.signal, cleanup: () => clearTimeout(timer) };
 }
 
 export function isRetryableApiRequestError(error: unknown): boolean {
@@ -129,12 +132,13 @@ export async function refreshAccountSession(
   if (refreshInFlight !== null) return refreshInFlight;
   refreshInFlight = (async () => {
     const startedAt = performance.now();
+    const { signal: timedSignal, cleanup } = withRequestTimeout(signal, defaultRequestTimeoutMs);
     try {
       const response = await fetch(`${baseUrl}${refreshPath}`, {
         method: "POST",
         credentials: "include",
         headers: { ...deviceSessionHeaders(), "x-request-id": createRequestId() },
-        signal: withRequestTimeout(signal, defaultRequestTimeoutMs)
+        signal: timedSignal
       });
       recordApiRequest("POST", `${baseUrl}${refreshPath}`, startedAt, response.status);
       return response.ok;
@@ -142,6 +146,7 @@ export async function refreshAccountSession(
       recordApiRequest("POST", `${baseUrl}${refreshPath}`, startedAt, "failed");
       return false;
     } finally {
+      cleanup();
       refreshInFlight = null;
     }
   })();
@@ -168,12 +173,13 @@ async function performFetch(
   options?: { body?: unknown; signal?: AbortSignal }
 ): Promise<Response> {
   const startedAt = performance.now();
+  const { signal: timedSignal, cleanup } = withRequestTimeout(options?.signal, defaultRequestTimeoutMs);
 
   try {
     const response = await fetch(url, {
       method,
       credentials: "include",
-      signal: withRequestTimeout(options?.signal, defaultRequestTimeoutMs),
+      signal: timedSignal,
       headers,
       ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) })
     });
@@ -182,6 +188,8 @@ async function performFetch(
   } catch (error) {
     recordApiRequest(method, url, startedAt, "failed");
     throw error;
+  } finally {
+    cleanup();
   }
 }
 
