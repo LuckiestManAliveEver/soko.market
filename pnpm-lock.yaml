@@ -86,6 +86,9 @@ importers:
       '@soko/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@wllama/wllama':
+        specifier: 3.5.1
+        version: 3.5.1
       libphonenumber-js:
         specifier: ^1.13.9
         version: 1.13.9
@@ -1814,6 +1817,9 @@ packages:
 
   '@vitest/utils@2.1.9':
     resolution: {integrity: sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==}
+
+  '@wllama/wllama@3.5.1':
+    resolution: {integrity: sha512-m5L0KKtmUTKz5lGvVVa/Y3qRtoobu80Jne51U0CSR6O930aOUURzhMEAolNsN4v0kfQ9u58wi2IdpUicLfaXUw==}
 
   '@xmldom/xmldom@0.8.13':
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
@@ -4590,6 +4596,8 @@ snapshots:
       '@vitest/pretty-format': 2.1.9
       loupe: 3.2.1
       tinyrainbow: 1.2.0
+
+  '@wllama/wllama@3.5.1': {}
 
   '@xmldom/xmldom@0.8.13': {}
 

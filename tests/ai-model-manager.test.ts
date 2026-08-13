@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assessDeviceModelCapability,
+  browserGgufRuntimeSupported,
   canRunCatalogModel,
   rankCatalogModelsForDevice,
   validateLocalAiModel,
@@ -10,6 +11,14 @@ import {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Android AI model capability checks", () => {
+  it("detects a worker, WebAssembly, and OPFS as a browser GGUF runtime", () => {
+    vi.stubGlobal("Worker", class Worker {});
+    vi.stubGlobal("WebAssembly", {});
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({}) } });
+
+    expect(browserGgufRuntimeSupported()).toBe(true);
+  });
+
   it("allows custom GGUF models only on high-capability devices with free storage", () => {
     const capable = assessDeviceModelCapability({
       deviceMemoryGb: 8,

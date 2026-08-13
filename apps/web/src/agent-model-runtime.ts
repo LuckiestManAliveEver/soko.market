@@ -1,4 +1,5 @@
 import type { AgentModelReadinessResult, AgentModelRuntimeBackend } from "@soko/shared-types";
+import { renderRuntimeModelOutputInstructions, type RuntimeToolName } from "@soko/tool-core";
 import type { LocalAiModel } from "./ai-model-manager";
 import {
   evaluateNativeModelCompatibility,
@@ -79,7 +80,7 @@ export interface AgentModelRuntime {
   health(installationId: string): Promise<ModelRuntimeHealth>;
 }
 
-interface NativeAgentModelRuntimeBridge {
+export interface NativeAgentModelRuntimeBridge {
   inspect(input: SafeRuntimeModelDescriptor): Promise<NativeModelInspectionAttestation>;
   load(input: SafeRuntimeModelDescriptor): Promise<void>;
   generate(input: {
@@ -383,6 +384,7 @@ export function buildLocalAgentPrompt(input: {
   relevantRecall?: string;
   message: string;
   recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  availableTools?: RuntimeToolName[];
 }): string {
   const history = input.recentMessages
     .slice(-8)
@@ -391,7 +393,11 @@ export function buildLocalAgentPrompt(input: {
   return [
     `You are Soko's ${input.role}.`,
     input.instructions,
-    "Respond directly, briefly, and accurately. Do not claim to have used tools you cannot access.",
+    ...(input.availableTools === undefined || input.availableTools.length === 0
+      ? [
+          "Respond directly, briefly, and accurately. Do not claim to have used tools you cannot access."
+        ]
+      : [renderRuntimeModelOutputInstructions(input.availableTools)]),
     ...(input.relevantRecall === undefined ? [] : [input.relevantRecall]),
     ...(history.length === 0 ? [] : [`Recent conversation:\n${history}`]),
     `User: ${input.message}`,

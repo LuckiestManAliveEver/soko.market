@@ -155,6 +155,106 @@ describe("browser inference database assignment", () => {
     expect(store.snapshot().agentModelAssignments).toEqual([]);
     await app.close();
   });
+
+  it("accepts a ready browser model proposal only through the canonical policy and confirmation pipeline", async () => {
+    const app = buildApi({
+      cp2: { store: createCp2Store({ modelRuntimeAdapterResolver: () => undefined }) }
+    });
+    const owner = await createOwnerBusiness(app, "+254700001434");
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/browser-inference`,
+      assignmentPayload("2026-07-29T12:00:00.000Z"),
+      owner.cookie
+    );
+
+    const proposed = await postJson<{
+      session: { id: string };
+      turn: {
+        status: string;
+        model: { provider: string; executionTarget: string; modelId: string };
+        plan: { toolName: string; confirmationToken: string | null; executedAt: string | null };
+      };
+    }>(
+      app,
+      `/businesses/${owner.businessId}/runtime/turns`,
+      {
+        message: "Handle this new stock item",
+        clientInferenceCompletion: {
+          requestId: "browser-request-1",
+          runtime: "browser-webgpu",
+          modelId: checkpointContract.sourceModelId,
+          deviceId: "browser-device-1",
+          outputText: JSON.stringify({
+            type: "tool",
+            toolName: "product.create",
+            input: { name: "Local model tea", unit: "packet", quantity: 3 },
+            reason: "Draft the product requested by the owner."
+          }),
+          durationMs: 820,
+          promptTokens: 41,
+          completionTokens: 22
+        }
+      },
+      owner.cookie
+    );
+
+    expect(proposed.turn).toMatchObject({
+      status: "needs_confirmation",
+      model: {
+        provider: "browser",
+        executionTarget: "browser-local",
+        modelId: checkpointContract.sourceModelId
+      },
+      plan: { toolName: "product.create", executedAt: null }
+    });
+    expect(proposed.turn.plan.confirmationToken).toEqual(expect.any(String));
+
+    const confirmed = await postJson<{
+      turn: { status: string; plan: { toolName: string; executedAt: string | null } };
+    }>(
+      app,
+      `/businesses/${owner.businessId}/runtime/turns`,
+      {
+        runtimeSessionId: proposed.session.id,
+        message: "confirm",
+        confirmationToken: proposed.turn.plan.confirmationToken
+      },
+      owner.cookie
+    );
+    expect(confirmed.turn).toMatchObject({
+      status: "completed",
+      plan: { toolName: "product.create" }
+    });
+    expect(confirmed.turn.plan.executedAt).toEqual(expect.any(String));
+
+    await app.close();
+  });
+
+  it("rejects client model output that does not match a ready device assignment", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const owner = await createOwnerBusiness(app, "+254700001435");
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie: owner.cookie },
+      payload: JSON.stringify({
+        message: "Handle this item",
+        clientInferenceCompletion: {
+          requestId: "forged-browser-request",
+          runtime: "browser-webgpu",
+          modelId: checkpointContract.sourceModelId,
+          deviceId: "unknown-device",
+          outputText: '{"type":"tool","toolName":"products.list","input":{}}',
+          durationMs: 1
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
+    await app.close();
+  });
 });
 
 function assignmentPayload(lastSuccessfulInferenceAt: string): Record<string, unknown> {

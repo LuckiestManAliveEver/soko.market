@@ -6,12 +6,18 @@ export function normalizeDeviceInferenceCapabilities(input: {
   browser: BrowserInferenceCapability;
   cachedModelIds: string[];
   nativeBridgeAvailable: boolean;
+  browserGgufAvailable?: boolean;
+  browserGgufWebGpu?: boolean;
   ownerNodeReachable: boolean;
   online: boolean;
 }): DeviceInferenceCapabilities {
   return {
-    webgpu: input.browser.supported && input.browser.backend === "webgpu",
-    wasm: input.browser.supported && input.browser.backend !== "none",
+    webgpu:
+      (input.browser.supported && input.browser.backend === "webgpu") ||
+      input.browserGgufWebGpu === true,
+    wasm:
+      (input.browser.supported && input.browser.backend !== "none") ||
+      input.browserGgufAvailable === true,
     nativeBridge: input.nativeBridgeAvailable,
     ownerNodeReachable: input.ownerNodeReachable,
     online: input.online,

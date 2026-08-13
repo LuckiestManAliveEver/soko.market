@@ -7,6 +7,7 @@ import type {
   RuntimeModelProvider
 } from "@soko/shared-types";
 import { resolveRuntimeModel } from "@soko/shared-types";
+import { renderRuntimeModelOutputInstructions } from "@soko/tool-core";
 
 export interface ModelRuntimeContext {
   agentId: string;
@@ -567,17 +568,12 @@ function healthPrompt(): RuntimeModelPrompt {
 }
 
 function buildBackendPrompt(prompt: RuntimeModelPrompt): string {
-  const tools = prompt.allowedTools.join(", ");
   const history = (prompt.conversationHistory ?? [])
     .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
     .join("\n");
   return [
     "You are the model behind the Soko agent runtime.",
-    "Return only one JSON object. Do not include markdown or surrounding commentary.",
-    'Allowed shapes: {"type":"tool","toolName":"products.list","input":{},"reason":"..."}',
-    'or {"type":"clarification","message":"..."}',
-    'or {"type":"response","message":"..."}.',
-    `Allowed tools: ${tools || "none"}.`,
+    renderRuntimeModelOutputInstructions(prompt.allowedTools),
     ...(history.length === 0 ? [] : [`Recent conversation (oldest first):\n${history}`]),
     prompt.message
   ].join("\n");

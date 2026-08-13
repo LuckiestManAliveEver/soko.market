@@ -636,6 +636,21 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
   }
 };
 
+/** Canonical structured-output contract shared by server and on-device model adapters. */
+export function renderRuntimeModelOutputInstructions(
+  allowedTools: readonly RuntimeToolName[]
+): string {
+  const tools = [...new Set(allowedTools)].join(", ");
+  return [
+    "Return only one JSON object. Do not include markdown or surrounding commentary.",
+    'Allowed shapes: {"type":"tool","toolName":"products.list","input":{},"reason":"..."}',
+    'or {"type":"clarification","message":"..."}',
+    'or {"type":"response","message":"..."}.',
+    `Allowed tools: ${tools || "none"}.`,
+    "A tool proposal is only a request; the Soko server validates permissions and confirmation before execution."
+  ].join("\n");
+}
+
 export function createRuntimeToolProposal(result: ParseResult): RuntimeToolProposal {
   switch (result.intent) {
     case "show_products":

@@ -22,6 +22,7 @@ import type {
   BrowserCheckpointCompatibilityContract,
   BrowserDeviceTier,
   BrowserRuntimeContract,
+  ClientInferenceCompletion,
   DeviceTrustLevel,
   FulfillmentMethod,
   FulfillmentStatus,
@@ -811,6 +812,7 @@ interface RuntimeTurnBody {
   message?: string;
   confirmationToken?: string;
   recallEscalation?: RuntimeRecallEscalation;
+  clientInferenceCompletion?: ClientInferenceCompletion;
 }
 
 interface RecallEffectivenessBody {
@@ -7094,6 +7096,7 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   message: string;
   confirmationToken?: string;
   recallEscalation?: RuntimeRecallEscalation;
+  clientInferenceCompletion?: ClientInferenceCompletion;
 } {
   const record = parseRequestBody(body);
   const runtimeSessionId =
@@ -7108,6 +7111,10 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
     record.recallEscalation === undefined || record.recallEscalation === null
       ? undefined
       : parseRuntimeRecallEscalation(record.recallEscalation);
+  const clientInferenceCompletion =
+    record.clientInferenceCompletion === undefined || record.clientInferenceCompletion === null
+      ? undefined
+      : parseClientInferenceCompletion(record.clientInferenceCompletion);
   const parsed = {
     message: parseString(record.message, "message")
   };
@@ -7115,8 +7122,73 @@ function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
     ...parsed,
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
     ...(confirmationToken === undefined ? {} : { confirmationToken }),
-    ...(recallEscalation === undefined ? {} : { recallEscalation })
+    ...(recallEscalation === undefined ? {} : { recallEscalation }),
+    ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion })
   };
+}
+
+function parseClientInferenceCompletion(value: unknown): ClientInferenceCompletion {
+  const record = parseRequestBody(value);
+  const runtime = parseString(record.runtime, "clientInferenceCompletion.runtime");
+  if (
+    runtime !== "browser-webgpu" &&
+    runtime !== "browser-wasm" &&
+    runtime !== "native-llama-cpp"
+  ) {
+    throw new Cp2Error(
+      400,
+      "client_inference_runtime_invalid",
+      "The client inference runtime is not supported."
+    );
+  }
+  const outputText = parseString(record.outputText, "clientInferenceCompletion.outputText");
+  if (outputText.length > 20_000) {
+    throw new Cp2Error(
+      400,
+      "client_inference_output_too_large",
+      "The client inference output is too large."
+    );
+  }
+  const durationMs = parseNumber(record.durationMs, "clientInferenceCompletion.durationMs");
+  if (!Number.isInteger(durationMs) || durationMs < 0 || durationMs > 120_000) {
+    throw new Cp2Error(
+      400,
+      "client_inference_duration_invalid",
+      "The client inference duration is invalid."
+    );
+  }
+  const installationId =
+    record.installationId === undefined || record.installationId === null
+      ? undefined
+      : parseString(record.installationId, "clientInferenceCompletion.installationId");
+  const promptTokens = parseOptionalClientTokenCount(
+    record.promptTokens,
+    "clientInferenceCompletion.promptTokens"
+  );
+  const completionTokens = parseOptionalClientTokenCount(
+    record.completionTokens,
+    "clientInferenceCompletion.completionTokens"
+  );
+  return {
+    requestId: parseString(record.requestId, "clientInferenceCompletion.requestId"),
+    runtime,
+    modelId: parseString(record.modelId, "clientInferenceCompletion.modelId"),
+    deviceId: parseString(record.deviceId, "clientInferenceCompletion.deviceId"),
+    ...(installationId === undefined ? {} : { installationId }),
+    outputText,
+    durationMs,
+    ...(promptTokens === undefined ? {} : { promptTokens }),
+    ...(completionTokens === undefined ? {} : { completionTokens })
+  };
+}
+
+function parseOptionalClientTokenCount(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const count = parseNumber(value, field);
+  if (!Number.isInteger(count) || count < 0 || count > 1_000_000) {
+    throw new Cp2Error(400, "client_inference_usage_invalid", `${field} is invalid.`);
+  }
+  return count;
 }
 
 function parseRuntimeRecallEscalation(value: unknown): RuntimeRecallEscalation {

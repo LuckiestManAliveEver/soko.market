@@ -87,6 +87,8 @@ export interface BrowserChatInput {
     updatedAt?: string;
   }>;
   nativeReady: boolean;
+  /** Server is online and will validate any structured tool proposal before execution. */
+  allowServerToolHandoff?: boolean;
   onToken: (token: string) => void;
   onProgress?: (progress: BrowserModelProgress) => void;
 }
@@ -396,7 +398,8 @@ export async function generateBrowserAgentResponse(input: BrowserChatInput): Pro
     nativeReady: input.nativeReady,
     promptTokens: context?.estimatedPromptTokens ?? Number.POSITIVE_INFINITY,
     contextLimit: model?.contextWindowTokens ?? 0,
-    requiresServerTool: requestRequiresServerTool(input.message),
+    requiresServerTool:
+      requestRequiresServerTool(input.message) && input.allowServerToolHandoff !== true,
     complexReasoning: requestNeedsComplexReasoning(input.message),
     pageActive: document.visibilityState === "visible"
   });

@@ -405,6 +405,7 @@ export async function validateLocalAiModel(
         canRunCatalogModel(capability, estimatedMinimumMemoryGb(model), model.fileSizeBytes);
       updated = {
         ...model,
+        runtimeBackend: browserGgufRuntimeSupported() ? "LLAMA_CPP_BROWSER" : model.runtimeBackend,
         installationStatus: "INSTALLED",
         compatibilityStatus: compatible ? "COMPATIBLE" : "INSUFFICIENT_MEMORY",
         lastVerifiedAt: verifiedAt,
@@ -423,6 +424,26 @@ export async function validateLocalAiModel(
 
   saveLocalModel(updated);
   return updated;
+}
+
+export function browserGgufRuntimeSupported(): boolean {
+  return (
+    typeof globalThis.Worker === "function" &&
+    typeof globalThis.WebAssembly === "object" &&
+    globalThis.navigator?.storage?.getDirectory !== undefined
+  );
+}
+
+/** Returns the original OPFS File without copying or uploading the GGUF artifact. */
+export async function readLocalAiModelFile(model: LocalAiModel): Promise<File> {
+  const directory = await openModelDirectory();
+  const handle = await directory.getFileHandle(model.storageKey);
+  const file = await handle.getFile();
+  const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (String.fromCharCode(...signature) !== "GGUF") {
+    throw new Error("The selected OPFS artifact is not a valid GGUF model.");
+  }
+  return file;
 }
 
 async function openModelDirectory(): Promise<FileSystemDirectoryHandle> {
@@ -680,7 +701,7 @@ function createInstalledModelRecord(input: {
     license: input.license,
     commercialUseAllowed:
       input.license === "Apache-2.0" || input.license === "User-confirmed commercial license",
-    runtimeBackend: "LLAMA_CPP_ANDROID",
+    runtimeBackend: browserGgufRuntimeSupported() ? "LLAMA_CPP_BROWSER" : "LLAMA_CPP_ANDROID",
     installationStatus: "INSTALLED",
     compatibilityStatus: "UNKNOWN",
     deviceId: getOrCreateDeviceModelScopeId(),

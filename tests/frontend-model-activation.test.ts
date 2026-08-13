@@ -72,7 +72,11 @@ describe("frontend model activation contracts", () => {
 
     expect(chat).toContain("decideClientInferenceRoute");
     expect(chat).toContain("executeInferenceRoute");
-    expect(chat).toContain('id: "native-llama-cpp"');
+    expect(chat).toContain('("native-llama-cpp" as const)');
+    expect(chat).toContain('("browser-wasm" as const)');
+    expect(chat).toContain("createAdaptiveAgentModelRuntime");
+    expect(chat).toContain("clientInferenceCompletion");
+    expect(chat).toContain("availableRuntimeTools");
     expect(chat).toContain("generateBrowserAgentResponse");
     expect(chat).toContain("createRemoteInferenceProvider");
     expect(chat).toContain('runtime: "cloud-fallback"');
@@ -82,6 +86,7 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("const canonicalRuntimeAgentId = business?.id ?? null");
     expect(chat).toContain("agentId: canonicalRuntimeAgentId ?? business.id");
     expect(chat).not.toContain("agentId: agentSettings.globalAgentId");
+    expect(chat).not.toContain("&& !requiresServerTool");
   });
 
   it("shows installation-scoped red and green model usage controls", () => {

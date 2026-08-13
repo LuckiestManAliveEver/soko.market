@@ -68,6 +68,7 @@ import type {
   BusinessRole,
   BusinessSummary,
   CatalogueQueryResult,
+  ClientInferenceCompletion,
   ComplianceRetentionSummary,
   AgentRouteSummary,
   CountryTaxConfigSummary,
@@ -12334,6 +12335,7 @@ export class Cp2Store {
     agentProfile?: RuntimeAgentProfile;
     confirmationToken?: string;
     recallEscalation?: RuntimeRecallEscalation;
+    clientInferenceCompletion?: ClientInferenceCompletion;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
     const now = input.now ?? new Date();
@@ -12368,7 +12370,21 @@ export class Cp2Store {
       input.businessId,
       storedAgentProfile
     );
-    if (this.options.modelRuntimeAdapterResolver !== undefined && activeBinding === null) {
+    const clientInferenceCompletion =
+      input.clientInferenceCompletion === undefined
+        ? null
+        : this.requireReadyClientInferenceCompletion({
+            completion: input.clientInferenceCompletion,
+            businessId: input.businessId,
+            accountId: auth.account.id,
+            userId: auth.user.id
+          });
+    if (
+      this.options.modelRuntimeAdapterResolver !== undefined &&
+      activeBinding === null &&
+      clientInferenceCompletion === null &&
+      input.confirmationToken === undefined
+    ) {
       throw new Cp2Error(
         409,
         "AGENT_MODEL_NOT_CONFIGURED",
@@ -12377,12 +12393,13 @@ export class Cp2Store {
         { agentId: storedAgentProfile.agentId, shopId: input.businessId }
       );
     }
-    const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, activeModelId);
+    const runtimeModelId = clientInferenceCompletion?.modelId ?? activeModelId;
+    const agentProfile = runtimeAgentProfileFromStored(storedAgentProfile, runtimeModelId);
     const shopRuntime = this.buildShopAgentRuntime(
       storedAgentProfile,
       now,
       callerAudience,
-      activeModelId
+      runtimeModelId
     );
     const runtimeSession =
       input.runtimeSessionId === undefined
@@ -12519,7 +12536,7 @@ export class Cp2Store {
       audience: callerAudience,
       limit: 6,
       intent: parserResult.intent,
-      characterBudget: contextCharacterBudgetForModel(activeModelId)
+      characterBudget: contextCharacterBudgetForModel(runtimeModelId)
     });
     const retrievedRecallCount = retrievedContext.filter((item) => item.type === "recall").length;
     if (retrievedRecallCount > 0) {
@@ -12536,23 +12553,25 @@ export class Cp2Store {
       : [];
     const modelRoute =
       documentImportProposal === null && effectiveContextScriptMatch === null
-        ? await this.createRuntimeModelRoute({
-            message: input.message,
-            ...(input.conversationHistory === undefined
-              ? {}
-              : { conversationHistory: input.conversationHistory }),
-            modelId: activeModelId,
-            context,
-            now,
-            appendTelemetry,
-            shopRuntime,
-            retrievedContext,
-            memory: runtimeMemory,
-            intent: parserResult.intent,
-            ...(input.recallEscalation === undefined
-              ? {}
-              : { recallEscalation: input.recallEscalation })
-          })
+        ? clientInferenceCompletion === null
+          ? await this.createRuntimeModelRoute({
+              message: input.message,
+              ...(input.conversationHistory === undefined
+                ? {}
+                : { conversationHistory: input.conversationHistory }),
+              modelId: runtimeModelId,
+              context,
+              now,
+              appendTelemetry,
+              shopRuntime,
+              retrievedContext,
+              memory: runtimeMemory,
+              intent: parserResult.intent,
+              ...(input.recallEscalation === undefined
+                ? {}
+                : { recallEscalation: input.recallEscalation })
+            })
+          : this.createClientInferenceModelRoute(clientInferenceCompletion, appendTelemetry)
         : {
             proposal: null,
             trace: null,
@@ -19031,6 +19050,125 @@ export class Cp2Store {
     };
     this.agentEvaluationEvents.set(event.id, event);
     return { ...event, metadata: { ...event.metadata } };
+  }
+
+  /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */
+  private requireReadyClientInferenceCompletion(input: {
+    completion: ClientInferenceCompletion;
+    businessId: string;
+    accountId: string;
+    userId: string;
+  }): ClientInferenceCompletion {
+    const completion = input.completion;
+    if (completion.installationId !== undefined) {
+      const assignment = this.agentModelAssignments.get(
+        agentModelAssignmentKey(input.businessId, completion.deviceId)
+      );
+      if (
+        assignment === undefined ||
+        assignment.accountId !== input.accountId ||
+        assignment.userId !== input.userId ||
+        assignment.readinessStatus !== "READY" ||
+        assignment.lastSuccessfulInferenceAt === null ||
+        assignment.activeModelInstallationId !== completion.installationId ||
+        assignment.modelId !== completion.modelId ||
+        (assignment.runtimeBackend === "LLAMA_CPP_BROWSER"
+          ? completion.runtime !== "browser-wasm"
+          : assignment.runtimeBackend === "LLAMA_CPP_ANDROID"
+            ? completion.runtime !== "native-llama-cpp"
+            : true)
+      ) {
+        throw new Cp2Error(
+          409,
+          "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
+          "The client model completion does not match a ready device assignment."
+        );
+      }
+      return completion;
+    }
+
+    const assignment = this.browserInferenceAssignments.get(
+      browserInferenceAssignmentKey(input.businessId, completion.deviceId)
+    );
+    if (
+      assignment === undefined ||
+      assignment.accountId !== input.accountId ||
+      assignment.userId !== input.userId ||
+      assignment.enabled !== true ||
+      assignment.readinessStatus !== "READY" ||
+      assignment.lastSuccessfulInferenceAt === null ||
+      assignment.selectedModelId !== completion.modelId ||
+      assignment.runtimeContract?.runtime !== completion.runtime
+    ) {
+      throw new Cp2Error(
+        409,
+        "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
+        "The browser model completion does not match a ready browser assignment."
+      );
+    }
+    return completion;
+  }
+
+  private createClientInferenceModelRoute(
+    completion: ClientInferenceCompletion,
+    appendTelemetry: (
+      state: RuntimeTelemetryEvent["state"],
+      status: RuntimeTelemetryEvent["status"],
+      toolName: RuntimeToolName | null,
+      risk: RuntimePlannedAction["risk"] | null,
+      metadata?: RuntimeTelemetryEvent["metadata"]
+    ) => void
+  ): {
+    proposal: RuntimeToolProposal;
+    trace: RuntimeModelTrace;
+    recallCandidate: null;
+  } {
+    appendTelemetry("model.inference_started", "completed", null, null, {
+      provider: completion.runtime,
+      modelId: completion.modelId,
+      requestId: completion.requestId,
+      executionTarget: completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
+    });
+    const parsed = parseRuntimeModelOutput(completion.outputText);
+    if (!parsed.ok || parsed.output === null) {
+      appendTelemetry("model.completed", "blocked", null, null, {
+        provider: completion.runtime,
+        adapterStatus: "malformed",
+        durationMs: completion.durationMs,
+        errorCode: "MODEL_RESPONSE_PARSE_FAILED"
+      });
+      throw new Cp2Error(
+        422,
+        "MODEL_RESPONSE_PARSE_FAILED",
+        "The local model returned an invalid structured response.",
+        true
+      );
+    }
+    appendTelemetry("model.completed", "completed", null, null, {
+      provider: completion.runtime,
+      adapterStatus: "available",
+      durationMs: completion.durationMs,
+      errorCode: null
+    });
+    return {
+      proposal: parsed.output.proposal,
+      recallCandidate: null,
+      trace: {
+        provider: completion.runtime === "native-llama-cpp" ? "llama.cpp" : "browser",
+        status: "available",
+        durationMs: completion.durationMs,
+        fallbackUsed: false,
+        outputKind: parsed.output.kind,
+        errorCode: null,
+        modelId: completion.modelId,
+        ...(completion.promptTokens === undefined ? {} : { promptTokens: completion.promptTokens }),
+        ...(completion.completionTokens === undefined
+          ? {}
+          : { completionTokens: completion.completionTokens }),
+        executionTarget:
+          completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
+      }
+    };
   }
 
   /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */

@@ -60,6 +60,23 @@ export interface InferenceRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * Untrusted output produced on an authenticated client device. The API must verify the matching
+ * ready assignment and run this text through the canonical model-output, policy, confirmation,
+ * and tool pipeline before it can affect business data.
+ */
+export interface ClientInferenceCompletion {
+  requestId: string;
+  runtime: Extract<InferenceRuntime, "browser-webgpu" | "browser-wasm" | "native-llama-cpp">;
+  modelId: string;
+  deviceId: string;
+  installationId?: string;
+  outputText: string;
+  durationMs: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
 export interface InferenceChunk {
   requestId: string;
   text: string;
@@ -2591,7 +2608,7 @@ export interface RuntimeContextSummary {
   knowledgeFactCount: number;
 }
 
-export type RuntimeModelProviderName = "llama.cpp" | "ollama" | "openai" | "test";
+export type RuntimeModelProviderName = "browser" | "llama.cpp" | "ollama" | "openai" | "test";
 
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
