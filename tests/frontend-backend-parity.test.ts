@@ -28,7 +28,8 @@ describe("frontend coverage for backend-owned lifecycles", () => {
     expect(phoneLogin).toContain("Continue with a passkey");
     expect(phoneLogin).toContain("loginMethods?.passwordFallback");
     expect(phoneLogin).toContain("loginMethods?.recoveryAvailable");
-    expect(phoneLogin).toContain("Use legacy PIN");
+    expect(phoneLogin).toContain("Use account PIN");
+    expect(phoneLogin).not.toContain("legacy");
     expect(phoneLogin).not.toContain('"/auth/identify"');
   });
 

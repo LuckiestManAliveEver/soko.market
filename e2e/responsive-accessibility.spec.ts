@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 const viewportMatrix = [
-  { name: "legacy compact phone", width: 280, height: 653 },
+  { name: "compact 280px phone", width: 280, height: 653 },
   { name: "small phone portrait", width: 320, height: 568 },
   { name: "Android phone portrait", width: 360, height: 800 },
   { name: "modern phone portrait", width: 390, height: 844 },

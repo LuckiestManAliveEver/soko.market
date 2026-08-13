@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("progressive onboarding UI", () => {
   it("opens the current phone-first signup instead of the legacy continue screen", async () => {
-    const [applicationSource, signupSource] = await Promise.all([
+    const [applicationSource, signupSource, styles] = await Promise.all([
       readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../apps/web/src/PhoneSignup.tsx", import.meta.url), "utf8")
+      readFile(new URL("../apps/web/src/PhoneSignup.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/styles.css", import.meta.url), "utf8")
     ]);
 
     expect(applicationSource).toContain(
@@ -17,6 +18,9 @@ describe("progressive onboarding UI", () => {
     expect(applicationSource).not.toContain('authenticationView === "continue"');
     expect(signupSource).toContain("Start with your phone");
     expect(signupSource).toContain("Continue to marketplace as guest");
+    expect(styles).not.toContain("progressive-auth");
+    expect(styles).not.toContain("signup-video");
+    expect(styles).not.toContain("auth-landing-grid");
   });
 
   it("recovers a device account from its device-bound signing key before onboarding", async () => {

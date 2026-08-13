@@ -392,7 +392,8 @@ describe("frontend user guidance", () => {
     );
     expect(application).toContain("<PhoneFirstAuthentication");
     expect(phoneFirst).toContain('role="tablist"');
-    expect(phoneFirst).toContain("Use legacy PIN");
+    expect(phoneFirst).toContain("Use account PIN");
+    expect(phoneFirst).not.toContain("legacy");
   });
 
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {

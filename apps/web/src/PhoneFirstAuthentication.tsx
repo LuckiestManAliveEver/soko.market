@@ -41,7 +41,7 @@ export function PhoneFirstAuthentication({
   onCancel
 }: Props) {
   // A returning visit does not need the identifier again, but still goes through the backend's
-  // enumeration-safe method discovery instead of assuming that the account uses a legacy PIN.
+  // enumeration-safe method discovery instead of assuming which credential the account uses.
   const startsWithRemembered = remembered !== null;
   const [usingRemembered, setUsingRemembered] = useState(startsWithRemembered);
   const [identifierType, setIdentifierType] = useState<IdentifierType>(remembered?.type ?? "phone");
@@ -306,7 +306,7 @@ export function PhoneFirstAuthentication({
       : stage === "methods"
         ? "Choose how to log in"
         : stage === "pin"
-          ? "Use your legacy PIN"
+          ? "Use your account PIN"
           : stage === "password"
             ? "Log in with password"
             : stage === "mfa"
@@ -516,10 +516,10 @@ export function PhoneFirstAuthentication({
                 onClick={() => {
                   setPin("");
                   setStage("pin");
-                  setMessage("PIN access is retained for accounts created with the legacy flow.");
+                  setMessage("Enter the 4-digit PIN previously set for this account.");
                 }}
               >
-                Use legacy PIN
+                Use account PIN
               </button>
               {loginMethods?.recoveryAvailable ? (
                 <button
@@ -532,7 +532,7 @@ export function PhoneFirstAuthentication({
                 </button>
               ) : null}
               {!loginMethods?.passkeyAvailable && !loginMethods?.passwordFallback ? (
-                <p className="form-hint">Use a legacy PIN or account recovery to continue.</p>
+                <p className="form-hint">Use your account PIN or account recovery to continue.</p>
               ) : null}
             </div>
           ) : null}

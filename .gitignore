@@ -14,3 +14,5 @@ mongodb/*.env
 *.log
 .DS_Store
 /commit.md
+/.agents/
+/.codex/
