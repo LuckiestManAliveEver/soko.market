@@ -25,7 +25,7 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
   await page.goto("/marketplace");
-  await page.getByRole("button", { name: "Browse marketplace as guest" }).click();
+  await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
 
   const welcome = page.getByTestId("welcome-message");
   await expect(welcome).toBeVisible();
@@ -40,8 +40,8 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
 
   await page.getByTestId("welcome-signup-button").click();
   await expect(page).toHaveURL(/\/signup$/u);
-  await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
-  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("heading", { name: "Start with your phone" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
   await expect(welcome).toBeVisible();
 
   await page.getByTestId("welcome-login-button").click();

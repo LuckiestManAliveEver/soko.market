@@ -1,9 +1,9 @@
 /* global URL, Response, caches, self */
 
 const CACHE_PREFIX = "soko-market-app-";
-const CACHE_NAME = `${CACHE_PREFIX}v11`;
-const STATIC_CACHE = `${CACHE_PREFIX}static-v11`;
-const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v11`;
+const CACHE_NAME = `${CACHE_PREFIX}v12`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v12`;
+const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v12`;
 const ACTIVE_CACHES = new Set([CACHE_NAME, STATIC_CACHE, PUBLIC_READ_CACHE]);
 const APP_SHELL = [
   "/",
@@ -102,27 +102,23 @@ self.addEventListener("fetch", (event) => {
 
 async function navigationResponse(event) {
   const shellCache = await caches.open(CACHE_NAME);
-  const cachedShell = await shellCache.match("/");
-  const networkResponse = Promise.resolve(event.preloadResponse)
-    .then((preloaded) => preloaded || fetch(event.request))
-    .then((response) => {
-      if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
-        event.waitUntil(shellCache.put("/", response.clone()));
-      }
-      return response;
-    });
+  const cachedShell = shellCache.match("/");
 
-  if (cachedShell !== undefined) {
-    event.waitUntil(networkResponse.catch(() => undefined));
-    return cachedShell;
+  try {
+    const preloaded = await event.preloadResponse;
+    const response = preloaded || (await fetch(event.request));
+    if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+      event.waitUntil(shellCache.put("/", response.clone()));
+    }
+    return response;
+  } catch {
+    const offlineShell = await cachedShell;
+    if (offlineShell !== undefined) return offlineShell;
+    return new Response("Soko.market is not available offline yet. Open it once while connected.", {
+      status: 503,
+      headers: { "content-type": "text/plain; charset=utf-8" }
+    });
   }
-  return networkResponse.catch(
-    () =>
-      new Response("Soko.market is not available offline yet. Open it once while connected.", {
-        status: 503,
-        headers: { "content-type": "text/plain; charset=utf-8" }
-      })
-  );
 }
 
 async function cacheFirst(request, cacheName) {

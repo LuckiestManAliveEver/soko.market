@@ -6,23 +6,23 @@ export function registerAppServiceWorker() {
     return;
   }
 
-  function register() {
-    void navigator.serviceWorker
-      .register("/sw.js", {
-        scope: "/",
-        updateViaCache: "none"
-      })
-      .catch((error: unknown) => {
-        console.error("Unable to register the Soko.market service worker.", error);
-      });
-  }
+  const controlledAtStartup = navigator.serviceWorker.controller !== null;
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!controlledAtStartup || reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.location.reload();
+  });
 
-  if (document.readyState === "complete") {
-    register();
-    return;
-  }
-
-  window.addEventListener("load", register, { once: true });
+  void navigator.serviceWorker
+    .register("/sw.js", {
+      scope: "/",
+      updateViaCache: "none"
+    })
+    .then((registration) => registration.update())
+    .catch((error: unknown) => {
+      console.error("Unable to register the Soko.market service worker.", error);
+    });
 }
 
 async function unregisterDevelopmentServiceWorkers() {

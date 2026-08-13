@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync("apps/web/public/sw.js", "utf8");
 
 describe("service-worker route policies", () => {
-  it("uses navigation preload and an immediate version-matched shell fallback", () => {
+  it("uses fresh navigation responses before falling back to the offline shell", () => {
     expect(source).toContain("navigationPreload?.enable()");
     expect(source).toContain("navigationResponse(event)");
     expect(source).toContain("shellCache.match");
     expect(source).toContain("event.preloadResponse");
+    expect(source.indexOf("await event.preloadResponse")).toBeLessThan(
+      source.indexOf("await cachedShell")
+    );
   });
 
   it("separates immutable assets from public stale-while-revalidate reads", () => {

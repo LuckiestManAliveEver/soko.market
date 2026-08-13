@@ -99,7 +99,7 @@ test("signs up with a profile and later logs in from the welcome message", async
     localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
   });
   await page.goto("/marketplace");
-  await page.getByRole("button", { name: "Browse marketplace as guest" }).click();
+  await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
 
   const welcome = page.getByTestId("welcome-message");
   await expect(welcome).toBeVisible();

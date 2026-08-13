@@ -236,7 +236,6 @@ import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
 import type { RememberedAccount } from "./PhoneFirstAuthentication";
-import { ProgressiveAuthentication } from "./ProgressiveAuthentication";
 import {
   ModelActivationCoordinator,
   ModelActivationError,
@@ -2232,8 +2231,8 @@ export function OwnerApp() {
   const [isAuthOpen, setIsAuthOpen] = useState(
     accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
   );
-  const [authenticationView, setAuthenticationView] = useState<"continue" | "signup" | "login">(
-    initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "continue")
+  const [authenticationView, setAuthenticationView] = useState<"signup" | "login">(
+    initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "signup")
   );
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
     useState(accountRestorationIntent);
@@ -3207,13 +3206,6 @@ export function OwnerApp() {
     setStatusMessage("Authentication complete");
   }
 
-  function completeProgressiveAuthentication(response: SessionResponse) {
-    acceptAuthenticatedSession(response);
-    navigateToView("chat", { replace: true, mode: "marketplace" });
-    setStatusMessage("Soko is ready.");
-    recordOnboardingEvent("first_chat_loaded");
-  }
-
   async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     acceptAuthenticatedSession(response);
@@ -3328,22 +3320,18 @@ export function OwnerApp() {
         if (storedBusiness === null) setBusiness(null);
         if (!accountDeletionIntent && !accountRestorationIntent) {
           const nextAuthenticationView =
-            initialAuthenticationTarget ?? (initialOwnerAuth === null ? "continue" : "login");
+            initialAuthenticationTarget ?? (initialOwnerAuth === null ? "signup" : "login");
           setIsAuthOpen(true);
           setAuthenticationView(nextAuthenticationView);
-          if (nextAuthenticationView !== "continue") {
-            window.history.replaceState(
-              window.history.state,
-              "",
-              authenticationRoute(nextAuthenticationView)
-            );
-          }
+          window.history.replaceState(
+            window.history.state,
+            "",
+            authenticationRoute(nextAuthenticationView)
+          );
           setStatusMessage(
-            nextAuthenticationView === "continue"
-              ? "Continue once to open Soko."
-              : nextAuthenticationView === "signup"
-                ? "Create your Soko account."
-                : "Sign in to continue"
+            nextAuthenticationView === "signup"
+              ? "Create your Soko account."
+              : "Sign in to continue"
           );
         }
         return;
@@ -3354,7 +3342,7 @@ export function OwnerApp() {
       setAuthBootstrapState("failed");
       if (cached === null) {
         setIsAuthOpen(true);
-        setAuthenticationView(initialAuthenticationTarget ?? "continue");
+        setAuthenticationView(initialAuthenticationTarget ?? "signup");
       }
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
     } finally {
@@ -6075,7 +6063,8 @@ export function OwnerApp() {
     setIsWorkspacePanelOpen(false);
     setIsBusinessSetupOpen(false);
     setIsAuthOpen(true);
-    setAuthenticationView("continue");
+    setAuthenticationView("signup");
+    window.history.replaceState(window.history.state, "", authenticationRoute("signup"));
     setIsAccountRestorationOpen(false);
     setStatusMessage(message);
   }
@@ -7689,13 +7678,6 @@ export function OwnerApp() {
               business !== null,
               agentSettings.name.trim().length > 0
             )}
-          />
-        ) : shouldShowAuth && authenticationView === "continue" ? (
-          <ProgressiveAuthentication
-            onAuthenticated={(response) => completeProgressiveAuthentication(response)}
-            onSignUp={() => openAuth("signup")}
-            onLogIn={() => openAuth("login")}
-            onBrowseAsGuest={browseAsGuest}
           />
         ) : shouldShowAuth && authenticationView === "signup" ? (
           <PhoneSignup

@@ -2,36 +2,21 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("progressive onboarding UI", () => {
-  it("offers one deliberate Continue action without mandatory identity fields", async () => {
-    const source = await readFile(
-      new URL("../apps/web/src/ProgressiveAuthentication.tsx", import.meta.url),
-      "utf8"
+  it("opens the current phone-first signup instead of the legacy continue screen", async () => {
+    const [applicationSource, signupSource] = await Promise.all([
+      readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/PhoneSignup.tsx", import.meta.url), "utf8")
+    ]);
+
+    expect(applicationSource).toContain(
+      'initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "signup")'
     );
-
-    expect(source).toContain("Continue to Soko");
-    expect(source).toContain("Opening Soko…");
-    expect(source).toContain("onClick={onSignUp}");
-    expect(source).toContain("Sign up");
-    expect(source).toContain("onClick={onLogIn}");
-    expect(source).toContain("Log in");
-    expect(source).toContain("onClick={onBrowseAsGuest}");
-    expect(source).toContain("Browse marketplace as guest");
-    expect(source).toContain('"/auth/continue"');
-    expect(source).not.toMatch(/<input|<select|<textarea/u);
-    expect(source).not.toContain("contacts");
-    expect(source).not.toContain("Notification.requestPermission");
-  });
-
-  it("routes explicit account actions into the dedicated signup and login screens", async () => {
-    const applicationSource = await readFile(
-      new URL("../apps/web/src/SokoApplication.tsx", import.meta.url),
-      "utf8"
-    );
-
-    expect(applicationSource).toContain('onSignUp={() => openAuth("signup")}');
-    expect(applicationSource).toContain('onLogIn={() => openAuth("login")}');
     expect(applicationSource).toContain('authenticationView === "signup"');
     expect(applicationSource).toContain("<PhoneSignup");
+    expect(applicationSource).not.toContain("ProgressiveAuthentication");
+    expect(applicationSource).not.toContain('authenticationView === "continue"');
+    expect(signupSource).toContain("Start with your phone");
+    expect(signupSource).toContain("Continue to marketplace as guest");
   });
 
   it("recovers a device account from its device-bound signing key before onboarding", async () => {

@@ -78,7 +78,10 @@ describe("PWA installability", () => {
     expect(existsSync(`${publicDirectory}/icons/soko-icon-32.png`)).toBe(true);
     expect(entrypoint).toContain("registerAppServiceWorker()");
     expect(serviceWorkerRegistration).toContain('.register("/sw.js"');
-    expect(serviceWorkerRegistration).toContain('document.readyState === "complete"');
+    expect(serviceWorkerRegistration).toContain('addEventListener("controllerchange"');
+    expect(serviceWorkerRegistration).toContain("registration.update()");
+    expect(serviceWorkerRegistration).toContain("window.location.reload()");
+    expect(serviceWorkerRegistration).not.toContain('window.addEventListener("load"');
     expect(serviceWorker).toMatch(/const CACHE_NAME = `\$\{CACHE_PREFIX\}v\d+`/);
     expect(serviceWorker).toContain('"/favicon.ico"');
     expect(serviceWorker).toContain('"/icons/soko-icon-32.png"');
