@@ -79,6 +79,9 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("readClientInferencePreferences");
     expect(chat).toContain("localInstallation?.modelId");
     expect(chat).toContain("selectedCloudFallback?.modelId");
+    expect(chat).toContain("const canonicalRuntimeAgentId = business?.id ?? null");
+    expect(chat).toContain("agentId: canonicalRuntimeAgentId ?? business.id");
+    expect(chat).not.toContain("agentId: agentSettings.globalAgentId");
   });
 
   it("shows installation-scoped red and green model usage controls", () => {
@@ -92,6 +95,27 @@ describe("frontend model activation contracts", () => {
   });
 
   it("loads canonical agent binding state and uses server test and activation APIs", () => {
+    const profile = sourceBetween(
+      "function AgentProfileSurface",
+      "function editFirstContextPhrase"
+    );
+    const models = sourceBetween("async function loadAiModels", "async function loadGitHubModels");
+    const binding = sourceBetween(
+      "async function loadCanonicalAgentModelBinding",
+      "async function registerInstalledModel"
+    );
+    const serverActivation = sourceBetween(
+      "async function testServerBackendModel",
+      "async function testAssignedModel"
+    );
+
+    expect(profile).toContain("const canonicalRuntimeAgentId = business.id");
+    expect(models).toContain("canonicalRuntimeAgentId");
+    expect(models).not.toContain("agent.globalAgentId");
+    expect(binding).toContain("canonicalRuntimeAgentId");
+    expect(binding).not.toContain("agent.globalAgentId");
+    expect(serverActivation).toContain("canonicalRuntimeAgentId");
+    expect(serverActivation).not.toContain("agent.globalAgentId");
     expect(application).toContain("/api/agents/${encodeURIComponent(");
     expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
     expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");

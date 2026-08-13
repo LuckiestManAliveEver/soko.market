@@ -6100,6 +6100,9 @@ export function OwnerApp() {
       return;
     }
     const activeSession = session;
+    // The public Soko ID identifies the storefront route. Runtime bindings, owner-node presence,
+    // and inference requests use the server-authoritative business agent ID.
+    const canonicalRuntimeAgentId = business?.id ?? null;
     const attachments = pendingAttachments;
     const message =
       (draftOverride ?? chatDraft).trim().length > 0
@@ -6219,7 +6222,7 @@ export function OwnerApp() {
             `/v1/inference/owner-node/presence?tenantId=${encodeURIComponent(
               business.id
             )}&agentId=${encodeURIComponent(
-              agentSettings.globalAgentId
+              canonicalRuntimeAgentId ?? business.id
             )}&modelId=${encodeURIComponent(inferenceModelId)}`
           )
             .then((result) => result.reachable)
@@ -6256,7 +6259,7 @@ export function OwnerApp() {
               : { runtimeSessionId: resolvedInferenceRuntimeSessionId }),
             tenantId: business.id,
             conversationId: activeConversationId ?? `agent:${business.id}`,
-            agentId: agentSettings.globalAgentId,
+            agentId: canonicalRuntimeAgentId ?? business.id,
             modelId: inferenceModelId,
             messages: [
               ...chatMessages
@@ -12567,6 +12570,9 @@ function AgentProfileSurface({
   onScheduleAccountDeletion,
   isLoggingOut
 }: AgentProfileSurfaceProps) {
+  // `globalAgentId` is the public storefront identifier. The API persists the executable agent
+  // profile and its model binding under the business UUID (`BusinessAgentProfileSummary.agentId`).
+  const canonicalRuntimeAgentId = business.id;
   const [draftAgent, setDraftAgent] = useState(agent);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -12952,7 +12958,7 @@ function AgentProfileSurface({
           : Promise.resolve(null),
         getJson<{ binding: AgentModelBindingSummary | null }>(
           `/api/agents/${encodeURIComponent(
-            agent.globalAgentId
+            canonicalRuntimeAgentId
           )}/model-binding?shopId=${encodeURIComponent(business.id)}`
         ).catch(() => ({ binding: null }))
       ]);
@@ -13273,9 +13279,9 @@ function AgentProfileSurface({
     if (!navigator.onLine) return activeAgentModelBinding;
     try {
       const response = await getJson<{ binding: AgentModelBindingSummary | null }>(
-        `/api/agents/${encodeURIComponent(agent.globalAgentId)}/model-binding?shopId=${encodeURIComponent(
-          business.id
-        )}`
+        `/api/agents/${encodeURIComponent(
+          canonicalRuntimeAgentId
+        )}/model-binding?shopId=${encodeURIComponent(business.id)}`
       );
       setActiveAgentModelBinding(response.binding);
       if (response.binding !== null) {
@@ -13653,7 +13659,7 @@ function AgentProfileSurface({
       setProfileMessage(`Testing ${model.label} through real backend inference…`);
       const result = await postJson<{ healthCheck: ModelRuntimeHealthSummary }>(
         `/api/agents/${encodeURIComponent(
-          agent.globalAgentId
+          canonicalRuntimeAgentId
         )}/models/${encodeURIComponent(model.id)}/test`,
         {
           shopId: business.id,
@@ -13705,7 +13711,7 @@ function AgentProfileSurface({
         inferencePreferences.cloudConsent && cloudFallbackModelId !== null;
       const result = await postJson<AgentModelActivationResult>(
         `/api/agents/${encodeURIComponent(
-          agent.globalAgentId
+          canonicalRuntimeAgentId
         )}/models/${encodeURIComponent(model.id)}/activate`,
         {
           shopId: business.id,
