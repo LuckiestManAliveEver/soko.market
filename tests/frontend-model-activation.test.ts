@@ -93,8 +93,9 @@ describe("frontend model activation contracts", () => {
     expect(application).toContain("agentModelAssignment?.activeModelInstallationId === model.id");
     expect(application).toContain("className={`model-use-button ${");
     expect(application).toContain("aria-pressed={modelInUse}");
-    expect(application).toContain('"Not in use · Use model"');
-    expect(application).toContain('"In use"');
+    expect(application).toContain('"Not active · Activate on this device"');
+    expect(application).toContain('"Active on this device"');
+    expect(application).toContain("It is separate from the persisted backend");
     expect(styles).toContain(".model-use-button.in-use");
     expect(styles).toContain(".model-use-button {");
   });

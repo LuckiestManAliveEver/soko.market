@@ -120,8 +120,8 @@ describe("frontend user guidance", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
     expect(application).toContain("Predownload & install");
-    expect(application).toContain("Installed on this device. Choose ‘Use with this agent’");
-    expect(application).toContain("Use with this agent");
+    expect(application).toContain("Installed on this device. Choose ‘Activate on this device’");
+    expect(application).toContain("Activate on this device");
     expect(application).toContain("Test model");
     expect(application).not.toContain("Ready without a connection");
     expect(application).not.toContain("offline ready");

@@ -13360,7 +13360,9 @@ function AgentProfileSurface({
       const verified = await validateLocalAiModel(installed, deviceCapability);
       setLocalAiModels(listLocalAiModels());
       if (navigator.onLine) await registerInstalledModel(verified);
-      setProfileMessage("Installed on this device. Choose ‘Use with this agent’ to activate it.");
+      setProfileMessage(
+        "Installed on this device. Choose ‘Activate on this device’ to run a readiness check and attach it locally."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -13389,7 +13391,9 @@ function AgentProfileSurface({
       const verified = await validateLocalAiModel(model, deviceCapability);
       setLocalAiModels(listLocalAiModels());
       if (navigator.onLine) await registerInstalledModel(verified);
-      setProfileMessage("Installed on this device. Choose ‘Use with this agent’ to activate it.");
+      setProfileMessage(
+        "Installed on this device. Choose ‘Activate on this device’ to run a readiness check and attach it locally."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     } finally {
@@ -15907,12 +15911,12 @@ function AgentProfileSurface({
                       onClick={() => void useModelWithAgent(model)}
                     >
                       {modelInUse
-                        ? "In use"
+                        ? "Active on this device"
                         : modelActivating
                           ? modelActivationMessage(modelActivationState)
                           : failedActivationModelId === model.modelId
-                            ? "Not in use · Retry activation"
-                            : "Not in use · Use model"}
+                            ? "Not active · Retry device activation"
+                            : "Not active · Activate on this device"}
                     </button>
                   </article>
                 );
@@ -15932,6 +15936,11 @@ function AgentProfileSurface({
               Find commercially permissible small OSS models in the curated catalog, Hugging Face
               Hub, and verified GitHub release assets, then install the best fit into
               browser-private storage.
+            </p>
+            <p>
+              Device activation validates and runs a downloaded GGUF model in this browser or the
+              installed app. It is separate from the persisted backend “Use with agent” binding
+              above.
             </p>
           </div>
 
@@ -16097,7 +16106,7 @@ function AgentProfileSurface({
                   </h4>
                   <p>
                     {offlineStarterInstalled
-                      ? "The file is in private storage. Choose ‘Use model’ to validate and activate it."
+                      ? "The file is in private storage. Choose ‘Activate on this device’ to validate it and run a local readiness check."
                       : offlineStarter === undefined
                         ? "This device does not report enough storage for a default offline model."
                         : `${offlineStarter.label} is the best default for this device (${formatModelBytes(
@@ -16297,12 +16306,12 @@ function AgentProfileSurface({
                                 onClick={() => void useModelWithAgent(localModel)}
                               >
                                 {localModelInUse
-                                  ? "In use"
+                                  ? "Active on this device"
                                   : localModelActivating
                                     ? "Activating…"
                                     : failedActivationModelId === localModel.modelId
-                                      ? "Not in use · Retry activation"
-                                      : "Not in use · Use model"}
+                                      ? "Not active · Retry device activation"
+                                      : "Not active · Activate on this device"}
                               </button>
                               <button
                                 className="secondary"
@@ -16388,12 +16397,12 @@ function AgentProfileSurface({
                           onClick={() => void useModelWithAgent(model)}
                         >
                           {modelInUse
-                            ? "In use"
+                            ? "Active on this device"
                             : modelActivating
                               ? "Activating…"
                               : failedActivationModelId === model.modelId
-                                ? "Not in use · Retry activation"
-                                : "Not in use · Use model"}
+                                ? "Not active · Retry device activation"
+                                : "Not active · Activate on this device"}
                         </button>
                         <button
                           className="secondary"

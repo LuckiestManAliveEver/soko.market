@@ -353,9 +353,11 @@ test("downloaded models show green when active and red when inactive", async ({ 
 
   await openModelLibrary(page, { width: 390, height: 844 });
 
-  const activeButton = page.getByRole("button", { name: "In use", exact: true }).first();
+  const activeButton = page
+    .getByRole("button", { name: "Active on this device", exact: true })
+    .first();
   const inactiveButton = page
-    .getByRole("button", { name: "Not in use · Use model", exact: true })
+    .getByRole("button", { name: "Not active · Activate on this device", exact: true })
     .first();
 
   await expect(activeButton).toBeVisible();
@@ -372,7 +374,7 @@ test("downloaded models show green when active and red when inactive", async ({ 
   ).toBe("rgb(180, 35, 24)");
 });
 
-test("Use model preserves the previous assignment when the GGUF runtime is unavailable", async ({
+test("device activation preserves the previous assignment when the GGUF runtime is unavailable", async ({
   page
 }) => {
   const readinessUpdates: string[] = [];
@@ -399,16 +401,17 @@ test("Use model preserves the previous assignment when the GGUF runtime is unava
   }, bindableInstalledModel.fileName);
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await page.getByRole("button", { name: "Not in use · Use model", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Not active · Activate on this device", exact: true })
+    .click();
 
   await expect(
     page.getByRole("status").filter({
-      hasText:
-        /This browser does not provide the trusted GGUF runtime.*previous working model was left unchanged/u
+      hasText: /The local model could not be loaded.*previous working model was left unchanged/u
     })
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Not in use · Retry activation", exact: true })
+    page.getByRole("button", { name: "Not active · Retry device activation", exact: true })
   ).toBeVisible();
   await expect.poll(() => readinessUpdates).toEqual([]);
 });
@@ -508,7 +511,7 @@ async function openModelLibrary(
   await expect(
     page
       .getByRole("button", {
-        name: /^(?:Predownload & install|In use|Not in use · Use model)$/u
+        name: /^(?:Predownload & install|Active on this device|Not active · Activate on this device)$/u
       })
       .first()
   ).toBeVisible({ timeout: 15_000 });

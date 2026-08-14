@@ -10,13 +10,13 @@ export type ModelActivationState =
 
 export function modelActivationMessage(state: ModelActivationState): string {
   const messages: Record<ModelActivationState, string> = {
-    idle: "Use model",
+    idle: "Activate on this device",
     validating: "Checking model…",
     creating_runtime: "Starting runtime…",
     loading_model: "Loading model…",
     binding_agent: "Connecting model to agent…",
-    active: "Active",
-    failed: "Retry activation",
+    active: "Active on this device",
+    failed: "Retry device activation",
     offline_blocked: "Connect to activate"
   };
   return messages[state];
