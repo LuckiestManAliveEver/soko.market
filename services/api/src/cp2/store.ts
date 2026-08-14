@@ -39,6 +39,7 @@ import type {
   AgentRuntimeVersion,
   AgentSkillBinding,
   AgentModelActivationResult,
+  AgentModelBindingRemovalResult,
   AgentModelBindingPermissions,
   AgentModelBindingSummary,
   AgentModelAssignmentSummary,
@@ -5753,13 +5754,73 @@ export class Cp2Store {
     const now = input.now ?? new Date();
     this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
     this.requireBusinessAgent(input.businessId, input.agentId, now);
-    const binding =
-      this.activeAgentModelBinding(input.agentId) ??
-      [...this.agentModelBindings.values()]
-        .filter((candidate) => candidate.agentId === input.agentId)
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ??
-      null;
+    const binding = this.activeAgentModelBinding(input.agentId);
     return binding === null ? null : cloneAgentModelBinding(binding);
+  }
+
+  removeAgentModelBinding(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    now?: Date;
+  }): AgentModelBindingRemovalResult {
+    const now = input.now ?? new Date();
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage",
+      now
+    );
+    const profile = this.requireBusinessAgent(input.businessId, input.agentId, now);
+    if (this.agentModelActivationLocks.has(input.agentId)) {
+      throw new Cp2Error(
+        409,
+        "MODEL_ACTIVATION_CONFLICT",
+        "Another model activation is already running for this agent.",
+        true,
+        { agentId: input.agentId }
+      );
+    }
+
+    const active = this.activeAgentModelBinding(input.agentId);
+    if (active === null) {
+      return {
+        agentId: input.agentId,
+        shopId: input.businessId,
+        binding: null,
+        removedBindingId: null
+      };
+    }
+
+    const removedAt = now.toISOString();
+    const inactive: AgentModelBindingSummary = {
+      ...active,
+      status: "inactive",
+      updatedAt: removedAt,
+      updatedBy: session.user.id
+    };
+    this.agentModelBindings.set(inactive.id, inactive);
+
+    const fallbackModelId = resolveDefaultDeviceModelId(
+      this.activeAiModels.get(input.businessId)?.modelId ?? defaultAiModelId
+    );
+    const revised: BusinessAgentProfileSummary = {
+      ...profile,
+      modelId: fallbackModelId,
+      runtimeVersion: profile.runtimeVersion + 1,
+      updatedAt: removedAt,
+      updatedBy: session.user.id
+    };
+    this.agentProfiles.set(input.businessId, revised);
+    this.recordAgentRuntimeVersion(revised, session.user.id, "Agent model binding removed");
+    this.recordAgentModelBindingAudit("agent_model.binding_removed", inactive, session.user.id, {});
+
+    return {
+      agentId: input.agentId,
+      shopId: input.businessId,
+      binding: null,
+      removedBindingId: inactive.id
+    };
   }
 
   async testAgentModel(input: {

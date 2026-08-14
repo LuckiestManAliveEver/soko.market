@@ -101,6 +101,75 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
+  it("is idempotent, switches one active binding, and persists removal across hydration", async () => {
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId || modelId === replacementModelId
+          ? healthyAdapter(modelId)
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700002009", "Binding Lifecycle Shop");
+
+    const first = await activate(app, owner, primaryModelId);
+    const repeated = await activate(app, owner, primaryModelId);
+    expect(repeated.binding.id).toBe(first.binding.id);
+    expect(
+      store.snapshot().agentModelBindings?.filter((candidate) => candidate.status === "active")
+    ).toHaveLength(1);
+
+    const replacement = await activate(app, owner, replacementModelId);
+    expect(replacement.binding).toMatchObject({
+      modelId: replacementModelId,
+      status: "active"
+    });
+    expect(replacement.binding.id).not.toBe(first.binding.id);
+    expect(store.snapshot().agentModelBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.binding.id, status: "inactive" }),
+        expect.objectContaining({ id: replacement.binding.id, status: "active" })
+      ])
+    );
+    expect(await getBinding(app, owner)).toMatchObject({
+      id: replacement.binding.id,
+      modelId: replacementModelId
+    });
+
+    const removed = await removeBinding(app, owner);
+    expect(removed).toMatchObject({
+      agentId: owner.businessId,
+      shopId: owner.businessId,
+      binding: null,
+      removedBindingId: replacement.binding.id
+    });
+    expect(await getBinding(app, owner)).toBeNull();
+    expect(await removeBinding(app, owner)).toMatchObject({
+      binding: null,
+      removedBindingId: null
+    });
+
+    const restoredStore = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId || modelId === replacementModelId
+          ? healthyAdapter(modelId)
+          : undefined
+    });
+    restoredStore.hydrateSnapshot(store.snapshot());
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    expect(await getBinding(restoredApp, owner)).toBeNull();
+    const chat = await restoredApp.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ message: "hello" })
+    });
+    expect(chat.statusCode).toBe(409);
+    expect(chat.json()).toMatchObject({ code: "AGENT_MODEL_NOT_CONFIGURED" });
+
+    await app.close();
+    await restoredApp.close();
+  });
+
   it("routes agent chat through the active binding with shop instructions and records metadata", async () => {
     const prompts: RuntimeModelPrompt[] = [];
     const adapter = healthyAdapter(primaryModelId, { prompts });
@@ -334,6 +403,20 @@ describe("agent model activation runtime", () => {
       payload: JSON.stringify(activationPayload(first.businessId))
     });
     expect(crossShop.statusCode).toBe(403);
+
+    const active = await activate(app, first, primaryModelId);
+    const unauthenticatedRemoval = await app.inject({
+      method: "DELETE",
+      url: `/api/agents/${first.businessId}/model-binding?shopId=${first.businessId}`
+    });
+    expect(unauthenticatedRemoval.statusCode).toBe(401);
+    const crossShopRemoval = await app.inject({
+      method: "DELETE",
+      url: `/api/agents/${first.businessId}/model-binding?shopId=${first.businessId}`,
+      headers: { cookie: second.cookie }
+    });
+    expect(crossShopRemoval.statusCode).toBe(403);
+    expect(await getBinding(app, first)).toMatchObject({ id: active.binding.id });
 
     for (const [executionTarget, code, statusCode] of [
       ["browser-local", "BROWSER_RUNTIME_DISABLED", 409],
@@ -682,6 +765,24 @@ async function getBinding(
   });
   expect(response.statusCode).toBe(200);
   return response.json<{ binding: AgentModelBindingSummary | null }>().binding;
+}
+
+async function removeBinding(
+  app: ReturnType<typeof buildApi>,
+  owner: { businessId: string; cookie: string }
+) {
+  const response = await app.inject({
+    method: "DELETE",
+    url: `/api/agents/${owner.businessId}/model-binding?shopId=${owner.businessId}`,
+    headers: { cookie: owner.cookie }
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json<{
+    agentId: string;
+    shopId: string;
+    binding: null;
+    removedBindingId: string | null;
+  }>();
 }
 
 async function createOwnerBusiness(

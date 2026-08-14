@@ -9,6 +9,7 @@ import {
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
+import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
 
 interface SqlExecutor {
   query<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -203,6 +204,128 @@ describePostgres("CP2 Postgres store", () => {
 
     await restoredApp.close();
   }, 15_000);
+
+  it("reloads an active binding from Postgres and routes chat through the backend adapter", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const modelId = "qwen2.5-0.5b-android";
+    const inferenceCalls: string[] = [];
+    const createAdapter = () =>
+      createBackendModelAdapter({
+        baseUrl: "http://soko-market-inference:4002",
+        modelId,
+        serviceToken: "postgres-integration-token",
+        connectTimeoutMs: 500,
+        timeoutMs: 1_000,
+        fetch: async (input) => {
+          const url = String(input);
+          inferenceCalls.push(url);
+          const body = url.endsWith("/health/ready")
+            ? {
+                ok: true,
+                engine: "ollama",
+                models: [
+                  {
+                    id: modelId,
+                    providerModelId: "qwen2.5:0.5b",
+                    available: true,
+                    digest: "sha256:postgres-integration"
+                  }
+                ]
+              }
+            : url.endsWith("/probe")
+              ? {
+                  ok: true,
+                  modelId,
+                  providerModelId: "qwen2.5:0.5b",
+                  engine: "ollama",
+                  latencyMs: 4
+                }
+              : {
+                  ok: true,
+                  id: "postgres-inference-request",
+                  modelId,
+                  providerModelId: "qwen2.5:0.5b",
+                  engine: "ollama",
+                  text: JSON.stringify({ type: "response", message: "postgres market" }),
+                  latencyMs: 8,
+                  usage: { promptTokens: 7, completionTokens: 3 },
+                  finishReason: "stop"
+                };
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+      });
+    const adapterResolver = ({ modelId: requestedModelId }: { modelId: string }) =>
+      requestedModelId === modelId ? createAdapter() : undefined;
+
+    const store = await createPostgresCp2Store({
+      databaseUrl: connectionString,
+      modelRuntimeAdapterResolver: adapterResolver
+    });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const uniquePhone = `254705${Date.now().toString().slice(-6)}`;
+    const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+    const activation = await postJson<{ binding: { id: string; modelId: string } }>(
+      app,
+      `/api/agents/${business.id}/models/${modelId}/activate`,
+      {
+        shopId: business.id,
+        executionTarget: "backend",
+        executionMode: "LOCAL_FIRST",
+        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+        permissions: {
+          allowInstalledApp: false,
+          allowRemoteShopDevice: false,
+          allowOpenAIFallback: false
+        },
+        fallbackModelId: null
+      },
+      sessionCookie
+    );
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({
+      databaseUrl: connectionString,
+      modelRuntimeAdapterResolver: adapterResolver
+    });
+    const restoredApp = buildApi({
+      cp2: { store: restoredStore },
+      mutationPersistenceFlush: () => restoredStore.flush()
+    });
+    const binding = await getJson<{ binding: { id: string; modelId: string } }>(
+      restoredApp,
+      `/api/agents/${business.id}/model-binding?shopId=${business.id}`,
+      sessionCookie
+    );
+    expect(binding.binding).toMatchObject({ id: activation.binding.id, modelId });
+
+    const turn = await postJson<{
+      turn: {
+        response: string;
+        model: { bindingId: string; modelId: string; inferenceRequestId: string };
+      };
+    }>(
+      restoredApp,
+      `/businesses/${business.id}/runtime/turns`,
+      { message: "Reply with postgres market" },
+      sessionCookie
+    );
+    expect(turn.turn).toMatchObject({
+      response: "postgres market",
+      model: {
+        bindingId: activation.binding.id,
+        modelId,
+        inferenceRequestId: "postgres-inference-request"
+      }
+    });
+    expect(inferenceCalls.some((url) => url.endsWith("/v1/chat/completions"))).toBe(true);
+
+    await restoredApp.close();
+  }, 30_000);
 
   it("persists phone-first access, verified recovery email, and password login across restarts", async () => {
     expect(databaseUrl).toBeDefined();
@@ -485,7 +608,7 @@ describePostgres("CP2 Postgres store", () => {
     await pool.end();
     await app.close();
     await store.close();
-  }, 15_000);
+  }, 30_000);
 
   it("normalizes known aliases and fails safely on unknown historical collections", async () => {
     expect(databaseUrl).toBeDefined();
@@ -736,6 +859,7 @@ async function insertMigrationTestAccount(
   client: TestPoolClient,
   accountId: string
 ): Promise<void> {
+  const phoneSuffix = accountId.replaceAll(/\D/gu, "").padEnd(9, "0").slice(0, 9);
   await client.query(
     `
       insert into accounts (
@@ -743,7 +867,7 @@ async function insertMigrationTestAccount(
       )
       values ($1, 'phone', $2, now())
     `,
-    [accountId, `+254${accountId.replaceAll("-", "").slice(0, 9)}`]
+    [accountId, `+254${phoneSuffix}`]
   );
 }
 

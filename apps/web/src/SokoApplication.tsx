@@ -49,6 +49,7 @@ import type {
   DeviceSessionSummary,
   AgentModelActivationResult,
   AgentModelAssignmentSummary,
+  AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
   AgentModelFallbackPolicy,
   BrowserInferenceAssignmentSummary,
@@ -13959,6 +13960,51 @@ function AgentProfileSurface({
     }
   }
 
+  async function removeServerBackendModelFromAgent(model: AiModelSummary) {
+    if (
+      modelRuntimeBusyRef.current ||
+      !navigator.onLine ||
+      activeAgentModelBinding?.status !== "active" ||
+      activeAgentModelBinding.modelId !== model.id
+    ) {
+      if (!navigator.onLine) {
+        setProfileMessage("Connect to the internet to remove this model from the agent.");
+      }
+      return;
+    }
+    modelRuntimeBusyRef.current = true;
+    setModelRuntimeBusy(true);
+    setActivatingModelId(model.id);
+    try {
+      setProfileMessage(`Removing ${model.label} from ${agent.name}…`);
+      const result = await deleteJson<AgentModelBindingRemovalResult>(
+        `/api/agents/${encodeURIComponent(
+          canonicalRuntimeAgentId
+        )}/model-binding?shopId=${encodeURIComponent(business.id)}`
+      );
+      if (result.binding !== null || result.agentId !== canonicalRuntimeAgentId) {
+        throw new Error("The backend did not remove the active model binding.");
+      }
+      const fallbackModelId = cloudFallbackModelId ?? "sokoclaw-local";
+      setActiveAgentModelBinding(null);
+      setActiveAiModelId(fallbackModelId);
+      updateAgent({ model: fallbackModelId });
+      onAgentChange({ ...agent, model: fallbackModelId });
+      setModelActivationState("idle");
+      setFailedActivationModelId(null);
+      setProfileMessage(
+        `${model.label} was removed from ${agent.name}. Activate a verified model before using server chat.`
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+      await loadCanonicalAgentModelBinding();
+    } finally {
+      modelRuntimeBusyRef.current = false;
+      setModelRuntimeBusy(false);
+      setActivatingModelId(null);
+    }
+  }
+
   async function testAssignedModel() {
     const assignment = agentModelAssignment;
     if (modelRuntimeBusy || assignment === null || assignment.activeModelInstallationId === null) {
@@ -15958,11 +16004,18 @@ function AgentProfileSurface({
                           </button>
                           <button
                             type="button"
-                            disabled={modelRuntimeBusy || activeForAgent}
-                            onClick={() => void activateServerBackendModel(model)}
+                            aria-pressed={activeForAgent}
+                            disabled={modelRuntimeBusy}
+                            onClick={() =>
+                              void (activeForAgent
+                                ? removeServerBackendModelFromAgent(model)
+                                : activateServerBackendModel(model))
+                            }
                           >
                             {activeForAgent
-                              ? `Active for ${agent.name}`
+                              ? activatingModelId === model.id
+                                ? "Removing…"
+                                : "Remove from agent"
                               : activatingModelId === model.id
                                 ? "Activating…"
                                 : "Use with agent"}

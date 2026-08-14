@@ -61,6 +61,32 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
 });
 
+test("backend model activation survives reload and can be removed", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/sell");
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await expect(page).toHaveURL(/\/agents\//u);
+  await page.getByRole("button", { name: "Open model library" }).click();
+  const backendModels = page.getByLabel("Soko backend models", { exact: true });
+  await expect(backendModels).toBeVisible();
+
+  await backendModels.getByRole("button", { name: "Use with agent", exact: true }).click();
+  await expect(
+    backendModels.getByRole("button", { name: "Remove from agent", exact: true })
+  ).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "Open model library" }).click();
+  await expect(
+    backendModels.getByRole("button", { name: "Remove from agent", exact: true })
+  ).toBeVisible();
+
+  await backendModels.getByRole("button", { name: "Remove from agent", exact: true }).click();
+  await expect(
+    backendModels.getByRole("button", { name: "Use with agent", exact: true })
+  ).toBeVisible();
+});
+
 async function clickToSecondPaint(page: Page, label: string): Promise<number> {
   return page.getByRole("button", { name: label, exact: true }).evaluate(async (button) => {
     const startedAt = performance.now();
@@ -73,8 +99,10 @@ async function clickToSecondPaint(page: Page, label: string): Promise<number> {
 }
 
 async function installDelayedApi(page: Page): Promise<void> {
+  let activeBinding: Record<string, unknown> | null = null;
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const url = new URL(route.request().url());
+    const method = route.request().method();
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
@@ -102,6 +130,64 @@ async function installDelayedApi(page: Page): Promise<void> {
         modelId: "qwen2.5-0.5b-android",
         activatedAt: "2026-07-26T00:00:00.000Z",
         activatedBy: "performance-account"
+      });
+    }
+    if (url.pathname.endsWith("/model-binding") && url.pathname.startsWith("/api/agents/")) {
+      if (method === "DELETE") {
+        const removedBindingId = typeof activeBinding?.id === "string" ? activeBinding.id : null;
+        activeBinding = null;
+        return json({
+          agentId: "performance-shop",
+          shopId: "performance-shop",
+          binding: null,
+          removedBindingId
+        });
+      }
+      return json({ binding: activeBinding });
+    }
+    if (
+      method === "POST" &&
+      url.pathname === "/api/agents/performance-shop/models/qwen2.5-0.5b-android/activate"
+    ) {
+      activeBinding = {
+        id: "performance-qwen-binding",
+        accountId: "performance-account",
+        shopId: "performance-shop",
+        agentId: "performance-shop",
+        modelId: "qwen2.5-0.5b-android",
+        status: "active",
+        executionTarget: "backend",
+        executionMode: "LOCAL_FIRST",
+        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+        permissions: {
+          allowInstalledApp: false,
+          allowRemoteShopDevice: false,
+          allowOpenAIFallback: false
+        },
+        fallbackModelId: null,
+        activatedAt: "2026-08-14T00:00:00.000Z",
+        verifiedAt: "2026-08-14T00:00:00.000Z",
+        lastVerificationStatus: "passed",
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        createdAt: "2026-08-14T00:00:00.000Z",
+        updatedAt: "2026-08-14T00:00:00.000Z",
+        updatedBy: "performance-user"
+      };
+      return json({
+        binding: activeBinding,
+        healthCheck: {
+          ok: true,
+          modelId: "qwen2.5-0.5b-android",
+          provider: "ollama",
+          executionTarget: "backend",
+          latencyMs: 12,
+          responsePreview: "SOKO_MODEL_OK",
+          errorCode: null,
+          message: null,
+          retryable: false,
+          checkedAt: "2026-08-14T00:00:00.000Z"
+        }
       });
     }
 

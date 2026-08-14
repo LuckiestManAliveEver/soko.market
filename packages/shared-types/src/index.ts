@@ -1021,6 +1021,13 @@ export interface AgentModelActivationResult {
   healthCheck: ModelRuntimeHealthSummary;
 }
 
+export interface AgentModelBindingRemovalResult {
+  agentId: string;
+  shopId: string;
+  binding: null;
+  removedBindingId: string | null;
+}
+
 export interface InstalledAgentModelSummary {
   id: string;
   accountId: string;

@@ -20,6 +20,42 @@ The exact broken link was between model selection and the server chat runtime:
 Consequently, an “Active” badge did not prove that a model was verified, persisted as the agent's
 primary model, resolved by chat, or used for inference.
 
+The 2026-08-14 follow-up audit found that the forward path described below had since been wired
+through `cp2_agent_model_bindings`, but its reverse path was still split: the UI's existing
+`removeModelFromAgent` deleted only a device-scoped `agentModelAssignment`. There was no API or
+store operation to remove a server/backend binding. In addition,
+`getActiveAgentModelBinding` fell back to the newest failed or inactive diagnostic record when no
+active binding existed. That made the endpoint's contract and reload UI ambiguous. The repair adds
+one authorized, idempotent canonical unbind operation, makes the GET return only an active verified
+binding, and drives the backend model card's “Remove from agent” state from that response.
+
+## Exact architecture trace
+
+| Stage                        | File and function                                                                                          | Input → output                                                                       | Persistent state                                                       | Failure boundary                                                                            |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1. Marketplace rendering     | `apps/web/src/SokoApplication.tsx` — `AgentProfileSurface`, `serverBackendModels.map`                      | `AiModelSummary[]` plus `activeAgentModelBinding` → model cards and action labels    | Read only                                                              | Empty registry/search result; backend state load failure                                    |
+| 2. Use click                 | `SokoApplication.tsx` — `activateServerBackendModel`                                                       | Canonical catalogue `model.id` → activation task                                     | None                                                                   | Offline/busy guard                                                                          |
+| 3. Request construction      | `SokoApplication.tsx` — `postJson`; `apps/web/src/lib/api.ts` — `apiFetch`/`performFetch`                  | `agentId`, `shopId`, `modelId`, target, policy, permissions → credentialed JSON POST | None                                                                   | Timeout, 401 refresh failure, non-2xx `ApiRequestError`                                     |
+| 4. Activation API            | `services/api/src/cp2/routes.ts` — `POST /api/agents/:agentId/models/:modelId/activate`                    | Parsed path/body → `store.activateAgentModel`                                        | None directly                                                          | Invalid body or store `Cp2Error`                                                            |
+| 5. Authentication            | `services/api/src/cp2/store.ts` — `requireAuthorizedSession`                                               | Session cookie, shop, `membership:manage` → authenticated session                    | Session/membership read                                                | `auth_required`, expired session, membership/permission failure                             |
+| 6. Agent resolution          | `store.ts` — `requireBusinessAgent`                                                                        | Owned `businessId` and requested `agentId` → `BusinessAgentProfileSummary`           | Agent profile read/default resolution                                  | `AGENT_NOT_FOUND`                                                                           |
+| 7. Registry resolution       | `store.ts` — `requireCanonicalAiModel`; `packages/shared-types/src/index.ts` — `runtimeModels`             | Catalogue ID → canonical model/runtime definition                                    | Registry is code-defined                                               | `MODEL_NOT_FOUND`, disabled/incompatible target                                             |
+| 8. Runtime eligibility       | `store.ts` — `requireModelRuntimeAdapter`; `services/api/src/inference/model-runtime.ts` — `healthCheck`   | Binding candidate → real readiness and inference probe                               | Failed attempt/audit diagnostic only; active binding unchanged         | `RUNTIME_UNAVAILABLE`, `MODEL_NOT_INSTALLED`, identity mismatch, timeout, probe failure     |
+| 9. Binding persistence       | `store.ts` — `activateAgentModel`; `services/api/src/cp2/postgres-store.ts` — mutation proxy/snapshot save | Passed health result → one active `AgentModelBindingSummary`                         | `cp2_agent_model_bindings`, agent profile/runtime version, audit event | Activation conflict or persistence failure; prior active binding remains on probe failure   |
+| 10. Runtime session          | `store.ts` — `createRuntimeTurn`/`createRuntimeSession`                                                    | Chat request without `runtimeSessionId` → lazy per-user runtime session              | `cp2_runtime_sessions` at chat time                                    | Foreign/expired session, turn limit                                                         |
+| 11. Chat submission          | `SokoApplication.tsx` — `sendChatDraft`; `routes.ts` — `POST /v1/messages`                                 | Conversation message plus agent request → `createAgentConversationMessage`           | User message and eventual assistant message                            | Invalid conversation/auth/content                                                           |
+| 12. Agent runtime            | `store.ts` — `createAgentConversationMessage` → `createRuntimeTurn`                                        | Shop/message/history → compiled business-agent turn                                  | Runtime turn, telemetry, messages                                      | `AGENT_MODEL_NOT_CONFIGURED` after unbind; recoverable error guidance                       |
+| 13. Model/provider selection | `store.ts` — `resolveActiveRuntimeModelId`, `resolveRuntimeModelProvider`                                  | Agent profile → active verified binding → adapter-backed provider                    | Binding read                                                           | Missing adapter yields `AGENT_MODEL_UNAVAILABLE`; fallback requires saved permission/policy |
+| 14. Inference                | `store.ts` — `createRuntimeModelRoute`; `model-runtime.ts` — adapter `generate`                            | Existing context/personality/instructions/history/tools → typed completion           | Runtime telemetry                                                      | Provider exception, unavailable/malformed response, non-qualifying fallback                 |
+| 15. Response                 | `store.ts` — policy/tool handling and `storeRuntimeTurn`; `routes.ts` response                             | Parsed response/tool proposal → persisted assistant response and runtime trace       | Conversation message, runtime turn, telemetry/audit                    | Policy/confirmation/tool validation remains authoritative                                   |
+
+Canonical removal follows `SokoApplication.removeServerBackendModelFromAgent` →
+`DELETE /api/agents/:agentId/model-binding` → `Cp2Store.removeAgentModelBinding` → mark the active
+row inactive, revise the profile/runtime version, persist through the existing Postgres snapshot
+transaction, return `{ binding: null }`, and refetch/render from the same GET source. Activation does
+not create or require a `runtimeSessionId`; runtime sessions remain lazy conversation operational
+state.
+
 ## Existing architecture audited
 
 ### Registry and persistence

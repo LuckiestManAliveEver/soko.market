@@ -88,6 +88,10 @@ route permissions, runs real inference, and only then changes the active binding
 
 `GET /api/agents/:agentId/model-binding?shopId=:shopId` returns the canonical reload-safe state.
 
+`DELETE /api/agents/:agentId/model-binding?shopId=:shopId` idempotently removes the active binding.
+It returns `{ binding: null }`, keeps the historical row as `inactive` for auditability, and does
+not remove device-local model files or change the independently configured cloud fallback.
+
 ## Adapter contract
 
 `ModelRuntimeAdapter` in `services/api/src/inference/model-runtime.ts` provides:

@@ -44,7 +44,7 @@ describe("frontend model activation contracts", () => {
   it("sets a cloud fallback without detaching the downloaded model", () => {
     const activation = sourceBetween(
       "async function useBackendModelWithAgent",
-      "async function testAssignedModel"
+      "async function testServerBackendModel"
     );
 
     expect(activation).toContain("await onEnsureRuntimeSession()");
@@ -125,7 +125,10 @@ describe("frontend model activation contracts", () => {
     expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
     expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");
     expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
+    expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(business.id)}");
     expect(application).toContain("setActiveAgentModelBinding(result.binding)");
+    expect(application).toContain("removeServerBackendModelFromAgent(model)");
+    expect(application).toContain('"Remove from agent"');
     expect(application).toContain('executionTarget: "backend"');
     expect(application).toContain("Active for ${agent.name}");
     expect(application).toContain("Browser-local inference is unavailable in this deployment");

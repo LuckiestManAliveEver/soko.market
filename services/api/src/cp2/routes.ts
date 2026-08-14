@@ -3351,6 +3351,55 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.delete(
+    "/api/agents/:agentId/model-binding",
+    async (
+      request: FastifyRequest<{
+        Params: AgentModelBindingParams;
+        Querystring: AgentModelBindingQuery;
+      }>,
+      reply
+    ) => {
+      const requestId = request.id;
+      const shopId = parseString(request.query.shopId, "shopId");
+      const agentId = parseString(request.params.agentId, "agentId");
+      request.log.info(
+        { event: "model.binding_removal_started", requestId, shopId, agentId },
+        "Agent model binding removal started."
+      );
+      try {
+        const result = store.removeAgentModelBinding({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: shopId,
+          agentId
+        });
+        request.log.info(
+          {
+            event: "model.binding_removed",
+            requestId,
+            shopId,
+            agentId,
+            bindingId: result.removedBindingId
+          },
+          "Agent model binding removed."
+        );
+        return result;
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "model.binding_removal_failed",
+            requestId,
+            shopId,
+            agentId,
+            errorCode: error instanceof Cp2Error ? error.code : "MODEL_BINDING_REMOVAL_FAILED"
+          },
+          "Agent model binding removal failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/api/agents/:agentId/models/:modelId/test",
     async (
