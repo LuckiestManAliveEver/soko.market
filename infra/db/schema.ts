@@ -334,6 +334,10 @@ export const conversationMessages = pgTable(
     selectedChannel: text("selected_channel").notNull().default("soko"),
     actualChannel: text("actual_channel"),
     providerMessageId: text("provider_message_id"),
+    provider: text("provider").notNull(),
+    direction: text("direction").notNull(),
+    externalConversationId: text("external_conversation_id"),
+    channelIdentityId: text("channel_identity_id"),
     importedSource: text("imported_source"),
     importedExternalId: text("imported_external_id"),
     consentRecordId: uuid("consent_record_id"),
@@ -547,6 +551,11 @@ function platformCommerceRecordTable(name: string) {
 export const platformIdentities = platformCommerceRecordTable("platform_identities");
 export const conversationChannels = platformCommerceRecordTable("conversation_channels");
 export const providerUpdateReceipts = platformCommerceRecordTable("provider_update_receipts");
+export const channelIdentityLinkGrants = platformCommerceRecordTable(
+  "channel_identity_link_grants"
+);
+export const nativeSmsDevices = platformCommerceRecordTable("native_sms_devices");
+export const nativeSmsDeviceCommands = platformCommerceRecordTable("native_sms_device_commands");
 export const customerRuntimeCapabilities = platformCommerceRecordTable(
   "customer_runtime_capabilities"
 );
@@ -563,6 +572,9 @@ export const customers = pgTable(
     name: text("name").notNull(),
     phone: text("phone"),
     email: text("email"),
+    linkedAccountId: uuid("linked_account_id").references(() => accounts.id, {
+      onDelete: "set null"
+    }),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()

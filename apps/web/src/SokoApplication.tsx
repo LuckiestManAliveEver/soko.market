@@ -53,6 +53,8 @@ import type {
   AgentModelFallbackPolicy,
   BrowserInferenceAssignmentSummary,
   ClientInferenceCompletion,
+  ChannelEndpointSummary,
+  ChannelProvider,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   E2eeDeviceSummary,
@@ -6099,7 +6101,7 @@ export function OwnerApp() {
     );
   }
 
-  async function sendChatDraft(draftOverride?: string) {
+  async function sendChatDraft(draftOverride?: string, preferredProvider?: ChannelProvider) {
     if (session === null) {
       requireMessagingSignIn();
       return;
@@ -6137,7 +6139,55 @@ export function OwnerApp() {
     setPendingAttachments([]);
     setReplyToMessageId(null);
 
-    const hasHumanRecipient = isHumanDirectConversation(activeConversation, session);
+    const hasAccountRecipient = isHumanDirectConversation(activeConversation, session);
+    const hasExternalRecipient = isExternalChannelConversation(activeConversation);
+    const hasHumanRecipient = hasAccountRecipient || hasExternalRecipient;
+    if (hasExternalRecipient) {
+      if (business === null || activeConversationId === null || attachments.length > 0) {
+        setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
+        setChatDraft(message);
+        setPendingAttachments(attachments);
+        setStatusMessage(
+          attachments.length > 0
+            ? "This connected channel currently supports text messages only."
+            : "A shop conversation is required for channel delivery."
+        );
+        return;
+      }
+      try {
+        const sent = await postJson<{
+          message: ConversationMessageSummary;
+        }>(`/businesses/${business.id}/channel-messages`, {
+          conversationId: activeConversationId,
+          ...(preferredProvider === undefined ? {} : { provider: preferredProvider }),
+          text: message,
+          idempotencyKey: `web-channel:${clientMessageId}`
+        });
+        setChatMessages((messages) =>
+          messages.map((item) =>
+            item.id === clientMessageId
+              ? mapConversationMessage(
+                  sent.message,
+                  activeConversation!.participants,
+                  activeSession
+                )
+              : item
+          )
+        );
+        setStatusMessage(
+          sent.message.provider === "native_sms" && sent.message.status === "queued"
+            ? "SMS queued — waiting for the linked Android device to send it."
+            : `Sent via ${sent.message.provider ?? preferredProvider ?? "connected channel"}.`
+        );
+        await loadMessagingInbox(activeConversationId);
+      } catch (error) {
+        setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
+        setChatDraft(message);
+        setPendingAttachments(attachments);
+        setStatusMessage(getErrorMessage(error));
+      }
+      return;
+    }
     const localAssignment =
       business === null
         ? null
@@ -6588,7 +6638,7 @@ export function OwnerApp() {
         ? { attachments: chatAttachmentsToConversationAttachments(attachments) }
         : {})
     };
-    if (hasHumanRecipient && activeConversationId !== null) {
+    if (hasAccountRecipient && activeConversationId !== null) {
       try {
         const devices = await getConversationEncryptionDevices(activeConversationId);
         messageContent = await encryptDirectMessage({
@@ -8026,7 +8076,10 @@ export function OwnerApp() {
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}
-              onSend={(draft) => void runAction("chat-send", () => sendChatDraft(draft))}
+              onSend={(draft, provider) =>
+                void runAction("chat-send", () => sendChatDraft(draft, provider))
+              }
+              channelEndpoints={activeConversation?.channels ?? []}
               onCancelGeneration={() => void cancelBrowserGeneration()}
               onSmsHandoff={recordSmsHandoff}
               onPlatformHandoff={recordPlatformHandoff}
@@ -17377,6 +17430,7 @@ interface ChatSurfaceProps {
   businessName: string;
   hasBusiness: boolean;
   chatDraft: string;
+  channelEndpoints: ChannelEndpointSummary[];
   children: ReactNode;
   conversations: ConversationInboxItem[];
   customerCount: number;
@@ -17456,7 +17510,7 @@ interface ChatSurfaceProps {
   onRemoveAttachment: (attachmentId: string) => void;
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
-  onSend: (draft: string) => void;
+  onSend: (draft: string, provider?: ChannelProvider) => void;
   onCancelGeneration: () => void;
   onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
   onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
@@ -17470,6 +17524,7 @@ function ChatSurface({
   businessName,
   hasBusiness,
   chatDraft,
+  channelEndpoints,
   children,
   conversations,
   customerCount,
@@ -17596,6 +17651,7 @@ function ChatSurface({
   const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
   const [externalShareNotice, setExternalShareNotice] = useState<string | null>(null);
   const [liveDraft, setLiveDraft] = useState(chatDraft);
+  const [selectedProvider, setSelectedProvider] = useState<ChannelProvider | null>(null);
   const draftSyncTimerRef = useRef<number | null>(null);
   const workspaceDialogRef = useRef<HTMLElement | null>(null);
   const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -17654,7 +17710,7 @@ function ChatSurface({
 
   function sendLiveDraft() {
     clearDraftSyncTimer();
-    onSend(liveDraft);
+    onSend(liveDraft, selectedProvider ?? undefined);
   }
 
   function openSmsHandoff(recipient: string, label: string) {
@@ -17691,6 +17747,18 @@ function ChatSurface({
   useEffect(() => {
     setLiveDraft(chatDraft);
   }, [chatDraft]);
+
+  useEffect(() => {
+    const available = channelEndpoints.find(
+      (endpoint) =>
+        endpoint.status === "available" &&
+        endpoint.configured &&
+        endpoint.authorized &&
+        (endpoint.capabilities.includes("CAN_REPLY") ||
+          endpoint.capabilities.includes("CAN_INITIATE"))
+    );
+    setSelectedProvider(available?.provider ?? null);
+  }, [activeConversationId, channelEndpoints]);
 
   useEffect(
     () => () => {
@@ -18501,6 +18569,50 @@ function ChatSurface({
                   </div>
                 ) : null}
               </div>
+            ) : null}
+            {channelEndpoints.length > 0 ? (
+              <label className="composer-channel-selector">
+                <span>Send via</span>
+                <select
+                  aria-label="Send message via"
+                  value={selectedProvider ?? ""}
+                  onChange={(event) =>
+                    setSelectedProvider(
+                      event.target.value === "" ? null : (event.target.value as ChannelProvider)
+                    )
+                  }
+                >
+                  <option value="" disabled>
+                    No available channel
+                  </option>
+                  {channelEndpoints.map((endpoint) => {
+                    const available =
+                      (endpoint.status === "available" ||
+                        (endpoint.status === "offline" &&
+                          endpoint.capabilities.includes("SUPPORTS_OFFLINE"))) &&
+                      endpoint.configured &&
+                      endpoint.authorized &&
+                      (endpoint.capabilities.includes("CAN_REPLY") ||
+                        endpoint.capabilities.includes("CAN_INITIATE"));
+                    return (
+                      <option
+                        key={endpoint.channelId}
+                        value={endpoint.provider}
+                        disabled={!available}
+                      >
+                        {formatChannelProvider(endpoint.provider)} ·{" "}
+                        {endpoint.provider === "native_sms" && endpoint.status === "offline"
+                          ? "queued — waiting for Android device"
+                          : available
+                            ? endpoint.provider === "native_sms"
+                              ? "via Android device"
+                              : "available"
+                            : endpoint.status}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
             ) : null}
             <label className="composer-input">
               <span>Message</span>
@@ -20909,6 +21021,29 @@ function isHumanDirectConversation(
         participant.role === "account" && participant.accountId !== session.account.id
     )
   );
+}
+
+function isExternalChannelConversation(conversation: ConversationView | null): boolean {
+  return Boolean(
+    conversation?.participants.some(
+      (participant) => participant.role === "external" && participant.externalIdentityId
+    )
+  );
+}
+
+function formatChannelProvider(provider: ChannelProvider): string {
+  const labels: Record<ChannelProvider, string> = {
+    soko: "Soko",
+    telegram: "Telegram",
+    whatsapp: "WhatsApp",
+    messenger: "Messenger",
+    instagram: "Instagram",
+    tiktok: "TikTok",
+    x: "X",
+    sms: "SMS",
+    native_sms: "SMS via Android"
+  };
+  return labels[provider];
 }
 
 function chatAttachmentsToConversationAttachments(

@@ -25,6 +25,7 @@ import {
 } from "./cp2/notification-delivery-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 import { createRateLimitRedisClient } from "./redis-client.js";
+import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway.js";
 
 const config = readEnvironment();
 const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
@@ -88,6 +89,7 @@ const accountDeletionProcessors = readAccountDeletionProcessors();
 const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
+const channelGateway = createChannelGatewayFromEnvironment();
 const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
 if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
   throw new Error(
@@ -109,6 +111,7 @@ if (process.env.NODE_ENV === "production" && cp2StoreMode !== "memory" && databa
 const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
+  channelGateway,
   runtimeModelProviderResolver,
   modelRuntimeAdapterResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),

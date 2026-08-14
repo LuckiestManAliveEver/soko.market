@@ -43,6 +43,7 @@ import type {
   LaunchIncidentStatus,
   MessageHandoffChannel,
   MessageHandoffStatus,
+  NativeSmsResultCode,
   ProductFieldDefinition,
   ProductFieldInputType,
   ProductImportDraft,
@@ -54,6 +55,7 @@ import type {
   SyncMutationPayload,
   SyncMutationType,
   ConversationKind,
+  ChannelProvider,
   ConversationMessageContent,
   E2eePublicKey,
   MessageChannel,
@@ -457,6 +459,66 @@ interface MessageHandoffBody {
   channel?: string;
   status?: string;
   normalizedErrorCode?: string | null;
+}
+
+interface ChannelMessageBody {
+  customerId?: string;
+  customerName?: string;
+  conversationId?: string;
+  provider?: string;
+  text?: string;
+  idempotencyKey?: string;
+}
+
+interface ChannelLinkGrantBody {
+  provider?: string;
+  conversationId?: string | null;
+  automaticRepliesEnabled?: boolean;
+}
+
+interface CustomerAccountLinkBody {
+  accountId?: string;
+}
+
+interface CustomerParams extends BusinessParams {
+  customerId: string;
+}
+
+interface ChannelWebhookParams {
+  provider: string;
+}
+
+interface NativeSmsDeviceBody {
+  roleAvailable?: boolean;
+  roleGranted?: boolean;
+  sendPermissionGranted?: boolean;
+  receivePermissionGranted?: boolean;
+  simReady?: boolean;
+  subscriptionId?: number | null;
+  preferred?: boolean;
+  lastErrorCode?: string | null;
+}
+
+interface NativeSmsInboundBody {
+  businessId?: string;
+  externalMessageId?: string;
+  sender?: string;
+  text?: string;
+  occurredAt?: string;
+}
+
+interface NativeSmsCommandResultBody {
+  status?: string;
+  resultCode?: string;
+  carrierReference?: string | null;
+}
+
+interface NativeSmsCommandParams {
+  commandId: string;
+}
+
+interface NativeSmsDeviceParams {
+  deviceId: string;
 }
 
 interface UpdateConversationBody {
@@ -3881,6 +3943,326 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.put(
+    "/v1/devices/native-sms",
+    async (request: FastifyRequest<{ Body: NativeSmsDeviceBody }>, reply) => {
+      try {
+        return store.registerNativeSmsDevice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          roleAvailable: parseBoolean(request.body.roleAvailable, "roleAvailable"),
+          roleGranted: parseBoolean(request.body.roleGranted, "roleGranted"),
+          sendPermissionGranted: parseBoolean(
+            request.body.sendPermissionGranted,
+            "sendPermissionGranted"
+          ),
+          receivePermissionGranted: parseBoolean(
+            request.body.receivePermissionGranted,
+            "receivePermissionGranted"
+          ),
+          simReady: parseBoolean(request.body.simReady, "simReady"),
+          ...(request.body.subscriptionId === undefined
+            ? {}
+            : {
+                subscriptionId:
+                  request.body.subscriptionId === null
+                    ? null
+                    : parseNonNegativeInteger(request.body.subscriptionId, "subscriptionId")
+              }),
+          ...(request.body.preferred === undefined
+            ? {}
+            : { preferred: parseBoolean(request.body.preferred, "preferred") }),
+          ...(request.body.lastErrorCode === undefined
+            ? {}
+            : { lastErrorCode: parseNullableString(request.body.lastErrorCode) })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/devices/native-sms", async (request, reply) => {
+    try {
+      return {
+        devices: store.listNativeSmsDevices({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/v1/devices/native-sms/businesses", async (request, reply) => {
+    try {
+      return {
+        businesses: store.listNativeSmsBusinesses({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.delete(
+    "/v1/devices/native-sms/:deviceId",
+    async (request: FastifyRequest<{ Params: NativeSmsDeviceParams }>, reply) => {
+      try {
+        return store.revokeNativeSmsDevice({
+          sessionId: readSessionCookie(request.headers.cookie),
+          deviceId: parseString(request.params.deviceId, "deviceId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/devices/native-sms/commands",
+    async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply) => {
+      try {
+        return store.fetchNativeSmsCommands({
+          sessionId: readSessionCookie(request.headers.cookie),
+          ...(request.query.limit === undefined
+            ? {}
+            : { limit: parseIntegerString(request.query.limit, "limit") })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/devices/native-sms/commands/:commandId/acknowledge",
+    async (request: FastifyRequest<{ Params: NativeSmsCommandParams }>, reply) => {
+      try {
+        return store.acknowledgeNativeSmsCommand({
+          sessionId: readSessionCookie(request.headers.cookie),
+          commandId: parseString(request.params.commandId, "commandId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/devices/native-sms/commands/:commandId/result",
+    async (
+      request: FastifyRequest<{
+        Params: NativeSmsCommandParams;
+        Body: NativeSmsCommandResultBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.reportNativeSmsCommandResult({
+          sessionId: readSessionCookie(request.headers.cookie),
+          commandId: parseString(request.params.commandId, "commandId"),
+          status: parseNativeSmsCommandResultStatus(request.body.status),
+          resultCode: parseNativeSmsResultCode(request.body.resultCode),
+          ...(request.body.carrierReference === undefined
+            ? {}
+            : { carrierReference: parseNullableString(request.body.carrierReference) })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/devices/native-sms/messages",
+    async (request: FastifyRequest<{ Body: NativeSmsInboundBody }>, reply) => {
+      try {
+        const result = store.ingestNativeSmsMessage({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.body.businessId, "businessId"),
+          externalMessageId: parseString(request.body.externalMessageId, "externalMessageId"),
+          sender: parseString(request.body.sender, "sender"),
+          text: parseString(request.body.text, "text"),
+          occurredAt: parseString(request.body.occurredAt, "occurredAt")
+        });
+        request.log.info(
+          {
+            event: "native_sms.inbound_received",
+            businessId: result.customer.businessId,
+            customerId: result.customer.id,
+            messageId: result.message?.id ?? null,
+            receiptId: result.receipt.id,
+            deviceId: result.device.id
+          },
+          "Native SMS message synchronized."
+        );
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/channels/readiness",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          providers: store.listChannelProviderReadiness({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: parseString(request.params.businessId, "businessId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/channel-endpoints",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams;
+        Querystring: { customerId?: string; conversationId?: string };
+      }>,
+      reply
+    ) => {
+      try {
+        return {
+          endpoints: store.listCustomerChannelEndpoints({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: parseString(request.params.businessId, "businessId"),
+            ...(request.query.customerId === undefined
+              ? {}
+              : { customerId: parseString(request.query.customerId, "customerId") }),
+            ...(request.query.conversationId === undefined
+              ? {}
+              : { conversationId: parseString(request.query.conversationId, "conversationId") })
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/customers/:customerId/channel-link-grants",
+    async (
+      request: FastifyRequest<{ Params: CustomerParams; Body: ChannelLinkGrantBody }>,
+      reply
+    ) => {
+      try {
+        return store.createChannelIdentityLinkGrant({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          customerId: parseString(request.params.customerId, "customerId"),
+          provider: parseChannelProvider(request.body.provider),
+          ...(request.body.conversationId === undefined
+            ? {}
+            : { conversationId: parseNullableString(request.body.conversationId) }),
+          ...(request.body.automaticRepliesEnabled === undefined
+            ? {}
+            : {
+                automaticRepliesEnabled: parseBoolean(
+                  request.body.automaticRepliesEnabled,
+                  "automaticRepliesEnabled"
+                )
+              })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/customers/:customerId/account-link",
+    async (
+      request: FastifyRequest<{ Params: CustomerParams; Body: CustomerAccountLinkBody }>,
+      reply
+    ) => {
+      try {
+        return store.linkCustomerAccount({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          customerId: parseString(request.params.customerId, "customerId"),
+          accountId: parseString(request.body.accountId, "accountId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/channel-messages",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ChannelMessageBody }>,
+      reply
+    ) => {
+      try {
+        const sent = await store.sendChannelMessage({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          ...(request.body.customerId === undefined
+            ? {}
+            : { customerId: parseString(request.body.customerId, "customerId") }),
+          ...(request.body.customerName === undefined
+            ? {}
+            : { customerName: parseString(request.body.customerName, "customerName") }),
+          ...(request.body.conversationId === undefined
+            ? {}
+            : { conversationId: parseString(request.body.conversationId, "conversationId") }),
+          ...(request.body.provider === undefined
+            ? {}
+            : { provider: parseChannelProvider(request.body.provider) }),
+          text: parseString(request.body.text, "text"),
+          idempotencyKey: parseString(request.body.idempotencyKey, "idempotencyKey")
+        });
+        request.log.info(
+          {
+            tenantId: request.params.businessId,
+            conversationId: sent.message.conversationId,
+            messageId: sent.message.id,
+            provider: sent.selection.endpoint.provider,
+            status: sent.message.status
+          },
+          "Channel message delivery completed."
+        );
+        return sent;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/webhooks/channels/:provider",
+    async (request: FastifyRequest<{ Params: ChannelWebhookParams; Body: unknown }>, reply) => {
+      try {
+        const result = store.ingestChannelWebhook({
+          provider: parseChannelProvider(request.params.provider),
+          headers: request.headers,
+          payload: request.body
+        });
+        request.log.info(
+          {
+            provider: request.params.provider,
+            receiptId: result.receipt.id,
+            duplicate: result.message === null
+          },
+          "Channel webhook processed."
+        );
+        return result;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/v1/message-handoffs",
     async (request: FastifyRequest<{ Body: MessageHandoffBody }>, reply) => {
@@ -6646,8 +7028,63 @@ function isMessageChannel(value: string): value is MessageChannel {
     "telegram",
     "facebook_messenger",
     "instagram_messaging",
+    "tiktok_business",
+    "x_dm",
+    "native_sms",
     "email"
   ].includes(value);
+}
+
+function parseChannelProvider(value: unknown): ChannelProvider {
+  const provider = parseString(value, "provider");
+  if (
+    [
+      "soko",
+      "telegram",
+      "whatsapp",
+      "messenger",
+      "instagram",
+      "tiktok",
+      "x",
+      "sms",
+      "native_sms"
+    ].includes(provider)
+  ) {
+    return provider as ChannelProvider;
+  }
+  throw new Cp2Error(400, "channel_provider_invalid", "The channel provider is invalid.");
+}
+
+function parseNativeSmsCommandResultStatus(
+  value: unknown
+): "sending" | "sent" | "delivered" | "failed" {
+  const status = parseString(value, "status");
+  if (["sending", "sent", "delivered", "failed"].includes(status)) {
+    return status as "sending" | "sent" | "delivered" | "failed";
+  }
+  throw new Cp2Error(400, "sms_result_status_invalid", "SMS result status is invalid.");
+}
+
+function parseNativeSmsResultCode(value: unknown): NativeSmsResultCode {
+  const code = parseString(value, "resultCode");
+  if (
+    [
+      "SMS_SENT",
+      "SMS_DELIVERED",
+      "SMS_DEVICE_UNAVAILABLE",
+      "SMS_NO_SERVICE",
+      "SMS_RADIO_OFF",
+      "SMS_SIM_UNAVAILABLE",
+      "SMS_SIM_SELECTION_REQUIRED",
+      "SMS_PERMISSION_REQUIRED",
+      "SMS_ROLE_REQUIRED",
+      "SMS_SEND_FAILED",
+      "SMS_DELIVERY_UNKNOWN"
+    ].includes(code)
+  ) {
+    return code as NativeSmsResultCode;
+  }
+  throw new Cp2Error(400, "sms_result_code_invalid", "SMS result code is invalid.");
 }
 
 function isMessageHandoffStatus(value: string): value is MessageHandoffStatus {

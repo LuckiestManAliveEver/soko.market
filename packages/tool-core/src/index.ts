@@ -103,6 +103,7 @@ export type RuntimeToolName =
   | "receipt.lookup"
   | "receipt.list"
   | "document_import.confirm"
+  | "messaging.send"
   | "unknown.clarify";
 
 export interface RuntimeToolDefinition {
@@ -626,6 +627,13 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     requiresConfirmation: true,
     readOnly: false,
     requiredPermission: "import:write"
+  },
+  "messaging.send": {
+    name: "messaging.send",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "customer:write"
   },
   "unknown.clarify": {
     name: "unknown.clarify",
@@ -1253,6 +1261,22 @@ export function validateRuntimeToolInput(
       return typeof input.importJobId === "string" && input.importJobId.trim().length > 0
         ? valid()
         : invalid("Which document import should I add?");
+
+    case "messaging.send": {
+      const text = typeof input.text === "string" ? input.text.trim() : "";
+      const customerId = typeof input.customerId === "string" ? input.customerId.trim() : "";
+      const conversationId =
+        typeof input.conversationId === "string" ? input.conversationId.trim() : "";
+      const customerName = typeof input.customerName === "string" ? input.customerName.trim() : "";
+      const errors: string[] = [];
+      if (text.length === 0 || text.length > 4000) {
+        errors.push("A message between 1 and 4000 characters is required.");
+      }
+      if (customerId === "" && conversationId === "" && customerName === "") {
+        errors.push("Choose a canonical customer or conversation before sending.");
+      }
+      return errors.length === 0 ? valid() : invalid(...errors);
+    }
 
     case "product.create": {
       const errors: string[] = [];

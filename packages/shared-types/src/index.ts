@@ -293,7 +293,45 @@ export type ConversationKind = "personal" | "storefront" | "order";
 
 export type ConversationParticipantRole = "account" | "shop" | "agent" | "external";
 
-export type ConversationProvider = "soko" | "telegram";
+export type ChannelProvider =
+  | "soko"
+  | "telegram"
+  | "whatsapp"
+  | "messenger"
+  | "instagram"
+  | "tiktok"
+  | "x"
+  | "sms"
+  | "native_sms";
+
+export type ConversationProvider = ChannelProvider;
+
+export type ChannelCapability =
+  | "CAN_SEND"
+  | "CAN_RECEIVE"
+  | "CAN_REPLY"
+  | "CAN_INITIATE"
+  | "REQUIRES_OPT_IN"
+  | "REQUIRES_TEMPLATE"
+  | "REQUIRES_EXISTING_THREAD"
+  | "SUPPORTS_OFFLINE"
+  | "REQUIRES_ANDROID_DEVICE"
+  | "REQUIRES_SIM"
+  | "REQUIRES_SMS_PERMISSION"
+  | "REQUIRES_DEFAULT_SMS_ROLE"
+  | "SUPPORTS_MEDIA"
+  | "SUPPORTS_PRODUCT_CARD";
+
+export type ChannelEndpointStatus =
+  | "available"
+  | "unavailable"
+  | "authorization_required"
+  | "expired"
+  | "blocked"
+  | "setup_required"
+  | "offline"
+  | "waiting_for_device"
+  | "error";
 
 export type ConversationMessageAuthor = "user" | "agent" | "system";
 
@@ -306,6 +344,9 @@ export type MessageChannel =
   | "telegram"
   | "facebook_messenger"
   | "instagram_messaging"
+  | "tiktok_business"
+  | "x_dm"
+  | "native_sms"
   | "email";
 
 export type MessageComposerChannel =
@@ -435,6 +476,12 @@ export interface PlatformIdentitySummary {
   provider: ConversationProvider;
   externalUserId: string;
   accountId: string | null;
+  customerId: string | null;
+  verifiedAt: string | null;
+  optInStatus: "unknown" | "granted" | "revoked";
+  optInSource: string | null;
+  optInAt: string | null;
+  optOutAt: string | null;
   businessId: string;
   displayName: string | null;
   metadata: Record<string, string | number | boolean | null>;
@@ -449,9 +496,140 @@ export interface ConversationChannelSummary {
   provider: ConversationProvider;
   externalConversationId: string;
   platformIdentityId: string;
+  capabilities: ChannelCapability[];
+  status: ChannelEndpointStatus;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
   metadata: Record<string, string | number | boolean | null>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ChannelEndpointSummary {
+  channelId: string;
+  conversationId: string;
+  businessId: string;
+  customerId: string | null;
+  channelIdentityId: string;
+  provider: ChannelProvider;
+  externalUserId: string;
+  externalConversationId: string;
+  capabilities: ChannelCapability[];
+  status: ChannelEndpointStatus;
+  configured: boolean;
+  authorized: boolean;
+  readinessErrorCode?: string | null;
+  executionEnvironment?: "server" | "android-device";
+  executionDeviceId?: string | null;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+}
+
+export interface ChannelProviderReadiness {
+  provider: ChannelProvider;
+  configured: boolean;
+  authorized: boolean;
+  capabilities: ChannelCapability[];
+  status: ChannelEndpointStatus;
+  configurationRequirement: string | null;
+  readinessErrorCode?: string | null;
+}
+
+export interface ChannelSelectionResult {
+  endpoint: ChannelEndpointSummary;
+  reason:
+    | "preferred_channel"
+    | "current_conversation_channel"
+    | "most_recent_reachable_channel"
+    | "soko_identity"
+    | "eligible_linked_channel";
+}
+
+export interface ChannelMessageSendResult {
+  message: ConversationMessageSummary;
+  selection: ChannelSelectionResult;
+}
+
+export type NativeSmsDeviceReadiness =
+  "unavailable" | "setup_required" | "ready" | "offline" | "error";
+
+export type NativeSmsDeviceCapability = "native_sms_send" | "native_sms_receive";
+
+export interface NativeSmsDeviceSummary {
+  id: string;
+  accountId: string;
+  sessionFamilyId: string;
+  deviceId: string;
+  deviceName: string;
+  platform: "android";
+  executionEnvironment: "android-device";
+  capabilities: NativeSmsDeviceCapability[];
+  readiness: NativeSmsDeviceReadiness;
+  roleAvailable: boolean;
+  roleGranted: boolean;
+  sendPermissionGranted: boolean;
+  receivePermissionGranted: boolean;
+  simReady: boolean;
+  subscriptionId: number | null;
+  preferred: boolean;
+  lastSeenAt: string;
+  lastErrorCode: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type NativeSmsCommandStatus =
+  | "queued"
+  | "waiting_for_device"
+  | "dispatched"
+  | "acknowledged"
+  | "sending"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type NativeSmsResultCode =
+  | "SMS_SENT"
+  | "SMS_DELIVERED"
+  | "SMS_DEVICE_UNAVAILABLE"
+  | "SMS_NO_SERVICE"
+  | "SMS_RADIO_OFF"
+  | "SMS_SIM_UNAVAILABLE"
+  | "SMS_SIM_SELECTION_REQUIRED"
+  | "SMS_PERMISSION_REQUIRED"
+  | "SMS_ROLE_REQUIRED"
+  | "SMS_SEND_FAILED"
+  | "SMS_DELIVERY_UNKNOWN";
+
+export interface NativeSmsDeviceCommandSummary {
+  id: string;
+  accountId: string;
+  businessId: string;
+  deviceId: string;
+  messageId: string;
+  type: "native_sms.send";
+  recipient: string;
+  status: NativeSmsCommandStatus;
+  resultCode: NativeSmsResultCode | null;
+  carrierReference: string | null;
+  createdAt: string;
+  expiresAt: string;
+  dispatchedAt: string | null;
+  acknowledgedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+export interface NativeSmsExecutableCommand extends NativeSmsDeviceCommandSummary {
+  text: string;
+}
+
+export interface NativeSmsInboundResult {
+  device: NativeSmsDeviceSummary;
+  customer: CustomerSummary;
+  receipt: ProviderUpdateReceiptSummary;
+  message: ConversationMessageSummary | null;
 }
 
 export interface ProviderUpdateReceiptSummary {
@@ -495,6 +673,10 @@ export interface ConversationMessageSummary {
   selectedChannel?: MessageChannel;
   actualChannel?: MessageChannel | null;
   providerMessageId?: string | null;
+  provider?: ChannelProvider;
+  direction?: "inbound" | "outbound";
+  externalConversationId?: string | null;
+  channelIdentityId?: string | null;
   importedSource?: string | null;
   importedExternalId?: string | null;
   consentRecordId?: string | null;
@@ -538,6 +720,7 @@ export interface ConversationView {
   conversation: ConversationSummary;
   participants: ConversationParticipantSummary[];
   messages: ConversationMessageSummary[];
+  channels?: ChannelEndpointSummary[];
   typing?: ConversationTypingSummary[];
 }
 
@@ -1013,6 +1196,7 @@ export interface CustomerSummary {
   name: string;
   phone: string | null;
   email: string | null;
+  linkedAccountId: string | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2535,6 +2719,7 @@ export type RuntimeToolName =
   | "receipt.lookup"
   | "receipt.list"
   | "document_import.confirm"
+  | "messaging.send"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =

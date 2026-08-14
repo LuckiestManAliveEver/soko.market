@@ -36,6 +36,9 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "platformIdentities", tableName: "platform_identities" },
   { key: "conversationChannels", tableName: "conversation_channels" },
   { key: "providerUpdateReceipts", tableName: "provider_update_receipts" },
+  { key: "channelIdentityLinkGrants", tableName: "channel_identity_link_grants" },
+  { key: "nativeSmsDevices", tableName: "native_sms_devices" },
+  { key: "nativeSmsDeviceCommands", tableName: "native_sms_device_commands" },
   { key: "customerRuntimeCapabilities", tableName: "customer_runtime_capabilities" },
   { key: "messageDeliveryAttempts", tableName: "cp2_message_delivery_attempts" },
   {
@@ -179,6 +182,8 @@ const mutatingMethodNames = new Set([
   "createSupplierCsvImport",
   "createSupplierFromPhoneContact",
   "createCustomer",
+  "createProviderConversation",
+  "createChannelIdentityLinkGrant",
   "deleteSalesAgent",
   "deleteNetworkSource",
   "deleteProduct",
@@ -190,6 +195,8 @@ const mutatingMethodNames = new Set([
   "getSokoSessionContext",
   "linkSalesAgentContact",
   "linkSupplierContact",
+  "linkCustomerAccount",
+  "listCustomerChannelEndpoints",
   "loginWithAccountPin",
   "loginWithSokoIdPin",
   "logout",
@@ -275,6 +282,15 @@ const mutatingMethodNames = new Set([
   "purgeExpiredShopDeletions",
   "purgeExpiredAccountDeletions",
   "registerE2eeDevice",
+  "registerNativeSmsDevice",
+  "revokeNativeSmsDevice",
+  "fetchNativeSmsCommands",
+  "acknowledgeNativeSmsCommand",
+  "reportNativeSmsCommandResult",
+  "ingestNativeSmsMessage",
+  "ingestChannelWebhook",
+  "ingestProviderMessage",
+  "sendChannelMessage",
   "revokeE2eeDevice",
   "registerPushSubscription",
   "registerInstalledAgentModel",
@@ -1313,6 +1329,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     name: string;
     phone: string | null;
     email: string | null;
+    linked_account_id: string | null;
     notes: string | null;
     created_at: Date;
     updated_at: Date;
@@ -1320,7 +1337,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     pool,
     "load customers",
     `
-      select id, business_id, name, phone, email, notes, created_at, updated_at
+      select id, business_id, name, phone, email, linked_account_id, notes, created_at, updated_at
       from customers
       order by business_id, name, id
     `
@@ -1331,6 +1348,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     name: row.name,
     phone: row.phone,
     email: row.email,
+    linkedAccountId: row.linked_account_id,
     notes: row.notes,
     createdAt: timestampToIso(row.created_at),
     updatedAt: timestampToIso(row.updated_at)
@@ -2422,13 +2440,14 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
   for (const record of snapshotRecords(snapshot.customers)) {
     await client.query(
       `
-        insert into customers (id, business_id, name, phone, email, notes, created_at, updated_at)
-        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        insert into customers (id, business_id, name, phone, email, linked_account_id, notes, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         on conflict (id) do update set
           business_id = excluded.business_id,
           name = excluded.name,
           phone = excluded.phone,
           email = excluded.email,
+          linked_account_id = excluded.linked_account_id,
           notes = excluded.notes,
           updated_at = excluded.updated_at
       `,
@@ -2438,6 +2457,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         requiredText(record, "name"),
         firstText(record, ["phone"]),
         firstText(record, ["email"]),
+        firstText(record, ["linkedAccountId"]),
         firstText(record, ["notes"]),
         requiredText(record, "createdAt"),
         requiredText(record, "updatedAt")
@@ -3502,6 +3522,9 @@ function emptySnapshot(): Cp2Snapshot {
     platformIdentities: [],
     conversationChannels: [],
     providerUpdateReceipts: [],
+    channelIdentityLinkGrants: [],
+    nativeSmsDevices: [],
+    nativeSmsDeviceCommands: [],
     customerRuntimeCapabilities: [],
     messageDeliveryAttempts: [],
     messageNotificationDeliveries: [],
