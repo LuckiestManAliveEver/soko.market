@@ -238,13 +238,10 @@ import {
   readMessagingOutbox,
   removeMessagingOutboxEntry
 } from "./messaging/outbox";
-import { SmsHandoffDialog, type SmsHandoffRequest } from "./messaging/SmsHandoffDialog";
+import type { SmsHandoffRequest } from "./messaging/SmsHandoffDialog";
 import { normalizeSmsRecipient } from "./messaging/sms-handoff";
 import { shareMessageExternally } from "./messaging/platform-handoff";
-import {
-  AccountRestorationPanel,
-  type AccountRestorationResult
-} from "./features/account-restoration/AccountRestorationPanel";
+import type { AccountRestorationResult } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
@@ -273,6 +270,14 @@ type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const clientInferenceFeatureFlags = readClientInferenceFeatureFlags();
+const AccountRestorationPanel = lazy(async () => {
+  const module = await import("./features/account-restoration/AccountRestorationPanel");
+  return { default: module.AccountRestorationPanel };
+});
+const SmsHandoffDialog = lazy(async () => {
+  const module = await import("./messaging/SmsHandoffDialog");
+  return { default: module.SmsHandoffDialog };
+});
 // The private runtime has a 90s inference deadline and successful mutations may spend up to 8s
 // crossing the persistence barrier. Keep this scoped to real backend model probes; ordinary API
 // calls retain the 20s client default.
@@ -7876,14 +7881,16 @@ export function OwnerApp() {
             onCancel={browseAsGuest}
           />
         ) : isAccountRestorationOpen && session !== null ? (
-          <AccountRestorationPanel
-            onRestored={completeAccountRestoration}
-            onCancel={() => {
-              setIsAccountRestorationOpen(false);
-              navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
-              setStatusMessage("Account restoration cancelled.");
-            }}
-          />
+          <Suspense fallback={<NativeLaunchScreen message="Opening account restoration…" />}>
+            <AccountRestorationPanel
+              onRestored={completeAccountRestoration}
+              onCancel={() => {
+                setIsAccountRestorationOpen(false);
+                navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
+                setStatusMessage("Account restoration cancelled.");
+              }}
+            />
+          </Suspense>
         ) : isBusinessSetupOpen && business === null ? (
           <BusinessSetupPanel
             step={businessSetupStep}
@@ -19130,14 +19137,16 @@ function ChatSurface({
           </div>
         )}
         {smsHandoffRequest !== null ? (
-          <SmsHandoffDialog
-            key={`${smsHandoffRequest.recipient}:${smsHandoffRequest.body}`}
-            {...smsHandoffRequest}
-            defaultCountry={smsDefaultCountry}
-            hasAttachments={pendingAttachments.length > 0}
-            onClose={() => setSmsHandoffRequest(null)}
-            onRecord={onSmsHandoff}
-          />
+          <Suspense fallback={null}>
+            <SmsHandoffDialog
+              key={`${smsHandoffRequest.recipient}:${smsHandoffRequest.body}`}
+              {...smsHandoffRequest}
+              defaultCountry={smsDefaultCountry}
+              hasAttachments={pendingAttachments.length > 0}
+              onClose={() => setSmsHandoffRequest(null)}
+              onRecord={onSmsHandoff}
+            />
+          </Suspense>
         ) : null}
       </section>
     </div>
