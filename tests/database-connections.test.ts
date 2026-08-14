@@ -2,9 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   databasePoolConfig,
   isAcceptedMigrationChecksum,
+  legacyMigrationChecksums,
   normalizeDatabaseUrl,
   readDatabaseUrl
 } from "../services/api/scripts/database-connection.mjs";
+
+const migration014 = "014_cp2_phase1_auth_security_relational.sql";
+const migration051 = "051_single_identity_single_store.sql";
+const knownLegacy014Checksums = [
+  "bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a",
+  "695019b487acf03ba6dfe87c64c5dd4204bbb52bfb9d551d8623cff2519560a6"
+];
 
 describe("database connection policy", () => {
   it("falls back from a blank direct URL to the pooled URL", () => {
@@ -60,5 +68,97 @@ describe("database connection policy", () => {
       )
     ).toBe(true);
     expect(isAcceptedMigrationChecksum("001_example.sql", "changed", "current")).toBe(false);
+  });
+
+  describe("migration checksum compatibility", () => {
+    it("accepts a matching current checksum for any migration, legacy-tracked or not", () => {
+      expect(isAcceptedMigrationChecksum("000_initial.sql", "abc123", "abc123")).toBe(true);
+      expect(isAcceptedMigrationChecksum(migration014, "abc123", "abc123")).toBe(true);
+      expect(isAcceptedMigrationChecksum(migration051, "abc123", "abc123")).toBe(true);
+    });
+
+    it("accepts every known legacy checksum recorded for migration 014", () => {
+      for (const legacyChecksum of knownLegacy014Checksums) {
+        expect(isAcceptedMigrationChecksum(migration014, legacyChecksum, "current-file-hash")).toBe(
+          true
+        );
+      }
+    });
+
+    it("rejects a checksum for migration 014 that was never recorded as legacy", () => {
+      expect(
+        isAcceptedMigrationChecksum(migration014, "not-a-recorded-checksum", "current-file-hash")
+      ).toBe(false);
+    });
+
+    it("rejects any applied checksum for migration 051 until a historical value is verified", () => {
+      // As of this test, no production checksum for 051 has been confirmed (see the comment
+      // above legacyMigrationChecksums in database-connection.mjs), so the allowlist must not
+      // contain an entry for it yet. If this test starts failing because someone added an
+      // unverified checksum, that is exactly the regression this test exists to catch.
+      expect(legacyMigrationChecksums.has(migration051)).toBe(false);
+      expect(
+        isAcceptedMigrationChecksum(migration051, "some-checksum-from-production", "current-file-hash")
+      ).toBe(false);
+      expect(
+        isAcceptedMigrationChecksum(migration051, "another-unverified-checksum", "current-file-hash")
+      ).toBe(false);
+    });
+
+    it("accepts a verified legacy checksum for 051 once one is recorded, and still rejects others", () => {
+      // Exercises the exact mechanism that unblocks Render once an operator runs the read-only
+      // query documented in database-connection.mjs and records the real checksum. Uses a
+      // synthetic map (via the optional 4th argument) rather than a fabricated production value,
+      // so this test proves the machinery works without ever hardcoding an unverified checksum
+      // into application code.
+      const verifiedHistoricalChecksum = "verified-historical-checksum-for-051";
+      const simulatedLegacyMap = new Map([
+        [migration051, new Set([verifiedHistoricalChecksum])]
+      ]);
+
+      expect(
+        isAcceptedMigrationChecksum(
+          migration051,
+          verifiedHistoricalChecksum,
+          "current-file-hash",
+          simulatedLegacyMap
+        )
+      ).toBe(true);
+      expect(
+        isAcceptedMigrationChecksum(
+          migration051,
+          "some-other-unverified-checksum",
+          "current-file-hash",
+          simulatedLegacyMap
+        )
+      ).toBe(false);
+    });
+
+    it("rejects an unknown checksum for a migration with no legacy entry at all", () => {
+      expect(
+        isAcceptedMigrationChecksum("999_hypothetical_future.sql", "old-checksum", "new-checksum")
+      ).toBe(false);
+    });
+
+    it("cannot be satisfied by silently modifying an already-applied migration file", () => {
+      // Regression guard for the underlying incident: a migration's file changing after it was
+      // applied must never pass validation on its own. It only passes if the file is restored to
+      // what actually ran (appliedChecksum === currentChecksum), or the exact applied checksum is
+      // explicitly recorded as legacy. There is no other path.
+      const appliedChecksum = "checksum-recorded-when-the-migration-first-ran";
+      const modifiedFileChecksum = "checksum-after-someone-edited-the-applied-migration";
+
+      expect(
+        isAcceptedMigrationChecksum("020_example.sql", appliedChecksum, modifiedFileChecksum)
+      ).toBe(false);
+      expect(
+        isAcceptedMigrationChecksum(
+          "020_example.sql",
+          appliedChecksum,
+          modifiedFileChecksum,
+          new Map()
+        )
+      ).toBe(false);
+    });
   });
 });
