@@ -106,12 +106,51 @@ export type RuntimeToolName =
   | "messaging.send"
   | "unknown.clarify";
 
+/**
+ * Deliberately a minimal, hand-rollable subset of JSON Schema - not a validation-library
+ * dependency - so it can be handed directly to an MCP `inputSchema` field (see
+ * services/api/src/mcp/routes.ts, which already writes plain objects in this exact shape) and so
+ * mcpSchemaForRuntimeTool() below needs no translation step.
+ */
+export type RuntimeToolInputFieldType = "string" | "number" | "boolean" | "array" | "object";
+
+export interface RuntimeToolInputFieldSchema {
+  type: RuntimeToolInputFieldType;
+  /**
+   * Documentation/MCP metadata only. validateRuntimeToolInputShape() below deliberately does NOT
+   * enforce this - each tool's proposal builder (createRuntimeToolProposal and friends) already
+   * enforces required fields with a specific, situation-aware clarification question ("Which
+   * product should I delete?") that is better UX than a generic schema error, and is exercised by
+   * existing tests (see cp10RuntimeEvalCommands). Duplicating that check here in a second place
+   * would risk the two disagreeing.
+   */
+  required?: boolean;
+  description: string;
+}
+
+export interface RuntimeToolInputSchema {
+  type: "object";
+  properties: Record<string, RuntimeToolInputFieldSchema>;
+}
+
 export interface RuntimeToolDefinition {
   name: RuntimeToolName;
+  description: string;
   risk: RuntimeToolRisk;
   requiresConfirmation: boolean;
   readOnly: boolean;
   requiredPermission: string;
+  inputSchema: RuntimeToolInputSchema;
+  /**
+   * Whether this tool is safe to expose through the MCP surface as its own callable tool. Every
+   * entry below is currently false: today's MCP surface (services/api/src/mcp/routes.ts) only
+   * exposes a small, separately-curated set of read tools plus the generic
+   * soko.runtime_turn/soko.confirm_runtime_action pair, which routes natural-language messages
+   * through this exact same registry and createRuntimeTurn pipeline rather than calling any of
+   * these tool names directly. This field exists so a future, deliberate decision to expose a
+   * specific tool directly is a one-line, reviewable change instead of an accidental default.
+   */
+  mcpExposable: boolean;
 }
 
 export interface RuntimeToolProposal {
@@ -497,152 +536,350 @@ export const defaultProductVocabularyContextScript: ProductVocabularyContextScri
 export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition> = {
   "products.list": {
     name: "products.list",
+    description: "List or search the active business's canonical product catalogue.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "product:read"
+    requiredPermission: "product:read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Optional free-text search over product names." }
+      }
+    },
+    mcpExposable: false
   },
   "invoices.list": {
     name: "invoices.list",
+    description: "List invoices for the active business.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "invoice:read"
+    requiredPermission: "invoice:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
   },
   "product.create": {
     name: "product.create",
+    description: "Create a new catalogue product with a name, unit, and starting quantity.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", required: true, description: "Product name." },
+        unit: {
+          type: "string",
+          required: true,
+          description: "Stock-keeping unit, e.g. \"kg\" or \"unit\"."
+        },
+        quantity: { type: "number", description: "Starting stock quantity." }
+      }
+    },
+    mcpExposable: false
   },
   "product.update": {
     name: "product.update",
+    description: "Update an existing catalogue product's details.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        productName: { type: "string", required: true, description: "Product to update." }
+      }
+    },
+    mcpExposable: false
   },
   "product.delete": {
     name: "product.delete",
+    description: "Permanently delete a catalogue product.",
     risk: "critical",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        productName: { type: "string", required: true, description: "Product to delete." }
+      }
+    },
+    mcpExposable: false
   },
   "product.stock_adjust": {
     name: "product.stock_adjust",
+    description: "Adjust a catalogue product's on-hand stock quantity.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        productName: { type: "string", required: true, description: "Product to adjust." },
+        quantity: {
+          type: "number",
+          required: true,
+          description: "New quantity or quantity delta."
+        }
+      }
+    },
+    mcpExposable: false
   },
   "product.field.add": {
     name: "product.field.add",
+    description: "Add a custom field to the product schema.",
     risk: "medium",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fieldName: { type: "string", required: true, description: "Custom field name to add." }
+      }
+    },
+    mcpExposable: false
   },
   "product.field.remove": {
     name: "product.field.remove",
+    description: "Remove a custom field from the product schema.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "product:write"
+    requiredPermission: "product:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fieldName: { type: "string", required: true, description: "Custom field name to remove." }
+      }
+    },
+    mcpExposable: false
   },
   "customer.create": {
     name: "customer.create",
+    description: "Create a new customer record.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "customer:write"
+    requiredPermission: "customer:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", required: true, description: "Customer name." }
+      }
+    },
+    mcpExposable: false
   },
   "invoice.draft": {
     name: "invoice.draft",
+    description: "Draft a new invoice for a customer.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "invoice:write"
+    requiredPermission: "invoice:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string", required: true, description: "Customer to invoice." },
+        quantity: { type: "number", description: "Quantity of the invoiced item." }
+      }
+    },
+    mcpExposable: false
   },
   "payment.record": {
     name: "payment.record",
+    description: "Record a payment against an invoice or customer balance.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "payment:write"
+    requiredPermission: "payment:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amount: { type: "number", required: true, description: "Payment amount." },
+        customerName: { type: "string", required: true, description: "Paying customer." }
+      }
+    },
+    mcpExposable: false
   },
   "receipt.scan": {
     name: "receipt.scan",
+    description: "Start OCR scanning of an uploaded purchase receipt.",
     risk: "medium",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "import:write"
+    requiredPermission: "import:write",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
   },
   "receipt.review": {
     name: "receipt.review",
+    description: "Review previously scanned purchase receipts pending confirmation.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "import:read"
+    requiredPermission: "import:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
   },
   "receipt.confirm": {
     name: "receipt.confirm",
+    description: "Confirm a reviewed purchase receipt, writing it into purchase history.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "import:write"
+    requiredPermission: "import:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ocrJobId: { type: "string", required: true, description: "Receipt scan to confirm." }
+      }
+    },
+    mcpExposable: false
   },
   "receipt.correct": {
     name: "receipt.correct",
+    description: "Correct a previously confirmed purchase receipt.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "import:write"
+    requiredPermission: "import:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ocrJobId: { type: "string", required: true, description: "Receipt scan to correct." }
+      }
+    },
+    mcpExposable: false
   },
   "receipt.cancel": {
     name: "receipt.cancel",
+    description: "Cancel a pending purchase receipt scan.",
     risk: "medium",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "import:write"
+    requiredPermission: "import:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ocrJobId: { type: "string", required: true, description: "Receipt scan to cancel." }
+      }
+    },
+    mcpExposable: false
   },
   "receipt.lookup": {
     name: "receipt.lookup",
+    description: "Look up purchase receipts by supplier or item name.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "import:read"
+    requiredPermission: "import:read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        supplierName: { type: "string", description: "Filter by supplier name." },
+        itemName: { type: "string", description: "Filter by line-item name." }
+      }
+    },
+    mcpExposable: false
   },
   "receipt.list": {
     name: "receipt.list",
+    description: "List all purchase receipts for the active business.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "import:read"
+    requiredPermission: "import:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
   },
   "document_import.confirm": {
     name: "document_import.confirm",
+    description: "Confirm a pending document import job (product catalogue or supplier list).",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "import:write"
+    requiredPermission: "import:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        importJobId: { type: "string", required: true, description: "Import job to confirm." }
+      }
+    },
+    mcpExposable: false
   },
   "messaging.send": {
     name: "messaging.send",
+    description: "Send a message to a customer over a connected channel.",
     risk: "high",
     requiresConfirmation: true,
     readOnly: false,
-    requiredPermission: "customer:write"
+    requiredPermission: "customer:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", required: true, description: "Message body." },
+        customerId: { type: "string", description: "Recipient customer id." },
+        customerName: { type: "string", description: "Recipient customer name." },
+        conversationId: { type: "string", description: "Existing conversation to reply in." },
+        provider: { type: "string", description: "Channel provider (e.g. sms, email)." },
+        mailboxId: { type: "string", description: "Connected mailbox to send from." },
+        subject: { type: "string", description: "Message subject, for email-like channels." },
+        replyToMessageId: { type: "string", description: "Message being replied to." },
+        attachments: { type: "array", description: "Attachments to include, e.g. an invoice." }
+      }
+    },
+    mcpExposable: false
   },
   "unknown.clarify": {
     name: "unknown.clarify",
+    description: "No actionable tool was identified; ask the user a clarifying question.",
     risk: "low",
     requiresConfirmation: false,
     readOnly: true,
-    requiredPermission: "business:read"
+    requiredPermission: "business:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
   }
 };
+
+/** Adapts a canonical Soko tool definition into an MCP `tools/list` entry, for tools that opt in
+ * via mcpExposable. Not currently called anywhere in this codebase (see mcpExposable's comment
+ * above) - provided so a future, deliberate MCP exposure decision does not need to hand-write a
+ * schema that already exists here. */
+export function mcpSchemaForRuntimeTool(toolName: RuntimeToolName): {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  annotations: { readOnlyHint: boolean; destructiveHint: boolean };
+} {
+  const definition = runtimeToolRegistry[toolName];
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const [field, fieldSchema] of Object.entries(definition.inputSchema.properties)) {
+    properties[field] = { type: fieldSchema.type, description: fieldSchema.description };
+    if (fieldSchema.required) required.push(field);
+  }
+  return {
+    name: `soko.${definition.name}`,
+    description: definition.description,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      ...(required.length > 0 ? { required } : {}),
+      properties
+    },
+    annotations: {
+      readOnlyHint: definition.readOnly,
+      destructiveHint: definition.risk === "critical"
+    }
+  };
+}
 
 /** Canonical structured-output contract shared by server and on-device model adapters. */
 export function renderRuntimeModelOutputInstructions(

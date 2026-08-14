@@ -2895,6 +2895,96 @@ export interface RuntimeModelConversationMessage {
   content: string;
 }
 
+/**
+ * Provider-neutral inference failure categories. Every inference-capable surface in this
+ * repository - server model adapters (services/api/src/inference/model-runtime.ts), the OpenAI
+ * cloud-fallback provider (services/api/src/inference/cloud-fallback.ts), and browser-local
+ * inference (apps/web/src/browser-inference-types.ts, BrowserInferenceErrorCode) - already throws
+ * or returns its own specific error code (e.g. "MODEL_PROVIDER_TIMEOUT", "CLOUD_TIMEOUT",
+ * "INFERENCE_TIMEOUT", "WEBGPU_UNAVAILABLE"). Those specific codes stay exactly as they are: this
+ * type and normalizeInferenceErrorCode() only add a shared, coarser category on top, so telemetry
+ * and user-facing messaging can reason about "a timeout happened" the same way regardless of which
+ * of the three surfaces produced it, without any of them changing what they already throw.
+ */
+export type RuntimeInferenceErrorCategory =
+  | "TIMEOUT"
+  | "ENGINE_UNREACHABLE"
+  | "MODEL_NOT_INSTALLED"
+  | "MODEL_LOADING"
+  | "MODEL_UNAVAILABLE"
+  | "CONTEXT_WINDOW_EXCEEDED"
+  | "EMPTY_RESPONSE"
+  | "INVALID_RESPONSE"
+  | "INVALID_TOOL_CALL"
+  | "RATE_LIMITED"
+  | "AUTHENTICATION_FAILED"
+  | "PROVIDER_ERROR"
+  | "ABORTED"
+  | "UNKNOWN";
+
+/**
+ * Machine-readable, provider-neutral description of an inference failure. Never includes secrets,
+ * API keys, raw provider response bodies, prompts, or other private data - only the normalized
+ * category, the original specific code, and (when known) which provider/model was involved.
+ */
+export interface RuntimeInferenceError {
+  category: RuntimeInferenceErrorCategory;
+  code: string;
+  message: string;
+  retryable: boolean;
+  provider?: RuntimeModelProviderName | "browser";
+  model?: string;
+  status?: number;
+  retryAfterMs?: number;
+}
+
+const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory> = {
+  // services/api/src/inference/model-runtime.ts and cloud-fallback.ts
+  MODEL_PROVIDER_TIMEOUT: "TIMEOUT",
+  INFERENCE_TIMEOUT: "TIMEOUT",
+  CLOUD_TIMEOUT: "TIMEOUT",
+  MODEL_PROVIDER_UNREACHABLE: "ENGINE_UNREACHABLE",
+  INFERENCE_SERVICE_UNREACHABLE: "ENGINE_UNREACHABLE",
+  INFERENCE_ENGINE_UNREACHABLE: "ENGINE_UNREACHABLE",
+  RUNTIME_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  MODEL_NOT_INSTALLED: "MODEL_NOT_INSTALLED",
+  MODEL_LOADING: "MODEL_LOADING",
+  MODEL_NOT_CONFIGURED: "MODEL_UNAVAILABLE",
+  AGENT_MODEL_NOT_CONFIGURED: "MODEL_UNAVAILABLE",
+  AGENT_MODEL_UNAVAILABLE: "MODEL_UNAVAILABLE",
+  MODEL_IDENTITY_MISMATCH: "MODEL_UNAVAILABLE",
+  MODEL_GENERATION_FAILED: "PROVIDER_ERROR",
+  MODEL_PROBE_FAILED: "PROVIDER_ERROR",
+  MODEL_HEALTH_CHECK_FAILED: "PROVIDER_ERROR",
+  MODEL_ENDPOINT: "PROVIDER_ERROR",
+  INVALID_INFERENCE_RESPONSE: "INVALID_RESPONSE",
+  CLOUD_SPENDING_LIMIT_REACHED: "RATE_LIMITED",
+  CLOUD_CIRCUIT_OPEN: "ENGINE_UNREACHABLE",
+  CLOUD_REQUEST_FAILED: "PROVIDER_ERROR",
+  // apps/web/src/browser-inference-types.ts BrowserInferenceErrorCode
+  WEBGPU_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  WASM_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  MODEL_DOWNLOAD_FAILED: "MODEL_NOT_INSTALLED",
+  MODEL_CACHE_CORRUPT: "MODEL_NOT_INSTALLED",
+  MODEL_LOAD_FAILED: "MODEL_LOADING",
+  OUT_OF_MEMORY: "PROVIDER_ERROR",
+  CONTEXT_LIMIT_EXCEEDED: "CONTEXT_WINDOW_EXCEEDED",
+  TASK_BUDGET_EXCEEDED: "RATE_LIMITED",
+  GENERATION_CANCELLED: "ABORTED",
+  WORKER_CRASHED: "PROVIDER_ERROR",
+  STORAGE_QUOTA_EXCEEDED: "PROVIDER_ERROR",
+  UNSUPPORTED_BROWSER: "ENGINE_UNREACHABLE"
+};
+
+/**
+ * Maps any of this repository's existing provider-specific inference error codes to a shared
+ * category. Unknown codes normalize to "UNKNOWN" rather than throwing, since this is meant to be
+ * safe to call from telemetry/logging paths with an error that originated somewhere new.
+ */
+export function normalizeInferenceErrorCode(code: string): RuntimeInferenceErrorCategory {
+  return inferenceErrorCategoryByCode[code] ?? "UNKNOWN";
+}
+
 export interface RuntimeModelDiagnostic {
   provider: RuntimeModelProviderName;
   status: "ready" | "unavailable";
