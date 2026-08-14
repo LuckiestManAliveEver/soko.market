@@ -282,7 +282,7 @@ describe("frontend lifecycle state", () => {
     expect(modelActivationMessage("loading_model")).toBe("Loading model…");
     expect(modelActivationMessage("binding_agent")).toBe("Connecting model to agent…");
     expect(modelActivationMessage("offline_blocked")).toBe("Connect to activate");
-    expect(modelActivationMessage("failed")).toBe("Retry activation");
+    expect(modelActivationMessage("failed")).toBe("Retry device activation");
   });
 });
 
