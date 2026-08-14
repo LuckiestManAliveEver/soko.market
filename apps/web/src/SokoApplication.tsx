@@ -273,6 +273,10 @@ type NetworkSyncProviderId = "phone" | SocialSignupProvider;
 type CountryDialCode = "+254" | "+1" | "+44" | "+234" | "+27" | "+255" | "+256" | "+250";
 
 const clientInferenceFeatureFlags = readClientInferenceFeatureFlags();
+// The private runtime has a 90s inference deadline and successful mutations may spend up to 8s
+// crossing the persistence barrier. Keep this scoped to real backend model probes; ordinary API
+// calls retain the 20s client default.
+const backendModelProbeRequestTimeoutMs = 105_000;
 const initialAuthenticationModuleTarget =
   readAuthenticationRoutePath(window.location.pathname) ??
   readAuthenticationRouteHash(window.location.hash);
@@ -12847,6 +12851,7 @@ function AgentProfileSurface({
   >({});
   const [cloudFallbackModelId, setCloudFallbackModelId] = useState<string | null>(null);
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
+  const [testingBackendModelId, setTestingBackendModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
   const [modelActivationState, setModelActivationState] = useState<ModelActivationState>("idle");
   const [modelLibraryLoaded, setModelLibraryLoaded] = useState(false);
@@ -13861,7 +13866,7 @@ function AgentProfileSurface({
     }
     modelRuntimeBusyRef.current = true;
     setModelRuntimeBusy(true);
-    setActivatingModelId(model.id);
+    setTestingBackendModelId(model.id);
     try {
       setProfileMessage(`Testing ${model.label} through real backend inference…`);
       const result = await postJson<{ healthCheck: ModelRuntimeHealthSummary }>(
@@ -13871,7 +13876,8 @@ function AgentProfileSurface({
         {
           shopId: business.id,
           executionTarget: "backend"
-        }
+        },
+        { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
       setServerBackendRuntime((current) => ({
         ...current,
@@ -13899,7 +13905,7 @@ function AgentProfileSurface({
     } finally {
       modelRuntimeBusyRef.current = false;
       setModelRuntimeBusy(false);
-      setActivatingModelId(null);
+      setTestingBackendModelId(null);
     }
   }
 
@@ -13931,7 +13937,8 @@ function AgentProfileSurface({
             allowOpenAIFallback
           },
           fallbackModelId: allowOpenAIFallback ? cloudFallbackModelId : null
-        }
+        },
+        { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
       setActiveAgentModelBinding(result.binding);
       setServerBackendRuntime((current) => ({
@@ -16009,7 +16016,7 @@ function AgentProfileSurface({
                             disabled={modelRuntimeBusy}
                             onClick={() => void testServerBackendModel(model)}
                           >
-                            {activatingModelId === model.id ? "Testing…" : "Test model"}
+                            {testingBackendModelId === model.id ? "Testing…" : "Test model"}
                           </button>
                           <button
                             type="button"
@@ -20504,7 +20511,7 @@ function recordModelActivationDiagnostic(diagnostic: ModelActivationDiagnostic):
 async function postJson<TResponse>(
   path: string,
   body: Record<string, unknown>,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<TResponse> {
   const response = await apiFetch<TResponse>(path, { method: "POST", body, ...options });
   invalidateApiCacheForMutation(path);

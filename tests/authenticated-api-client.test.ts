@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../apps/web/src/lib/api";
 
 describe("authenticated API client", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("uses one refresh request for concurrent 401 responses and retries each body once", async () => {
     const storage = new Map<string, string>();
@@ -84,6 +87,30 @@ describe("authenticated API client", () => {
 
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]?.[0])).toContain("/auth/login/password");
+  });
+
+  it("allows a request-specific timeout without changing the ordinary API deadline", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+    vi.stubGlobal("navigator", { platform: "Android" });
+    vi.stubGlobal("window", { matchMedia: () => ({ matches: false }) });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true
+          });
+        });
+      })
+    );
+
+    const request = apiFetch("/slow-model-probe", { timeoutMs: 25_000 });
+    const rejection = expect(request).rejects.toMatchObject({ name: "TimeoutError" });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejection;
   });
 });
 

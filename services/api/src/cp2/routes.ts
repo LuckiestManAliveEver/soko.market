@@ -3414,6 +3414,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       const agentId = parseString(request.params.agentId, "agentId");
       const modelId = parseString(request.params.modelId, "modelId");
       const executionTarget = parseModelExecutionTarget(request.body.executionTarget);
+      const requestAbort = observeRequestAbort(request, reply);
       request.log.info(
         { event: "model.test_started", requestId, shopId, agentId, modelId, executionTarget },
         "Model test started."
@@ -3424,7 +3425,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           businessId: shopId,
           agentId,
           modelId,
-          executionTarget
+          executionTarget,
+          signal: requestAbort.signal
         });
         request.log.info(
           {
@@ -3453,6 +3455,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           "Model test failed."
         );
         return sendCp2Error(reply, error);
+      } finally {
+        requestAbort.cleanup();
       }
     }
   );
@@ -3471,6 +3475,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       const agentId = parseString(request.params.agentId, "agentId");
       const modelId = parseString(request.params.modelId, "modelId");
       const executionTarget = parseModelExecutionTarget(request.body.executionTarget);
+      const requestAbort = observeRequestAbort(request, reply);
       request.log.info(
         {
           event: "model.activation_started",
@@ -3492,7 +3497,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           executionMode: parsePreferredExecutionMode(request.body.executionMode),
           fallbackPolicy: parseAgentModelFallbackPolicy(request.body.fallbackPolicy),
           permissions: parseAgentModelBindingPermissions(request.body.permissions),
-          fallbackModelId: parseNullableString(request.body.fallbackModelId)
+          fallbackModelId: parseNullableString(request.body.fallbackModelId),
+          signal: requestAbort.signal,
+          onStage: (stage, elapsedMs) => {
+            request.log.info(
+              {
+                event: "model.activation_stage",
+                requestId,
+                shopId,
+                agentId,
+                modelId,
+                executionTarget,
+                stage,
+                elapsedMs
+              },
+              "Model activation stage completed."
+            );
+          }
         });
         request.log.info(
           {
@@ -3522,6 +3543,8 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           "Model activation failed."
         );
         return sendCp2Error(reply, error);
+      } finally {
+        requestAbort.cleanup();
       }
     }
   );
@@ -9263,6 +9286,33 @@ function readHeader(request: FastifyRequest, name: string): string | null {
   const value = request.headers[name];
   if (Array.isArray(value)) return value[0]?.trim() || null;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function observeRequestAbort(
+  request: FastifyRequest,
+  reply: FastifyReply
+): {
+  signal: AbortSignal;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error("The HTTP client disconnected."));
+  const abortIfResponseClosed = () => {
+    if (!reply.raw.writableEnded) abort();
+  };
+  if (request.raw.aborted) {
+    abort();
+  } else {
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abortIfResponseClosed);
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      request.raw.off("aborted", abort);
+      reply.raw.off("close", abortIfResponseClosed);
+    }
+  };
 }
 
 function sendCp2Error(reply: FastifyReply, error: unknown) {

@@ -619,8 +619,13 @@ async function inferenceRequest(
     timeoutKind = "connect";
     controller.abort();
   }, options.connectTimeoutMs);
-  const abort = () => controller.abort();
+  let externallyAborted = input.signal?.aborted === true;
+  const abort = () => {
+    externallyAborted = true;
+    controller.abort(input.signal?.reason);
+  };
   input.signal?.addEventListener("abort", abort, { once: true });
+  if (externallyAborted) controller.abort(input.signal?.reason);
   try {
     const response = await options.request(new URL(input.path, options.baseUrl), {
       method: input.method ?? "GET",
@@ -661,10 +666,12 @@ async function inferenceRequest(
     if (error instanceof ModelRuntimeError) throw error;
     if (controller.signal.aborted) {
       throw new ModelRuntimeError(
-        "INFERENCE_TIMEOUT",
-        timeoutKind === "connect"
-          ? "The inference service connection timed out."
-          : "The inference request timed out.",
+        externallyAborted ? "INFERENCE_CANCELLED" : "INFERENCE_TIMEOUT",
+        externallyAborted
+          ? "The inference request was cancelled because the client disconnected."
+          : timeoutKind === "connect"
+            ? "The inference service connection timed out."
+            : "The inference request timed out.",
         true,
         { cause: error }
       );

@@ -5829,6 +5829,7 @@ export class Cp2Store {
     agentId: string;
     modelId: string;
     executionTarget: ModelExecutionTarget;
+    signal?: AbortSignal;
     now?: Date;
   }): Promise<ModelRuntimeHealthSummary> {
     const now = input.now ?? new Date();
@@ -5839,7 +5840,8 @@ export class Cp2Store {
     const health = await adapter.healthCheck({
       agentId: input.agentId,
       shopId: input.businessId,
-      modelId: input.modelId
+      modelId: input.modelId,
+      ...(input.signal === undefined ? {} : { signal: input.signal })
     });
     const summary = healthSummary(health, now);
     if (!summary.ok) {
@@ -5858,18 +5860,24 @@ export class Cp2Store {
     fallbackPolicy: AgentModelFallbackPolicy;
     permissions: AgentModelBindingPermissions;
     fallbackModelId: string | null;
+    signal?: AbortSignal;
+    onStage?: (stage: string, elapsedMs: number) => void;
     now?: Date;
   }): Promise<AgentModelActivationResult> {
     const now = input.now ?? new Date();
+    const startedAt = Date.now();
     const session = this.requireAuthorizedSession(
       input.sessionId,
       input.businessId,
       "membership:manage",
       now
     );
+    input.onStage?.("auth_resolved", Date.now() - startedAt);
     this.requireBusinessAgent(input.businessId, input.agentId, now);
+    input.onStage?.("agent_resolved", Date.now() - startedAt);
     const model = this.requireCanonicalAiModel(input.modelId);
     validateAgentModelBindingConfiguration(input, model, aiModelRegistry);
+    input.onStage?.("model_resolved", Date.now() - startedAt);
     const existingActive = this.activeAgentModelBinding(input.agentId);
     if (
       existingActive !== null &&
@@ -5883,14 +5891,17 @@ export class Cp2Store {
         input.permissions.allowRemoteShopDevice &&
       existingActive.permissions.allowOpenAIFallback === input.permissions.allowOpenAIFallback
     ) {
+      input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
         await this.requireModelRuntimeAdapter(input).healthCheck({
           agentId: input.agentId,
           shopId: input.businessId,
-          modelId: input.modelId
+          modelId: input.modelId,
+          ...(input.signal === undefined ? {} : { signal: input.signal })
         }),
         now
       );
+      input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
       if (!health.ok) throw modelHealthError(health);
       const verified = {
         ...existingActive,
@@ -5908,6 +5919,7 @@ export class Cp2Store {
         session.user.id,
         { latencyMs: health.latencyMs }
       );
+      input.onStage?.("binding_staged", Date.now() - startedAt);
       return { binding: cloneAgentModelBinding(verified), healthCheck: health };
     }
     if (this.agentModelActivationLocks.has(input.agentId)) {
@@ -5947,14 +5959,17 @@ export class Cp2Store {
 
     try {
       const adapter = this.requireModelRuntimeAdapter(input);
+      input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
         await adapter.healthCheck({
           agentId: input.agentId,
           shopId: input.businessId,
-          modelId: input.modelId
+          modelId: input.modelId,
+          ...(input.signal === undefined ? {} : { signal: input.signal })
         }),
         now
       );
+      input.onStage?.("runtime_probe_completed", Date.now() - startedAt);
       if (!health.ok) {
         const failed: AgentModelBindingSummary = {
           ...pending,
@@ -6019,6 +6034,7 @@ export class Cp2Store {
         session.user.id,
         { latencyMs: health.latencyMs }
       );
+      input.onStage?.("binding_staged", Date.now() - startedAt);
       return { binding: cloneAgentModelBinding(active), healthCheck: health };
     } catch (error) {
       if (error instanceof Cp2Error) {
@@ -26382,11 +26398,13 @@ function modelHealthError(health: ModelRuntimeHealthSummary): Cp2Error {
   const statusCode =
     code === "INFERENCE_TIMEOUT"
       ? 504
-      : isUnavailableRuntimeCode(code)
-        ? 503
-        : code === "MODEL_IDENTITY_MISMATCH"
-          ? 422
-          : 422;
+      : code === "INFERENCE_CANCELLED"
+        ? 408
+        : isUnavailableRuntimeCode(code)
+          ? 503
+          : code === "MODEL_IDENTITY_MISMATCH"
+            ? 422
+            : 422;
   return new Cp2Error(
     statusCode,
     code,

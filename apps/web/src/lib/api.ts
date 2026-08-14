@@ -96,6 +96,7 @@ export async function apiFetch<T>(
     requestId?: string;
     idempotencyKey?: string;
     skipAuthRefresh?: boolean;
+    timeoutMs?: number;
   }
 ) {
   const base = readApiBaseUrl();
@@ -170,12 +171,12 @@ async function performFetch(
   url: string,
   method: string,
   headers: Record<string, string>,
-  options?: { body?: unknown; signal?: AbortSignal }
+  options?: { body?: unknown; signal?: AbortSignal; timeoutMs?: number }
 ): Promise<Response> {
   const startedAt = performance.now();
   const { signal: timedSignal, cleanup } = withRequestTimeout(
     options?.signal,
-    defaultRequestTimeoutMs
+    options?.timeoutMs ?? defaultRequestTimeoutMs
   );
 
   try {

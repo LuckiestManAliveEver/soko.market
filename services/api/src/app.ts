@@ -120,8 +120,19 @@ export function buildApi(options: BuildApiOptions = {}) {
     }
 
     persistenceBarrierRequests.add(request);
+    const persistenceStartedAt = Date.now();
     try {
       await withPersistenceFlushDeadline(options.mutationPersistenceFlush(), request);
+      if (request.routeOptions.url === "/api/agents/:agentId/models/:modelId/activate") {
+        request.log.info(
+          {
+            event: "model.activation_persisted",
+            requestId: request.id,
+            persistenceLatencyMs: Date.now() - persistenceStartedAt
+          },
+          "Verified agent model binding crossed the persistence barrier."
+        );
+      }
     } catch (error) {
       if (error instanceof PersistenceFlushDeadlineExceeded) {
         // The write is still queued and will complete/retry in the background (see

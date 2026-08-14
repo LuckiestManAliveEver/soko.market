@@ -611,6 +611,59 @@ describe("backend model adapter", () => {
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/chat/completions"))
     ).toHaveLength(1);
   });
+
+  it("propagates a caller abort into an in-flight model probe", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
+      if (String(input).endsWith("/health/ready")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              engine: "ollama",
+              models: [
+                {
+                  id: primaryModelId,
+                  providerModelId: "qwen2.5:0.5b",
+                  available: true
+                }
+              ]
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+        );
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError")),
+          { once: true }
+        );
+      });
+    });
+    const adapter = createBackendModelAdapter({
+      baseUrl: "http://soko-market-inference:4002",
+      modelId: primaryModelId,
+      serviceToken: "test-inference-token",
+      connectTimeoutMs: 500,
+      timeoutMs: 1_000,
+      fetch: fetchMock
+    });
+
+    const healthPromise = adapter.healthCheck({
+      agentId: "agent",
+      shopId: "shop",
+      modelId: primaryModelId,
+      signal: controller.signal
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    controller.abort();
+
+    await expect(healthPromise).resolves.toMatchObject({
+      available: false,
+      errorCode: "INFERENCE_CANCELLED"
+    });
+  });
 });
 
 function gatewayFetch(
