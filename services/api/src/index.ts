@@ -23,9 +23,14 @@ import {
   startNotificationDeliveryRunner,
   type NotificationDeliveryRunner
 } from "./cp2/notification-delivery-runner.js";
+import {
+  startConnectedMailboxSyncRunner,
+  type ConnectedMailboxSyncRunner
+} from "./cp2/connected-mailbox-sync-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 import { createRateLimitRedisClient } from "./redis-client.js";
 import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway.js";
+import { createEmailMailboxProviderClient } from "./messaging/email-provider-client.js";
 
 const config = readEnvironment();
 const rateLimitRedisClient = createRateLimitRedisClient(config.redisUrl);
@@ -90,6 +95,7 @@ const receiptOCRProcessor = createReceiptOCRProcessorFromEnvironment();
 const networkInviteSender = createNetworkInviteSenderFromEnvironment();
 const binaryUploadPipeline = createBinaryUploadPipelineFromEnvironment();
 const channelGateway = createChannelGatewayFromEnvironment();
+const emailMailboxProviderClient = createEmailMailboxProviderClient();
 const ownerNodeSigningSecret = process.env.INFERENCE_JOB_SIGNING_SECRET?.trim() ?? "";
 if (config.inferenceOwnerNodeEnabled && ownerNodeSigningSecret.length < 32) {
   throw new Error(
@@ -112,6 +118,7 @@ const shouldUsePostgresStore =
   cp2StoreMode === "postgres" || (cp2StoreMode !== "memory" && databaseUrl !== "");
 const cp2StoreOptions = {
   channelGateway,
+  emailMailboxProviderClient,
   runtimeModelProviderResolver,
   modelRuntimeAdapterResolver,
   ...(pushNotificationSender === undefined ? {} : { pushNotificationSender }),
@@ -162,7 +169,12 @@ const app = buildApi(
 
 let accountDeletionRunner: AccountDeletionRunner | null = null;
 let notificationDeliveryRunner: NotificationDeliveryRunner | null = null;
+let connectedMailboxSyncRunner: ConnectedMailboxSyncRunner | null = null;
+const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
+  process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
+);
 app.addHook("onClose", async () => {
+  await connectedMailboxSyncRunner?.stop();
   await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
   rateLimitRedisClient.disconnect();
@@ -170,6 +182,21 @@ app.addHook("onClose", async () => {
     await cp2Store.close();
   }
 });
+
+if (process.env.ENABLE_CONNECTED_MAILBOX_SYNC_RUNNER !== "false") {
+  connectedMailboxSyncRunner = startConnectedMailboxSyncRunner({
+    store: cp2Store,
+    ...(connectedMailboxSyncIntervalMs === undefined
+      ? {}
+      : { intervalMs: connectedMailboxSyncIntervalMs }),
+    onResult: (result) => {
+      if (result.checked > 0) {
+        app.log.info({ event: "mailbox_background_sync_completed", ...result });
+      }
+    },
+    onError: (error) => app.log.error({ error }, "Connected mailbox sync run failed.")
+  });
+}
 
 if (process.env.ENABLE_NOTIFICATION_DELIVERY_RUNNER !== "false") {
   notificationDeliveryRunner = startNotificationDeliveryRunner({
@@ -203,6 +230,15 @@ if (process.env.ENABLE_ACCOUNT_DELETION_RUNNER === "true") {
 
 function isClosableStore(store: unknown): store is { close: () => Promise<void> } {
   return typeof (store as { close?: unknown }).close === "function";
+}
+
+function readOptionalPositiveInteger(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error("CONNECTED_MAILBOX_SYNC_INTERVAL_MS must be a positive integer.");
+  }
+  return parsed;
 }
 
 function isHealthyStore(

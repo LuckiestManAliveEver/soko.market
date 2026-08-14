@@ -556,6 +556,10 @@ export const channelIdentityLinkGrants = platformCommerceRecordTable(
 );
 export const nativeSmsDevices = platformCommerceRecordTable("native_sms_devices");
 export const nativeSmsDeviceCommands = platformCommerceRecordTable("native_sms_device_commands");
+export const connectedMailboxes = platformCommerceRecordTable("connected_mailboxes");
+export const connectedMailboxOAuthSessions = platformCommerceRecordTable(
+  "connected_mailbox_oauth_sessions"
+);
 export const customerRuntimeCapabilities = platformCommerceRecordTable(
   "customer_runtime_capabilities"
 );

@@ -73,12 +73,18 @@ import type {
   ChannelMessageSendResult,
   ChannelProvider,
   ChannelProviderReadiness,
+  ConnectedMailboxOAuthStartSummary,
+  ConnectedMailboxProvider,
+  ConnectedMailboxProviderSummary,
+  ConnectedMailboxSummary,
+  ConnectedMailboxSyncSummary,
   ComplianceRetentionSummary,
   AgentRouteSummary,
   CountryTaxConfigSummary,
   ContactHashSummary,
   ConversationKind,
   ConversationChannelSummary,
+  ConversationAttachment,
   ConversationInboxItem,
   ConversationMessageContent,
   ConversationMessageAuthor,
@@ -163,6 +169,7 @@ import type {
   PublicOrderSummary,
   PublicStorefrontMessageSummary,
   PublicShopPresenceSummary,
+  TrustedMessageAttachmentReference,
   PurchaseReceiptSummary,
   PushSubscriptionSummary,
   RuntimeContextSummary,
@@ -219,12 +226,20 @@ import {
 } from "../inference/model-runtime.js";
 import {
   ChannelGatewayError,
+  createEmailChannelAdapter,
   createNativeSmsChannelAdapter,
   createChannelGatewayFromEnvironment,
   providerToMessageChannel,
   type ChannelGateway,
   type OutboundChannelMessage
 } from "../messaging/channel-gateway.js";
+import {
+  createEmailMailboxProviderClient,
+  EmailProviderClientError,
+  type EmailMailboxProviderClient,
+  type EmailProviderTokens,
+  type NormalizedProviderEmail
+} from "../messaging/email-provider-client.js";
 import {
   agentAudienceForBusinessRole,
   assembleAgentInferenceMessage,
@@ -770,6 +785,29 @@ interface OAuthSessionRecord extends OAuthSessionSummary {
   redirectUri: string;
 }
 
+export interface ConnectedMailboxRecord extends ConnectedMailboxSummary {
+  accountId: string;
+  encryptedAccessToken: string | null;
+  encryptedRefreshToken: string | null;
+  tokenExpiresAt: string | null;
+  tokenType: string;
+  scope: string;
+}
+
+export interface ConnectedMailboxOAuthSessionRecord {
+  id: string;
+  accountId: string;
+  businessId: string;
+  provider: ConnectedMailboxProvider;
+  stateHash: string;
+  encryptedCodeVerifier: string;
+  redirectUri: string;
+  returnUrl: string;
+  expiresAt: string;
+  completedAt: string | null;
+  createdAt: string;
+}
+
 interface DocumentImportSourceRecord extends DocumentImportSourceSummary {
   content: string;
 }
@@ -873,6 +911,8 @@ export interface Cp2Snapshot {
   channelIdentityLinkGrants?: ChannelIdentityLinkGrantRecord[];
   nativeSmsDevices?: NativeSmsDeviceSummary[];
   nativeSmsDeviceCommands?: NativeSmsDeviceCommandSummary[];
+  connectedMailboxes?: ConnectedMailboxRecord[];
+  connectedMailboxOAuthSessions?: ConnectedMailboxOAuthSessionRecord[];
   customerRuntimeCapabilities?: CustomerRuntimeCapabilityRecord[];
   messageDeliveryAttempts?: MessageDeliveryAttemptSummary[];
   messageNotificationDeliveries?: MessageNotificationDelivery[];
@@ -980,6 +1020,7 @@ export interface Cp2StoreOptions {
   messageWebBaseUrl?: string;
   accountDeletionProcessors?: AccountDeletionProcessor[];
   channelGateway?: ChannelGateway;
+  emailMailboxProviderClient?: EmailMailboxProviderClient;
 }
 
 export interface ChannelIdentityLinkGrantRecord {
@@ -1139,15 +1180,33 @@ export interface MessageNotificationDeliveryRunSummary {
   deadLettered: number;
 }
 
+export interface ConnectedMailboxBackgroundSyncSummary {
+  checked: number;
+  synchronized: number;
+  ingested: number;
+  deduplicated: number;
+  filtered: number;
+  failed: number;
+}
+
 export class Cp2Store {
   private readonly channelGateway: ChannelGateway;
+  private readonly emailMailboxProviderClient: EmailMailboxProviderClient;
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
+    this.emailMailboxProviderClient =
+      options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
     this.channelGateway.registerAdapter(
       createNativeSmsChannelAdapter({
         readiness: (businessId) => this.nativeSmsTransportReadiness(businessId, new Date()),
         queue: (request) => this.queueNativeSmsCommand(request, new Date())
+      })
+    );
+    this.channelGateway.registerAdapter(
+      createEmailChannelAdapter({
+        readiness: (businessId) => this.emailTransportReadiness(businessId),
+        send: (request) => this.sendEmailTransport(request, new Date())
       })
     );
   }
@@ -1179,6 +1238,11 @@ export class Cp2Store {
   private readonly channelIdentityLinkGrants = new Map<string, ChannelIdentityLinkGrantRecord>();
   private readonly nativeSmsDevices = new Map<string, NativeSmsDeviceSummary>();
   private readonly nativeSmsDeviceCommands = new Map<string, NativeSmsDeviceCommandSummary>();
+  private readonly connectedMailboxes = new Map<string, ConnectedMailboxRecord>();
+  private readonly connectedMailboxOAuthSessions = new Map<
+    string,
+    ConnectedMailboxOAuthSessionRecord
+  >();
   private readonly customerRuntimeCapabilities = new Map<string, CustomerRuntimeCapabilityRecord>();
   private readonly messageDeliveryAttempts = new Map<string, MessageDeliveryAttemptSummary>();
   private readonly messageNotificationDeliveries = new Map<string, MessageNotificationDelivery>();
@@ -4541,6 +4605,507 @@ export class Cp2Store {
     return { device: this.nativeSmsDeviceView(touchedDevice, now), customer, ...ingested };
   }
 
+  listConnectedMailboxProviders(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ConnectedMailboxProviderSummary[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.emailMailboxProviderClient.providers();
+  }
+
+  beginConnectedMailboxOAuth(input: {
+    sessionId: string | null;
+    businessId: string;
+    provider: ConnectedMailboxProvider;
+    redirectUri: string;
+    returnUrl: string;
+    now?: Date;
+  }): ConnectedMailboxOAuthStartSummary {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const configured = this.emailMailboxProviderClient
+      .providers()
+      .find((candidate) => candidate.provider === input.provider)?.configured;
+    if (configured !== true) {
+      throw new Cp2Error(
+        503,
+        "EMAIL_PROVIDER_UNAVAILABLE",
+        "This mailbox provider is not configured."
+      );
+    }
+    const authorization = this.emailMailboxProviderClient.beginAuthorization({
+      provider: input.provider,
+      redirectUri: normalizeAbsoluteHttpUrl(input.redirectUri, "redirectUri")
+    });
+    const expiresAt = new Date(now.getTime() + mailboxOAuthSessionTtlMs).toISOString();
+    const session: ConnectedMailboxOAuthSessionRecord = {
+      id: randomUUID(),
+      accountId: auth.account.id,
+      businessId: input.businessId,
+      provider: input.provider,
+      stateHash: hashOAuthSecret(authorization.state),
+      encryptedCodeVerifier: encryptOAuthToken(authorization.codeVerifier),
+      redirectUri: input.redirectUri,
+      returnUrl: normalizeAbsoluteHttpUrl(input.returnUrl, "returnUrl"),
+      expiresAt,
+      completedAt: null,
+      createdAt: now.toISOString()
+    };
+    this.connectedMailboxOAuthSessions.set(session.id, session);
+    return {
+      provider: input.provider,
+      authorizationUrl: authorization.authorizationUrl,
+      expiresAt
+    };
+  }
+
+  async completeConnectedMailboxOAuth(input: {
+    provider: ConnectedMailboxProvider;
+    code: string;
+    state: string;
+    now?: Date;
+  }): Promise<{ mailbox: ConnectedMailboxSummary; returnUrl: string }> {
+    const now = input.now ?? new Date();
+    const stateHash = hashOAuthSecret(normalizeRequiredBoundedText(input.state, "state", 500));
+    const session = [...this.connectedMailboxOAuthSessions.values()].find(
+      (candidate) => candidate.provider === input.provider && candidate.stateHash === stateHash
+    );
+    if (
+      session === undefined ||
+      session.completedAt !== null ||
+      Date.parse(session.expiresAt) <= now.getTime()
+    ) {
+      throw new Cp2Error(
+        401,
+        "mailbox_oauth_invalid",
+        "Mailbox authorization is invalid or expired."
+      );
+    }
+    const authorization = await this.emailMailboxProviderClient.completeAuthorization({
+      provider: input.provider,
+      code: normalizeRequiredBoundedText(input.code, "code", 4000),
+      codeVerifier: decryptOAuthToken(session.encryptedCodeVerifier),
+      redirectUri: session.redirectUri
+    });
+    const address = normalizeEmailIdentity(authorization.profile.address);
+    const existing = [...this.connectedMailboxes.values()].find(
+      (candidate) =>
+        candidate.businessId === session.businessId &&
+        candidate.provider === input.provider &&
+        candidate.providerAccountId === authorization.profile.providerAccountId
+    );
+    if (existing !== undefined && existing.accountId !== session.accountId) {
+      throw new Cp2Error(
+        409,
+        "mailbox_identity_conflict",
+        "This mailbox is already connected by another account for this business."
+      );
+    }
+    const tokens = authorization.tokens;
+    const canSend = mailboxScopeAllows(input.provider, tokens.scope, "send");
+    const canReceive = mailboxScopeAllows(input.provider, tokens.scope, "receive");
+    if (!canSend || !canReceive) {
+      throw new Cp2Error(
+        403,
+        "mailbox_scope_missing",
+        "Mailbox authorization did not grant both send and receive access."
+      );
+    }
+    const isDefault =
+      existing?.isDefault ??
+      ![...this.connectedMailboxes.values()].some(
+        (candidate) =>
+          candidate.businessId === session.businessId &&
+          candidate.status === "connected" &&
+          candidate.isDefault
+      );
+    const record: ConnectedMailboxRecord = {
+      id: existing?.id ?? randomUUID(),
+      businessId: session.businessId,
+      accountId: session.accountId,
+      address,
+      provider: input.provider,
+      providerAccountId: authorization.profile.providerAccountId,
+      status: "connected",
+      readiness: "READY",
+      canSend,
+      canReceive,
+      isDefault,
+      ingestUnknownSenders: existing?.ingestUnknownSenders ?? false,
+      automaticReplyEnabled: existing?.automaticReplyEnabled ?? false,
+      automaticReplyText: existing?.automaticReplyText ?? null,
+      encryptedAccessToken: encryptOAuthToken(tokens.accessToken),
+      encryptedRefreshToken:
+        tokens.refreshToken === null
+          ? (existing?.encryptedRefreshToken ?? null)
+          : encryptOAuthToken(tokens.refreshToken),
+      tokenExpiresAt: tokens.expiresAt,
+      tokenType: tokens.tokenType,
+      scope: tokens.scope,
+      connectedAt: existing?.connectedAt ?? now.toISOString(),
+      lastSyncAt: existing?.lastSyncAt ?? null,
+      lastErrorCode: null,
+      disconnectedAt: null,
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(record.id, record);
+    this.connectedMailboxOAuthSessions.set(session.id, {
+      ...session,
+      completedAt: now.toISOString()
+    });
+    this.setMailboxChannelStatus(record.id, "available", now);
+    this.recordAuditEvent({
+      type: "mailbox.connected",
+      aggregateType: "connected_mailbox",
+      aggregateId: record.id,
+      actorId: session.accountId,
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: session.accountId,
+        businessId: session.businessId,
+        mailboxId: record.id,
+        provider: record.provider
+      }
+    });
+    return { mailbox: connectedMailboxView(record), returnUrl: session.returnUrl };
+  }
+
+  listConnectedMailboxes(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ConnectedMailboxSummary[] {
+    this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return [...this.connectedMailboxes.values()]
+      .filter((mailbox) => mailbox.businessId === input.businessId)
+      .sort(
+        (left, right) =>
+          Number(right.isDefault) - Number(left.isDefault) ||
+          right.updatedAt.localeCompare(left.updatedAt)
+      )
+      .map(connectedMailboxView);
+  }
+
+  updateConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    isDefault?: boolean;
+    ingestUnknownSenders?: boolean;
+    automaticReplyEnabled?: boolean;
+    automaticReplyText?: string | null;
+    now?: Date;
+  }): ConnectedMailboxSummary {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    if (input.isDefault === true) {
+      for (const candidate of this.connectedMailboxes.values()) {
+        if (candidate.businessId === input.businessId && candidate.id !== mailbox.id) {
+          this.connectedMailboxes.set(candidate.id, {
+            ...candidate,
+            isDefault: false,
+            updatedAt: now.toISOString()
+          });
+        }
+      }
+    }
+    const automaticReplyText =
+      input.automaticReplyText === undefined
+        ? mailbox.automaticReplyText
+        : normalizeOptionalBoundedText(input.automaticReplyText, 1000);
+    const automaticReplyEnabled = input.automaticReplyEnabled ?? mailbox.automaticReplyEnabled;
+    if (automaticReplyEnabled && automaticReplyText === null) {
+      throw new Cp2Error(
+        400,
+        "mailbox_automatic_reply_text_required",
+        "Automatic acknowledgement text is required before enabling automatic replies."
+      );
+    }
+    const updated: ConnectedMailboxRecord = {
+      ...mailbox,
+      isDefault: input.isDefault === true ? true : mailbox.isDefault,
+      ingestUnknownSenders: input.ingestUnknownSenders ?? mailbox.ingestUnknownSenders,
+      automaticReplyEnabled,
+      automaticReplyText,
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(updated.id, updated);
+    if (input.automaticReplyEnabled !== undefined) {
+      for (const channel of this.conversationChannels.values()) {
+        if (channel.provider === "email" && channel.metadata.mailboxId === updated.id) {
+          this.conversationChannels.set(channel.id, {
+            ...channel,
+            metadata: {
+              ...channel.metadata,
+              automaticRepliesEnabled: updated.automaticReplyEnabled
+            },
+            updatedAt: now.toISOString()
+          });
+        }
+      }
+    }
+    return connectedMailboxView(updated);
+  }
+
+  async disconnectConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    now?: Date;
+  }): Promise<ConnectedMailboxSummary> {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    const accessToken =
+      mailbox.encryptedAccessToken === null
+        ? null
+        : decryptOAuthToken(mailbox.encryptedAccessToken);
+    await this.emailMailboxProviderClient.revoke({ provider: mailbox.provider, accessToken });
+    const disconnected: ConnectedMailboxRecord = {
+      ...mailbox,
+      status: "disconnected",
+      readiness: "NOT_CONFIGURED",
+      canSend: false,
+      canReceive: false,
+      isDefault: false,
+      encryptedAccessToken: null,
+      encryptedRefreshToken: null,
+      tokenExpiresAt: null,
+      lastErrorCode: null,
+      disconnectedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(disconnected.id, disconnected);
+    this.setMailboxChannelStatus(disconnected.id, "authorization_required", now);
+    return connectedMailboxView(disconnected);
+  }
+
+  async syncConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    historyDays?: number;
+    now?: Date;
+  }): Promise<ConnectedMailboxSyncSummary> {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    const historyDays = normalizeMailboxHistoryDays(input.historyDays);
+    return this.syncMailboxRecord(mailbox, now, historyDays);
+  }
+
+  async syncDueConnectedMailboxes(
+    input: {
+      now?: Date;
+      staleAfterMs?: number;
+      limit?: number;
+    } = {}
+  ): Promise<ConnectedMailboxBackgroundSyncSummary> {
+    const now = input.now ?? new Date();
+    const staleAfterMs = normalizePositiveInteger(input.staleAfterMs, 5 * 60_000, 60_000);
+    const limit = Math.min(50, normalizePositiveInteger(input.limit, 20, 1));
+    const due = [...this.connectedMailboxes.values()]
+      .filter(
+        (mailbox) =>
+          mailbox.status === "connected" &&
+          mailbox.canReceive &&
+          Date.parse(mailbox.lastSyncAt ?? mailbox.connectedAt) <= now.getTime() - staleAfterMs
+      )
+      .sort((left, right) =>
+        (left.lastSyncAt ?? left.connectedAt).localeCompare(right.lastSyncAt ?? right.connectedAt)
+      )
+      .slice(0, limit);
+    const summary: ConnectedMailboxBackgroundSyncSummary = {
+      checked: due.length,
+      synchronized: 0,
+      ingested: 0,
+      deduplicated: 0,
+      filtered: 0,
+      failed: 0
+    };
+    for (const mailbox of due) {
+      try {
+        const result = await this.syncMailboxRecord(mailbox, now, null);
+        summary.synchronized += 1;
+        summary.ingested += result.ingested;
+        summary.deduplicated += result.deduplicated;
+        summary.filtered += result.filtered;
+      } catch {
+        summary.failed += 1;
+      }
+    }
+    return summary;
+  }
+
+  private async syncMailboxRecord(
+    mailbox: ConnectedMailboxRecord,
+    now: Date,
+    historyDays: number | null
+  ): Promise<ConnectedMailboxSyncSummary> {
+    try {
+      let authorized = await this.authorizedMailbox(mailbox, now);
+      const since =
+        historyDays === null
+          ? (authorized.mailbox.lastSyncAt ?? authorized.mailbox.connectedAt)
+          : new Date(now.getTime() - historyDays * 24 * 60 * 60_000).toISOString();
+      const limit = historyDays === null ? 25 : 100;
+      let messages: NormalizedProviderEmail[];
+      try {
+        messages = await this.emailMailboxProviderClient.fetchInbound({
+          provider: authorized.mailbox.provider,
+          accessToken: authorized.accessToken,
+          since,
+          limit
+        });
+      } catch (error) {
+        if (!isEmailReauthorizationError(error)) throw error;
+        authorized = await this.refreshMailboxAuthorization(authorized.mailbox, now);
+        messages = await this.emailMailboxProviderClient.fetchInbound({
+          provider: authorized.mailbox.provider,
+          accessToken: authorized.accessToken,
+          since,
+          limit
+        });
+      }
+      let ingested = 0;
+      let deduplicated = 0;
+      let filtered = 0;
+      for (const message of messages) {
+        const result = await this.ingestConnectedMailboxEmail(authorized.mailbox, message, now);
+        if (result === "ingested") ingested += 1;
+        else if (result === "deduplicated") deduplicated += 1;
+        else filtered += 1;
+      }
+      const synchronized: ConnectedMailboxRecord = {
+        ...authorized.mailbox,
+        lastSyncAt: now.toISOString(),
+        lastErrorCode: null,
+        updatedAt: now.toISOString()
+      };
+      this.connectedMailboxes.set(synchronized.id, synchronized);
+      return {
+        mailbox: connectedMailboxView(synchronized),
+        fetched: messages.length,
+        ingested,
+        deduplicated,
+        filtered
+      };
+    } catch (error) {
+      this.handleEmailProviderFailure(mailbox, error, now);
+      throw this.emailProviderCp2Error(error);
+    }
+  }
+
+  createConnectedEmailConversation(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    recipientAddress: string;
+    displayName?: string;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const auth = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (
+      mailbox.accountId !== auth.account.id ||
+      mailbox.status !== "connected" ||
+      !mailbox.canSend
+    ) {
+      throw new Cp2Error(
+        403,
+        "EMAIL_MAILBOX_NOT_CONNECTED",
+        "This mailbox is not authorized to send email for the current account."
+      );
+    }
+    const recipientAddress = normalizeEmailIdentity(input.recipientAddress);
+    const existingCustomer = [...this.customers.values()].find(
+      (candidate) =>
+        candidate.businessId === input.businessId &&
+        normalizeStoredEmailIdentity(candidate.email) === recipientAddress
+    );
+    const customer =
+      existingCustomer ??
+      this.createGuestCustomer({
+        businessId: input.businessId,
+        displayName: input.displayName ?? recipientAddress,
+        provider: "email",
+        externalUserId: recipientAddress,
+        now
+      });
+    this.ensureEmailEndpoint({
+      businessId: input.businessId,
+      customer,
+      accountId: auth.account.id,
+      userId: auth.user.id,
+      mailboxId: mailbox.id,
+      conversationId: null,
+      allowUnconnected: false,
+      now
+    });
+    const channel = [...this.conversationChannels.values()].find((candidate) => {
+      const identity = this.platformIdentities.get(candidate.platformIdentityId);
+      return (
+        candidate.provider === "email" &&
+        candidate.businessId === input.businessId &&
+        candidate.metadata.mailboxId === mailbox.id &&
+        identity?.customerId === customer.id
+      );
+    });
+    if (channel === undefined) {
+      throw new Cp2Error(500, "EMAIL_CONVERSATION_FAILED", "Email conversation was not created.");
+    }
+    return this.conversationView(
+      this.requireAccountConversation(channel.conversationId, auth.account.id)
+    );
+  }
+
   listCustomerChannelEndpoints(input: {
     sessionId: string | null;
     businessId: string;
@@ -4565,6 +5130,16 @@ export class Cp2Store {
         customer,
         accountId: auth.account.id,
         userId: auth.user.id,
+        now
+      });
+      this.ensureEmailEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        mailboxId: null,
+        conversationId: input.conversationId ?? null,
+        allowUnconnected: true,
         now
       });
     }
@@ -4746,6 +5321,10 @@ export class Cp2Store {
     customerName?: string;
     conversationId?: string;
     provider?: ChannelProvider;
+    mailboxId?: string;
+    subject?: string;
+    replyToMessageId?: string;
+    attachments?: TrustedMessageAttachmentReference[];
     text: string;
     idempotencyKey: string;
     now?: Date;
@@ -4777,11 +5356,29 @@ export class Cp2Store {
         now
       });
     }
-    const endpoints = this.channelEndpoints({
+    if (input.provider === "email") {
+      this.ensureEmailEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        mailboxId: input.mailboxId ?? null,
+        conversationId: input.conversationId ?? null,
+        allowUnconnected: false,
+        now
+      });
+    }
+    let endpoints = this.channelEndpoints({
       businessId: input.businessId,
       customerId: customer.id,
       conversationId: input.conversationId ?? null
     });
+    if (input.mailboxId !== undefined) {
+      endpoints = endpoints.filter(
+        (endpoint) =>
+          endpoint.provider !== "email" || endpoint.executionMailboxId === input.mailboxId
+      );
+    }
     let selection;
     try {
       selection = this.channelGateway.select({
@@ -4800,10 +5397,30 @@ export class Cp2Store {
         selection
       };
     }
+    const replyTo =
+      input.replyToMessageId === undefined
+        ? null
+        : this.requireEmailReplyTarget(selection.endpoint.conversationId, input.replyToMessageId);
+    const subject =
+      selection.endpoint.provider === "email"
+        ? normalizeEmailSubject(input.subject ?? replyTo?.subject ?? "")
+        : null;
+    const resolvedAttachments =
+      selection.endpoint.provider === "email"
+        ? this.resolveTrustedEmailAttachments(
+            input.businessId,
+            customer.id,
+            input.attachments ?? []
+          )
+        : { canonical: [], provider: [] };
     const message = this.persistOutboundChannelMessage({
       endpoint: selection.endpoint,
       authorId: auth.user.id,
       text,
+      subject,
+      replyToMessageId: replyTo?.id ?? null,
+      externalThreadId: replyTo?.externalThreadId ?? null,
+      attachments: resolvedAttachments.canonical,
       idempotencyKey,
       now
     });
@@ -4814,6 +5431,16 @@ export class Cp2Store {
         customerId: customer.id,
         idempotencyKey,
         text,
+        ...(subject === null ? {} : { subject }),
+        ...(replyTo === null
+          ? {}
+          : {
+              replyToProviderMessageId: replyTo.providerMessageId ?? null,
+              externalThreadId: replyTo.externalThreadId ?? null
+            }),
+        ...(resolvedAttachments.provider.length === 0
+          ? {}
+          : { attachments: resolvedAttachments.provider }),
         endpoints,
         preferredProvider: selection.endpoint.provider
       });
@@ -4824,7 +5451,10 @@ export class Cp2Store {
         deliveredAt: dispatched.result.status === "delivered" ? now.toISOString() : null,
         failureCode: null,
         actualChannel: providerToMessageChannel(dispatched.selection.endpoint.provider),
-        providerMessageId: dispatched.result.providerMessageId
+        providerMessageId: dispatched.result.providerMessageId,
+        externalThreadId: dispatched.result.externalThreadId ?? message.externalThreadId ?? null,
+        externalConversationId:
+          dispatched.result.externalThreadId ?? message.externalConversationId ?? null
       };
       this.conversationMessages.set(delivered.id, delivered);
       if (dispatched.result.status !== "queued") {
@@ -4834,6 +5464,9 @@ export class Cp2Store {
       if (channel) {
         this.conversationChannels.set(channel.id, {
           ...channel,
+          externalConversationId:
+            dispatched.result.externalThreadId ?? channel.externalConversationId,
+          metadata: subject === null ? channel.metadata : { ...channel.metadata, subject },
           lastOutboundAt: now.toISOString(),
           updatedAt: now.toISOString()
         });
@@ -4871,6 +5504,11 @@ export class Cp2Store {
     externalUpdateId: string;
     body: string;
     providerMessageId?: string | null;
+    subject?: string | null;
+    externalThreadId?: string | null;
+    senderAddress?: string | null;
+    recipientAddresses?: string[];
+    ccAddresses?: string[];
     now?: Date;
   }): { receipt: ProviderUpdateReceiptSummary; message: ConversationMessageSummary | null } {
     const now = input.now ?? new Date();
@@ -4911,6 +5549,11 @@ export class Cp2Store {
       attachmentNames: [],
       idempotencyKey: `${input.provider}:update:${input.externalUpdateId}`,
       providerMessageId: input.providerMessageId ?? null,
+      subject: input.subject ?? null,
+      externalThreadId: input.externalThreadId ?? null,
+      senderAddress: input.senderAddress ?? null,
+      recipientAddresses: input.recipientAddresses ?? [],
+      ccAddresses: input.ccAddresses ?? [],
       now
     });
     this.conversationChannels.set(channel.id, {
@@ -8230,6 +8873,12 @@ export class Cp2Store {
     providerMessageId?: string | null;
     channelIdentityId?: string | null;
     externalConversationId?: string | null;
+    subject?: string | null;
+    externalThreadId?: string | null;
+    senderAddress?: string | null;
+    recipientAddresses?: string[];
+    ccAddresses?: string[];
+    bccAddresses?: string[];
     now: Date;
   }): ConversationMessageSummary {
     const conversation = this.conversations.get(input.conversationId);
@@ -8275,6 +8924,12 @@ export class Cp2Store {
       selectedChannel: providerToMessageChannel(input.provider),
       actualChannel: providerToMessageChannel(input.provider),
       providerMessageId: input.providerMessageId ?? null,
+      subject: input.subject ?? null,
+      externalThreadId: input.externalThreadId ?? null,
+      senderAddress: input.senderAddress ?? null,
+      recipientAddresses: [...(input.recipientAddresses ?? [])],
+      ccAddresses: [...(input.ccAddresses ?? [])],
+      bccAddresses: [...(input.bccAddresses ?? [])],
       provider: input.provider,
       direction: input.author === "user" ? "inbound" : "outbound",
       externalConversationId: input.externalConversationId ?? null,
@@ -13448,7 +14103,7 @@ export class Cp2Store {
       input.businessId,
       input.message
     );
-    const messagingProposal = this.createRuntimeMessagingProposal(input.message);
+    const messagingProposal = this.createRuntimeMessagingProposal(input.businessId, input.message);
     const receiptContextScriptMatch = parseReceiptContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
@@ -14054,6 +14709,8 @@ export class Cp2Store {
       channelIdentityLinkGrants: [...this.channelIdentityLinkGrants.values()],
       nativeSmsDevices: [...this.nativeSmsDevices.values()],
       nativeSmsDeviceCommands: [...this.nativeSmsDeviceCommands.values()],
+      connectedMailboxes: [...this.connectedMailboxes.values()],
+      connectedMailboxOAuthSessions: [...this.connectedMailboxOAuthSessions.values()],
       customerRuntimeCapabilities: [...this.customerRuntimeCapabilities.values()],
       messageDeliveryAttempts: [...this.messageDeliveryAttempts.values()],
       messageNotificationDeliveries: [...this.messageNotificationDeliveries.values()],
@@ -14174,6 +14831,8 @@ export class Cp2Store {
     this.channelIdentityLinkGrants.clear();
     this.nativeSmsDevices.clear();
     this.nativeSmsDeviceCommands.clear();
+    this.connectedMailboxes.clear();
+    this.connectedMailboxOAuthSessions.clear();
     this.customerRuntimeCapabilities.clear();
     this.messageDeliveryAttempts.clear();
     this.messageNotificationDeliveries.clear();
@@ -14411,6 +15070,16 @@ export class Cp2Store {
     }
     for (const command of snapshot.nativeSmsDeviceCommands ?? []) {
       this.nativeSmsDeviceCommands.set(command.id, command);
+    }
+    for (const mailbox of snapshot.connectedMailboxes ?? []) {
+      this.connectedMailboxes.set(mailbox.id, {
+        ...mailbox,
+        automaticReplyEnabled: mailbox.automaticReplyEnabled ?? false,
+        automaticReplyText: mailbox.automaticReplyText ?? null
+      });
+    }
+    for (const session of snapshot.connectedMailboxOAuthSessions ?? []) {
+      this.connectedMailboxOAuthSessions.set(session.id, session);
     }
     for (const capability of snapshot.customerRuntimeCapabilities ?? []) {
       this.customerRuntimeCapabilities.set(capability.id, capability);
@@ -15252,6 +15921,15 @@ export class Cp2Store {
     challenge.verifiedAt = now.toISOString();
     identity.verifiedAt = now.toISOString();
     identity.updatedAt = now.toISOString();
+    const userId = this.userByAccount.get(identity.accountId);
+    const user = userId === undefined ? undefined : this.users.get(userId);
+    if (user !== undefined) {
+      this.users.set(user.id, {
+        ...user,
+        emailAddress: identity.normalizedValue,
+        emailVerificationStatus: "verified"
+      });
+    }
     const account = this.promoteAccountIdentityLevel(identity.accountId, "verified_contact");
     this.recordSecurityEvent("auth.email_verified", identity.accountId, "success", now, {});
     return {
@@ -15524,7 +16202,10 @@ export class Cp2Store {
       phoneAddedAt: phoneIdentity === null ? null : now.toISOString(),
       phoneUpdatedAt: phoneIdentity === null ? null : now.toISOString(),
       phoneSource: phoneIdentity === null ? null : "phone_login",
-      publicPhoneEnabled: false
+      publicPhoneEnabled: false,
+      ...(channel === "email"
+        ? { emailAddress: destination, emailVerificationStatus: "unverified" as const }
+        : {})
     };
 
     this.accounts.set(account.id, account);
@@ -16823,6 +17504,575 @@ export class Cp2Store {
     return product;
   }
 
+  private emailTransportReadiness(businessId: string | undefined) {
+    const providerConfigured = this.emailMailboxProviderClient
+      .providers()
+      .some((provider) => provider.configured);
+    const candidates = [...this.connectedMailboxes.values()].filter(
+      (mailbox) =>
+        (businessId === undefined || mailbox.businessId === businessId) &&
+        mailbox.status !== "disconnected"
+    );
+    const mailbox =
+      candidates.find((candidate) => candidate.isDefault) ??
+      (candidates.length === 1 ? candidates[0] : undefined);
+    if (!providerConfigured) {
+      return {
+        configured: false,
+        authorized: false,
+        status: "unavailable" as const,
+        mailboxId: null,
+        configurationRequirement: "Configure Gmail or Outlook mailbox OAuth credentials.",
+        errorCode: "EMAIL_PROVIDER_UNAVAILABLE" as const
+      };
+    }
+    if (mailbox === undefined) {
+      return {
+        configured: false,
+        authorized: false,
+        status: candidates.length > 1 ? ("error" as const) : ("unavailable" as const),
+        mailboxId: null,
+        configurationRequirement:
+          candidates.length > 1
+            ? "Choose one connected mailbox as the business default."
+            : "Connect and authorize a Gmail or Outlook mailbox.",
+        errorCode:
+          candidates.length > 1
+            ? ("EMAIL_MAILBOX_NOT_FOUND" as const)
+            : ("EMAIL_MAILBOX_NOT_CONNECTED" as const)
+      };
+    }
+    if (mailbox.status === "reauthorization_required") {
+      return {
+        configured: true,
+        authorized: false,
+        status: "authorization_required" as const,
+        mailboxId: mailbox.id,
+        configurationRequirement: "Reconnect this mailbox to restore provider authorization.",
+        errorCode: "EMAIL_REAUTHORIZATION_REQUIRED" as const
+      };
+    }
+    if (mailbox.status === "error" || !mailbox.canSend) {
+      return {
+        configured: true,
+        authorized: mailbox.status === "connected",
+        status: "error" as const,
+        mailboxId: mailbox.id,
+        configurationRequirement: "The connected mailbox cannot currently send email.",
+        errorCode: "EMAIL_PROVIDER_UNAVAILABLE" as const
+      };
+    }
+    return {
+      configured: true,
+      authorized: true,
+      status: "available" as const,
+      mailboxId: mailbox.id,
+      configurationRequirement: null,
+      errorCode: null
+    };
+  }
+
+  private async sendEmailTransport(
+    request: OutboundChannelMessage,
+    now: Date
+  ): Promise<{
+    accepted: true;
+    providerMessageId: string | null;
+    externalThreadId: string | null;
+    status: "sent";
+  }> {
+    const conversation = this.conversations.get(request.conversationId);
+    if (conversation === undefined || conversation.activeShopId !== request.businessId) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "The canonical email conversation is unavailable."
+      );
+    }
+    const messageId = this.messageByIdempotencyKey.get(
+      `${request.conversationId}:${request.idempotencyKey}`
+    );
+    if (messageId === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "The canonical email message is unavailable."
+      );
+    }
+    const mailboxId = request.endpoint.executionMailboxId;
+    if (mailboxId === null || mailboxId === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_MAILBOX_NOT_FOUND",
+        "No sending mailbox was selected for this conversation."
+      );
+    }
+    const mailbox = this.requireConnectedMailbox(request.businessId, mailboxId);
+    if (mailbox.accountId !== conversation.accountId) {
+      throw new ChannelGatewayError(
+        "EMAIL_MAILBOX_NOT_FOUND",
+        "The selected mailbox is not authorized for this account."
+      );
+    }
+    if (request.subject === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "A subject is required when starting an email conversation."
+      );
+    }
+    const subject = normalizeRequiredBoundedText(request.subject, "subject", 200);
+    const recipientAddress = normalizeEmailIdentity(request.endpoint.externalUserId);
+    try {
+      let authorized = await this.authorizedMailbox(mailbox, now);
+      const send = (authorization: { mailbox: ConnectedMailboxRecord; accessToken: string }) =>
+        this.emailMailboxProviderClient.send({
+          provider: authorization.mailbox.provider,
+          accessToken: authorization.accessToken,
+          senderAddress: authorization.mailbox.address,
+          recipientAddress,
+          subject,
+          text: request.text,
+          idempotencyKey: messageId,
+          externalThreadId: request.externalThreadId ?? null,
+          replyToProviderMessageId: request.replyToProviderMessageId ?? null,
+          attachments: request.attachments ?? []
+        });
+      let result;
+      try {
+        result = await send(authorized);
+      } catch (error) {
+        if (!isEmailReauthorizationError(error)) throw error;
+        authorized = await this.refreshMailboxAuthorization(authorized.mailbox, now);
+        result = await send(authorized);
+      }
+      this.recordAuditEvent({
+        type: "email.send_completed",
+        aggregateType: "conversation_message",
+        aggregateId: messageId,
+        actorId: "channel-gateway",
+        occurredAt: now.toISOString(),
+        payload: {
+          accountId: mailbox.accountId,
+          businessId: mailbox.businessId,
+          mailboxId: mailbox.id,
+          conversationId: request.conversationId,
+          messageId,
+          provider: mailbox.provider
+        }
+      });
+      return {
+        accepted: true,
+        providerMessageId: result.externalMessageId,
+        externalThreadId: result.externalThreadId,
+        status: "sent"
+      };
+    } catch (error) {
+      this.handleEmailProviderFailure(mailbox, error, now);
+      const normalized = this.emailProviderCp2Error(error);
+      throw new ChannelGatewayError(
+        normalized.code as
+          "EMAIL_REAUTHORIZATION_REQUIRED" | "EMAIL_SEND_FAILED" | "EMAIL_PROVIDER_UNAVAILABLE",
+        normalized.message,
+        normalized.statusCode >= 500
+      );
+    }
+  }
+
+  private resolveTrustedEmailAttachments(
+    businessId: string,
+    customerId: string,
+    references: TrustedMessageAttachmentReference[]
+  ): {
+    canonical: ConversationAttachment[];
+    provider: Array<{ filename: string; mimeType: string; contentBase64: string }>;
+  } {
+    if (references.length > 3) {
+      throw new Cp2Error(
+        400,
+        "EMAIL_ATTACHMENT_UNAVAILABLE",
+        "At most three trusted attachments may be sent in one email."
+      );
+    }
+    const unique = new Set<string>();
+    const canonical: ConversationAttachment[] = [];
+    const provider: Array<{ filename: string; mimeType: string; contentBase64: string }> = [];
+    for (const reference of references) {
+      if (reference.resourceType !== "invoice" || unique.has(reference.resourceId)) continue;
+      unique.add(reference.resourceId);
+      const invoice = this.requireInvoice(businessId, reference.resourceId);
+      if (invoice.customerId !== customerId) {
+        throw new Cp2Error(
+          403,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "The invoice belongs to a different customer."
+        );
+      }
+      if (invoice.status !== "confirmed") {
+        throw new Cp2Error(
+          409,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "Confirm the invoice before attaching it to an email."
+        );
+      }
+      const text = renderInvoiceAttachment(this.requireBusiness(businessId), invoice);
+      const bytes = Buffer.from(text, "utf8");
+      if (bytes.byteLength > 512 * 1024) {
+        throw new Cp2Error(
+          413,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "The generated invoice attachment is too large."
+        );
+      }
+      const filename = `invoice-${sanitizeAttachmentFilename(invoice.invoiceNumber)}.txt`;
+      const contentBase64 = bytes.toString("base64");
+      canonical.push({
+        id: `invoice:${invoice.id}`,
+        name: filename,
+        mimeType: "text/plain",
+        size: bytes.byteLength,
+        category: "document",
+        url: `data:text/plain;base64,${contentBase64}`
+      });
+      provider.push({ filename, mimeType: "text/plain", contentBase64 });
+    }
+    return { canonical, provider };
+  }
+
+  private requireConnectedMailbox(businessId: string, mailboxId: string): ConnectedMailboxRecord {
+    const mailbox = this.connectedMailboxes.get(mailboxId);
+    if (mailbox === undefined || mailbox.businessId !== businessId) {
+      throw new Cp2Error(404, "EMAIL_MAILBOX_NOT_FOUND", "Connected mailbox was not found.");
+    }
+    return mailbox;
+  }
+
+  private async authorizedMailbox(
+    mailbox: ConnectedMailboxRecord,
+    now: Date
+  ): Promise<{ mailbox: ConnectedMailboxRecord; accessToken: string }> {
+    if (mailbox.status !== "connected" || mailbox.encryptedAccessToken === null) {
+      throw new EmailProviderClientError(
+        "EMAIL_REAUTHORIZATION_REQUIRED",
+        "Reconnect this mailbox before using it."
+      );
+    }
+    if (mailbox.tokenExpiresAt === null || Date.parse(mailbox.tokenExpiresAt) > now.getTime()) {
+      return { mailbox, accessToken: decryptOAuthToken(mailbox.encryptedAccessToken) };
+    }
+    return this.refreshMailboxAuthorization(mailbox, now);
+  }
+
+  private async refreshMailboxAuthorization(
+    mailbox: ConnectedMailboxRecord,
+    now: Date
+  ): Promise<{ mailbox: ConnectedMailboxRecord; accessToken: string }> {
+    if (mailbox.encryptedRefreshToken === null) {
+      throw new EmailProviderClientError(
+        "EMAIL_REAUTHORIZATION_REQUIRED",
+        "Mailbox offline authorization is unavailable. Reconnect the mailbox."
+      );
+    }
+    const tokens = await this.emailMailboxProviderClient.refreshAuthorization({
+      provider: mailbox.provider,
+      refreshToken: decryptOAuthToken(mailbox.encryptedRefreshToken)
+    });
+    const refreshed = this.withMailboxTokens(mailbox, tokens, now);
+    this.connectedMailboxes.set(refreshed.id, refreshed);
+    return { mailbox: refreshed, accessToken: tokens.accessToken };
+  }
+
+  private withMailboxTokens(
+    mailbox: ConnectedMailboxRecord,
+    tokens: EmailProviderTokens,
+    now: Date
+  ): ConnectedMailboxRecord {
+    return {
+      ...mailbox,
+      encryptedAccessToken: encryptOAuthToken(tokens.accessToken),
+      encryptedRefreshToken:
+        tokens.refreshToken === null
+          ? mailbox.encryptedRefreshToken
+          : encryptOAuthToken(tokens.refreshToken),
+      tokenExpiresAt: tokens.expiresAt,
+      tokenType: tokens.tokenType,
+      scope: tokens.scope,
+      status: "connected",
+      readiness: "READY",
+      canSend: mailboxScopeAllows(mailbox.provider, tokens.scope, "send"),
+      canReceive: mailboxScopeAllows(mailbox.provider, tokens.scope, "receive"),
+      lastErrorCode: null,
+      updatedAt: now.toISOString()
+    };
+  }
+
+  private async ingestConnectedMailboxEmail(
+    mailbox: ConnectedMailboxRecord,
+    inbound: NormalizedProviderEmail,
+    now: Date
+  ): Promise<"ingested" | "deduplicated" | "filtered"> {
+    const senderAddress = normalizeEmailIdentity(inbound.senderAddress);
+    if (inbound.automated || senderAddress === mailbox.address) return "filtered";
+    const externalUpdateId = `${mailbox.id}:${normalizeRequiredBoundedText(inbound.externalMessageId, "externalMessageId", 200)}`;
+    if (
+      [...this.providerUpdateReceipts.values()].some(
+        (receipt) => receipt.provider === "email" && receipt.externalUpdateId === externalUpdateId
+      )
+    ) {
+      return "deduplicated";
+    }
+    const externalThreadId = normalizeRequiredBoundedText(
+      inbound.externalThreadId,
+      "externalThreadId",
+      200
+    );
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === "email" &&
+        candidate.businessId === mailbox.businessId &&
+        candidate.externalConversationId === externalThreadId &&
+        candidate.metadata.mailboxId === mailbox.id
+    );
+    const hadExistingThread = channel !== undefined;
+    let identity = channel ? this.platformIdentities.get(channel.platformIdentityId) : undefined;
+    if (identity === undefined) {
+      identity = [...this.platformIdentities.values()].find(
+        (candidate) =>
+          candidate.provider === "email" &&
+          candidate.businessId === mailbox.businessId &&
+          normalizeStoredEmailIdentity(candidate.externalUserId) === senderAddress
+      );
+    }
+    let customer =
+      identity?.customerId === null || identity?.customerId === undefined
+        ? undefined
+        : this.customers.get(identity.customerId);
+    if (customer === undefined) {
+      const matches = [...this.customers.values()].filter(
+        (candidate) =>
+          candidate.businessId === mailbox.businessId &&
+          normalizeStoredEmailIdentity(candidate.email) === senderAddress
+      );
+      if (matches.length > 1) return "filtered";
+      customer = matches[0];
+    }
+    if (customer === undefined && !mailbox.ingestUnknownSenders) return "filtered";
+    if (channel === undefined) {
+      const ownerUserId = this.userByAccount.get(mailbox.accountId);
+      if (ownerUserId === undefined) {
+        throw new Cp2Error(409, "mailbox_owner_missing", "Mailbox owner is unavailable.");
+      }
+      const linked = this.upsertProviderConversation({
+        businessId: mailbox.businessId,
+        provider: "email",
+        customerId: customer?.id ?? null,
+        externalUserId: senderAddress,
+        externalConversationId: externalThreadId,
+        displayName: customer?.name ?? null,
+        metadata: {
+          mailboxId: mailbox.id,
+          subject: normalizeEmailSubject(inbound.subject),
+          automaticRepliesEnabled: mailbox.automaticReplyEnabled
+        },
+        ownerAccountId: mailbox.accountId,
+        ownerUserId,
+        now
+      });
+      channel = linked.channel;
+      identity = linked.identity;
+    }
+    const ingested = this.ingestProviderMessage({
+      provider: "email",
+      businessId: mailbox.businessId,
+      externalConversationId: channel.externalConversationId,
+      externalUpdateId,
+      body: inbound.text,
+      providerMessageId: inbound.externalMessageId,
+      subject: normalizeEmailSubject(inbound.subject),
+      externalThreadId,
+      senderAddress,
+      recipientAddresses: inbound.recipientAddresses.map(normalizeEmailIdentity),
+      ccAddresses: inbound.ccAddresses.map(normalizeEmailIdentity),
+      now: new Date(inbound.receivedAt)
+    });
+    this.recordAuditEvent({
+      type: "email.received",
+      aggregateType: "conversation_message",
+      aggregateId: ingested.message?.id ?? ingested.receipt.id,
+      actorId: "email-sync",
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: mailbox.accountId,
+        businessId: mailbox.businessId,
+        mailboxId: mailbox.id,
+        conversationId: channel.conversationId,
+        customerId: identity?.customerId ?? null,
+        messageId: ingested.message?.id ?? null,
+        provider: mailbox.provider
+      }
+    });
+    if (
+      hadExistingThread &&
+      ingested.message !== null &&
+      mailbox.automaticReplyEnabled &&
+      mailbox.automaticReplyText !== null
+    ) {
+      await this.sendMailboxAutomaticReply(mailbox, channel, inbound, ingested.message, now).catch(
+        () => undefined
+      );
+    }
+    return "ingested";
+  }
+
+  private async sendMailboxAutomaticReply(
+    mailbox: ConnectedMailboxRecord,
+    channel: ConversationChannelSummary,
+    inbound: NormalizedProviderEmail,
+    inboundMessage: ConversationMessageSummary,
+    now: Date
+  ): Promise<void> {
+    const automaticReplyText = mailbox.automaticReplyText;
+    if (!mailbox.automaticReplyEnabled || automaticReplyText === null) return;
+    const lastAutomaticReplyAt =
+      typeof channel.metadata.lastAutomaticReplyAt === "string"
+        ? channel.metadata.lastAutomaticReplyAt
+        : null;
+    if (
+      lastAutomaticReplyAt !== null &&
+      Date.parse(lastAutomaticReplyAt) > now.getTime() - 24 * 60 * 60_000
+    ) {
+      return;
+    }
+    const identity = this.platformIdentities.get(channel.platformIdentityId);
+    if (identity?.customerId === null || identity?.customerId === undefined) return;
+    const ownerUserId = this.userByAccount.get(mailbox.accountId);
+    if (ownerUserId === undefined) return;
+    const endpoint = this.channelGateway.endpoint(channel, identity);
+    const idempotencyKey = `email-auto-reply:${mailbox.id}:${inbound.externalMessageId}`;
+    const existingId = this.messageByIdempotencyKey.get(
+      `${channel.conversationId}:${idempotencyKey}`
+    );
+    if (existingId !== undefined) return;
+    const subject = normalizeEmailSubject(inbound.subject);
+    const message = this.persistOutboundChannelMessage({
+      endpoint,
+      authorId: ownerUserId,
+      text: automaticReplyText,
+      subject,
+      replyToMessageId: inboundMessage.id,
+      externalThreadId: inbound.externalThreadId,
+      attachments: [],
+      idempotencyKey,
+      now
+    });
+    try {
+      const dispatched = await this.channelGateway.send({
+        businessId: mailbox.businessId,
+        conversationId: channel.conversationId,
+        customerId: identity.customerId,
+        idempotencyKey,
+        text: automaticReplyText,
+        subject,
+        replyToProviderMessageId: inbound.externalMessageId,
+        externalThreadId: inbound.externalThreadId,
+        endpoints: [endpoint],
+        preferredProvider: "email"
+      });
+      const sent: ConversationMessageSummary = {
+        ...message,
+        status: dispatched.result.status,
+        sentAt: now.toISOString(),
+        actualChannel: "email",
+        providerMessageId: dispatched.result.providerMessageId,
+        externalThreadId: dispatched.result.externalThreadId ?? inbound.externalThreadId
+      };
+      this.conversationMessages.set(sent.id, sent);
+      this.finishChannelDeliveryAttempt(sent, "succeeded", null, now);
+      this.conversationChannels.set(channel.id, {
+        ...channel,
+        metadata: {
+          ...channel.metadata,
+          lastAutomaticReplyAt: now.toISOString(),
+          lastAutomaticReplyMessageId: sent.id
+        },
+        lastOutboundAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      });
+      this.recordAuditEvent({
+        type: "email.automatic_reply_sent",
+        aggregateType: "conversation_message",
+        aggregateId: sent.id,
+        actorId: ownerUserId,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: mailbox.businessId,
+          mailboxId: mailbox.id,
+          conversationId: channel.conversationId,
+          messageId: sent.id,
+          provider: mailbox.provider
+        }
+      });
+    } catch (error) {
+      const normalized = this.channelError(error);
+      const failed: ConversationMessageSummary = {
+        ...message,
+        status: "failed",
+        failureCode: normalized.code,
+        retryCount: 1,
+        nextRetryAt: null
+      };
+      this.conversationMessages.set(failed.id, failed);
+      this.finishChannelDeliveryAttempt(failed, "permanent_failure", normalized.code, now);
+      throw error;
+    }
+  }
+
+  private setMailboxChannelStatus(
+    mailboxId: string,
+    status: "available" | "authorization_required",
+    now: Date
+  ): void {
+    for (const channel of this.conversationChannels.values()) {
+      if (channel.provider === "email" && channel.metadata.mailboxId === mailboxId) {
+        this.conversationChannels.set(channel.id, {
+          ...channel,
+          status,
+          updatedAt: now.toISOString()
+        });
+      }
+    }
+  }
+
+  private handleEmailProviderFailure(
+    mailbox: ConnectedMailboxRecord,
+    error: unknown,
+    now: Date
+  ): void {
+    const reauthorization =
+      error instanceof EmailProviderClientError && error.code === "EMAIL_REAUTHORIZATION_REQUIRED";
+    const failed: ConnectedMailboxRecord = {
+      ...mailbox,
+      status: reauthorization ? "reauthorization_required" : "error",
+      readiness: reauthorization ? "REAUTHORIZATION_REQUIRED" : "ERROR",
+      lastErrorCode:
+        error instanceof EmailProviderClientError ? error.code : "EMAIL_PROVIDER_UNAVAILABLE",
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(failed.id, failed);
+    this.setMailboxChannelStatus(
+      failed.id,
+      reauthorization ? "authorization_required" : "authorization_required",
+      now
+    );
+  }
+
+  private emailProviderCp2Error(error: unknown): Cp2Error {
+    if (error instanceof EmailProviderClientError) {
+      return new Cp2Error(
+        error.code === "EMAIL_REAUTHORIZATION_REQUIRED" ? 401 : error.retryable ? 503 : 502,
+        error.code,
+        error.message
+      );
+    }
+    return new Cp2Error(502, "EMAIL_PROVIDER_UNAVAILABLE", "The mailbox provider is unavailable.");
+  }
+
   private nativeSmsTransportReadiness(businessId: string | undefined, now: Date) {
     const accountId =
       businessId === undefined ? undefined : this.nativeSmsAccountForBusiness(businessId);
@@ -17108,6 +18358,118 @@ export class Cp2Store {
     });
   }
 
+  private ensureEmailEndpoint(input: {
+    businessId: string;
+    customer: CustomerSummary;
+    accountId: string;
+    userId: string;
+    mailboxId: string | null;
+    conversationId: string | null;
+    allowUnconnected: boolean;
+    now: Date;
+  }): void {
+    if (input.customer.email === null) {
+      throw new Cp2Error(404, "EMAIL_RECIPIENT_NOT_FOUND", "This customer has no email identity.");
+    }
+    const recipient = normalizeEmailIdentity(input.customer.email);
+    const existing = [...this.conversationChannels.values()].find((channel) => {
+      const identity = this.platformIdentities.get(channel.platformIdentityId);
+      return (
+        channel.provider === "email" &&
+        channel.businessId === input.businessId &&
+        identity?.customerId === input.customer.id &&
+        (input.conversationId === null || channel.conversationId === input.conversationId) &&
+        (input.mailboxId === null || channel.metadata.mailboxId === input.mailboxId)
+      );
+    });
+    const eligible = [...this.connectedMailboxes.values()].filter(
+      (mailbox) =>
+        mailbox.businessId === input.businessId &&
+        mailbox.accountId === input.accountId &&
+        mailbox.status === "connected" &&
+        mailbox.canSend
+    );
+    const mailbox =
+      input.mailboxId === null
+        ? (eligible.find((candidate) => candidate.isDefault) ??
+          (eligible.length === 1 ? eligible[0] : undefined))
+        : eligible.find((candidate) => candidate.id === input.mailboxId);
+    if (mailbox === undefined) {
+      if (input.allowUnconnected) {
+        if (existing !== undefined) return;
+        this.upsertProviderConversation({
+          businessId: input.businessId,
+          provider: "email",
+          customerId: input.customer.id,
+          externalUserId: recipient,
+          externalConversationId: `email:unconnected:${recipient}`,
+          displayName: input.customer.name,
+          metadata: { mailboxId: null, automaticRepliesEnabled: false },
+          ownerAccountId: input.accountId,
+          ownerUserId: input.userId,
+          now: input.now
+        });
+        return;
+      }
+      throw new Cp2Error(
+        eligible.length > 1 ? 409 : 404,
+        eligible.length > 1 ? "EMAIL_MAILBOX_NOT_FOUND" : "EMAIL_MAILBOX_NOT_CONNECTED",
+        eligible.length > 1
+          ? "Choose a default or explicit sending mailbox."
+          : "Connect an authorized mailbox before sending email."
+      );
+    }
+    if (existing !== undefined) {
+      if (existing.metadata.mailboxId === mailbox.id) return;
+      this.conversationChannels.set(existing.id, {
+        ...existing,
+        externalConversationId: `email:${mailbox.id}:${recipient}`,
+        status: "available",
+        metadata: {
+          ...existing.metadata,
+          mailboxId: mailbox.id,
+          senderAddress: mailbox.address,
+          automaticRepliesEnabled: false
+        },
+        updatedAt: input.now.toISOString()
+      });
+      return;
+    }
+    this.upsertProviderConversation({
+      businessId: input.businessId,
+      provider: "email",
+      customerId: input.customer.id,
+      externalUserId: recipient,
+      externalConversationId: `email:${mailbox.id}:${recipient}`,
+      displayName: input.customer.name,
+      metadata: {
+        mailboxId: mailbox.id,
+        senderAddress: mailbox.address,
+        automaticRepliesEnabled: false
+      },
+      ownerAccountId: input.accountId,
+      ownerUserId: input.userId,
+      now: input.now
+    });
+  }
+
+  private requireEmailReplyTarget(
+    conversationId: string,
+    messageId: string
+  ): ConversationMessageSummary {
+    const message = this.conversationMessages.get(messageId);
+    if (
+      message === undefined ||
+      message.conversationId !== conversationId ||
+      message.provider !== "email" ||
+      message.externalThreadId === null ||
+      message.externalThreadId === undefined
+    ) {
+      throw new Cp2Error(404, "email_reply_target_not_found", "Email reply target was not found.");
+    }
+    return message;
+  }
+
   private requireCustomer(businessId: string, customerId: string): CustomerSummary {
     const customer = this.customers.get(customerId);
 
@@ -17133,7 +18495,7 @@ export class Cp2Store {
       businessId: input.businessId,
       name,
       phone: null,
-      email: null,
+      email: input.provider === "email" ? normalizeEmailIdentity(input.externalUserId) : null,
       linkedAccountId: null,
       notes: null,
       createdAt: input.now.toISOString(),
@@ -17207,6 +18569,10 @@ export class Cp2Store {
     endpoint: ChannelEndpointSummary;
     authorId: string;
     text: string;
+    subject: string | null;
+    replyToMessageId: string | null;
+    externalThreadId: string | null;
+    attachments: ConversationAttachment[];
     idempotencyKey: string;
     now: Date;
   }): ConversationMessageSummary {
@@ -17221,7 +18587,11 @@ export class Cp2Store {
       idempotencyKey: input.idempotencyKey,
       author: "user",
       authorId: input.authorId,
-      content: { type: "text", text: input.text },
+      content: {
+        type: "text",
+        text: input.text,
+        ...(input.attachments.length === 0 ? {} : { attachments: input.attachments })
+      },
       status: "queued",
       queuedAt: input.now.toISOString(),
       sentAt: null,
@@ -17233,6 +18603,17 @@ export class Cp2Store {
       selectedChannel: providerToMessageChannel(input.endpoint.provider),
       actualChannel: null,
       providerMessageId: null,
+      subject: input.subject,
+      externalThreadId: input.externalThreadId,
+      senderAddress:
+        input.endpoint.executionMailboxId === null ||
+        input.endpoint.executionMailboxId === undefined
+          ? null
+          : (this.connectedMailboxes.get(input.endpoint.executionMailboxId)?.address ?? null),
+      recipientAddresses:
+        input.endpoint.provider === "email" ? [input.endpoint.externalUserId] : [],
+      ccAddresses: [],
+      bccAddresses: [],
       provider: input.endpoint.provider,
       direction: "outbound",
       externalConversationId: input.endpoint.externalConversationId,
@@ -17242,7 +18623,7 @@ export class Cp2Store {
       consentRecordId: null,
       editedAt: null,
       deletedAt: null,
-      replyToMessageId: null,
+      replyToMessageId: input.replyToMessageId,
       forwardedFromMessageId: null,
       reactions: [],
       clientTimestamp: input.now.toISOString(),
@@ -17311,7 +18692,9 @@ export class Cp2Store {
     const status =
       error.code === "CHANNEL_RATE_LIMITED"
         ? 429
-        : error.code === "CHANNEL_WEBHOOK_INVALID"
+        : error.code === "CHANNEL_WEBHOOK_INVALID" ||
+            error.code === "EMAIL_REAUTHORIZATION_REQUIRED" ||
+            error.code === "PROVIDER_AUTH_EXPIRED"
           ? 401
           : error.code === "CHANNEL_IDENTITY_NOT_FOUND"
             ? 404
@@ -17799,6 +19182,31 @@ export class Cp2Store {
           ...(isChannelProvider(input.action.input.provider)
             ? { provider: input.action.input.provider }
             : {}),
+          ...(typeof input.action.input.mailboxId === "string"
+            ? { mailboxId: input.action.input.mailboxId }
+            : {}),
+          ...(typeof input.action.input.subject === "string"
+            ? { subject: input.action.input.subject }
+            : {}),
+          ...(typeof input.action.input.replyToMessageId === "string"
+            ? { replyToMessageId: input.action.input.replyToMessageId }
+            : {}),
+          ...(Array.isArray(input.action.input.attachments)
+            ? {
+                attachments: input.action.input.attachments.flatMap((attachment) => {
+                  if (attachment === null || typeof attachment !== "object") return [];
+                  const record = attachment as Record<string, unknown>;
+                  return record.resourceType === "invoice" && typeof record.resourceId === "string"
+                    ? [
+                        {
+                          resourceType: "invoice" as const,
+                          resourceId: record.resourceId
+                        }
+                      ]
+                    : [];
+                })
+              }
+            : {}),
           text: String(input.action.input.text ?? ""),
           idempotencyKey: `runtime-message:${input.action.id}`,
           now: input.now
@@ -17806,18 +19214,68 @@ export class Cp2Store {
     }
   }
 
-  private createRuntimeMessagingProposal(message: string): RuntimeToolProposal | null {
+  private createRuntimeMessagingProposal(
+    businessId: string,
+    message: string
+  ): RuntimeToolProposal | null {
+    const invoiceEmail =
+      /^(?:please\s+)?(?:email|send)\s+(.+?)\s+(?:the\s+|their\s+)?(?:latest\s+)?invoice(?:\s+by\s+email)?[.!]?$/iu.exec(
+        message.trim()
+      );
+    if (invoiceEmail?.[1] !== undefined) {
+      const requestedName = invoiceEmail[1].trim();
+      const customers = [...this.customers.values()].filter(
+        (customer) =>
+          customer.businessId === businessId &&
+          customer.name.localeCompare(requestedName, undefined, { sensitivity: "accent" }) === 0
+      );
+      const customer = customers.length === 1 ? customers[0] : undefined;
+      const invoice =
+        customer === undefined
+          ? undefined
+          : [...this.invoices.values()]
+              .filter(
+                (candidate) =>
+                  candidate.businessId === businessId &&
+                  candidate.customerId === customer.id &&
+                  candidate.status === "confirmed"
+              )
+              .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+      return {
+        toolName: "messaging.send",
+        input:
+          customer === undefined || invoice === undefined
+            ? {}
+            : {
+                customerId: customer.id,
+                provider: "email",
+                subject: `Invoice ${invoice.invoiceNumber}`,
+                text: "Please find your invoice attached.",
+                attachments: [{ resourceType: "invoice", resourceId: invoice.id }]
+              },
+        reason: `Prepared the latest confirmed invoice email for ${requestedName}.`,
+        validation:
+          customer === undefined
+            ? invalid("Choose one canonical customer before sending an invoice.")
+            : invoice === undefined
+              ? invalid("Confirm an invoice for this customer before sending it.")
+              : valid()
+      };
+    }
+    const email = /^(?:please\s+)?email\s+(.+?)\s+(?:that|saying|:)\s+(.+)$/iu.exec(message.trim());
     const direct =
-      /^(?:please\s+)?(?:message|tell)\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|soko))?\s+(?:that|saying|:)\s+(.+)$/iu.exec(
+      /^(?:please\s+)?(?:message|tell)\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|email|soko))?\s+(?:that|saying|:)\s+(.+)$/iu.exec(
         message.trim()
       );
     const send =
-      /^(?:please\s+)?send\s+["“]?(.+?)["”]?\s+to\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|soko))?$/iu.exec(
+      /^(?:please\s+)?send\s+["“]?(.+?)["”]?\s+to\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|email|soko))?$/iu.exec(
         message.trim()
       );
-    const customerName = (direct?.[1] ?? send?.[2])?.trim();
-    const text = (direct?.[3] ?? send?.[1])?.trim();
-    const providerInput = (direct?.[2] ?? send?.[3])?.toLowerCase().replace(" ", "_");
+    const customerName = (email?.[1] ?? direct?.[1] ?? send?.[2])?.trim();
+    const text = (email?.[2] ?? direct?.[3] ?? send?.[1])?.trim();
+    const providerInput = (email === null ? (direct?.[2] ?? send?.[3]) : "email")
+      ?.toLowerCase()
+      .replace(" ", "_");
     const provider = providerInput === "sms" ? "native_sms" : providerInput;
     if (!customerName || !text) return null;
     return {
@@ -17825,6 +19283,7 @@ export class Cp2Store {
       input: {
         customerName,
         text,
+        ...(provider === "email" ? { subject: "Update from Soko" } : {}),
         ...(isChannelProvider(provider) ? { provider } : {})
       },
       reason: `Prepared a message to ${customerName}${provider ? ` on ${provider}` : ""}.`,
@@ -19728,6 +21187,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.channelIdentityLinkGrants, scope);
       deletedRecordCount += deleteScopedMapRecords(this.nativeSmsDevices, scope);
       deletedRecordCount += deleteScopedMapRecords(this.nativeSmsDeviceCommands, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.connectedMailboxes, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.connectedMailboxOAuthSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.customerRuntimeCapabilities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.messageDeliveryAttempts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.messageNotificationDeliveries, scope);
@@ -21355,6 +22816,102 @@ export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
 
 const nativeSmsOnlineWindowMs = 2 * 60_000;
 const nativeSmsCommandTtlMs = 24 * 60 * 60_000;
+const mailboxOAuthSessionTtlMs = 10 * 60_000;
+
+export function normalizeEmailIdentity(value: string): string {
+  const normalized = value.trim();
+  const at = normalized.lastIndexOf("@");
+  if (
+    at <= 0 ||
+    at === normalized.length - 1 ||
+    normalized.length > 254 ||
+    /\s/u.test(normalized)
+  ) {
+    throw new Cp2Error(400, "EMAIL_INVALID_RECIPIENT", "Email address is invalid.");
+  }
+  const local = normalized.slice(0, at);
+  const domain = normalized.slice(at + 1).toLowerCase();
+  if (
+    local.length > 64 ||
+    !/^[^@<>(),;:\\"[\]]+$/u.test(local) ||
+    !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/u.test(domain)
+  ) {
+    throw new Cp2Error(400, "EMAIL_INVALID_RECIPIENT", "Email address is invalid.");
+  }
+  return `${local}@${domain}`;
+}
+
+function isEmailReauthorizationError(error: unknown): error is EmailProviderClientError {
+  return (
+    error instanceof EmailProviderClientError && error.code === "EMAIL_REAUTHORIZATION_REQUIRED"
+  );
+}
+
+function normalizeStoredEmailIdentity(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    return normalizeEmailIdentity(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEmailSubject(value: string): string {
+  return normalizeRequiredBoundedText(value.replace(/^(?:\s*re:\s*)+/giu, "Re: "), "subject", 200);
+}
+
+function normalizeAbsoluteHttpUrl(value: string, label: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "localhost")) {
+      throw new Error("invalid protocol");
+    }
+    return url.toString();
+  } catch {
+    throw new Cp2Error(400, `${label}_invalid`, `${label} must be an absolute HTTPS URL.`);
+  }
+}
+
+function mailboxScopeAllows(
+  provider: ConnectedMailboxProvider,
+  scope: string,
+  capability: "send" | "receive"
+): boolean {
+  const scopes = new Set(scope.split(/\s+/u).map((item) => item.toLowerCase()));
+  if (provider === "gmail") {
+    return capability === "send"
+      ? scopes.has("https://www.googleapis.com/auth/gmail.send") ||
+          scopes.has("https://www.googleapis.com/auth/gmail.modify") ||
+          scopes.has("https://mail.google.com/")
+      : scopes.has("https://www.googleapis.com/auth/gmail.readonly") ||
+          scopes.has("https://www.googleapis.com/auth/gmail.modify") ||
+          scopes.has("https://mail.google.com/");
+  }
+  return capability === "send" ? scopes.has("mail.send") : scopes.has("mail.read");
+}
+
+function connectedMailboxView(mailbox: ConnectedMailboxRecord): ConnectedMailboxSummary {
+  return {
+    id: mailbox.id,
+    businessId: mailbox.businessId,
+    address: mailbox.address,
+    provider: mailbox.provider,
+    providerAccountId: mailbox.providerAccountId,
+    status: mailbox.status,
+    readiness: mailbox.readiness,
+    canSend: mailbox.canSend,
+    canReceive: mailbox.canReceive,
+    isDefault: mailbox.isDefault,
+    ingestUnknownSenders: mailbox.ingestUnknownSenders,
+    automaticReplyEnabled: mailbox.automaticReplyEnabled,
+    automaticReplyText: mailbox.automaticReplyText,
+    connectedAt: mailbox.connectedAt,
+    lastSyncAt: mailbox.lastSyncAt,
+    lastErrorCode: mailbox.lastErrorCode,
+    disconnectedAt: mailbox.disconnectedAt,
+    updatedAt: mailbox.updatedAt
+  };
+}
 
 function nativeSmsReadinessFromRegistration(input: {
   roleAvailable: boolean;
@@ -22577,7 +24134,8 @@ function isChannelProvider(value: unknown): value is ChannelProvider {
       "tiktok",
       "x",
       "sms",
-      "native_sms"
+      "native_sms",
+      "email"
     ].includes(value)
   );
 }
@@ -25130,6 +26688,58 @@ function normalizeOptionalBoundedText(value: string | null, maximumLength: numbe
     );
   }
   return normalized;
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+  minimum: number
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Cp2Error(400, "value_invalid", `Value must be an integer of at least ${minimum}.`);
+  }
+  return value;
+}
+
+function normalizeMailboxHistoryDays(value: number | undefined): number | null {
+  if (value === undefined) return null;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 30) {
+    throw new Cp2Error(
+      400,
+      "mailbox_history_range_invalid",
+      "Mailbox history import must be between 1 and 30 days."
+    );
+  }
+  return value;
+}
+
+function renderInvoiceAttachment(business: BusinessSummary, invoice: InvoiceSummary): string {
+  const lines = [
+    business.name,
+    `Invoice ${invoice.invoiceNumber}`,
+    `Customer: ${invoice.customerName ?? "Customer"}`,
+    `Issued: ${invoice.confirmedAt ?? invoice.createdAt}`,
+    "",
+    ...invoice.items.map(
+      (item) =>
+        `${item.productName} — ${item.quantity} × ${item.unitPrice.toFixed(2)} = ${item.lineTotal.toFixed(2)}`
+    ),
+    "",
+    `Subtotal: ${invoice.subtotal.toFixed(2)}`,
+    `Tax (${invoice.taxRate}%): ${invoice.taxTotal.toFixed(2)}`,
+    `Total: ${invoice.total.toFixed(2)}`
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function sanitizeAttachmentFilename(value: string): string {
+  return (
+    value
+      .replace(/[^a-z0-9._-]+/giu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 80) || "invoice"
+  );
 }
 
 function hashCustomerCapability(token: string): string {

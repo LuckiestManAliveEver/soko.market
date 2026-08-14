@@ -39,6 +39,11 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "channelIdentityLinkGrants", tableName: "channel_identity_link_grants" },
   { key: "nativeSmsDevices", tableName: "native_sms_devices" },
   { key: "nativeSmsDeviceCommands", tableName: "native_sms_device_commands" },
+  { key: "connectedMailboxes", tableName: "connected_mailboxes" },
+  {
+    key: "connectedMailboxOAuthSessions",
+    tableName: "connected_mailbox_oauth_sessions"
+  },
   { key: "customerRuntimeCapabilities", tableName: "customer_runtime_capabilities" },
   { key: "messageDeliveryAttempts", tableName: "cp2_message_delivery_attempts" },
   {
@@ -3525,6 +3530,8 @@ function emptySnapshot(): Cp2Snapshot {
     channelIdentityLinkGrants: [],
     nativeSmsDevices: [],
     nativeSmsDeviceCommands: [],
+    connectedMailboxes: [],
+    connectedMailboxOAuthSessions: [],
     customerRuntimeCapabilities: [],
     messageDeliveryAttempts: [],
     messageNotificationDeliveries: [],

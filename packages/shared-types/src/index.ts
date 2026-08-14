@@ -208,6 +208,8 @@ export interface UserSummary {
   phoneUpdatedAt?: string | null;
   phoneSource?: "phone_login" | "shop_registration" | null;
   publicPhoneEnabled?: boolean;
+  emailAddress?: string | null;
+  emailVerificationStatus?: "unverified" | "verified" | null;
 }
 
 export interface BusinessSummary {
@@ -302,7 +304,8 @@ export type ChannelProvider =
   | "tiktok"
   | "x"
   | "sms"
-  | "native_sms";
+  | "native_sms"
+  | "email";
 
 export type ConversationProvider = ChannelProvider;
 
@@ -319,6 +322,9 @@ export type ChannelCapability =
   | "REQUIRES_SIM"
   | "REQUIRES_SMS_PERMISSION"
   | "REQUIRES_DEFAULT_SMS_ROLE"
+  | "SUPPORTS_SUBJECT"
+  | "SUPPORTS_THREADS"
+  | "SUPPORTS_ATTACHMENTS"
   | "SUPPORTS_MEDIA"
   | "SUPPORTS_PRODUCT_CARD";
 
@@ -521,6 +527,7 @@ export interface ChannelEndpointSummary {
   readinessErrorCode?: string | null;
   executionEnvironment?: "server" | "android-device";
   executionDeviceId?: string | null;
+  executionMailboxId?: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
 }
@@ -548,6 +555,62 @@ export interface ChannelSelectionResult {
 export interface ChannelMessageSendResult {
   message: ConversationMessageSummary;
   selection: ChannelSelectionResult;
+}
+
+export type ConnectedMailboxProvider = "gmail" | "outlook";
+
+export type ConnectedMailboxStatus =
+  "connected" | "reauthorization_required" | "disconnected" | "error";
+
+export type ConnectedMailboxReadiness =
+  "READY" | "REAUTHORIZATION_REQUIRED" | "NOT_CONFIGURED" | "ERROR";
+
+export interface ConnectedMailboxSummary {
+  id: string;
+  businessId: string;
+  address: string;
+  provider: ConnectedMailboxProvider;
+  providerAccountId: string;
+  status: ConnectedMailboxStatus;
+  readiness: ConnectedMailboxReadiness;
+  canSend: boolean;
+  canReceive: boolean;
+  isDefault: boolean;
+  ingestUnknownSenders: boolean;
+  automaticReplyEnabled: boolean;
+  automaticReplyText: string | null;
+  connectedAt: string;
+  lastSyncAt: string | null;
+  lastErrorCode: string | null;
+  disconnectedAt: string | null;
+  updatedAt: string;
+}
+
+export interface ConnectedMailboxProviderSummary {
+  provider: ConnectedMailboxProvider;
+  displayName: string;
+  configured: boolean;
+  canSend: boolean;
+  canReceive: boolean;
+}
+
+export interface ConnectedMailboxOAuthStartSummary {
+  provider: ConnectedMailboxProvider;
+  authorizationUrl: string;
+  expiresAt: string;
+}
+
+export interface ConnectedMailboxSyncSummary {
+  mailbox: ConnectedMailboxSummary;
+  fetched: number;
+  ingested: number;
+  deduplicated: number;
+  filtered: number;
+}
+
+export interface TrustedMessageAttachmentReference {
+  resourceType: "invoice";
+  resourceId: string;
 }
 
 export type NativeSmsDeviceReadiness =
@@ -673,6 +736,12 @@ export interface ConversationMessageSummary {
   selectedChannel?: MessageChannel;
   actualChannel?: MessageChannel | null;
   providerMessageId?: string | null;
+  subject?: string | null;
+  externalThreadId?: string | null;
+  senderAddress?: string | null;
+  recipientAddresses?: string[];
+  ccAddresses?: string[];
+  bccAddresses?: string[];
   provider?: ChannelProvider;
   direction?: "inbound" | "outbound";
   externalConversationId?: string | null;

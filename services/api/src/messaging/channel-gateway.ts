@@ -32,7 +32,16 @@ export type ChannelErrorCode =
   | "SMS_SIM_SELECTION_REQUIRED"
   | "SMS_NO_SERVICE"
   | "SMS_SEND_FAILED"
-  | "SMS_DELIVERY_UNKNOWN";
+  | "SMS_DELIVERY_UNKNOWN"
+  | "EMAIL_MAILBOX_NOT_CONNECTED"
+  | "EMAIL_MAILBOX_NOT_FOUND"
+  | "EMAIL_REAUTHORIZATION_REQUIRED"
+  | "EMAIL_RECIPIENT_NOT_FOUND"
+  | "EMAIL_INVALID_RECIPIENT"
+  | "EMAIL_SEND_FAILED"
+  | "EMAIL_PROVIDER_UNAVAILABLE"
+  | "EMAIL_ATTACHMENT_UNAVAILABLE"
+  | "EMAIL_SYNC_FAILED";
 
 export class ChannelGatewayError extends Error {
   constructor(
@@ -51,12 +60,23 @@ export interface OutboundChannelMessage {
   customerId: string | null;
   idempotencyKey: string;
   text: string;
+  subject?: string;
+  replyToProviderMessageId?: string | null;
+  externalThreadId?: string | null;
+  attachments?: OutboundChannelAttachment[];
   endpoint: ChannelEndpointSummary;
+}
+
+export interface OutboundChannelAttachment {
+  filename: string;
+  mimeType: string;
+  contentBase64: string;
 }
 
 export interface ChannelSendResult {
   accepted: boolean;
   providerMessageId: string | null;
+  externalThreadId?: string | null;
   status: "queued" | "sent" | "delivered";
 }
 
@@ -102,6 +122,18 @@ export interface NativeSmsDeviceTransport {
     commandId: string;
     waitingForDevice: boolean;
   };
+}
+
+export interface EmailMailboxTransport {
+  readiness(businessId?: string): {
+    configured: boolean;
+    authorized: boolean;
+    status: "available" | "unavailable" | "authorization_required" | "error";
+    mailboxId: string | null;
+    configurationRequirement: string | null;
+    errorCode: ChannelErrorCode | null;
+  };
+  send(request: OutboundChannelMessage): Promise<ChannelSendResult>;
 }
 
 export class ChannelGateway {
@@ -156,6 +188,8 @@ export class ChannelGateway {
       readinessErrorCode: readiness.readinessErrorCode ?? null,
       executionEnvironment: execution.environment,
       executionDeviceId: execution.deviceId,
+      executionMailboxId:
+        typeof channel.metadata.mailboxId === "string" ? channel.metadata.mailboxId : null,
       lastInboundAt: channel.lastInboundAt,
       lastOutboundAt: channel.lastOutboundAt
     };
@@ -262,8 +296,10 @@ export class ChannelGateway {
     }
     if (endpoint.status === "error") {
       throw new ChannelGatewayError(
-        "SMS_DEVICE_UNAVAILABLE",
-        "The linked Android SMS device reported an error."
+        endpoint.provider === "email" ? "EMAIL_PROVIDER_UNAVAILABLE" : "SMS_DEVICE_UNAVAILABLE",
+        endpoint.provider === "email"
+          ? "The connected mailbox provider reported an error."
+          : "The linked Android SMS device reported an error."
       );
     }
     if (endpoint.status === "offline" && !endpoint.capabilities.includes("SUPPORTS_OFFLINE")) {
@@ -271,15 +307,21 @@ export class ChannelGateway {
     }
     if (!endpoint.configured || endpoint.status === "unavailable") {
       throw new ChannelGatewayError(
-        endpoint.provider === "native_sms" ? "SMS_DEVICE_UNAVAILABLE" : "CHANNEL_NOT_CONNECTED",
+        endpoint.provider === "native_sms"
+          ? "SMS_DEVICE_UNAVAILABLE"
+          : endpoint.provider === "email"
+            ? "EMAIL_MAILBOX_NOT_CONNECTED"
+            : "CHANNEL_NOT_CONNECTED",
         endpoint.provider === "native_sms"
           ? "No authenticated SMS-capable Android device is available."
-          : "The selected channel is not connected."
+          : endpoint.provider === "email"
+            ? "No authorized mailbox is connected to this business."
+            : "The selected channel is not connected."
       );
     }
     if (!endpoint.authorized || endpoint.status === "authorization_required") {
       throw new ChannelGatewayError(
-        "PROVIDER_AUTH_EXPIRED",
+        endpoint.provider === "email" ? "EMAIL_REAUTHORIZATION_REQUIRED" : "PROVIDER_AUTH_EXPIRED",
         "The selected provider needs authorization."
       );
     }
@@ -374,6 +416,19 @@ export function createChannelGatewayFromEnvironment(
         "REQUIRES_DEFAULT_SMS_ROLE"
       ],
       "No authenticated SMS-capable Android device is registered."
+    ),
+    disabledAdapter(
+      "email",
+      [
+        "CAN_SEND",
+        "CAN_RECEIVE",
+        "CAN_REPLY",
+        "CAN_INITIATE",
+        "SUPPORTS_SUBJECT",
+        "SUPPORTS_THREADS",
+        "SUPPORTS_ATTACHMENTS"
+      ],
+      "Connect an authorized Gmail or Outlook mailbox."
     )
   ]);
 }
@@ -388,7 +443,8 @@ export function providerToMessageChannel(provider: ChannelProvider): MessageChan
     tiktok: "tiktok_business",
     x: "x_dm",
     sms: "sms",
-    native_sms: "native_sms"
+    native_sms: "native_sms",
+    email: "email"
   };
   return channels[provider];
 }
@@ -618,6 +674,38 @@ export function createNativeSmsChannelAdapter(
   };
 }
 
+export function createEmailChannelAdapter(
+  transport: EmailMailboxTransport
+): MessagingChannelAdapter {
+  const capabilities: ChannelCapability[] = [
+    "CAN_SEND",
+    "CAN_RECEIVE",
+    "CAN_REPLY",
+    "CAN_INITIATE",
+    "SUPPORTS_SUBJECT",
+    "SUPPORTS_THREADS",
+    "SUPPORTS_ATTACHMENTS"
+  ];
+  return {
+    provider: "email",
+    readiness: (context) => {
+      const state = transport.readiness(context?.businessId);
+      return {
+        provider: "email",
+        configured: state.configured,
+        authorized: state.authorized,
+        capabilities: [...capabilities],
+        status: state.status,
+        configurationRequirement: state.configurationRequirement,
+        readinessErrorCode: state.errorCode
+      };
+    },
+    getCapabilities: () => [...capabilities],
+    executionContext: () => ({ environment: "server", deviceId: null }),
+    sendMessage: (request) => transport.send(request)
+  };
+}
+
 function activityTime(endpoint: ChannelEndpointSummary): number {
   return Math.max(
     endpoint.lastInboundAt === null ? 0 : Date.parse(endpoint.lastInboundAt),
@@ -651,7 +739,16 @@ const channelErrorCodes = new Set<ChannelErrorCode>([
   "SMS_SIM_SELECTION_REQUIRED",
   "SMS_NO_SERVICE",
   "SMS_SEND_FAILED",
-  "SMS_DELIVERY_UNKNOWN"
+  "SMS_DELIVERY_UNKNOWN",
+  "EMAIL_MAILBOX_NOT_CONNECTED",
+  "EMAIL_MAILBOX_NOT_FOUND",
+  "EMAIL_REAUTHORIZATION_REQUIRED",
+  "EMAIL_RECIPIENT_NOT_FOUND",
+  "EMAIL_INVALID_RECIPIENT",
+  "EMAIL_SEND_FAILED",
+  "EMAIL_PROVIDER_UNAVAILABLE",
+  "EMAIL_ATTACHMENT_UNAVAILABLE",
+  "EMAIL_SYNC_FAILED"
 ]);
 
 function unavailableReadiness(provider: ChannelProvider): ChannelProviderReadiness {

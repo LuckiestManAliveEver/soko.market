@@ -56,6 +56,8 @@ import type {
   SyncMutationType,
   ConversationKind,
   ChannelProvider,
+  ConnectedMailboxProvider,
+  TrustedMessageAttachmentReference,
   ConversationMessageContent,
   E2eePublicKey,
   MessageChannel,
@@ -466,8 +468,37 @@ interface ChannelMessageBody {
   customerName?: string;
   conversationId?: string;
   provider?: string;
+  mailboxId?: string;
+  subject?: string;
+  replyToMessageId?: string;
+  attachments?: unknown;
   text?: string;
   idempotencyKey?: string;
+}
+
+interface ConnectedMailboxParams extends BusinessParams {
+  mailboxId: string;
+}
+
+interface ConnectedMailboxOAuthParams {
+  provider: string;
+}
+
+interface ConnectedMailboxOAuthQuery {
+  code?: string;
+  error?: string;
+  state?: string;
+}
+
+interface ConnectedMailboxSyncBody {
+  historyDays?: number;
+}
+
+interface ConnectedMailboxUpdateBody {
+  isDefault?: boolean;
+  ingestUnknownSenders?: boolean;
+  automaticReplyEnabled?: boolean;
+  automaticReplyText?: string | null;
 }
 
 interface ChannelLinkGrantBody {
@@ -3943,6 +3974,239 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  app.get(
+    "/businesses/:businessId/mailboxes/providers",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          providers: store.listConnectedMailboxProviders({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: parseString(request.params.businessId, "businessId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/mailboxes",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          mailboxes: store.listConnectedMailboxes({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: parseString(request.params.businessId, "businessId")
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/mailboxes/oauth/:provider/start",
+    async (
+      request: FastifyRequest<{
+        Params: BusinessParams & ConnectedMailboxOAuthParams;
+      }>,
+      reply
+    ) => {
+      try {
+        const provider = parseConnectedMailboxProvider(request.params.provider);
+        const apiOrigin = new URL(defaultOAuthRedirectUri(request)).origin;
+        const redirectUri = new URL(
+          `/v1/mailboxes/oauth/${provider}/callback`,
+          apiOrigin
+        ).toString();
+        const requestedOrigin = request.headers.origin;
+        const returnOrigin =
+          requestedOrigin !== undefined &&
+          (requestedOrigin === apiOrigin || oauthAllowedRedirectOrigins.has(requestedOrigin))
+            ? requestedOrigin
+            : apiOrigin;
+        return store.beginConnectedMailboxOAuth({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          provider,
+          redirectUri,
+          returnUrl: new URL("/?mailbox=connected", returnOrigin).toString()
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/mailboxes/oauth/:provider/callback",
+    async (
+      request: FastifyRequest<{
+        Params: ConnectedMailboxOAuthParams;
+        Querystring: ConnectedMailboxOAuthQuery;
+      }>,
+      reply
+    ) => {
+      try {
+        if (request.query.error !== undefined) {
+          throw new Cp2Error(401, "mailbox_oauth_denied", "Mailbox authorization was denied.");
+        }
+        const result = await store.completeConnectedMailboxOAuth({
+          provider: parseConnectedMailboxProvider(request.params.provider),
+          code: parseString(request.query.code, "code"),
+          state: parseString(request.query.state, "state")
+        });
+        request.log.info(
+          {
+            event: "mailbox_connected",
+            businessId: result.mailbox.businessId,
+            mailboxId: result.mailbox.id,
+            provider: result.mailbox.provider
+          },
+          "Connected mailbox authorization completed."
+        );
+        return reply.redirect(result.returnUrl);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/mailboxes/:mailboxId",
+    async (
+      request: FastifyRequest<{
+        Params: ConnectedMailboxParams;
+        Body: ConnectedMailboxUpdateBody;
+      }>,
+      reply
+    ) => {
+      try {
+        return store.updateConnectedMailbox({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          mailboxId: parseString(request.params.mailboxId, "mailboxId"),
+          ...(request.body.isDefault === undefined
+            ? {}
+            : { isDefault: parseBoolean(request.body.isDefault, "isDefault") }),
+          ...(request.body.ingestUnknownSenders === undefined
+            ? {}
+            : {
+                ingestUnknownSenders: parseBoolean(
+                  request.body.ingestUnknownSenders,
+                  "ingestUnknownSenders"
+                )
+              }),
+          ...(request.body.automaticReplyEnabled === undefined
+            ? {}
+            : {
+                automaticReplyEnabled: parseBoolean(
+                  request.body.automaticReplyEnabled,
+                  "automaticReplyEnabled"
+                )
+              }),
+          ...(request.body.automaticReplyText === undefined
+            ? {}
+            : { automaticReplyText: parseNullableString(request.body.automaticReplyText) })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/businesses/:businessId/mailboxes/:mailboxId",
+    async (request: FastifyRequest<{ Params: ConnectedMailboxParams }>, reply) => {
+      try {
+        const mailbox = await store.disconnectConnectedMailbox({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          mailboxId: parseString(request.params.mailboxId, "mailboxId")
+        });
+        request.log.info(
+          {
+            event: "mailbox_disconnected",
+            businessId: mailbox.businessId,
+            mailboxId: mailbox.id,
+            provider: mailbox.provider
+          },
+          "Connected mailbox disconnected."
+        );
+        return mailbox;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/mailboxes/:mailboxId/sync",
+    async (
+      request: FastifyRequest<{
+        Params: ConnectedMailboxParams;
+        Body: ConnectedMailboxSyncBody;
+      }>,
+      reply
+    ) => {
+      try {
+        const synchronized = await store.syncConnectedMailbox({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          mailboxId: parseString(request.params.mailboxId, "mailboxId"),
+          ...(request.body.historyDays === undefined
+            ? {}
+            : {
+                historyDays: parseNonNegativeInteger(request.body.historyDays, "historyDays")
+              })
+        });
+        request.log.info(
+          {
+            event: "mailbox_sync_completed",
+            businessId: synchronized.mailbox.businessId,
+            mailboxId: synchronized.mailbox.id,
+            provider: synchronized.mailbox.provider,
+            fetched: synchronized.fetched,
+            ingested: synchronized.ingested,
+            deduplicated: synchronized.deduplicated,
+            filtered: synchronized.filtered
+          },
+          "Connected mailbox synchronization completed."
+        );
+        return synchronized;
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/mailboxes/:mailboxId/conversations",
+    async (
+      request: FastifyRequest<{
+        Params: ConnectedMailboxParams;
+        Body: { recipientAddress?: string; displayName?: string };
+      }>,
+      reply
+    ) => {
+      try {
+        return store.createConnectedEmailConversation({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: parseString(request.params.businessId, "businessId"),
+          mailboxId: parseString(request.params.mailboxId, "mailboxId"),
+          recipientAddress: parseString(request.body.recipientAddress, "recipientAddress"),
+          ...(request.body.displayName === undefined
+            ? {}
+            : { displayName: parseString(request.body.displayName, "displayName") })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.put(
     "/v1/devices/native-sms",
     async (request: FastifyRequest<{ Body: NativeSmsDeviceBody }>, reply) => {
@@ -4219,6 +4483,22 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           ...(request.body.provider === undefined
             ? {}
             : { provider: parseChannelProvider(request.body.provider) }),
+          ...(request.body.mailboxId === undefined
+            ? {}
+            : { mailboxId: parseString(request.body.mailboxId, "mailboxId") }),
+          ...(request.body.subject === undefined
+            ? {}
+            : { subject: parseString(request.body.subject, "subject") }),
+          ...(request.body.replyToMessageId === undefined
+            ? {}
+            : {
+                replyToMessageId: parseString(request.body.replyToMessageId, "replyToMessageId")
+              }),
+          ...(request.body.attachments === undefined
+            ? {}
+            : {
+                attachments: parseTrustedMessageAttachmentReferences(request.body.attachments)
+              }),
           text: parseString(request.body.text, "text"),
           idempotencyKey: parseString(request.body.idempotencyKey, "idempotencyKey")
         });
@@ -7047,12 +7327,19 @@ function parseChannelProvider(value: unknown): ChannelProvider {
       "tiktok",
       "x",
       "sms",
-      "native_sms"
+      "native_sms",
+      "email"
     ].includes(provider)
   ) {
     return provider as ChannelProvider;
   }
   throw new Cp2Error(400, "channel_provider_invalid", "The channel provider is invalid.");
+}
+
+function parseConnectedMailboxProvider(value: unknown): ConnectedMailboxProvider {
+  const provider = parseString(value, "provider");
+  if (provider === "gmail" || provider === "outlook") return provider;
+  throw new Cp2Error(400, "mailbox_provider_invalid", "Mailbox provider is invalid.");
 }
 
 function parseNativeSmsCommandResultStatus(
@@ -8439,6 +8726,33 @@ function parseStringArray(value: unknown, name: string, maximumItems: number): s
     throw new Cp2Error(400, `${name}_invalid`, `${name} is invalid.`);
   }
   return value.map((item, index) => parseString(item, `${name}[${index}]`));
+}
+
+function parseTrustedMessageAttachmentReferences(
+  value: unknown
+): TrustedMessageAttachmentReference[] {
+  if (!Array.isArray(value) || value.length > 3) {
+    throw new Cp2Error(
+      400,
+      "EMAIL_ATTACHMENT_UNAVAILABLE",
+      "Email attachments must contain at most three trusted resource references."
+    );
+  }
+  return value.map((item, index) => {
+    const record = parseRequestBody(item);
+    const resourceType = parseString(record.resourceType, `attachments[${index}].resourceType`);
+    if (resourceType !== "invoice") {
+      throw new Cp2Error(
+        400,
+        "EMAIL_ATTACHMENT_UNAVAILABLE",
+        "Only trusted invoice resources can currently be attached to email."
+      );
+    }
+    return {
+      resourceType,
+      resourceId: parseString(record.resourceId, `attachments[${index}].resourceId`)
+    };
+  });
 }
 
 function parseNetworkInviteContacts(value: unknown): Array<{

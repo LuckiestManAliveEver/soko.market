@@ -146,6 +146,8 @@ INSERT INTO purge_table_plan (table_name, classification, delete_order, reason) 
   ('channel_identity_link_grants', 'DELETE', 12, 'Hashed external identity link grants'),
   ('native_sms_devices', 'DELETE', 12, 'Authenticated Android SMS execution devices'),
   ('native_sms_device_commands', 'DELETE', 12, 'Queued Android SMS device commands'),
+  ('connected_mailboxes', 'DELETE', 12, 'Business-scoped authorized email mailboxes'),
+  ('connected_mailbox_oauth_sessions', 'DELETE', 12, 'Mailbox OAuth authorization sessions'),
   ('customer_runtime_capabilities', 'DELETE', 12, 'Hashed customer commerce capabilities'),
   ('product_media', 'DELETE', 12, 'Business product media'),
   ('product_capture_jobs', 'DELETE', 12, 'Business camera capture jobs'),

@@ -55,6 +55,11 @@ import type {
   ClientInferenceCompletion,
   ChannelEndpointSummary,
   ChannelProvider,
+  ConnectedMailboxOAuthStartSummary,
+  ConnectedMailboxProvider,
+  ConnectedMailboxProviderSummary,
+  ConnectedMailboxSummary,
+  ConnectedMailboxSyncSummary,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   E2eeDeviceSummary,
@@ -399,6 +404,8 @@ interface SessionResponse {
     phoneUpdatedAt?: string | null;
     phoneSource?: "phone_login" | "shop_registration" | null;
     publicPhoneEnabled?: boolean;
+    emailAddress?: string | null;
+    emailVerificationStatus?: "unverified" | "verified" | null;
   };
   session: {
     id: string;
@@ -5722,19 +5729,46 @@ export function OwnerApp() {
       requireMessagingSignIn();
       return;
     }
-    const created = await postJson<ConversationView>("/v1/conversations", {
-      kind: "personal",
-      activeShopId: null,
-      recipient,
-      title
-    });
+    let created: ConversationView;
+    if (business !== null && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(recipient.trim())) {
+      const response = await getJson<{ mailboxes: ConnectedMailboxSummary[] }>(
+        `/businesses/${business.id}/mailboxes`
+      );
+      const eligible = response.mailboxes.filter(
+        (mailbox) => mailbox.status === "connected" && mailbox.canSend
+      );
+      const mailbox = eligible.find((candidate) => candidate.isDefault) ?? eligible[0];
+      if (mailbox === undefined) {
+        throw new Error(
+          "Connect an authorized Gmail or Outlook mailbox in Agent settings before starting email."
+        );
+      }
+      created = await postJson<ConversationView>(
+        `/businesses/${business.id}/mailboxes/${encodeURIComponent(mailbox.id)}/conversations`,
+        {
+          recipientAddress: recipient.trim(),
+          ...(title.trim().length === 0 ? {} : { displayName: title.trim() })
+        }
+      );
+    } else {
+      created = await postJson<ConversationView>("/v1/conversations", {
+        kind: "personal",
+        activeShopId: null,
+        recipient,
+        title
+      });
+    }
     await loadMessagingInbox(created.conversation.id);
     navigateToOwnerRoute({
       mode,
       view: "chat",
       conversationId: created.conversation.id
     });
-    setStatusMessage("Conversation created");
+    setStatusMessage(
+      created.channels?.some((channel) => channel.provider === "email") === true
+        ? "Email draft ready. Add a subject and message."
+        : "Conversation created"
+    );
   }
 
   async function updateConversationPreference(
@@ -6101,7 +6135,12 @@ export function OwnerApp() {
     );
   }
 
-  async function sendChatDraft(draftOverride?: string, preferredProvider?: ChannelProvider) {
+  async function sendChatDraft(
+    draftOverride?: string,
+    preferredProvider?: ChannelProvider,
+    emailSubject?: string,
+    emailInvoiceId?: string
+  ) {
     if (session === null) {
       requireMessagingSignIn();
       return;
@@ -6160,6 +6199,17 @@ export function OwnerApp() {
         }>(`/businesses/${business.id}/channel-messages`, {
           conversationId: activeConversationId,
           ...(preferredProvider === undefined ? {} : { provider: preferredProvider }),
+          ...(preferredProvider === "email" && emailSubject !== undefined
+            ? { subject: emailSubject }
+            : {}),
+          ...(preferredProvider === "email" && replyToMessageId !== null
+            ? { replyToMessageId }
+            : {}),
+          ...(preferredProvider === "email" && emailInvoiceId !== undefined
+            ? {
+                attachments: [{ resourceType: "invoice", resourceId: emailInvoiceId }]
+              }
+            : {}),
           text: message,
           idempotencyKey: `web-channel:${clientMessageId}`
         });
@@ -7865,6 +7915,12 @@ export function OwnerApp() {
             oauthProviders={oauthProviders}
             ownerLabel={userLabel}
             ownerUser={session?.user ?? null}
+            registeredEmail={
+              session?.user.emailAddress ??
+              (session?.account.primaryAuthChannel === "email"
+                ? session.account.primaryAuthDestination
+                : null)
+            }
             storefrontUrl={publicStorefrontUrl}
             shops={sokoSessionContext?.shops ?? []}
             onSwitchBusiness={switchActiveBusiness}
@@ -7942,8 +7998,15 @@ export function OwnerApp() {
               businessName={business?.name ?? "Your shop"}
               hasBusiness={business !== null}
               chatDraft={chatDraft}
+              initialEmailSubject={
+                activeConversation?.messages
+                  .slice()
+                  .reverse()
+                  .find((message) => message.provider === "email" && message.subject)?.subject ?? ""
+              }
               customerCount={customers.length}
               invoiceCount={invoices.length}
+              invoices={invoices}
               messages={chatMessages}
               isAuthenticated={session !== null}
               conversations={conversationInbox}
@@ -8076,8 +8139,10 @@ export function OwnerApp() {
               onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
               marketplaceIntroComplete={isMarketplaceIntroComplete}
               marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}
-              onSend={(draft, provider) =>
-                void runAction("chat-send", () => sendChatDraft(draft, provider))
+              onSend={(draft, provider, subject, invoiceId) =>
+                void runAction("chat-send", () =>
+                  sendChatDraft(draft, provider, subject, invoiceId)
+                )
               }
               channelEndpoints={activeConversation?.channels ?? []}
               onCancelGeneration={() => void cancelBrowserGeneration()}
@@ -12651,6 +12716,7 @@ interface AgentProfileSurfaceProps {
   oauthProviders: OAuthProviderSummary[];
   ownerLabel: string;
   ownerUser: SessionResponse["user"] | null;
+  registeredEmail: string | null;
   storefrontUrl: string;
   shops: AccountShopSummary[];
   onSwitchBusiness: (shop: AccountShopSummary) => void;
@@ -12680,6 +12746,7 @@ function AgentProfileSurface({
   oauthProviders,
   ownerLabel,
   ownerUser,
+  registeredEmail,
   storefrontUrl,
   shops,
   onSwitchBusiness,
@@ -12728,6 +12795,10 @@ function AgentProfileSurface({
   const [businessSocialAccounts, setBusinessSocialAccounts] = useState<
     ConnectedSocialAccountSummary[]
   >([]);
+  const [connectedMailboxProviders, setConnectedMailboxProviders] = useState<
+    ConnectedMailboxProviderSummary[]
+  >([]);
+  const [connectedMailboxes, setConnectedMailboxes] = useState<ConnectedMailboxSummary[]>([]);
   const [deviceSessions, setDeviceSessions] = useState<DeviceSessionSummary[]>([]);
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
   const [mcpTokenName, setMcpTokenName] = useState("My integration");
@@ -12753,7 +12824,7 @@ function AgentProfileSurface({
   const [ownerPhoneError, setOwnerPhoneError] = useState("");
   const [ownerPhoneMergeRequired, setOwnerPhoneMergeRequired] = useState(false);
   const [ownerPhoneMergePin, setOwnerPhoneMergePin] = useState("");
-  const [ownerEmail, setOwnerEmail] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState(ownerUser?.emailAddress ?? "");
   const [emailChallengeId, setEmailChallengeId] = useState("");
   const [emailVerificationCode, setEmailVerificationCode] = useState("");
   const [emailMergeRequired, setEmailMergeRequired] = useState(false);
@@ -12877,6 +12948,7 @@ function AgentProfileSurface({
     setInferencePreferences(readClientInferencePreferences(accountId, business.id));
     void loadConnectedSocialAccounts();
     void loadBusinessSocialAccounts();
+    void loadConnectedMailboxes();
     void loadPasskeys();
     void loadMfaFactors();
     void loadDeviceSessions();
@@ -13987,6 +14059,65 @@ function AgentProfileSurface({
     }
   }
 
+  async function loadConnectedMailboxes() {
+    try {
+      const [providerResponse, mailboxResponse] = await Promise.all([
+        getJson<{ providers: ConnectedMailboxProviderSummary[] }>(
+          `/businesses/${business.id}/mailboxes/providers`
+        ),
+        getJson<{ mailboxes: ConnectedMailboxSummary[] }>(`/businesses/${business.id}/mailboxes`)
+      ]);
+      setConnectedMailboxProviders(providerResponse.providers);
+      setConnectedMailboxes(mailboxResponse.mailboxes);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function connectMailbox(provider: ConnectedMailboxProvider) {
+    const started = await postJson<ConnectedMailboxOAuthStartSummary>(
+      `/businesses/${business.id}/mailboxes/oauth/${provider}/start`,
+      {}
+    );
+    window.location.assign(started.authorizationUrl);
+  }
+
+  async function updateMailbox(
+    mailboxId: string,
+    patch: {
+      isDefault?: boolean;
+      ingestUnknownSenders?: boolean;
+      automaticReplyEnabled?: boolean;
+      automaticReplyText?: string | null;
+    }
+  ) {
+    await patchJson<ConnectedMailboxSummary>(
+      `/businesses/${business.id}/mailboxes/${encodeURIComponent(mailboxId)}`,
+      patch
+    );
+    await loadConnectedMailboxes();
+    setProfileMessage("Connected mailbox settings saved.");
+  }
+
+  async function syncMailbox(mailboxId: string, historyDays?: number) {
+    const result = await postJson<ConnectedMailboxSyncSummary>(
+      `/businesses/${business.id}/mailboxes/${encodeURIComponent(mailboxId)}/sync`,
+      historyDays === undefined ? {} : { historyDays }
+    );
+    await loadConnectedMailboxes();
+    setProfileMessage(
+      `Mailbox synced: ${result.ingested} received, ${result.deduplicated} already known, ${result.filtered} filtered.`
+    );
+  }
+
+  async function disconnectMailbox(mailboxId: string) {
+    await deleteJson<ConnectedMailboxSummary>(
+      `/businesses/${business.id}/mailboxes/${encodeURIComponent(mailboxId)}`
+    );
+    await loadConnectedMailboxes();
+    setProfileMessage("Connected mailbox disconnected. Your Soko account email was unchanged.");
+  }
+
   async function disconnectBusinessSocialAccount(identityId: string) {
     try {
       await deleteJson<{ disconnected: true; identityId: string }>(
@@ -14191,6 +14322,13 @@ function AgentProfileSurface({
       code: emailVerificationCode
     });
     onIdentityLevelChange(result.identityLevel);
+    if (ownerUser !== null) {
+      onOwnerUserChange({
+        ...ownerUser,
+        emailAddress: ownerEmail.trim(),
+        emailVerificationStatus: "verified"
+      });
+    }
     setEmailChallengeId("");
     setEmailVerificationCode("");
     setEmailMergeRequired(false);
@@ -16687,6 +16825,181 @@ function AgentProfileSurface({
               })}
           </div>
           <div className="section-heading">
+            <p className="eyebrow">Connected email channel</p>
+            <h4>Mailboxes for customer conversations</h4>
+            <p>
+              These are authorized business mailboxes used to send and receive customer email. They
+              are separate from the email used to sign in to or recover your Soko account.
+            </p>
+          </div>
+          <div className="connected-social-list" role="list" aria-label="Connected mailboxes">
+            <article className="connected-social-card" role="listitem">
+              <div>
+                <span>Soko account email</span>
+                <strong>{registeredEmail ?? "No account email registered"}</strong>
+                <p>Identity and recovery only. This address is not an email channel.</p>
+              </div>
+            </article>
+            {connectedMailboxes.map((mailbox) => (
+              <article className="connected-social-card" role="listitem" key={mailbox.id}>
+                <div>
+                  <span>{mailbox.provider === "gmail" ? "Gmail" : "Microsoft Outlook"}</span>
+                  <strong>{mailbox.address}</strong>
+                  <p>
+                    {mailbox.status.replaceAll("_", " ")}
+                    {mailbox.isDefault ? " · default sender" : ""}
+                  </p>
+                </div>
+                <div className="connected-social-meta">
+                  <span>Connected: {formatDate(mailbox.connectedAt)}</span>
+                  <span>
+                    Last sync:{" "}
+                    {mailbox.lastSyncAt === null ? "Never" : formatDate(mailbox.lastSyncAt)}
+                  </span>
+                </div>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={mailbox.ingestUnknownSenders}
+                    disabled={pendingProfileAction !== null || mailbox.status !== "connected"}
+                    onChange={(event) =>
+                      void runProfileAction(`mailbox-unknown-${mailbox.id}`, () =>
+                        updateMailbox(mailbox.id, {
+                          ingestUnknownSenders: event.target.checked
+                        })
+                      )
+                    }
+                  />
+                  Import mail from unknown senders
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={mailbox.automaticReplyEnabled}
+                    disabled={pendingProfileAction !== null || mailbox.status !== "connected"}
+                    onChange={(event) =>
+                      void runProfileAction(`mailbox-auto-reply-${mailbox.id}`, () =>
+                        updateMailbox(mailbox.id, {
+                          automaticReplyEnabled: event.target.checked,
+                          automaticReplyText:
+                            mailbox.automaticReplyText ??
+                            "Thanks for your message. We received it and will follow up shortly."
+                        })
+                      )
+                    }
+                  />
+                  Send one automatic acknowledgement per thread every 24 hours
+                </label>
+                <label>
+                  <span>Automatic acknowledgement</span>
+                  <textarea
+                    rows={2}
+                    maxLength={1000}
+                    defaultValue={mailbox.automaticReplyText ?? ""}
+                    disabled={pendingProfileAction !== null || mailbox.status !== "connected"}
+                    onBlur={(event) => {
+                      const next = event.target.value.trim();
+                      if (next === (mailbox.automaticReplyText ?? "")) return;
+                      void runProfileAction(`mailbox-auto-reply-text-${mailbox.id}`, () =>
+                        updateMailbox(mailbox.id, {
+                          automaticReplyText: next === "" ? null : next,
+                          ...(next === "" ? { automaticReplyEnabled: false } : {})
+                        })
+                      );
+                    }}
+                    placeholder="Acknowledgement text"
+                  />
+                </label>
+                <div className="row-actions">
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null || mailbox.status !== "connected"}
+                    onClick={() =>
+                      void runProfileAction(`mailbox-sync-${mailbox.id}`, () =>
+                        syncMailbox(mailbox.id)
+                      )
+                    }
+                  >
+                    Sync inbox
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null || mailbox.status !== "connected"}
+                    onClick={() =>
+                      void runProfileAction(`mailbox-history-${mailbox.id}`, () =>
+                        syncMailbox(mailbox.id, 30)
+                      )
+                    }
+                  >
+                    Import 30 days
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={
+                      pendingProfileAction !== null ||
+                      mailbox.isDefault ||
+                      mailbox.status !== "connected"
+                    }
+                    onClick={() =>
+                      void runProfileAction(`mailbox-default-${mailbox.id}`, () =>
+                        updateMailbox(mailbox.id, { isDefault: true })
+                      )
+                    }
+                  >
+                    Make default
+                  </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={pendingProfileAction !== null || mailbox.status === "disconnected"}
+                    onClick={() =>
+                      void runProfileAction(`mailbox-disconnect-${mailbox.id}`, () =>
+                        disconnectMailbox(mailbox.id)
+                      )
+                    }
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </article>
+            ))}
+            {connectedMailboxProviders
+              .filter((provider) => provider.configured)
+              .map((provider) => {
+                const alreadyConnected = connectedMailboxes.some(
+                  (mailbox) =>
+                    mailbox.provider === provider.provider && mailbox.status === "connected"
+                );
+                return (
+                  <article
+                    className="connected-social-card"
+                    role="listitem"
+                    key={provider.provider}
+                  >
+                    <div>
+                      <span>{provider.displayName}</span>
+                      <strong>{alreadyConnected ? "Add another mailbox" : "Not connected"}</strong>
+                      <p>Authorize with OAuth. Soko never stores your mailbox password.</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={pendingProfileAction !== null}
+                      onClick={() =>
+                        void runProfileAction(`mailbox-connect-${provider.provider}`, () =>
+                          connectMailbox(provider.provider)
+                        )
+                      }
+                    >
+                      Connect {provider.displayName}
+                    </button>
+                  </article>
+                );
+              })}
+          </div>
+          <div className="section-heading">
             <p className="eyebrow">{business.name}</p>
             <h4>Login methods visible to this shop</h4>
             <p>
@@ -17430,11 +17743,13 @@ interface ChatSurfaceProps {
   businessName: string;
   hasBusiness: boolean;
   chatDraft: string;
+  initialEmailSubject: string;
   channelEndpoints: ChannelEndpointSummary[];
   children: ReactNode;
   conversations: ConversationInboxItem[];
   customerCount: number;
   invoiceCount: number;
+  invoices: InvoiceSummary[];
   messages: ChatMessage[];
   isAuthenticated: boolean;
   isInboxOpen: boolean;
@@ -17510,7 +17825,7 @@ interface ChatSurfaceProps {
   onRemoveAttachment: (attachmentId: string) => void;
   onStatusChange: (status: ShopPresenceStatus) => void;
   onConfirm: (confirmationToken: string) => void;
-  onSend: (draft: string, provider?: ChannelProvider) => void;
+  onSend: (draft: string, provider?: ChannelProvider, subject?: string, invoiceId?: string) => void;
   onCancelGeneration: () => void;
   onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
   onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
@@ -17524,11 +17839,13 @@ function ChatSurface({
   businessName,
   hasBusiness,
   chatDraft,
+  initialEmailSubject,
   channelEndpoints,
   children,
   conversations,
   customerCount,
   invoiceCount,
+  invoices,
   messages,
   isAuthenticated,
   isInboxOpen,
@@ -17651,6 +17968,8 @@ function ChatSurface({
   const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
   const [externalShareNotice, setExternalShareNotice] = useState<string | null>(null);
   const [liveDraft, setLiveDraft] = useState(chatDraft);
+  const [emailSubject, setEmailSubject] = useState(initialEmailSubject);
+  const [emailInvoiceId, setEmailInvoiceId] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<ChannelProvider | null>(null);
   const draftSyncTimerRef = useRef<number | null>(null);
   const workspaceDialogRef = useRef<HTMLElement | null>(null);
@@ -17669,6 +17988,9 @@ function ChatSurface({
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === activeConversationId
   );
+  const selectedEmailCustomerId = channelEndpoints.find(
+    (endpoint) => endpoint.provider === "email"
+  )?.customerId;
   const visibleConversations = showMessageThread
     ? conversations.filter((conversation) => {
         const query = inboxSearch.trim().toLowerCase();
@@ -17710,7 +18032,12 @@ function ChatSurface({
 
   function sendLiveDraft() {
     clearDraftSyncTimer();
-    onSend(liveDraft, selectedProvider ?? undefined);
+    onSend(
+      liveDraft,
+      selectedProvider ?? undefined,
+      selectedProvider === "email" ? emailSubject : undefined,
+      selectedProvider === "email" && emailInvoiceId !== "" ? emailInvoiceId : undefined
+    );
   }
 
   function openSmsHandoff(recipient: string, label: string) {
@@ -17747,6 +18074,11 @@ function ChatSurface({
   useEffect(() => {
     setLiveDraft(chatDraft);
   }, [chatDraft]);
+
+  useEffect(() => {
+    setEmailSubject(initialEmailSubject);
+    setEmailInvoiceId("");
+  }, [activeConversationId, initialEmailSubject]);
 
   useEffect(() => {
     const available = channelEndpoints.find(
@@ -18614,6 +18946,42 @@ function ChatSurface({
                 </select>
               </label>
             ) : null}
+            {selectedProvider === "email" ? (
+              <>
+                <label className="composer-input">
+                  <span>Subject</span>
+                  <input
+                    aria-label="Email subject"
+                    required
+                    maxLength={200}
+                    value={emailSubject}
+                    onChange={(event) => setEmailSubject(event.target.value)}
+                    placeholder="Required for email"
+                  />
+                </label>
+                <label className="composer-input">
+                  <span>Trusted attachment</span>
+                  <select
+                    aria-label="Attach a confirmed invoice"
+                    value={emailInvoiceId}
+                    onChange={(event) => setEmailInvoiceId(event.target.value)}
+                  >
+                    <option value="">No attachment</option>
+                    {invoices
+                      .filter(
+                        (invoice) =>
+                          invoice.status === "confirmed" &&
+                          invoice.customerId === selectedEmailCustomerId
+                      )
+                      .map((invoice) => (
+                        <option value={invoice.id} key={invoice.id}>
+                          Invoice {invoice.invoiceNumber} · {invoice.customerName ?? "Customer"}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
             <label className="composer-input">
               <span>Message</span>
               <textarea
@@ -18672,7 +19040,9 @@ function ChatSurface({
                 type="button"
                 onClick={sendLiveDraft}
                 disabled={
-                  isSending || (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
+                  isSending ||
+                  (selectedProvider === "email" && emailSubject.trim().length === 0) ||
+                  (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
                 }
                 aria-busy={isSending}
               >
@@ -20924,7 +21294,12 @@ function conversationTitle(view: ConversationView, accountId: string): string {
 
 function conversationMessageText(message: ConversationMessageSummary): string {
   if (message.deletedAt) return "Message deleted";
-  if (message.content.type === "text") return message.content.text || "Attachment";
+  if (message.content.type === "text") {
+    const body = message.content.text || "Attachment";
+    return message.provider === "email" && message.subject
+      ? `Subject: ${message.subject}\n\n${body}`
+      : body;
+  }
   if (message.content.type === "encrypted") return "Encrypted message";
   if (message.content.type === "confirmation") return message.content.prompt;
   if (message.content.type === "storefront") return "Shared a storefront";
@@ -21041,7 +21416,8 @@ function formatChannelProvider(provider: ChannelProvider): string {
     tiktok: "TikTok",
     x: "X",
     sms: "SMS",
-    native_sms: "SMS via Android"
+    native_sms: "SMS via Android",
+    email: "Email"
   };
   return labels[provider];
 }

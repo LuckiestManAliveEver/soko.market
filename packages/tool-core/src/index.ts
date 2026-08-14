@@ -1268,12 +1268,32 @@ export function validateRuntimeToolInput(
       const conversationId =
         typeof input.conversationId === "string" ? input.conversationId.trim() : "";
       const customerName = typeof input.customerName === "string" ? input.customerName.trim() : "";
+      const provider = typeof input.provider === "string" ? input.provider.trim() : "";
+      const subject = typeof input.subject === "string" ? input.subject.trim() : "";
       const errors: string[] = [];
       if (text.length === 0 || text.length > 4000) {
         errors.push("A message between 1 and 4000 characters is required.");
       }
       if (customerId === "" && conversationId === "" && customerName === "") {
         errors.push("Choose a canonical customer or conversation before sending.");
+      }
+      if (provider === "email" && (subject.length === 0 || subject.length > 200)) {
+        errors.push("Email requires a subject between 1 and 200 characters.");
+      }
+      if (input.attachments !== undefined) {
+        if (!Array.isArray(input.attachments) || input.attachments.length > 3) {
+          errors.push("Email supports at most three trusted attachment references.");
+        } else if (
+          input.attachments.some(
+            (attachment) =>
+              attachment === null ||
+              typeof attachment !== "object" ||
+              (attachment as Record<string, unknown>).resourceType !== "invoice" ||
+              typeof (attachment as Record<string, unknown>).resourceId !== "string"
+          )
+        ) {
+          errors.push("Email attachments must reference trusted invoice resources.");
+        }
       }
       return errors.length === 0 ? valid() : invalid(...errors);
     }
