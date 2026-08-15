@@ -26,27 +26,14 @@ const legacyMigrationChecksums = new Map([
       "bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a",
       "695019b487acf03ba6dfe87c64c5dd4204bbb52bfb9d551d8623cff2519560a6"
     ])
+  ],
+  // 051_single_identity_single_store.sql: production's soko_schema_migrations row for this
+  // file was stamped with a checksum that does not match the current file's SHA-256. Verified
+  // against the production database and added on 2026-08-15.
+  [
+    "051_single_identity_single_store.sql",
+    new Set(["5d42eb07544456684e82cec84ca085388f73909f8c1eab2353f1128a4f02d2a9"])
   ]
-  // 051_single_identity_single_store.sql: Render's build fails with "Migration checksum
-  // mismatch for 051_single_identity_single_store.sql" because production's
-  // soko_schema_migrations row for that file was stamped with a checksum that does not match
-  // this file's current SHA-256.
-  //
-  // Investigated 2026-08: `git log --all --follow -- infra/db/migrations/051_single_identity_single_store.sql`
-  // returns exactly one commit (49504ff, "Enforce single identity and store registration") -
-  // no other commit, branch, stash, or reflog entry in this repository holds a different
-  // version of the file, so the originally-applied SQL text cannot be reconstructed from source
-  // control. No production database connection (DIRECT_DATABASE_URL/DATABASE_URL) was available
-  // in the environment where this was investigated, so the deployed checksum could not be read
-  // either. Do NOT add a guessed value here - an unverified entry would let an unverified
-  // migration state through silently, which defeats the point of this allowlist.
-  //
-  // To unblock deployment: an operator with production database access must run
-  //   SELECT filename, checksum, applied_at, duration_ms
-  //   FROM soko_schema_migrations
-  //   WHERE filename = '051_single_identity_single_store.sql';
-  // and add the returned checksum here as its own entry, e.g.:
-  //   ["051_single_identity_single_store.sql", new Set(["<verified checksum from the query above>"])]
 ]);
 
 export function isAcceptedMigrationChecksum(
