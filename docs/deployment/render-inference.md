@@ -1,12 +1,23 @@
 # Deploying private inference on Render
 
+> **This is now an optional backend-inference provider.** The currently deployed provider is
+> Cloudflare Workers AI — see [Deploying inference on Cloudflare Workers](./cloudflare-workers-ai.md).
+> Both implement the same backend-inference HTTP protocol (`GET /health/ready`, `GET /v1/models`,
+> `POST /v1/models/:modelId/probe`, `POST /v1/chat/completions`), so `soko-market-api` only needs
+> `BACKEND_INFERENCE_BASE_URL` / `INFERENCE_SERVICE_TOKEN` / `BACKEND_INFERENCE_MODEL_ID` repointed
+> to switch between them. This document describes the Render/Ollama service `services/ai-runtime`
+> implements; its `render.yaml` block is commented out by default because it requires a paid Render
+> plan. Uncomment it (see the comment above the `soko-market-inference` block in `render.yaml`) to
+> use it instead of, or in addition to, Cloudflare.
+
 ## Services
 
 `render.yaml` defines:
 
 - `soko-market-api`, the public Node API;
-- `soko-market-inference`, a paid private Docker service in the same Oregon region;
-- a 10 GB persistent disk mounted at `/var/lib/soko-models`;
+- `soko-market-inference`, a paid private Docker service in the same Oregon region (commented out
+  by default — see the note above);
+- a 10 GB persistent disk mounted at `/var/lib/soko-models`, used only when that service is enabled;
 - the existing frontend and operational cron services.
 
 The API uses the paid `starter` plan because Render's pre-deploy command is available only for paid
@@ -81,8 +92,10 @@ ordering.
 
 ## Required configuration
 
-The Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API.
-Do not add it to a `VITE_` variable or frontend environment.
+When this service is enabled (uncommented in `render.yaml`), restore its `fromService` linkage so
+the Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API,
+instead of the `sync: false` placeholders used for the Cloudflare-backed deployment. Do not add the
+token to a `VITE_` variable or frontend environment.
 
 API:
 

@@ -926,10 +926,10 @@ export interface BrowserInferenceAssignmentSummary {
 export interface RuntimeModelDefinition {
   id: string;
   displayName: string;
-  provider: "ollama";
+  provider: "ollama" | "cloudflare-workers-ai";
   providerModelId: string;
   executionTarget: "backend";
-  deploymentTarget: "render-private-inference";
+  deploymentTarget: "render-private-inference" | "cloudflare-workers-ai";
   contextWindow: number;
   enabled: boolean;
 }
@@ -964,6 +964,16 @@ export const runtimeModels = {
     deploymentTarget: "render-private-inference",
     contextWindow: 8_192,
     enabled: false
+  },
+  "cloudflare-backend-default": {
+    id: "cloudflare-backend-default",
+    displayName: "Cloudflare Workers AI (Llama 3.2 1B)",
+    provider: "cloudflare-workers-ai",
+    providerModelId: "@cf/meta/llama-3.2-1b-instruct",
+    executionTarget: "backend",
+    deploymentTarget: "cloudflare-workers-ai",
+    contextWindow: 60_000,
+    enabled: true
   }
 } as const satisfies Record<string, RuntimeModelDefinition>;
 
@@ -2869,7 +2879,8 @@ export interface RuntimeContextSummary {
   knowledgeFactCount: number;
 }
 
-export type RuntimeModelProviderName = "browser" | "llama.cpp" | "ollama" | "openai" | "test";
+export type RuntimeModelProviderName =
+  "browser" | "llama.cpp" | "ollama" | "openai" | "test" | "cloudflare-workers-ai";
 
 export type RuntimeModelAdapterStatus =
   "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";

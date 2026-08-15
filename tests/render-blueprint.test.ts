@@ -75,19 +75,25 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(blueprint).toContain("services/ai-runtime/**");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
-    expect(blueprint).toContain("type: pserv\n    name: soko-market-inference");
+    // The paid Render/Ollama private service is commented out (not deleted) because it requires
+    // a paid Render plan; Cloudflare Workers AI is the currently active backend-inference
+    // provider. See docs/deployment/cloudflare-workers-ai.md and docs/deployment/render-inference.md.
+    expect(blueprint).not.toMatch(/\n {2}- type: pserv\n {4}name: soko-market-inference/u);
+    expect(blueprint).toContain("# - type: pserv");
+    expect(blueprint).toContain("#   name: soko-market-inference");
     expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
     expect(blueprint).toContain("mountPath: /var/lib/soko-models");
-    expect(blueprint).toContain("property: hostport");
-    expect(blueprint).toContain("envVarKey: INFERENCE_SERVICE_TOKEN");
-    expect(blueprint).toContain("INFERENCE_SERVICE_TOKEN\n        generateValue: true");
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
+    expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL\n        sync: false");
+    expect(blueprint).toContain("INFERENCE_SERVICE_TOKEN\n        sync: false");
+    expect(blueprint).toContain("BACKEND_INFERENCE_MODEL_ID\n        value: cloudflare-backend-default");
+    expect(blueprint).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
     const inference = blueprint.slice(
       blueprint.indexOf("name: soko-market-inference"),
       blueprint.indexOf("name: soko-market-web")
     );
     expect(inference).not.toContain("healthCheckPath:");
-    expect(inference).toContain('OLLAMA_NO_CLOUD\n        value: "true"');
+    expect(inference).toContain("OLLAMA_NO_CLOUD");
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "false"');
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");

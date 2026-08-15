@@ -1,4 +1,4 @@
-import type { RuntimeModelProvider } from "@soko/shared-types";
+import type { RuntimeModelProvider, RuntimeModelProviderName } from "@soko/shared-types";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
 import { createCloudFallbackProvider } from "./inference/cloud-fallback.js";
@@ -281,7 +281,7 @@ async function runtimeDiagnostic(runInference: boolean) {
       ? await backendModelAdapter.healthCheck(context)
       : await backendModelAdapter.canRun(context);
     return {
-      provider: "ollama" as const,
+      provider: backendModelAdapter.provider as RuntimeModelProviderName,
       status: result.available ? ("ready" as const) : ("unavailable" as const),
       model: config.backendInferenceModelId,
       modelAvailable: result.available,

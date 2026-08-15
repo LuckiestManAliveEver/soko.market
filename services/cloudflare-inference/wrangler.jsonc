@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "soko-cloudflare-inference",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "ai": {
+    "binding": "AI"
+  },
+  // INFERENCE_SERVICE_TOKEN is a secret, not a var — set it with:
+  //   pnpm --filter @soko/cloudflare-inference exec wrangler secret put INFERENCE_SERVICE_TOKEN
+  // CLOUDFLARE_AI_MODEL is optional; unset it to use the built-in default provider model id.
+  "vars": {
+    "CLOUDFLARE_AI_MODEL": ""
+  },
+  "observability": {
+    "enabled": true
+  }
+}

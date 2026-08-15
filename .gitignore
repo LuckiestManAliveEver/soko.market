@@ -11,6 +11,9 @@ backups/
 .env.*
 !.env.example
 mongodb/*.env
+.wrangler/
+.dev.vars
+.dev.vars.*
 *.log
 .DS_Store
 /commit.md

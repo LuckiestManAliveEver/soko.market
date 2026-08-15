@@ -96,7 +96,7 @@ export function createBackendModelAdapter(
   });
 
   return {
-    provider: "ollama",
+    provider: runtimeModel.provider,
     executionTarget: "backend",
     async canRun(context) {
       if (context.modelId !== options.modelId) {

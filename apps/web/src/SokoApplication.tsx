@@ -1341,7 +1341,8 @@ interface RuntimeTurnResult {
     status: "completed" | "needs_confirmation" | "clarifying" | "blocked" | "rate_limited";
     response: string;
     model: {
-      provider: "browser" | "llama.cpp" | "ollama" | "openai" | "test" | null;
+      provider:
+        "browser" | "llama.cpp" | "ollama" | "openai" | "test" | "cloudflare-workers-ai" | null;
       status: "disabled" | "available" | "unavailable" | "timeout" | "malformed" | "error";
       fallbackUsed: boolean;
       errorCode: string | null;
