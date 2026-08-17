@@ -576,6 +576,180 @@ describePostgres("CP2 Postgres store", () => {
     30_000
   );
 
+  it(
+    "persists customers, invoices, payments, inventory movements, product field schemas, " +
+      "public customer-care requests, and public orders across restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const connectionString = databaseUrl ?? "";
+      const uniquePhone = `254707${Date.now().toString().slice(-6)}`;
+
+      const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+      const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+
+      const invoiceProduct = await postJson<{ id: string }>(
+        app,
+        `/businesses/${business.id}/products`,
+        { name: "Invoice Sugar", sku: "SUGAR-1", unit: "kg", quantity: 20, sellingPrice: 150 },
+        sessionCookie
+      );
+      const orderProduct = await postJson<{ id: string }>(
+        app,
+        `/businesses/${business.id}/products`,
+        { name: "Order Rice", sku: "RICE-1", unit: "kg", quantity: 20, sellingPrice: 200 },
+        sessionCookie
+      );
+
+      const customer = await postJson<{ id: string; name: string }>(
+        app,
+        `/businesses/${business.id}/customers`,
+        { name: "Postgres Customer", phone: "+254700111222" },
+        sessionCookie
+      );
+
+      const fieldSchema = await postJson<{ businessId: string; fields: Array<{ id: string }> }>(
+        app,
+        `/businesses/${business.id}/products/fields`,
+        {
+          fields: [
+            { id: "name", label: "Name", inputType: "text", required: true },
+            { id: "batch", label: "Batch", inputType: "text", required: false }
+          ]
+        },
+        sessionCookie
+      );
+
+      const invoice = await postJson<{ id: string }>(
+        app,
+        `/businesses/${business.id}/invoices`,
+        {
+          customerId: customer.id,
+          taxRate: 0,
+          items: [{ productId: invoiceProduct.id, quantity: 2, unitPrice: 150 }]
+        },
+        sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${business.id}/invoices/${invoice.id}/confirm`,
+        {},
+        sessionCookie
+      );
+      const paymentResult = await postJson<{ payment: { id: string } }>(
+        app,
+        `/businesses/${business.id}/payments`,
+        { invoiceId: invoice.id, amount: 300, method: "cash" },
+        sessionCookie
+      );
+      const payment = paymentResult.payment;
+
+      const careRequest = await postJson<{ id: string }>(
+        app,
+        `/public/storefronts/${business.sokoId}/customer-care`,
+        { type: "quote", customerName: "Storefront Visitor", message: "How much for rice?" },
+        undefined
+      );
+
+      const visitorId = `visitor-${Date.now()}`;
+      const session = await postJson<{ capabilityToken: string }>(
+        app,
+        `/public/storefronts/${business.sokoId}/sessions`,
+        { visitorId, displayName: "Storefront Visitor" },
+        undefined
+      );
+      const order = await postJson<{ id: string; invoiceId: string }>(
+        app,
+        `/public/storefronts/${business.sokoId}/orders`,
+        {
+          capabilityToken: session.capabilityToken,
+          customerName: "Storefront Visitor",
+          phone: "+254700333444",
+          note: null,
+          items: [{ productId: orderProduct.id, quantity: 1 }]
+        },
+        undefined
+      );
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const restoredApp = buildApi({
+        cp2: { store: restoredStore },
+        mutationPersistenceFlush: () => restoredStore.flush()
+      });
+
+      const restoredCustomers = await getJson<Array<{ id: string; name: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/customers`,
+        sessionCookie
+      );
+      expect(restoredCustomers).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: customer.id, name: customer.name })])
+      );
+
+      const restoredFieldSchema = await getJson<{ fields: Array<{ id: string }> }>(
+        restoredApp,
+        `/businesses/${business.id}/products/fields`,
+        sessionCookie
+      );
+      expect(restoredFieldSchema.fields.map((field) => field.id)).toEqual(
+        fieldSchema.fields.map((field) => field.id)
+      );
+
+      const restoredInvoices = await getJson<Array<{ id: string; status: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/invoices`,
+        sessionCookie
+      );
+      expect(restoredInvoices).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: invoice.id, status: "confirmed" })])
+      );
+
+      const restoredPayments = await getJson<Array<{ id: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/payments`,
+        sessionCookie
+      );
+      expect(restoredPayments).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: payment.id })])
+      );
+
+      const restoredCareRequests = await getJson<Array<{ id: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/storefront/customer-care`,
+        sessionCookie
+      );
+      expect(restoredCareRequests).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: careRequest.id })])
+      );
+
+      const restoredOrders = await getJson<Array<{ id: string; invoiceId: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/storefront/orders`,
+        sessionCookie
+      );
+      expect(restoredOrders).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: order.id, invoiceId: order.invoiceId })])
+      );
+
+      const restoredMovements = (
+        restoredStore as unknown as {
+          salesDomain: {
+            inventoryMovementsForBusiness: (businessId: string) => Array<{ productId: string }>;
+          };
+        }
+      ).salesDomain.inventoryMovementsForBusiness(business.id);
+      expect(restoredMovements).toEqual(
+        expect.arrayContaining([expect.objectContaining({ productId: invoiceProduct.id })])
+      );
+
+      await restoredApp.close();
+    },
+    60_000
+  );
+
   it("persists phone-first access, verified recovery email, and password login across restarts", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";

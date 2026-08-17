@@ -50,7 +50,6 @@ import { NetworkDomain } from "./domains/network/store.js";
 import { providerDisplayName } from "./domains/network/shared.js";
 import { MessagingDomain } from "./domains/messaging/store.js";
 import {
-  normalizeEmailIdentity,
   requirePublicStorefrontBusiness,
   type ChannelIdentityLinkGrantRecord,
   type ConnectedMailboxOAuthSessionRecord,
@@ -71,6 +70,8 @@ import {
   publicAgentReplyText,
   type BusinessAgentProfileSummary
 } from "./domains/agent-runtime/shared.js";
+import { SalesDomain } from "./domains/sales/store.js";
+import { type ProductMediaRecord } from "./domains/sales/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -96,7 +97,6 @@ import type {
   BusinessRole,
   BusinessSummary,
   CatalogueQueryResult,
-  ChannelProvider,
   ComplianceRetentionSummary,
   AgentRouteSummary,
   CountryTaxConfigSummary,
@@ -108,7 +108,6 @@ import type {
   ConversationSummary,
   PlatformIdentitySummary,
   ProviderUpdateReceiptSummary,
-  CustomerDebtSummary,
   CustomerSummary,
   DataExportBundle,
   DataExportBundleSummary,
@@ -117,11 +116,8 @@ import type {
   DocumentImportJobSummary,
   DocumentImportSourceSummary,
   E2eeDeviceSummary,
-  InvoicePaymentSummary,
   InventoryMovementSummary,
   InstalledAgentModelSummary,
-  InvoiceItemSummary,
-  InvoicePreview,
   InvoiceSummary,
   LaunchChecklistItemSummary,
   LaunchIncidentSummary,
@@ -147,18 +143,14 @@ import type {
   OAuthSessionSummary,
   PaymentSummary,
   PasskeySummary,
-  ProductFieldDefinition,
   ProductFieldSchemaSummary,
-  ProductFieldInputType,
   ProductSummary,
   BuyOrderSummary,
   ProductCaptureJobSummary,
-  ProductMediaSummary,
   StatusBroadcastSummary,
   StatusOrderSummary,
   UnifiedCheckoutSummary,
   PublicCustomerCareRequestSummary,
-  PublicCustomerCareRequestType,
   PublicOrderSummary,
   PublicStorefrontMessageSummary,
   PublicShopPresenceSummary,
@@ -238,35 +230,12 @@ import {
 } from "./phone-identity.js";
 import {
   accountDeletionScheduledEvent,
-  customerCreatedEvent,
-  customerUpdatedEvent,
-  createInvoicePreview,
-  createInvoicePaymentSummary,
   dataExportCreatedEvent,
-  invoiceConfirmedEvent,
-  invoiceCreatedEvent,
-  invoiceUpdatedEvent,
   isBusinessRole,
   normalizeAccountDeletionInput,
-  normalizeContactRecordInput,
-  normalizeInvoiceInput,
-  normalizePaymentInput,
-  normalizeProductInput,
-  queryCatalogueProducts,
-  normalizeStockAdjustmentInput,
-  paymentRecordedEvent,
   permissionsForRole,
-  productCreatedEvent,
-  productDeletedEvent,
-  productUpdatedEvent,
   roleCan,
-  stockAdjustedEvent,
   validateAccountDeletionInput,
-  validateContactRecordInput,
-  validateInvoiceInput,
-  validatePaymentInput,
-  validateProductInput,
-  validateStockAdjustmentInput,
   type AccountDeletionInput,
   type BusinessPermission,
   type ContactRecordInput,
@@ -409,6 +378,7 @@ export type {
   NormalizedBusinessAgentProfile,
   RuntimeAgentProfile
 } from "./domains/agent-runtime/shared.js";
+export type { ProductMediaRecord } from "./domains/sales/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -767,10 +737,6 @@ export interface Cp2StoreOptions {
   emailMailboxProviderClient?: EmailMailboxProviderClient;
 }
 
-export interface ProductMediaRecord extends ProductMediaSummary {
-  contentBase64: string;
-}
-
 export interface NetworkInviteDeliveryInput {
   inviteId: string;
   businessId: string;
@@ -872,24 +838,49 @@ export class Cp2Store {
       businesses: this.businesses,
       userIdentities: this.userIdentities
     });
+    this.salesDomain = new SalesDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      appendBusinessEvent: (event) => this.appendBusinessEvent(event),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      requireCustomerCapability: (token, businessId, now) =>
+        this.messagingDomain.requireCustomerCapability(token, businessId, now),
+      findPlatformIdentity: (platformIdentityId) =>
+        this.messagingDomain.platformIdentitiesMap.get(platformIdentityId),
+      relinkPlatformIdentitiesForCustomer: (businessId, customerId, accountId, now) => {
+        for (const identity of this.messagingDomain.platformIdentitiesMap.values()) {
+          if (identity.businessId === businessId && identity.customerId === customerId) {
+            this.messagingDomain.platformIdentitiesMap.set(identity.id, {
+              ...identity,
+              accountId,
+              verifiedAt: now.toISOString(),
+              updatedAt: now.toISOString()
+            });
+          }
+        }
+      },
+      businesses: this.businesses,
+      quarantinedBusinessIds: this.quarantinedBusinessIds
+    });
     this.commerce = new CommerceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
-      requireProduct: (businessId, productId) => this.requireProduct(businessId, productId),
-      createProduct: (input) => this.createProduct(input),
-      updateProduct: (input) => this.updateProduct(input),
+      requireProduct: (businessId, productId) => this.salesDomain.requireProduct(businessId, productId),
+      createProduct: (input) => this.salesDomain.createProduct(input),
+      updateProduct: (input) => this.salesDomain.updateProduct(input),
       listPublicStorefronts: (input) => this.listPublicStorefronts(input),
       createConversationMessage: (input) => this.createConversationMessage(input),
-      buildStoredInvoice: (input) => this.buildStoredInvoice(input),
-      nextInvoiceNumber: (businessId) => this.nextInvoiceNumber(businessId),
-      productMedia: this.productMedia,
-      products: this.products,
-      customers: this.customers,
+      buildStoredInvoice: (input) => this.salesDomain.buildStoredInvoice(input),
+      nextInvoiceNumber: (businessId) => this.salesDomain.nextInvoiceNumber(businessId),
+      productMedia: this.salesDomain.productMediaMap,
+      products: this.salesDomain.productsMap,
+      customers: this.salesDomain.customersMap,
       networkNodes: this.networkDomain.networkNodesMap,
       users: this.users,
       businesses: this.businesses,
-      invoices: this.invoices
+      invoices: this.salesDomain.invoicesMap
     });
     this.compliance = new ComplianceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -900,7 +891,7 @@ export class Cp2Store {
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
-      requireInvoice: (businessId, invoiceId) => this.requireInvoice(businessId, invoiceId)
+      requireInvoice: (businessId, invoiceId) => this.salesDomain.requireInvoice(businessId, invoiceId)
     });
     this.supplierDomain = new SupplierDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -932,9 +923,10 @@ export class Cp2Store {
       recordSyncChange: (input) => this.recordSyncChange(input),
       requireMembership: (businessId, userId) => this.requireMembership(businessId, userId),
       requireBusiness: (businessId) => this.requireBusiness(businessId),
-      requireCustomer: (businessId, customerId) => this.requireCustomer(businessId, customerId),
-      createGuestCustomer: (input) => this.createGuestCustomer(input),
-      requireInvoice: (businessId, invoiceId) => this.requireInvoice(businessId, invoiceId),
+      requireCustomer: (businessId, customerId) =>
+        this.salesDomain.requireCustomer(businessId, customerId),
+      createGuestCustomer: (input) => this.salesDomain.createGuestCustomer(input),
+      requireInvoice: (businessId, invoiceId) => this.salesDomain.requireInvoice(businessId, invoiceId),
       ensureSokoSessionContext: (session, now) => this.ensureSokoSessionContext(session, now),
       createRuntimeTurn: (input) => this.agentRuntimeDomain.createRuntimeTurn(input),
       agentModelRecoveryGuidance: (businessId, error) =>
@@ -957,7 +949,7 @@ export class Cp2Store {
       businesses: this.businesses,
       memberships: this.memberships,
       sessions: this.sessions,
-      customers: this.customers,
+      customers: this.salesDomain.customersMap,
       quarantinedBusinessIds: this.quarantinedBusinessIds,
       accountByDestination: this.accountByDestination
     });
@@ -969,25 +961,25 @@ export class Cp2Store {
       requireMembership: (businessId, userId) => this.requireMembership(businessId, userId),
       requireBusiness: (businessId) => this.requireBusiness(businessId),
       buildRuntimeContext: (businessId, userId) => this.buildRuntimeContext(businessId, userId),
-      imageForProduct: (product) => this.publicProductImage(product),
+      imageForProduct: (product) => this.salesDomain.publicProductImage(product),
       importsForBusiness: (businessId) => this.documentImportDomain.importsForBusiness(businessId),
       requireDocumentImport: (businessId, importJobId) =>
         this.documentImportDomain.requireDocumentImport(businessId, importJobId),
       suppliersForBusiness: (businessId) => this.supplierDomain.suppliersForBusiness(businessId),
       purchaseReceipts: this.supplierDomain.purchaseReceiptsMap,
-      queryCatalogue: (input) => this.queryCatalogue(input),
-      listProducts: (input) => this.listProducts(input),
-      listInvoices: (input) => this.listInvoices(input),
-      createProduct: (input) => this.createProduct(input),
-      deleteProduct: (input) => this.deleteProduct(input),
-      createCustomer: (input) => this.createCustomer(input),
+      queryCatalogue: (input) => this.salesDomain.queryCatalogue(input),
+      listProducts: (input) => this.salesDomain.listProducts(input),
+      listInvoices: (input) => this.salesDomain.listInvoices(input),
+      createProduct: (input) => this.salesDomain.createProduct(input),
+      deleteProduct: (input) => this.salesDomain.deleteProduct(input),
+      createCustomer: (input) => this.salesDomain.createCustomer(input),
       listPurchaseReceipts: (input) => this.listPurchaseReceipts(input),
       confirmProductImport: (input) => this.confirmProductImport(input),
       confirmSupplierImport: (input) => this.confirmSupplierImport(input),
       sendChannelMessage: (input) => this.sendChannelMessage(input),
-      products: this.products,
-      customers: this.customers,
-      invoices: this.invoices,
+      products: this.salesDomain.productsMap,
+      customers: this.salesDomain.customersMap,
+      invoices: this.salesDomain.invoicesMap,
       sessions: this.sessions,
       businesses: this.businesses,
       ...(this.options.modelRuntimeAdapterResolver === undefined
@@ -1048,36 +1040,31 @@ export class Cp2Store {
     string,
     Set<(event: SyncRealtimeChangesAvailableEvent) => void>
   >();
-  private readonly products = new Map<string, ProductSummary>();
-  private readonly productMedia = new Map<string, ProductMediaRecord>();
+  // products/productMedia/productFieldSchemas/customers/invoices/payments/inventoryMovements/
+  // publicOrders/publicCustomerCareRequests/publicStorefrontMessages (+ the derived, never-
+  // persisted nextInvoiceNumberByBusiness counter) now live inside `salesDomain`
+  // (services/api/src/cp2/domains/sales/store.ts) - accessed via its map getters for the generic
+  // snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  private readonly salesDomain: SalesDomain;
   // productCaptureJobs/statusBroadcasts/buyOrders/statusOrders/unifiedCheckouts now live inside
   // `commerce` (services/api/src/cp2/domains/commerce/store.ts) - accessed via its map getters for
   // the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
   private readonly commerce: CommerceDomain;
-  private readonly productFieldSchemas = new Map<string, ProductFieldSchemaSummary>();
-  private readonly customers = new Map<string, CustomerSummary>();
   private readonly supplierDomain: SupplierDomain;
-  private readonly invoices = new Map<string, InvoiceSummary>();
-  private readonly payments = new Map<string, PaymentSummary>();
   private readonly logisticsDomain: LogisticsDomain;
   private readonly dataExports = new Map<string, DataExportBundle>();
   private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
   private readonly accountDeletionProofs = new Map<string, AccountDeletionProof>();
   private readonly shopPresences = new Map<string, ShopPresenceSummary>();
   private readonly networkInvites = new Map<string, NetworkInviteSummary>();
-  private readonly publicCustomerCareRequests = new Map<string, PublicCustomerCareRequestSummary>();
-  private readonly publicStorefrontMessages = new Map<string, PublicStorefrontMessageSummary>();
   /** Ephemeral per-(business,visitor) attempt timestamps; never persisted or snapshotted. */
   private readonly publicAgentReplyAttemptsByVisitor = new Map<string, number[]>();
-  private readonly publicOrders = new Map<string, PublicOrderSummary>();
   private readonly compliance: ComplianceDomain;
   private readonly documentImportDomain: DocumentImportDomain;
   // notifications/notificationByRuleKey now live inside `notificationsDomain`
   // (services/api/src/cp2/domains/notifications/store.ts) - accessed via its map getters
   // for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
   private readonly notificationsDomain: NotificationsDomain;
-  private readonly nextInvoiceNumberByBusiness = new Map<string, number>();
-  private readonly inventoryMovements = new Map<string, InventoryMovementSummary>();
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
   private readonly otpChallenges = new Map<string, OtpChallenge>();
@@ -4187,78 +4174,26 @@ export class Cp2Store {
     };
   }
 
-  listProducts(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): ProductSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
-    return [...this.products.values()].filter((product) => product.businessId === input.businessId);
+  listProducts(
+    ...args: Parameters<SalesDomain["listProducts"]>
+  ): ReturnType<SalesDomain["listProducts"]> {
+    return this.salesDomain.listProducts(...args);
   }
-
-  queryCatalogue(input: {
-    sessionId: string | null;
-    businessId: string;
-    query: string;
-    limit?: number;
-    now?: Date;
-  }): CatalogueQueryResult {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
-    return queryCatalogueProducts({
-      businessId: input.businessId,
-      products: [...this.products.values()],
-      query: input.query,
-      imageForProduct: (product) => this.publicProductImage(product),
-      ...(input.limit === undefined ? {} : { limit: input.limit })
-    });
+  queryCatalogue(
+    ...args: Parameters<SalesDomain["queryCatalogue"]>
+  ): ReturnType<SalesDomain["queryCatalogue"]> {
+    return this.salesDomain.queryCatalogue(...args);
   }
-
-  getProductFieldSchema(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): ProductFieldSchemaSummary {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
-    return (
-      this.productFieldSchemas.get(input.businessId) ?? {
-        businessId: input.businessId,
-        fields: defaultProductFieldDefinitions(),
-        updatedAt: new Date(0).toISOString()
-      }
-    );
+  getProductFieldSchema(
+    ...args: Parameters<SalesDomain["getProductFieldSchema"]>
+  ): ReturnType<SalesDomain["getProductFieldSchema"]> {
+    return this.salesDomain.getProductFieldSchema(...args);
   }
-
-  saveProductFieldSchema(input: {
-    sessionId: string | null;
-    businessId: string;
-    fields: ProductFieldDefinition[];
-    now?: Date;
-  }): ProductFieldSchemaSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "product:write",
-      now
-    );
-    const fields = normalizeProductFieldDefinitions(input.fields);
-    const schema: ProductFieldSchemaSummary = {
-      businessId: input.businessId,
-      fields,
-      updatedAt: now.toISOString()
-    };
-    this.productFieldSchemas.set(input.businessId, schema);
-    this.recordAuditEvent({
-      type: "product.fields_updated",
-      aggregateType: "business",
-      aggregateId: input.businessId,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: { fieldCount: fields.length }
-    });
-    return schema;
+  saveProductFieldSchema(
+    ...args: Parameters<SalesDomain["saveProductFieldSchema"]>
+  ): ReturnType<SalesDomain["saveProductFieldSchema"]> {
+    return this.salesDomain.saveProductFieldSchema(...args);
   }
-
   getPublicStorefront(input: { agentId: string }): PublicStorefrontSummary {
     const business = requirePublicStorefrontBusiness(
       this.businesses,
@@ -4463,45 +4398,11 @@ export class Cp2Store {
     return invites.map((invite) => this.networkInvites.get(invite.id) as NetworkInviteSummary);
   }
 
-  createPublicCustomerCareRequest(input: {
-    agentId: string;
-    type: PublicCustomerCareRequestType;
-    customerName: string | null;
-    phone: string | null;
-    message: string | null;
-    now?: Date;
-  }): PublicCustomerCareRequestSummary {
-    const now = input.now ?? new Date();
-    const business = requirePublicStorefrontBusiness(
-      this.businesses,
-      this.quarantinedBusinessIds,
-      input.agentId
-    );
-    const request: PublicCustomerCareRequestSummary = {
-      id: randomUUID(),
-      businessId: business.id,
-      type: input.type,
-      customerName: normalizeOptionalBoundedText(input.customerName, 120),
-      phone: normalizeOptionalBoundedText(input.phone, 40),
-      message: normalizeOptionalBoundedText(input.message, 2000),
-      status: "new",
-      createdAt: now.toISOString()
-    };
-    if (request.type === "callback" && request.phone === null) {
-      throw new Cp2Error(400, "callback_phone_required", "A callback phone number is required.");
-    }
-    this.publicCustomerCareRequests.set(request.id, request);
-    this.recordAuditEvent({
-      type: "storefront.customer_care_requested",
-      aggregateType: "customer_care_request",
-      aggregateId: request.id,
-      actorId: "public-storefront",
-      occurredAt: now.toISOString(),
-      payload: { businessId: business.id, type: request.type }
-    });
-    return request;
+  createPublicCustomerCareRequest(
+    ...args: Parameters<SalesDomain["createPublicCustomerCareRequest"]>
+  ): ReturnType<SalesDomain["createPublicCustomerCareRequest"]> {
+    return this.salesDomain.createPublicCustomerCareRequest(...args);
   }
-
   createPublicStorefrontSession(
     ...args: Parameters<MessagingDomain["createPublicStorefrontSession"]>
   ): ReturnType<MessagingDomain["createPublicStorefrontSession"]> {
@@ -4624,140 +4525,26 @@ export class Cp2Store {
     return false;
   }
 
-  createPublicOrder(input: {
-    agentId: string;
-    capabilityToken: string;
-    customerName: string;
-    phone: string;
-    note: string | null;
-    items: Array<{ productId: string; quantity: number }>;
-    now?: Date;
-  }): PublicOrderSummary {
-    const now = input.now ?? new Date();
-    const business = requirePublicStorefrontBusiness(
-      this.businesses,
-      this.quarantinedBusinessIds,
-      input.agentId
-    );
-    const principal = this.messagingDomain.requireCustomerCapability(
-      input.capabilityToken,
-      business.id,
-      now
-    );
-    const identity = this.messagingDomain.platformIdentitiesMap.get(principal.platformIdentityId);
-    if (identity === undefined) {
-      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
-    }
-    if (input.items.length === 0 || input.items.length > 100) {
-      throw new Cp2Error(400, "order_items_invalid", "An order needs between 1 and 100 items.");
-    }
-    const resolvedItems = input.items.map((item) => {
-      const product = this.products.get(item.productId);
-      if (product === undefined || product.businessId !== business.id || product.quantity <= 0) {
-        throw new Cp2Error(404, "order_product_unavailable", "An order product is unavailable.");
-      }
-      if (
-        !Number.isInteger(item.quantity) ||
-        item.quantity < 1 ||
-        item.quantity > product.quantity
-      ) {
-        throw new Cp2Error(400, "order_quantity_invalid", `Invalid quantity for ${product.name}.`);
-      }
-      if (product.sellingPrice === null) {
-        throw new Cp2Error(
-          409,
-          "order_price_unavailable",
-          `Price is unavailable for ${product.name}.`
-        );
-      }
-      return { product, quantity: item.quantity };
-    });
-    const invoice = this.buildStoredInvoice({
-      businessId: business.id,
-      invoiceId: randomUUID(),
-      invoiceNumber: this.nextInvoiceNumber(business.id),
-      input: {
-        customerId: null,
-        customerName: normalizeRequiredBoundedText(input.customerName, "customer name", 120),
-        taxRate: 0,
-        items: resolvedItems.map(({ product, quantity }) => ({
-          productId: product.id,
-          quantity,
-          unitPrice: product.sellingPrice as number
-        }))
-      },
-      status: "draft",
-      confirmedAt: null,
-      now
-    });
-    this.invoices.set(invoice.id, invoice);
-    const items = resolvedItems.map(({ product, quantity }) => ({
-      productId: product.id,
-      productName: product.name,
-      unit: product.unit,
-      quantity
-    }));
-    const order: PublicOrderSummary = {
-      id: randomUUID(),
-      businessId: business.id,
-      visitorId: identity.externalUserId,
-      customerName: invoice.customerName as string,
-      phone: normalizeRequiredBoundedText(input.phone, "phone", 40),
-      note: normalizeOptionalBoundedText(input.note, 2000),
-      items,
-      status: "requested",
-      conversationId: principal.conversationId,
-      invoiceId: invoice.id,
-      payment: this.buildInvoicePaymentSummary(invoice),
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-    this.publicOrders.set(order.id, order);
-    this.recordAuditEvent({
-      type: "storefront.order_requested",
-      aggregateType: "invoice",
-      aggregateId: order.id,
-      actorId: "public-storefront",
-      occurredAt: now.toISOString(),
-      payload: {
-        businessId: business.id,
-        conversationId: principal.conversationId,
-        invoiceId: invoice.id,
-        itemCount: order.items.length
-      }
-    });
-    return order;
+  createPublicOrder(
+    ...args: Parameters<SalesDomain["createPublicOrder"]>
+  ): ReturnType<SalesDomain["createPublicOrder"]> {
+    return this.salesDomain.createPublicOrder(...args);
   }
-
-  listPublicCustomerCareRequests(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): PublicCustomerCareRequestSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
-    return [...this.publicCustomerCareRequests.values()].filter(
-      (request) => request.businessId === input.businessId
-    );
+  listPublicCustomerCareRequests(
+    ...args: Parameters<SalesDomain["listPublicCustomerCareRequests"]>
+  ): ReturnType<SalesDomain["listPublicCustomerCareRequests"]> {
+    return this.salesDomain.listPublicCustomerCareRequests(...args);
   }
-
   listPublicStorefrontMessages(
     ...args: Parameters<MessagingDomain["listPublicStorefrontMessages"]>
   ): ReturnType<MessagingDomain["listPublicStorefrontMessages"]> {
     return this.messagingDomain.listPublicStorefrontMessages(...args);
   }
-  listPublicOrders(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): PublicOrderSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
-    return [...this.publicOrders.values()].filter((order) => order.businessId === input.businessId);
+  listPublicOrders(
+    ...args: Parameters<SalesDomain["listPublicOrders"]>
+  ): ReturnType<SalesDomain["listPublicOrders"]> {
+    return this.salesDomain.listPublicOrders(...args);
   }
-
-  // Delegates to this.commerce (services/api/src/cp2/domains/commerce/store.ts) - the photo
-  // capture -> status broadcast -> unified checkout cluster, extracted as the first slice of
-  // in-process domain modularization (see docs/architecture/domain-modularization-roadmap.md).
-  // Identical public signatures to before the extraction - zero behavior change.
   createProductCaptureJob(
     ...args: Parameters<CommerceDomain["createProductCaptureJob"]>
   ): ReturnType<CommerceDomain["createProductCaptureJob"]> {
@@ -4866,338 +4653,51 @@ export class Cp2Store {
     return this.commerce.getUnifiedCheckout(...args);
   }
 
-  getPublicProductMedia(input: { mediaId: string }): ProductMediaRecord {
-    const media = this.productMedia.get(input.mediaId);
-    if (media === undefined || media.productId === null) {
-      throw new Cp2Error(404, "product_media_not_found", "Product image was not found.");
-    }
-    return media;
+  getPublicProductMedia(
+    ...args: Parameters<SalesDomain["getPublicProductMedia"]>
+  ): ReturnType<SalesDomain["getPublicProductMedia"]> {
+    return this.salesDomain.getPublicProductMedia(...args);
   }
-
-  createProduct(input: {
-    sessionId: string | null;
-    businessId: string;
-    product: ProductInput;
-    now?: Date;
-  }): ProductSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "product:write",
-      now
-    );
-    assertValid(validateProductInput(input.product));
-    const normalized = normalizeProductInput(input.product);
-    const product: ProductSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      name: normalized.name,
-      sku: normalized.sku,
-      aliases: normalized.aliases,
-      primaryMediaId: null,
-      unit: normalized.unit,
-      quantity: normalized.quantity,
-      buyingPrice: normalized.buyingPrice,
-      sellingPrice: normalized.sellingPrice,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    this.products.set(product.id, product);
-    this.appendBusinessEvent(
-      productCreatedEvent({
-        id: randomUUID(),
-        product,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    if (product.quantity > 0) {
-      this.createInventoryMovement({
-        businessId: input.businessId,
-        productId: product.id,
-        quantityBefore: 0,
-        quantityAfter: product.quantity,
-        reason: "Initial product quantity",
-        actorId: session.user.id,
-        now
-      });
-    }
-
-    return product;
+  createProduct(
+    ...args: Parameters<SalesDomain["createProduct"]>
+  ): ReturnType<SalesDomain["createProduct"]> {
+    return this.salesDomain.createProduct(...args);
   }
-
-  updateProduct(input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    product: ProductInput;
-    now?: Date;
-  }): ProductSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "product:write",
-      now
-    );
-    const existing = this.requireProduct(input.businessId, input.productId);
-    assertValid(validateProductInput(input.product));
-    const normalized = normalizeProductInput(input.product);
-    const updated: ProductSummary = {
-      ...existing,
-      name: normalized.name,
-      sku: normalized.sku,
-      aliases: input.product.aliases === undefined ? (existing.aliases ?? []) : normalized.aliases,
-      primaryMediaId: existing.primaryMediaId ?? null,
-      unit: normalized.unit,
-      quantity: normalized.quantity,
-      buyingPrice: normalized.buyingPrice,
-      sellingPrice: normalized.sellingPrice,
-      updatedAt: now.toISOString()
-    };
-
-    this.products.set(updated.id, updated);
-    this.appendBusinessEvent(
-      productUpdatedEvent({
-        id: randomUUID(),
-        product: updated,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    if (existing.quantity !== updated.quantity) {
-      this.createInventoryMovement({
-        businessId: input.businessId,
-        productId: updated.id,
-        quantityBefore: existing.quantity,
-        quantityAfter: updated.quantity,
-        reason: "Product quantity updated",
-        actorId: session.user.id,
-        now
-      });
-    }
-
-    return updated;
+  updateProduct(
+    ...args: Parameters<SalesDomain["updateProduct"]>
+  ): ReturnType<SalesDomain["updateProduct"]> {
+    return this.salesDomain.updateProduct(...args);
   }
-
-  deleteProduct(input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    now?: Date;
-  }): ProductSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "product:write",
-      now
-    );
-    const product = this.requireProduct(input.businessId, input.productId);
-
-    this.products.delete(product.id);
-    this.appendBusinessEvent(
-      productDeletedEvent({
-        id: randomUUID(),
-        product,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return product;
+  deleteProduct(
+    ...args: Parameters<SalesDomain["deleteProduct"]>
+  ): ReturnType<SalesDomain["deleteProduct"]> {
+    return this.salesDomain.deleteProduct(...args);
   }
-
-  adjustProductStock(input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    adjustment: StockAdjustmentInput;
-    now?: Date;
-  }): { product: ProductSummary; movement: InventoryMovementSummary } {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "inventory:adjust",
-      now
-    );
-    const product = this.requireProduct(input.businessId, input.productId);
-    assertValid(validateStockAdjustmentInput(input.adjustment));
-    const normalized = normalizeStockAdjustmentInput(input.adjustment);
-    const updated: ProductSummary = {
-      ...product,
-      quantity: normalized.quantityAfter,
-      updatedAt: now.toISOString()
-    };
-
-    this.products.set(updated.id, updated);
-    const movement = this.createInventoryMovement({
-      businessId: input.businessId,
-      productId: product.id,
-      quantityBefore: product.quantity,
-      quantityAfter: normalized.quantityAfter,
-      reason: normalized.reason,
-      actorId: session.user.id,
-      now
-    });
-
-    return {
-      product: updated,
-      movement
-    };
+  adjustProductStock(
+    ...args: Parameters<SalesDomain["adjustProductStock"]>
+  ): ReturnType<SalesDomain["adjustProductStock"]> {
+    return this.salesDomain.adjustProductStock(...args);
   }
-
-  listCustomers(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): CustomerSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
-    return [...this.customers.values()].filter(
-      (customer) => customer.businessId === input.businessId
-    );
+  listCustomers(
+    ...args: Parameters<SalesDomain["listCustomers"]>
+  ): ReturnType<SalesDomain["listCustomers"]> {
+    return this.salesDomain.listCustomers(...args);
   }
-
-  createCustomer(input: {
-    sessionId: string | null;
-    businessId: string;
-    customer: ContactRecordInput;
-    now?: Date;
-  }): CustomerSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "customer:write",
-      now
-    );
-    assertValid(validateContactRecordInput(input.customer, "Customer"));
-    const normalized = normalizeContactRecordInput(input.customer);
-    const customer: CustomerSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      name: normalized.name,
-      phone: normalized.phone,
-      email: normalized.email,
-      linkedAccountId: null,
-      notes: normalized.notes,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    this.customers.set(customer.id, customer);
-    this.appendBusinessEvent(
-      customerCreatedEvent({
-        id: randomUUID(),
-        customer,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return customer;
+  createCustomer(
+    ...args: Parameters<SalesDomain["createCustomer"]>
+  ): ReturnType<SalesDomain["createCustomer"]> {
+    return this.salesDomain.createCustomer(...args);
   }
-
-  updateCustomer(input: {
-    sessionId: string | null;
-    businessId: string;
-    customerId: string;
-    customer: ContactRecordInput;
-    now?: Date;
-  }): CustomerSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "customer:write",
-      now
-    );
-    const existing = this.requireCustomer(input.businessId, input.customerId);
-    assertValid(validateContactRecordInput(input.customer, "Customer"));
-    const normalized = normalizeContactRecordInput(input.customer);
-    const updated: CustomerSummary = {
-      ...existing,
-      name: normalized.name,
-      phone: normalized.phone,
-      email: normalized.email,
-      notes: normalized.notes,
-      updatedAt: now.toISOString()
-    };
-
-    this.customers.set(updated.id, updated);
-    this.appendBusinessEvent(
-      customerUpdatedEvent({
-        id: randomUUID(),
-        customer: updated,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateCustomer(
+    ...args: Parameters<SalesDomain["updateCustomer"]>
+  ): ReturnType<SalesDomain["updateCustomer"]> {
+    return this.salesDomain.updateCustomer(...args);
   }
-
-  linkCustomerAccount(input: {
-    sessionId: string | null;
-    businessId: string;
-    customerId: string;
-    accountId: string;
-    now?: Date;
-  }): CustomerSummary {
-    const now = input.now ?? new Date();
-    const auth = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "customer:write",
-      now
-    );
-    const customer = this.requireCustomer(input.businessId, input.customerId);
-    this.requireAccount(input.accountId);
-    const conflict = [...this.customers.values()].find(
-      (candidate) =>
-        candidate.businessId === input.businessId &&
-        candidate.id !== customer.id &&
-        candidate.linkedAccountId === input.accountId
-    );
-    if (conflict) {
-      throw new Cp2Error(
-        409,
-        "customer_account_already_linked",
-        "This Soko account is already linked to another customer."
-      );
-    }
-    const linked: CustomerSummary = {
-      ...customer,
-      linkedAccountId: input.accountId,
-      updatedAt: now.toISOString()
-    };
-    this.customers.set(linked.id, linked);
-    for (const identity of this.messagingDomain.platformIdentitiesMap.values()) {
-      if (identity.businessId === input.businessId && identity.customerId === linked.id) {
-        this.messagingDomain.platformIdentitiesMap.set(identity.id, {
-          ...identity,
-          accountId: input.accountId,
-          verifiedAt: now.toISOString(),
-          updatedAt: now.toISOString()
-        });
-      }
-    }
-    this.recordAuditEvent({
-      type: "customer.account_linked",
-      aggregateType: "customer",
-      aggregateId: linked.id,
-      actorId: auth.user.id,
-      occurredAt: now.toISOString(),
-      payload: { businessId: input.businessId, accountId: input.accountId }
-    });
-    return linked;
+  linkCustomerAccount(
+    ...args: Parameters<SalesDomain["linkCustomerAccount"]>
+  ): ReturnType<SalesDomain["linkCustomerAccount"]> {
+    return this.salesDomain.linkCustomerAccount(...args);
   }
-
   listSuppliers(
     ...args: Parameters<SupplierDomain["listSuppliers"]>
   ): ReturnType<SupplierDomain["listSuppliers"]> {
@@ -5300,302 +4800,51 @@ export class Cp2Store {
     return this.supplierDomain.getPurchaseReceipt(...args);
   }
 
-  previewInvoice(input: {
-    sessionId: string | null;
-    businessId: string;
-    invoice: InvoiceInput;
-    now?: Date;
-  }): InvoicePreview {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:write", input.now);
-    assertValid(validateInvoiceInput(input.invoice));
-
-    return this.buildInvoicePreview(input.businessId, input.invoice);
+  previewInvoice(
+    ...args: Parameters<SalesDomain["previewInvoice"]>
+  ): ReturnType<SalesDomain["previewInvoice"]> {
+    return this.salesDomain.previewInvoice(...args);
   }
-
-  listInvoices(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): InvoiceSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
-    return [...this.invoices.values()].filter((invoice) => invoice.businessId === input.businessId);
+  listInvoices(
+    ...args: Parameters<SalesDomain["listInvoices"]>
+  ): ReturnType<SalesDomain["listInvoices"]> {
+    return this.salesDomain.listInvoices(...args);
   }
-
-  createInvoice(input: {
-    sessionId: string | null;
-    businessId: string;
-    invoice: InvoiceInput;
-    now?: Date;
-  }): InvoiceSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "invoice:write",
-      now
-    );
-    assertValid(validateInvoiceInput(input.invoice));
-    this.buildInvoicePreview(input.businessId, input.invoice);
-
-    const invoice = this.buildStoredInvoice({
-      businessId: input.businessId,
-      invoiceId: randomUUID(),
-      invoiceNumber: this.nextInvoiceNumber(input.businessId),
-      input: input.invoice,
-      status: "draft",
-      confirmedAt: null,
-      now
-    });
-
-    this.invoices.set(invoice.id, invoice);
-    this.appendBusinessEvent(
-      invoiceCreatedEvent({
-        id: randomUUID(),
-        invoice,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return invoice;
+  createInvoice(
+    ...args: Parameters<SalesDomain["createInvoice"]>
+  ): ReturnType<SalesDomain["createInvoice"]> {
+    return this.salesDomain.createInvoice(...args);
   }
-
-  updateInvoice(input: {
-    sessionId: string | null;
-    businessId: string;
-    invoiceId: string;
-    invoice: InvoiceInput;
-    now?: Date;
-  }): InvoiceSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "invoice:write",
-      now
-    );
-    const existing = this.requireInvoice(input.businessId, input.invoiceId);
-
-    if (existing.status !== "draft") {
-      throw new Cp2Error(409, "invoice_already_confirmed", "Confirmed invoices cannot be edited.");
-    }
-
-    assertValid(validateInvoiceInput(input.invoice));
-    const invoice = this.buildStoredInvoice({
-      businessId: input.businessId,
-      invoiceId: existing.id,
-      invoiceNumber: existing.invoiceNumber,
-      input: input.invoice,
-      status: "draft",
-      confirmedAt: null,
-      now,
-      createdAt: existing.createdAt
-    });
-
-    this.invoices.set(invoice.id, invoice);
-    this.appendBusinessEvent(
-      invoiceUpdatedEvent({
-        id: randomUUID(),
-        invoice,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return invoice;
+  updateInvoice(
+    ...args: Parameters<SalesDomain["updateInvoice"]>
+  ): ReturnType<SalesDomain["updateInvoice"]> {
+    return this.salesDomain.updateInvoice(...args);
   }
-
-  confirmInvoice(input: {
-    sessionId: string | null;
-    businessId: string;
-    invoiceId: string;
-    now?: Date;
-  }): { invoice: InvoiceSummary; movements: InventoryMovementSummary[] } {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "invoice:confirm",
-      now
-    );
-    const invoice = this.requireInvoice(input.businessId, input.invoiceId);
-
-    if (invoice.status !== "draft") {
-      throw new Cp2Error(409, "invoice_already_confirmed", "Invoice is already confirmed.");
-    }
-
-    const requiredQuantityByProduct = new Map<string, number>();
-
-    for (const item of invoice.items) {
-      requiredQuantityByProduct.set(
-        item.productId,
-        (requiredQuantityByProduct.get(item.productId) ?? 0) + item.quantity
-      );
-    }
-
-    for (const [productId, requiredQuantity] of requiredQuantityByProduct) {
-      const product = this.requireProduct(input.businessId, productId);
-
-      if (product.quantity < requiredQuantity) {
-        throw new Cp2Error(
-          409,
-          "stock_insufficient",
-          `${product.name} has ${product.quantity} ${product.unit} available.`
-        );
-      }
-    }
-
-    const movements: InventoryMovementSummary[] = [];
-
-    for (const item of invoice.items) {
-      const product = this.requireProduct(input.businessId, item.productId);
-      const updatedProduct: ProductSummary = {
-        ...product,
-        quantity: product.quantity - item.quantity,
-        updatedAt: now.toISOString()
-      };
-
-      this.products.set(updatedProduct.id, updatedProduct);
-      movements.push(
-        this.createInventoryMovement({
-          businessId: input.businessId,
-          productId: product.id,
-          type: "sale",
-          quantityBefore: product.quantity,
-          quantityAfter: updatedProduct.quantity,
-          reason: `Invoice ${invoice.invoiceNumber}`,
-          actorId: session.user.id,
-          now
-        })
-      );
-    }
-
-    const confirmed: InvoiceSummary = {
-      ...invoice,
-      status: "confirmed",
-      confirmedAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    this.invoices.set(confirmed.id, confirmed);
-    this.appendBusinessEvent(
-      invoiceConfirmedEvent({
-        id: randomUUID(),
-        invoice: confirmed,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return {
-      invoice: confirmed,
-      movements
-    };
+  confirmInvoice(
+    ...args: Parameters<SalesDomain["confirmInvoice"]>
+  ): ReturnType<SalesDomain["confirmInvoice"]> {
+    return this.salesDomain.confirmInvoice(...args);
   }
-
-  listPayments(input: {
-    sessionId: string | null;
-    businessId: string;
-    invoiceId?: string;
-    now?: Date;
-  }): PaymentSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
-
-    if (input.invoiceId !== undefined) {
-      this.requireInvoice(input.businessId, input.invoiceId);
-    }
-
-    return [...this.payments.values()]
-      .filter(
-        (payment) =>
-          payment.businessId === input.businessId &&
-          (input.invoiceId === undefined || payment.invoiceId === input.invoiceId)
-      )
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  listPayments(
+    ...args: Parameters<SalesDomain["listPayments"]>
+  ): ReturnType<SalesDomain["listPayments"]> {
+    return this.salesDomain.listPayments(...args);
   }
-
-  recordPayment(input: {
-    sessionId: string | null;
-    businessId: string;
-    payment: PaymentInput;
-    now?: Date;
-  }): { payment: PaymentSummary; invoicePayment: InvoicePaymentSummary } {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "payment:write",
-      now
-    );
-    assertValid(validatePaymentInput(input.payment));
-    const normalized = normalizePaymentInput(input.payment);
-    const invoice = this.requireInvoice(input.businessId, normalized.invoiceId);
-
-    if (invoice.status !== "confirmed") {
-      throw new Cp2Error(409, "invoice_not_confirmed", "Payments require a confirmed invoice.");
-    }
-
-    const currentSummary = this.buildInvoicePaymentSummary(invoice);
-
-    if (normalized.amount > currentSummary.balanceDue) {
-      throw new Cp2Error(
-        409,
-        "payment_exceeds_balance",
-        "Payment amount exceeds the invoice balance."
-      );
-    }
-
-    const payment: PaymentSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      customerId: invoice.customerId,
-      customerName: invoice.customerName,
-      method: normalized.method,
-      amount: normalized.amount,
-      reference: normalized.reference,
-      note: normalized.note,
-      actorId: session.user.id,
-      createdAt: now.toISOString()
-    };
-
-    this.payments.set(payment.id, payment);
-    const invoicePayment = this.buildInvoicePaymentSummary(invoice);
-    this.appendBusinessEvent(
-      paymentRecordedEvent({
-        id: randomUUID(),
-        payment,
-        invoicePayment,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return {
-      payment,
-      invoicePayment
-    };
+  recordPayment(
+    ...args: Parameters<SalesDomain["recordPayment"]>
+  ): ReturnType<SalesDomain["recordPayment"]> {
+    return this.salesDomain.recordPayment(...args);
   }
-
-  listInvoicePaymentSummaries(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): InvoicePaymentSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
-    return this.buildInvoicePaymentSummaries(input.businessId);
+  listInvoicePaymentSummaries(
+    ...args: Parameters<SalesDomain["listInvoicePaymentSummaries"]>
+  ): ReturnType<SalesDomain["listInvoicePaymentSummaries"]> {
+    return this.salesDomain.listInvoicePaymentSummaries(...args);
   }
-
-  listCustomerDebts(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): CustomerDebtSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
-    return this.buildCustomerDebtSummaries(input.businessId);
+  listCustomerDebts(
+    ...args: Parameters<SalesDomain["listCustomerDebts"]>
+  ): ReturnType<SalesDomain["listCustomerDebts"]> {
+    return this.salesDomain.listCustomerDebts(...args);
   }
-
   listLogistics(
     ...args: Parameters<LogisticsDomain["listLogistics"]>
   ): ReturnType<LogisticsDomain["listLogistics"]> {
@@ -5612,44 +4861,6 @@ export class Cp2Store {
     ...args: Parameters<LogisticsDomain["updateLogisticsStatus"]>
   ): ReturnType<LogisticsDomain["updateLogisticsStatus"]> {
     return this.logisticsDomain.updateLogisticsStatus(...args);
-  }
-
-  private buildCustomerDebtSummaries(businessId: string): CustomerDebtSummary[] {
-    const debts = new Map<string, CustomerDebtSummary>();
-
-    for (const summary of this.buildInvoicePaymentSummaries(businessId)) {
-      if (summary.customerId === null || summary.balanceDue <= 0) {
-        continue;
-      }
-
-      const existing = debts.get(summary.customerId);
-
-      if (existing === undefined) {
-        debts.set(summary.customerId, {
-          customerId: summary.customerId,
-          customerName: summary.customerName ?? "Customer",
-          invoiceCount: 1,
-          totalInvoiced: summary.invoiceTotal,
-          totalPaid: summary.paidTotal,
-          balanceDue: summary.balanceDue
-        });
-        continue;
-      }
-
-      debts.set(summary.customerId, {
-        ...existing,
-        invoiceCount: existing.invoiceCount + 1,
-        totalInvoiced: roundMoney(existing.totalInvoiced + summary.invoiceTotal),
-        totalPaid: roundMoney(existing.totalPaid + summary.paidTotal),
-        balanceDue: roundMoney(existing.balanceDue + summary.balanceDue)
-      });
-    }
-
-    return [...debts.values()].sort((left, right) =>
-      right.balanceDue === left.balanceDue
-        ? left.customerName.localeCompare(right.customerName)
-        : right.balanceDue - left.balanceDue
-    );
   }
 
   getOfflineCache(input: {
@@ -5739,15 +4950,15 @@ export class Cp2Store {
       user,
       business,
       memberships: this.membershipsForBusiness(input.businessId),
-      products: this.productsForBusiness(input.businessId),
-      customers: this.customersForBusiness(input.businessId),
+      products: this.salesDomain.productsForBusiness(input.businessId),
+      customers: this.salesDomain.customersForBusiness(input.businessId),
       suppliers: this.supplierDomain.suppliersForBusiness(input.businessId),
-      invoices: this.invoicesForBusiness(input.businessId),
-      payments: this.paymentsForBusiness(input.businessId),
+      invoices: this.salesDomain.invoicesForBusiness(input.businessId),
+      payments: this.salesDomain.paymentsForBusiness(input.businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(input.businessId),
       documentImports: this.documentImportDomain.importsForBusiness(input.businessId),
       notifications: this.notificationsDomain.sortedNotifications(input.businessId),
-      inventoryMovements: this.inventoryMovementsForBusiness(input.businessId),
+      inventoryMovements: this.salesDomain.inventoryMovementsForBusiness(input.businessId),
       auditEvents
     };
     const recordCounts = countExportRecords(data);
@@ -7043,15 +6254,15 @@ export class Cp2Store {
       ),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpAccessTokens.values()],
-      productFieldSchemas: [...this.productFieldSchemas.values()],
-      products: [...this.products.values()],
-      productMedia: [...this.productMedia.values()],
+      productFieldSchemas: [...this.salesDomain.productFieldSchemasMap.values()],
+      products: [...this.salesDomain.productsMap.values()],
+      productMedia: [...this.salesDomain.productMediaMap.values()],
       productCaptureJobs: [...this.commerce.productCaptureJobsMap.values()],
       statusBroadcasts: [...this.commerce.statusBroadcastsMap.values()],
       buyOrders: [...this.commerce.buyOrdersMap.values()],
       statusOrders: [...this.commerce.statusOrdersMap.values()],
       unifiedCheckouts: [...this.commerce.unifiedCheckoutsMap.values()],
-      customers: [...this.customers.values()],
+      customers: [...this.salesDomain.customersMap.values()],
       suppliers: [...this.supplierDomain.suppliersMap.values()],
       salesAgents: [...this.supplierDomain.salesAgentsMap.values()],
       supplierContactLinks: [...this.supplierDomain.supplierContactLinksMap.values()],
@@ -7061,17 +6272,17 @@ export class Cp2Store {
       })),
       receiptLineItems: [...this.supplierDomain.receiptLineItemsMap.values()],
       receiptOCRJobs: [...this.supplierDomain.receiptOCRJobsMap.values()],
-      invoices: [...this.invoices.values()],
-      payments: [...this.payments.values()],
+      invoices: [...this.salesDomain.invoicesMap.values()],
+      payments: [...this.salesDomain.paymentsMap.values()],
       logistics: [...this.logisticsDomain.logisticsMap.values()],
       dataExports: [...this.dataExports.values()].map(dataExportSummary),
       accountDeletionRequests: [...this.accountDeletionRequests.values()],
       accountDeletionProofs: [...this.accountDeletionProofs.values()],
       shopPresences: [...this.shopPresences.values()],
       networkInvites: [...this.networkInvites.values()],
-      publicCustomerCareRequests: [...this.publicCustomerCareRequests.values()],
-      publicStorefrontMessages: [...this.publicStorefrontMessages.values()],
-      publicOrders: [...this.publicOrders.values()],
+      publicCustomerCareRequests: [...this.salesDomain.publicCustomerCareRequestsMap.values()],
+      publicStorefrontMessages: [...this.salesDomain.publicStorefrontMessagesMap.values()],
+      publicOrders: [...this.salesDomain.publicOrdersMap.values()],
       verificationTiers: [...this.compliance.verificationTiersMap.values()],
       taxConfigs: [...this.compliance.taxConfigsMap.values()],
       deviceTrust: [...this.compliance.deviceTrustMap.values()],
@@ -7088,7 +6299,7 @@ export class Cp2Store {
       notifications: [...this.notificationsDomain.notificationsMap.values()],
       runtimeSessions: [...this.agentRuntimeDomain.runtimeSessionsMap.values()],
       runtimeTurns: [...this.agentRuntimeDomain.runtimeTurnsMap.values()],
-      inventoryMovements: [...this.inventoryMovements.values()],
+      inventoryMovements: [...this.salesDomain.inventoryMovementsMap.values()],
       syncQueue: [...this.syncQueue.values()],
       otpChallenges: [...this.otpChallenges.values()],
       smsDeliveryAttempts: [...this.smsDeliveryAttempts.values()],
@@ -7137,28 +6348,18 @@ export class Cp2Store {
     this.quarantinedBusinessIds.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
-    this.products.clear();
-    this.productMedia.clear();
+    this.salesDomain.clear();
     this.commerce.clear();
-    this.productFieldSchemas.clear();
-    this.customers.clear();
     this.supplierDomain.clear();
-    this.invoices.clear();
-    this.payments.clear();
     this.logisticsDomain.clear();
     this.dataExports.clear();
     this.accountDeletionRequests.clear();
     this.accountDeletionProofs.clear();
     this.shopPresences.clear();
     this.networkInvites.clear();
-    this.publicCustomerCareRequests.clear();
-    this.publicStorefrontMessages.clear();
-    this.publicOrders.clear();
     this.compliance.clear();
     this.documentImportDomain.clear();
     this.notificationsDomain.clear();
-    this.nextInvoiceNumberByBusiness.clear();
-    this.inventoryMovements.clear();
     this.syncQueue.clear();
     this.syncQueueIdByIdempotency.clear();
     this.otpChallenges.clear();
@@ -7231,6 +6432,7 @@ export class Cp2Store {
 
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
+    this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {
       this.marketplaceIntroStates.set(
@@ -7245,14 +6447,6 @@ export class Cp2Store {
       }
     }
 
-    for (const product of snapshot.products) {
-      this.products.set(product.id, {
-        ...product,
-        aliases: product.aliases ?? [],
-        primaryMediaId: product.primaryMediaId ?? null
-      });
-    }
-    for (const media of snapshot.productMedia ?? []) this.productMedia.set(media.id, media);
     for (const job of snapshot.productCaptureJobs ?? []) {
       this.commerce.productCaptureJobsMap.set(job.id, job);
     }
@@ -7265,20 +6459,6 @@ export class Cp2Store {
     }
     for (const checkout of snapshot.unifiedCheckouts ?? []) {
       this.commerce.unifiedCheckoutsMap.set(checkout.id, checkout);
-    }
-
-    for (const schema of snapshot.productFieldSchemas ?? []) {
-      this.productFieldSchemas.set(schema.businessId, {
-        ...schema,
-        fields: schema.fields.map((field) => ({ ...field }))
-      });
-    }
-
-    for (const customer of snapshot.customers) {
-      this.customers.set(customer.id, {
-        ...customer,
-        linkedAccountId: customer.linkedAccountId ?? null
-      });
     }
 
     for (const supplier of snapshot.suppliers) {
@@ -7315,20 +6495,6 @@ export class Cp2Store {
       this.supplierDomain.receiptOCRJobsMap.set(job.id, job);
     }
 
-    for (const invoice of snapshot.invoices) {
-      this.invoices.set(invoice.id, invoice);
-      const invoiceNumber = Number(invoice.invoiceNumber.replace(/^INV-/, ""));
-      const nextNumber = Number.isInteger(invoiceNumber) ? invoiceNumber + 1 : 1;
-      this.nextInvoiceNumberByBusiness.set(
-        invoice.businessId,
-        Math.max(this.nextInvoiceNumberByBusiness.get(invoice.businessId) ?? 1, nextNumber)
-      );
-    }
-
-    for (const payment of snapshot.payments) {
-      this.payments.set(payment.id, payment);
-    }
-
     for (const logisticsItem of snapshot.logistics) {
       this.logisticsDomain.logisticsMap.set(logisticsItem.id, logisticsItem);
       this.logisticsDomain.logisticsByInvoiceMap.set(logisticsItem.invoiceId, logisticsItem.id);
@@ -7352,18 +6518,6 @@ export class Cp2Store {
 
     for (const invite of snapshot.networkInvites ?? []) {
       this.networkInvites.set(invite.id, invite);
-    }
-
-    for (const request of snapshot.publicCustomerCareRequests ?? []) {
-      this.publicCustomerCareRequests.set(request.id, request);
-    }
-
-    for (const message of snapshot.publicStorefrontMessages ?? []) {
-      this.publicStorefrontMessages.set(message.id, message);
-    }
-
-    for (const order of snapshot.publicOrders ?? []) {
-      this.publicOrders.set(order.id, order);
     }
 
     for (const item of snapshot.verificationTiers) {
@@ -7430,10 +6584,6 @@ export class Cp2Store {
         notificationRuleKey(notification),
         notification.id
       );
-    }
-
-    for (const item of snapshot.inventoryMovements) {
-      this.inventoryMovements.set(item.id, item);
     }
 
     for (const item of snapshot.syncQueue) {
@@ -9048,7 +8198,7 @@ export class Cp2Store {
       sokoId: business.sokoId,
       businessName: business.name,
       presence: { status: presence.status, updatedAt: presence.updatedAt },
-      products: this.productsForBusiness(business.id)
+      products: this.salesDomain.productsForBusiness(business.id)
         .filter((product) => product.quantity > 0)
         .map((product) => ({
           id: product.id,
@@ -9056,17 +8206,9 @@ export class Cp2Store {
           unit: product.unit,
           available: true,
           sellingPrice: product.sellingPrice,
-          image: this.publicProductImage(product)
+          image: this.salesDomain.publicProductImage(product)
         }))
     };
-  }
-
-  private publicProductImage(product: ProductSummary): string | null {
-    if (product.primaryMediaId === null || product.primaryMediaId === undefined) return null;
-    const media = this.productMedia.get(product.primaryMediaId);
-    return media?.productId === product.id && media.businessId === product.businessId
-      ? media.publicUrl
-      : null;
   }
 
   private shopPresenceForBusiness(businessId: string): ShopPresenceSummary {
@@ -9092,61 +8234,6 @@ export class Cp2Store {
     }
 
     return business;
-  }
-
-  private requireProduct(businessId: string, productId: string): ProductSummary {
-    const product = this.products.get(productId);
-
-    if (product === undefined || product.businessId !== businessId) {
-      throw new Cp2Error(404, "product_not_found", "Product was not found.");
-    }
-
-    return product;
-  }
-
-  private requireCustomer(businessId: string, customerId: string): CustomerSummary {
-    const customer = this.customers.get(customerId);
-
-    if (customer === undefined || customer.businessId !== businessId) {
-      throw new Cp2Error(404, "customer_not_found", "Customer was not found.");
-    }
-
-    return customer;
-  }
-
-  private createGuestCustomer(input: {
-    businessId: string;
-    displayName?: string | null;
-    provider: ChannelProvider;
-    externalUserId: string;
-    now: Date;
-  }): CustomerSummary {
-    const name =
-      normalizeOptionalBoundedText(input.displayName ?? null, 120) ??
-      `${input.provider} customer ${input.externalUserId.slice(-6)}`;
-    const customer: CustomerSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      name,
-      phone: null,
-      email: input.provider === "email" ? normalizeEmailIdentity(input.externalUserId) : null,
-      linkedAccountId: null,
-      notes: null,
-      createdAt: input.now.toISOString(),
-      updatedAt: input.now.toISOString()
-    };
-    this.customers.set(customer.id, customer);
-    return customer;
-  }
-
-  private requireInvoice(businessId: string, invoiceId: string): InvoiceSummary {
-    const invoice = this.invoices.get(invoiceId);
-
-    if (invoice === undefined || invoice.businessId !== businessId) {
-      throw new Cp2Error(404, "invoice_not_found", "Invoice was not found.");
-    }
-
-    return invoice;
   }
 
   private requireSyncQueueItem(businessId: string, syncItemId: string): SyncQueueItem {
@@ -9252,7 +8339,7 @@ export class Cp2Store {
 
   private buildRuntimeContext(businessId: string, userId: string): RuntimeContextSummary {
     const membership = this.requireMembership(businessId, userId);
-    const invoices = [...this.invoices.values()].filter(
+    const invoices = [...this.salesDomain.invoicesMap.values()].filter(
       (invoice) => invoice.businessId === businessId
     );
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
@@ -9265,18 +8352,18 @@ export class Cp2Store {
       businessId,
       userId,
       role: membership.role,
-      productCount: [...this.products.values()].filter(
+      productCount: [...this.salesDomain.productsMap.values()].filter(
         (product) => product.businessId === businessId
       ).length,
-      customerCount: [...this.customers.values()].filter(
+      customerCount: [...this.salesDomain.customersMap.values()].filter(
         (customer) => customer.businessId === businessId
       ).length,
       supplierCount: this.supplierDomain.suppliersForBusiness(businessId).length,
       invoiceCount: invoices.length,
       openInvoiceCount: invoices.filter(
-        (invoice) => this.buildInvoicePaymentSummary(invoice).balanceDue > 0
+        (invoice) => this.salesDomain.buildInvoicePaymentSummary(invoice).balanceDue > 0
       ).length,
-      paymentCount: [...this.payments.values()].filter(
+      paymentCount: [...this.salesDomain.paymentsMap.values()].filter(
         (payment) => payment.businessId === businessId
       ).length,
       importJobCount: this.documentImportDomain.importsForBusiness(businessId).length,
@@ -9349,8 +8436,8 @@ export class Cp2Store {
     const supportTickets = this.compliance.betaSupportTicketsForBusiness(businessId);
     const telemetryEvents = this.compliance.betaTelemetryEventsForBusiness(businessId);
     const syncItems = this.syncItemsForBusiness(businessId);
-    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
-    const payments = this.paymentsForBusiness(businessId);
+    const paymentSummaries = this.salesDomain.buildInvoicePaymentSummaries(businessId);
+    const payments = this.salesDomain.paymentsForBusiness(businessId);
     const offlineSnapshot = this.buildOfflineCacheSnapshot(businessId, now);
     const passedDeviceClasses = [
       ...new Set(
@@ -9510,14 +8597,14 @@ export class Cp2Store {
     );
     const incidents = this.compliance.launchIncidentsForBusiness(businessId);
     const telemetryEvents = this.compliance.betaTelemetryEventsForBusiness(businessId);
-    const products = this.productsForBusiness(businessId);
-    const customers = [...this.customers.values()].filter(
+    const products = this.salesDomain.productsForBusiness(businessId);
+    const customers = [...this.salesDomain.customersMap.values()].filter(
       (customer) => customer.businessId === businessId
     );
-    const invoices = this.invoicesForBusiness(businessId);
-    const payments = this.paymentsForBusiness(businessId);
+    const invoices = this.salesDomain.invoicesForBusiness(businessId);
+    const payments = this.salesDomain.paymentsForBusiness(businessId);
     const syncSummary = summarizeSyncQueue(businessId, this.syncItemsForBusiness(businessId));
-    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
+    const paymentSummaries = this.salesDomain.buildInvoicePaymentSummaries(businessId);
     const sessionEventCount = telemetryEvents.filter((event) => event.kind === "session").length;
     const crashEventCount = telemetryEvents.filter((event) => event.kind === "crash").length;
     const errorEventCount = telemetryEvents.filter((event) => event.kind === "error").length;
@@ -9663,16 +8750,16 @@ export class Cp2Store {
   }
 
   private buildBusinessReport(businessId: string, now: Date): BusinessReportSummary {
-    const products = this.productsForBusiness(businessId);
-    const invoices = this.invoicesForBusiness(businessId);
-    const payments = this.paymentsForBusiness(businessId);
+    const products = this.salesDomain.productsForBusiness(businessId);
+    const invoices = this.salesDomain.invoicesForBusiness(businessId);
+    const payments = this.salesDomain.paymentsForBusiness(businessId);
     const imports = this.documentImportDomain.importsForBusiness(businessId);
     const logistics = this.logisticsDomain.logisticsForBusiness(businessId);
-    const movements = [...this.inventoryMovements.values()].filter(
+    const movements = [...this.salesDomain.inventoryMovementsMap.values()].filter(
       (movement) => movement.businessId === businessId
     );
-    const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
-    const debts = this.buildCustomerDebtSummaries(businessId);
+    const paymentSummaries = this.salesDomain.buildInvoicePaymentSummaries(businessId);
+    const debts = this.salesDomain.buildCustomerDebtSummaries(businessId);
     const syncSummary = summarizeSyncQueue(businessId, this.syncItemsForBusiness(businessId));
     const confirmedInvoices = invoices.filter((invoice) => invoice.status === "confirmed");
 
@@ -9831,30 +8918,8 @@ export class Cp2Store {
     );
   }
 
-  private productsForBusiness(businessId: string): ProductSummary[] {
-    return [...this.products.values()].filter((product) => product.businessId === businessId);
-  }
-
-  private customersForBusiness(businessId: string): CustomerSummary[] {
-    return [...this.customers.values()].filter((customer) => customer.businessId === businessId);
-  }
-
-  private invoicesForBusiness(businessId: string): InvoiceSummary[] {
-    return [...this.invoices.values()].filter((invoice) => invoice.businessId === businessId);
-  }
-
-  private paymentsForBusiness(businessId: string): PaymentSummary[] {
-    return [...this.payments.values()].filter((payment) => payment.businessId === businessId);
-  }
-
   private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
     return [...this.syncQueue.values()].filter((item) => item.businessId === businessId);
-  }
-
-  private inventoryMovementsForBusiness(businessId: string): InventoryMovementSummary[] {
-    return [...this.inventoryMovements.values()].filter(
-      (movement) => movement.businessId === businessId
-    );
   }
 
   private buildOfflineCacheSnapshot(businessId: string, now: Date): OfflineCacheSnapshot {
@@ -9862,15 +8927,15 @@ export class Cp2Store {
       businessId,
       capturedAt: now.toISOString(),
       source: "server_cache",
-      products: this.productsForBusiness(businessId),
-      customers: this.customersForBusiness(businessId),
+      products: this.salesDomain.productsForBusiness(businessId),
+      customers: this.salesDomain.customersForBusiness(businessId),
       suppliers: this.supplierDomain.suppliersForBusiness(businessId),
-      invoices: this.invoicesForBusiness(businessId),
-      payments: this.paymentsForBusiness(businessId),
+      invoices: this.salesDomain.invoicesForBusiness(businessId),
+      payments: this.salesDomain.paymentsForBusiness(businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(businessId),
-      invoicePaymentSummaries: this.buildInvoicePaymentSummaries(businessId),
-      customerDebts: this.buildCustomerDebtSummaries(businessId),
-      inventoryMovements: this.inventoryMovementsForBusiness(businessId)
+      invoicePaymentSummaries: this.salesDomain.buildInvoicePaymentSummaries(businessId),
+      customerDebts: this.salesDomain.buildCustomerDebtSummaries(businessId),
+      inventoryMovements: this.salesDomain.inventoryMovementsForBusiness(businessId)
     };
   }
 
@@ -9878,14 +8943,14 @@ export class Cp2Store {
     const aggregateIds = new Set<string>([
       businessId,
       ...this.membershipsForBusiness(businessId).map((item) => item.id),
-      ...this.productsForBusiness(businessId).map((item) => item.id),
-      ...this.customersForBusiness(businessId).map((item) => item.id),
+      ...this.salesDomain.productsForBusiness(businessId).map((item) => item.id),
+      ...this.salesDomain.customersForBusiness(businessId).map((item) => item.id),
       ...this.supplierDomain.suppliersForBusiness(businessId).map((item) => item.id),
-      ...this.invoicesForBusiness(businessId).map((item) => item.id),
-      ...this.paymentsForBusiness(businessId).map((item) => item.id),
+      ...this.salesDomain.invoicesForBusiness(businessId).map((item) => item.id),
+      ...this.salesDomain.paymentsForBusiness(businessId).map((item) => item.id),
       ...this.logisticsDomain.logisticsForBusiness(businessId).map((item) => item.id),
       ...this.documentImportDomain.importsForBusiness(businessId).map((item) => item.id),
-      ...this.inventoryMovementsForBusiness(businessId).map((item) => item.id),
+      ...this.salesDomain.inventoryMovementsForBusiness(businessId).map((item) => item.id),
       ...this.notificationsDomain.sortedNotifications(businessId).map((item) => item.id),
       ...this.syncItemsForBusiness(businessId).map((item) => item.id),
       ...[...this.dataExports.values()]
@@ -9933,8 +8998,8 @@ export class Cp2Store {
     now: Date
   ): ShopDeletionPreviewSummary {
     const business = this.requireBusiness(businessId);
-    const invoices = this.invoicesForBusiness(businessId);
-    const payments = this.paymentsForBusiness(businessId);
+    const invoices = this.salesDomain.invoicesForBusiness(businessId);
+    const payments = this.salesDomain.paymentsForBusiness(businessId);
     const documentSources = this.documentImportDomain.documentImportSourcesForBusiness(businessId);
 
     return {
@@ -9942,8 +9007,8 @@ export class Cp2Store {
       shopId: business.sokoId,
       generatedAt: now.toISOString(),
       counts: {
-        products: this.productsForBusiness(businessId).length,
-        customers: this.customersForBusiness(businessId).length,
+        products: this.salesDomain.productsForBusiness(businessId).length,
+        customers: this.salesDomain.customersForBusiness(businessId).length,
         suppliers: this.supplierDomain.suppliersForBusiness(businessId).length,
         salesAgents: this.supplierDomain.salesAgentsForBusiness(businessId).length,
         salesRecords: invoices.length + payments.length,
@@ -9974,7 +9039,7 @@ export class Cp2Store {
       entity: null,
       now
     });
-    const invoiceIds = new Set(this.invoicesForBusiness(businessId).map((invoice) => invoice.id));
+    const invoiceIds = new Set(this.salesDomain.invoicesForBusiness(businessId).map((invoice) => invoice.id));
     const supplierIds = new Set(
       this.supplierDomain.suppliersForBusiness(businessId).map((supplier) => supplier.id)
     );
@@ -10018,15 +9083,15 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, product] of this.products.entries()) {
+    for (const [id, product] of this.salesDomain.productsMap.entries()) {
       if (product.businessId === businessId) {
-        this.products.delete(id);
+        this.salesDomain.productsMap.delete(id);
       }
     }
 
-    for (const [id, customer] of this.customers.entries()) {
+    for (const [id, customer] of this.salesDomain.customersMap.entries()) {
       if (customer.businessId === businessId) {
-        this.customers.delete(id);
+        this.salesDomain.customersMap.delete(id);
       }
     }
 
@@ -10069,15 +9134,15 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, invoice] of this.invoices.entries()) {
+    for (const [id, invoice] of this.salesDomain.invoicesMap.entries()) {
       if (invoice.businessId === businessId) {
-        this.invoices.delete(id);
+        this.salesDomain.invoicesMap.delete(id);
       }
     }
 
-    for (const [id, payment] of this.payments.entries()) {
+    for (const [id, payment] of this.salesDomain.paymentsMap.entries()) {
       if (payment.businessId === businessId || invoiceIds.has(payment.invoiceId)) {
-        this.payments.delete(id);
+        this.salesDomain.paymentsMap.delete(id);
       }
     }
 
@@ -10088,9 +9153,9 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, movement] of this.inventoryMovements.entries()) {
+    for (const [id, movement] of this.salesDomain.inventoryMovementsMap.entries()) {
       if (movement.businessId === businessId) {
-        this.inventoryMovements.delete(id);
+        this.salesDomain.inventoryMovementsMap.delete(id);
       }
     }
 
@@ -10141,14 +9206,14 @@ export class Cp2Store {
     for (const [id, invite] of this.networkInvites.entries()) {
       if (invite.businessId === businessId) this.networkInvites.delete(id);
     }
-    for (const [id, request] of this.publicCustomerCareRequests.entries()) {
-      if (request.businessId === businessId) this.publicCustomerCareRequests.delete(id);
+    for (const [id, request] of this.salesDomain.publicCustomerCareRequestsMap.entries()) {
+      if (request.businessId === businessId) this.salesDomain.publicCustomerCareRequestsMap.delete(id);
     }
-    for (const [id, message] of this.publicStorefrontMessages.entries()) {
-      if (message.businessId === businessId) this.publicStorefrontMessages.delete(id);
+    for (const [id, message] of this.salesDomain.publicStorefrontMessagesMap.entries()) {
+      if (message.businessId === businessId) this.salesDomain.publicStorefrontMessagesMap.delete(id);
     }
-    for (const [id, order] of this.publicOrders.entries()) {
-      if (order.businessId === businessId) this.publicOrders.delete(id);
+    for (const [id, order] of this.salesDomain.publicOrdersMap.entries()) {
+      if (order.businessId === businessId) this.salesDomain.publicOrdersMap.delete(id);
     }
 
     for (const [id, membership] of this.memberships.entries()) {
@@ -10159,7 +9224,7 @@ export class Cp2Store {
 
     this.compliance.verificationTiersMap.delete(businessId);
     this.compliance.taxConfigsMap.delete(businessId);
-    this.productFieldSchemas.delete(businessId);
+    this.salesDomain.productFieldSchemasMap.delete(businessId);
     this.compliance.betaAccessMap.delete(businessId);
     this.compliance.launchSettingsMap.delete(businessId);
     this.businesses.delete(businessId);
@@ -10266,15 +9331,15 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.browserInferenceAssignmentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentModelBindingsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.productFieldSchemas, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.products, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.productMedia, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productFieldSchemasMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productMediaMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.productCaptureJobsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.statusBroadcastsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.buyOrdersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.statusOrdersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.unifiedCheckoutsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.customers, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.customersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.suppliersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.salesAgentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(
@@ -10284,16 +9349,16 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.purchaseReceiptsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.receiptLineItemsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.receiptOCRJobsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.invoices, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.payments, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.invoicesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.paymentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.logisticsDomain.logisticsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.dataExports, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkInvites, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.publicCustomerCareRequests, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.publicStorefrontMessages, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.publicOrders, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicCustomerCareRequestsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicStorefrontMessagesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicOrdersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.verificationTiersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.taxConfigsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.deviceTrustMap, scope);
@@ -10317,7 +9382,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.runtimeSessionsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.runtimeTurnsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.pendingRuntimeActionsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.inventoryMovements, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.inventoryMovementsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
       deletedRecordCount += deleteScopedMapRecords(this.otpChallenges, scope);
       deletedRecordCount += deleteScopedMapRecords(this.smsDeliveryAttempts, scope);
@@ -10436,132 +9501,21 @@ export class Cp2Store {
 
   private buildComplianceRetention(businessId: string): ComplianceRetentionSummary {
     const directIdentifierFieldsRemoved =
-      this.customersForBusiness(businessId).length * 3 +
+      this.salesDomain.customersForBusiness(businessId).length * 3 +
       this.supplierDomain.suppliersForBusiness(businessId).length * 3 +
       this.logisticsDomain.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
 
     return {
       businessId,
-      retainedInvoiceCount: this.invoicesForBusiness(businessId).filter(
+      retainedInvoiceCount: this.salesDomain.invoicesForBusiness(businessId).filter(
         (invoice) => invoice.status === "confirmed"
       ).length,
-      retainedPaymentCount: this.paymentsForBusiness(businessId).length,
+      retainedPaymentCount: this.salesDomain.paymentsForBusiness(businessId).length,
       retainedLogisticsCount: this.logisticsDomain.logisticsForBusiness(businessId).length,
       retainedImportCount: this.documentImportDomain.importsForBusiness(businessId).length,
       retainedAuditEventCount: this.auditEventsForBusiness(businessId).length,
       directIdentifierFieldsRemoved
     };
-  }
-
-  private buildInvoicePreview(businessId: string, invoice: InvoiceInput): InvoicePreview {
-    const normalized = normalizeInvoiceInput(invoice);
-    const customer =
-      normalized.customerId === null
-        ? null
-        : this.requireCustomer(businessId, normalized.customerId);
-    const products = normalized.items.map((item) =>
-      this.requireProduct(businessId, item.productId)
-    );
-
-    return createInvoicePreview({
-      businessId,
-      invoice,
-      products,
-      customer
-    });
-  }
-
-  private buildStoredInvoice(input: {
-    businessId: string;
-    invoiceId: string;
-    invoiceNumber: string;
-    input: InvoiceInput;
-    status: "draft" | "confirmed";
-    confirmedAt: string | null;
-    now: Date;
-    createdAt?: string;
-  }): InvoiceSummary {
-    const preview = this.buildInvoicePreview(input.businessId, input.input);
-    const items: InvoiceItemSummary[] = preview.items.map((item) => ({
-      id: randomUUID(),
-      invoiceId: input.invoiceId,
-      ...item
-    }));
-
-    return {
-      id: input.invoiceId,
-      businessId: input.businessId,
-      invoiceNumber: input.invoiceNumber,
-      status: input.status,
-      customerId: preview.customerId,
-      customerName: preview.customerName,
-      items,
-      subtotal: preview.subtotal,
-      taxRate: preview.taxRate,
-      taxTotal: preview.taxTotal,
-      total: preview.total,
-      confirmedAt: input.confirmedAt,
-      createdAt: input.createdAt ?? input.now.toISOString(),
-      updatedAt: input.now.toISOString()
-    };
-  }
-
-  private nextInvoiceNumber(businessId: string): string {
-    const nextNumber = this.nextInvoiceNumberByBusiness.get(businessId) ?? 1;
-    this.nextInvoiceNumberByBusiness.set(businessId, nextNumber + 1);
-    return `INV-${String(nextNumber).padStart(5, "0")}`;
-  }
-
-  private createInventoryMovement(input: {
-    businessId: string;
-    productId: string;
-    type?: "manual_adjustment" | "sale";
-    quantityBefore: number;
-    quantityAfter: number;
-    reason: string;
-    actorId: string;
-    now: Date;
-  }): InventoryMovementSummary {
-    const movement: InventoryMovementSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      productId: input.productId,
-      type: input.type ?? "manual_adjustment",
-      quantityBefore: input.quantityBefore,
-      quantityAfter: input.quantityAfter,
-      delta: input.quantityAfter - input.quantityBefore,
-      reason: input.reason,
-      actorId: input.actorId,
-      createdAt: input.now.toISOString()
-    };
-
-    this.inventoryMovements.set(movement.id, movement);
-    this.appendBusinessEvent(
-      stockAdjustedEvent({
-        id: randomUUID(),
-        movement,
-        actorId: input.actorId,
-        occurredAt: input.now.toISOString()
-      })
-    );
-
-    return movement;
-  }
-
-  private buildInvoicePaymentSummaries(businessId: string): InvoicePaymentSummary[] {
-    return [...this.invoices.values()]
-      .filter((invoice) => invoice.businessId === businessId)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .map((invoice) => this.buildInvoicePaymentSummary(invoice));
-  }
-
-  private buildInvoicePaymentSummary(invoice: InvoiceSummary): InvoicePaymentSummary {
-    return createInvoicePaymentSummary({
-      invoice,
-      payments: [...this.payments.values()].filter(
-        (payment) => payment.businessId === invoice.businessId
-      )
-    });
   }
 
   private appendBusinessEvent(event: BusinessEvent): void {
@@ -11441,66 +10395,5 @@ function syncRecordDate(value: string): Date {
 }
 
 
-function defaultProductFieldDefinitions(): ProductFieldDefinition[] {
-  return [
-    { id: "name", label: "Name", inputType: "text", required: true },
-    { id: "sku", label: "SKU", inputType: "text", required: true },
-    { id: "unit", label: "Unit", inputType: "select", required: true },
-    { id: "quantity", label: "Quantity", inputType: "number", required: true },
-    { id: "selling-price", label: "Selling Price", inputType: "number", required: true }
-  ];
-}
-
-function normalizeProductFieldDefinitions(
-  fields: ProductFieldDefinition[]
-): ProductFieldDefinition[] {
-  if (!Array.isArray(fields) || fields.length < 1 || fields.length > 50) {
-    throw new Cp2Error(
-      400,
-      "product_fields_invalid",
-      "A product field schema needs between 1 and 50 fields."
-    );
-  }
-  const ids = new Set<string>();
-  const labels = new Set<string>();
-  const supportedTypes = new Set<ProductFieldInputType>([
-    "text",
-    "number",
-    "select",
-    "textarea",
-    "yes_no"
-  ]);
-
-  return fields.map((field, index) => {
-    const id = normalizeRequiredBoundedText(field.id, `field ${index + 1} id`, 80);
-    const label = normalizeRequiredBoundedText(field.label, `field ${index + 1} label`, 80);
-    const normalizedLabel = label.toLowerCase();
-    if (!/^[a-z0-9][a-z0-9_-]*$/iu.test(id)) {
-      throw new Cp2Error(
-        400,
-        "product_field_id_invalid",
-        "Product field IDs may use letters, numbers, hyphens, and underscores."
-      );
-    }
-    if (ids.has(id) || labels.has(normalizedLabel)) {
-      throw new Cp2Error(
-        400,
-        "product_field_duplicate",
-        "Product field IDs and labels must be unique."
-      );
-    }
-    if (!supportedTypes.has(field.inputType)) {
-      throw new Cp2Error(400, "product_field_type_invalid", "Product field type is not supported.");
-    }
-    ids.add(id);
-    labels.add(normalizedLabel);
-    return {
-      id,
-      label,
-      inputType: field.inputType,
-      required: field.required === true
-    };
-  });
-}
 
 
