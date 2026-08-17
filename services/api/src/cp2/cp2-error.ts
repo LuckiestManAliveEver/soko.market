@@ -14,3 +14,9 @@ export class Cp2Error extends Error {
     super(message);
   }
 }
+
+export function assertValid(result: { ok: boolean; errors: string[] }): void {
+  if (!result.ok) {
+    throw new Cp2Error(400, "validation_failed", result.errors.join(" "));
+  }
+}

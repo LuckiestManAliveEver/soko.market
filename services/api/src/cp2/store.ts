@@ -23,9 +23,17 @@ import {
 } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection, resolveRuntimeModel } from "@soko/shared-types";
-import { Cp2Error } from "./cp2-error.js";
+import { Cp2Error, assertValid } from "./cp2-error.js";
 import { normalizeOptionalBoundedText, normalizeRequiredBoundedText } from "./text-normalization.js";
 import { CommerceDomain } from "./domains/commerce/store.js";
+import { ComplianceDomain } from "./domains/compliance/store.js";
+import {
+  betaFeatureFlagKeys,
+  betaFeatureFlagMapKey,
+  deviceTrustKey,
+  launchChecklistKeys,
+  launchChecklistMapKey
+} from "./domains/compliance/shared.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -56,7 +64,6 @@ import type {
   AuthSessionView,
   BetaAccessSummary,
   BetaDeviceTestSummary,
-  BetaFeatureFlagKey,
   BetaFeatureFlagSummary,
   BetaReadinessReportSummary,
   BetaSupportTicketSummary,
@@ -123,7 +130,6 @@ import type {
   InvoicePreview,
   InvoiceSummary,
   LaunchChecklistItemSummary,
-  LaunchChecklistKey,
   LaunchIncidentSummary,
   LaunchReadinessReportSummary,
   LaunchSettingsSummary,
@@ -293,13 +299,6 @@ import {
 } from "./phone-identity.js";
 import {
   accountDeletionScheduledEvent,
-  betaAccessUpdatedEvent,
-  betaDeviceTestRecordedEvent,
-  betaFeatureFlagRisk,
-  betaFeatureFlagUpdatedEvent,
-  betaSupportTicketCreatedEvent,
-  betaSupportTicketStatusUpdatedEvent,
-  betaTelemetryRecordedEvent,
   customerCreatedEvent,
   customerUpdatedEvent,
   createInvoicePreview,
@@ -307,7 +306,6 @@ import {
   createProductImportPreview,
   createSupplierImportPreview,
   dataExportCreatedEvent,
-  deviceTrustUpdatedEvent,
   documentImportConfirmedEvent,
   documentImportFailedEvent,
   documentImportPreviewedEvent,
@@ -315,24 +313,8 @@ import {
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
   isBusinessRole,
-  launchChecklistUpdatedEvent,
-  launchIncidentCreatedEvent,
-  launchIncidentStatusUpdatedEvent,
-  launchSettingsUpdatedEvent,
-  normalizeBetaAccessInput,
-  normalizeBetaDeviceTestInput,
-  normalizeBetaFeatureFlagInput,
-  normalizeBetaSupportTicketInput,
-  normalizeBetaSupportTicketStatusInput,
-  normalizeBetaTelemetryInput,
-  normalizeLaunchChecklistInput,
-  normalizeLaunchIncidentInput,
-  normalizeLaunchIncidentStatusInput,
-  normalizeLaunchSettingsInput,
   normalizeAccountDeletionInput,
   normalizeContactRecordInput,
-  normalizeCountryTaxConfigInput,
-  normalizeDeviceTrustInput,
   normalizeInvoiceInput,
   normalizeLogisticsInput,
   normalizeLogisticsStatusInput,
@@ -340,7 +322,6 @@ import {
   normalizeProductInput,
   queryCatalogueProducts,
   normalizeStockAdjustmentInput,
-  normalizeVerificationTierInput,
   paymentRecordedEvent,
   permissionsForRole,
   productCreatedEvent,
@@ -350,24 +331,10 @@ import {
   stockAdjustedEvent,
   supplierCreatedEvent,
   supplierUpdatedEvent,
-  taxConfigUpdatedEvent,
-  verificationTierUpdatedEvent,
   validateAccountDeletionInput,
-  validateBetaAccessInput,
-  validateBetaDeviceTestInput,
-  validateBetaFeatureFlagInput,
-  validateBetaSupportTicketInput,
-  validateBetaSupportTicketStatusInput,
-  validateBetaTelemetryInput,
-  validateLaunchChecklistInput,
-  validateLaunchIncidentInput,
-  validateLaunchIncidentStatusInput,
-  validateLaunchSettingsInput,
   logisticsCreatedEvent,
   logisticsStatusUpdatedEvent,
   validateContactRecordInput,
-  validateCountryTaxConfigInput,
-  validateDeviceTrustInput,
   validateDocumentImportSource,
   validateInvoiceInput,
   validateLogisticsInput,
@@ -376,30 +343,16 @@ import {
   validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput,
-  validateVerificationTierInput,
   type AccountDeletionInput,
-  type BetaAccessInput,
-  type BetaDeviceTestInput,
-  type BetaFeatureFlagInput,
-  type BetaSupportTicketInput,
-  type BetaSupportTicketStatusInput,
-  type BetaTelemetryInput,
   type BusinessPermission,
   type ContactRecordInput,
-  type CountryTaxConfigInput,
-  type DeviceTrustInput,
   type DocumentImportSourceInput,
   type InvoiceInput,
-  type LaunchChecklistInput,
-  type LaunchIncidentInput,
-  type LaunchIncidentStatusInput,
-  type LaunchSettingsInput,
   type LogisticsInput,
   type LogisticsStatusInput,
   type PaymentInput,
   type ProductInput,
-  type StockAdjustmentInput,
-  type VerificationTierInput
+  type StockAdjustmentInput
 } from "@soko/business-core";
 import {
   createRuntimeToolProposalFromReceiptContextScript,
@@ -1229,6 +1182,11 @@ export class Cp2Store {
       businesses: this.businesses,
       invoices: this.invoices
     });
+    this.compliance = new ComplianceDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      appendBusinessEvent: (event) => this.appendBusinessEvent(event)
+    });
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1327,17 +1285,7 @@ export class Cp2Store {
   /** Ephemeral per-(business,visitor) attempt timestamps; never persisted or snapshotted. */
   private readonly publicAgentReplyAttemptsByVisitor = new Map<string, number[]>();
   private readonly publicOrders = new Map<string, PublicOrderSummary>();
-  private readonly verificationTiers = new Map<string, VerificationTierSummary>();
-  private readonly taxConfigs = new Map<string, CountryTaxConfigSummary>();
-  private readonly deviceTrust = new Map<string, DeviceTrustSummary>();
-  private readonly betaAccess = new Map<string, BetaAccessSummary>();
-  private readonly betaFeatureFlags = new Map<string, BetaFeatureFlagSummary>();
-  private readonly betaDeviceTests = new Map<string, BetaDeviceTestSummary>();
-  private readonly betaSupportTickets = new Map<string, BetaSupportTicketSummary>();
-  private readonly betaTelemetryEvents = new Map<string, BetaTelemetryEventSummary>();
-  private readonly launchSettings = new Map<string, LaunchSettingsSummary>();
-  private readonly launchChecklist = new Map<string, LaunchChecklistItemSummary>();
-  private readonly launchIncidents = new Map<string, LaunchIncidentSummary>();
+  private readonly compliance: ComplianceDomain;
   private readonly documentImports = new Map<string, DocumentImportJobSummary>();
   private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
@@ -12267,183 +12215,40 @@ export class Cp2Store {
     return summary;
   }
 
-  getVerificationTier(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): VerificationTierSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "verification:read",
-      now
-    );
-    return this.getOrCreateVerificationTier(input.businessId, session.user.id, now);
+  getVerificationTier(
+    ...args: Parameters<ComplianceDomain["getVerificationTier"]>
+  ): ReturnType<ComplianceDomain["getVerificationTier"]> {
+    return this.compliance.getVerificationTier(...args);
   }
 
-  updateVerificationTier(input: {
-    sessionId: string | null;
-    businessId: string;
-    verification: VerificationTierInput;
-    now?: Date;
-  }): VerificationTierSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "verification:write",
-      now
-    );
-    assertValid(validateVerificationTierInput(input.verification));
-    const normalized = normalizeVerificationTierInput(input.verification);
-    const existing = this.getOrCreateVerificationTier(input.businessId, session.user.id, now);
-    const updated: VerificationTierSummary = {
-      businessId: input.businessId,
-      tier: normalized.tier,
-      evidenceType: normalized.evidenceType,
-      note: normalized.note,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.verificationTiers.set(input.businessId, updated);
-    this.appendBusinessEvent(
-      verificationTierUpdatedEvent({
-        id: randomUUID(),
-        verification: updated,
-        previousTier: existing.tier,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateVerificationTier(
+    ...args: Parameters<ComplianceDomain["updateVerificationTier"]>
+  ): ReturnType<ComplianceDomain["updateVerificationTier"]> {
+    return this.compliance.updateVerificationTier(...args);
   }
 
-  getTaxConfig(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): CountryTaxConfigSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "tax:read",
-      now
-    );
-    return this.getOrCreateTaxConfig(input.businessId, session.user.id, now);
+  getTaxConfig(
+    ...args: Parameters<ComplianceDomain["getTaxConfig"]>
+  ): ReturnType<ComplianceDomain["getTaxConfig"]> {
+    return this.compliance.getTaxConfig(...args);
   }
 
-  updateTaxConfig(input: {
-    sessionId: string | null;
-    businessId: string;
-    taxConfig: CountryTaxConfigInput;
-    now?: Date;
-  }): CountryTaxConfigSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "tax:write",
-      now
-    );
-    assertValid(validateCountryTaxConfigInput(input.taxConfig));
-    const normalized = normalizeCountryTaxConfigInput(input.taxConfig);
-    const updated: CountryTaxConfigSummary = {
-      businessId: input.businessId,
-      countryCode: normalized.countryCode,
-      defaultTaxRate: normalized.defaultTaxRate,
-      taxIdLabel: normalized.countryCode === "KE" ? "KRA PIN" : "Tax ID",
-      taxId: normalized.taxId,
-      pricesIncludeTax: normalized.pricesIncludeTax,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.taxConfigs.set(input.businessId, updated);
-    this.appendBusinessEvent(
-      taxConfigUpdatedEvent({
-        id: randomUUID(),
-        taxConfig: updated,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateTaxConfig(
+    ...args: Parameters<ComplianceDomain["updateTaxConfig"]>
+  ): ReturnType<ComplianceDomain["updateTaxConfig"]> {
+    return this.compliance.updateTaxConfig(...args);
   }
 
-  getDeviceTrust(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceId?: string;
-    now?: Date;
-  }): DeviceTrustSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "device_trust:read",
-      now
-    );
-    return this.getOrCreateDeviceTrust(
-      input.businessId,
-      session.user.id,
-      input.deviceId ?? "browser-session",
-      session.user.id,
-      now
-    );
+  getDeviceTrust(
+    ...args: Parameters<ComplianceDomain["getDeviceTrust"]>
+  ): ReturnType<ComplianceDomain["getDeviceTrust"]> {
+    return this.compliance.getDeviceTrust(...args);
   }
 
-  updateDeviceTrust(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceTrust: DeviceTrustInput;
-    now?: Date;
-  }): DeviceTrustSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "device_trust:write",
-      now
-    );
-    assertValid(validateDeviceTrustInput(input.deviceTrust));
-    const normalized = normalizeDeviceTrustInput(input.deviceTrust);
-    const existing = this.getOrCreateDeviceTrust(
-      input.businessId,
-      session.user.id,
-      normalized.deviceId,
-      session.user.id,
-      now
-    );
-    const updated: DeviceTrustSummary = {
-      businessId: input.businessId,
-      userId: session.user.id,
-      deviceId: normalized.deviceId,
-      level: normalized.level,
-      reason: normalized.reason,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.deviceTrust.set(
-      deviceTrustKey(input.businessId, session.user.id, normalized.deviceId),
-      updated
-    );
-    this.appendBusinessEvent(
-      deviceTrustUpdatedEvent({
-        id: randomUUID(),
-        deviceTrust: updated,
-        previousLevel: existing.level,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateDeviceTrust(
+    ...args: Parameters<ComplianceDomain["updateDeviceTrust"]>
+  ): ReturnType<ComplianceDomain["updateDeviceTrust"]> {
+    return this.compliance.updateDeviceTrust(...args);
   }
 
   getSecurityReview(input: {
@@ -12505,280 +12310,52 @@ export class Cp2Store {
     return this.buildBetaReadinessReport(input.businessId, now);
   }
 
-  updateBetaAccess(input: {
-    sessionId: string | null;
-    businessId: string;
-    access: BetaAccessInput;
-    now?: Date;
-  }): BetaAccessSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:write",
-      now
-    );
-    assertValid(validateBetaAccessInput(input.access));
-    const normalized = normalizeBetaAccessInput(input.access);
-    const existing = this.getOrCreateBetaAccess(input.businessId, session.user.id, now);
-    const updated: BetaAccessSummary = {
-      businessId: input.businessId,
-      status: normalized.status,
-      targetMerchantCount: 10,
-      invitedMerchantCount: normalized.invitedMerchantCount,
-      pauseReason: normalized.pauseReason,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.betaAccess.set(input.businessId, updated);
-    this.appendBusinessEvent(
-      betaAccessUpdatedEvent({
-        id: randomUUID(),
-        access: updated,
-        previousStatus: existing.status,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateBetaAccess(
+    ...args: Parameters<ComplianceDomain["updateBetaAccess"]>
+  ): ReturnType<ComplianceDomain["updateBetaAccess"]> {
+    return this.compliance.updateBetaAccess(...args);
   }
 
-  listBetaFeatureFlags(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): BetaFeatureFlagSummary[] {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:read",
-      now
-    );
-    return betaFeatureFlagKeys.map((key) =>
-      this.getOrCreateBetaFeatureFlag(input.businessId, key, session.user.id, now)
-    );
+  listBetaFeatureFlags(
+    ...args: Parameters<ComplianceDomain["listBetaFeatureFlags"]>
+  ): ReturnType<ComplianceDomain["listBetaFeatureFlags"]> {
+    return this.compliance.listBetaFeatureFlags(...args);
   }
 
-  updateBetaFeatureFlag(input: {
-    sessionId: string | null;
-    businessId: string;
-    key: BetaFeatureFlagKey;
-    featureFlag: BetaFeatureFlagInput;
-    now?: Date;
-  }): BetaFeatureFlagSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:write",
-      now
-    );
-    assertValid(validateBetaFeatureFlagInput(input.featureFlag));
-    const normalized = normalizeBetaFeatureFlagInput(input.featureFlag);
-    const updated: BetaFeatureFlagSummary = {
-      businessId: input.businessId,
-      key: input.key,
-      enabled: normalized.enabled,
-      risk: betaFeatureFlagRisk(input.key),
-      reason: normalized.reason,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.betaFeatureFlags.set(betaFeatureFlagMapKey(input.businessId, input.key), updated);
-    this.appendBusinessEvent(
-      betaFeatureFlagUpdatedEvent({
-        id: randomUUID(),
-        featureFlag: updated,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateBetaFeatureFlag(
+    ...args: Parameters<ComplianceDomain["updateBetaFeatureFlag"]>
+  ): ReturnType<ComplianceDomain["updateBetaFeatureFlag"]> {
+    return this.compliance.updateBetaFeatureFlag(...args);
   }
 
-  recordBetaDeviceTest(input: {
-    sessionId: string | null;
-    businessId: string;
-    deviceTest: BetaDeviceTestInput;
-    now?: Date;
-  }): BetaDeviceTestSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:write",
-      now
-    );
-    assertValid(validateBetaDeviceTestInput(input.deviceTest));
-    const normalized = normalizeBetaDeviceTestInput(input.deviceTest);
-    const deviceTest: BetaDeviceTestSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      deviceClass: normalized.deviceClass,
-      workflow: normalized.workflow,
-      status: normalized.status,
-      durationMs: normalized.durationMs,
-      notes: normalized.notes,
-      recordedBy: session.user.id,
-      recordedAt: now.toISOString()
-    };
-
-    this.betaDeviceTests.set(deviceTest.id, deviceTest);
-    this.appendBusinessEvent(
-      betaDeviceTestRecordedEvent({
-        id: randomUUID(),
-        deviceTest,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return deviceTest;
+  recordBetaDeviceTest(
+    ...args: Parameters<ComplianceDomain["recordBetaDeviceTest"]>
+  ): ReturnType<ComplianceDomain["recordBetaDeviceTest"]> {
+    return this.compliance.recordBetaDeviceTest(...args);
   }
 
-  listBetaSupportTickets(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): BetaSupportTicketSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "beta:support", input.now);
-    return this.betaSupportTicketsForBusiness(input.businessId);
+  listBetaSupportTickets(
+    ...args: Parameters<ComplianceDomain["listBetaSupportTickets"]>
+  ): ReturnType<ComplianceDomain["listBetaSupportTickets"]> {
+    return this.compliance.listBetaSupportTickets(...args);
   }
 
-  createBetaSupportTicket(input: {
-    sessionId: string | null;
-    businessId: string;
-    ticket: BetaSupportTicketInput;
-    now?: Date;
-  }): BetaSupportTicketSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:support",
-      now
-    );
-    assertValid(validateBetaSupportTicketInput(input.ticket));
-    const normalized = normalizeBetaSupportTicketInput(input.ticket);
-    const ticket: BetaSupportTicketSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      severity: normalized.severity,
-      status: "open",
-      title: normalized.title,
-      bodySummary: normalized.bodySummary,
-      source: normalized.source,
-      createdBy: session.user.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      resolvedAt: null
-    };
-
-    this.betaSupportTickets.set(ticket.id, ticket);
-    this.appendBusinessEvent(
-      betaSupportTicketCreatedEvent({
-        id: randomUUID(),
-        ticket,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return ticket;
+  createBetaSupportTicket(
+    ...args: Parameters<ComplianceDomain["createBetaSupportTicket"]>
+  ): ReturnType<ComplianceDomain["createBetaSupportTicket"]> {
+    return this.compliance.createBetaSupportTicket(...args);
   }
 
-  updateBetaSupportTicketStatus(input: {
-    sessionId: string | null;
-    businessId: string;
-    supportTicketId: string;
-    ticketStatus: BetaSupportTicketStatusInput;
-    now?: Date;
-  }): BetaSupportTicketSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:support",
-      now
-    );
-    assertValid(validateBetaSupportTicketStatusInput(input.ticketStatus));
-    const normalized = normalizeBetaSupportTicketStatusInput(input.ticketStatus);
-    const ticket = this.betaSupportTickets.get(input.supportTicketId);
-
-    if (ticket === undefined || ticket.businessId !== input.businessId) {
-      throw new Cp2Error(404, "beta_support_ticket_not_found", "Support ticket was not found.");
-    }
-
-    const updated: BetaSupportTicketSummary = {
-      ...ticket,
-      status: normalized.status,
-      updatedAt: now.toISOString(),
-      resolvedAt: normalized.status === "resolved" ? (ticket.resolvedAt ?? now.toISOString()) : null
-    };
-
-    this.betaSupportTickets.set(updated.id, updated);
-    this.appendBusinessEvent(
-      betaSupportTicketStatusUpdatedEvent({
-        id: randomUUID(),
-        ticket: updated,
-        previousStatus: ticket.status,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateBetaSupportTicketStatus(
+    ...args: Parameters<ComplianceDomain["updateBetaSupportTicketStatus"]>
+  ): ReturnType<ComplianceDomain["updateBetaSupportTicketStatus"]> {
+    return this.compliance.updateBetaSupportTicketStatus(...args);
   }
 
-  recordBetaTelemetry(input: {
-    sessionId: string | null;
-    businessId: string;
-    telemetry: BetaTelemetryInput;
-    now?: Date;
-  }): BetaTelemetryEventSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "beta:telemetry",
-      now
-    );
-    assertValid(validateBetaTelemetryInput(input.telemetry));
-    const normalized = normalizeBetaTelemetryInput(input.telemetry);
-    const event: BetaTelemetryEventSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      kind: normalized.kind,
-      severity:
-        normalized.kind === "crash" ? "critical" : normalized.kind === "error" ? "warning" : "info",
-      fingerprint: createHash("sha256")
-        .update(`${normalized.kind}:${normalized.message ?? ""}`)
-        .digest("hex")
-        .slice(0, 16),
-      messageHash: createHash("sha256")
-        .update(normalized.message ?? "")
-        .digest("hex"),
-      boundedMetadata: normalized.metadata,
-      occurredAt: now.toISOString(),
-      recordedAt: now.toISOString()
-    };
-
-    this.betaTelemetryEvents.set(event.id, event);
-    this.appendBusinessEvent(
-      betaTelemetryRecordedEvent({
-        id: randomUUID(),
-        telemetry: event,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return event;
+  recordBetaTelemetry(
+    ...args: Parameters<ComplianceDomain["recordBetaTelemetry"]>
+  ): ReturnType<ComplianceDomain["recordBetaTelemetry"]> {
+    return this.compliance.recordBetaTelemetry(...args);
   }
 
   getLaunchReadiness(input: {
@@ -12791,195 +12368,40 @@ export class Cp2Store {
     return this.buildLaunchReadinessReport(input.businessId, now);
   }
 
-  updateLaunchSettings(input: {
-    sessionId: string | null;
-    businessId: string;
-    settings: LaunchSettingsInput;
-    now?: Date;
-  }): LaunchSettingsSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "launch:write",
-      now
-    );
-    assertValid(validateLaunchSettingsInput(input.settings));
-    const normalized = normalizeLaunchSettingsInput(input.settings);
-    const existing = this.getOrCreateLaunchSettings(input.businessId, session.user.id, now);
-    const settings: LaunchSettingsSummary = {
-      businessId: input.businessId,
-      status: normalized.status,
-      publicOnboardingEnabled: normalized.publicOnboardingEnabled,
-      rollbackArmed: normalized.rollbackArmed,
-      freezeActive: normalized.freezeActive,
-      allowedSignupCount: normalized.allowedSignupCount,
-      pauseReason: normalized.pauseReason,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.launchSettings.set(input.businessId, settings);
-    this.appendBusinessEvent(
-      launchSettingsUpdatedEvent({
-        id: randomUUID(),
-        settings,
-        previousStatus: existing.status,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return settings;
+  updateLaunchSettings(
+    ...args: Parameters<ComplianceDomain["updateLaunchSettings"]>
+  ): ReturnType<ComplianceDomain["updateLaunchSettings"]> {
+    return this.compliance.updateLaunchSettings(...args);
   }
 
-  listLaunchChecklist(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): LaunchChecklistItemSummary[] {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "launch:read",
-      now
-    );
-    return launchChecklistKeys.map((key) =>
-      this.getOrCreateLaunchChecklistItem(input.businessId, key, session.user.id, now)
-    );
+  listLaunchChecklist(
+    ...args: Parameters<ComplianceDomain["listLaunchChecklist"]>
+  ): ReturnType<ComplianceDomain["listLaunchChecklist"]> {
+    return this.compliance.listLaunchChecklist(...args);
   }
 
-  updateLaunchChecklist(input: {
-    sessionId: string | null;
-    businessId: string;
-    checklist: LaunchChecklistInput;
-    now?: Date;
-  }): LaunchChecklistItemSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "launch:write",
-      now
-    );
-    assertValid(validateLaunchChecklistInput(input.checklist));
-    const normalized = normalizeLaunchChecklistInput(input.checklist);
-    const item: LaunchChecklistItemSummary = {
-      businessId: input.businessId,
-      key: normalized.key,
-      status: normalized.status,
-      evidence: normalized.evidence,
-      updatedBy: session.user.id,
-      updatedAt: now.toISOString()
-    };
-
-    this.launchChecklist.set(launchChecklistMapKey(input.businessId, item.key), item);
-    this.appendBusinessEvent(
-      launchChecklistUpdatedEvent({
-        id: randomUUID(),
-        item,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return item;
+  updateLaunchChecklist(
+    ...args: Parameters<ComplianceDomain["updateLaunchChecklist"]>
+  ): ReturnType<ComplianceDomain["updateLaunchChecklist"]> {
+    return this.compliance.updateLaunchChecklist(...args);
   }
 
-  listLaunchIncidents(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): LaunchIncidentSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "launch:support", input.now);
-    return this.launchIncidentsForBusiness(input.businessId);
+  listLaunchIncidents(
+    ...args: Parameters<ComplianceDomain["listLaunchIncidents"]>
+  ): ReturnType<ComplianceDomain["listLaunchIncidents"]> {
+    return this.compliance.listLaunchIncidents(...args);
   }
 
-  createLaunchIncident(input: {
-    sessionId: string | null;
-    businessId: string;
-    incident: LaunchIncidentInput;
-    now?: Date;
-  }): LaunchIncidentSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "launch:support",
-      now
-    );
-    assertValid(validateLaunchIncidentInput(input.incident));
-    const normalized = normalizeLaunchIncidentInput(input.incident);
-    const incident: LaunchIncidentSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      severity: normalized.severity,
-      status: "open",
-      category: normalized.category,
-      title: normalized.title,
-      bodySummary: normalized.bodySummary,
-      createdBy: session.user.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      resolvedAt: null
-    };
-
-    this.launchIncidents.set(incident.id, incident);
-    this.appendBusinessEvent(
-      launchIncidentCreatedEvent({
-        id: randomUUID(),
-        incident,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return incident;
+  createLaunchIncident(
+    ...args: Parameters<ComplianceDomain["createLaunchIncident"]>
+  ): ReturnType<ComplianceDomain["createLaunchIncident"]> {
+    return this.compliance.createLaunchIncident(...args);
   }
 
-  updateLaunchIncidentStatus(input: {
-    sessionId: string | null;
-    businessId: string;
-    incidentId: string;
-    incidentStatus: LaunchIncidentStatusInput;
-    now?: Date;
-  }): LaunchIncidentSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "launch:support",
-      now
-    );
-    assertValid(validateLaunchIncidentStatusInput(input.incidentStatus));
-    const normalized = normalizeLaunchIncidentStatusInput(input.incidentStatus);
-    const incident = this.launchIncidents.get(input.incidentId);
-
-    if (incident === undefined || incident.businessId !== input.businessId) {
-      throw new Cp2Error(404, "launch_incident_not_found", "Launch incident was not found.");
-    }
-
-    const updated: LaunchIncidentSummary = {
-      ...incident,
-      status: normalized.status,
-      updatedAt: now.toISOString(),
-      resolvedAt:
-        normalized.status === "resolved" ? (incident.resolvedAt ?? now.toISOString()) : null
-    };
-
-    this.launchIncidents.set(updated.id, updated);
-    this.appendBusinessEvent(
-      launchIncidentStatusUpdatedEvent({
-        id: randomUUID(),
-        incident: updated,
-        previousStatus: incident.status,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateLaunchIncidentStatus(
+    ...args: Parameters<ComplianceDomain["updateLaunchIncidentStatus"]>
+  ): ReturnType<ComplianceDomain["updateLaunchIncidentStatus"]> {
+    return this.compliance.updateLaunchIncidentStatus(...args);
   }
 
   enqueueSyncMutation(input: {
@@ -14639,17 +14061,17 @@ export class Cp2Store {
       publicCustomerCareRequests: [...this.publicCustomerCareRequests.values()],
       publicStorefrontMessages: [...this.publicStorefrontMessages.values()],
       publicOrders: [...this.publicOrders.values()],
-      verificationTiers: [...this.verificationTiers.values()],
-      taxConfigs: [...this.taxConfigs.values()],
-      deviceTrust: [...this.deviceTrust.values()],
-      betaAccess: [...this.betaAccess.values()],
-      betaFeatureFlags: [...this.betaFeatureFlags.values()],
-      betaDeviceTests: [...this.betaDeviceTests.values()],
-      betaSupportTickets: [...this.betaSupportTickets.values()],
-      betaTelemetryEvents: [...this.betaTelemetryEvents.values()],
-      launchSettings: [...this.launchSettings.values()],
-      launchChecklist: [...this.launchChecklist.values()],
-      launchIncidents: [...this.launchIncidents.values()],
+      verificationTiers: [...this.compliance.verificationTiersMap.values()],
+      taxConfigs: [...this.compliance.taxConfigsMap.values()],
+      deviceTrust: [...this.compliance.deviceTrustMap.values()],
+      betaAccess: [...this.compliance.betaAccessMap.values()],
+      betaFeatureFlags: [...this.compliance.betaFeatureFlagsMap.values()],
+      betaDeviceTests: [...this.compliance.betaDeviceTestsMap.values()],
+      betaSupportTickets: [...this.compliance.betaSupportTicketsMap.values()],
+      betaTelemetryEvents: [...this.compliance.betaTelemetryEventsMap.values()],
+      launchSettings: [...this.compliance.launchSettingsMap.values()],
+      launchChecklist: [...this.compliance.launchChecklistMap.values()],
+      launchIncidents: [...this.compliance.launchIncidentsMap.values()],
       documentImports: [...this.documentImports.values()],
       documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
       notifications: [...this.notifications.values()],
@@ -14755,17 +14177,7 @@ export class Cp2Store {
     this.publicCustomerCareRequests.clear();
     this.publicStorefrontMessages.clear();
     this.publicOrders.clear();
-    this.verificationTiers.clear();
-    this.taxConfigs.clear();
-    this.deviceTrust.clear();
-    this.betaAccess.clear();
-    this.betaFeatureFlags.clear();
-    this.betaDeviceTests.clear();
-    this.betaSupportTickets.clear();
-    this.betaTelemetryEvents.clear();
-    this.launchSettings.clear();
-    this.launchChecklist.clear();
-    this.launchIncidents.clear();
+    this.compliance.clear();
     this.documentImports.clear();
     this.documentImportSources.clear();
     this.notifications.clear();
@@ -15165,47 +14577,50 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.verificationTiers) {
-      this.verificationTiers.set(item.businessId, item);
+      this.compliance.verificationTiersMap.set(item.businessId, item);
     }
 
     for (const item of snapshot.taxConfigs) {
-      this.taxConfigs.set(item.businessId, item);
+      this.compliance.taxConfigsMap.set(item.businessId, item);
     }
 
     for (const item of snapshot.deviceTrust) {
-      this.deviceTrust.set(deviceTrustKey(item.businessId, item.userId, item.deviceId), item);
+      this.compliance.deviceTrustMap.set(
+        deviceTrustKey(item.businessId, item.userId, item.deviceId),
+        item
+      );
     }
 
     for (const item of snapshot.betaAccess) {
-      this.betaAccess.set(item.businessId, item);
+      this.compliance.betaAccessMap.set(item.businessId, item);
     }
 
     for (const item of snapshot.betaFeatureFlags) {
-      this.betaFeatureFlags.set(betaFeatureFlagMapKey(item.businessId, item.key), item);
+      this.compliance.betaFeatureFlagsMap.set(betaFeatureFlagMapKey(item.businessId, item.key), item);
     }
 
     for (const item of snapshot.betaDeviceTests) {
-      this.betaDeviceTests.set(item.id, item);
+      this.compliance.betaDeviceTestsMap.set(item.id, item);
     }
 
     for (const item of snapshot.betaSupportTickets) {
-      this.betaSupportTickets.set(item.id, item);
+      this.compliance.betaSupportTicketsMap.set(item.id, item);
     }
 
     for (const item of snapshot.betaTelemetryEvents) {
-      this.betaTelemetryEvents.set(item.id, item);
+      this.compliance.betaTelemetryEventsMap.set(item.id, item);
     }
 
     for (const item of snapshot.launchSettings) {
-      this.launchSettings.set(item.businessId, item);
+      this.compliance.launchSettingsMap.set(item.businessId, item);
     }
 
     for (const item of snapshot.launchChecklist) {
-      this.launchChecklist.set(launchChecklistMapKey(item.businessId, item.key), item);
+      this.compliance.launchChecklistMap.set(launchChecklistMapKey(item.businessId, item.key), item);
     }
 
     for (const item of snapshot.launchIncidents) {
-      this.launchIncidents.set(item.id, item);
+      this.compliance.launchIncidentsMap.set(item.id, item);
     }
 
     for (const item of snapshot.documentImports) {
@@ -19318,14 +18733,14 @@ export class Cp2Store {
     now: Date
   ): BusinessReportSummary["compliance"] {
     const retention = this.buildComplianceRetention(businessId);
-    const verification = this.getOrCreateVerificationTier(businessId, actorId, now);
-    const taxConfig = this.getOrCreateTaxConfig(businessId, actorId, now);
+    const verification = this.compliance.getOrCreateVerificationTier(businessId, actorId, now);
+    const taxConfig = this.compliance.getOrCreateTaxConfig(businessId, actorId, now);
     const deviceTrust =
       actorId === "system"
-        ? [...this.deviceTrust.values()].find(
+        ? [...this.compliance.deviceTrustMap.values()].find(
             (item) => item.businessId === businessId && item.userId !== "system"
           )
-        : this.getOrCreateDeviceTrust(businessId, actorId, "browser-session", actorId, now);
+        : this.compliance.getOrCreateDeviceTrust(businessId, actorId, "browser-session", actorId, now);
     const highRiskAuditEventCount = this.auditEventsForBusiness(businessId).filter(
       (event) => event.risk === "high" || event.risk === "critical"
     ).length;
@@ -19353,13 +18768,13 @@ export class Cp2Store {
   }
 
   private buildBetaReadinessReport(businessId: string, now: Date): BetaReadinessReportSummary {
-    const access = this.getOrCreateBetaAccess(businessId, "system", now);
+    const access = this.compliance.getOrCreateBetaAccess(businessId, "system", now);
     const featureFlags = betaFeatureFlagKeys.map((key) =>
-      this.getOrCreateBetaFeatureFlag(businessId, key, "system", now)
+      this.compliance.getOrCreateBetaFeatureFlag(businessId, key, "system", now)
     );
-    const deviceTests = this.betaDeviceTestsForBusiness(businessId);
-    const supportTickets = this.betaSupportTicketsForBusiness(businessId);
-    const telemetryEvents = this.betaTelemetryEventsForBusiness(businessId);
+    const deviceTests = this.compliance.betaDeviceTestsForBusiness(businessId);
+    const supportTickets = this.compliance.betaSupportTicketsForBusiness(businessId);
+    const telemetryEvents = this.compliance.betaTelemetryEventsForBusiness(businessId);
     const syncItems = this.syncItemsForBusiness(businessId);
     const paymentSummaries = this.buildInvoicePaymentSummaries(businessId);
     const payments = this.paymentsForBusiness(businessId);
@@ -19516,12 +18931,12 @@ export class Cp2Store {
 
   private buildLaunchReadinessReport(businessId: string, now: Date): LaunchReadinessReportSummary {
     const beta = this.buildBetaReadinessReport(businessId, now);
-    const settings = this.getOrCreateLaunchSettings(businessId, "system", now);
+    const settings = this.compliance.getOrCreateLaunchSettings(businessId, "system", now);
     const checklistItems = launchChecklistKeys.map((key) =>
-      this.getOrCreateLaunchChecklistItem(businessId, key, "system", now)
+      this.compliance.getOrCreateLaunchChecklistItem(businessId, key, "system", now)
     );
-    const incidents = this.launchIncidentsForBusiness(businessId);
-    const telemetryEvents = this.betaTelemetryEventsForBusiness(businessId);
+    const incidents = this.compliance.launchIncidentsForBusiness(businessId);
+    const telemetryEvents = this.compliance.betaTelemetryEventsForBusiness(businessId);
     const products = this.productsForBusiness(businessId);
     const customers = [...this.customers.values()].filter(
       (customer) => customer.businessId === businessId
@@ -20691,30 +20106,6 @@ export class Cp2Store {
     };
   }
 
-  private betaDeviceTestsForBusiness(businessId: string): BetaDeviceTestSummary[] {
-    return [...this.betaDeviceTests.values()]
-      .filter((test) => test.businessId === businessId)
-      .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
-  }
-
-  private betaSupportTicketsForBusiness(businessId: string): BetaSupportTicketSummary[] {
-    return [...this.betaSupportTickets.values()]
-      .filter((ticket) => ticket.businessId === businessId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  private betaTelemetryEventsForBusiness(businessId: string): BetaTelemetryEventSummary[] {
-    return [...this.betaTelemetryEvents.values()]
-      .filter((event) => event.businessId === businessId)
-      .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
-  }
-
-  private launchIncidentsForBusiness(businessId: string): LaunchIncidentSummary[] {
-    return [...this.launchIncidents.values()]
-      .filter((incident) => incident.businessId === businessId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
   private auditEventsForBusiness(businessId: string): BusinessEvent[] {
     const aggregateIds = new Set<string>([
       businessId,
@@ -20735,22 +20126,22 @@ export class Cp2Store {
       ...[...this.accountDeletionRequests.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => item.id),
-      ...[...this.betaAccess.values()]
+      ...[...this.compliance.betaAccessMap.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => item.businessId),
-      ...[...this.betaFeatureFlags.values()]
+      ...[...this.compliance.betaFeatureFlagsMap.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => `${item.businessId}:${item.key}`),
-      ...this.betaDeviceTestsForBusiness(businessId).map((item) => item.id),
-      ...this.betaSupportTicketsForBusiness(businessId).map((item) => item.id),
-      ...this.betaTelemetryEventsForBusiness(businessId).map((item) => item.id),
-      ...[...this.launchSettings.values()]
+      ...this.compliance.betaDeviceTestsForBusiness(businessId).map((item) => item.id),
+      ...this.compliance.betaSupportTicketsForBusiness(businessId).map((item) => item.id),
+      ...this.compliance.betaTelemetryEventsForBusiness(businessId).map((item) => item.id),
+      ...[...this.compliance.launchSettingsMap.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => item.businessId),
-      ...[...this.launchChecklist.values()]
+      ...[...this.compliance.launchChecklistMap.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => `${item.businessId}:${item.key}`),
-      ...this.launchIncidentsForBusiness(businessId).map((item) => item.id)
+      ...this.compliance.launchIncidentsForBusiness(businessId).map((item) => item.id)
     ]);
 
     return this.auditEvents.filter(
@@ -21019,11 +20410,11 @@ export class Cp2Store {
       }
     }
 
-    this.verificationTiers.delete(businessId);
-    this.taxConfigs.delete(businessId);
+    this.compliance.verificationTiersMap.delete(businessId);
+    this.compliance.taxConfigsMap.delete(businessId);
     this.productFieldSchemas.delete(businessId);
-    this.betaAccess.delete(businessId);
-    this.launchSettings.delete(businessId);
+    this.compliance.betaAccessMap.delete(businessId);
+    this.compliance.launchSettingsMap.delete(businessId);
     this.businesses.delete(businessId);
   }
 
@@ -21120,17 +20511,17 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.publicCustomerCareRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.publicStorefrontMessages, scope);
       deletedRecordCount += deleteScopedMapRecords(this.publicOrders, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.verificationTiers, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.taxConfigs, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.deviceTrust, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.betaAccess, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.betaFeatureFlags, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.betaDeviceTests, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.betaSupportTickets, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.betaTelemetryEvents, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.launchSettings, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.launchChecklist, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.launchIncidents, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.verificationTiersMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.taxConfigsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.deviceTrustMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.betaAccessMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.betaFeatureFlagsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.betaDeviceTestsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.betaSupportTicketsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.betaTelemetryEventsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.launchSettingsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.launchChecklistMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.compliance.launchIncidentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.documentImports, scope);
       deletedRecordCount += deleteScopedMapRecords(this.documentImportSources, scope);
       deletedRecordCount += deleteScopedMapRecords(this.notifications, scope);
@@ -21303,178 +20694,6 @@ export class Cp2Store {
       retainedAuditEventCount: this.auditEventsForBusiness(businessId).length,
       directIdentifierFieldsRemoved
     };
-  }
-
-  private getOrCreateVerificationTier(
-    businessId: string,
-    actorId: string,
-    now: Date
-  ): VerificationTierSummary {
-    const existing = this.verificationTiers.get(businessId);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const verification: VerificationTierSummary = {
-      businessId,
-      tier: "unverified",
-      evidenceType: "none",
-      note: null,
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.verificationTiers.set(businessId, verification);
-    return verification;
-  }
-
-  private getOrCreateTaxConfig(
-    businessId: string,
-    actorId: string,
-    now: Date
-  ): CountryTaxConfigSummary {
-    const existing = this.taxConfigs.get(businessId);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const taxConfig: CountryTaxConfigSummary = {
-      businessId,
-      countryCode: "KE",
-      defaultTaxRate: 0.16,
-      taxIdLabel: "KRA PIN",
-      taxId: null,
-      pricesIncludeTax: false,
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.taxConfigs.set(businessId, taxConfig);
-    return taxConfig;
-  }
-
-  private getOrCreateDeviceTrust(
-    businessId: string,
-    userId: string,
-    deviceId: string,
-    actorId: string,
-    now: Date
-  ): DeviceTrustSummary {
-    const key = deviceTrustKey(businessId, userId, deviceId);
-    const existing = this.deviceTrust.get(key);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const trust: DeviceTrustSummary = {
-      businessId,
-      userId,
-      deviceId,
-      level: "unknown",
-      reason: null,
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.deviceTrust.set(key, trust);
-    return trust;
-  }
-
-  private getOrCreateBetaAccess(businessId: string, actorId: string, now: Date): BetaAccessSummary {
-    const existing = this.betaAccess.get(businessId);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const access: BetaAccessSummary = {
-      businessId,
-      status: "not_invited",
-      targetMerchantCount: 10,
-      invitedMerchantCount: 0,
-      pauseReason: null,
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.betaAccess.set(businessId, access);
-    return access;
-  }
-
-  private getOrCreateBetaFeatureFlag(
-    businessId: string,
-    key: BetaFeatureFlagKey,
-    actorId: string,
-    now: Date
-  ): BetaFeatureFlagSummary {
-    const mapKey = betaFeatureFlagMapKey(businessId, key);
-    const existing = this.betaFeatureFlags.get(mapKey);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const featureFlag: BetaFeatureFlagSummary = {
-      businessId,
-      key,
-      enabled: false,
-      risk: betaFeatureFlagRisk(key),
-      reason: "Disabled until CP15 beta hardening passes.",
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.betaFeatureFlags.set(mapKey, featureFlag);
-    return featureFlag;
-  }
-
-  private getOrCreateLaunchSettings(
-    businessId: string,
-    actorId: string,
-    now: Date
-  ): LaunchSettingsSummary {
-    const existing = this.launchSettings.get(businessId);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const settings: LaunchSettingsSummary = {
-      businessId,
-      status: "closed",
-      publicOnboardingEnabled: false,
-      rollbackArmed: true,
-      freezeActive: true,
-      allowedSignupCount: 0,
-      pauseReason: "Public launch is closed until CP16 gates pass.",
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.launchSettings.set(businessId, settings);
-    return settings;
-  }
-
-  private getOrCreateLaunchChecklistItem(
-    businessId: string,
-    key: LaunchChecklistKey,
-    actorId: string,
-    now: Date
-  ): LaunchChecklistItemSummary {
-    const mapKey = launchChecklistMapKey(businessId, key);
-    const existing = this.launchChecklist.get(mapKey);
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const item: LaunchChecklistItemSummary = {
-      businessId,
-      key,
-      status: "pending",
-      evidence: "Pending CP16 public launch verification.",
-      updatedBy: actorId,
-      updatedAt: now.toISOString()
-    };
-    this.launchChecklist.set(mapKey, item);
-    return item;
   }
 
   private requireBusinessAgent(
@@ -24292,36 +23511,6 @@ function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): st
   return `${businessId}:${idempotencyKey}`;
 }
 
-function deviceTrustKey(businessId: string, userId: string, deviceId: string): string {
-  return `${businessId}:${userId}:${deviceId}`;
-}
-
-const betaFeatureFlagKeys: BetaFeatureFlagKey[] = [
-  "closed_beta",
-  "offline_hardening",
-  "controlled_payments",
-  "support_intake",
-  "crash_telemetry"
-];
-
-const launchChecklistKeys: LaunchChecklistKey[] = [
-  "environment_config",
-  "secrets_ready",
-  "backup_verified",
-  "monitoring_ready",
-  "deploy_verified",
-  "rollback_runbook",
-  "support_coverage"
-];
-
-function betaFeatureFlagMapKey(businessId: string, key: BetaFeatureFlagKey): string {
-  return `${businessId}:${key}`;
-}
-
-function launchChecklistMapKey(businessId: string, key: LaunchChecklistKey): string {
-  return `${businessId}:${key}`;
-}
-
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -26612,8 +25801,3 @@ function hashCustomerCapability(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function assertValid(result: { ok: boolean; errors: string[] }): void {
-  if (!result.ok) {
-    throw new Cp2Error(400, "validation_failed", result.errors.join(" "));
-  }
-}

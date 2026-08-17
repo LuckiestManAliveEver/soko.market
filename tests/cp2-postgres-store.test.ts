@@ -6,11 +6,21 @@ import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
+  type BetaFeatureFlagSummary,
+  type BetaReadinessReportSummary,
+  type BetaSupportTicketSummary,
   type BuyFeedSummary,
+  type CountryTaxConfigSummary,
+  type DeviceTrustSummary,
+  type LaunchChecklistItemSummary,
+  type LaunchIncidentSummary,
+  type LaunchReadinessReportSummary,
+  type LaunchSettingsSummary,
   type NetworkGraphSummary,
   type ProductCaptureJobSummary,
   type StatusBroadcastSummary,
-  type UnifiedCheckoutSummary
+  type UnifiedCheckoutSummary,
+  type VerificationTierSummary
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
@@ -941,6 +951,207 @@ describePostgres("CP2 Postgres store", () => {
     },
     20_000
   );
+
+  it(
+    "persists compliance/beta/launch domain records across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254703${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const businessId = owner.business.id;
+
+      const verification = await patchJson<VerificationTierSummary>(
+        app,
+        `/businesses/${businessId}/compliance/verification`,
+        { tier: "owner_verified", evidenceType: "owner_attestation", note: "Postgres slice test" },
+        owner.sessionCookie
+      );
+      const taxConfig = await patchJson<CountryTaxConfigSummary>(
+        app,
+        `/businesses/${businessId}/compliance/tax-config`,
+        { countryCode: "KE", defaultTaxRate: 0.16, taxId: "P000111222A", pricesIncludeTax: true },
+        owner.sessionCookie
+      );
+      const deviceTrust = await patchJson<DeviceTrustSummary>(
+        app,
+        `/businesses/${businessId}/compliance/device-trust`,
+        { deviceId: "browser-session", level: "trusted", reason: "Postgres slice test" },
+        owner.sessionCookie
+      );
+      await patchJson(
+        app,
+        `/businesses/${businessId}/beta/access`,
+        { status: "active", pauseReason: null, invitedMerchantCount: 3 },
+        owner.sessionCookie
+      );
+      await patchJson(
+        app,
+        `/businesses/${businessId}/beta/feature-flags/closed_beta`,
+        { enabled: true, reason: "Postgres slice test" },
+        owner.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${businessId}/beta/device-tests`,
+        {
+          deviceClass: "android_1gb",
+          workflow: "checkout",
+          status: "passed",
+          durationMs: 1200,
+          notes: "Postgres slice test"
+        },
+        owner.sessionCookie
+      );
+      const supportTicket = await postJson<BetaSupportTicketSummary>(
+        app,
+        `/businesses/${businessId}/beta/support-tickets`,
+        { severity: "high", title: "Postgres slice ticket", body: "Persistence check" },
+        owner.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${businessId}/beta/telemetry`,
+        { kind: "session", message: null },
+        owner.sessionCookie
+      );
+      const launchSettings = await patchJson<LaunchSettingsSummary>(
+        app,
+        `/businesses/${businessId}/launch/settings`,
+        {
+          status: "open",
+          publicOnboardingEnabled: true,
+          rollbackArmed: true,
+          freezeActive: false,
+          allowedSignupCount: 5,
+          pauseReason: null
+        },
+        owner.sessionCookie
+      );
+      await patchJson(
+        app,
+        `/businesses/${businessId}/launch/checklist/environment_config`,
+        { status: "passed", evidence: "Postgres slice test" },
+        owner.sessionCookie
+      );
+      const incident = await postJson<LaunchIncidentSummary>(
+        app,
+        `/businesses/${businessId}/launch/incidents`,
+        {
+          severity: "medium",
+          category: "onboarding",
+          title: "Postgres slice incident",
+          body: "Persistence check"
+        },
+        owner.sessionCookie
+      );
+
+      const betaReadinessBefore = await getJson<BetaReadinessReportSummary>(
+        app,
+        `/businesses/${businessId}/beta/readiness`,
+        owner.sessionCookie
+      );
+      const launchReadinessBefore = await getJson<LaunchReadinessReportSummary>(
+        app,
+        `/businesses/${businessId}/launch/readiness`,
+        owner.sessionCookie
+      );
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredVerification = await getJson<VerificationTierSummary>(
+          restoredApp,
+          `/businesses/${businessId}/compliance/verification`,
+          owner.sessionCookie
+        );
+        expect(restoredVerification).toEqual(verification);
+
+        const restoredTaxConfig = await getJson<CountryTaxConfigSummary>(
+          restoredApp,
+          `/businesses/${businessId}/compliance/tax-config`,
+          owner.sessionCookie
+        );
+        expect(restoredTaxConfig).toEqual(taxConfig);
+
+        const restoredDeviceTrust = await getJson<DeviceTrustSummary>(
+          restoredApp,
+          `/businesses/${businessId}/compliance/device-trust`,
+          owner.sessionCookie
+        );
+        expect(restoredDeviceTrust).toEqual(deviceTrust);
+
+        const restoredFeatureFlags = await getJson<BetaFeatureFlagSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/beta/feature-flags`,
+          owner.sessionCookie
+        );
+        const restoredClosedBeta = restoredFeatureFlags.find((flag) => flag.key === "closed_beta");
+        expect(restoredClosedBeta?.enabled).toBe(true);
+
+        const restoredSupportTickets = await getJson<BetaSupportTicketSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/beta/support-tickets`,
+          owner.sessionCookie
+        );
+        expect(restoredSupportTickets.find((ticket) => ticket.id === supportTicket.id)).toEqual(
+          supportTicket
+        );
+
+        const restoredChecklist = await getJson<LaunchChecklistItemSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/launch/checklist`,
+          owner.sessionCookie
+        );
+        const restoredEnvironmentConfig = restoredChecklist.find(
+          (item) => item.key === "environment_config"
+        );
+        expect(restoredEnvironmentConfig?.status).toBe("passed");
+
+        const restoredIncidents = await getJson<LaunchIncidentSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/launch/incidents`,
+          owner.sessionCookie
+        );
+        expect(restoredIncidents.find((item) => item.id === incident.id)).toEqual(incident);
+
+        const restoredBetaReadiness = await getJson<BetaReadinessReportSummary>(
+          restoredApp,
+          `/businesses/${businessId}/beta/readiness`,
+          owner.sessionCookie
+        );
+        expect(restoredBetaReadiness.deviceTesting.passedDeviceClasses).toEqual(
+          betaReadinessBefore.deviceTesting.passedDeviceClasses
+        );
+        expect(restoredBetaReadiness.telemetry.sessionEventCount).toBe(
+          betaReadinessBefore.telemetry.sessionEventCount
+        );
+        expect(restoredBetaReadiness.support.openTicketCount).toBe(
+          betaReadinessBefore.support.openTicketCount
+        );
+
+        const restoredLaunchReadiness = await getJson<LaunchReadinessReportSummary>(
+          restoredApp,
+          `/businesses/${businessId}/launch/readiness`,
+          owner.sessionCookie
+        );
+        expect(restoredLaunchReadiness.checklist.passed).toBe(launchReadinessBefore.checklist.passed);
+        expect(restoredLaunchReadiness.support.openIncidentCount).toBe(
+          launchReadinessBefore.support.openIncidentCount
+        );
+        expect(restoredLaunchReadiness.settings).toEqual(launchSettings);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
 });
 
 async function rowUpdatedAt(
@@ -1044,6 +1255,27 @@ async function postJson<T>(
 ): Promise<T> {
   const response = await app.inject({
     method: "POST",
+    url,
+    headers: {
+      ...jsonHeaders(),
+      ...(cookie === undefined ? {} : { cookie })
+    },
+    payload: JSON.stringify(payload)
+  });
+
+  expect(response.statusCode).toBeGreaterThanOrEqual(200);
+  expect(response.statusCode).toBeLessThan(300);
+  return response.json<T>();
+}
+
+async function patchJson<T>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  payload: unknown,
+  cookie?: string
+): Promise<T> {
+  const response = await app.inject({
+    method: "PATCH",
     url,
     headers: {
       ...jsonHeaders(),
