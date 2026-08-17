@@ -41,6 +41,8 @@ import { SupplierDomain } from "./domains/suppliers/store.js";
 import { DocumentImportDomain } from "./domains/document-imports/store.js";
 import { NotificationsDomain } from "./domains/notifications/store.js";
 import { notificationRuleKey, summarizeNotifications } from "./domains/notifications/shared.js";
+import { NetworkDomain } from "./domains/network/store.js";
+import { createPublicAgentId, providerDisplayName } from "./domains/network/shared.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -146,14 +148,10 @@ import type {
   MembershipSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
-  NetworkConsentStatus,
-  NetworkEdgeSourceType,
   NetworkEdgeSummary,
-  NetworkGraphSummary,
   NetworkNodeSummary,
   NetworkPermissionSummary,
   NetworkSyncSourceSummary,
-  NetworkVisibilityStatus,
   NativeSmsDeviceCapability,
   NativeSmsDeviceCommandSummary,
   NativeSmsDeviceReadiness,
@@ -206,7 +204,6 @@ import type {
   SessionSummary,
   SalesAgentSummary,
   ExternalIdentitySummary,
-  SocialNetworkProvider,
   SokoIdentityLinkSummary,
   SyncMutationPayload,
   SyncMutationType,
@@ -538,22 +535,12 @@ type NormalizedBusinessAgentProfile = BusinessAgentProfileInput & {
   publicIntroduction: string;
 };
 
-export interface NetworkImportConnectionInput {
-  name: string;
-  phone?: string | null | undefined;
-  email?: string | null | undefined;
-  providerSubject?: string | null | undefined;
-  handle?: string | null | undefined;
-}
-
-export interface PhoneContactNetworkInput extends NetworkImportConnectionInput {
-  connections?: NetworkImportConnectionInput[] | undefined;
-}
-
-export interface SocialProfileNetworkInput extends NetworkImportConnectionInput {
-  relationship?: "followed" | "follower" | "interaction" | "message" | undefined;
-  connections?: NetworkImportConnectionInput[] | undefined;
-}
+export type {
+  NetworkImportConnectionInput,
+  PhoneContactNetworkInput,
+  SocialProfileNetworkInput
+} from "./domains/network/shared.js";
+export { createContactHash } from "./domains/network/shared.js";
 
 interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -1128,6 +1115,14 @@ export class Cp2Store {
         send: (request) => this.sendEmailTransport(request, new Date())
       })
     );
+    this.networkDomain = new NetworkDomain({
+      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      accounts: this.accounts,
+      userByAccount: this.userByAccount,
+      memberships: this.memberships,
+      businesses: this.businesses,
+      userIdentities: this.userIdentities
+    });
     this.commerce = new CommerceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
@@ -1142,7 +1137,7 @@ export class Cp2Store {
       productMedia: this.productMedia,
       products: this.products,
       customers: this.customers,
-      networkNodes: this.networkNodes,
+      networkNodes: this.networkDomain.networkNodesMap,
       users: this.users,
       businesses: this.businesses,
       invoices: this.invoices
@@ -1163,10 +1158,9 @@ export class Cp2Store {
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requirePhonebookNode: (ownerUserId, networkNodeId) =>
-        this.requirePhonebookNode(ownerUserId, networkNodeId),
-      sanitizeNetworkNode: (node) => sanitizeNetworkNode(node),
-      networkNodes: this.networkNodes,
-      networkSources: this.networkSources
+        this.networkDomain.requirePhonebookNode(ownerUserId, networkNodeId),
+      networkNodes: this.networkDomain.networkNodesMap,
+      networkSources: this.networkDomain.networkSourcesMap
     });
     this.documentImportDomain = new DocumentImportDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1316,16 +1310,12 @@ export class Cp2Store {
   private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
   private readonly accountPinHashes = new Map<string, string>();
   private readonly failedPinAttempts = new Map<string, number[]>();
-  private readonly networkNodes = new Map<string, NetworkNodeSummary>();
-  private readonly networkEdges = new Map<string, NetworkEdgeSummary>();
-  private readonly networkSources = new Map<string, NetworkSyncSourceSummary>();
-  private readonly networkPermissions = new Map<string, NetworkPermissionSummary>();
-  private readonly networkRoutes = new Map<string, AgentRouteSummary>();
-  private readonly contactHashes = new Map<string, ContactHashSummary>();
-  private readonly contactHashIdByValue = new Map<string, string>();
-  private readonly externalIdentities = new Map<string, ExternalIdentitySummary>();
-  private readonly externalIdentityIdBySubject = new Map<string, string>();
-  private readonly sokoIdentityLinks = new Map<string, SokoIdentityLinkSummary>();
+  // networkNodes/networkEdges/networkSources/networkPermissions/networkRoutes/contactHashes/
+  // contactHashIdByValue/externalIdentities/externalIdentityIdBySubject/sokoIdentityLinks now
+  // live inside `networkDomain` (services/api/src/cp2/domains/network/store.ts) - accessed via
+  // its map getters for the generic snapshot/restore/Postgres-persistence/account-deletion
+  // sweeps below.
+  private readonly networkDomain: NetworkDomain;
   private readonly auditEvents: BusinessEvent[] = [];
 
   continueWithDevice(input: {
@@ -12070,337 +12060,72 @@ export class Cp2Store {
     });
   }
 
-  syncPhoneContacts(input: {
-    sessionId: string | null;
-    contacts: PhoneContactNetworkInput[];
-    sourceName?: string;
-    now?: Date;
-  }): NetworkGraphSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const importedContacts = input.contacts.map((contact, index) =>
-      normalizeNetworkConnectionInput(contact, `contacts.${index}`)
-    );
-    this.disconnectActiveNetworkSources(session.user.id, "phone", now);
-    const source = this.createNetworkSource({
-      ownerUserId: session.user.id,
-      sourceType: "phone_contact",
-      sourcePlatform: "phone",
-      displayName: input.sourceName?.trim() || "Phone contacts",
-      importedCount: importedContacts.length,
-      now
-    });
-    const ownerNode = this.ensureOwnerNetworkNode(session.user, now);
-
-    for (const contact of importedContacts) {
-      const directNode = this.createImportedNetworkNode({
-        ownerUserId: session.user.id,
-        sourceId: source.id,
-        sourceType: "phone_contact",
-        sourcePlatform: "phone",
-        displayName: contact.name,
-        degree: 1,
-        kind: "external_contact",
-        phone: contact.phone,
-        email: contact.email,
-        now
-      });
-      this.createNetworkEdge({
-        ownerUserId: session.user.id,
-        sourceType: "phone_contact",
-        sourcePlatform: "phone",
-        fromNodeId: ownerNode.id,
-        toNodeId: directNode.id,
-        degree: 1,
-        trustWeight: 0.8,
-        interactionWeight: 0.3,
-        visibilityStatus: "direct",
-        consentStatus: "pending",
-        now
-      });
-
-      for (const connection of contact.connections ?? []) {
-        const normalizedConnection = normalizeNetworkConnectionInput(connection, "connection");
-        const extendedNode = this.createImportedNetworkNode({
-          ownerUserId: session.user.id,
-          sourceId: source.id,
-          sourceType: "phone_contact",
-          sourcePlatform: "phone",
-          displayName: normalizedConnection.name,
-          degree: 2,
-          kind: "external_contact",
-          phone: null,
-          email: null,
-          now
-        });
-        this.createNetworkEdge({
-          ownerUserId: session.user.id,
-          sourceType: "agent_route",
-          sourcePlatform: "phone",
-          fromNodeId: directNode.id,
-          toNodeId: extendedNode.id,
-          degree: 2,
-          trustWeight: 0.45,
-          interactionWeight: 0.15,
-          visibilityStatus: "agent_mediated",
-          consentStatus: "agent_required",
-          now
-        });
-      }
-    }
-
-    this.refreshNetworkSourceCounts(source.id, now);
-    return this.getNetworkGraph({ sessionId: input.sessionId, now });
+  syncPhoneContacts(
+    ...args: Parameters<NetworkDomain["syncPhoneContacts"]>
+  ): ReturnType<NetworkDomain["syncPhoneContacts"]> {
+    return this.networkDomain.syncPhoneContacts(...args);
   }
 
-  syncSocialNetwork(input: {
-    sessionId: string | null;
-    provider: SocialNetworkProvider;
-    profiles: SocialProfileNetworkInput[];
-    sourceName?: string;
-    now?: Date;
-  }): NetworkGraphSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const profiles = input.profiles.map((profile, index) =>
-      normalizeNetworkConnectionInput(profile, `profiles.${index}`)
-    );
-    this.disconnectActiveNetworkSources(session.user.id, input.provider, now);
-    const source = this.createNetworkSource({
-      ownerUserId: session.user.id,
-      sourceType: "social",
-      sourcePlatform: input.provider,
-      displayName: input.sourceName?.trim() || `${input.provider} connections`,
-      importedCount: profiles.length,
-      now
-    });
-    const ownerNode = this.ensureOwnerNetworkNode(session.user, now);
-
-    for (const profile of profiles) {
-      const relationship = normalizeSocialRelationship(profile.relationship);
-      const directNode = this.createImportedNetworkNode({
-        ownerUserId: session.user.id,
-        sourceId: source.id,
-        sourceType: "social",
-        sourcePlatform: input.provider,
-        displayName: profile.name,
-        degree: 1,
-        kind: "external_social",
-        providerSubject: profile.providerSubject ?? profile.handle ?? profile.name,
-        handle: profile.handle,
-        now
-      });
-      this.createNetworkEdge({
-        ownerUserId: session.user.id,
-        sourceType:
-          relationship === "interaction" || relationship === "message"
-            ? "social_interaction"
-            : "social_follow",
-        sourcePlatform: input.provider,
-        fromNodeId: ownerNode.id,
-        toNodeId: directNode.id,
-        degree: 1,
-        trustWeight: relationship === "interaction" || relationship === "message" ? 0.7 : 0.55,
-        interactionWeight:
-          relationship === "interaction" || relationship === "message" ? 0.8 : 0.35,
-        visibilityStatus: "direct",
-        consentStatus: "pending",
-        now
-      });
-
-      for (const connection of profile.connections ?? []) {
-        const normalizedConnection = normalizeNetworkConnectionInput(connection, "connection");
-        const extendedNode = this.createImportedNetworkNode({
-          ownerUserId: session.user.id,
-          sourceId: source.id,
-          sourceType: "social",
-          sourcePlatform: input.provider,
-          displayName: normalizedConnection.name,
-          degree: 2,
-          kind: "external_social",
-          providerSubject:
-            normalizedConnection.providerSubject ??
-            normalizedConnection.handle ??
-            normalizedConnection.name,
-          handle: normalizedConnection.handle,
-          now
-        });
-        this.createNetworkEdge({
-          ownerUserId: session.user.id,
-          sourceType: "agent_route",
-          sourcePlatform: input.provider,
-          fromNodeId: directNode.id,
-          toNodeId: extendedNode.id,
-          degree: 2,
-          trustWeight: 0.4,
-          interactionWeight: 0.2,
-          visibilityStatus: "agent_mediated",
-          consentStatus: "agent_required",
-          now
-        });
-      }
-    }
-
-    this.refreshNetworkSourceCounts(source.id, now);
-    return this.getNetworkGraph({ sessionId: input.sessionId, now });
+  syncSocialNetwork(
+    ...args: Parameters<NetworkDomain["syncSocialNetwork"]>
+  ): ReturnType<NetworkDomain["syncSocialNetwork"]> {
+    return this.networkDomain.syncSocialNetwork(...args);
   }
 
-  syncConnectedSocialProvider(input: {
-    sessionId: string | null;
-    provider: SocialNetworkProvider;
-    now?: Date;
-  }): NetworkGraphSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const identity = [...this.userIdentities.values()].find(
-      (candidate) =>
-        candidate.accountId === session.account.id && candidate.provider === input.provider
-    );
-
-    if (identity === undefined) {
-      throw new Cp2Error(
-        409,
-        "network_provider_not_connected",
-        "Connect this provider to your Soko account before synchronizing it."
-      );
-    }
-
-    return this.syncSocialNetwork({
-      sessionId: input.sessionId,
-      provider: input.provider,
-      profiles: [],
-      sourceName: `${providerDisplayName(identity.provider)} network`,
-      now
-    });
+  syncConnectedSocialProvider(
+    ...args: Parameters<NetworkDomain["syncConnectedSocialProvider"]>
+  ): ReturnType<NetworkDomain["syncConnectedSocialProvider"]> {
+    return this.networkDomain.syncConnectedSocialProvider(...args);
   }
 
-  getNetworkGraph(input: { sessionId: string | null; now?: Date }): NetworkGraphSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    this.ensureOwnerNetworkNode(session.user, now);
-    return this.networkGraphForUser(session.user.id, now);
+  getNetworkGraph(
+    ...args: Parameters<NetworkDomain["getNetworkGraph"]>
+  ): ReturnType<NetworkDomain["getNetworkGraph"]> {
+    return this.networkDomain.getNetworkGraph(...args);
   }
 
-  getDirectNetwork(input: { sessionId: string | null; now?: Date }): NetworkNodeSummary[] {
-    return this.getNetworkGraph(input).nodes.filter((node) => node.degree === 1);
+  getDirectNetwork(
+    ...args: Parameters<NetworkDomain["getDirectNetwork"]>
+  ): ReturnType<NetworkDomain["getDirectNetwork"]> {
+    return this.networkDomain.getDirectNetwork(...args);
   }
 
-  getExtendedNetwork(input: { sessionId: string | null; now?: Date }): NetworkNodeSummary[] {
-    return this.getNetworkGraph(input).nodes.filter((node) => node.degree === 2);
+  getExtendedNetwork(
+    ...args: Parameters<NetworkDomain["getExtendedNetwork"]>
+  ): ReturnType<NetworkDomain["getExtendedNetwork"]> {
+    return this.networkDomain.getExtendedNetwork(...args);
   }
 
-  createAgentRoute(input: {
-    sessionId: string | null;
-    requestText: string;
-    targetNodeId?: string | null;
-    now?: Date;
-  }): AgentRouteSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const targetNode = this.findAgentRouteTarget({
-      ownerUserId: session.user.id,
-      requestText: input.requestText,
-      targetNodeId: input.targetNodeId ?? null
-    });
-    const directEdge = [...this.networkEdges.values()].find(
-      (edge) =>
-        edge.ownerUserId === session.user.id && edge.toNodeId === targetNode.id && edge.degree === 2
-    );
-
-    if (directEdge === undefined) {
-      throw new Cp2Error(
-        409,
-        "network_route_requires_agent",
-        "Only second-degree network nodes require agent-mediated routes."
-      );
-    }
-
-    const directNode = this.requireNetworkNode(directEdge.fromNodeId, session.user.id);
-    const permission: NetworkPermissionSummary = {
-      id: randomUUID(),
-      ownerUserId: session.user.id,
-      routeId: "",
-      fromNodeId: directNode.id,
-      toNodeId: targetNode.id,
-      status: "agent_required",
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-    const route: AgentRouteSummary = {
-      id: randomUUID(),
-      ownerUserId: session.user.id,
-      requestText: input.requestText.trim(),
-      status: "pending_permission",
-      directNodeId: directNode.id,
-      targetNodeId: targetNode.id,
-      viaAgentLabel: `${directNode.displayName}'s Agent`,
-      path: [
-        "You",
-        directNode.displayName,
-        `${directNode.displayName}'s Agent`,
-        targetNode.displayName
-      ],
-      permissionId: permission.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-    this.networkPermissions.set(permission.id, {
-      ...permission,
-      routeId: route.id
-    });
-    this.networkRoutes.set(route.id, route);
-    return route;
+  createAgentRoute(
+    ...args: Parameters<NetworkDomain["createAgentRoute"]>
+  ): ReturnType<NetworkDomain["createAgentRoute"]> {
+    return this.networkDomain.createAgentRoute(...args);
   }
 
-  getAgentRoute(input: {
-    sessionId: string | null;
-    routeId: string;
-    now?: Date;
-  }): AgentRouteSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const route = this.networkRoutes.get(input.routeId);
-
-    if (route === undefined || route.ownerUserId !== session.user.id) {
-      throw new Cp2Error(404, "network_route_not_found", "Network route was not found.");
-    }
-
-    return route;
+  getAgentRoute(
+    ...args: Parameters<NetworkDomain["getAgentRoute"]>
+  ): ReturnType<NetworkDomain["getAgentRoute"]> {
+    return this.networkDomain.getAgentRoute(...args);
   }
 
-  approveAgentRoute(input: {
-    sessionId: string | null;
-    routeId: string;
-    now?: Date;
-  }): AgentRouteSummary {
-    return this.updateAgentRouteStatus(input, "approved", "granted");
+  approveAgentRoute(
+    ...args: Parameters<NetworkDomain["approveAgentRoute"]>
+  ): ReturnType<NetworkDomain["approveAgentRoute"]> {
+    return this.networkDomain.approveAgentRoute(...args);
   }
 
-  rejectAgentRoute(input: {
-    sessionId: string | null;
-    routeId: string;
-    now?: Date;
-  }): AgentRouteSummary {
-    return this.updateAgentRouteStatus(input, "rejected", "rejected");
+  rejectAgentRoute(
+    ...args: Parameters<NetworkDomain["rejectAgentRoute"]>
+  ): ReturnType<NetworkDomain["rejectAgentRoute"]> {
+    return this.networkDomain.rejectAgentRoute(...args);
   }
 
-  deleteNetworkSource(input: {
-    sessionId: string | null;
-    sourceId: string;
-    now?: Date;
-  }): NetworkGraphSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const source = this.networkSources.get(input.sourceId);
-
-    if (source === undefined || source.ownerUserId !== session.user.id) {
-      throw new Cp2Error(404, "network_source_not_found", "Network sync source was not found.");
-    }
-
-    this.disconnectNetworkSourceRecord(source, now);
-
-    return this.networkGraphForUser(session.user.id, now);
+  deleteNetworkSource(
+    ...args: Parameters<NetworkDomain["deleteNetworkSource"]>
+  ): ReturnType<NetworkDomain["deleteNetworkSource"]> {
+    return this.networkDomain.deleteNetworkSource(...args);
   }
+
 
   snapshot(): Cp2Snapshot {
     return {
@@ -12512,14 +12237,14 @@ export class Cp2Store {
         accountId,
         pinHash
       })),
-      networkNodes: [...this.networkNodes.values()],
-      networkEdges: [...this.networkEdges.values()],
-      networkSources: [...this.networkSources.values()],
-      networkPermissions: [...this.networkPermissions.values()],
-      networkRoutes: [...this.networkRoutes.values()],
-      contactHashes: [...this.contactHashes.values()],
-      externalIdentities: [...this.externalIdentities.values()],
-      sokoIdentityLinks: [...this.sokoIdentityLinks.values()],
+      networkNodes: [...this.networkDomain.networkNodesMap.values()],
+      networkEdges: [...this.networkDomain.networkEdgesMap.values()],
+      networkSources: [...this.networkDomain.networkSourcesMap.values()],
+      networkPermissions: [...this.networkDomain.networkPermissionsMap.values()],
+      networkRoutes: [...this.networkDomain.networkRoutesMap.values()],
+      contactHashes: [...this.networkDomain.contactHashesMap.values()],
+      externalIdentities: [...this.networkDomain.externalIdentitiesMap.values()],
+      sokoIdentityLinks: [...this.networkDomain.sokoIdentityLinksMap.values()],
       auditEvents: [...this.auditEvents]
     };
   }
@@ -12615,16 +12340,7 @@ export class Cp2Store {
     this.identityByEmail.clear();
     this.oauthSessions.clear();
     this.accountPinHashes.clear();
-    this.networkNodes.clear();
-    this.networkEdges.clear();
-    this.networkSources.clear();
-    this.networkPermissions.clear();
-    this.networkRoutes.clear();
-    this.contactHashes.clear();
-    this.contactHashIdByValue.clear();
-    this.externalIdentities.clear();
-    this.externalIdentityIdBySubject.clear();
-    this.sokoIdentityLinks.clear();
+    this.networkDomain.clear();
     this.auditEvents.splice(0, this.auditEvents.length);
 
     for (const account of snapshot.accounts) {
@@ -13195,43 +12911,43 @@ export class Cp2Store {
     }
 
     for (const node of snapshot.networkNodes ?? []) {
-      this.networkNodes.set(node.id, node);
+      this.networkDomain.networkNodesMap.set(node.id, node);
     }
 
     for (const edge of snapshot.networkEdges ?? []) {
-      this.networkEdges.set(edge.id, edge);
+      this.networkDomain.networkEdgesMap.set(edge.id, edge);
     }
 
     for (const source of snapshot.networkSources ?? []) {
-      this.networkSources.set(source.id, source);
+      this.networkDomain.networkSourcesMap.set(source.id, source);
     }
 
     for (const permission of snapshot.networkPermissions ?? []) {
-      this.networkPermissions.set(permission.id, permission);
+      this.networkDomain.networkPermissionsMap.set(permission.id, permission);
     }
 
     for (const route of snapshot.networkRoutes ?? []) {
-      this.networkRoutes.set(route.id, route);
+      this.networkDomain.networkRoutesMap.set(route.id, route);
     }
 
     for (const contactHash of snapshot.contactHashes ?? []) {
-      this.contactHashes.set(contactHash.id, contactHash);
-      this.contactHashIdByValue.set(
+      this.networkDomain.contactHashesMap.set(contactHash.id, contactHash);
+      this.networkDomain.contactHashIdByValueMap.set(
         `${contactHash.ownerUserId}:${contactHash.hashType}:${contactHash.hashValue}`,
         contactHash.id
       );
     }
 
     for (const identity of snapshot.externalIdentities ?? []) {
-      this.externalIdentities.set(identity.id, identity);
-      this.externalIdentityIdBySubject.set(
+      this.networkDomain.externalIdentitiesMap.set(identity.id, identity);
+      this.networkDomain.externalIdentityIdBySubjectMap.set(
         `${identity.ownerUserId}:${identity.provider}:${identity.providerSubjectHash}`,
         identity.id
       );
     }
 
     for (const link of snapshot.sokoIdentityLinks ?? []) {
-      this.sokoIdentityLinks.set(link.id, link);
+      this.networkDomain.sokoIdentityLinksMap.set(link.id, link);
     }
 
     for (const change of snapshot.syncChanges ?? []) {
@@ -16416,20 +16132,6 @@ export class Cp2Store {
     return new Cp2Error(status, error.code, error.message);
   }
 
-  private requirePhonebookNode(ownerUserId: string, networkNodeId: string): NetworkNodeSummary {
-    const node = this.networkNodes.get(networkNodeId);
-
-    if (
-      node === undefined ||
-      node.ownerUserId !== ownerUserId ||
-      node.sourceType !== "phone_contact"
-    ) {
-      throw new Cp2Error(404, "phonebook_contact_not_found", "Phonebook contact was not found.");
-    }
-
-    return node;
-  }
-
   private requireInvoice(businessId: string, invoiceId: string): InvoiceSummary {
     const invoice = this.invoices.get(invoiceId);
 
@@ -17625,463 +17327,6 @@ export class Cp2Store {
     return [...this.syncQueue.values()].filter((item) => item.businessId === businessId);
   }
 
-  private ensureOwnerNetworkNode(user: UserSummary, now: Date): NetworkNodeSummary {
-    const existing = [...this.networkNodes.values()].find(
-      (node) => node.ownerUserId === user.id && node.degree === 0
-    );
-
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const node: NetworkNodeSummary = {
-      id: randomUUID(),
-      ownerUserId: user.id,
-      kind: "soko_user",
-      displayName: user.displayName,
-      degree: 0,
-      sourceId: null,
-      sourceType: "owner",
-      sourcePlatform: null,
-      sokoUserId: user.id,
-      sokoBusinessId: null,
-      sokoAgentId: null,
-      contactHashIds: [],
-      externalIdentityId: null,
-      visibilityStatus: "direct",
-      consentStatus: "granted",
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-    this.networkNodes.set(node.id, node);
-    return node;
-  }
-
-  private createNetworkSource(input: {
-    ownerUserId: string;
-    sourceType: "phone_contact" | "social";
-    sourcePlatform: "phone" | SocialNetworkProvider;
-    displayName: string;
-    importedCount: number;
-    now: Date;
-  }): NetworkSyncSourceSummary {
-    const common = {
-      id: randomUUID(),
-      ownerUserId: input.ownerUserId,
-      displayName: input.displayName,
-      importedCount: input.importedCount,
-      directCount: 0,
-      extendedCount: 0,
-      status: "active" as const,
-      createdAt: input.now.toISOString(),
-      updatedAt: input.now.toISOString(),
-      disconnectedAt: null
-    };
-    const source: NetworkSyncSourceSummary =
-      input.sourceType === "phone_contact"
-        ? {
-            ...common,
-            sourceType: "phone_contact",
-            sourcePlatform: "phone"
-          }
-        : {
-            ...common,
-            sourceType: "social",
-            sourcePlatform: input.sourcePlatform as SocialNetworkProvider
-          };
-    this.networkSources.set(source.id, source);
-    return source;
-  }
-
-  private disconnectActiveNetworkSources(
-    ownerUserId: string,
-    sourcePlatform: "phone" | SocialNetworkProvider,
-    now: Date
-  ): void {
-    for (const source of this.networkSources.values()) {
-      if (
-        source.ownerUserId === ownerUserId &&
-        source.sourcePlatform === sourcePlatform &&
-        source.status === "active"
-      ) {
-        this.disconnectNetworkSourceRecord(source, now);
-      }
-    }
-  }
-
-  private disconnectNetworkSourceRecord(source: NetworkSyncSourceSummary, now: Date): void {
-    this.networkSources.set(source.id, {
-      ...source,
-      status: "disconnected",
-      updatedAt: now.toISOString(),
-      disconnectedAt: now.toISOString()
-    } as NetworkSyncSourceSummary);
-
-    const nodeIds = new Set(
-      [...this.networkNodes.values()]
-        .filter((node) => node.ownerUserId === source.ownerUserId && node.sourceId === source.id)
-        .map((node) => node.id)
-    );
-
-    for (const edge of [...this.networkEdges.values()]) {
-      if (
-        edge.ownerUserId === source.ownerUserId &&
-        (nodeIds.has(edge.fromNodeId) || nodeIds.has(edge.toNodeId))
-      ) {
-        this.networkEdges.delete(edge.id);
-      }
-    }
-
-    for (const route of [...this.networkRoutes.values()]) {
-      if (
-        route.ownerUserId === source.ownerUserId &&
-        (nodeIds.has(route.directNodeId) || nodeIds.has(route.targetNodeId))
-      ) {
-        this.networkRoutes.delete(route.id);
-        this.networkPermissions.delete(route.permissionId);
-      }
-    }
-
-    for (const [id, link] of this.sokoIdentityLinks.entries()) {
-      if (link.ownerUserId === source.ownerUserId && nodeIds.has(link.nodeId)) {
-        this.sokoIdentityLinks.delete(id);
-      }
-    }
-
-    for (const nodeId of nodeIds) {
-      this.networkNodes.delete(nodeId);
-    }
-  }
-
-  private createImportedNetworkNode(input: {
-    ownerUserId: string;
-    sourceId: string;
-    sourceType: "phone_contact" | "social";
-    sourcePlatform: string;
-    displayName: string;
-    degree: 1 | 2;
-    kind: "external_contact" | "external_social";
-    phone?: string | null | undefined;
-    email?: string | null | undefined;
-    providerSubject?: string | null | undefined;
-    handle?: string | null | undefined;
-    now: Date;
-  }): NetworkNodeSummary {
-    const contactHashIds: string[] = [];
-
-    if (input.degree === 1) {
-      if (input.phone !== undefined && input.phone !== null) {
-        contactHashIds.push(
-          this.ensureContactHash({
-            ownerUserId: input.ownerUserId,
-            hashType: "phone",
-            rawValue: input.phone,
-            now: input.now
-          }).id
-        );
-      }
-
-      if (input.email !== undefined && input.email !== null) {
-        contactHashIds.push(
-          this.ensureContactHash({
-            ownerUserId: input.ownerUserId,
-            hashType: "email",
-            rawValue: input.email,
-            now: input.now
-          }).id
-        );
-      }
-    }
-
-    const externalIdentityId =
-      input.kind === "external_social"
-        ? this.ensureExternalIdentity({
-            ownerUserId: input.ownerUserId,
-            provider: input.sourcePlatform,
-            providerSubject: input.providerSubject ?? input.displayName,
-            displayName: input.displayName,
-            handle: input.handle ?? null,
-            now: input.now
-          }).id
-        : null;
-    const sokoLink = this.findSokoIdentityLink({
-      ownerUserId: input.ownerUserId,
-      contactHashIds,
-      now: input.now
-    });
-    const node: NetworkNodeSummary = {
-      id: randomUUID(),
-      ownerUserId: input.ownerUserId,
-      kind: sokoLink === null ? input.kind : "soko_user",
-      displayName: input.displayName,
-      degree: input.degree,
-      sourceId: input.sourceId,
-      sourceType: input.sourceType,
-      sourcePlatform: input.sourcePlatform,
-      sokoUserId: sokoLink?.linkedUserId ?? null,
-      sokoBusinessId: sokoLink?.linkedBusinessId ?? null,
-      sokoAgentId: sokoLink?.linkedAgentId ?? null,
-      contactHashIds,
-      externalIdentityId,
-      visibilityStatus: input.degree === 1 ? "direct" : "agent_mediated",
-      consentStatus: input.degree === 1 ? "pending" : "agent_required",
-      createdAt: input.now.toISOString(),
-      updatedAt: input.now.toISOString()
-    };
-    this.networkNodes.set(node.id, node);
-
-    if (sokoLink !== null) {
-      this.sokoIdentityLinks.set(sokoLink.id, {
-        ...sokoLink,
-        nodeId: node.id
-      });
-    }
-
-    return node;
-  }
-
-  private createNetworkEdge(input: {
-    ownerUserId: string;
-    sourceType: NetworkEdgeSourceType;
-    sourcePlatform: string | null;
-    fromNodeId: string;
-    toNodeId: string;
-    degree: 1 | 2;
-    trustWeight: number;
-    interactionWeight: number;
-    visibilityStatus: NetworkVisibilityStatus;
-    consentStatus: NetworkConsentStatus;
-    now: Date;
-  }): NetworkEdgeSummary {
-    const edge: NetworkEdgeSummary = {
-      id: randomUUID(),
-      ownerUserId: input.ownerUserId,
-      sourceType: input.sourceType,
-      sourcePlatform: input.sourcePlatform,
-      fromNodeId: input.fromNodeId,
-      toNodeId: input.toNodeId,
-      degree: input.degree,
-      trustWeight: input.trustWeight,
-      interactionWeight: input.interactionWeight,
-      visibilityStatus: input.visibilityStatus,
-      consentStatus: input.consentStatus,
-      createdAt: input.now.toISOString(),
-      updatedAt: input.now.toISOString()
-    };
-    this.networkEdges.set(edge.id, edge);
-    return edge;
-  }
-
-  private ensureContactHash(input: {
-    ownerUserId: string;
-    hashType: "phone" | "email" | "social";
-    rawValue: string;
-    now: Date;
-  }): ContactHashSummary {
-    const hashValue = createContactHash(input.hashType, input.rawValue);
-    const mapKey = `${input.ownerUserId}:${input.hashType}:${hashValue}`;
-    const existingId = this.contactHashIdByValue.get(mapKey);
-
-    if (existingId !== undefined) {
-      return this.contactHashes.get(existingId)!;
-    }
-
-    const contactHash: ContactHashSummary = {
-      id: randomUUID(),
-      ownerUserId: input.ownerUserId,
-      hashType: input.hashType,
-      hashValue,
-      displayHint: createContactDisplayHint(input.rawValue),
-      createdAt: input.now.toISOString()
-    };
-    this.contactHashes.set(contactHash.id, contactHash);
-    this.contactHashIdByValue.set(mapKey, contactHash.id);
-    return contactHash;
-  }
-
-  private ensureExternalIdentity(input: {
-    ownerUserId: string;
-    provider: string;
-    providerSubject: string;
-    displayName: string;
-    handle: string | null;
-    now: Date;
-  }): ExternalIdentitySummary {
-    const providerSubjectHash = createContactHash(
-      "social",
-      `${input.provider}:${input.providerSubject}`
-    );
-    const mapKey = `${input.ownerUserId}:${input.provider}:${providerSubjectHash}`;
-    const existingId = this.externalIdentityIdBySubject.get(mapKey);
-
-    if (existingId !== undefined) {
-      return this.externalIdentities.get(existingId)!;
-    }
-
-    const identity: ExternalIdentitySummary = {
-      id: randomUUID(),
-      ownerUserId: input.ownerUserId,
-      provider: input.provider,
-      providerSubjectHash,
-      displayName: input.displayName,
-      handle: input.handle,
-      createdAt: input.now.toISOString()
-    };
-    this.externalIdentities.set(identity.id, identity);
-    this.externalIdentityIdBySubject.set(mapKey, identity.id);
-    return identity;
-  }
-
-  private findSokoIdentityLink(input: {
-    ownerUserId: string;
-    contactHashIds: string[];
-    now: Date;
-  }): SokoIdentityLinkSummary | null {
-    for (const hashId of input.contactHashIds) {
-      const contactHash = this.contactHashes.get(hashId);
-
-      if (contactHash === undefined) {
-        continue;
-      }
-
-      const matchingAccount = [...this.accounts.values()].find((account) => {
-        const channel = contactHash.hashType === "email" ? "email" : "phone";
-        return createContactHash(channel, account.primaryAuthDestination) === contactHash.hashValue;
-      });
-
-      if (matchingAccount === undefined) {
-        continue;
-      }
-
-      const linkedUserId = this.userByAccount.get(matchingAccount.id) ?? null;
-      const linkedBusiness = [...this.memberships.values()]
-        .filter((membership) => membership.userId === linkedUserId)
-        .map((membership) => this.businesses.get(membership.businessId))
-        .find((business): business is BusinessSummary => business !== undefined);
-
-      return {
-        id: randomUUID(),
-        ownerUserId: input.ownerUserId,
-        nodeId: "",
-        linkedUserId,
-        linkedBusinessId: linkedBusiness?.id ?? null,
-        linkedAgentId: linkedBusiness === undefined ? null : createPublicAgentId(linkedBusiness),
-        confidence: 0.95,
-        createdAt: input.now.toISOString()
-      };
-    }
-
-    return null;
-  }
-
-  private refreshNetworkSourceCounts(sourceId: string, now: Date): void {
-    const source = this.networkSources.get(sourceId);
-
-    if (source === undefined) {
-      return;
-    }
-
-    const nodes = [...this.networkNodes.values()].filter((node) => node.sourceId === sourceId);
-    this.networkSources.set(sourceId, {
-      ...source,
-      directCount: nodes.filter((node) => node.degree === 1).length,
-      extendedCount: nodes.filter((node) => node.degree === 2).length,
-      updatedAt: now.toISOString()
-    } as NetworkSyncSourceSummary);
-  }
-
-  private networkGraphForUser(ownerUserId: string, now: Date): NetworkGraphSummary {
-    return {
-      ownerUserId,
-      generatedAt: now.toISOString(),
-      nodes: [...this.networkNodes.values()]
-        .filter((node) => node.ownerUserId === ownerUserId)
-        .map(sanitizeNetworkNode)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-      edges: [...this.networkEdges.values()]
-        .filter((edge) => edge.ownerUserId === ownerUserId)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-      sources: [...this.networkSources.values()]
-        .filter((source) => source.ownerUserId === ownerUserId)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-      routes: [...this.networkRoutes.values()]
-        .filter((route) => route.ownerUserId === ownerUserId)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-      permissions: [...this.networkPermissions.values()]
-        .filter((permission) => permission.ownerUserId === ownerUserId)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-      identityLinks: [...this.sokoIdentityLinks.values()]
-        .filter((link) => link.ownerUserId === ownerUserId)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-    };
-  }
-
-  private findAgentRouteTarget(input: {
-    ownerUserId: string;
-    requestText: string;
-    targetNodeId: string | null;
-  }): NetworkNodeSummary {
-    const extendedNodes = [...this.networkNodes.values()].filter(
-      (node) => node.ownerUserId === input.ownerUserId && node.degree === 2
-    );
-    const target =
-      input.targetNodeId === null
-        ? (extendedNodes.find((node) =>
-            input.requestText.toLowerCase().includes(node.displayName.toLowerCase())
-          ) ?? extendedNodes[0])
-        : extendedNodes.find((node) => node.id === input.targetNodeId);
-
-    if (target === undefined) {
-      throw new Cp2Error(
-        404,
-        "network_target_not_found",
-        "No reachable second-degree network target was found."
-      );
-    }
-
-    return target;
-  }
-
-  private requireNetworkNode(nodeId: string, ownerUserId: string): NetworkNodeSummary {
-    const node = this.networkNodes.get(nodeId);
-
-    if (node === undefined || node.ownerUserId !== ownerUserId) {
-      throw new Cp2Error(404, "network_node_not_found", "Network node was not found.");
-    }
-
-    return node;
-  }
-
-  private updateAgentRouteStatus(
-    input: {
-      sessionId: string | null;
-      routeId: string;
-      now?: Date;
-    },
-    status: AgentRouteSummary["status"],
-    permissionStatus: NetworkConsentStatus
-  ): AgentRouteSummary {
-    const now = input.now ?? new Date();
-    const route = this.getAgentRoute({ ...input, now });
-    const updatedRoute: AgentRouteSummary = {
-      ...route,
-      status,
-      updatedAt: now.toISOString()
-    };
-    const permission = this.networkPermissions.get(route.permissionId);
-
-    if (permission !== undefined) {
-      this.networkPermissions.set(permission.id, {
-        ...permission,
-        status: permissionStatus,
-        updatedAt: now.toISOString()
-      });
-    }
-
-    this.networkRoutes.set(route.id, updatedRoute);
-    return updatedRoute;
-  }
-
   private inventoryMovementsForBusiness(businessId: string): InventoryMovementSummary[] {
     return [...this.inventoryMovements.values()].filter(
       (movement) => movement.businessId === businessId
@@ -18530,14 +17775,20 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.networkNodes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.networkEdges, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.networkSources, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.networkPermissions, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.networkRoutes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.contactHashes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.externalIdentities, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.sokoIdentityLinks, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkNodesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkEdgesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkSourcesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.networkDomain.networkPermissionsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkRoutesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.contactHashesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.networkDomain.externalIdentitiesMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.sokoIdentityLinksMap, scope);
     }
 
     deletedRecordCount += deleteScopedArrayRecords(this.syncChanges, scope);
@@ -18631,21 +17882,7 @@ export class Cp2Store {
       this.mcpTokenIdByHash.set(token.tokenHash, token.id);
     }
 
-    this.contactHashIdByValue.clear();
-    for (const item of this.contactHashes.values()) {
-      this.contactHashIdByValue.set(
-        `${item.ownerUserId}:${item.hashType}:${item.hashValue}`,
-        item.id
-      );
-    }
-
-    this.externalIdentityIdBySubject.clear();
-    for (const item of this.externalIdentities.values()) {
-      this.externalIdentityIdBySubject.set(
-        `${item.ownerUserId}:${item.provider}:${item.providerSubjectHash}`,
-        item.id
-      );
-    }
+    this.networkDomain.rebuildDerivedIndexes();
 
     this.nextSyncSequenceByAccount.clear();
     for (const change of this.syncChanges) {
@@ -20163,103 +19400,6 @@ function valueReferencesDeletionScope(
   return Object.values(value).some((item) => valueReferencesDeletionScope(item, scope, seen));
 }
 
-interface NormalizedNetworkConnection extends NetworkImportConnectionInput {
-  relationship?: SocialProfileNetworkInput["relationship"];
-  connections?: NetworkImportConnectionInput[] | undefined;
-}
-
-function normalizeNetworkConnectionInput(
-  value: NetworkImportConnectionInput & {
-    relationship?: SocialProfileNetworkInput["relationship"];
-    connections?: NetworkImportConnectionInput[] | undefined;
-  },
-  name: string
-): NormalizedNetworkConnection {
-  const displayName = value.name?.trim();
-
-  if (displayName === undefined || displayName.length < 1) {
-    throw new Cp2Error(400, "network_contact_name_required", `${name}.name is required.`);
-  }
-
-  return {
-    name: displayName,
-    phone:
-      value.phone === undefined || value.phone === null
-        ? null
-        : normalizeDestination("phone", value.phone),
-    email:
-      value.email === undefined || value.email === null
-        ? null
-        : normalizeDestination("email", value.email),
-    providerSubject:
-      value.providerSubject === undefined || value.providerSubject === null
-        ? null
-        : value.providerSubject.trim(),
-    handle: value.handle === undefined || value.handle === null ? null : value.handle.trim(),
-    relationship: value.relationship,
-    connections: value.connections
-  };
-}
-
-function normalizeSocialRelationship(
-  relationship: SocialProfileNetworkInput["relationship"] | undefined
-): NonNullable<SocialProfileNetworkInput["relationship"]> {
-  if (
-    relationship === "followed" ||
-    relationship === "follower" ||
-    relationship === "interaction" ||
-    relationship === "message"
-  ) {
-    return relationship;
-  }
-
-  return "followed";
-}
-
-export function createContactHash(
-  hashType: "phone" | "email" | "social",
-  rawValue: string
-): string {
-  const normalized =
-    hashType === "phone"
-      ? normalizeDestination("phone", rawValue)
-      : hashType === "email"
-        ? normalizeDestination("email", rawValue)
-        : rawValue.trim().toLowerCase();
-  return createHash("sha256").update(`${hashType}:${normalized}`).digest("hex");
-}
-
-function createContactDisplayHint(rawValue: string): string | null {
-  const normalized = rawValue.trim();
-
-  if (normalized.length <= 4) {
-    return null;
-  }
-
-  return normalized.slice(-4).padStart(Math.min(normalized.length, 6), "*");
-}
-
-function sanitizeNetworkNode(node: NetworkNodeSummary): NetworkNodeSummary {
-  if (node.degree !== 2) {
-    return node;
-  }
-
-  return {
-    ...node,
-    contactHashIds: []
-  };
-}
-
-function createPublicAgentId(business: BusinessSummary): string {
-  const seed = `${business.id}-${business.name}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-
-  return seed.length === 0 ? "soko-agent" : seed;
-}
-
 function inferCountryNamespace(destination: string): string {
   const match = destination.match(/^\+?(\d{1,3})/);
   return match?.[1] ?? "254";
@@ -21522,27 +20662,6 @@ function parseDeletionOtpChallengeId(value: string | null | undefined): string |
   }
 
   return value.slice("otp:".length);
-}
-
-function providerDisplayName(provider: OAuthProvider): string {
-  switch (provider) {
-    case "facebook":
-      return "Facebook";
-    case "github":
-      return "GitHub";
-    case "google":
-      return "Google";
-    case "linkedin":
-      return "LinkedIn";
-    case "tiktok":
-      return "TikTok";
-    case "microsoft":
-      return "Microsoft";
-    case "apple":
-      return "Apple";
-    case "x":
-      return "X";
-  }
 }
 
 function hashMatches(actual: string, expected: string): boolean {

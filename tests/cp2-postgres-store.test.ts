@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
+  type AgentRouteSummary,
   type BetaFeatureFlagSummary,
   type BetaReadinessReportSummary,
   type BetaSupportTicketSummary,
@@ -1456,6 +1457,106 @@ describePostgres("CP2 Postgres store", () => {
         // same two records rather than duplicate them - proves notificationByRuleKey survived
         // the restart and still dedupes by rule key.
         expect(restoredInbox.notifications).toHaveLength(2);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists the network contact graph (nodes/edges/sources/routes/permissions and the contactHashIdByValue index) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254708${Date.now().toString().slice(-6)}`;
+      const connectionPhone = `+254709${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+
+      const graph = await postJson<NetworkGraphSummary>(
+        app,
+        "/network/sync/contacts",
+        {
+          contacts: [
+            {
+              name: "Postgres Contact",
+              phone: connectionPhone,
+              connections: [{ name: "Extended Contact" }]
+            }
+          ]
+        },
+        owner.sessionCookie
+      );
+      const directNode = graph.nodes.find((node) => node.displayName === "Postgres Contact");
+      const extendedNode = graph.nodes.find((node) => node.displayName === "Extended Contact");
+      expect(directNode).toBeDefined();
+      expect(extendedNode).toBeDefined();
+      expect(directNode?.contactHashIds).toHaveLength(1);
+      const originalContactHashId = directNode?.contactHashIds[0];
+
+      const route = await postJson<AgentRouteSummary>(
+        app,
+        "/network/routes",
+        { requestText: "Extended Contact", targetNodeId: extendedNode?.id },
+        owner.sessionCookie
+      );
+      const approvedRoute = await postJson<AgentRouteSummary>(
+        app,
+        `/network/routes/${route.id}/approve`,
+        {},
+        owner.sessionCookie
+      );
+      expect(approvedRoute.status).toBe("approved");
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredGraph = await getJson<NetworkGraphSummary>(
+          restoredApp,
+          "/network",
+          owner.sessionCookie
+        );
+        expect(restoredGraph.nodes).toHaveLength(3);
+        expect(
+          restoredGraph.nodes.map((node) => node.displayName).sort((left, right) =>
+            left.localeCompare(right)
+          )
+        ).toEqual(expect.arrayContaining(["Extended Contact", "Postgres Contact"]));
+        expect(
+          restoredGraph.nodes.find((node) => node.displayName === "Postgres Contact")
+            ?.contactHashIds
+        ).toEqual([originalContactHashId]);
+
+        const restoredRoute = await getJson<AgentRouteSummary>(
+          restoredApp,
+          `/network/routes/${route.id}`,
+          owner.sessionCookie
+        );
+        expect(restoredRoute).toMatchObject({
+          id: route.id,
+          status: "approved",
+          permissionId: route.permissionId
+        });
+
+        // Re-syncing the same phone number after restart must reuse the original contactHash
+        // via the rebuilt contactHashIdByValue index, not mint a duplicate - proves the derived
+        // index survived the restart.
+        const resyncedGraph = await postJson<NetworkGraphSummary>(
+          restoredApp,
+          "/network/sync/contacts",
+          { contacts: [{ name: "Postgres Contact Again", phone: connectionPhone }] },
+          owner.sessionCookie
+        );
+        const resyncedNode = resyncedGraph.nodes.find(
+          (node) => node.displayName === "Postgres Contact Again"
+        );
+        expect(resyncedNode?.contactHashIds).toEqual([originalContactHashId]);
       } finally {
         await restoredApp.close();
         await restoredStore.close();

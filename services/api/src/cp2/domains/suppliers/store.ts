@@ -11,11 +11,11 @@
  * `money.ts` were pulled out to avoid.
  *
  * `networkNodes`/`networkSources` are read here (phonebook contact search, receipt contact
- * matching) but not owned here - they belong to the not-yet-extracted network/contacts-graph
- * domain, so they're injected as raw Map references via `SupplierDomainDeps`, the same pattern
- * `CommerceDomainDeps` used for `networkNodes`. `sanitizeNetworkNode` is a store.ts-local function
- * also used outside this domain (by the network graph builder), so it's injected as a function
- * rather than duplicated.
+ * matching) but not owned here - they belong to `NetworkDomain` (extracted as the sixth slice),
+ * so they're injected as raw Map references via `SupplierDomainDeps`, pointed at
+ * `NetworkDomain`'s own map getters from `Cp2Store`'s constructor - the same pattern
+ * `CommerceDomainDeps` uses for `networkNodes`. `sanitizeNetworkNode` has no `this` dependency,
+ * so it's imported directly from `NetworkDomain`'s `shared.ts` rather than injected.
  */
 import { randomUUID, createHash } from "node:crypto";
 import {
@@ -42,6 +42,7 @@ import type {
 import { Cp2Error, assertValid } from "../../cp2-error.js";
 import { roundMoney } from "../../money.js";
 import { normalizeDestination } from "../../phone-identity.js";
+import { sanitizeNetworkNode } from "../network/shared.js";
 import {
   averageReceiptBlockConfidence,
   buildReceiptFieldEvidence,
@@ -75,7 +76,6 @@ export interface SupplierDomainDeps {
   ) => AuthSessionView;
   appendBusinessEvent: (event: BusinessEvent) => void;
   requirePhonebookNode: (ownerUserId: string, networkNodeId: string) => NetworkNodeSummary;
-  sanitizeNetworkNode: (node: NetworkNodeSummary) => NetworkNodeSummary;
   networkNodes: Map<string, NetworkNodeSummary>;
   networkSources: Map<string, NetworkSyncSourceSummary>;
 }
@@ -376,7 +376,7 @@ export class SupplierDomain {
           node.displayName.toLowerCase().includes(query)
       )
       .slice(0, 25)
-      .map(this.deps.sanitizeNetworkNode);
+      .map(sanitizeNetworkNode);
   }
 
   createSupplierFromPhoneContact(input: {
