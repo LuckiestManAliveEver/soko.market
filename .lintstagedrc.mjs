@@ -1,0 +1,51 @@
+import path from "node:path";
+
+// Maps a staged file's path prefix to the pnpm workspace package that owns it, so the pre-commit
+// hook can typecheck only the affected package(s) instead of the whole monorepo graph - full
+// cross-package correctness still runs in CI (`pnpm typecheck`), this is a fast local gate, not a
+// CI replica.
+const workspacesByPrefix = [
+  ["apps/web/", "@soko/web"],
+  ["services/api/", "@soko/api"],
+  ["services/ai-runtime/", "@soko/ai-runtime"],
+  ["services/sync/", "@soko/sync"],
+  ["services/cloudflare-inference/", "@soko/cloudflare-inference"],
+  ["packages/shared-types/", "@soko/shared-types"],
+  ["packages/sync-core/", "@soko/sync-core"],
+  ["packages/tool-core/", "@soko/tool-core"],
+  ["packages/business-core/", "@soko/business-core"],
+  ["packages/event-core/", "@soko/event-core"],
+  ["packages/ui/", "@soko/ui"]
+];
+
+function workspaceForFile(relativePath) {
+  const normalized = relativePath.replaceAll("\\", "/");
+  const match = workspacesByPrefix.find(([prefix]) => normalized.startsWith(prefix));
+  return match?.[1] ?? null;
+}
+
+export default {
+  "*.{ts,tsx}": (files) => {
+    const relativeFiles = files.map((file) => path.relative(process.cwd(), file));
+    const workspaces = new Set();
+    let touchesPackages = false;
+    for (const file of relativeFiles) {
+      const workspace = workspaceForFile(file);
+      if (workspace !== null) workspaces.add(workspace);
+      if (file.startsWith("packages/")) touchesPackages = true;
+    }
+
+    const commands = [`eslint --max-warnings=0 ${files.map((file) => `"${file}"`).join(" ")}`];
+
+    // Packages are consumed as built libs by services/apps, so rebuild them before typechecking
+    // anything downstream - mirrors the root `typecheck` script's own build-then-typecheck order.
+    if (touchesPackages) {
+      commands.push('pnpm -r --filter "./packages/**" --if-present build');
+    }
+    for (const workspace of workspaces) {
+      commands.push(`pnpm --filter ${workspace} typecheck`);
+    }
+
+    return commands;
+  }
+};

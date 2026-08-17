@@ -60,7 +60,8 @@
     "test:live-model-runtime": "RUN_LIVE_MODEL_RUNTIME_TEST=true vitest run tests/live-render-model-runtime.test.ts",
     "test:ui-cert": "playwright test e2e/responsive-accessibility.spec.ts",
     "typecheck": "pnpm -r --filter \"./packages/**\" --if-present build && pnpm -r --if-present typecheck",
-    "verify:production-runtime": "node scripts/verify-production-runtime.mjs"
+    "verify:production-runtime": "node scripts/verify-production-runtime.mjs",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
@@ -72,7 +73,9 @@
     "drizzle-orm": "^0.38.4",
     "eslint": "^9.18.0",
     "fake-indexeddb": "^6.2.5",
+    "husky": "^9.1.7",
     "jsdom": "^25.0.1",
+    "lint-staged": "^17.3.0",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
