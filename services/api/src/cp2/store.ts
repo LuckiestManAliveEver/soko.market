@@ -38,6 +38,7 @@ import {
 import { LogisticsDomain } from "./domains/logistics/store.js";
 import { summarizeLogistics } from "./domains/logistics/shared.js";
 import { SupplierDomain } from "./domains/suppliers/store.js";
+import { DocumentImportDomain } from "./domains/document-imports/store.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -121,9 +122,7 @@ import type {
   DataExportBundleSummary,
   DeviceSessionSummary,
   DeviceTrustSummary,
-  DocumentImportConfirmResult,
   DocumentImportJobSummary,
-  DocumentImportPreviewRow,
   DocumentImportSourceSummary,
   E2eeDeviceSummary,
   E2eePublicKey,
@@ -171,7 +170,6 @@ import type {
   ProductFieldDefinition,
   ProductFieldSchemaSummary,
   ProductFieldInputType,
-  ProductImportDraft,
   ProductSummary,
   BuyOrderSummary,
   ProductCaptureJobSummary,
@@ -215,7 +213,6 @@ import type {
   SyncQueueItem,
   SyncQueueSummary,
   SyncReplayResult,
-  SupplierImportDraft,
   SupplierContactLinkSummary,
   SupplierSummary,
   SupportedLanguage,
@@ -306,12 +303,7 @@ import {
   customerUpdatedEvent,
   createInvoicePreview,
   createInvoicePaymentSummary,
-  createProductImportPreview,
-  createSupplierImportPreview,
   dataExportCreatedEvent,
-  documentImportConfirmedEvent,
-  documentImportFailedEvent,
-  documentImportPreviewedEvent,
   invoiceConfirmedEvent,
   invoiceCreatedEvent,
   invoiceUpdatedEvent,
@@ -332,7 +324,6 @@ import {
   stockAdjustedEvent,
   validateAccountDeletionInput,
   validateContactRecordInput,
-  validateDocumentImportSource,
   validateInvoiceInput,
   validatePaymentInput,
   validateProductInput,
@@ -340,7 +331,6 @@ import {
   type AccountDeletionInput,
   type BusinessPermission,
   type ContactRecordInput,
-  type DocumentImportSourceInput,
   type InvoiceInput,
   type LogisticsInput,
   type LogisticsStatusInput,
@@ -735,10 +725,6 @@ export interface ConnectedMailboxOAuthSessionRecord {
   expiresAt: string;
   completedAt: string | null;
   createdAt: string;
-}
-
-interface DocumentImportSourceRecord extends DocumentImportSourceSummary {
-  content: string;
 }
 
 interface PendingRuntimeAction {
@@ -1182,6 +1168,13 @@ export class Cp2Store {
       networkNodes: this.networkNodes,
       networkSources: this.networkSources
     });
+    this.documentImportDomain = new DocumentImportDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      appendBusinessEvent: (event) => this.appendBusinessEvent(event),
+      createSupplier: (input) => this.createSupplier(input),
+      createProduct: (input) => this.createProduct(input)
+    });
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1275,8 +1268,7 @@ export class Cp2Store {
   private readonly publicAgentReplyAttemptsByVisitor = new Map<string, number[]>();
   private readonly publicOrders = new Map<string, PublicOrderSummary>();
   private readonly compliance: ComplianceDomain;
-  private readonly documentImports = new Map<string, DocumentImportJobSummary>();
-  private readonly documentImportSources = new Map<string, DocumentImportSourceRecord>();
+  private readonly documentImportDomain: DocumentImportDomain;
   private readonly notifications = new Map<string, BusinessNotificationSummary>();
   private readonly notificationByRuleKey = new Map<string, string>();
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
@@ -10301,7 +10293,7 @@ export class Cp2Store {
       invoices: this.invoicesForBusiness(input.businessId),
       payments: this.paymentsForBusiness(input.businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(input.businessId),
-      documentImports: this.importsForBusiness(input.businessId),
+      documentImports: this.documentImportDomain.importsForBusiness(input.businessId),
       notifications: this.sortedNotifications(input.businessId),
       inventoryMovements: this.inventoryMovementsForBusiness(input.businessId),
       auditEvents
@@ -11389,419 +11381,58 @@ export class Cp2Store {
     };
   }
 
-  createSupplierCsvImport(input: {
-    sessionId: string | null;
-    businessId: string;
-    source: DocumentImportSourceInput;
-    now?: Date;
-  }): DocumentImportJobSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "import:write",
-      now
-    );
-    assertValid(validateDocumentImportSource(input.source));
-    const source: DocumentImportSourceRecord = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      fileName: input.source.fileName.trim(),
-      contentType: input.source.contentType?.trim() || "text/csv",
-      sizeBytes: input.source.originalSizeBytes ?? Buffer.byteLength(input.source.content),
-      checksum:
-        input.source.originalChecksum ??
-        createHash("sha256").update(input.source.content).digest("hex"),
-      sourceType: input.source.sourceType ?? "upload",
-      sourceLocator: input.source.sourceLocator?.trim() || null,
-      originalStorageKey: input.source.originalStorageKey ?? null,
-      content: input.source.content,
-      createdAt: now.toISOString()
-    };
-    const preview = createSupplierImportPreview({
-      content: source.content
-    });
-    const job: DocumentImportJobSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      source: documentImportSourceView(source),
-      target: "supplier",
-      status: preview.rows.length === 0 ? "failed" : "previewed",
-      fieldMapping: preview.fieldMapping,
-      rows: preview.rows,
-      confirmedCount: 0,
-      errorMessage: preview.rows.length === 0 ? "Import file does not contain data rows." : null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      confirmedAt: null
-    };
-
-    this.documentImportSources.set(source.id, source);
-    this.documentImports.set(job.id, job);
-    this.appendBusinessEvent(
-      job.status === "failed"
-        ? documentImportFailedEvent({
-            id: randomUUID(),
-            importJob: job,
-            actorId: session.user.id,
-            occurredAt: now.toISOString()
-          })
-        : documentImportPreviewedEvent({
-            id: randomUUID(),
-            importJob: job,
-            actorId: session.user.id,
-            occurredAt: now.toISOString()
-          })
-    );
-
-    return job;
+  createSupplierCsvImport(
+    ...args: Parameters<DocumentImportDomain["createSupplierCsvImport"]>
+  ): ReturnType<DocumentImportDomain["createSupplierCsvImport"]> {
+    return this.documentImportDomain.createSupplierCsvImport(...args);
   }
 
-  assertDocumentImportWriteAccess(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): void {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", input.now);
+  assertDocumentImportWriteAccess(
+    ...args: Parameters<DocumentImportDomain["assertDocumentImportWriteAccess"]>
+  ): ReturnType<DocumentImportDomain["assertDocumentImportWriteAccess"]> {
+    return this.documentImportDomain.assertDocumentImportWriteAccess(...args);
   }
 
-  createProductCatalogueImport(input: {
-    sessionId: string | null;
-    businessId: string;
-    source: DocumentImportSourceInput;
-    now?: Date;
-  }): DocumentImportJobSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "import:write",
-      now
-    );
-    assertValid(validateDocumentImportSource(input.source));
-    const source: DocumentImportSourceRecord = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      fileName: input.source.fileName.trim(),
-      contentType: input.source.contentType?.trim() || "text/plain",
-      sizeBytes: input.source.originalSizeBytes ?? Buffer.byteLength(input.source.content),
-      checksum:
-        input.source.originalChecksum ??
-        createHash("sha256").update(input.source.content).digest("hex"),
-      sourceType: input.source.sourceType ?? "upload",
-      sourceLocator: input.source.sourceLocator?.trim() || null,
-      originalStorageKey: input.source.originalStorageKey ?? null,
-      content: input.source.content,
-      createdAt: now.toISOString()
-    };
-    const preview = createProductImportPreview({
-      content: source.content
-    });
-    const job: DocumentImportJobSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      source: documentImportSourceView(source),
-      target: "product",
-      status: preview.rows.length === 0 ? "failed" : "previewed",
-      fieldMapping: preview.fieldMapping,
-      rows: preview.rows,
-      confirmedCount: 0,
-      errorMessage: preview.rows.length === 0 ? "Import file does not contain product rows." : null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      confirmedAt: null
-    };
-
-    this.documentImportSources.set(source.id, source);
-    this.documentImports.set(job.id, job);
-    this.appendBusinessEvent(
-      job.status === "failed"
-        ? documentImportFailedEvent({
-            id: randomUUID(),
-            importJob: job,
-            actorId: session.user.id,
-            occurredAt: now.toISOString()
-          })
-        : documentImportPreviewedEvent({
-            id: randomUUID(),
-            importJob: job,
-            actorId: session.user.id,
-            occurredAt: now.toISOString()
-          })
-    );
-
-    return job;
+  createProductCatalogueImport(
+    ...args: Parameters<DocumentImportDomain["createProductCatalogueImport"]>
+  ): ReturnType<DocumentImportDomain["createProductCatalogueImport"]> {
+    return this.documentImportDomain.createProductCatalogueImport(...args);
   }
 
-  listDocumentImports(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): DocumentImportJobSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
-    return [...this.documentImports.values()]
-      .filter((job) => job.businessId === input.businessId)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  listDocumentImports(
+    ...args: Parameters<DocumentImportDomain["listDocumentImports"]>
+  ): ReturnType<DocumentImportDomain["listDocumentImports"]> {
+    return this.documentImportDomain.listDocumentImports(...args);
   }
 
-  getDocumentImport(input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    now?: Date;
-  }): DocumentImportJobSummary {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
-    return this.requireDocumentImport(input.businessId, input.importJobId);
+  getDocumentImport(
+    ...args: Parameters<DocumentImportDomain["getDocumentImport"]>
+  ): ReturnType<DocumentImportDomain["getDocumentImport"]> {
+    return this.documentImportDomain.getDocumentImport(...args);
   }
 
-  updateSupplierImportRow(input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    rowNumber: number;
-    mapped: SupplierImportDraft;
-    selected?: boolean;
-    now?: Date;
-  }): DocumentImportJobSummary {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
-    const job = this.requireDocumentImport(input.businessId, input.importJobId);
-
-    if (job.target !== "supplier") {
-      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a supplier import.");
-    }
-
-    if (job.status !== "previewed") {
-      throw new Cp2Error(409, "import_not_editable", "Only previewed imports can be edited.");
-    }
-
-    const rowIndex = job.rows.findIndex((row) => row.rowNumber === input.rowNumber);
-
-    if (rowIndex === -1) {
-      throw new Cp2Error(404, "import_row_not_found", "Import row was not found.");
-    }
-
-    const validation = validateContactRecordInput(input.mapped, "Supplier");
-    const rows = job.rows.map((row, index): DocumentImportPreviewRow => {
-      if (index !== rowIndex) {
-        return row;
-      }
-
-      return {
-        ...row,
-        mapped: input.mapped,
-        errors: validation.errors,
-        warnings: [],
-        selected: input.selected ?? (validation.ok && row.selected)
-      };
-    });
-    const updated: DocumentImportJobSummary = {
-      ...job,
-      rows,
-      updatedAt: now.toISOString()
-    };
-
-    this.documentImports.set(updated.id, updated);
-    return updated;
+  updateSupplierImportRow(
+    ...args: Parameters<DocumentImportDomain["updateSupplierImportRow"]>
+  ): ReturnType<DocumentImportDomain["updateSupplierImportRow"]> {
+    return this.documentImportDomain.updateSupplierImportRow(...args);
   }
 
-  updateProductImportRow(input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    rowNumber: number;
-    mapped: ProductImportDraft;
-    selected?: boolean;
-    now?: Date;
-  }): DocumentImportJobSummary {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
-    const job = this.requireDocumentImport(input.businessId, input.importJobId);
-
-    if (job.target !== "product") {
-      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a product catalogue.");
-    }
-
-    if (job.status !== "previewed") {
-      throw new Cp2Error(409, "import_not_editable", "Only previewed imports can be edited.");
-    }
-
-    const rowIndex = job.rows.findIndex((row) => row.rowNumber === input.rowNumber);
-
-    if (rowIndex === -1) {
-      throw new Cp2Error(404, "import_row_not_found", "Import row was not found.");
-    }
-
-    const validation = validateProductInput(input.mapped);
-    const rows = job.rows.map((row, index): DocumentImportPreviewRow => {
-      if (index !== rowIndex) {
-        return row;
-      }
-
-      return {
-        ...row,
-        mapped: input.mapped,
-        errors: validation.errors,
-        warnings: [],
-        selected: input.selected ?? (validation.ok && row.selected)
-      };
-    });
-    const updated: DocumentImportJobSummary = {
-      ...job,
-      rows,
-      updatedAt: now.toISOString()
-    };
-
-    this.documentImports.set(updated.id, updated);
-    return updated;
+  updateProductImportRow(
+    ...args: Parameters<DocumentImportDomain["updateProductImportRow"]>
+  ): ReturnType<DocumentImportDomain["updateProductImportRow"]> {
+    return this.documentImportDomain.updateProductImportRow(...args);
   }
 
-  confirmSupplierImport(input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    selectedRowNumbers?: number[];
-    now?: Date;
-  }): DocumentImportConfirmResult {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "import:write",
-      now
-    );
-    const job = this.requireDocumentImport(input.businessId, input.importJobId);
-
-    if (job.target !== "supplier") {
-      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a supplier import.");
-    }
-
-    if (job.status !== "previewed") {
-      throw new Cp2Error(409, "import_not_confirmable", "Only previewed imports can be confirmed.");
-    }
-
-    const selectedRows = this.selectImportRows(job, input.selectedRowNumbers);
-
-    if (selectedRows.length === 0) {
-      throw new Cp2Error(400, "import_rows_required", "At least one import row must be selected.");
-    }
-
-    const invalidRows = selectedRows.filter(
-      (row) => !validateContactRecordInput(row.mapped as SupplierImportDraft, "Supplier").ok
-    );
-
-    if (invalidRows.length > 0) {
-      throw new Cp2Error(
-        409,
-        "import_rows_invalid",
-        `Import has invalid selected rows: ${invalidRows.map((row) => row.rowNumber).join(", ")}.`
-      );
-    }
-
-    const suppliers = selectedRows.map((row) =>
-      this.createSupplier({
-        sessionId: input.sessionId,
-        businessId: input.businessId,
-        supplier: row.mapped as SupplierImportDraft,
-        now
-      })
-    );
-    const confirmed: DocumentImportJobSummary = {
-      ...job,
-      status: "confirmed",
-      confirmedCount: suppliers.length,
-      updatedAt: now.toISOString(),
-      confirmedAt: now.toISOString()
-    };
-
-    this.documentImports.set(confirmed.id, confirmed);
-    this.appendBusinessEvent(
-      documentImportConfirmedEvent({
-        id: randomUUID(),
-        importJob: confirmed,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return {
-      job: confirmed,
-      suppliers
-    };
+  confirmSupplierImport(
+    ...args: Parameters<DocumentImportDomain["confirmSupplierImport"]>
+  ): ReturnType<DocumentImportDomain["confirmSupplierImport"]> {
+    return this.documentImportDomain.confirmSupplierImport(...args);
   }
 
-  confirmProductImport(input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    selectedRowNumbers?: number[];
-    now?: Date;
-  }): DocumentImportConfirmResult {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "import:write",
-      now
-    );
-    const job = this.requireDocumentImport(input.businessId, input.importJobId);
-
-    if (job.target !== "product") {
-      throw new Cp2Error(409, "import_target_mismatch", "Import job is not a product catalogue.");
-    }
-
-    if (job.status !== "previewed") {
-      throw new Cp2Error(409, "import_not_confirmable", "Only previewed imports can be confirmed.");
-    }
-
-    const selectedRows = this.selectImportRows(job, input.selectedRowNumbers);
-
-    if (selectedRows.length === 0) {
-      throw new Cp2Error(400, "import_rows_required", "At least one import row must be selected.");
-    }
-
-    const invalidRows = selectedRows.filter(
-      (row) => !validateProductInput(row.mapped as ProductImportDraft).ok
-    );
-
-    if (invalidRows.length > 0) {
-      throw new Cp2Error(
-        409,
-        "import_rows_invalid",
-        `Import has invalid selected rows: ${invalidRows.map((row) => row.rowNumber).join(", ")}.`
-      );
-    }
-
-    const products = selectedRows.map((row) =>
-      this.createProduct({
-        sessionId: input.sessionId,
-        businessId: input.businessId,
-        product: row.mapped as ProductInput,
-        now
-      })
-    );
-    const confirmed: DocumentImportJobSummary = {
-      ...job,
-      status: "confirmed",
-      confirmedCount: products.length,
-      updatedAt: now.toISOString(),
-      confirmedAt: now.toISOString()
-    };
-
-    this.documentImports.set(confirmed.id, confirmed);
-    this.appendBusinessEvent(
-      documentImportConfirmedEvent({
-        id: randomUUID(),
-        importJob: confirmed,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return {
-      job: confirmed,
-      products
-    };
+  confirmProductImport(
+    ...args: Parameters<DocumentImportDomain["confirmProductImport"]>
+  ): ReturnType<DocumentImportDomain["confirmProductImport"]> {
+    return this.documentImportDomain.confirmProductImport(...args);
   }
 
   createRuntimeSession(input: {
@@ -12906,8 +12537,8 @@ export class Cp2Store {
       launchSettings: [...this.compliance.launchSettingsMap.values()],
       launchChecklist: [...this.compliance.launchChecklistMap.values()],
       launchIncidents: [...this.compliance.launchIncidentsMap.values()],
-      documentImports: [...this.documentImports.values()],
-      documentImportSources: [...this.documentImportSources.values()].map(documentImportSourceView),
+      documentImports: [...this.documentImportDomain.documentImportsMap.values()],
+      documentImportSources: this.documentImportDomain.documentImportSourcesView(),
       notifications: [...this.notifications.values()],
       runtimeSessions: [...this.runtimeSessions.values()],
       runtimeTurns: [...this.runtimeTurns.values()],
@@ -13006,8 +12637,7 @@ export class Cp2Store {
     this.publicStorefrontMessages.clear();
     this.publicOrders.clear();
     this.compliance.clear();
-    this.documentImports.clear();
-    this.documentImportSources.clear();
+    this.documentImportDomain.clear();
     this.notifications.clear();
     this.notificationByRuleKey.clear();
     this.runtimeSessions.clear();
@@ -13452,11 +13082,11 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.documentImports) {
-      this.documentImports.set(item.id, item);
+      this.documentImportDomain.documentImportsMap.set(item.id, item);
     }
 
     for (const item of snapshot.documentImportSources) {
-      this.documentImportSources.set(item.id, {
+      this.documentImportDomain.documentImportSourcesMap.set(item.id, {
         ...item,
         content: ""
       });
@@ -16869,27 +16499,6 @@ export class Cp2Store {
     return item;
   }
 
-  private requireDocumentImport(businessId: string, importJobId: string): DocumentImportJobSummary {
-    const job = this.documentImports.get(importJobId);
-
-    if (job === undefined || job.businessId !== businessId) {
-      throw new Cp2Error(404, "import_not_found", "Document import was not found.");
-    }
-
-    return job;
-  }
-
-  private selectImportRows(
-    job: DocumentImportJobSummary,
-    selectedRowNumbers: number[] | undefined
-  ): DocumentImportPreviewRow[] {
-    if (selectedRowNumbers === undefined) {
-      return job.rows.filter((row) => row.selected);
-    }
-
-    const selected = new Set(selectedRowNumbers);
-    return job.rows.filter((row) => selected.has(row.rowNumber));
-  }
 
   private replaySyncMutation(input: {
     sessionId: string | null;
@@ -17240,7 +16849,7 @@ export class Cp2Store {
 
       case "document_import.confirm": {
         const importJobId = String(input.action.input.importJobId ?? "");
-        const job = this.requireDocumentImport(input.businessId, importJobId);
+        const job = this.documentImportDomain.requireDocumentImport(input.businessId, importJobId);
 
         return job.target === "product"
           ? this.confirmProductImport({
@@ -17393,16 +17002,15 @@ export class Cp2Store {
       /\b(catalogue|catalog|document|excel|extracted|import|pdf|spreadsheet|uploaded|word|workbook)\b/u.test(
         normalized
       );
-    const referencedJob = [...this.documentImports.values()].find(
-      (job) => job.businessId === businessId && message.includes(job.id)
-    );
+    const businessImports = this.documentImportDomain.importsForBusiness(businessId);
+    const referencedJob = businessImports.find((job) => message.includes(job.id));
 
     if (!hasAction || (!referencesDocument && referencedJob === undefined)) {
       return null;
     }
 
-    const latestPreview = [...this.documentImports.values()]
-      .filter((job) => job.businessId === businessId && job.status === "previewed")
+    const latestPreview = businessImports
+      .filter((job) => job.status === "previewed")
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     const job = referencedJob ?? latestPreview;
 
@@ -17490,9 +17098,7 @@ export class Cp2Store {
       paymentCount: [...this.payments.values()].filter(
         (payment) => payment.businessId === businessId
       ).length,
-      importJobCount: [...this.documentImports.values()].filter(
-        (job) => job.businessId === businessId
-      ).length,
+      importJobCount: this.documentImportDomain.importsForBusiness(businessId).length,
       logisticsCount: logisticsReport.fulfillmentCount,
       activeLogisticsCount: logisticsReport.activeCount,
       complianceExportCount: compliance.exportCount,
@@ -17879,7 +17485,7 @@ export class Cp2Store {
     const products = this.productsForBusiness(businessId);
     const invoices = this.invoicesForBusiness(businessId);
     const payments = this.paymentsForBusiness(businessId);
-    const imports = this.importsForBusiness(businessId);
+    const imports = this.documentImportDomain.importsForBusiness(businessId);
     const logistics = this.logisticsDomain.logisticsForBusiness(businessId);
     const movements = [...this.inventoryMovements.values()].filter(
       (movement) => movement.businessId === businessId
@@ -18231,10 +17837,6 @@ export class Cp2Store {
 
   private paymentsForBusiness(businessId: string): PaymentSummary[] {
     return [...this.payments.values()].filter((payment) => payment.businessId === businessId);
-  }
-
-  private importsForBusiness(businessId: string): DocumentImportJobSummary[] {
-    return [...this.documentImports.values()].filter((job) => job.businessId === businessId);
   }
 
   private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
@@ -18731,7 +18333,7 @@ export class Cp2Store {
       ...this.invoicesForBusiness(businessId).map((item) => item.id),
       ...this.paymentsForBusiness(businessId).map((item) => item.id),
       ...this.logisticsDomain.logisticsForBusiness(businessId).map((item) => item.id),
-      ...this.importsForBusiness(businessId).map((item) => item.id),
+      ...this.documentImportDomain.importsForBusiness(businessId).map((item) => item.id),
       ...this.inventoryMovementsForBusiness(businessId).map((item) => item.id),
       ...this.sortedNotifications(businessId).map((item) => item.id),
       ...this.syncItemsForBusiness(businessId).map((item) => item.id),
@@ -18782,9 +18384,7 @@ export class Cp2Store {
     const business = this.requireBusiness(businessId);
     const invoices = this.invoicesForBusiness(businessId);
     const payments = this.paymentsForBusiness(businessId);
-    const documentSources = [...this.documentImportSources.values()].filter(
-      (source) => source.businessId === businessId
-    );
+    const documentSources = this.documentImportDomain.documentImportSourcesForBusiness(businessId);
 
     return {
       businessId,
@@ -18964,15 +18564,15 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, item] of this.documentImports.entries()) {
+    for (const [id, item] of this.documentImportDomain.documentImportsMap.entries()) {
       if (item.businessId === businessId) {
-        this.documentImports.delete(id);
+        this.documentImportDomain.documentImportsMap.delete(id);
       }
     }
 
-    for (const [id, source] of this.documentImportSources.entries()) {
+    for (const [id, source] of this.documentImportDomain.documentImportSourcesMap.entries()) {
       if (source.businessId === businessId) {
-        this.documentImportSources.delete(id);
+        this.documentImportDomain.documentImportSourcesMap.delete(id);
       }
     }
 
@@ -19142,8 +18742,14 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.compliance.launchSettingsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.launchChecklistMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.launchIncidentsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.documentImports, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.documentImportSources, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.documentImportDomain.documentImportsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.documentImportDomain.documentImportSourcesMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.notifications, scope);
       deletedRecordCount += deleteScopedMapRecords(this.runtimeSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.runtimeTurns, scope);
@@ -19308,7 +18914,7 @@ export class Cp2Store {
       ).length,
       retainedPaymentCount: this.paymentsForBusiness(businessId).length,
       retainedLogisticsCount: this.logisticsDomain.logisticsForBusiness(businessId).length,
-      retainedImportCount: this.importsForBusiness(businessId).length,
+      retainedImportCount: this.documentImportDomain.importsForBusiness(businessId).length,
       retainedAuditEventCount: this.auditEventsForBusiness(businessId).length,
       directIdentifierFieldsRemoved
     };
@@ -22341,21 +21947,6 @@ function oauthSessionView(session: OAuthSessionRecord): OAuthSessionSummary {
     expiresAt: session.expiresAt,
     completedAt: session.completedAt,
     createdAt: session.createdAt
-  };
-}
-
-function documentImportSourceView(source: DocumentImportSourceRecord): DocumentImportSourceSummary {
-  return {
-    id: source.id,
-    businessId: source.businessId,
-    fileName: source.fileName,
-    contentType: source.contentType,
-    sizeBytes: source.sizeBytes,
-    checksum: source.checksum,
-    sourceType: source.sourceType ?? "upload",
-    sourceLocator: source.sourceLocator ?? null,
-    originalStorageKey: source.originalStorageKey ?? null,
-    createdAt: source.createdAt
   };
 }
 

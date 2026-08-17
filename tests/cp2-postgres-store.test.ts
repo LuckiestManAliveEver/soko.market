@@ -12,6 +12,8 @@ import {
   type BuyFeedSummary,
   type CountryTaxConfigSummary,
   type DeviceTrustSummary,
+  type DocumentImportConfirmResult,
+  type DocumentImportJobSummary,
   type InvoiceSummary,
   type LaunchChecklistItemSummary,
   type LaunchIncidentSummary,
@@ -1319,6 +1321,69 @@ describePostgres("CP2 Postgres store", () => {
         expect(restoredReceipt?.supplierId).toBe(supplier.id);
         expect(restoredReceipt?.salesAgentId).toBe(salesAgent.id);
         expect(restoredReceipt?.lineItems).toEqual(receipt.lineItems);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists document import jobs and sources across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254706${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const businessId = owner.business.id;
+
+      const importJob = await postJson<DocumentImportJobSummary>(
+        app,
+        `/businesses/${businessId}/imports/supplier-csv`,
+        {
+          fileName: "postgres-suppliers.csv",
+          contentType: "text/csv",
+          sourceType: "database",
+          sourceLocator: "postgres slice test",
+          content: "name,phone,email,notes\nPostgres Import Supplier,+254733444555,,Imported"
+        },
+        owner.sessionCookie
+      );
+      expect(importJob.status).toBe("previewed");
+
+      const confirmed = await postJson<DocumentImportConfirmResult>(
+        app,
+        `/businesses/${businessId}/imports/${importJob.id}/confirm`,
+        {},
+        owner.sessionCookie
+      );
+      expect(confirmed.job.status).toBe("confirmed");
+      expect(confirmed.suppliers?.[0]?.name).toBe("Postgres Import Supplier");
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredJob = await getJson<DocumentImportJobSummary>(
+          restoredApp,
+          `/businesses/${businessId}/imports/${importJob.id}`,
+          owner.sessionCookie
+        );
+        expect(restoredJob.status).toBe("confirmed");
+        expect(restoredJob.confirmedCount).toBe(1);
+        expect(restoredJob.source).toEqual(importJob.source);
+
+        const restoredList = await getJson<DocumentImportJobSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/imports`,
+          owner.sessionCookie
+        );
+        expect(restoredList.find((job) => job.id === importJob.id)?.status).toBe("confirmed");
       } finally {
         await restoredApp.close();
         await restoredStore.close();
