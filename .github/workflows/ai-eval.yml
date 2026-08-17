@@ -1,0 +1,53 @@
+name: AI eval
+
+# Periodic eval lane (CLAUDE.md: paid, quality-measuring, threshold-gated) for the model-fallback
+# path - separate from ci.yml's fast deterministic gate, which runs on every push/PR. This runs
+# nightly and on manual dispatch (before a ship) only, since it makes real model calls.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  ai-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run AI eval
+        env:
+          BACKEND_INFERENCE_ENABLED: ${{ vars.BACKEND_INFERENCE_ENABLED }}
+          BACKEND_INFERENCE_BASE_URL: ${{ vars.BACKEND_INFERENCE_BASE_URL }}
+          BACKEND_INFERENCE_MODEL_ID: ${{ vars.BACKEND_INFERENCE_MODEL_ID }}
+          INFERENCE_SERVICE_TOKEN: ${{ secrets.INFERENCE_SERVICE_TOKEN }}
+          INFERENCE_CLOUD_FALLBACK_ENABLED: ${{ vars.INFERENCE_CLOUD_FALLBACK_ENABLED }}
+          INFERENCE_CLOUD_PROVIDER: ${{ vars.INFERENCE_CLOUD_PROVIDER }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_FAST_MODEL: ${{ vars.OPENAI_FAST_MODEL }}
+        # Neither local backend nor cloud fallback configured yet -> the script prints a clear
+        # skip message and exits 0. This job goes from a no-op to a real gate the moment those
+        # repo variables/secrets are set - no script change needed.
+        run: pnpm eval:ai
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-report
+          path: /tmp/soko-ai-eval-report.json
+          if-no-files-found: ignore

@@ -46,6 +46,7 @@
     "db:verify-schema": "pnpm --filter @soko/api db:verify-schema",
     "db:rollback": "pnpm --filter @soko/api db:rollback",
     "db:restore": "pnpm --filter @soko/api db:restore",
+    "eval:ai": "pnpm --filter @soko/api eval:ai",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "health:api": "node scripts/health-check.mjs",

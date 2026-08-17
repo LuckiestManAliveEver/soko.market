@@ -24,6 +24,7 @@
     "db:verify-schema": "node scripts/verify-db-schema.mjs",
     "phone-identities:audit": "tsx scripts/audit-phone-identities.ts",
     "phone-identities:normalize": "tsx scripts/audit-phone-identities.ts",
+    "eval:ai": "tsx scripts/run-ai-eval.ts",
     "vapid:generate": "node scripts/generate-vapid-env.mjs",
     "db:rollback": "node scripts/rollback-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",
