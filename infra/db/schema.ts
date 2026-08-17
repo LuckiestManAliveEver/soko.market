@@ -565,6 +565,10 @@ export const customerRuntimeCapabilities = platformCommerceRecordTable(
 );
 export const productMedia = platformCommerceRecordTable("product_media");
 export const productCaptureJobs = platformCommerceRecordTable("product_capture_jobs");
+export const statusBroadcasts = platformCommerceRecordTable("status_broadcasts");
+export const buyOrders = platformCommerceRecordTable("buy_orders");
+export const statusOrders = platformCommerceRecordTable("status_orders");
+export const unifiedCheckouts = platformCommerceRecordTable("unified_checkouts");
 
 export const customers = pgTable(
   "customers",

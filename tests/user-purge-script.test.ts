@@ -20,8 +20,8 @@ describe("registered-user purge script", () => {
       (match) => match[1]
     );
 
-    expect(plan.size).toBe(150);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(145);
+    expect(plan.size).toBe(154);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(149);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

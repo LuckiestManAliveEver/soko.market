@@ -45,6 +45,9 @@ export interface ChatMessage {
   };
   attachments?: ChatAttachment[];
   confirmationToken?: string;
+  productCaptureJobId?: string;
+  statusBroadcastId?: string;
+  unifiedCheckoutId?: string;
   createdAt?: string;
   status?: ConversationMessageDeliveryStatus;
   editedAt?: string | null;

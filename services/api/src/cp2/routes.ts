@@ -11,6 +11,8 @@ import type {
   AgentPersonality,
   AgentSkillBinding,
   AuthChannel,
+  BuyCheckoutItemInput,
+  BuyResultSourceKind,
   BusinessNotificationStatus,
   BetaAccessStatus,
   BetaDeviceClass,
@@ -657,6 +659,58 @@ interface ProductCaptureConfirmBody {
   unit?: string | null;
   quantity?: number;
   aliases?: string[];
+}
+
+interface ProductCaptureItemParams extends ProductCaptureParams {
+  itemId: string;
+}
+
+interface ProductCaptureItemConfirmBody {
+  title?: string;
+  category?: string | null;
+  description?: string | null;
+  visiblePrice?: number | null;
+  existingProductId?: string | null;
+  unit?: string | null;
+  quantity?: number;
+  aliases?: string[];
+}
+
+interface StatusBroadcastParams extends BusinessParams {
+  statusBroadcastId: string;
+}
+
+interface StatusBroadcastCreateBody {
+  sourceCaptureJobId?: string;
+  recipientNodeIds?: string[];
+  sellerConversationId?: string | null;
+}
+
+interface StatusBroadcastEngagementParams {
+  statusBroadcastId: string;
+}
+
+interface BuySearchQuery {
+  query?: string;
+}
+
+interface BuyCheckoutBody {
+  items?: Array<{
+    sourceKind?: string;
+    sourceId?: string;
+    sourceLabel?: string;
+    title?: string;
+    quantity?: number;
+    agentId?: string | null;
+    productId?: string | null;
+    statusBroadcastId?: string | null;
+    productCaptureItemId?: string | null;
+  }>;
+  sellerConversationId?: string | null;
+}
+
+interface UnifiedCheckoutParams {
+  unifiedCheckoutId: string;
 }
 
 interface ProductParams extends BusinessParams {
@@ -6844,6 +6898,218 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
+  app.post(
+    "/businesses/:businessId/product-captures/:captureJobId/items/:itemId/confirm",
+    async (
+      request: FastifyRequest<{
+        Params: ProductCaptureItemParams;
+        Body: ProductCaptureItemConfirmBody;
+      }>,
+      reply
+    ) => {
+      try {
+        const quantity =
+          request.body.quantity === undefined
+            ? undefined
+            : parseNumber(request.body.quantity, "quantity");
+        const aliases =
+          request.body.aliases === undefined
+            ? undefined
+            : parseStringArray(request.body.aliases, "aliases", 20);
+        return store.confirmProductCaptureItem({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId,
+          itemId: request.params.itemId,
+          ...(request.body.title === undefined
+            ? {}
+            : { title: parseString(request.body.title, "title") }),
+          ...(request.body.category === undefined
+            ? {}
+            : { category: parseNullableString(request.body.category) }),
+          ...(request.body.description === undefined
+            ? {}
+            : { description: parseNullableString(request.body.description) }),
+          ...(request.body.visiblePrice === undefined
+            ? {}
+            : { visiblePrice: parseNullableNumber(request.body.visiblePrice, "visiblePrice") }),
+          existingProductId: parseNullableString(request.body.existingProductId),
+          unit: parseNullableString(request.body.unit),
+          ...(quantity === undefined ? {} : { quantity }),
+          ...(aliases === undefined ? {} : { aliases })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/product-captures/:captureJobId/items/:itemId/reject",
+    async (request: FastifyRequest<{ Params: ProductCaptureItemParams }>, reply) => {
+      try {
+        return store.rejectProductCaptureItem({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          captureJobId: request.params.captureJobId,
+          itemId: request.params.itemId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/status-broadcasts/candidates",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          candidates: store.listStatusBroadcastCandidates({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/status-broadcasts",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: StatusBroadcastCreateBody }>,
+      reply
+    ) => {
+      try {
+        return store.createStatusBroadcast({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          sourceCaptureJobId: parseString(request.body.sourceCaptureJobId, "sourceCaptureJobId"),
+          recipientNodeIds: parseStringArray(request.body.recipientNodeIds, "recipientNodeIds", 200),
+          sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/status-broadcasts/:statusBroadcastId",
+    async (request: FastifyRequest<{ Params: StatusBroadcastParams }>, reply) => {
+      try {
+        return store.getStatusBroadcast({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          statusBroadcastId: request.params.statusBroadcastId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/businesses/:businessId/status-broadcasts",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return {
+          statusBroadcasts: store.listStatusBroadcastsForBusiness({
+            sessionId: readSessionCookie(request.headers.cookie),
+            businessId: request.params.businessId
+          })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/status-broadcasts/received", async (request, reply) => {
+    try {
+      return {
+        statusBroadcasts: store.listStatusBroadcastsReceivedByViewer({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/status-broadcasts/:statusBroadcastId/view",
+    async (request: FastifyRequest<{ Params: StatusBroadcastEngagementParams }>, reply) => {
+      try {
+        return store.recordStatusBroadcastView({
+          sessionId: readSessionCookie(request.headers.cookie),
+          statusBroadcastId: request.params.statusBroadcastId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/status-broadcasts/:statusBroadcastId/reply",
+    async (request: FastifyRequest<{ Params: StatusBroadcastEngagementParams }>, reply) => {
+      try {
+        return store.recordStatusBroadcastReply({
+          sessionId: readSessionCookie(request.headers.cookie),
+          statusBroadcastId: request.params.statusBroadcastId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/buy/search",
+    async (request: FastifyRequest<{ Querystring: BuySearchQuery }>, reply) => {
+      try {
+        return store.searchBuyFeed({
+          sessionId: readSessionCookie(request.headers.cookie),
+          query: request.query.query ?? ""
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/buy/checkout",
+    async (request: FastifyRequest<{ Body: BuyCheckoutBody }>, reply) => {
+      try {
+        return store.createUnifiedCheckout({
+          sessionId: readSessionCookie(request.headers.cookie),
+          items: parseBuyCheckoutItems(request.body.items),
+          sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/buy/checkouts/:unifiedCheckoutId",
+    async (request: FastifyRequest<{ Params: UnifiedCheckoutParams }>, reply) => {
+      try {
+        return store.getUnifiedCheckout({
+          sessionId: readSessionCookie(request.headers.cookie),
+          unifiedCheckoutId: request.params.unifiedCheckoutId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   async function prepareDocumentUpload(
     input: DocumentUploadInput,
     businessId: string,
@@ -8798,6 +9064,33 @@ function parseStringArray(value: unknown, name: string, maximumItems: number): s
     throw new Cp2Error(400, `${name}_invalid`, `${name} is invalid.`);
   }
   return value.map((item, index) => parseString(item, `${name}[${index}]`));
+}
+
+function parseBuySourceKind(value: unknown): BuyResultSourceKind {
+  if (value === "contact" || value === "catalogue" || value === "marketplace_connector") {
+    return value;
+  }
+  throw new Cp2Error(400, "buy_source_kind_invalid", "Checkout item source is invalid.");
+}
+
+function parseBuyCheckoutItems(value: unknown): BuyCheckoutItemInput[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 100) {
+    throw new Cp2Error(400, "buy_checkout_items_invalid", "Checkout needs between 1 and 100 items.");
+  }
+  return value.map((raw, index) => {
+    const item = parseRequestBody(raw);
+    return {
+      sourceKind: parseBuySourceKind(item.sourceKind),
+      sourceId: parseString(item.sourceId, `items[${index}].sourceId`),
+      sourceLabel: parseString(item.sourceLabel, `items[${index}].sourceLabel`),
+      title: parseString(item.title, `items[${index}].title`),
+      quantity: parseNumber(item.quantity, `items[${index}].quantity`),
+      agentId: parseNullableString(item.agentId ?? null),
+      productId: parseNullableString(item.productId ?? null),
+      statusBroadcastId: parseNullableString(item.statusBroadcastId ?? null),
+      productCaptureItemId: parseNullableString(item.productCaptureItemId ?? null)
+    };
+  });
 }
 
 function parseTrustedMessageAttachmentReferences(

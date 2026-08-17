@@ -67,6 +67,10 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "products", tableName: "cp2_products" },
   { key: "productMedia", tableName: "product_media" },
   { key: "productCaptureJobs", tableName: "product_capture_jobs" },
+  { key: "statusBroadcasts", tableName: "status_broadcasts" },
+  { key: "buyOrders", tableName: "buy_orders" },
+  { key: "statusOrders", tableName: "status_orders" },
+  { key: "unifiedCheckouts", tableName: "unified_checkouts" },
   { key: "customers", tableName: "cp2_customers" },
   { key: "suppliers", tableName: "cp2_suppliers" },
   { key: "salesAgents", tableName: "cp2_sales_agents" },
@@ -2244,8 +2248,8 @@ async function saveCollectionRecords(
       [
         recordEntityId(collection.key, record),
         firstText(record, ["businessId", "shopId", "tenantId"]),
-        firstText(record, ["accountId"]),
-        firstText(record, ["userId", "ownerUserId", "actorId"]),
+        firstText(record, ["accountId", "buyerAccountId"]),
+        firstText(record, ["userId", "ownerUserId", "actorId", "postedBy"]),
         firstText(record, ["invoiceId", "importJobId", "sourceId", "eventId", "permissionId"]),
         JSON.stringify(record)
       ]
@@ -3555,6 +3559,10 @@ function emptySnapshot(): Cp2Snapshot {
     products: [],
     productMedia: [],
     productCaptureJobs: [],
+    statusBroadcasts: [],
+    buyOrders: [],
+    statusOrders: [],
+    unifiedCheckouts: [],
     customers: [],
     suppliers: [],
     salesAgents: [],

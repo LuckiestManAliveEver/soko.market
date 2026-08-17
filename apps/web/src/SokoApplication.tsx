@@ -40,6 +40,9 @@ import type {
   AgentSkillBinding,
   AuthBootstrapResponse,
   AuthBootstrapState,
+  BuyFeedSummary,
+  BuyResultSourceKind,
+  BuyResultSummary,
   ConversationInboxItem,
   ConversationAttachment,
   ConversationMessageContent,
@@ -75,6 +78,7 @@ import type {
   MessageDeliveryAttemptSummary,
   NetworkInviteSummary,
   PasskeySummary,
+  ProductCaptureJobSummary,
   ProductFieldDefinition,
   ProductFieldInputType,
   ProductFieldSchemaSummary,
@@ -85,7 +89,8 @@ import type {
   SokoSessionContext,
   RuntimeRecallEscalation,
   SyncMutationPayload,
-  SyncMutationType
+  SyncMutationType,
+  UnifiedCheckoutSummary
 } from "@soko/shared-types";
 import {
   createInitialChatMessages,
@@ -306,6 +311,10 @@ const ProductCapturePanel = lazy(
 const AccountBackendControls = lazy(
   () => initialAccountControlsModule ?? import("./AccountBackendControls")
 );
+const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsCard"));
+const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
+const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
+const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));
 
 const chatAttachmentAccept = [
   "image/*",
@@ -593,6 +602,25 @@ interface StorefrontChatMessage {
 interface StorefrontCartItem {
   productId: string;
   quantity: number;
+}
+
+/**
+ * A unified buy-flow cart item, distinct from StorefrontCartItem (which is scoped to a guest
+ * visiting one specific shop's public storefront and stays untouched by this). Keeps its source
+ * visible through add-to-cart, review, and checkout - never merged into an anonymous line.
+ */
+interface BuyCartItem {
+  cartItemId: string;
+  sourceKind: BuyResultSourceKind;
+  sourceId: string;
+  sourceLabel: string;
+  title: string;
+  price: number | null;
+  quantity: number;
+  agentId: string | null;
+  productId: string | null;
+  statusBroadcastId: string | null;
+  productCaptureItemId: string | null;
 }
 
 interface StorefrontCheckoutDetails {
@@ -2272,6 +2300,8 @@ export function OwnerApp() {
   );
   const [chatDraft, setChatDraft] = useState(initialNavigationSession?.chatDraft ?? "");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [buyFeed, setBuyFeed] = useState<BuyFeedSummary | null>(null);
+  const [buyCart, setBuyCart] = useState<BuyCartItem[]>([]);
   const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(
     initialNavigationSession?.runtimeSessionId ?? null
   );
@@ -7253,6 +7283,129 @@ export function OwnerApp() {
     );
   }
 
+  /**
+   * Sell-flow photo capture: unlike handleChatAttachmentChange (which only ever records
+   * attachment metadata - see chat_attachments), this sends the real image bytes to the
+   * product-captures pipeline so the seller can review detected/manual items and post a status.
+   * Kept as a separate composer action rather than overloading the generic attach button so the
+   * metadata-only guarantee of the general chat attachment channel is untouched.
+   */
+  async function handleSellerPhotoCapture(file: File) {
+    if (business === null) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setStatusMessage("Choose a JPEG, PNG, or WebP product photo.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setStatusMessage("Product photos must be 10 MB or smaller.");
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const job = await postJson<ProductCaptureJobSummary>(
+        `/businesses/${business.id}/product-captures`,
+        {
+          fileName: file.name,
+          contentType: file.type,
+          contentBase64: dataUrlPayload(dataUrl)
+        }
+      );
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          id: `product-capture-${job.id}`,
+          author: "merchant",
+          body: "Reviewing a photo capture",
+          productCaptureJobId: job.id,
+          createdAt: new Date().toISOString()
+        }
+      ]);
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function handleSearchBuyFeed(query: string) {
+    await runAction("buy-search", async () => {
+      try {
+        const feed = await getJson<BuyFeedSummary>(`/buy/search?query=${encodeURIComponent(query)}`);
+        setBuyFeed(feed);
+      } catch (error) {
+        setStatusMessage(getErrorMessage(error));
+      }
+    });
+  }
+
+  function handleAddToCart(result: BuyResultSummary) {
+    setBuyCart((items) => [
+      ...items,
+      {
+        cartItemId: `${result.id}-${Date.now()}`,
+        sourceKind: result.sourceKind,
+        sourceId: result.sourceId,
+        sourceLabel: result.sourceLabel,
+        title: result.title,
+        price: result.price,
+        quantity: 1,
+        agentId: result.agentId,
+        productId: result.productId,
+        statusBroadcastId: result.statusBroadcastId,
+        productCaptureItemId: result.productCaptureItemId
+      }
+    ]);
+  }
+
+  function handleRemoveFromCart(cartItemId: string) {
+    setBuyCart((items) => items.filter((item) => item.cartItemId !== cartItemId));
+  }
+
+  async function handleCheckout() {
+    if (buyCart.length === 0) return;
+    await runAction("buy-checkout", async () => {
+      try {
+        const checkout = await postJson<UnifiedCheckoutSummary>("/buy/checkout", {
+          items: buyCart.map((item) => ({
+            sourceKind: item.sourceKind,
+            sourceId: item.sourceId,
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            quantity: item.quantity,
+            agentId: item.agentId,
+            productId: item.productId,
+            statusBroadcastId: item.statusBroadcastId,
+            productCaptureItemId: item.productCaptureItemId
+          }))
+        });
+        setBuyCart([]);
+        setChatMessages((messages) => [
+          ...messages,
+          {
+            id: `unified-checkout-${checkout.id}`,
+            author: "merchant",
+            body: "Checked out",
+            unifiedCheckoutId: checkout.id,
+            createdAt: new Date().toISOString()
+          }
+        ]);
+      } catch (error) {
+        setStatusMessage(getErrorMessage(error));
+      }
+    });
+  }
+
+  function handleStatusBroadcastPosted(statusBroadcastId: string) {
+    setChatMessages((messages) => [
+      ...messages,
+      {
+        id: `status-broadcast-${statusBroadcastId}`,
+        author: "merchant",
+        body: "Posted a status",
+        statusBroadcastId,
+        createdAt: new Date().toISOString()
+      }
+    ]);
+  }
+
   function createLocalParserReply(message: string): ChatMessage {
     const supplierReply = createSupplierChatReply(message, suppliers);
 
@@ -8059,7 +8212,17 @@ export function OwnerApp() {
               shopPresenceStatus={shopPresenceStatus}
               workspaceOpen={isWorkspacePanelOpen}
               syncSummary={syncSummary}
+              buyFeed={buyFeed}
+              isSearchingBuyFeed={isPending("buy-search")}
+              buyCart={buyCart}
+              isCheckingOut={isPending("buy-checkout")}
               onAttachmentChange={handleChatAttachmentChange}
+              onSellerPhotoCapture={(file) => void handleSellerPhotoCapture(file)}
+              onStatusBroadcastPosted={handleStatusBroadcastPosted}
+              onSearchBuyFeed={(query) => void handleSearchBuyFeed(query)}
+              onAddToCart={handleAddToCart}
+              onRemoveFromCart={handleRemoveFromCart}
+              onCheckout={() => void handleCheckout()}
               onBackToChat={returnToChat}
               onConfirm={(token) =>
                 void runAction("runtime-confirm", () => confirmRuntimeAction(token))
@@ -17856,7 +18019,17 @@ interface ChatSurfaceProps {
   shopPresenceStatus: ShopPresenceStatus;
   syncSummary: SyncQueueSummary;
   workspaceOpen: boolean;
+  buyFeed: BuyFeedSummary | null;
+  isSearchingBuyFeed: boolean;
+  buyCart: BuyCartItem[];
+  isCheckingOut: boolean;
   onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onSellerPhotoCapture: (file: File) => void;
+  onStatusBroadcastPosted: (statusBroadcastId: string) => void;
+  onSearchBuyFeed: (query: string) => void;
+  onAddToCart: (result: BuyResultSummary) => void;
+  onRemoveFromCart: (cartItemId: string) => void;
+  onCheckout: () => void;
   onBackToChat: () => void;
   onCloseWorkspace: () => void;
   onDraftChange: (draft: string) => void;
@@ -17952,7 +18125,17 @@ function ChatSurface({
   shopPresenceStatus,
   syncSummary,
   workspaceOpen,
+  buyFeed,
+  isSearchingBuyFeed,
+  buyCart,
+  isCheckingOut,
   onAttachmentChange,
+  onSellerPhotoCapture,
+  onStatusBroadcastPosted,
+  onSearchBuyFeed,
+  onAddToCart,
+  onRemoveFromCart,
+  onCheckout,
   onBackToChat,
   onCloseWorkspace,
   onDraftChange,
@@ -17999,6 +18182,7 @@ function ChatSurface({
   onPlatformHandoff
 }: ChatSurfaceProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sellerPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const defaultMessageWindow = useRef(detectCapabilitySettings().messageWindowSize).current;
   const [messageWindowSize, setMessageWindowSize] = useState(defaultMessageWindow);
@@ -18494,6 +18678,28 @@ function ChatSurface({
                     onNavigate={onNavigate}
                   />
                 ) : null}
+                {message.productCaptureJobId !== undefined && businessId !== null ? (
+                  <Suspense fallback={<div className="inline-loading-card">Opening photo review…</div>}>
+                    <ProductCaptureItemsCard
+                      businessId={businessId}
+                      captureJobId={message.productCaptureJobId}
+                      onPosted={onStatusBroadcastPosted}
+                    />
+                  </Suspense>
+                ) : null}
+                {message.statusBroadcastId !== undefined && businessId !== null ? (
+                  <Suspense fallback={<div className="inline-loading-card">Opening status…</div>}>
+                    <StatusBroadcastCard
+                      businessId={businessId}
+                      statusBroadcastId={message.statusBroadcastId}
+                    />
+                  </Suspense>
+                ) : null}
+                {message.unifiedCheckoutId !== undefined ? (
+                  <Suspense fallback={<div className="inline-loading-card">Opening order…</div>}>
+                    <FulfilmentSplitCard unifiedCheckoutId={message.unifiedCheckoutId} />
+                  </Suspense>
+                ) : null}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
                     <button type="button" data-testid="welcome-signup-button" onClick={onSignUp}>
@@ -18775,11 +18981,19 @@ function ChatSurface({
                     productCount={productCount}
                     publicStorefronts={publicStorefronts}
                     sokoId={sokoId}
+                    buyFeed={buyFeed}
+                    isSearchingBuyFeed={isSearchingBuyFeed}
+                    buyCart={buyCart}
+                    isCheckingOut={isCheckingOut}
                     onCompleteIntro={onCompleteMarketplaceIntro}
                     onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
                     onPrompt={commitDraft}
                     onRefreshStorefronts={onRefreshPublicStorefronts}
                     onSell={() => onModeChange("seller")}
+                    onSearchBuyFeed={onSearchBuyFeed}
+                    onAddToCart={onAddToCart}
+                    onRemoveFromCart={onRemoveFromCart}
+                    onCheckout={onCheckout}
                   />
                 )
               ) : null}
@@ -18933,6 +19147,33 @@ function ChatSurface({
               accept={chatAttachmentAccept}
               onChange={onAttachmentChange}
             />
+            {mode === "seller" ? (
+              <>
+                <button
+                  className="icon-button composer-icon-button"
+                  type="button"
+                  aria-label="Add product from photo"
+                  title="Add product from photo"
+                  data-testid="seller-photo-button"
+                  onClick={() => sellerPhotoInputRef.current?.click()}
+                >
+                  <span className="camera-icon" aria-hidden="true" />
+                </button>
+                <input
+                  ref={sellerPhotoInputRef}
+                  className="chat-file-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  capture="environment"
+                  data-testid="seller-photo-input"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file !== undefined) onSellerPhotoCapture(file);
+                    event.target.value = "";
+                  }}
+                />
+              </>
+            ) : null}
             {pendingAttachments.length > 0 ? (
               <div className="attachment-workbench">
                 <div className="attachment-tray" aria-label="Selected attachments">
@@ -19163,11 +19404,19 @@ interface MarketplaceModeCardProps {
   productCount: number;
   publicStorefronts: PublicStorefrontSummary[];
   sokoId: string;
+  buyFeed: BuyFeedSummary | null;
+  isSearchingBuyFeed: boolean;
+  buyCart: BuyCartItem[];
+  isCheckingOut: boolean;
   onOpenStore: () => void;
   onCompleteIntro: () => void;
   onPrompt: (prompt: string) => void;
   onRefreshStorefronts: () => void;
   onSell: () => void;
+  onSearchBuyFeed: (query: string) => void;
+  onAddToCart: (result: BuyResultSummary) => void;
+  onRemoveFromCart: (cartItemId: string) => void;
+  onCheckout: () => void;
 }
 
 function MarketplaceModeCard({
@@ -19179,12 +19428,21 @@ function MarketplaceModeCard({
   productCount,
   publicStorefronts,
   sokoId,
+  buyFeed,
+  isSearchingBuyFeed,
+  buyCart,
+  isCheckingOut,
   onOpenStore,
   onCompleteIntro,
   onPrompt,
   onRefreshStorefronts,
-  onSell
+  onSell,
+  onSearchBuyFeed,
+  onAddToCart,
+  onRemoveFromCart,
+  onCheckout
 }: MarketplaceModeCardProps) {
+  const [buyQueryDraft, setBuyQueryDraft] = useState("");
   return (
     <section className="generated-card-message mode-card" aria-label="Explore the marketplace">
       <div className="mode-card-heading">
@@ -19219,6 +19477,62 @@ function MarketplaceModeCard({
           </button>
         </div>
       )}
+      <form
+        className="buy-search-form"
+        aria-label="Search to buy"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearchBuyFeed(buyQueryDraft);
+        }}
+      >
+        <input
+          type="search"
+          placeholder="What are you looking for?"
+          value={buyQueryDraft}
+          onChange={(event) => setBuyQueryDraft(event.target.value)}
+        />
+        <button type="submit" disabled={isSearchingBuyFeed}>
+          {isSearchingBuyFeed ? "Searching…" : "Search"}
+        </button>
+      </form>
+      {buyFeed !== null ? (
+        <div className="buy-feed" aria-label="Search results">
+          {buyFeed.results.length === 0 ? (
+            <p className="marketplace-directory-status">No results for &quot;{buyFeed.query}&quot;.</p>
+          ) : (
+            buyFeed.results.map((result) => (
+              <div className="buy-result-card" key={result.id}>
+                <span className={`buy-source-badge buy-source-${result.sourceKind}`}>
+                  {result.sourceKind === "contact" ? "From your contact" : "Shop"}: {result.sourceLabel}
+                </span>
+                <strong>{result.title}</strong>
+                <span>{result.price === null ? "Price on request" : `KSh ${result.price}`}</span>
+                {isAuthenticated ? (
+                  <button type="button" onClick={() => onAddToCart(result)}>
+                    Add to cart
+                  </button>
+                ) : null}
+              </div>
+            ))
+          )}
+          {buyFeed.marketplaceConnectorAvailable ? null : (
+            <p className="shell-note">
+              External marketplace results aren&apos;t connected yet - showing your contacts and
+              catalogue only.
+            </p>
+          )}
+        </div>
+      ) : null}
+      {buyCart.length > 0 ? (
+        <Suspense fallback={<div className="inline-loading-card">Opening cart…</div>}>
+          <UnifiedCartSummary
+            items={buyCart}
+            isCheckingOut={isCheckingOut}
+            onRemove={onRemoveFromCart}
+            onCheckout={onCheckout}
+          />
+        </Suspense>
+      ) : null}
       <div className="marketplace-directory-heading">
         <div>
           <span>Public marketplace</span>
@@ -21382,6 +21696,9 @@ function conversationMessageText(message: ConversationMessageSummary): string {
   if (message.content.type === "encrypted") return "Encrypted message";
   if (message.content.type === "confirmation") return message.content.prompt;
   if (message.content.type === "storefront") return "Shared a storefront";
+  if (message.content.type === "product-capture-progress") return "Reviewing a photo capture";
+  if (message.content.type === "status-broadcast") return "Posted a status";
+  if (message.content.type === "unified-checkout") return "Checked out";
   return "Shared owner controls";
 }
 
@@ -21416,6 +21733,15 @@ function mapConversationMessage(
           : conversationMessageText(message),
     ...(message.content.type === "owner-controls"
       ? { businessCards: { shopId: message.content.shopId } }
+      : {}),
+    ...(message.content.type === "product-capture-progress"
+      ? { productCaptureJobId: message.content.captureJobId }
+      : {}),
+    ...(message.content.type === "status-broadcast"
+      ? { statusBroadcastId: message.content.statusBroadcastId }
+      : {}),
+    ...(message.content.type === "unified-checkout"
+      ? { unifiedCheckoutId: message.content.unifiedCheckoutId }
       : {}),
     ...((message.content.type === "text" && message.content.attachments?.length) ||
     (message.content.type === "encrypted" && decrypted?.attachments.length)

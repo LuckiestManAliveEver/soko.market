@@ -454,7 +454,10 @@ export type ConversationMessageContent =
     }
   | { type: "storefront"; shopId: string }
   | { type: "owner-controls"; shopId: string }
-  | { type: "confirmation"; confirmationToken: string; prompt: string };
+  | { type: "confirmation"; confirmationToken: string; prompt: string }
+  | { type: "product-capture-progress"; captureJobId: string }
+  | { type: "status-broadcast"; statusBroadcastId: string }
+  | { type: "unified-checkout"; unifiedCheckoutId: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;
@@ -1226,6 +1229,34 @@ export interface ProductCaptureField<T> {
   confidence: number | null;
 }
 
+export type ProductCaptureItemStatus = "pending_review" | "confirmed" | "rejected";
+
+export interface ProductCaptureBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * One item on a capture job's photo. Today every job produces exactly one item, mirroring the
+ * job-level `fields` below, because no real vision/detection model is wired in yet
+ * (`detectionAvailable` on the job is always false) - `boundingBox` stays null and this array
+ * exists so the UI and API shape are already multi-item-ready once real detection lands.
+ */
+export interface ProductCaptureItemSummary {
+  id: string;
+  fields: {
+    title: ProductCaptureField<string>;
+    category: ProductCaptureField<string>;
+    description: ProductCaptureField<string>;
+    visiblePrice: ProductCaptureField<number>;
+  };
+  boundingBox: ProductCaptureBoundingBox | null;
+  status: ProductCaptureItemStatus;
+  confirmedProductId: string | null;
+}
+
 export interface ProductCaptureJobSummary {
   id: string;
   businessId: string;
@@ -1242,6 +1273,13 @@ export interface ProductCaptureJobSummary {
     description: ProductCaptureField<string>;
     visiblePrice: ProductCaptureField<number>;
   };
+  /**
+   * Whether a real vision/detection model produced these items. Always false today - see the
+   * ProductCaptureItemSummary doc comment. The frontend must render this honestly ("detection
+   * isn't available - review manually"), never fabricate pins when this is false.
+   */
+  detectionAvailable: boolean;
+  items: ProductCaptureItemSummary[];
   possibleDuplicateProductIds: string[];
   failureCode: string | null;
   failureMessage: string | null;
@@ -1376,6 +1414,182 @@ export interface NetworkEdgeSummary {
   consentStatus: NetworkConsentStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+export type StatusBroadcastLifecycleState = "active" | "expired" | "cancelled";
+
+export type StatusBroadcastDeliveryChannel = "in_app" | "share_sheet_pending";
+
+export interface StatusBroadcastItemSummary {
+  productCaptureItemId: string;
+  title: string;
+  visiblePrice: number | null;
+  image: string | null;
+}
+
+export interface StatusBroadcastRecipientSummary {
+  networkNodeId: string;
+  displayName: string;
+  deliveryChannel: StatusBroadcastDeliveryChannel;
+  viewedAt: string | null;
+  repliedAt: string | null;
+}
+
+/**
+ * A distinct, trackable commerce object posted from a confirmed product capture to a chosen set
+ * of contacts - not a plain chat message (direct conversations between two human accounts must be
+ * end-to-end encrypted, which a server-composed status card cannot honestly satisfy). Recipients
+ * matched to an existing Soko account (`deliveryChannel: "in_app"`) can discover it by querying
+ * their own received statuses; unmatched phone contacts (`"share_sheet_pending"`) are handed off
+ * through the OS share sheet client-side, so their delivery is never claimed as guaranteed the way
+ * in-app discovery is.
+ */
+export interface StatusBroadcastSummary {
+  id: string;
+  businessId: string;
+  postedBy: string;
+  sourceCaptureJobId: string;
+  items: StatusBroadcastItemSummary[];
+  recipients: StatusBroadcastRecipientSummary[];
+  state: StatusBroadcastLifecycleState;
+  createdAt: string;
+  expiresAt: string;
+  viewCount: number;
+  replyCount: number;
+  resultingOrderIds: string[];
+}
+
+/**
+ * A phone contact eligible to receive a status broadcast. `defaultSelected` is true only for
+ * contacts who are both a matched Soko account and an existing customer of this business - the
+ * picker must never default to selecting every candidate.
+ */
+export interface StatusBroadcastCandidateSummary {
+  networkNodeId: string;
+  displayName: string;
+  isSokoUser: boolean;
+  isExistingCustomer: boolean;
+  defaultSelected: boolean;
+}
+
+export type BuyResultSourceKind = "contact" | "catalogue" | "marketplace_connector";
+
+/**
+ * One flattened, rankable buy result regardless of where it came from - a contact's active
+ * status or a business's public catalogue. `marketplace_connector` results never appear today
+ * (no connector is integrated); see BuyFeedSummary.marketplaceConnectorAvailable.
+ */
+export interface BuyResultSummary {
+  id: string;
+  title: string;
+  price: number | null;
+  image: string | null;
+  sourceKind: BuyResultSourceKind;
+  sourceLabel: string;
+  sourceId: string;
+  agentId: string | null;
+  productId: string | null;
+  statusBroadcastId: string | null;
+  productCaptureItemId: string | null;
+}
+
+/**
+ * `marketplace_connector` results are never fabricated - `marketplaceConnectorAvailable` is
+ * always false today since no marketplace connector is integrated, matching
+ * ProductCaptureJobSummary.detectionAvailable's honesty convention from the sell flow.
+ */
+export interface BuyFeedSummary {
+  query: string;
+  results: BuyResultSummary[];
+  marketplaceConnectorAvailable: boolean;
+}
+
+export type HandoffOrderStatus = "requested" | "accepted" | "rejected" | "completed" | "cancelled";
+
+export interface BuyOrderItemSummary {
+  productId: string;
+  productName: string;
+  unit: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+/**
+ * The authenticated-buyer equivalent of PublicOrderSummary, for catalogue-sourced checkout items.
+ * PublicOrderSummary is guest-shaped (capabilityToken, visitorId) for the existing single-shop
+ * storefront-visit flow; this is deliberately separate, not a variant of it.
+ */
+export interface BuyOrderSummary {
+  id: string;
+  businessId: string;
+  buyerAccountId: string;
+  invoiceId: string;
+  items: BuyOrderItemSummary[];
+  status: HandoffOrderStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StatusOrderItemSummary {
+  productCaptureItemId: string;
+  title: string;
+  price: number | null;
+  quantity: number;
+}
+
+/**
+ * A pickup request against a contact's status broadcast. Contacts are not businesses and have no
+ * invoice/payment machinery, so unlike BuyOrderSummary this carries no invoiceId - payment is
+ * handled directly between buyer and seller-contact, out of band, the same way a real-world
+ * peer sale would be. Its id is pushed into the source StatusBroadcastSummary's
+ * `resultingOrderIds`.
+ */
+export interface StatusOrderSummary {
+  id: string;
+  statusBroadcastId: string;
+  buyerAccountId: string;
+  items: StatusOrderItemSummary[];
+  status: HandoffOrderStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UnifiedCheckoutHandoffSummary {
+  kind: "catalogue" | "contact";
+  sourceLabel: string;
+  orderId: string;
+  status: HandoffOrderStatus;
+}
+
+/** An item that could not be ordered at checkout - surfaced to the buyer, never silently dropped. */
+export interface UnifiedCheckoutFailureSummary {
+  sourceLabel: string;
+  title: string;
+  reason: string;
+}
+
+/**
+ * Correlates every order a single checkout action fanned out into - one per distinct source, not
+ * one per item, and one real payment rail (none - see BuyOrderSummary/StatusOrderSummary docs).
+ */
+export interface UnifiedCheckoutSummary {
+  id: string;
+  buyerAccountId: string;
+  handoffs: UnifiedCheckoutHandoffSummary[];
+  failures: UnifiedCheckoutFailureSummary[];
+  createdAt: string;
+}
+
+export interface BuyCheckoutItemInput {
+  sourceKind: BuyResultSourceKind;
+  sourceId: string;
+  sourceLabel: string;
+  title: string;
+  quantity: number;
+  agentId: string | null;
+  productId: string | null;
+  statusBroadcastId: string | null;
+  productCaptureItemId: string | null;
 }
 
 export interface ContactSyncSourceSummary {

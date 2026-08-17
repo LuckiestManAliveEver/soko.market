@@ -5,7 +5,12 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_SYNC_COLLECTIONS,
-  isAccountSyncCollection
+  isAccountSyncCollection,
+  type BuyFeedSummary,
+  type NetworkGraphSummary,
+  type ProductCaptureJobSummary,
+  type StatusBroadcastSummary,
+  type UnifiedCheckoutSummary
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
@@ -824,6 +829,118 @@ describePostgres("CP2 Postgres store", () => {
       delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
     }
   }, 20_000);
+
+  it(
+    "persists status broadcasts and unified checkout orders (buy_orders/status_orders) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const onePixelPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZCr8AAAAASUVORK5CYII=";
+
+      const sellerPhone = `254701${Date.now().toString().slice(-6)}`;
+      const buyerPhone = `254702${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const seller = await createOwnerBusiness(app, sellerPhone);
+      const buyer = await createOwnerBusiness(app, buyerPhone);
+
+      await postJson<ProductResponse>(
+        app,
+        `/businesses/${seller.business.id}/products`,
+        { name: "Postgres Mangoes", quantity: 10, unit: "kg", buyingPrice: 100, sellingPrice: 150 },
+        seller.sessionCookie
+      );
+
+      const sellerGraph = await postJson<NetworkGraphSummary>(
+        app,
+        "/network/sync/contacts",
+        { contacts: [{ name: "Buyer Contact", phone: `+${buyerPhone}` }] },
+        seller.sessionCookie
+      );
+      const buyerNode = sellerGraph.nodes.find((node) => node.displayName === "Buyer Contact")!;
+
+      const job = await postJson<ProductCaptureJobSummary>(
+        app,
+        `/businesses/${seller.business.id}/product-captures`,
+        { fileName: "shelf.jpg", contentType: "image/png", contentBase64: onePixelPng },
+        seller.sessionCookie
+      );
+      await postJson(
+        app,
+        `/businesses/${seller.business.id}/product-captures/${job.id}/items/${job.items[0]!.id}/confirm`,
+        { title: "Postgres Bananas", visiblePrice: 90 },
+        seller.sessionCookie
+      );
+      const status = await postJson<StatusBroadcastSummary>(
+        app,
+        `/businesses/${seller.business.id}/status-broadcasts`,
+        { sourceCaptureJobId: job.id, recipientNodeIds: [buyerNode.id] },
+        seller.sessionCookie
+      );
+
+      const feed = await getJson<BuyFeedSummary>(app, "/buy/search?query=", buyer.sessionCookie);
+      const catalogueResult = feed.results.find((r) => r.title === "Postgres Mangoes")!;
+      const contactResult = feed.results.find((r) => r.title === "Postgres Bananas")!;
+
+      const checkout = await postJson<UnifiedCheckoutSummary>(
+        app,
+        "/buy/checkout",
+        {
+          items: [
+            {
+              sourceKind: "catalogue",
+              sourceId: catalogueResult.sourceId,
+              sourceLabel: catalogueResult.sourceLabel,
+              title: catalogueResult.title,
+              quantity: 1,
+              agentId: catalogueResult.agentId,
+              productId: catalogueResult.productId
+            },
+            {
+              sourceKind: "contact",
+              sourceId: contactResult.sourceId,
+              sourceLabel: contactResult.sourceLabel,
+              title: contactResult.title,
+              quantity: 1,
+              statusBroadcastId: contactResult.statusBroadcastId,
+              productCaptureItemId: contactResult.productCaptureItemId
+            }
+          ]
+        },
+        buyer.sessionCookie
+      );
+      expect(checkout.handoffs).toHaveLength(2);
+      const contactHandoff = checkout.handoffs.find((handoff) => handoff.kind === "contact")!;
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredStatus = await getJson<StatusBroadcastSummary>(
+          restoredApp,
+          `/businesses/${seller.business.id}/status-broadcasts/${status.id}`,
+          seller.sessionCookie
+        );
+        expect(restoredStatus.resultingOrderIds).toEqual(
+          expect.arrayContaining([contactHandoff.orderId])
+        );
+
+        const restoredCheckout = await getJson<UnifiedCheckoutSummary>(
+          restoredApp,
+          `/buy/checkouts/${checkout.id}`,
+          buyer.sessionCookie
+        );
+        expect(restoredCheckout.handoffs).toEqual(checkout.handoffs);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
 });
 
 async function rowUpdatedAt(
