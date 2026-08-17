@@ -2,9 +2,11 @@ import {
   normalizeInternationalPhoneInput,
   normalizePhoneInput,
   phoneNormalizationErrorMessage,
+  type AuthChannel,
   type PhoneNormalizationError
 } from "@soko/shared-types";
 import { getCountryCallingCode, isSupportedCountry, type CountryCode } from "libphonenumber-js";
+import { Cp2Error } from "./cp2-error.js";
 
 export type PhoneIdentityErrorCode =
   "phone_country_invalid" | "phone_number_invalid" | "phone_number_required";
@@ -75,4 +77,24 @@ export function maskPhoneNumber(phoneNumber: string | null | undefined): string 
   const visiblePrefixLength = Math.min(4, Math.max(2, phoneNumber.length - 6));
   const hiddenLength = Math.max(3, phoneNumber.length - visiblePrefixLength - 3);
   return `${phoneNumber.slice(0, visiblePrefixLength)}${"*".repeat(hiddenLength)}${phoneNumber.slice(-3)}`;
+}
+
+export function normalizeDestination(channel: AuthChannel, destination: string): string {
+  const normalized = destination.trim();
+
+  if (channel === "email") {
+    const email = normalized.toLowerCase();
+
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      throw new Cp2Error(400, "destination_invalid", "Email address is invalid.");
+    }
+
+    return email;
+  }
+
+  try {
+    return normalizeInternationalOwnerPhoneNumber(normalized).e164;
+  } catch {
+    throw new Cp2Error(400, "INVALID_PHONE_NUMBER", "Enter a valid phone number.");
+  }
 }

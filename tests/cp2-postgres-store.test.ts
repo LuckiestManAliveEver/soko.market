@@ -20,7 +20,11 @@ import {
   type LogisticsSummary,
   type NetworkGraphSummary,
   type ProductCaptureJobSummary,
+  type PurchaseReceiptSummary,
+  type ReceiptOCRJobSummary,
+  type SalesAgentSummary,
   type StatusBroadcastSummary,
+  type SupplierBusinessCardSummary,
   type UnifiedCheckoutSummary,
   type VerificationTierSummary
 } from "../packages/shared-types/src/index";
@@ -1227,6 +1231,94 @@ describePostgres("CP2 Postgres store", () => {
           })
         });
         expect(duplicateAttempt.statusCode).toBe(409);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists suppliers, sales agents, and purchase receipts (via receipt-OCR confirm) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254705${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const businessId = owner.business.id;
+
+      const supplier = await postJson<SupplierBusinessCardSummary>(
+        app,
+        `/businesses/${businessId}/suppliers`,
+        { name: "Postgres Wholesale Ltd", phone: "+254711222333", email: null, notes: null },
+        owner.sessionCookie
+      );
+      const salesAgent = await postJson<SalesAgentSummary>(
+        app,
+        `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
+        { name: "Postgres Agent", phone: "+254722333444", email: null, notes: null },
+        owner.sessionCookie
+      );
+
+      const ocrJob = await postJson<ReceiptOCRJobSummary>(
+        app,
+        `/businesses/${businessId}/receipt-ocr/jobs`,
+        {
+          fileName: "receipt.txt",
+          contentType: "text/plain",
+          contentBase64: null,
+          extractedText:
+            "Supplier: Postgres Wholesale Ltd\nPhone: +254711222333\nTotal: 500\nItem A, 2, 100, 200"
+        },
+        owner.sessionCookie
+      );
+      const receipt = await postJson<PurchaseReceiptSummary>(
+        app,
+        `/businesses/${businessId}/receipt-ocr/jobs/${ocrJob.id}/confirm`,
+        { supplierId: supplier.id, salesAgentId: salesAgent.id },
+        owner.sessionCookie
+      );
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredSuppliers = await getJson<SupplierBusinessCardSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/suppliers`,
+          owner.sessionCookie
+        );
+        const restoredSupplier = restoredSuppliers.find((item) => item.id === supplier.id);
+        expect(restoredSupplier?.name).toBe(supplier.name);
+        // salesAgentCount/purchaseReceiptCount are derived by supplierBusinessCard from the
+        // restored salesAgents/purchaseReceipts maps, not stored verbatim - a non-zero count here
+        // proves those two maps round-tripped and stayed linked to this supplier after restart.
+        expect(restoredSupplier?.salesAgentCount).toBe(1);
+        expect(restoredSupplier?.purchaseReceiptCount).toBe(1);
+
+        const restoredSalesAgents = await getJson<SalesAgentSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
+          owner.sessionCookie
+        );
+        expect(restoredSalesAgents.find((item) => item.id === salesAgent.id)?.name).toBe(
+          salesAgent.name
+        );
+
+        const restoredReceipts = await getJson<PurchaseReceiptSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/purchase-receipts`,
+          owner.sessionCookie
+        );
+        const restoredReceipt = restoredReceipts.find((item) => item.id === receipt.id);
+        expect(restoredReceipt?.supplierId).toBe(supplier.id);
+        expect(restoredReceipt?.salesAgentId).toBe(salesAgent.id);
+        expect(restoredReceipt?.lineItems).toEqual(receipt.lineItems);
       } finally {
         await restoredApp.close();
         await restoredStore.close();

@@ -24,6 +24,7 @@ import {
 import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection, resolveRuntimeModel } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "./cp2-error.js";
+import { roundMoney } from "./money.js";
 import { normalizeOptionalBoundedText, normalizeRequiredBoundedText } from "./text-normalization.js";
 import { CommerceDomain } from "./domains/commerce/store.js";
 import { ComplianceDomain } from "./domains/compliance/store.js";
@@ -36,6 +37,7 @@ import {
 } from "./domains/compliance/shared.js";
 import { LogisticsDomain } from "./domains/logistics/store.js";
 import { summarizeLogistics } from "./domains/logistics/shared.js";
+import { SupplierDomain } from "./domains/suppliers/store.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -214,7 +216,6 @@ import type {
   SyncQueueSummary,
   SyncReplayResult,
   SupplierImportDraft,
-  SupplierBusinessCardSummary,
   SupplierContactLinkSummary,
   SupplierSummary,
   SupportedLanguage,
@@ -293,6 +294,7 @@ import {
 } from "./oauth.js";
 import {
   maskPhoneNumber,
+  normalizeDestination,
   normalizeInternationalOwnerPhoneNumber,
   normalizeOwnerPhoneNumber,
   PhoneIdentityError,
@@ -328,8 +330,6 @@ import {
   productUpdatedEvent,
   roleCan,
   stockAdjustedEvent,
-  supplierCreatedEvent,
-  supplierUpdatedEvent,
   validateAccountDeletionInput,
   validateContactRecordInput,
   validateDocumentImportSource,
@@ -411,22 +411,6 @@ const marketplacePermissions = [
   "order:create",
   "order:read-own"
 ];
-const receiptOCRDefaultPrimaryEngine = "paddleocr";
-const receiptOCRDefaultFallbackEngine = "tesseract";
-const receiptOCRDefaultProfile = "balanced";
-const receiptOCRDefaultLanguageHints = ["en", "sw"];
-const receiptOCRSupportedContentTypes = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-  "application/pdf",
-  "text/plain",
-  "text/csv",
-  "application/vnd.ms-excel"
-]);
-
 export interface PublicStorefrontProductSummary {
   id: string;
   name: string;
@@ -445,6 +429,7 @@ export interface PublicStorefrontSummary {
 }
 
 export { Cp2Error } from "./cp2-error.js";
+export { normalizeDestination } from "./phone-identity.js";
 
 const recoverableAgentModelChatErrorCodes = new Set([
   "AGENT_MODEL_NOT_CONFIGURED",
@@ -1187,6 +1172,16 @@ export class Cp2Store {
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requireInvoice: (businessId, invoiceId) => this.requireInvoice(businessId, invoiceId)
     });
+    this.supplierDomain = new SupplierDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      appendBusinessEvent: (event) => this.appendBusinessEvent(event),
+      requirePhonebookNode: (ownerUserId, networkNodeId) =>
+        this.requirePhonebookNode(ownerUserId, networkNodeId),
+      sanitizeNetworkNode: (node) => sanitizeNetworkNode(node),
+      networkNodes: this.networkNodes,
+      networkSources: this.networkSources
+    });
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1265,12 +1260,7 @@ export class Cp2Store {
   private readonly commerce: CommerceDomain;
   private readonly productFieldSchemas = new Map<string, ProductFieldSchemaSummary>();
   private readonly customers = new Map<string, CustomerSummary>();
-  private readonly suppliers = new Map<string, SupplierSummary>();
-  private readonly salesAgents = new Map<string, SalesAgentSummary>();
-  private readonly supplierContactLinks = new Map<string, SupplierContactLinkSummary>();
-  private readonly purchaseReceipts = new Map<string, PurchaseReceiptSummary>();
-  private readonly receiptLineItems = new Map<string, ReceiptLineItemSummary>();
-  private readonly receiptOCRJobs = new Map<string, ReceiptOCRJobSummary>();
+  private readonly supplierDomain: SupplierDomain;
   private readonly invoices = new Map<string, InvoiceSummary>();
   private readonly payments = new Map<string, PaymentSummary>();
   private readonly logisticsDomain: LogisticsDomain;
@@ -9708,1158 +9698,106 @@ export class Cp2Store {
     return linked;
   }
 
-  listSuppliers(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): SupplierBusinessCardSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
-    return [...this.suppliers.values()]
-      .filter((supplier) => supplier.businessId === input.businessId)
-      .map((supplier) => this.supplierBusinessCard(supplier));
+  listSuppliers(
+    ...args: Parameters<SupplierDomain["listSuppliers"]>
+  ): ReturnType<SupplierDomain["listSuppliers"]> {
+    return this.supplierDomain.listSuppliers(...args);
   }
 
-  createSupplier(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplier: ContactRecordInput;
-    now?: Date;
-  }): SupplierSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    assertValid(validateContactRecordInput(input.supplier, "Supplier"));
-    const normalized = normalizeContactRecordInput(input.supplier);
-    const supplier: SupplierSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      name: normalized.name,
-      phone: normalized.phone,
-      linkedPhonebookContactId: null,
-      linkedPhonebookContactName: null,
-      email: normalized.email,
-      notes: normalized.notes,
-      salesAgentCount: 0,
-      purchaseReceiptCount: 0,
-      lastPurchaseDate: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    this.suppliers.set(supplier.id, supplier);
-    this.appendBusinessEvent(
-      supplierCreatedEvent({
-        id: randomUUID(),
-        supplier,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return supplier;
+  createSupplier(
+    ...args: Parameters<SupplierDomain["createSupplier"]>
+  ): ReturnType<SupplierDomain["createSupplier"]> {
+    return this.supplierDomain.createSupplier(...args);
   }
 
-  updateSupplier(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    supplier: ContactRecordInput;
-    now?: Date;
-  }): SupplierSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    const existing = this.requireSupplier(input.businessId, input.supplierId);
-    assertValid(validateContactRecordInput(input.supplier, "Supplier"));
-    const normalized = normalizeContactRecordInput(input.supplier);
-    const updated: SupplierSummary = {
-      ...existing,
-      name: normalized.name,
-      phone: normalized.phone,
-      email: normalized.email,
-      notes: normalized.notes,
-      updatedAt: now.toISOString()
-    };
-
-    this.suppliers.set(updated.id, updated);
-    this.appendBusinessEvent(
-      supplierUpdatedEvent({
-        id: randomUUID(),
-        supplier: updated,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateSupplier(
+    ...args: Parameters<SupplierDomain["updateSupplier"]>
+  ): ReturnType<SupplierDomain["updateSupplier"]> {
+    return this.supplierDomain.updateSupplier(...args);
   }
 
-  deleteSupplier(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    now?: Date;
-  }): { deleted: true; supplierId: string } {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", input.now);
-    this.requireSupplier(input.businessId, input.supplierId);
-
-    for (const agent of this.salesAgentsForSupplier(input.supplierId)) {
-      this.salesAgents.delete(agent.id);
-    }
-
-    for (const link of [...this.supplierContactLinks.values()]) {
-      if (link.supplierId === input.supplierId) {
-        this.supplierContactLinks.delete(link.id);
-      }
-    }
-
-    this.suppliers.delete(input.supplierId);
-
-    return {
-      deleted: true,
-      supplierId: input.supplierId
-    };
+  deleteSupplier(
+    ...args: Parameters<SupplierDomain["deleteSupplier"]>
+  ): ReturnType<SupplierDomain["deleteSupplier"]> {
+    return this.supplierDomain.deleteSupplier(...args);
   }
 
-  listSalesAgents(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId?: string;
-    now?: Date;
-  }): SalesAgentSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
-    return [...this.salesAgents.values()]
-      .filter(
-        (agent) =>
-          agent.businessId === input.businessId &&
-          (input.supplierId === undefined || agent.supplierId === input.supplierId)
-      )
-      .map((agent) => this.salesAgentCard(agent));
+  listSalesAgents(
+    ...args: Parameters<SupplierDomain["listSalesAgents"]>
+  ): ReturnType<SupplierDomain["listSalesAgents"]> {
+    return this.supplierDomain.listSalesAgents(...args);
   }
 
-  createSalesAgent(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    agent: ContactRecordInput;
-    now?: Date;
-  }): SalesAgentSummary {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", now);
-    const supplier = this.requireSupplier(input.businessId, input.supplierId);
-    assertValid(validateContactRecordInput(input.agent, "Sales agent"));
-    const normalized = normalizeContactRecordInput(input.agent);
-    const agent: SalesAgentSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      name: normalized.name,
-      phone: normalized.phone,
-      linkedPhonebookContactId: null,
-      linkedPhonebookContactName: null,
-      notes: normalized.notes,
-      receiptsHandled: 0,
-      lastTransactionDate: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    this.salesAgents.set(agent.id, agent);
-    this.refreshSupplierMetrics(supplier.id);
-
-    return this.salesAgentCard(agent);
+  createSalesAgent(
+    ...args: Parameters<SupplierDomain["createSalesAgent"]>
+  ): ReturnType<SupplierDomain["createSalesAgent"]> {
+    return this.supplierDomain.createSalesAgent(...args);
   }
 
-  updateSalesAgent(input: {
-    sessionId: string | null;
-    businessId: string;
-    salesAgentId: string;
-    agent: ContactRecordInput;
-    now?: Date;
-  }): SalesAgentSummary {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", now);
-    const existing = this.requireSalesAgent(input.businessId, input.salesAgentId);
-    assertValid(validateContactRecordInput(input.agent, "Sales agent"));
-    const normalized = normalizeContactRecordInput(input.agent);
-    const updated: SalesAgentSummary = {
-      ...existing,
-      name: normalized.name,
-      phone: normalized.phone,
-      notes: normalized.notes,
-      updatedAt: now.toISOString()
-    };
-
-    this.salesAgents.set(updated.id, updated);
-    this.refreshSupplierMetrics(updated.supplierId);
-
-    return this.salesAgentCard(updated);
+  updateSalesAgent(
+    ...args: Parameters<SupplierDomain["updateSalesAgent"]>
+  ): ReturnType<SupplierDomain["updateSalesAgent"]> {
+    return this.supplierDomain.updateSalesAgent(...args);
   }
 
-  deleteSalesAgent(input: {
-    sessionId: string | null;
-    businessId: string;
-    salesAgentId: string;
-    now?: Date;
-  }): { deleted: true; salesAgentId: string } {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:write", input.now);
-    const agent = this.requireSalesAgent(input.businessId, input.salesAgentId);
-
-    for (const link of [...this.supplierContactLinks.values()]) {
-      if (link.salesAgentId === agent.id) {
-        this.supplierContactLinks.delete(link.id);
-      }
-    }
-
-    this.salesAgents.delete(agent.id);
-    this.refreshSupplierMetrics(agent.supplierId);
-
-    return {
-      deleted: true,
-      salesAgentId: agent.id
-    };
+  deleteSalesAgent(
+    ...args: Parameters<SupplierDomain["deleteSalesAgent"]>
+  ): ReturnType<SupplierDomain["deleteSalesAgent"]> {
+    return this.supplierDomain.deleteSalesAgent(...args);
   }
 
-  searchSupplierPhonebookContacts(input: {
-    sessionId: string | null;
-    businessId: string;
-    query: string;
-    now?: Date;
-  }): NetworkNodeSummary[] {
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:read",
-      input.now
-    );
-    const query = input.query.trim().toLowerCase();
-
-    return [...this.networkNodes.values()]
-      .filter(
-        (node) =>
-          node.ownerUserId === session.user.id &&
-          node.sourceType === "phone_contact" &&
-          node.displayName.toLowerCase().includes(query)
-      )
-      .slice(0, 25)
-      .map(sanitizeNetworkNode);
+  searchSupplierPhonebookContacts(
+    ...args: Parameters<SupplierDomain["searchSupplierPhonebookContacts"]>
+  ): ReturnType<SupplierDomain["searchSupplierPhonebookContacts"]> {
+    return this.supplierDomain.searchSupplierPhonebookContacts(...args);
   }
 
-  createSupplierFromPhoneContact(input: {
-    sessionId: string | null;
-    businessId: string;
-    networkNodeId: string;
-    notes?: string | null;
-    now?: Date;
-  }): SupplierBusinessCardSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
-    const supplier = this.createSupplier({
-      sessionId: input.sessionId,
-      businessId: input.businessId,
-      supplier: {
-        name: node.displayName,
-        phone: null,
-        email: null,
-        notes: input.notes ?? "Created from phone contact"
-      },
-      now
-    });
-
-    this.linkSupplierContact({
-      sessionId: input.sessionId,
-      businessId: input.businessId,
-      supplierId: supplier.id,
-      networkNodeId: node.id,
-      now
-    });
-
-    return this.supplierBusinessCard(this.requireSupplier(input.businessId, supplier.id));
+  createSupplierFromPhoneContact(
+    ...args: Parameters<SupplierDomain["createSupplierFromPhoneContact"]>
+  ): ReturnType<SupplierDomain["createSupplierFromPhoneContact"]> {
+    return this.supplierDomain.createSupplierFromPhoneContact(...args);
   }
 
-  createSalesAgentFromPhoneContact(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    networkNodeId: string;
-    notes?: string | null;
-    now?: Date;
-  }): SalesAgentSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
-    const agent = this.createSalesAgent({
-      sessionId: input.sessionId,
-      businessId: input.businessId,
-      supplierId: input.supplierId,
-      agent: {
-        name: node.displayName,
-        phone: null,
-        email: null,
-        notes: input.notes ?? "Created from phone contact"
-      },
-      now
-    });
-
-    this.linkSalesAgentContact({
-      sessionId: input.sessionId,
-      businessId: input.businessId,
-      salesAgentId: agent.id,
-      networkNodeId: node.id,
-      now
-    });
-
-    return this.salesAgentCard(this.requireSalesAgent(input.businessId, agent.id));
+  createSalesAgentFromPhoneContact(
+    ...args: Parameters<SupplierDomain["createSalesAgentFromPhoneContact"]>
+  ): ReturnType<SupplierDomain["createSalesAgentFromPhoneContact"]> {
+    return this.supplierDomain.createSalesAgentFromPhoneContact(...args);
   }
 
-  linkSupplierContact(input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    networkNodeId: string;
-    now?: Date;
-  }): SupplierBusinessCardSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    const supplier = this.requireSupplier(input.businessId, input.supplierId);
-    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
-    const link = this.upsertSupplierContactLink({
-      businessId: input.businessId,
-      linkType: "supplier",
-      supplierId: supplier.id,
-      salesAgentId: null,
-      node,
-      now
-    });
-    const updated: SupplierSummary = {
-      ...supplier,
-      linkedPhonebookContactId: link.networkNodeId,
-      linkedPhonebookContactName: link.contactName,
-      updatedAt: now.toISOString()
-    };
-
-    this.suppliers.set(updated.id, updated);
-    return this.supplierBusinessCard(updated);
+  linkSupplierContact(
+    ...args: Parameters<SupplierDomain["linkSupplierContact"]>
+  ): ReturnType<SupplierDomain["linkSupplierContact"]> {
+    return this.supplierDomain.linkSupplierContact(...args);
   }
 
-  linkSalesAgentContact(input: {
-    sessionId: string | null;
-    businessId: string;
-    salesAgentId: string;
-    networkNodeId: string;
-    now?: Date;
-  }): SalesAgentSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "supplier:write",
-      now
-    );
-    const agent = this.requireSalesAgent(input.businessId, input.salesAgentId);
-    const node = this.requirePhonebookNode(session.user.id, input.networkNodeId);
-    const link = this.upsertSupplierContactLink({
-      businessId: input.businessId,
-      linkType: "sales_agent",
-      supplierId: agent.supplierId,
-      salesAgentId: agent.id,
-      node,
-      now
-    });
-    const updated: SalesAgentSummary = {
-      ...agent,
-      linkedPhonebookContactId: link.networkNodeId,
-      linkedPhonebookContactName: link.contactName,
-      updatedAt: now.toISOString()
-    };
-
-    this.salesAgents.set(updated.id, updated);
-    return this.salesAgentCard(updated);
+  linkSalesAgentContact(
+    ...args: Parameters<SupplierDomain["linkSalesAgentContact"]>
+  ): ReturnType<SupplierDomain["linkSalesAgentContact"]> {
+    return this.supplierDomain.linkSalesAgentContact(...args);
   }
 
-  createReceiptOCRJob(input: {
-    sessionId: string | null;
-    businessId: string;
-    sourceFileName: string;
-    contentType: string;
-    extractedText: string;
-    fileSizeBytes?: number | null;
-    fileSignature?: string | null;
-    sourceChecksum?: string;
-    extraction?: Pick<
-      ReceiptOCRJobSummary,
-      | "engine"
-      | "engineVersion"
-      | "modelVersion"
-      | "profile"
-      | "fallbackUsed"
-      | "blocks"
-      | "fullText"
-      | "averageConfidence"
-      | "warnings"
-    >;
-    now?: Date;
-  }): ReceiptOCRJobSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "import:write",
-      now
-    );
-    const contentType = normalizeReceiptContentType(input.contentType);
-    const validation = validateReceiptUpload({
-      contentType,
-      fileSizeBytes: input.fileSizeBytes ?? null,
-      fileSignature: input.fileSignature ?? null
-    });
-
-    if (!validation.ok) {
-      throw new Cp2Error(400, validation.code, validation.message);
-    }
-
-    const extractedText = input.extraction?.fullText ?? input.extractedText;
-    const parsed = parseReceiptText(extractedText);
-    const matchedSupplier = this.matchSupplier(input.businessId, parsed.supplierName, parsed.phone);
-    const matchedAgent =
-      matchedSupplier === null
-        ? null
-        : this.matchSalesAgent(
-            input.businessId,
-            matchedSupplier.id,
-            parsed.salesAgentName,
-            parsed.phone
-          );
-    const hasContent = extractedText.trim().length > 0;
-    const ocrConfig = readReceiptOCRConfig();
-    const blocks =
-      input.extraction?.blocks ?? buildReceiptOCRBlocks(extractedText, hasContent ? 0.9 : 0);
-    const warnings = [
-      ...(input.extraction?.warnings ?? []),
-      ...buildReceiptOCRWarnings(parsed, hasContent)
-    ];
-    const sourceFileName = input.sourceFileName.trim() || "receipt-upload";
-    const jobId = randomUUID();
-    const structuredExtraction = buildReceiptStructuredExtraction(parsed);
-    const contactMatchingResult = this.createReceiptContactMatchingResult({
-      businessId: input.businessId,
-      ownerUserId: session.user.id,
-      ocrJobId: jobId,
-      parsed,
-      matchedSupplier,
-      matchedAgent
-    });
-    const imageStorageKey = null;
-    const imageHash =
-      input.sourceChecksum ??
-      createHash("sha256")
-        .update(`${sourceFileName}:${contentType}:${extractedText}`)
-        .digest("hex");
-    const job: ReceiptOCRJobSummary = {
-      id: jobId,
-      businessId: input.businessId,
-      tenantId: input.businessId,
-      shopId: input.businessId,
-      uploadedBy: session.user.id,
-      status: !hasContent
-        ? "FAILED"
-        : matchedSupplier === null || parsed.items.length === 0
-          ? "REVIEW_REQUIRED"
-          : "MATCHING",
-      sourceFileName,
-      contentType,
-      engine: input.extraction?.engine ?? ocrConfig.primaryEngine,
-      engineVersion: input.extraction?.engineVersion ?? ocrConfig.engineVersion,
-      modelVersion: input.extraction?.modelVersion ?? ocrConfig.modelVersion,
-      profile: input.extraction?.profile ?? ocrConfig.profile,
-      fallbackUsed:
-        input.extraction?.fallbackUsed ??
-        ocrConfig.primaryEngine === receiptOCRDefaultFallbackEngine,
-      languageHints: ocrConfig.languageHints,
-      blocks,
-      fullText: extractedText,
-      averageConfidence:
-        input.extraction?.averageConfidence ?? averageReceiptBlockConfidence(blocks),
-      warnings,
-      fieldEvidence: buildReceiptFieldEvidence(parsed, extractedText),
-      structuredExtraction,
-      contactMatchingResult,
-      supplierCandidates: contactMatchingResult.supplier.candidates,
-      salesAgentCandidates: contactMatchingResult.salesAgent.candidates,
-      supplierName: parsed.supplierName,
-      salesAgentName: parsed.salesAgentName,
-      phone: parsed.phone,
-      receiptDate: parsed.receiptDate,
-      total: parsed.total,
-      items: parsed.items,
-      matchedSupplierId: matchedSupplier?.id ?? null,
-      matchedSalesAgentId: matchedAgent?.id ?? null,
-      errorMessage: hasContent
-        ? null
-        : "OCR could not read this receipt. Retry upload or enter receipt details manually.",
-      failureCode: hasContent ? null : "ocr_empty_text",
-      imageStorageKey,
-      imageHash,
-      imageRetained: false,
-      imageDeletedAt: null,
-      cleanupPending: false,
-      retryCount: 0,
-      processingStartedAt: now.toISOString(),
-      completedAt: hasContent ? now.toISOString() : null,
-      temporaryImageExpiresAt: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      confirmedAt: null
-    };
-
-    this.receiptOCRJobs.set(job.id, job);
-    return job;
+  createReceiptOCRJob(
+    ...args: Parameters<SupplierDomain["createReceiptOCRJob"]>
+  ): ReturnType<SupplierDomain["createReceiptOCRJob"]> {
+    return this.supplierDomain.createReceiptOCRJob(...args);
   }
 
-  confirmReceiptOCRJob(input: {
-    sessionId: string | null;
-    businessId: string;
-    ocrJobId: string;
-    supplierId?: string | null;
-    salesAgentId?: string | null;
-    createSupplier?: boolean;
-    createSalesAgent?: boolean;
-    now?: Date;
-  }): PurchaseReceiptSummary {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
-    const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
-
-    if (job.status === "failed" || job.status === "FAILED") {
-      throw new Cp2Error(409, "receipt_ocr_failed", job.errorMessage ?? "Receipt OCR failed.");
-    }
-
-    let supplier =
-      input.supplierId === null || input.supplierId === undefined
-        ? job.matchedSupplierId === null
-          ? null
-          : this.requireSupplier(input.businessId, job.matchedSupplierId)
-        : this.requireSupplier(input.businessId, input.supplierId);
-
-    if (supplier === null && input.createSupplier === true && job.supplierName !== null) {
-      supplier = this.createSupplier({
-        sessionId: input.sessionId,
-        businessId: input.businessId,
-        supplier: {
-          name: job.supplierName,
-          phone: job.phone,
-          email: null,
-          notes: "Created from purchase receipt"
-        },
-        now
-      });
-    }
-
-    if (supplier === null) {
-      throw new Cp2Error(409, "receipt_supplier_required", "Confirm or create a supplier first.");
-    }
-
-    let salesAgent =
-      input.salesAgentId === null || input.salesAgentId === undefined
-        ? job.matchedSalesAgentId === null
-          ? null
-          : this.requireSalesAgent(input.businessId, job.matchedSalesAgentId)
-        : this.requireSalesAgent(input.businessId, input.salesAgentId);
-
-    if (
-      salesAgent === null &&
-      input.createSalesAgent === true &&
-      job.salesAgentName !== null &&
-      job.salesAgentName.trim() !== ""
-    ) {
-      salesAgent = this.createSalesAgent({
-        sessionId: input.sessionId,
-        businessId: input.businessId,
-        supplierId: supplier.id,
-        agent: {
-          name: job.salesAgentName,
-          phone: job.phone,
-          email: null,
-          notes: "Created from purchase receipt"
-        },
-        now
-      });
-    }
-
-    const receiptId = randomUUID();
-    const lineItems = job.items.map((item): ReceiptLineItemSummary => ({
-      id: randomUUID(),
-      receiptId,
-      name: item.name,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      total: item.total
-    }));
-    const receipt: PurchaseReceiptSummary = {
-      id: receiptId,
-      businessId: input.businessId,
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      salesAgentId: salesAgent?.id ?? null,
-      salesAgentName: salesAgent?.name ?? job.salesAgentName,
-      receiptDate: job.receiptDate ?? now.toISOString(),
-      total:
-        job.total ??
-        lineItems.reduce((sum, item) => {
-          return roundMoney(sum + item.total);
-        }, 0),
-      sourceFileName: job.sourceFileName,
-      ocrJobId: job.id,
-      imageStored: false,
-      createdAt: now.toISOString(),
-      lineItems
-    };
-    const confirmedJob: ReceiptOCRJobSummary = {
-      ...job,
-      status: "COMPLETED",
-      matchedSupplierId: supplier.id,
-      matchedSalesAgentId: salesAgent?.id ?? null,
-      imageRetained: false,
-      imageDeletedAt: job.imageRetained ? now.toISOString() : job.imageDeletedAt,
-      cleanupPending: false,
-      completedAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      confirmedAt: now.toISOString()
-    };
-
-    this.purchaseReceipts.set(receipt.id, { ...receipt, lineItems: [] });
-    for (const item of lineItems) {
-      this.receiptLineItems.set(item.id, item);
-    }
-    this.receiptOCRJobs.set(confirmedJob.id, confirmedJob);
-    this.refreshSupplierMetrics(supplier.id);
-    if (salesAgent !== null) {
-      this.refreshSalesAgentMetrics(salesAgent.id);
-    }
-
-    return receipt;
+  confirmReceiptOCRJob(
+    ...args: Parameters<SupplierDomain["confirmReceiptOCRJob"]>
+  ): ReturnType<SupplierDomain["confirmReceiptOCRJob"]> {
+    return this.supplierDomain.confirmReceiptOCRJob(...args);
   }
 
-  private createReceiptContactMatchingResult(input: {
-    businessId: string;
-    ownerUserId: string;
-    ocrJobId: string;
-    parsed: ParsedReceiptText;
-    matchedSupplier: SupplierSummary | null;
-    matchedAgent: SalesAgentSummary | null;
-  }): ReceiptOCRJobSummary["contactMatchingResult"] {
-    const thresholds = readReceiptContactMatchThresholds();
-    const supplierCandidates = this.buildSupplierContactCandidates({
-      businessId: input.businessId,
-      ownerUserId: input.ownerUserId,
-      parsed: input.parsed,
-      matchedSupplier: input.matchedSupplier,
-      thresholds
-    });
-    const selectedSupplier = selectReceiptCandidate(supplierCandidates, thresholds);
-    const salesAgentCandidates = this.buildSalesAgentContactCandidates({
-      businessId: input.businessId,
-      ownerUserId: input.ownerUserId,
-      supplierId: selectedSupplier?.recordId ?? input.matchedSupplier?.id ?? null,
-      parsed: input.parsed,
-      matchedAgent: input.matchedAgent,
-      thresholds
-    });
-    const selectedSalesAgent = selectReceiptCandidate(salesAgentCandidates, thresholds);
-    const unmatchedFields = [
-      ...(supplierCandidates.length === 0 ? ["supplier"] : []),
-      ...(input.parsed.salesAgentName !== null && salesAgentCandidates.length === 0
-        ? ["salesAgent"]
-        : [])
-    ];
-    const warnings = [
-      ...(hasTiedHighConfidenceCandidates(supplierCandidates, thresholds)
-        ? ["Supplier contact matching produced tied high-confidence candidates."]
-        : []),
-      ...(hasTiedHighConfidenceCandidates(salesAgentCandidates, thresholds)
-        ? ["Sales-agent contact matching produced tied high-confidence candidates."]
-        : [])
-    ];
-
-    return {
-      matched: supplierCandidates.length > 0 || salesAgentCandidates.length > 0,
-      scriptId: "receipt_contact_matching",
-      intent: "RECEIPT_CONTACT_MATCH",
-      source: "context_script",
-      ocrJobId: input.ocrJobId,
-      supplier: {
-        extractedName: input.parsed.supplierName,
-        extractedPhone: input.parsed.phone,
-        extractedEmail: input.parsed.supplierEmail,
-        selectedRecordId: selectedSupplier?.recordId ?? null,
-        selectedContactId: selectedSupplier?.contactId ?? null,
-        confidence: selectedSupplier?.confidence ?? 0,
-        matchedBy: selectedSupplier?.matchedBy ?? [],
-        sources: selectedSupplier?.sources ?? [],
-        requiresConfirmation: selectedSupplier?.requiresConfirmation ?? true,
-        candidates: supplierCandidates
-      },
-      salesAgent: {
-        extractedName: input.parsed.salesAgentName,
-        extractedPhone: input.parsed.salesAgentPhone ?? input.parsed.phone,
-        extractedEmail: input.parsed.salesAgentEmail,
-        selectedRecordId: selectedSalesAgent?.recordId ?? null,
-        selectedContactId: selectedSalesAgent?.contactId ?? null,
-        confidence: selectedSalesAgent?.confidence ?? 0,
-        matchedBy: selectedSalesAgent?.matchedBy ?? [],
-        sources: selectedSalesAgent?.sources ?? [],
-        requiresConfirmation: selectedSalesAgent?.requiresConfirmation ?? true,
-        candidates: salesAgentCandidates
-      },
-      unmatchedFields,
-      warnings,
-      thresholds
-    };
+  listPurchaseReceipts(
+    ...args: Parameters<SupplierDomain["listPurchaseReceipts"]>
+  ): ReturnType<SupplierDomain["listPurchaseReceipts"]> {
+    return this.supplierDomain.listPurchaseReceipts(...args);
   }
 
-  private buildSupplierContactCandidates(input: {
-    businessId: string;
-    ownerUserId: string;
-    parsed: ParsedReceiptText;
-    matchedSupplier: SupplierSummary | null;
-    thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
-  }): ReceiptOCRJobSummary["supplierCandidates"] {
-    const candidates: ReceiptOCRJobSummary["supplierCandidates"] = [];
-    const addCandidate = (candidate: ReceiptOCRJobSummary["supplierCandidates"][number]) => {
-      const existingIndex = candidates.findIndex(
-        (existing) =>
-          existing.recordId === candidate.recordId && existing.contactId === candidate.contactId
-      );
-
-      if (existingIndex === -1) {
-        candidates.push(candidate);
-        return;
-      }
-
-      const existing = candidates[existingIndex]!;
-      candidates[existingIndex] = {
-        ...existing,
-        confidence: Math.max(existing.confidence, candidate.confidence),
-        matchedBy: [...new Set([...existing.matchedBy, ...candidate.matchedBy])],
-        sources: [...new Set([...existing.sources, ...candidate.sources])],
-        reason: `${existing.reason} ${candidate.reason}`.trim(),
-        requiresConfirmation:
-          Math.max(existing.confidence, candidate.confidence) < input.thresholds.autoSelect
-      };
-    };
-
-    for (const link of [...this.supplierContactLinks.values()]) {
-      if (link.businessId !== input.businessId || link.linkType !== "supplier") {
-        continue;
-      }
-
-      const supplier =
-        link.supplierId === null ? null : (this.suppliers.get(link.supplierId) ?? null);
-      const node = this.getAuthorizedContactNode(input.ownerUserId, link.networkNodeId);
-
-      if (supplier === null || node === null) {
-        continue;
-      }
-
-      const matchedBy = receiptSupplierMatchedBy(input.parsed, supplier, node);
-
-      if (matchedBy.includes("confirmed_contact_link") || matchedBy.length > 1) {
-        addCandidate(
-          createReceiptCandidate({
-            entityType: "supplier",
-            recordId: supplier.id,
-            contactId: node.id,
-            displayName: supplier.name,
-            confidence: matchedBy.includes("phone_exact") ? 0.98 : 0.96,
-            matchedBy,
-            sources: [contactSourceLabel(node), "confirmed_suppliers"],
-            thresholds: input.thresholds,
-            reason: "Matched supplier through an existing confirmed supplier-contact link."
-          })
-        );
-      }
-    }
-
-    for (const supplier of [...this.suppliers.values()].filter(
-      (supplier) => supplier.businessId === input.businessId
-    )) {
-      const linkedNode =
-        supplier.linkedPhonebookContactId === null
-          ? null
-          : this.getAuthorizedContactNode(input.ownerUserId, supplier.linkedPhonebookContactId);
-      const matchedBy = receiptSupplierMatchedBy(input.parsed, supplier, linkedNode).filter(
-        (match) =>
-          match === "tax_pin_exact" ||
-          match === "registration_number_exact" ||
-          match === "phone_exact" ||
-          match === "email_exact" ||
-          match === "name_exact"
-      );
-
-      if (matchedBy.length === 0) {
-        continue;
-      }
-
-      addCandidate(
-        createReceiptCandidate({
-          entityType: "supplier",
-          recordId: supplier.id,
-          contactId: linkedNode?.id ?? null,
-          displayName: supplier.name,
-          confidence: receiptIdentifierConfidence(matchedBy),
-          matchedBy,
-          sources: [
-            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
-            "confirmed_suppliers"
-          ],
-          thresholds: input.thresholds,
-          reason: "Matched supplier through deterministic supplier record identifiers."
-        })
-      );
-    }
-
-    for (const receipt of [...this.purchaseReceipts.values()].filter(
-      (receipt) => receipt.businessId === input.businessId
-    )) {
-      if (
-        input.parsed.supplierName === null ||
-        normalizeReceiptName(receipt.supplierName) !==
-          normalizeReceiptName(input.parsed.supplierName)
-      ) {
-        continue;
-      }
-
-      addCandidate(
-        createReceiptCandidate({
-          entityType: "supplier",
-          recordId: receipt.supplierId,
-          contactId: null,
-          displayName: receipt.supplierName,
-          confidence: 0.88,
-          matchedBy: ["previous_receipt_pattern"],
-          sources: ["previous_receipts"],
-          thresholds: input.thresholds,
-          reason: "Matched supplier through a previous confirmed receipt pattern."
-        })
-      );
-    }
-
-    if (input.matchedSupplier !== null) {
-      const linkedNode =
-        input.matchedSupplier.linkedPhonebookContactId === null
-          ? null
-          : this.getAuthorizedContactNode(
-              input.ownerUserId,
-              input.matchedSupplier.linkedPhonebookContactId
-            );
-      const matchedBy = receiptSupplierMatchedBy(input.parsed, input.matchedSupplier, linkedNode);
-
-      addCandidate(
-        createReceiptCandidate({
-          entityType: "supplier",
-          recordId: input.matchedSupplier.id,
-          contactId: linkedNode?.id ?? null,
-          displayName: input.matchedSupplier.name,
-          confidence: matchedBy.includes("phone_exact") ? 0.97 : 0.9,
-          matchedBy: matchedBy.length === 0 ? ["previous_receipt_pattern"] : matchedBy,
-          sources: [
-            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
-            "previous_receipts",
-            "confirmed_suppliers"
-          ],
-          thresholds: input.thresholds,
-          reason: "Matched supplier from OCR fields against confirmed supplier records."
-        })
-      );
-    }
-
-    for (const node of this.authorizedReceiptContactNodes(input.ownerUserId)) {
-      if (
-        input.parsed.supplierName !== null &&
-        normalizeReceiptName(node.displayName) === normalizeReceiptName(input.parsed.supplierName)
-      ) {
-        addCandidate(
-          createReceiptCandidate({
-            entityType: "contact",
-            recordId: null,
-            contactId: node.id,
-            displayName: node.displayName,
-            confidence: 0.82,
-            matchedBy: ["name_exact"],
-            sources: [contactSourceLabel(node)],
-            thresholds: input.thresholds,
-            reason: "Matched OCR supplier name against an authorized synced contact."
-          })
-        );
-      }
-    }
-
-    return candidates.sort(compareReceiptCandidates);
-  }
-
-  private buildSalesAgentContactCandidates(input: {
-    businessId: string;
-    ownerUserId: string;
-    supplierId: string | null;
-    parsed: ParsedReceiptText;
-    matchedAgent: SalesAgentSummary | null;
-    thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
-  }): ReceiptOCRJobSummary["salesAgentCandidates"] {
-    const candidates: ReceiptOCRJobSummary["salesAgentCandidates"] = [];
-    const addCandidate = (candidate: ReceiptOCRJobSummary["salesAgentCandidates"][number]) => {
-      const existingIndex = candidates.findIndex(
-        (existing) =>
-          existing.recordId === candidate.recordId && existing.contactId === candidate.contactId
-      );
-
-      if (existingIndex === -1) {
-        candidates.push(candidate);
-        return;
-      }
-
-      const existing = candidates[existingIndex]!;
-      candidates[existingIndex] = {
-        ...existing,
-        confidence: Math.max(existing.confidence, candidate.confidence),
-        matchedBy: [...new Set([...existing.matchedBy, ...candidate.matchedBy])],
-        sources: [...new Set([...existing.sources, ...candidate.sources])],
-        requiresConfirmation:
-          Math.max(existing.confidence, candidate.confidence) < input.thresholds.autoSelect
-      };
-    };
-
-    for (const link of [...this.supplierContactLinks.values()]) {
-      if (
-        link.businessId !== input.businessId ||
-        link.linkType !== "sales_agent" ||
-        (input.supplierId !== null && link.supplierId !== input.supplierId)
-      ) {
-        continue;
-      }
-
-      const agent =
-        link.salesAgentId === null ? null : (this.salesAgents.get(link.salesAgentId) ?? null);
-      const node = this.getAuthorizedContactNode(input.ownerUserId, link.networkNodeId);
-
-      if (agent === null || node === null) {
-        continue;
-      }
-
-      const matchedBy = receiptSalesAgentMatchedBy(input.parsed, agent, node, input.supplierId);
-
-      if (matchedBy.includes("confirmed_contact_link") || matchedBy.length > 1) {
-        addCandidate(
-          createReceiptCandidate({
-            entityType: "sales_agent",
-            recordId: agent.id,
-            contactId: node.id,
-            displayName: agent.name,
-            confidence: matchedBy.includes("phone_exact") ? 0.97 : 0.86,
-            matchedBy,
-            sources: [contactSourceLabel(node), "confirmed_sales_agents"],
-            thresholds: input.thresholds,
-            reason: "Matched sales agent through an existing confirmed contact link."
-          })
-        );
-      }
-    }
-
-    for (const agent of [...this.salesAgents.values()].filter(
-      (agent) =>
-        agent.businessId === input.businessId &&
-        (input.supplierId === null || agent.supplierId === input.supplierId)
-    )) {
-      const linkedNode =
-        agent.linkedPhonebookContactId === null
-          ? null
-          : this.getAuthorizedContactNode(input.ownerUserId, agent.linkedPhonebookContactId);
-      const matchedBy = receiptSalesAgentMatchedBy(
-        input.parsed,
-        agent,
-        linkedNode,
-        input.supplierId
-      ).filter(
-        (match) =>
-          match === "phone_exact" ||
-          match === "name_exact" ||
-          match === "name_supplier_combination" ||
-          match === "confirmed_contact_link"
-      );
-
-      if (matchedBy.length === 0) {
-        continue;
-      }
-
-      addCandidate(
-        createReceiptCandidate({
-          entityType: "sales_agent",
-          recordId: agent.id,
-          contactId: linkedNode?.id ?? null,
-          displayName: agent.name,
-          confidence: receiptIdentifierConfidence(matchedBy),
-          matchedBy,
-          sources: [
-            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
-            "confirmed_sales_agents"
-          ],
-          thresholds: input.thresholds,
-          reason: "Matched sales agent through deterministic supplier-scoped identifiers."
-        })
-      );
-    }
-
-    if (input.matchedAgent !== null) {
-      const linkedNode =
-        input.matchedAgent.linkedPhonebookContactId === null
-          ? null
-          : this.getAuthorizedContactNode(
-              input.ownerUserId,
-              input.matchedAgent.linkedPhonebookContactId
-            );
-      const matchedBy = receiptSalesAgentMatchedBy(
-        input.parsed,
-        input.matchedAgent,
-        linkedNode,
-        input.supplierId
-      );
-
-      addCandidate(
-        createReceiptCandidate({
-          entityType: "sales_agent",
-          recordId: input.matchedAgent.id,
-          contactId: linkedNode?.id ?? null,
-          displayName: input.matchedAgent.name,
-          confidence: matchedBy.includes("phone_exact") ? 0.94 : 0.86,
-          matchedBy: matchedBy.length === 0 ? ["previous_receipt_association"] : matchedBy,
-          sources: [
-            ...(linkedNode === null ? [] : [contactSourceLabel(linkedNode)]),
-            "previous_receipts",
-            "confirmed_sales_agents"
-          ],
-          thresholds: input.thresholds,
-          reason: "Matched sales agent from OCR fields against confirmed sales-agent records."
-        })
-      );
-    }
-
-    for (const node of this.authorizedReceiptContactNodes(input.ownerUserId)) {
-      if (
-        input.parsed.salesAgentName !== null &&
-        normalizeReceiptName(node.displayName) === normalizeReceiptName(input.parsed.salesAgentName)
-      ) {
-        addCandidate(
-          createReceiptCandidate({
-            entityType: "contact",
-            recordId: null,
-            contactId: node.id,
-            displayName: node.displayName,
-            confidence: 0.8,
-            matchedBy: ["name_exact"],
-            sources: [contactSourceLabel(node)],
-            thresholds: input.thresholds,
-            reason: "Matched OCR sales-agent name against an authorized synced contact."
-          })
-        );
-      }
-    }
-
-    return candidates.sort(compareReceiptCandidates);
-  }
-
-  private authorizedReceiptContactNodes(ownerUserId: string): NetworkNodeSummary[] {
-    return [...this.networkNodes.values()].filter(
-      (node) =>
-        node.ownerUserId === ownerUserId &&
-        node.degree === 1 &&
-        node.visibilityStatus === "direct" &&
-        node.consentStatus !== "revoked" &&
-        this.isNetworkSourceActive(node.sourceId)
-    );
-  }
-
-  private getAuthorizedContactNode(
-    ownerUserId: string,
-    networkNodeId: string
-  ): NetworkNodeSummary | null {
-    const node = this.networkNodes.get(networkNodeId);
-
-    if (
-      node === undefined ||
-      node.ownerUserId !== ownerUserId ||
-      node.consentStatus === "revoked" ||
-      !this.isNetworkSourceActive(node.sourceId)
-    ) {
-      return null;
-    }
-
-    return node;
-  }
-
-  private isNetworkSourceActive(sourceId: string | null): boolean {
-    if (sourceId === null) {
-      return true;
-    }
-
-    return this.networkSources.get(sourceId)?.status === "active";
-  }
-
-  listPurchaseReceipts(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): PurchaseReceiptSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
-    return [...this.purchaseReceipts.values()]
-      .filter((receipt) => receipt.businessId === input.businessId)
-      .map((receipt) => ({
-        ...receipt,
-        lineItems: this.receiptLineItemsForReceipt(receipt.id)
-      }))
-      .sort((left, right) => right.receiptDate.localeCompare(left.receiptDate));
-  }
-
-  getPurchaseReceipt(input: {
-    sessionId: string | null;
-    businessId: string;
-    receiptId: string;
-    now?: Date;
-  }): PurchaseReceiptSummary {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
-    const receipt = this.purchaseReceipts.get(input.receiptId);
-
-    if (receipt === undefined || receipt.businessId !== input.businessId) {
-      throw new Cp2Error(404, "purchase_receipt_not_found", "Purchase receipt was not found.");
-    }
-
-    return {
-      ...receipt,
-      lineItems: this.receiptLineItemsForReceipt(receipt.id)
-    };
+  getPurchaseReceipt(
+    ...args: Parameters<SupplierDomain["getPurchaseReceipt"]>
+  ): ReturnType<SupplierDomain["getPurchaseReceipt"]> {
+    return this.supplierDomain.getPurchaseReceipt(...args);
   }
 
   previewInvoice(input: {
@@ -11359,7 +10297,7 @@ export class Cp2Store {
       memberships: this.membershipsForBusiness(input.businessId),
       products: this.productsForBusiness(input.businessId),
       customers: this.customersForBusiness(input.businessId),
-      suppliers: this.suppliersForBusiness(input.businessId),
+      suppliers: this.supplierDomain.suppliersForBusiness(input.businessId),
       invoices: this.invoicesForBusiness(input.businessId),
       payments: this.paymentsForBusiness(input.businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(input.businessId),
@@ -13937,15 +12875,15 @@ export class Cp2Store {
       statusOrders: [...this.commerce.statusOrdersMap.values()],
       unifiedCheckouts: [...this.commerce.unifiedCheckoutsMap.values()],
       customers: [...this.customers.values()],
-      suppliers: [...this.suppliers.values()],
-      salesAgents: [...this.salesAgents.values()],
-      supplierContactLinks: [...this.supplierContactLinks.values()],
-      purchaseReceipts: [...this.purchaseReceipts.values()].map((receipt) => ({
+      suppliers: [...this.supplierDomain.suppliersMap.values()],
+      salesAgents: [...this.supplierDomain.salesAgentsMap.values()],
+      supplierContactLinks: [...this.supplierDomain.supplierContactLinksMap.values()],
+      purchaseReceipts: [...this.supplierDomain.purchaseReceiptsMap.values()].map((receipt) => ({
         ...receipt,
-        lineItems: this.receiptLineItemsForReceipt(receipt.id)
+        lineItems: this.supplierDomain.receiptLineItemsForReceipt(receipt.id)
       })),
-      receiptLineItems: [...this.receiptLineItems.values()],
-      receiptOCRJobs: [...this.receiptOCRJobs.values()],
+      receiptLineItems: [...this.supplierDomain.receiptLineItemsMap.values()],
+      receiptOCRJobs: [...this.supplierDomain.receiptOCRJobsMap.values()],
       invoices: [...this.invoices.values()],
       payments: [...this.payments.values()],
       logistics: [...this.logisticsDomain.logisticsMap.values()],
@@ -14055,12 +12993,7 @@ export class Cp2Store {
     this.commerce.clear();
     this.productFieldSchemas.clear();
     this.customers.clear();
-    this.suppliers.clear();
-    this.salesAgents.clear();
-    this.supplierContactLinks.clear();
-    this.purchaseReceipts.clear();
-    this.receiptLineItems.clear();
-    this.receiptOCRJobs.clear();
+    this.supplierDomain.clear();
     this.invoices.clear();
     this.payments.clear();
     this.logisticsDomain.clear();
@@ -14387,7 +13320,7 @@ export class Cp2Store {
     }
 
     for (const supplier of snapshot.suppliers) {
-      this.suppliers.set(supplier.id, {
+      this.supplierDomain.suppliersMap.set(supplier.id, {
         ...supplier,
         linkedPhonebookContactId: supplier.linkedPhonebookContactId ?? null,
         linkedPhonebookContactName: supplier.linkedPhonebookContactName ?? null,
@@ -14398,26 +13331,26 @@ export class Cp2Store {
     }
 
     for (const salesAgent of snapshot.salesAgents ?? []) {
-      this.salesAgents.set(salesAgent.id, salesAgent);
+      this.supplierDomain.salesAgentsMap.set(salesAgent.id, salesAgent);
     }
 
     for (const contactLink of snapshot.supplierContactLinks ?? []) {
-      this.supplierContactLinks.set(contactLink.id, contactLink);
+      this.supplierDomain.supplierContactLinksMap.set(contactLink.id, contactLink);
     }
 
     for (const receipt of snapshot.purchaseReceipts ?? []) {
-      this.purchaseReceipts.set(receipt.id, {
+      this.supplierDomain.purchaseReceiptsMap.set(receipt.id, {
         ...receipt,
         lineItems: []
       });
     }
 
     for (const lineItem of snapshot.receiptLineItems ?? []) {
-      this.receiptLineItems.set(lineItem.id, lineItem);
+      this.supplierDomain.receiptLineItemsMap.set(lineItem.id, lineItem);
     }
 
     for (const job of snapshot.receiptOCRJobs ?? []) {
-      this.receiptOCRJobs.set(job.id, job);
+      this.supplierDomain.receiptOCRJobsMap.set(job.id, job);
     }
 
     for (const invoice of snapshot.invoices) {
@@ -17902,36 +16835,6 @@ export class Cp2Store {
     return new Cp2Error(status, error.code, error.message);
   }
 
-  private requireSupplier(businessId: string, supplierId: string): SupplierSummary {
-    const supplier = this.suppliers.get(supplierId);
-
-    if (supplier === undefined || supplier.businessId !== businessId) {
-      throw new Cp2Error(404, "supplier_not_found", "Supplier was not found.");
-    }
-
-    return supplier;
-  }
-
-  private requireSalesAgent(businessId: string, salesAgentId: string): SalesAgentSummary {
-    const agent = this.salesAgents.get(salesAgentId);
-
-    if (agent === undefined || agent.businessId !== businessId) {
-      throw new Cp2Error(404, "sales_agent_not_found", "Sales agent was not found.");
-    }
-
-    return agent;
-  }
-
-  private requireReceiptOCRJob(businessId: string, ocrJobId: string): ReceiptOCRJobSummary {
-    const job = this.receiptOCRJobs.get(ocrJobId);
-
-    if (job === undefined || job.businessId !== businessId) {
-      throw new Cp2Error(404, "receipt_ocr_not_found", "Receipt OCR job was not found.");
-    }
-
-    return job;
-  }
-
   private requirePhonebookNode(ownerUserId: string, networkNodeId: string): NetworkNodeSummary {
     const node = this.networkNodes.get(networkNodeId);
 
@@ -18579,9 +17482,7 @@ export class Cp2Store {
       customerCount: [...this.customers.values()].filter(
         (customer) => customer.businessId === businessId
       ).length,
-      supplierCount: [...this.suppliers.values()].filter(
-        (supplier) => supplier.businessId === businessId
-      ).length,
+      supplierCount: this.supplierDomain.suppliersForBusiness(businessId).length,
       invoiceCount: invoices.length,
       openInvoiceCount: invoices.filter(
         (invoice) => this.buildInvoicePaymentSummary(invoice).balanceDue > 0
@@ -19320,179 +18221,12 @@ export class Cp2Store {
     return [...this.customers.values()].filter((customer) => customer.businessId === businessId);
   }
 
-  private suppliersForBusiness(businessId: string): SupplierSummary[] {
-    return [...this.suppliers.values()].filter((supplier) => supplier.businessId === businessId);
-  }
-
-  private salesAgentsForBusiness(businessId: string): SalesAgentSummary[] {
-    return [...this.salesAgents.values()].filter((agent) => agent.businessId === businessId);
+  private invoicesForBusiness(businessId: string): InvoiceSummary[] {
+    return [...this.invoices.values()].filter((invoice) => invoice.businessId === businessId);
   }
 
   private runtimeTurnsForBusiness(businessId: string): RuntimeTurnSummary[] {
     return [...this.runtimeTurns.values()].filter((turn) => turn.businessId === businessId);
-  }
-
-  private supplierBusinessCard(supplier: SupplierSummary): SupplierBusinessCardSummary {
-    const salesAgents = this.salesAgentsForSupplier(supplier.id).map((agent) =>
-      this.salesAgentCard(agent)
-    );
-    const purchaseReceipts = this.purchaseReceiptsForSupplier(supplier.id);
-    const lastPurchaseDate =
-      purchaseReceipts
-        .map((receipt) => receipt.receiptDate)
-        .sort((left, right) => right.localeCompare(left))[0] ?? null;
-
-    return {
-      ...supplier,
-      salesAgentCount: salesAgents.length,
-      purchaseReceiptCount: purchaseReceipts.length,
-      lastPurchaseDate,
-      salesAgents,
-      purchaseReceipts
-    };
-  }
-
-  private salesAgentCard(agent: SalesAgentSummary): SalesAgentSummary {
-    const receipts = this.purchaseReceiptsForSalesAgent(agent.id);
-    const lastTransactionDate =
-      receipts
-        .map((receipt) => receipt.receiptDate)
-        .sort((left, right) => right.localeCompare(left))[0] ?? null;
-
-    return {
-      ...agent,
-      supplierName: this.suppliers.get(agent.supplierId)?.name ?? agent.supplierName,
-      receiptsHandled: receipts.length,
-      lastTransactionDate
-    };
-  }
-
-  private salesAgentsForSupplier(supplierId: string): SalesAgentSummary[] {
-    return [...this.salesAgents.values()].filter((agent) => agent.supplierId === supplierId);
-  }
-
-  private purchaseReceiptsForSupplier(supplierId: string): PurchaseReceiptSummary[] {
-    return [...this.purchaseReceipts.values()]
-      .filter((receipt) => receipt.supplierId === supplierId)
-      .map((receipt) => ({
-        ...receipt,
-        lineItems: this.receiptLineItemsForReceipt(receipt.id)
-      }))
-      .sort((left, right) => right.receiptDate.localeCompare(left.receiptDate));
-  }
-
-  private purchaseReceiptsForSalesAgent(salesAgentId: string): PurchaseReceiptSummary[] {
-    return [...this.purchaseReceipts.values()]
-      .filter((receipt) => receipt.salesAgentId === salesAgentId)
-      .map((receipt) => ({
-        ...receipt,
-        lineItems: this.receiptLineItemsForReceipt(receipt.id)
-      }));
-  }
-
-  private receiptLineItemsForReceipt(receiptId: string): ReceiptLineItemSummary[] {
-    return [...this.receiptLineItems.values()].filter((item) => item.receiptId === receiptId);
-  }
-
-  private refreshSupplierMetrics(supplierId: string): void {
-    const supplier = this.suppliers.get(supplierId);
-
-    if (supplier === undefined) {
-      return;
-    }
-
-    const card = this.supplierBusinessCard(supplier);
-    this.suppliers.set(supplierId, {
-      ...supplier,
-      salesAgentCount: card.salesAgentCount,
-      purchaseReceiptCount: card.purchaseReceiptCount,
-      lastPurchaseDate: card.lastPurchaseDate
-    });
-  }
-
-  private refreshSalesAgentMetrics(salesAgentId: string): void {
-    const agent = this.salesAgents.get(salesAgentId);
-
-    if (agent === undefined) {
-      return;
-    }
-
-    const card = this.salesAgentCard(agent);
-    this.salesAgents.set(salesAgentId, {
-      ...agent,
-      receiptsHandled: card.receiptsHandled,
-      lastTransactionDate: card.lastTransactionDate
-    });
-  }
-
-  private matchSupplier(
-    businessId: string,
-    supplierName: string | null,
-    phone: string | null
-  ): SupplierSummary | null {
-    const normalizedName = supplierName?.trim().toLowerCase() ?? "";
-    const normalizedPhone = phone === null ? null : normalizeDestination("phone", phone);
-
-    return (
-      this.suppliersForBusiness(businessId).find(
-        (supplier) =>
-          (normalizedPhone !== null && supplier.phone === normalizedPhone) ||
-          (normalizedName.length > 0 && supplier.name.trim().toLowerCase() === normalizedName)
-      ) ?? null
-    );
-  }
-
-  private matchSalesAgent(
-    businessId: string,
-    supplierId: string,
-    salesAgentName: string | null,
-    phone: string | null
-  ): SalesAgentSummary | null {
-    const normalizedName = salesAgentName?.trim().toLowerCase() ?? "";
-    const normalizedPhone = phone === null ? null : normalizeDestination("phone", phone);
-
-    return (
-      this.salesAgentsForSupplier(supplierId).find(
-        (agent) =>
-          agent.businessId === businessId &&
-          ((normalizedPhone !== null && agent.phone === normalizedPhone) ||
-            (normalizedName.length > 0 && agent.name.trim().toLowerCase() === normalizedName))
-      ) ?? null
-    );
-  }
-
-  private upsertSupplierContactLink(input: {
-    businessId: string;
-    linkType: "supplier" | "sales_agent";
-    supplierId: string | null;
-    salesAgentId: string | null;
-    node: NetworkNodeSummary;
-    now: Date;
-  }): SupplierContactLinkSummary {
-    const existing = [...this.supplierContactLinks.values()].find(
-      (link) =>
-        link.businessId === input.businessId &&
-        link.linkType === input.linkType &&
-        link.supplierId === input.supplierId &&
-        link.salesAgentId === input.salesAgentId
-    );
-    const link: SupplierContactLinkSummary = {
-      id: existing?.id ?? randomUUID(),
-      businessId: input.businessId,
-      linkType: input.linkType,
-      supplierId: input.supplierId,
-      salesAgentId: input.salesAgentId,
-      networkNodeId: input.node.id,
-      contactName: input.node.displayName,
-      linkedAt: input.now.toISOString()
-    };
-
-    this.supplierContactLinks.set(link.id, link);
-    return link;
-  }
-
-  private invoicesForBusiness(businessId: string): InvoiceSummary[] {
-    return [...this.invoices.values()].filter((invoice) => invoice.businessId === businessId);
   }
 
   private paymentsForBusiness(businessId: string): PaymentSummary[] {
@@ -19977,7 +18711,7 @@ export class Cp2Store {
       source: "server_cache",
       products: this.productsForBusiness(businessId),
       customers: this.customersForBusiness(businessId),
-      suppliers: this.suppliersForBusiness(businessId),
+      suppliers: this.supplierDomain.suppliersForBusiness(businessId),
       invoices: this.invoicesForBusiness(businessId),
       payments: this.paymentsForBusiness(businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(businessId),
@@ -19993,7 +18727,7 @@ export class Cp2Store {
       ...this.membershipsForBusiness(businessId).map((item) => item.id),
       ...this.productsForBusiness(businessId).map((item) => item.id),
       ...this.customersForBusiness(businessId).map((item) => item.id),
-      ...this.suppliersForBusiness(businessId).map((item) => item.id),
+      ...this.supplierDomain.suppliersForBusiness(businessId).map((item) => item.id),
       ...this.invoicesForBusiness(businessId).map((item) => item.id),
       ...this.paymentsForBusiness(businessId).map((item) => item.id),
       ...this.logisticsDomain.logisticsForBusiness(businessId).map((item) => item.id),
@@ -20059,8 +18793,8 @@ export class Cp2Store {
       counts: {
         products: this.productsForBusiness(businessId).length,
         customers: this.customersForBusiness(businessId).length,
-        suppliers: this.suppliersForBusiness(businessId).length,
-        salesAgents: this.salesAgentsForBusiness(businessId).length,
+        suppliers: this.supplierDomain.suppliersForBusiness(businessId).length,
+        salesAgents: this.supplierDomain.salesAgentsForBusiness(businessId).length,
         salesRecords: invoices.length + payments.length,
         messages: this.runtimeTurnsForBusiness(businessId).length,
         notifications: this.sortedNotifications(businessId).length,
@@ -20069,7 +18803,9 @@ export class Cp2Store {
         ).length,
         uploadedFiles:
           documentSources.length +
-          [...this.receiptOCRJobs.values()].filter((job) => job.businessId === businessId).length,
+          [...this.supplierDomain.receiptOCRJobsMap.values()].filter(
+            (job) => job.businessId === businessId
+          ).length,
         installedIntegrations: 0
       },
       retentionNotice:
@@ -20110,10 +18846,10 @@ export class Cp2Store {
     });
     const invoiceIds = new Set(this.invoicesForBusiness(businessId).map((invoice) => invoice.id));
     const supplierIds = new Set(
-      this.suppliersForBusiness(businessId).map((supplier) => supplier.id)
+      this.supplierDomain.suppliersForBusiness(businessId).map((supplier) => supplier.id)
     );
     const receiptIds = new Set(
-      [...this.purchaseReceipts.values()]
+      [...this.supplierDomain.purchaseReceiptsMap.values()]
         .filter((receipt) => receipt.businessId === businessId)
         .map((receipt) => receipt.id)
     );
@@ -20164,42 +18900,42 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, supplier] of this.suppliers.entries()) {
+    for (const [id, supplier] of this.supplierDomain.suppliersMap.entries()) {
       if (supplier.businessId === businessId) {
-        this.suppliers.delete(id);
+        this.supplierDomain.suppliersMap.delete(id);
       }
     }
 
-    for (const [id, agent] of this.salesAgents.entries()) {
+    for (const [id, agent] of this.supplierDomain.salesAgentsMap.entries()) {
       if (agent.businessId === businessId) {
-        this.salesAgents.delete(id);
+        this.supplierDomain.salesAgentsMap.delete(id);
       }
     }
 
-    for (const [id, link] of this.supplierContactLinks.entries()) {
+    for (const [id, link] of this.supplierDomain.supplierContactLinksMap.entries()) {
       if (
         link.businessId === businessId ||
         (link.supplierId !== null && supplierIds.has(link.supplierId))
       ) {
-        this.supplierContactLinks.delete(id);
+        this.supplierDomain.supplierContactLinksMap.delete(id);
       }
     }
 
-    for (const [id, receipt] of this.purchaseReceipts.entries()) {
+    for (const [id, receipt] of this.supplierDomain.purchaseReceiptsMap.entries()) {
       if (receipt.businessId === businessId) {
-        this.purchaseReceipts.delete(id);
+        this.supplierDomain.purchaseReceiptsMap.delete(id);
       }
     }
 
-    for (const [id, lineItem] of this.receiptLineItems.entries()) {
+    for (const [id, lineItem] of this.supplierDomain.receiptLineItemsMap.entries()) {
       if (receiptIds.has(lineItem.receiptId)) {
-        this.receiptLineItems.delete(id);
+        this.supplierDomain.receiptLineItemsMap.delete(id);
       }
     }
 
-    for (const [id, job] of this.receiptOCRJobs.entries()) {
+    for (const [id, job] of this.supplierDomain.receiptOCRJobsMap.entries()) {
       if (job.businessId === businessId) {
-        this.receiptOCRJobs.delete(id);
+        this.supplierDomain.receiptOCRJobsMap.delete(id);
       }
     }
 
@@ -20376,12 +19112,15 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.commerce.statusOrdersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.commerce.unifiedCheckoutsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.customers, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.suppliers, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.salesAgents, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.supplierContactLinks, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.purchaseReceipts, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.receiptLineItems, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.receiptOCRJobs, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.suppliersMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.salesAgentsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.supplierDomain.supplierContactLinksMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.purchaseReceiptsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.receiptLineItemsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.supplierDomain.receiptOCRJobsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.invoices, scope);
       deletedRecordCount += deleteScopedMapRecords(this.payments, scope);
       deletedRecordCount += deleteScopedMapRecords(this.logisticsDomain.logisticsMap, scope);
@@ -20559,7 +19298,7 @@ export class Cp2Store {
   private buildComplianceRetention(businessId: string): ComplianceRetentionSummary {
     const directIdentifierFieldsRemoved =
       this.customersForBusiness(businessId).length * 3 +
-      this.suppliersForBusiness(businessId).length * 3 +
+      this.supplierDomain.suppliersForBusiness(businessId).length * 3 +
       this.logisticsDomain.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
 
     return {
@@ -20854,14 +19593,14 @@ export class Cp2Store {
         updatedAt: item.updatedAt,
         sensitivity: "confidential" as const
       })),
-      ...this.suppliersForBusiness(businessId).map((item) => ({
+      ...this.supplierDomain.suppliersForBusiness(businessId).map((item) => ({
         type: "supplier" as const,
         title: item.name,
         id: item.id,
         updatedAt: item.updatedAt,
         sensitivity: "confidential" as const
       })),
-      ...[...this.purchaseReceipts.values()]
+      ...[...this.supplierDomain.purchaseReceiptsMap.values()]
         .filter((item) => item.businessId === businessId)
         .map((item) => ({
           type: "receipt" as const,
@@ -22160,748 +20899,6 @@ function createPublicAgentId(business: BusinessSummary): string {
   return seed.length === 0 ? "soko-agent" : seed;
 }
 
-interface ParsedReceiptText {
-  supplierName: string | null;
-  supplierTradingName: string | null;
-  supplierLegalName: string | null;
-  salesAgentName: string | null;
-  phone: string | null;
-  alternatePhone: string | null;
-  supplierEmail: string | null;
-  supplierAddress: string | null;
-  supplierTaxPin: string | null;
-  supplierRegistrationNumber: string | null;
-  supplierBranch: string | null;
-  supplierAccountNumber: string | null;
-  salesAgentPhone: string | null;
-  salesAgentEmail: string | null;
-  salesAgentNumber: string | null;
-  salesAgentSupplierRepresented: string | null;
-  salesAgentBranch: string | null;
-  salesAgentNotes: string | null;
-  receiptNumber: string | null;
-  invoiceNumber: string | null;
-  orderNumber: string | null;
-  receiptDate: string | null;
-  purchaseTime: string | null;
-  currency: string | null;
-  subtotal: number | null;
-  discount: number | null;
-  tax: number | null;
-  total: number | null;
-  amountPaid: number | null;
-  balance: number | null;
-  paymentMethod: string | null;
-  tillNumber: string | null;
-  paybillNumber: string | null;
-  transactionReference: string | null;
-  items: Array<{
-    name: string;
-    itemCode: string | null;
-    sku: string | null;
-    quantity: number;
-    unit: string | null;
-    unitPrice: number;
-    total: number;
-    batchNumber: string | null;
-    expiryDate: string | null;
-  }>;
-}
-
-function parseReceiptText(text: string): ParsedReceiptText {
-  const lines = text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  return {
-    supplierName:
-      findReceiptField(lines, ["supplier", "supplier name", "vendor"]) ?? lines[0] ?? null,
-    supplierTradingName: findReceiptField(lines, ["trading name", "business name"]),
-    supplierLegalName: findReceiptField(lines, ["legal name", "registered name"]),
-    salesAgentName: findReceiptField(lines, ["agent", "sales agent", "served by"]),
-    phone: normalizeReceiptPhone(findReceiptField(lines, ["phone", "tel", "mobile"]) ?? text),
-    alternatePhone: normalizeReceiptPhone(
-      findReceiptField(lines, ["alternate phone", "alt phone"])
-    ),
-    supplierEmail: normalizeReceiptEmail(
-      findReceiptField(lines, ["email", "supplier email"]) ?? text
-    ),
-    supplierAddress: findReceiptField(lines, ["address", "physical address", "location"]),
-    supplierTaxPin: findReceiptField(lines, ["tax pin", "pin", "kra pin"]),
-    supplierRegistrationNumber: findReceiptField(lines, [
-      "registration",
-      "registration number",
-      "reg no"
-    ]),
-    supplierBranch: findReceiptField(lines, ["branch"]),
-    supplierAccountNumber: findReceiptField(lines, [
-      "account",
-      "account number",
-      "supplier number"
-    ]),
-    salesAgentPhone: normalizeReceiptPhone(
-      findReceiptField(lines, ["agent phone", "sales agent phone"])
-    ),
-    salesAgentEmail: normalizeReceiptEmail(
-      findReceiptField(lines, ["agent email", "sales agent email"])
-    ),
-    salesAgentNumber: findReceiptField(lines, [
-      "agent number",
-      "employee number",
-      "sales agent number"
-    ]),
-    salesAgentSupplierRepresented: findReceiptField(lines, ["supplier represented"]),
-    salesAgentBranch: findReceiptField(lines, ["agent branch", "sales agent branch"]),
-    salesAgentNotes: findReceiptField(lines, ["agent notes", "sales agent notes"]),
-    receiptNumber: findReceiptField(lines, ["receipt", "receipt number", "receipt no"]),
-    invoiceNumber: findReceiptField(lines, ["invoice", "invoice number", "invoice no"]),
-    orderNumber: findReceiptField(lines, ["order", "order number", "order no"]),
-    receiptDate: normalizeReceiptDate(findReceiptField(lines, ["date"]) ?? text),
-    purchaseTime: normalizeReceiptTime(findReceiptField(lines, ["time", "purchase time"]) ?? text),
-    currency: normalizeReceiptCurrency(findReceiptField(lines, ["currency"]) ?? text),
-    subtotal: parseReceiptMoney(findReceiptField(lines, ["subtotal", "sub total"])),
-    discount: parseReceiptMoney(findReceiptField(lines, ["discount"])),
-    tax: parseReceiptMoney(findReceiptField(lines, ["tax", "vat"])),
-    total: parseReceiptMoney(findReceiptField(lines, ["total", "amount"])),
-    amountPaid: parseReceiptMoney(findReceiptField(lines, ["amount paid", "paid"])),
-    balance: parseReceiptMoney(findReceiptField(lines, ["balance"])),
-    paymentMethod: findReceiptField(lines, ["payment method", "paid by", "method"]),
-    tillNumber: findReceiptField(lines, ["till", "till number"]),
-    paybillNumber: findReceiptField(lines, ["paybill", "paybill number"]),
-    transactionReference: findReceiptField(lines, [
-      "transaction",
-      "transaction reference",
-      "mpesa code",
-      "reference"
-    ]),
-    items: parseReceiptLineItems(lines)
-  };
-}
-
-function findReceiptField(lines: string[], labels: string[]): string | null {
-  for (const line of lines) {
-    const normalized = line.toLowerCase();
-
-    for (const label of labels) {
-      if (normalized.startsWith(`${label}:`) || normalized.startsWith(`${label} -`)) {
-        return line.slice(label.length + 1).trim();
-      }
-    }
-  }
-
-  return null;
-}
-
-function normalizeReceiptPhone(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/\+?[0-9][0-9\s-]{6,18}[0-9]/u);
-
-  if (match === null) {
-    return null;
-  }
-
-  const compact = match[0].replace(/[\s-]+/gu, "");
-  const kenyanNormalized = /^0[17]\d{8}$/u.test(compact)
-    ? `+254${compact.slice(1)}`
-    : /^254[17]\d{8}$/u.test(compact)
-      ? `+${compact}`
-      : compact;
-
-  return normalizeDestination("phone", kenyanNormalized);
-}
-
-function normalizeReceiptEmail(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu);
-
-  if (match === null) {
-    return null;
-  }
-
-  try {
-    return normalizeDestination("email", match[0]);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeReceiptDate(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/u);
-  const parsed = match === null ? NaN : Date.parse(match[0]);
-
-  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-}
-
-function parseReceiptMoney(value: string | null): number | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/[0-9]+(?:[.,][0-9]{1,2})?/u);
-
-  return match === null ? null : roundMoney(Number(match[0].replace(",", ".")));
-}
-
-function normalizeReceiptTime(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/u);
-  return match?.[0] ?? null;
-}
-
-function normalizeReceiptCurrency(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const match = value.match(/\b(KES|KSH|USD|EUR|GBP|TZS|UGX)\b/iu);
-
-  if (match === null) {
-    return null;
-  }
-
-  return match[1]?.toUpperCase() === "KSH" ? "KES" : (match[1]?.toUpperCase() ?? null);
-}
-
-function parseReceiptLineItems(lines: string[]): ParsedReceiptText["items"] {
-  const items: ParsedReceiptText["items"] = [];
-
-  for (const line of lines) {
-    const match = line.match(
-      /^(?:item:)?\s*([A-Za-z][A-Za-z0-9\s-]{1,48})[,|]\s*([0-9]+(?:\.[0-9]+)?)[,|]\s*([0-9]+(?:\.[0-9]+)?)(?:[,|]\s*([0-9]+(?:\.[0-9]+)?))?/u
-    );
-
-    if (match === null) {
-      continue;
-    }
-
-    const quantity = Number(match[2]);
-    const unitPrice = Number(match[3]);
-    const total = match[4] === undefined ? quantity * unitPrice : Number(match[4]);
-
-    items.push({
-      name: match[1]?.trim() ?? "Receipt item",
-      itemCode: null,
-      sku: null,
-      quantity,
-      unit: null,
-      unitPrice: roundMoney(unitPrice),
-      total: roundMoney(total),
-      batchNumber: null,
-      expiryDate: null
-    });
-  }
-
-  return items;
-}
-
-function buildReceiptStructuredExtraction(
-  parsed: ParsedReceiptText
-): ReceiptOCRJobSummary["structuredExtraction"] {
-  return {
-    supplier: {
-      supplierName: parsed.supplierName,
-      tradingName: parsed.supplierTradingName,
-      legalName: parsed.supplierLegalName,
-      phoneNumber: parsed.phone,
-      alternatePhoneNumber: parsed.alternatePhone,
-      email: parsed.supplierEmail,
-      physicalAddress: parsed.supplierAddress,
-      taxPin: parsed.supplierTaxPin,
-      registrationNumber: parsed.supplierRegistrationNumber,
-      branch: parsed.supplierBranch,
-      accountNumber: parsed.supplierAccountNumber
-    },
-    salesAgent: {
-      name: parsed.salesAgentName,
-      phoneNumber: parsed.salesAgentPhone ?? parsed.phone,
-      email: parsed.salesAgentEmail,
-      agentNumber: parsed.salesAgentNumber,
-      supplierRepresented: parsed.salesAgentSupplierRepresented,
-      branch: parsed.salesAgentBranch,
-      notes: parsed.salesAgentNotes
-    },
-    receipt: {
-      receiptNumber: parsed.receiptNumber,
-      invoiceNumber: parsed.invoiceNumber,
-      orderNumber: parsed.orderNumber,
-      purchaseDate: parsed.receiptDate,
-      purchaseTime: parsed.purchaseTime,
-      currency: parsed.currency,
-      subtotal: parsed.subtotal,
-      discount: parsed.discount,
-      tax: parsed.tax,
-      total: parsed.total,
-      amountPaid: parsed.amountPaid,
-      balance: parsed.balance,
-      paymentMethod: parsed.paymentMethod,
-      tillNumber: parsed.tillNumber,
-      paybillNumber: parsed.paybillNumber,
-      transactionReference: parsed.transactionReference
-    },
-    products: parsed.items.map((item) => ({
-      itemName: item.name,
-      itemCode: item.itemCode,
-      sku: item.sku,
-      quantity: item.quantity,
-      unit: item.unit,
-      unitPrice: item.unitPrice,
-      lineTotal: item.total,
-      batchNumber: item.batchNumber,
-      expiryDate: item.expiryDate
-    }))
-  };
-}
-
-function readReceiptContactMatchThresholds(): ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"] {
-  return {
-    autoSelect: readDecimalEnv("OCR_CONTACT_MATCH_AUTO_SELECT", 0.95),
-    confirmationRequired: readDecimalEnv("OCR_CONTACT_MATCH_CONFIRMATION_REQUIRED", 0.8),
-    rejectBelow: readDecimalEnv("OCR_CONTACT_MATCH_REJECT_BELOW", 0.5)
-  };
-}
-
-function readDecimalEnv(name: string, fallback: number): number {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
-}
-
-function createReceiptCandidate(input: {
-  entityType: ReceiptOCRJobSummary["supplierCandidates"][number]["entityType"];
-  recordId: string | null;
-  contactId: string | null;
-  displayName: string;
-  confidence: number;
-  matchedBy: string[];
-  sources: string[];
-  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"];
-  reason: string;
-}): ReceiptOCRJobSummary["supplierCandidates"][number] {
-  const id = input.recordId ?? input.contactId ?? randomUUID();
-
-  return {
-    id,
-    entityType: input.entityType,
-    recordId: input.recordId,
-    contactId: input.contactId,
-    displayName: input.displayName,
-    name: input.displayName,
-    confidence: roundMoney(input.confidence),
-    matchedBy: [...new Set(input.matchedBy)],
-    sources: [...new Set(input.sources)],
-    requiresConfirmation: input.confidence < input.thresholds.autoSelect,
-    reason: input.reason,
-    sourceProvider: input.sources[0] ?? null
-  };
-}
-
-function selectReceiptCandidate(
-  candidates: ReceiptOCRJobSummary["supplierCandidates"],
-  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"]
-): ReceiptOCRJobSummary["supplierCandidates"][number] | null {
-  const [first, second] = candidates;
-
-  if (first === undefined || first.confidence < thresholds.rejectBelow) {
-    return null;
-  }
-
-  if (
-    second !== undefined &&
-    first.confidence >= thresholds.autoSelect &&
-    second.confidence >= thresholds.autoSelect &&
-    Math.abs(first.confidence - second.confidence) < 0.01
-  ) {
-    return {
-      ...first,
-      requiresConfirmation: true
-    };
-  }
-
-  return first;
-}
-
-function hasTiedHighConfidenceCandidates(
-  candidates: ReceiptOCRJobSummary["supplierCandidates"],
-  thresholds: ReceiptOCRJobSummary["contactMatchingResult"]["thresholds"]
-): boolean {
-  const [first, second] = candidates;
-  return (
-    first !== undefined &&
-    second !== undefined &&
-    first.confidence >= thresholds.autoSelect &&
-    second.confidence >= thresholds.autoSelect &&
-    Math.abs(first.confidence - second.confidence) < 0.01
-  );
-}
-
-function compareReceiptCandidates(
-  left: ReceiptOCRJobSummary["supplierCandidates"][number],
-  right: ReceiptOCRJobSummary["supplierCandidates"][number]
-): number {
-  return right.confidence - left.confidence || left.displayName.localeCompare(right.displayName);
-}
-
-function receiptSupplierMatchedBy(
-  parsed: ParsedReceiptText,
-  supplier: SupplierSummary,
-  node: NetworkNodeSummary | null
-): string[] {
-  const matchedBy: string[] = [];
-
-  if (node !== null && supplier.linkedPhonebookContactId === node.id) {
-    matchedBy.push("confirmed_contact_link");
-  }
-
-  if (
-    parsed.phone !== null &&
-    supplier.phone !== null &&
-    normalizeReceiptPhone(supplier.phone) === parsed.phone
-  ) {
-    matchedBy.push("phone_exact");
-  }
-
-  if (
-    parsed.supplierEmail !== null &&
-    supplier.email !== null &&
-    normalizeReceiptEmail(supplier.email) === parsed.supplierEmail
-  ) {
-    matchedBy.push("email_exact");
-  }
-
-  if (
-    parsed.supplierTaxPin !== null &&
-    supplier.notes !== null &&
-    normalizeReceiptIdentifier(supplier.notes).includes(
-      normalizeReceiptIdentifier(parsed.supplierTaxPin)
-    )
-  ) {
-    matchedBy.push("tax_pin_exact");
-  }
-
-  if (
-    parsed.supplierRegistrationNumber !== null &&
-    supplier.notes !== null &&
-    normalizeReceiptIdentifier(supplier.notes).includes(
-      normalizeReceiptIdentifier(parsed.supplierRegistrationNumber)
-    )
-  ) {
-    matchedBy.push("registration_number_exact");
-  }
-
-  if (
-    parsed.supplierName !== null &&
-    normalizeReceiptName(supplier.name) === normalizeReceiptName(parsed.supplierName)
-  ) {
-    matchedBy.push("name_exact");
-  }
-
-  if (
-    node !== null &&
-    parsed.supplierName !== null &&
-    normalizeReceiptName(node.displayName) === normalizeReceiptName(parsed.supplierName)
-  ) {
-    matchedBy.push("external_contact_id");
-  }
-
-  return [...new Set(matchedBy)];
-}
-
-function receiptIdentifierConfidence(matchedBy: string[]): number {
-  if (
-    matchedBy.includes("confirmed_contact_link") ||
-    matchedBy.includes("tax_pin_exact") ||
-    matchedBy.includes("registration_number_exact") ||
-    matchedBy.includes("phone_exact") ||
-    matchedBy.includes("email_exact")
-  ) {
-    return 0.97;
-  }
-
-  if (matchedBy.includes("name_supplier_combination")) {
-    return 0.86;
-  }
-
-  if (matchedBy.includes("name_exact")) {
-    return 0.82;
-  }
-
-  return 0.75;
-}
-
-function normalizeReceiptIdentifier(value: string): string {
-  return value.toUpperCase().replace(/[^A-Z0-9]+/gu, "");
-}
-
-function receiptSalesAgentMatchedBy(
-  parsed: ParsedReceiptText,
-  agent: SalesAgentSummary,
-  node: NetworkNodeSummary | null,
-  supplierId: string | null
-): string[] {
-  const matchedBy: string[] = [];
-  const extractedPhone = parsed.salesAgentPhone ?? parsed.phone;
-
-  if (node !== null && agent.linkedPhonebookContactId === node.id) {
-    matchedBy.push("confirmed_contact_link");
-  }
-
-  if (
-    extractedPhone !== null &&
-    agent.phone !== null &&
-    normalizeReceiptPhone(agent.phone) === extractedPhone
-  ) {
-    matchedBy.push("phone_exact");
-  }
-
-  if (
-    parsed.salesAgentName !== null &&
-    normalizeReceiptName(agent.name) === normalizeReceiptName(parsed.salesAgentName)
-  ) {
-    matchedBy.push("name_exact");
-  }
-
-  if (supplierId !== null && agent.supplierId === supplierId) {
-    matchedBy.push("name_supplier_combination");
-  }
-
-  return [...new Set(matchedBy)];
-}
-
-function contactSourceLabel(node: NetworkNodeSummary): string {
-  if (node.sourceType === "phone_contact") {
-    return "phone_contacts";
-  }
-
-  if (node.sourcePlatform !== null) {
-    return `${node.sourcePlatform}_contacts`;
-  }
-
-  return node.sourceType;
-}
-
-function normalizeReceiptName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[.,'’"&/()-]+/gu, " ")
-    .replace(/\b(ltd|limited|co|company|enterprises|enterprise|traders|shop|store)\b/gu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function normalizeReceiptContentType(contentType: string): string {
-  const normalized = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-  return normalized.length === 0 ? "application/octet-stream" : normalized;
-}
-
-function validateReceiptUpload(input: {
-  contentType: string;
-  fileSizeBytes: number | null;
-  fileSignature: string | null;
-}): { ok: true } | { ok: false; code: string; message: string } {
-  const maxBytes = readPositiveIntegerEnv("OCR_MAX_UPLOAD_MB", 10) * 1024 * 1024;
-
-  if (!receiptOCRSupportedContentTypes.has(input.contentType)) {
-    return {
-      ok: false,
-      code: "receipt_ocr_unsupported_type",
-      message: "Receipt upload must be JPEG, PNG, WebP, HEIC/HEIF, PDF, or text for manual retry."
-    };
-  }
-
-  if (input.fileSizeBytes !== null && input.fileSizeBytes > maxBytes) {
-    return {
-      ok: false,
-      code: "receipt_ocr_file_too_large",
-      message: `Receipt upload must be ${readPositiveIntegerEnv("OCR_MAX_UPLOAD_MB", 10)} MB or smaller.`
-    };
-  }
-
-  if (
-    input.fileSignature !== null &&
-    input.fileSignature.trim().length > 0 &&
-    !receiptSignatureMatches(input.contentType, input.fileSignature)
-  ) {
-    return {
-      ok: false,
-      code: "receipt_ocr_signature_mismatch",
-      message: "Receipt file contents do not match the declared upload type."
-    };
-  }
-
-  return { ok: true };
-}
-
-function receiptSignatureMatches(contentType: string, signature: string): boolean {
-  const hex = signature.replace(/[^a-f0-9]/giu, "").toLowerCase();
-
-  if (contentType === "image/jpeg") {
-    return hex.startsWith("ffd8ff");
-  }
-
-  if (contentType === "image/png") {
-    return hex.startsWith("89504e47");
-  }
-
-  if (contentType === "image/webp") {
-    return hex.startsWith("52494646") && hex.slice(16, 24) === "57454250";
-  }
-
-  if (contentType === "application/pdf") {
-    return hex.startsWith("25504446");
-  }
-
-  if (contentType === "image/heic" || contentType === "image/heif") {
-    return ["6674797068656963", "6674797068656966", "667479706d696631"].some((brand) =>
-      hex.includes(brand)
-    );
-  }
-
-  return contentType.startsWith("text/") || contentType === "application/vnd.ms-excel";
-}
-
-function readReceiptOCRConfig(): {
-  primaryEngine: ReceiptOCRJobSummary["engine"];
-  engineVersion: string;
-  modelVersion: string;
-  profile: ReceiptOCRJobSummary["profile"];
-  languageHints: string[];
-} {
-  const primaryEngine =
-    process.env.OCR_ENGINE_PRIMARY === receiptOCRDefaultFallbackEngine
-      ? receiptOCRDefaultFallbackEngine
-      : receiptOCRDefaultPrimaryEngine;
-  const profile =
-    process.env.OCR_PROFILE === "mobile" || process.env.OCR_PROFILE === "accurate"
-      ? process.env.OCR_PROFILE
-      : receiptOCRDefaultProfile;
-  const languageHints = (process.env.OCR_LANGUAGE_HINTS ?? receiptOCRDefaultLanguageHints.join(","))
-    .split(",")
-    .map((language) => language.trim())
-    .filter((language) => language.length > 0);
-
-  return {
-    primaryEngine,
-    engineVersion: process.env.OCR_ENGINE_VERSION ?? "paddleocr-2.8.1",
-    modelVersion: process.env.OCR_MODEL_VERSION ?? `${profile}-cpu`,
-    profile,
-    languageHints
-  };
-}
-
-function readPositiveIntegerEnv(name: string, fallback: number): number {
-  const parsed = Number(process.env[name]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function buildReceiptOCRBlocks(text: string, confidence: number): ReceiptOCRJobSummary["blocks"] {
-  return text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line, index) => ({
-      id: `block-${index + 1}`,
-      page: 1,
-      text: line,
-      confidence,
-      boundingBox: null
-    }));
-}
-
-function averageReceiptBlockConfidence(blocks: ReceiptOCRJobSummary["blocks"]): number {
-  if (blocks.length === 0) {
-    return 0;
-  }
-
-  return roundMoney(blocks.reduce((sum, block) => sum + block.confidence, 0) / blocks.length);
-}
-
-function buildReceiptFieldEvidence(
-  parsed: ParsedReceiptText,
-  fullText: string
-): ReceiptOCRJobSummary["fieldEvidence"] {
-  return [
-    {
-      field: "supplierName",
-      value: parsed.supplierName,
-      confidence: parsed.supplierName === null ? 0 : 0.86,
-      sourceText: findEvidenceLine(fullText, parsed.supplierName)
-    },
-    {
-      field: "salesAgentName",
-      value: parsed.salesAgentName,
-      confidence: parsed.salesAgentName === null ? 0 : 0.82,
-      sourceText: findEvidenceLine(fullText, parsed.salesAgentName)
-    },
-    {
-      field: "phone",
-      value: parsed.phone,
-      confidence: parsed.phone === null ? 0 : 0.88,
-      sourceText: findEvidenceLine(fullText, parsed.phone)
-    },
-    {
-      field: "receiptDate",
-      value: parsed.receiptDate,
-      confidence: parsed.receiptDate === null ? 0 : 0.84,
-      sourceText: findEvidenceLine(fullText, parsed.receiptDate)
-    },
-    {
-      field: "total",
-      value: parsed.total,
-      confidence: parsed.total === null ? 0 : 0.86,
-      sourceText: parsed.total === null ? null : findEvidenceLine(fullText, String(parsed.total))
-    }
-  ];
-}
-
-function findEvidenceLine(fullText: string, value: string | number | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const normalizedValue = String(value).toLowerCase();
-  return (
-    fullText
-      .split(/\r?\n/u)
-      .find((line) => line.toLowerCase().includes(normalizedValue))
-      ?.trim() ?? null
-  );
-}
-
-function buildReceiptOCRWarnings(parsed: ParsedReceiptText, hasContent: boolean): string[] {
-  const warnings: string[] = [];
-
-  if (!hasContent) {
-    warnings.push("OCR produced no text. Retry the scan or enter the receipt manually.");
-  }
-
-  if (parsed.items.length === 0) {
-    warnings.push("No line items were parsed. Review and correct the receipt before saving.");
-  }
-
-  if (parsed.total !== null && parsed.items.length > 0) {
-    const itemTotal = roundMoney(parsed.items.reduce((sum, item) => sum + item.total, 0));
-
-    if (Math.abs(itemTotal - parsed.total) > 1) {
-      warnings.push("Line item total does not match the receipt total.");
-    }
-  }
-
-  return warnings;
-}
-
 function inferCountryNamespace(destination: string): string {
   const match = destination.match(/^\+?(\d{1,3})/);
   return match?.[1] ?? "254";
@@ -23210,26 +21207,6 @@ function readNamedCookie(cookieHeader: string | undefined, cookieName: string): 
   return null;
 }
 
-export function normalizeDestination(channel: AuthChannel, destination: string): string {
-  const normalized = destination.trim();
-
-  if (channel === "email") {
-    const email = normalized.toLowerCase();
-
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      throw new Cp2Error(400, "destination_invalid", "Email address is invalid.");
-    }
-
-    return email;
-  }
-
-  try {
-    return normalizeInternationalOwnerPhoneNumber(normalized).e164;
-  } catch {
-    throw new Cp2Error(400, "INVALID_PHONE_NUMBER", "Enter a valid phone number.");
-  }
-}
-
 export function isSupportedLanguage(value: string): value is SupportedLanguage {
   return value === "en" || value === "sw";
 }
@@ -23388,10 +21365,6 @@ function oauthEmailLocalPart(subject: string): string {
 
 function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): string {
   return `${businessId}:${idempotencyKey}`;
-}
-
-function roundMoney(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function dataExportSummary(exportBundle: DataExportBundle): DataExportBundleSummary {
