@@ -34,6 +34,8 @@ import {
   launchChecklistKeys,
   launchChecklistMapKey
 } from "./domains/compliance/shared.js";
+import { LogisticsDomain } from "./domains/logistics/store.js";
+import { summarizeLogistics } from "./domains/logistics/shared.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -133,7 +135,6 @@ import type {
   LaunchIncidentSummary,
   LaunchReadinessReportSummary,
   LaunchSettingsSummary,
-  LogisticsReportSummary,
   LogisticsSummary,
   MarketplaceIntroStateSummary,
   McpAccessScope,
@@ -316,8 +317,6 @@ import {
   normalizeAccountDeletionInput,
   normalizeContactRecordInput,
   normalizeInvoiceInput,
-  normalizeLogisticsInput,
-  normalizeLogisticsStatusInput,
   normalizePaymentInput,
   normalizeProductInput,
   queryCatalogueProducts,
@@ -332,14 +331,9 @@ import {
   supplierCreatedEvent,
   supplierUpdatedEvent,
   validateAccountDeletionInput,
-  logisticsCreatedEvent,
-  logisticsStatusUpdatedEvent,
   validateContactRecordInput,
   validateDocumentImportSource,
   validateInvoiceInput,
-  validateLogisticsInput,
-  validateLogisticsStatusInput,
-  validateLogisticsStatusTransition,
   validatePaymentInput,
   validateProductInput,
   validateStockAdjustmentInput,
@@ -1187,6 +1181,12 @@ export class Cp2Store {
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event)
     });
+    this.logisticsDomain = new LogisticsDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      appendBusinessEvent: (event) => this.appendBusinessEvent(event),
+      requireInvoice: (businessId, invoiceId) => this.requireInvoice(businessId, invoiceId)
+    });
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1273,8 +1273,7 @@ export class Cp2Store {
   private readonly receiptOCRJobs = new Map<string, ReceiptOCRJobSummary>();
   private readonly invoices = new Map<string, InvoiceSummary>();
   private readonly payments = new Map<string, PaymentSummary>();
-  private readonly logistics = new Map<string, LogisticsSummary>();
-  private readonly logisticsByInvoice = new Map<string, string>();
+  private readonly logisticsDomain: LogisticsDomain;
   private readonly dataExports = new Map<string, DataExportBundle>();
   private readonly accountDeletionRequests = new Map<string, AccountDeletionRequestSummary>();
   private readonly accountDeletionProofs = new Map<string, AccountDeletionProof>();
@@ -11159,125 +11158,22 @@ export class Cp2Store {
     return this.buildCustomerDebtSummaries(input.businessId);
   }
 
-  listLogistics(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): LogisticsSummary[] {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "logistics:read", input.now);
-    return this.logisticsForBusiness(input.businessId).sort((left, right) =>
-      right.updatedAt.localeCompare(left.updatedAt)
-    );
+  listLogistics(
+    ...args: Parameters<LogisticsDomain["listLogistics"]>
+  ): ReturnType<LogisticsDomain["listLogistics"]> {
+    return this.logisticsDomain.listLogistics(...args);
   }
 
-  createLogistics(input: {
-    sessionId: string | null;
-    businessId: string;
-    logistics: LogisticsInput;
-    now?: Date;
-  }): LogisticsSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "logistics:write",
-      now
-    );
-    assertValid(validateLogisticsInput(input.logistics));
-    const normalized = normalizeLogisticsInput(input.logistics);
-    const invoice = this.requireInvoice(input.businessId, normalized.invoiceId);
-
-    if (invoice.status !== "confirmed") {
-      throw new Cp2Error(
-        409,
-        "invoice_not_confirmed",
-        "Logistics records require a confirmed invoice."
-      );
-    }
-
-    if (this.logisticsByInvoice.has(invoice.id)) {
-      throw new Cp2Error(
-        409,
-        "logistics_invoice_exists",
-        "This invoice already has a logistics record."
-      );
-    }
-
-    const logistics: LogisticsSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      customerId: invoice.customerId,
-      customerName: invoice.customerName,
-      method: normalized.method,
-      status: "pending",
-      destination: normalized.destination,
-      note: normalized.note,
-      actorId: session.user.id,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      completedAt: null,
-      cancelledAt: null
-    };
-
-    this.logistics.set(logistics.id, logistics);
-    this.logisticsByInvoice.set(invoice.id, logistics.id);
-    this.appendBusinessEvent(
-      logisticsCreatedEvent({
-        id: randomUUID(),
-        logistics,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return logistics;
+  createLogistics(
+    ...args: Parameters<LogisticsDomain["createLogistics"]>
+  ): ReturnType<LogisticsDomain["createLogistics"]> {
+    return this.logisticsDomain.createLogistics(...args);
   }
 
-  updateLogisticsStatus(input: {
-    sessionId: string | null;
-    businessId: string;
-    logisticsId: string;
-    status: LogisticsStatusInput;
-    now?: Date;
-  }): LogisticsSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "logistics:write",
-      now
-    );
-    const existing = this.requireLogistics(input.businessId, input.logisticsId);
-    assertValid(validateLogisticsStatusInput(input.status));
-    const normalized = normalizeLogisticsStatusInput(input.status);
-    assertValid(
-      validateLogisticsStatusTransition(existing.status, normalized.status, existing.method)
-    );
-    const updated: LogisticsSummary = {
-      ...existing,
-      status: normalized.status,
-      note: normalized.note ?? existing.note,
-      updatedAt: now.toISOString(),
-      completedAt:
-        normalized.status === "completed" ? (existing.completedAt ?? now.toISOString()) : null,
-      cancelledAt:
-        normalized.status === "cancelled" ? (existing.cancelledAt ?? now.toISOString()) : null
-    };
-
-    this.logistics.set(updated.id, updated);
-    this.appendBusinessEvent(
-      logisticsStatusUpdatedEvent({
-        id: randomUUID(),
-        logistics: updated,
-        previousStatus: existing.status,
-        actorId: session.user.id,
-        occurredAt: now.toISOString()
-      })
-    );
-
-    return updated;
+  updateLogisticsStatus(
+    ...args: Parameters<LogisticsDomain["updateLogisticsStatus"]>
+  ): ReturnType<LogisticsDomain["updateLogisticsStatus"]> {
+    return this.logisticsDomain.updateLogisticsStatus(...args);
   }
 
   private buildCustomerDebtSummaries(businessId: string): CustomerDebtSummary[] {
@@ -11466,7 +11362,7 @@ export class Cp2Store {
       suppliers: this.suppliersForBusiness(input.businessId),
       invoices: this.invoicesForBusiness(input.businessId),
       payments: this.paymentsForBusiness(input.businessId),
-      logistics: this.logisticsForBusiness(input.businessId),
+      logistics: this.logisticsDomain.logisticsForBusiness(input.businessId),
       documentImports: this.importsForBusiness(input.businessId),
       notifications: this.sortedNotifications(input.businessId),
       inventoryMovements: this.inventoryMovementsForBusiness(input.businessId),
@@ -14052,7 +13948,7 @@ export class Cp2Store {
       receiptOCRJobs: [...this.receiptOCRJobs.values()],
       invoices: [...this.invoices.values()],
       payments: [...this.payments.values()],
-      logistics: [...this.logistics.values()],
+      logistics: [...this.logisticsDomain.logisticsMap.values()],
       dataExports: [...this.dataExports.values()].map(dataExportSummary),
       accountDeletionRequests: [...this.accountDeletionRequests.values()],
       accountDeletionProofs: [...this.accountDeletionProofs.values()],
@@ -14167,8 +14063,7 @@ export class Cp2Store {
     this.receiptOCRJobs.clear();
     this.invoices.clear();
     this.payments.clear();
-    this.logistics.clear();
-    this.logisticsByInvoice.clear();
+    this.logisticsDomain.clear();
     this.dataExports.clear();
     this.accountDeletionRequests.clear();
     this.accountDeletionProofs.clear();
@@ -14540,8 +14435,8 @@ export class Cp2Store {
     }
 
     for (const logisticsItem of snapshot.logistics) {
-      this.logistics.set(logisticsItem.id, logisticsItem);
-      this.logisticsByInvoice.set(logisticsItem.invoiceId, logisticsItem.id);
+      this.logisticsDomain.logisticsMap.set(logisticsItem.id, logisticsItem);
+      this.logisticsDomain.logisticsByInvoiceMap.set(logisticsItem.invoiceId, logisticsItem.id);
     }
 
     for (const dataExport of snapshot.dataExports) {
@@ -18061,16 +17956,6 @@ export class Cp2Store {
     return invoice;
   }
 
-  private requireLogistics(businessId: string, logisticsId: string): LogisticsSummary {
-    const logistics = this.logistics.get(logisticsId);
-
-    if (logistics === undefined || logistics.businessId !== businessId) {
-      throw new Cp2Error(404, "logistics_not_found", "Logistics record was not found.");
-    }
-
-    return logistics;
-  }
-
   private requireSyncQueueItem(businessId: string, syncItemId: string): SyncQueueItem {
     const item = this.syncQueue.get(syncItemId);
 
@@ -18679,7 +18564,7 @@ export class Cp2Store {
       (invoice) => invoice.businessId === businessId
     );
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
-    const logisticsReport = summarizeLogistics(this.logisticsForBusiness(businessId));
+    const logisticsReport = summarizeLogistics(this.logisticsDomain.logisticsForBusiness(businessId));
     const compliance = this.buildComplianceReport(businessId, userId, new Date());
     const beta = this.buildBetaReadinessReport(businessId, new Date());
     const launch = this.buildLaunchReadinessReport(businessId, new Date());
@@ -19094,7 +18979,7 @@ export class Cp2Store {
     const invoices = this.invoicesForBusiness(businessId);
     const payments = this.paymentsForBusiness(businessId);
     const imports = this.importsForBusiness(businessId);
-    const logistics = this.logisticsForBusiness(businessId);
+    const logistics = this.logisticsDomain.logisticsForBusiness(businessId);
     const movements = [...this.inventoryMovements.values()].filter(
       (movement) => movement.businessId === businessId
     );
@@ -19618,10 +19503,6 @@ export class Cp2Store {
     return [...this.documentImports.values()].filter((job) => job.businessId === businessId);
   }
 
-  private logisticsForBusiness(businessId: string): LogisticsSummary[] {
-    return [...this.logistics.values()].filter((item) => item.businessId === businessId);
-  }
-
   private syncItemsForBusiness(businessId: string): SyncQueueItem[] {
     return [...this.syncQueue.values()].filter((item) => item.businessId === businessId);
   }
@@ -20099,7 +19980,7 @@ export class Cp2Store {
       suppliers: this.suppliersForBusiness(businessId),
       invoices: this.invoicesForBusiness(businessId),
       payments: this.paymentsForBusiness(businessId),
-      logistics: this.logisticsForBusiness(businessId),
+      logistics: this.logisticsDomain.logisticsForBusiness(businessId),
       invoicePaymentSummaries: this.buildInvoicePaymentSummaries(businessId),
       customerDebts: this.buildCustomerDebtSummaries(businessId),
       inventoryMovements: this.inventoryMovementsForBusiness(businessId)
@@ -20115,7 +19996,7 @@ export class Cp2Store {
       ...this.suppliersForBusiness(businessId).map((item) => item.id),
       ...this.invoicesForBusiness(businessId).map((item) => item.id),
       ...this.paymentsForBusiness(businessId).map((item) => item.id),
-      ...this.logisticsForBusiness(businessId).map((item) => item.id),
+      ...this.logisticsDomain.logisticsForBusiness(businessId).map((item) => item.id),
       ...this.importsForBusiness(businessId).map((item) => item.id),
       ...this.inventoryMovementsForBusiness(businessId).map((item) => item.id),
       ...this.sortedNotifications(businessId).map((item) => item.id),
@@ -20334,10 +20215,10 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, logistics] of this.logistics.entries()) {
+    for (const [id, logistics] of this.logisticsDomain.logisticsMap.entries()) {
       if (logistics.businessId === businessId || invoiceIds.has(logistics.invoiceId)) {
-        this.logistics.delete(id);
-        this.logisticsByInvoice.delete(logistics.invoiceId);
+        this.logisticsDomain.logisticsMap.delete(id);
+        this.logisticsDomain.logisticsByInvoiceMap.delete(logistics.invoiceId);
       }
     }
 
@@ -20503,7 +20384,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.receiptOCRJobs, scope);
       deletedRecordCount += deleteScopedMapRecords(this.invoices, scope);
       deletedRecordCount += deleteScopedMapRecords(this.payments, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.logistics, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.logisticsDomain.logisticsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.dataExports, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);
@@ -20612,9 +20493,7 @@ export class Cp2Store {
       this.pushSubscriptionIdByEndpoint.set(subscription.endpoint, subscription.id);
     }
 
-    this.logisticsByInvoice.clear();
-    for (const item of this.logistics.values())
-      this.logisticsByInvoice.set(item.invoiceId, item.id);
+    this.logisticsDomain.rebuildLogisticsByInvoiceIndex();
 
     this.notificationByRuleKey.clear();
     for (const notification of this.notifications.values()) {
@@ -20681,7 +20560,7 @@ export class Cp2Store {
     const directIdentifierFieldsRemoved =
       this.customersForBusiness(businessId).length * 3 +
       this.suppliersForBusiness(businessId).length * 3 +
-      this.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
+      this.logisticsDomain.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
 
     return {
       businessId,
@@ -20689,7 +20568,7 @@ export class Cp2Store {
         (invoice) => invoice.status === "confirmed"
       ).length,
       retainedPaymentCount: this.paymentsForBusiness(businessId).length,
-      retainedLogisticsCount: this.logisticsForBusiness(businessId).length,
+      retainedLogisticsCount: this.logisticsDomain.logisticsForBusiness(businessId).length,
       retainedImportCount: this.importsForBusiness(businessId).length,
       retainedAuditEventCount: this.auditEventsForBusiness(businessId).length,
       directIdentifierFieldsRemoved
@@ -23561,46 +23440,6 @@ function summarizeNotifications(
 
   for (const notification of notifications) {
     summary[notification.status] += 1;
-  }
-
-  return summary;
-}
-
-function summarizeLogistics(logistics: LogisticsSummary[]): LogisticsReportSummary {
-  const summary: LogisticsReportSummary = {
-    fulfillmentCount: logistics.length,
-    pendingCount: 0,
-    readyCount: 0,
-    outForDeliveryCount: 0,
-    completedCount: 0,
-    cancelledCount: 0,
-    activeCount: 0
-  };
-
-  for (const item of logistics) {
-    if (item.status === "pending") {
-      summary.pendingCount += 1;
-    }
-
-    if (item.status === "ready") {
-      summary.readyCount += 1;
-    }
-
-    if (item.status === "out_for_delivery") {
-      summary.outForDeliveryCount += 1;
-    }
-
-    if (item.status === "completed") {
-      summary.completedCount += 1;
-    }
-
-    if (item.status === "cancelled") {
-      summary.cancelledCount += 1;
-    }
-
-    if (item.status !== "completed" && item.status !== "cancelled") {
-      summary.activeCount += 1;
-    }
   }
 
   return summary;

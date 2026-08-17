@@ -12,10 +12,12 @@ import {
   type BuyFeedSummary,
   type CountryTaxConfigSummary,
   type DeviceTrustSummary,
+  type InvoiceSummary,
   type LaunchChecklistItemSummary,
   type LaunchIncidentSummary,
   type LaunchReadinessReportSummary,
   type LaunchSettingsSummary,
+  type LogisticsSummary,
   type NetworkGraphSummary,
   type ProductCaptureJobSummary,
   type StatusBroadcastSummary,
@@ -1145,6 +1147,86 @@ describePostgres("CP2 Postgres store", () => {
           launchReadinessBefore.support.openIncidentCount
         );
         expect(restoredLaunchReadiness.settings).toEqual(launchSettings);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists logistics records (including the logisticsByInvoice index) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254704${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const businessId = owner.business.id;
+
+      const product = await postJson<ProductResponse>(
+        app,
+        `/businesses/${businessId}/products`,
+        { name: "Postgres Logistics Rice", quantity: 10, unit: "kg", buyingPrice: 80, sellingPrice: 120 },
+        owner.sessionCookie
+      );
+      const draftInvoice = await postJson<{ id: string }>(
+        app,
+        `/businesses/${businessId}/invoices`,
+        { items: [{ productId: product.id, quantity: 2, unitPrice: 120 }] },
+        owner.sessionCookie
+      );
+      const confirmed = await postJson<{ invoice: InvoiceSummary }>(
+        app,
+        `/businesses/${businessId}/invoices/${draftInvoice.id}/confirm`,
+        {},
+        owner.sessionCookie
+      );
+
+      const logistics = await postJson<LogisticsSummary>(
+        app,
+        `/businesses/${businessId}/logistics`,
+        { invoiceId: confirmed.invoice.id, method: "delivery", destination: "Nairobi CBD", note: null },
+        owner.sessionCookie
+      );
+      const updated = await patchJson<LogisticsSummary>(
+        app,
+        `/businesses/${businessId}/logistics/${logistics.id}`,
+        { status: "ready", note: "Postgres slice test" },
+        owner.sessionCookie
+      );
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredList = await getJson<LogisticsSummary[]>(
+          restoredApp,
+          `/businesses/${businessId}/logistics`,
+          owner.sessionCookie
+        );
+        expect(restoredList.find((item) => item.id === logistics.id)).toEqual(updated);
+
+        // logisticsByInvoice is a derived index (never itself a Cp2Snapshot field) rebuilt
+        // per-item during hydrateSnapshot from the restored logistics records - creating a second
+        // logistics record for the same invoice must still be rejected after a restart, proving
+        // the index round-tripped correctly, not just the underlying logistics Map.
+        const duplicateAttempt = await restoredApp.inject({
+          method: "POST",
+          url: `/businesses/${businessId}/logistics`,
+          headers: { ...jsonHeaders(), cookie: owner.sessionCookie },
+          payload: JSON.stringify({
+            invoiceId: confirmed.invoice.id,
+            method: "pickup",
+            destination: null,
+            note: null
+          })
+        });
+        expect(duplicateAttempt.statusCode).toBe(409);
       } finally {
         await restoredApp.close();
         await restoredStore.close();
