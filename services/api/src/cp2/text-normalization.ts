@@ -1,0 +1,43 @@
+/**
+ * Split out of store.ts (same reasoning as cp2-error.ts) so domain modules can validate text
+ * fields without a circular value-import back into store.ts. These are generic, stateless string
+ * validators used across many domains, not commerce-specific - kept here rather than in a
+ * commerce-only shared module.
+ */
+import { Cp2Error } from "./cp2-error.js";
+
+export function normalizeRequiredBoundedText(
+  value: string,
+  label: string,
+  maximumLength: number
+): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new Cp2Error(400, `${label.replaceAll(" ", "_")}_required`, `${label} is required.`);
+  }
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      `${label.replaceAll(" ", "_")}_too_long`,
+      `${label} must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
+}
+
+export function normalizeOptionalBoundedText(
+  value: string | null,
+  maximumLength: number
+): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized.length === 0) return null;
+  if (normalized.length > maximumLength) {
+    throw new Cp2Error(
+      400,
+      "value_too_long",
+      `Value must be ${maximumLength} characters or fewer.`
+    );
+  }
+  return normalized;
+}
