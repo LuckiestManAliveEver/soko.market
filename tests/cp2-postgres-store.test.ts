@@ -12,6 +12,8 @@ import {
   type BetaSupportTicketSummary,
   type BusinessNotificationSummary,
   type BuyFeedSummary,
+  type ConversationMessageSummary,
+  type ConversationView,
   type CountryTaxConfigSummary,
   type DeviceTrustSummary,
   type DocumentImportConfirmResult,
@@ -26,6 +28,7 @@ import {
   type NotificationInbox,
   type ProductCaptureJobSummary,
   type PurchaseReceiptSummary,
+  type PushSubscriptionSummary,
   type ReceiptOCRJobSummary,
   type SalesAgentSummary,
   type StatusBroadcastSummary,
@@ -1557,6 +1560,106 @@ describePostgres("CP2 Postgres store", () => {
           (node) => node.displayName === "Postgres Contact Again"
         );
         expect(resyncedNode?.contactHashIds).toEqual([originalContactHashId]);
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists conversations/messages and push subscriptions (including the messageByClientId/messageByIdempotencyKey and pushSubscriptionIdByEndpoint indexes) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254710${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+
+      const conversation = await postJson<ConversationView>(
+        app,
+        "/v1/conversations",
+        { kind: "personal", activeShopId: null },
+        owner.sessionCookie
+      );
+      const clientMessageId = `postgres-message-${Date.now()}`;
+      const message = await postJson<ConversationMessageSummary>(
+        app,
+        "/v1/messages",
+        {
+          conversationId: conversation.conversation.id,
+          clientMessageId,
+          content: { type: "text", text: "Persisted before restart" }
+        },
+        owner.sessionCookie
+      );
+
+      const pushEndpoint = `https://push.example.com/${randomUUID()}`;
+      const subscription = await postJson<PushSubscriptionSummary>(
+        app,
+        "/v1/push/subscriptions",
+        {
+          endpoint: pushEndpoint,
+          expirationTime: null,
+          keys: { auth: "a".repeat(24), p256dh: "b".repeat(88) }
+        },
+        owner.sessionCookie
+      );
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredConversation = await getJson<ConversationView>(
+          restoredApp,
+          `/v1/conversations/${conversation.conversation.id}`,
+          owner.sessionCookie
+        );
+        expect(restoredConversation.messages).toHaveLength(1);
+        expect(restoredConversation.messages[0]).toMatchObject({
+          id: message.id,
+          clientMessageId
+        });
+
+        // Re-posting the exact same clientMessageId/content after restart must return the
+        // original message rather than create a duplicate - proves messageByClientId and
+        // messageByIdempotencyKey both survived the restart's rebuild.
+        const repostedMessage = await postJson<ConversationMessageSummary>(
+          restoredApp,
+          "/v1/messages",
+          {
+            conversationId: conversation.conversation.id,
+            clientMessageId,
+            content: { type: "text", text: "Persisted before restart" }
+          },
+          owner.sessionCookie
+        );
+        expect(repostedMessage.id).toBe(message.id);
+        const conversationAfterRepost = await getJson<ConversationView>(
+          restoredApp,
+          `/v1/conversations/${conversation.conversation.id}`,
+          owner.sessionCookie
+        );
+        expect(conversationAfterRepost.messages).toHaveLength(1);
+
+        // Re-registering the same push endpoint after restart must update the original
+        // subscription in place rather than create a duplicate - proves
+        // pushSubscriptionIdByEndpoint survived the restart's rebuild.
+        const resubscribed = await postJson<PushSubscriptionSummary>(
+          restoredApp,
+          "/v1/push/subscriptions",
+          {
+            endpoint: pushEndpoint,
+            expirationTime: null,
+            keys: { auth: "a".repeat(24), p256dh: "b".repeat(88) }
+          },
+          owner.sessionCookie
+        );
+        expect(resubscribed.id).toBe(subscription.id);
       } finally {
         await restoredApp.close();
         await restoredStore.close();

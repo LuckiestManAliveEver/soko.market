@@ -1,0 +1,5029 @@
+/**
+ * Eighth slice of in-process domain modularization for the Cp2Store monolith (see
+ * docs/architecture/domain-modularization-roadmap.md). Owns every messaging/channels Map:
+ * `conversations`, `conversationParticipants`, `conversationMessages`, `platformIdentities`,
+ * `conversationChannels`, `providerUpdateReceipts`, `channelIdentityLinkGrants`,
+ * `nativeSmsDevices`, `nativeSmsDeviceCommands`, `connectedMailboxes`,
+ * `connectedMailboxOAuthSessions`, `customerRuntimeCapabilities`, `messageDeliveryAttempts`,
+ * `messageNotificationDeliveries`, `e2eeDevices`, `pushSubscriptions` (+ derived
+ * `pushSubscriptionIdByEndpoint`), `conversationTyping` (ephemeral, never persisted), and the
+ * two derived message-lookup indexes `messageByClientId`/`messageByIdempotencyKey`.
+ *
+ * `customerRuntimeCapabilities` and `pushSubscriptions`/`pushSubscriptionIdByEndpoint` were not
+ * in the roadmap's original row-7 Map list - reading the method bodies during this extraction
+ * showed they are exclusively messaging/storefront infrastructure (a hashed bearer token scoping
+ * an anonymous storefront visitor to one conversation, and Web Push subscriptions respectively),
+ * so they moved here too rather than staying stranded on `Cp2Store`.
+ *
+ * **Load-bearing invariant - read before touching `createConversationMessage` or
+ * `updateConversationMessage`:** `validateConversationEncryption` (below) enforces that once a
+ * conversation has two or more distinct human `role: "account"` participants, every message must
+ * be `content.type === "encrypted"`, every participant must have a live registered
+ * `e2eeDevices` entry, and the encrypted envelope's recipient device set must exactly match the
+ * live device set. Dropping or reordering this check re-opens a real confidentiality regression:
+ * plaintext would persist into `conversationMessages`/Postgres and leak into push-notification
+ * payloads for a conversation the product promises is end-to-end encrypted.
+ * `tests/cp20-unified-session-conversations.test.ts`'s "supports full direct-message lifecycle
+ * across two accounts" test is the direct regression check (asserts a plaintext POST to a
+ * two-account conversation 400s with `e2ee_required`) - it must keep failing-if-broken after any
+ * future change here.
+ *
+ * Coupling with the not-yet-extracted domains, resolved as constructor-injected callbacks/raw
+ * Map references (same pattern used throughout this refactor):
+ * - Core auth/identity kernel (`accounts`, `users`, `userByAccount`, `businesses`, `memberships`,
+ *   `sessions`, `accountByDestination`) - read-only raw Map references, same shape `NetworkDomain`
+ *   already uses.
+ * - Customer ownership (`customers` Map, `requireCustomer`, `createGuestCustomer`) - stays on
+ *   `Cp2Store` since customer CRUD (`updateCustomer`, `linkCustomerAccount`) isn't messaging and
+ *   isn't extracted yet; injected the same way `CommerceDomainDeps` already takes `customers`.
+ * - Invoicing (`requireInvoice`, used only by `resolveTrustedEmailAttachments` to attach a
+ *   confirmed invoice to an outbound email) - single callback.
+ * - Agent/AI runtime (`createRuntimeTurn`, `agentModelRecoveryGuidance`) - both stay on
+ *   `Cp2Store` (domain 8, not yet extracted); injected as callbacks exactly like
+ *   `DocumentImportDomainDeps.createSupplier`/`LogisticsDomainDeps.requireInvoice` already do for
+ *   their own not-yet-extracted dependencies.
+ * - `attemptPublicAgentReply` - deliberately **not** moved here even though
+ *   `createPublicStorefrontMessage` is its only caller: it depends on six separate agent-runtime
+ *   primitives (`computeAgentRuntimeReadiness`, `currentAgentProfile`,
+ *   `resolveActiveRuntimeModelId`, `buildShopAgentRuntime`, `resolveRuntimeModelProvider`,
+ *   `contextSourcesForRuntime`) that will all move together when domain 8 is eventually
+ *   extracted. Injecting all six here now would create churn on both sides of that future PR for
+ *   no present benefit, so it stays on `Cp2Store` as a single injected callback instead. It calls
+ *   back into this domain's `persistExternalConversationMessage`/`persistExternalProductCard`/
+ *   `publicMessageView`/`requireCustomerCapability`, which is why those four are deliberately
+ *   public rather than private, mirroring `ComplianceDomain`'s public `getOrCreate*` accessors
+ *   for the same reason.
+ * - `requirePublicStorefrontBusiness` moved into this domain's `shared.ts` as a standalone
+ *   function (takes `businesses`/`quarantinedBusinessIds` as parameters) since `Cp2Store` still
+ *   needs it too (`createPublicOrder`, which stays - it owns `publicOrders`/`invoices`, not a
+ *   messaging concern, and only reads `platformIdentities` via this domain's public map getter).
+ * - `ChannelGateway`/`EmailMailboxProviderClient` stay exactly where they already lived
+ *   (`services/api/src/messaging/`) - both are pure adapter/client objects with no `Cp2Store`
+ *   Map ownership, injected here unchanged. The two `channelGateway.registerAdapter(...)` calls
+ *   moved from `Cp2Store`'s constructor into this domain's constructor since their closures
+ *   reference `nativeSmsTransportReadiness`/`queueNativeSmsCommand`/`emailTransportReadiness`/
+ *   `sendEmailTransport`, all of which live here now.
+ */
+import { randomBytes, randomUUID } from "node:crypto";
+import type {
+  AccountSummary,
+  AuthChannel,
+  AuthSessionView,
+  BusinessSummary,
+  CatalogueQueryResult,
+  ChannelEndpointSummary,
+  ChannelMessageSendResult,
+  ChannelProvider,
+  ChannelProviderReadiness,
+  ConnectedMailboxOAuthStartSummary,
+  ConnectedMailboxProvider,
+  ConnectedMailboxProviderSummary,
+  ConnectedMailboxSummary,
+  ConnectedMailboxSyncSummary,
+  ConversationAttachment,
+  ConversationChannelSummary,
+  ConversationInboxItem,
+  ConversationKind,
+  ConversationMessageAuthor,
+  ConversationMessageContent,
+  ConversationMessageSummary,
+  ConversationParticipantSummary,
+  ConversationSummary,
+  ConversationTypingSummary,
+  ConversationView,
+  CustomerSummary,
+  E2eeDeviceSummary,
+  E2eePublicKey,
+  InvoiceSummary,
+  MembershipSummary,
+  MessageChannel,
+  MessageDeliveryAttemptSummary,
+  MessageHandoffChannel,
+  MessageHandoffStatus,
+  MessageHandoffSummary,
+  NativeSmsDeviceCapability,
+  NativeSmsDeviceCommandSummary,
+  NativeSmsDeviceSummary,
+  NativeSmsExecutableCommand,
+  NativeSmsInboundResult,
+  NativeSmsResultCode,
+  PlatformIdentitySummary,
+  ProviderUpdateReceiptSummary,
+  PublicStorefrontMessageSummary,
+  PushSubscriptionSummary,
+  RuntimeModelConversationMessage,
+  RuntimeTurnResult,
+  StoredSokoSessionContext,
+  SyncChange,
+  SyncCollection,
+  TrustedMessageAttachmentReference,
+  UserSummary
+} from "@soko/shared-types";
+import type { BusinessPermission } from "@soko/business-core";
+import {
+  ChannelGatewayError,
+  createEmailChannelAdapter,
+  createNativeSmsChannelAdapter,
+  providerToMessageChannel,
+  type ChannelGateway,
+  type OutboundChannelMessage
+} from "../../../messaging/channel-gateway.js";
+import {
+  EmailProviderClientError,
+  type EmailMailboxProviderClient,
+  type EmailProviderTokens,
+  type NormalizedProviderEmail
+} from "../../../messaging/email-provider-client.js";
+import { Cp2Error } from "../../cp2-error.js";
+import { decryptOAuthToken, encryptOAuthToken, hashOAuthSecret } from "../../oauth.js";
+import { normalizeDestination, normalizeInternationalOwnerPhoneNumber } from "../../phone-identity.js";
+import {
+  destinationAccountKey,
+  normalizeOptionalBoundedText,
+  normalizeRequiredBoundedText
+} from "../../text-normalization.js";
+import type { Cp2Snapshot, RuntimeAgentProfile, SessionRecord } from "../../store.js";
+import {
+  connectedMailboxView,
+  hashCustomerCapability,
+  isBase64Url,
+  isEmailReauthorizationError,
+  isRecoverableAgentModelChatError,
+  mailboxOAuthSessionTtlMs,
+  mailboxScopeAllows,
+  nativeSmsCommandTtlMs,
+  nativeSmsDeviceRequirement,
+  nativeSmsMissingCapabilityCode,
+  nativeSmsOnlineWindowMs,
+  nativeSmsReadinessErrorCode,
+  nativeSmsReadinessFromRegistration,
+  normalizeAbsoluteHttpUrl,
+  normalizeEmailIdentity,
+  normalizeEmailSubject,
+  normalizeExistingCustomerPhone,
+  normalizeMailboxHistoryDays,
+  normalizeNativeSmsOccurredAt,
+  normalizeNativeSmsSubscriptionId,
+  normalizePositiveInteger,
+  normalizeStoredEmailIdentity,
+  renderInvoiceAttachment,
+  requirePublicStorefrontBusiness,
+  sanitizeAttachmentFilename,
+  validateConversationMessageContent,
+  validateE2eePublicKey,
+  type AgentConversationMessageResult,
+  type ChannelIdentityLinkGrantRecord,
+  type ConnectedMailboxBackgroundSyncSummary,
+  type ConnectedMailboxOAuthSessionRecord,
+  type ConnectedMailboxRecord,
+  type CustomerRuntimeCapabilityRecord,
+  type MessageNotificationDelivery,
+  type MessageNotificationDeliveryRunSummary,
+  type PublicStorefrontSessionResult
+} from "./shared.js";
+
+export interface MessagingDomainDeps {
+  requireAuthorizedSession: (
+    sessionId: string | null,
+    businessId: string,
+    permission: BusinessPermission,
+    now?: Date
+  ) => AuthSessionView;
+  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
+  recordAuditEvent: (input: {
+    type: string;
+    aggregateType: string;
+    aggregateId: string;
+    actorId: string;
+    occurredAt: string;
+    payload: Record<string, unknown>;
+  }) => void;
+  recordSyncChange: (input: {
+    accountId: string;
+    collection: SyncCollection;
+    entityId: string;
+    operation: "upsert" | "delete";
+    shopId: string | null;
+    entity: unknown | null;
+    now: Date;
+  }) => SyncChange;
+  requireMembership: (businessId: string, userId: string) => MembershipSummary;
+  requireBusiness: (businessId: string) => BusinessSummary;
+  requireCustomer: (businessId: string, customerId: string) => CustomerSummary;
+  createGuestCustomer: (input: {
+    businessId: string;
+    displayName?: string | null;
+    provider: ChannelProvider;
+    externalUserId: string;
+    now: Date;
+  }) => CustomerSummary;
+  requireInvoice: (businessId: string, invoiceId: string) => InvoiceSummary;
+  ensureSokoSessionContext: (session: AuthSessionView, now: Date) => StoredSokoSessionContext;
+  createRuntimeTurn: (input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeSessionId?: string;
+    message: string;
+    conversationHistory?: RuntimeModelConversationMessage[];
+    agentProfile?: RuntimeAgentProfile;
+    now?: Date;
+  }) => Promise<RuntimeTurnResult>;
+  agentModelRecoveryGuidance: (businessId: string, error: Cp2Error) => string;
+  attemptPublicAgentReply: (input: {
+    businessId: string;
+    capability: CustomerRuntimeCapabilityRecord;
+    visitorId: string;
+    body: string;
+    now: Date;
+  }) => Promise<PublicStorefrontMessageSummary | null>;
+  channelGateway: ChannelGateway;
+  emailMailboxProviderClient: EmailMailboxProviderClient;
+  pushNotificationSender?: (
+    subscription: PushSubscriptionSummary,
+    payload: {
+      type: "message.new";
+      conversationId: string;
+      messageId: string;
+      title: string;
+      body: string;
+    }
+  ) => Promise<"sent" | "failed" | "expired">;
+  messageEmailNotificationSender?: (input: {
+    conversationId: string;
+    messageId: string;
+    openUrl: string;
+    to: string;
+  }) => Promise<"sent" | "failed" | "expired">;
+  messageWebBaseUrl?: string;
+  accounts: Map<string, AccountSummary>;
+  users: Map<string, UserSummary>;
+  userByAccount: Map<string, string>;
+  businesses: Map<string, BusinessSummary>;
+  memberships: Map<string, MembershipSummary>;
+  sessions: Map<string, SessionRecord>;
+  customers: Map<string, CustomerSummary>;
+  quarantinedBusinessIds: Set<string>;
+  accountByDestination: Map<string, string>;
+}
+
+export class MessagingDomain {
+  private readonly conversations = new Map<string, ConversationSummary>();
+  private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
+  private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly platformIdentities = new Map<string, PlatformIdentitySummary>();
+  private readonly conversationChannels = new Map<string, ConversationChannelSummary>();
+  private readonly providerUpdateReceipts = new Map<string, ProviderUpdateReceiptSummary>();
+  private readonly channelIdentityLinkGrants = new Map<string, ChannelIdentityLinkGrantRecord>();
+  private readonly nativeSmsDevices = new Map<string, NativeSmsDeviceSummary>();
+  private readonly nativeSmsDeviceCommands = new Map<string, NativeSmsDeviceCommandSummary>();
+  private readonly connectedMailboxes = new Map<string, ConnectedMailboxRecord>();
+  private readonly connectedMailboxOAuthSessions = new Map<
+    string,
+    ConnectedMailboxOAuthSessionRecord
+  >();
+  private readonly customerRuntimeCapabilities = new Map<string, CustomerRuntimeCapabilityRecord>();
+  private readonly messageDeliveryAttempts = new Map<string, MessageDeliveryAttemptSummary>();
+  private readonly messageNotificationDeliveries = new Map<string, MessageNotificationDelivery>();
+  private readonly e2eeDevices = new Map<string, E2eeDeviceSummary>();
+  private readonly pushSubscriptions = new Map<string, PushSubscriptionSummary>();
+  private readonly pushSubscriptionIdByEndpoint = new Map<string, string>();
+  private readonly conversationTyping = new Map<
+    string,
+    ConversationTypingSummary & { conversationId: string }
+  >();
+  private readonly messageByClientId = new Map<string, string>();
+  private readonly messageByIdempotencyKey = new Map<string, string>();
+
+  constructor(private readonly deps: MessagingDomainDeps) {
+    this.deps.channelGateway.registerAdapter(
+      createNativeSmsChannelAdapter({
+        readiness: (businessId) => this.nativeSmsTransportReadiness(businessId, new Date()),
+        queue: (request) => this.queueNativeSmsCommand(request, new Date())
+      })
+    );
+    this.deps.channelGateway.registerAdapter(
+      createEmailChannelAdapter({
+        readiness: (businessId) => this.emailTransportReadiness(businessId),
+        send: (request) => this.sendEmailTransport(request, new Date())
+      })
+    );
+  }
+
+  get conversationsMap(): Map<string, ConversationSummary> {
+    return this.conversations;
+  }
+
+  get conversationParticipantsMap(): Map<string, ConversationParticipantSummary> {
+    return this.conversationParticipants;
+  }
+
+  get conversationMessagesMap(): Map<string, ConversationMessageSummary> {
+    return this.conversationMessages;
+  }
+
+  get platformIdentitiesMap(): Map<string, PlatformIdentitySummary> {
+    return this.platformIdentities;
+  }
+
+  get conversationChannelsMap(): Map<string, ConversationChannelSummary> {
+    return this.conversationChannels;
+  }
+
+  get providerUpdateReceiptsMap(): Map<string, ProviderUpdateReceiptSummary> {
+    return this.providerUpdateReceipts;
+  }
+
+  get channelIdentityLinkGrantsMap(): Map<string, ChannelIdentityLinkGrantRecord> {
+    return this.channelIdentityLinkGrants;
+  }
+
+  get nativeSmsDevicesMap(): Map<string, NativeSmsDeviceSummary> {
+    return this.nativeSmsDevices;
+  }
+
+  get nativeSmsDeviceCommandsMap(): Map<string, NativeSmsDeviceCommandSummary> {
+    return this.nativeSmsDeviceCommands;
+  }
+
+  get connectedMailboxesMap(): Map<string, ConnectedMailboxRecord> {
+    return this.connectedMailboxes;
+  }
+
+  get connectedMailboxOAuthSessionsMap(): Map<string, ConnectedMailboxOAuthSessionRecord> {
+    return this.connectedMailboxOAuthSessions;
+  }
+
+  get customerRuntimeCapabilitiesMap(): Map<string, CustomerRuntimeCapabilityRecord> {
+    return this.customerRuntimeCapabilities;
+  }
+
+  get messageDeliveryAttemptsMap(): Map<string, MessageDeliveryAttemptSummary> {
+    return this.messageDeliveryAttempts;
+  }
+
+  get messageNotificationDeliveriesMap(): Map<string, MessageNotificationDelivery> {
+    return this.messageNotificationDeliveries;
+  }
+
+  get e2eeDevicesMap(): Map<string, E2eeDeviceSummary> {
+    return this.e2eeDevices;
+  }
+
+  get pushSubscriptionsMap(): Map<string, PushSubscriptionSummary> {
+    return this.pushSubscriptions;
+  }
+
+  get pushSubscriptionIdByEndpointMap(): Map<string, string> {
+    return this.pushSubscriptionIdByEndpoint;
+  }
+
+  get conversationTypingMap(): Map<string, ConversationTypingSummary & { conversationId: string }> {
+    return this.conversationTyping;
+  }
+
+  get messageByClientIdMap(): Map<string, string> {
+    return this.messageByClientId;
+  }
+
+  get messageByIdempotencyKeyMap(): Map<string, string> {
+    return this.messageByIdempotencyKey;
+  }
+
+  clear(): void {
+    this.conversations.clear();
+    this.conversationParticipants.clear();
+    this.conversationMessages.clear();
+    this.platformIdentities.clear();
+    this.conversationChannels.clear();
+    this.providerUpdateReceipts.clear();
+    this.channelIdentityLinkGrants.clear();
+    this.nativeSmsDevices.clear();
+    this.nativeSmsDeviceCommands.clear();
+    this.connectedMailboxes.clear();
+    this.connectedMailboxOAuthSessions.clear();
+    this.customerRuntimeCapabilities.clear();
+    this.messageDeliveryAttempts.clear();
+    this.messageNotificationDeliveries.clear();
+    this.e2eeDevices.clear();
+    this.pushSubscriptions.clear();
+    this.pushSubscriptionIdByEndpoint.clear();
+    this.conversationTyping.clear();
+    this.messageByClientId.clear();
+    this.messageByIdempotencyKey.clear();
+  }
+
+  rebuildDerivedIndexes(): void {
+    this.messageByClientId.clear();
+    this.messageByIdempotencyKey.clear();
+    for (const message of this.conversationMessages.values()) {
+      this.messageByClientId.set(
+        `${message.conversationId}:${message.clientMessageId}`,
+        message.id
+      );
+      this.messageByIdempotencyKey.set(
+        `${message.conversationId}:${message.idempotencyKey}`,
+        message.id
+      );
+    }
+
+    this.pushSubscriptionIdByEndpoint.clear();
+    for (const subscription of this.pushSubscriptions.values()) {
+      this.pushSubscriptionIdByEndpoint.set(subscription.endpoint, subscription.id);
+    }
+  }
+
+  restore(snapshot: Cp2Snapshot): void {
+    for (const conversation of snapshot.conversations ?? []) {
+      this.conversations.set(conversation.id, conversation);
+    }
+
+    for (const participant of snapshot.conversationParticipants ?? []) {
+      this.conversationParticipants.set(participant.id, participant);
+    }
+
+    for (const message of snapshot.conversationMessages ?? []) {
+      const restored: ConversationMessageSummary = {
+        ...message,
+        idempotencyKey:
+          message.idempotencyKey ?? `soko:${message.conversationId}:${message.clientMessageId}`,
+        queuedAt: message.queuedAt ?? null,
+        sentAt:
+          message.sentAt === undefined
+            ? message.status === "sent" ||
+              message.status === "delivered" ||
+              message.status === "read" ||
+              message.status === undefined
+              ? (message.deliveredAt ?? message.createdAt)
+              : null
+            : message.sentAt,
+        failureCode: message.failureCode ?? null,
+        retryCount: message.retryCount ?? 0,
+        nextRetryAt: message.nextRetryAt ?? null,
+        selectedChannel: message.selectedChannel ?? "soko",
+        actualChannel:
+          message.actualChannel === undefined
+            ? message.status === "sent" ||
+              message.status === "delivered" ||
+              message.status === "read" ||
+              message.status === undefined
+              ? "soko"
+              : null
+            : message.actualChannel,
+        providerMessageId: message.providerMessageId ?? null,
+        provider:
+          message.provider ?? (message.selectedChannel === "telegram" ? "telegram" : "soko"),
+        direction:
+          message.direction ??
+          (snapshot.platformIdentities?.some((identity) => identity.id === message.authorId)
+            ? "inbound"
+            : "outbound"),
+        externalConversationId: message.externalConversationId ?? null,
+        channelIdentityId: message.channelIdentityId ?? null,
+        importedSource: message.importedSource ?? null,
+        importedExternalId: message.importedExternalId ?? null,
+        consentRecordId: message.consentRecordId ?? null
+      };
+      this.conversationMessages.set(restored.id, restored);
+      this.messageByClientId.set(
+        `${restored.conversationId}:${restored.clientMessageId}`,
+        restored.id
+      );
+      this.messageByIdempotencyKey.set(
+        `${restored.conversationId}:${restored.idempotencyKey}`,
+        restored.id
+      );
+    }
+
+    for (const identity of snapshot.platformIdentities ?? []) {
+      this.platformIdentities.set(identity.id, {
+        ...identity,
+        customerId: identity.customerId ?? null,
+        verifiedAt: identity.verifiedAt ?? null,
+        optInStatus: identity.optInStatus ?? "unknown",
+        optInSource: identity.optInSource ?? null,
+        optInAt: identity.optInAt ?? null,
+        optOutAt: identity.optOutAt ?? null
+      });
+    }
+    for (const channel of snapshot.conversationChannels ?? []) {
+      this.conversationChannels.set(channel.id, {
+        ...channel,
+        capabilities: channel.capabilities ?? [],
+        status: channel.status ?? "available",
+        lastInboundAt: channel.lastInboundAt ?? null,
+        lastOutboundAt: channel.lastOutboundAt ?? null
+      });
+    }
+    for (const receipt of snapshot.providerUpdateReceipts ?? []) {
+      this.providerUpdateReceipts.set(receipt.id, receipt);
+    }
+    for (const grant of snapshot.channelIdentityLinkGrants ?? []) {
+      this.channelIdentityLinkGrants.set(grant.id, grant);
+    }
+    for (const device of snapshot.nativeSmsDevices ?? []) {
+      this.nativeSmsDevices.set(device.id, device);
+    }
+    for (const command of snapshot.nativeSmsDeviceCommands ?? []) {
+      this.nativeSmsDeviceCommands.set(command.id, command);
+    }
+    for (const mailbox of snapshot.connectedMailboxes ?? []) {
+      this.connectedMailboxes.set(mailbox.id, {
+        ...mailbox,
+        automaticReplyEnabled: mailbox.automaticReplyEnabled ?? false,
+        automaticReplyText: mailbox.automaticReplyText ?? null
+      });
+    }
+    for (const session of snapshot.connectedMailboxOAuthSessions ?? []) {
+      this.connectedMailboxOAuthSessions.set(session.id, session);
+    }
+    for (const capability of snapshot.customerRuntimeCapabilities ?? []) {
+      this.customerRuntimeCapabilities.set(capability.id, capability);
+    }
+
+    for (const attempt of snapshot.messageDeliveryAttempts ?? []) {
+      this.messageDeliveryAttempts.set(attempt.id, attempt);
+    }
+
+    for (const delivery of snapshot.messageNotificationDeliveries ?? []) {
+      this.messageNotificationDeliveries.set(delivery.id, delivery);
+    }
+
+    for (const device of snapshot.e2eeDevices ?? []) {
+      this.e2eeDevices.set(device.id, device);
+    }
+
+    for (const subscription of snapshot.pushSubscriptions ?? []) {
+      this.pushSubscriptions.set(subscription.id, subscription);
+      this.pushSubscriptionIdByEndpoint.set(subscription.endpoint, subscription.id);
+    }
+  }
+
+  createConversation(input: {
+    sessionId: string | null;
+    kind: ConversationKind;
+    activeShopId: string | null;
+    recipient?: string | null;
+    title?: string | null;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+
+    if (input.activeShopId !== null) {
+      if (!this.deps.businesses.has(input.activeShopId)) {
+        throw new Cp2Error(404, "business_not_found", "Conversation shop was not found.");
+      }
+      if (input.kind !== "storefront" && input.kind !== "order") {
+        this.deps.requireMembership(input.activeShopId, session.user.id);
+      }
+    }
+
+    let recipientAccountId: string | null = null;
+    if (input.recipient?.trim()) {
+      const channel: AuthChannel = input.recipient.includes("@") ? "email" : "phone";
+      const destination = normalizeDestination(channel, input.recipient);
+      recipientAccountId =
+        this.deps.accountByDestination.get(destinationAccountKey(channel, destination)) ?? null;
+      if (recipientAccountId === null) {
+        throw new Cp2Error(404, "recipient_not_found", "No Soko account matches that contact.");
+      }
+      if (recipientAccountId === session.account.id) {
+        throw new Cp2Error(400, "recipient_invalid", "Choose another Soko account.");
+      }
+    }
+
+    const conversation = this.createAccountConversation({
+      accountId: session.account.id,
+      userId: session.user.id,
+      kind: input.kind,
+      activeShopId: input.activeShopId,
+      recipientAccountId,
+      title: input.title?.trim() || null,
+      now
+    });
+    this.deps.recordAuditEvent({
+      type: "conversation.created",
+      aggregateType: "conversation",
+      aggregateId: conversation.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: session.account.id,
+        activeShopId: conversation.activeShopId,
+        kind: conversation.kind
+      }
+    });
+    return this.conversationView(conversation);
+  }
+
+  createProviderConversation(input: {
+    sessionId: string | null;
+    businessId: string;
+    provider: ChannelProvider;
+    customerId?: string;
+    externalUserId: string;
+    externalConversationId: string;
+    displayName?: string | null;
+    metadata?: Record<string, string | number | boolean | null>;
+    now?: Date;
+  }): { identity: PlatformIdentitySummary; channel: ConversationChannelSummary } {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    return this.upsertProviderConversation({
+      businessId: input.businessId,
+      provider: input.provider,
+      customerId: input.customerId ?? null,
+      externalUserId: input.externalUserId,
+      externalConversationId: input.externalConversationId,
+      displayName: input.displayName ?? null,
+      metadata: input.metadata ?? {},
+      ownerAccountId: auth.account.id,
+      ownerUserId: auth.user.id,
+      now
+    });
+  }
+
+  private upsertProviderConversation(input: {
+    businessId: string;
+    provider: ChannelProvider;
+    customerId: string | null;
+    externalUserId: string;
+    externalConversationId: string;
+    displayName: string | null;
+    metadata: Record<string, string | number | boolean | null>;
+    ownerAccountId: string;
+    ownerUserId: string;
+    now: Date;
+  }): { identity: PlatformIdentitySummary; channel: ConversationChannelSummary } {
+    const now = input.now;
+    const externalUserId = normalizeRequiredBoundedText(
+      input.externalUserId,
+      "externalUserId",
+      200
+    );
+    const requestedCustomer =
+      input.customerId === null ? null : this.deps.requireCustomer(input.businessId, input.customerId);
+    let identity = [...this.platformIdentities.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalUserId === externalUserId
+    );
+    if (
+      identity !== undefined &&
+      requestedCustomer !== null &&
+      identity.customerId !== null &&
+      identity.customerId !== requestedCustomer.id
+    ) {
+      throw new Cp2Error(
+        409,
+        "CHANNEL_IDENTITY_ALREADY_LINKED",
+        "This provider identity is already linked to another customer."
+      );
+    }
+    const customer =
+      requestedCustomer ??
+      (identity?.customerId ? this.deps.requireCustomer(input.businessId, identity.customerId) : null) ??
+      this.deps.createGuestCustomer({
+        businessId: input.businessId,
+        displayName: input.displayName,
+        provider: input.provider,
+        externalUserId,
+        now
+      });
+    if (identity === undefined) {
+      identity = {
+        id: randomUUID(),
+        provider: input.provider,
+        externalUserId,
+        accountId: null,
+        customerId: customer.id,
+        verifiedAt: null,
+        optInStatus: "unknown",
+        optInSource: null,
+        optInAt: null,
+        optOutAt: null,
+        businessId: input.businessId,
+        displayName: normalizeOptionalBoundedText(input.displayName ?? null, 120),
+        metadata: { ...(input.metadata ?? {}) },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.platformIdentities.set(identity.id, identity);
+    } else if (identity.customerId === null) {
+      identity = { ...identity, customerId: customer.id, updatedAt: now.toISOString() };
+      this.platformIdentities.set(identity.id, identity);
+    }
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalConversationId === input.externalConversationId
+    );
+    if (channel === undefined) {
+      const existingCustomerChannel = [...this.conversationChannels.values()].find((candidate) => {
+        const candidateIdentity = this.platformIdentities.get(candidate.platformIdentityId);
+        return (
+          candidate.businessId === input.businessId && candidateIdentity?.customerId === customer.id
+        );
+      });
+      const conversation =
+        existingCustomerChannel === undefined
+          ? this.createAccountConversation({
+              accountId: input.ownerAccountId,
+              userId: input.ownerUserId,
+              kind: "storefront",
+              activeShopId: input.businessId,
+              title: customer.name,
+              now
+            })
+          : this.conversations.get(existingCustomerChannel.conversationId);
+      if (conversation === undefined) {
+        throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+      }
+      const participantId = randomUUID();
+      this.conversationParticipants.set(participantId, {
+        id: participantId,
+        conversationId: conversation.id,
+        role: "external",
+        accountId: null,
+        businessId: input.businessId,
+        agentId: null,
+        externalIdentityId: identity.id,
+        displayName: identity.displayName,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: now.toISOString()
+      });
+      channel = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        businessId: input.businessId,
+        provider: input.provider,
+        externalConversationId: normalizeRequiredBoundedText(
+          input.externalConversationId,
+          "externalConversationId",
+          200
+        ),
+        platformIdentityId: identity.id,
+        capabilities: [],
+        status: "available",
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        metadata: { ...(input.metadata ?? {}) },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.conversationChannels.set(channel.id, channel);
+    } else if (channel.platformIdentityId !== identity.id) {
+      throw new Cp2Error(
+        409,
+        "CHANNEL_IDENTITY_ALREADY_LINKED",
+        "This provider conversation is already linked to another customer."
+      );
+    }
+    return { identity, channel };
+  }
+
+  listChannelProviderReadiness(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ChannelProviderReadiness[] {
+    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", input.now);
+    return this.deps.channelGateway.providerReadiness({ businessId: input.businessId });
+  }
+
+  registerNativeSmsDevice(input: {
+    sessionId: string | null;
+    roleAvailable: boolean;
+    roleGranted: boolean;
+    sendPermissionGranted: boolean;
+    receivePermissionGranted: boolean;
+    simReady: boolean;
+    subscriptionId?: number | null;
+    preferred?: boolean;
+    lastErrorCode?: string | null;
+    now?: Date;
+  }): NativeSmsDeviceSummary {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const session = this.deps.sessions.get(auth.session.id);
+    if (
+      session === undefined ||
+      session.platform.toLocaleLowerCase() !== "android" ||
+      session.browserOrApp.toLocaleLowerCase() !== "android-native"
+    ) {
+      throw new Cp2Error(
+        403,
+        "SMS_DEVICE_UNAVAILABLE",
+        "Native SMS registration requires an authenticated Android-native session."
+      );
+    }
+    const existingForDevice = [...this.nativeSmsDevices.values()].find(
+      (candidate) => candidate.deviceId === session.deviceId && candidate.revokedAt === null
+    );
+    if (existingForDevice !== undefined && existingForDevice.accountId !== auth.account.id) {
+      throw new Cp2Error(409, "sms_device_conflict", "This device is linked to another account.");
+    }
+    const existingForAccount = [...this.nativeSmsDevices.values()].filter(
+      (candidate) => candidate.accountId === auth.account.id && candidate.revokedAt === null
+    );
+    const preferred = input.preferred ?? existingForAccount.length === 0;
+    if (preferred) {
+      for (const candidate of existingForAccount) {
+        this.nativeSmsDevices.set(candidate.id, {
+          ...candidate,
+          preferred: false,
+          updatedAt: now.toISOString()
+        });
+      }
+    }
+    const capabilities: NativeSmsDeviceCapability[] = [];
+    if (input.roleAvailable && input.roleGranted && input.sendPermissionGranted && input.simReady) {
+      capabilities.push("native_sms_send");
+    }
+    if (
+      input.roleAvailable &&
+      input.roleGranted &&
+      input.receivePermissionGranted &&
+      input.simReady
+    ) {
+      capabilities.push("native_sms_receive");
+    }
+    const readiness = nativeSmsReadinessFromRegistration({
+      roleAvailable: input.roleAvailable,
+      roleGranted: input.roleGranted,
+      sendPermissionGranted: input.sendPermissionGranted,
+      receivePermissionGranted: input.receivePermissionGranted,
+      simReady: input.simReady,
+      lastErrorCode: input.lastErrorCode ?? null
+    });
+    const device: NativeSmsDeviceSummary = {
+      id: existingForDevice?.id ?? randomUUID(),
+      accountId: auth.account.id,
+      sessionFamilyId: session.sessionFamilyId,
+      deviceId: session.deviceId,
+      deviceName: session.deviceName,
+      platform: "android",
+      executionEnvironment: "android-device",
+      capabilities,
+      readiness,
+      roleAvailable: input.roleAvailable,
+      roleGranted: input.roleGranted,
+      sendPermissionGranted: input.sendPermissionGranted,
+      receivePermissionGranted: input.receivePermissionGranted,
+      simReady: input.simReady,
+      subscriptionId:
+        input.subscriptionId === undefined || input.subscriptionId === null
+          ? null
+          : normalizeNativeSmsSubscriptionId(input.subscriptionId),
+      preferred,
+      lastSeenAt: now.toISOString(),
+      lastErrorCode: normalizeOptionalBoundedText(input.lastErrorCode ?? null, 80),
+      revokedAt: null,
+      createdAt: existingForDevice?.createdAt ?? now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDevices.set(device.id, device);
+    this.deps.recordAuditEvent({
+      type: "native_sms.device_registered",
+      aggregateType: "native_sms_device",
+      aggregateId: device.id,
+      actorId: auth.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: device.accountId,
+        readiness: device.readiness,
+        sendCapable: device.capabilities.includes("native_sms_send"),
+        receiveCapable: device.capabilities.includes("native_sms_receive")
+      }
+    });
+    return this.nativeSmsDeviceView(device, now);
+  }
+
+  listNativeSmsDevices(input: { sessionId: string | null; now?: Date }): NativeSmsDeviceSummary[] {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    return [...this.nativeSmsDevices.values()]
+      .filter((device) => device.accountId === auth.account.id && device.revokedAt === null)
+      .map((device) => this.nativeSmsDeviceView(device, now))
+      .sort(
+        (left, right) =>
+          Number(right.preferred) - Number(left.preferred) ||
+          right.lastSeenAt.localeCompare(left.lastSeenAt)
+      );
+  }
+
+  listNativeSmsBusinesses(input: { sessionId: string | null; now?: Date }): BusinessSummary[] {
+    const auth = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    const businessIds = new Set(
+      [...this.deps.memberships.values()]
+        .filter((membership) => membership.userId === auth.user.id)
+        .map((membership) => membership.businessId)
+    );
+    return [...this.deps.businesses.values()].filter((business) => businessIds.has(business.id));
+  }
+
+  revokeNativeSmsDevice(input: {
+    sessionId: string | null;
+    deviceId: string;
+    now?: Date;
+  }): NativeSmsDeviceSummary {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const device = this.nativeSmsDevices.get(input.deviceId);
+    if (device === undefined || device.accountId !== auth.account.id) {
+      throw new Cp2Error(404, "sms_device_not_found", "Native SMS device was not found.");
+    }
+    const revoked: NativeSmsDeviceSummary = {
+      ...device,
+      capabilities: [],
+      readiness: "unavailable",
+      revokedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDevices.set(revoked.id, revoked);
+    for (const command of this.nativeSmsDeviceCommands.values()) {
+      if (
+        command.deviceId === revoked.id &&
+        !["completed", "failed", "cancelled"].includes(command.status)
+      ) {
+        this.nativeSmsDeviceCommands.set(command.id, {
+          ...command,
+          status: "cancelled",
+          resultCode: "SMS_DEVICE_UNAVAILABLE",
+          completedAt: now.toISOString(),
+          updatedAt: now.toISOString()
+        });
+        this.failNativeSmsMessage(command.messageId, "SMS_DEVICE_UNAVAILABLE", now);
+      }
+    }
+    return revoked;
+  }
+
+  fetchNativeSmsCommands(input: { sessionId: string | null; limit?: number; now?: Date }): {
+    device: NativeSmsDeviceSummary;
+    commands: NativeSmsExecutableCommand[];
+  } {
+    const now = input.now ?? new Date();
+    const device = this.requireCurrentNativeSmsDevice(input.sessionId, "native_sms_send", now);
+    const touched = this.touchNativeSmsDevice(device, now);
+    const limit = Math.min(50, Math.max(1, input.limit ?? 20));
+    const commands = [...this.nativeSmsDeviceCommands.values()]
+      .filter(
+        (command) =>
+          command.deviceId === touched.id &&
+          ["queued", "waiting_for_device", "dispatched", "acknowledged"].includes(command.status) &&
+          Date.parse(command.expiresAt) > now.getTime()
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(0, limit)
+      .map((command) => {
+        const message = this.conversationMessages.get(command.messageId);
+        if (message?.content.type !== "text") {
+          throw new Cp2Error(409, "sms_command_invalid", "SMS command content is unavailable.");
+        }
+        const dispatched: NativeSmsDeviceCommandSummary = {
+          ...command,
+          status:
+            command.status === "queued" || command.status === "waiting_for_device"
+              ? "dispatched"
+              : command.status,
+          dispatchedAt: command.dispatchedAt ?? now.toISOString(),
+          updatedAt: now.toISOString()
+        };
+        this.nativeSmsDeviceCommands.set(dispatched.id, dispatched);
+        return { ...dispatched, text: message.content.text };
+      });
+    return { device: touched, commands };
+  }
+
+  acknowledgeNativeSmsCommand(input: {
+    sessionId: string | null;
+    commandId: string;
+    now?: Date;
+  }): NativeSmsDeviceCommandSummary {
+    const now = input.now ?? new Date();
+    const device = this.requireCurrentNativeSmsDevice(input.sessionId, "native_sms_send", now);
+    const command = this.requireNativeSmsCommand(device, input.commandId, now);
+    if (["completed", "failed", "cancelled"].includes(command.status)) return command;
+    const acknowledged: NativeSmsDeviceCommandSummary = {
+      ...command,
+      status: "acknowledged",
+      acknowledgedAt: command.acknowledgedAt ?? now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDeviceCommands.set(acknowledged.id, acknowledged);
+    return acknowledged;
+  }
+
+  reportNativeSmsCommandResult(input: {
+    sessionId: string | null;
+    commandId: string;
+    status: "sending" | "sent" | "delivered" | "failed";
+    resultCode: NativeSmsResultCode;
+    carrierReference?: string | null;
+    now?: Date;
+  }): { command: NativeSmsDeviceCommandSummary; message: ConversationMessageSummary } {
+    const now = input.now ?? new Date();
+    const device = this.requireCurrentNativeSmsDevice(input.sessionId, "native_sms_send", now);
+    const command = this.requireNativeSmsCommand(device, input.commandId, now);
+    const message = this.conversationMessages.get(command.messageId);
+    if (message === undefined || message.provider !== "native_sms") {
+      throw new Cp2Error(409, "sms_command_invalid", "Canonical SMS message is unavailable.");
+    }
+    const deliveryUpgrade =
+      command.status === "completed" &&
+      command.resultCode === "SMS_SENT" &&
+      input.status === "delivered";
+    if (
+      ["failed", "cancelled"].includes(command.status) ||
+      (command.status === "completed" && !deliveryUpgrade)
+    ) {
+      return { command, message };
+    }
+    const terminal =
+      input.status === "sent" || input.status === "delivered" || input.status === "failed";
+    const updatedCommand: NativeSmsDeviceCommandSummary = {
+      ...command,
+      status:
+        input.status === "failed"
+          ? "failed"
+          : input.status === "sent" || input.status === "delivered"
+            ? "completed"
+            : "sending",
+      resultCode: input.resultCode,
+      carrierReference: normalizeOptionalBoundedText(input.carrierReference ?? null, 200),
+      completedAt: terminal ? now.toISOString() : null,
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDeviceCommands.set(updatedCommand.id, updatedCommand);
+    const updatedMessage: ConversationMessageSummary = {
+      ...message,
+      status:
+        input.status === "failed"
+          ? "failed"
+          : input.status === "delivered"
+            ? "delivered"
+            : input.status === "sent"
+              ? "sent"
+              : "sending",
+      actualChannel: "native_sms",
+      providerMessageId: command.id,
+      sentAt:
+        input.status === "sent" || input.status === "delivered"
+          ? (message.sentAt ?? now.toISOString())
+          : (message.sentAt ?? null),
+      deliveredAt: input.status === "delivered" ? now.toISOString() : (message.deliveredAt ?? null),
+      failureCode: input.status === "failed" ? input.resultCode : null,
+      nextRetryAt: null
+    };
+    this.conversationMessages.set(updatedMessage.id, updatedMessage);
+    this.recordConversationSyncForParticipants(
+      updatedMessage.conversationId,
+      "conversation_messages",
+      updatedMessage.id,
+      updatedMessage,
+      now
+    );
+    if (terminal) {
+      this.finishChannelDeliveryAttempt(
+        updatedMessage,
+        input.status === "failed" ? "permanent_failure" : "succeeded",
+        input.status === "failed" ? input.resultCode : null,
+        now
+      );
+    }
+    return { command: updatedCommand, message: updatedMessage };
+  }
+
+  ingestNativeSmsMessage(input: {
+    sessionId: string | null;
+    businessId: string;
+    externalMessageId: string;
+    sender: string;
+    text: string;
+    occurredAt: string;
+    now?: Date;
+  }): NativeSmsInboundResult {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const device = this.requireCurrentNativeSmsDevice(input.sessionId, "native_sms_receive", now);
+    const sender = normalizeInternationalOwnerPhoneNumber(input.sender).e164;
+    const externalMessageId = normalizeRequiredBoundedText(
+      input.externalMessageId,
+      "externalMessageId",
+      200
+    );
+    const occurredAt = normalizeNativeSmsOccurredAt(input.occurredAt, now);
+    let customer = [...this.deps.customers.values()].find(
+      (candidate) =>
+        candidate.businessId === input.businessId &&
+        normalizeExistingCustomerPhone(candidate.phone) === sender
+    );
+    if (customer === undefined) {
+      customer = this.deps.createGuestCustomer({
+        businessId: input.businessId,
+        provider: "native_sms",
+        externalUserId: sender,
+        now
+      });
+      customer = { ...customer, phone: sender };
+      this.deps.customers.set(customer.id, customer);
+    }
+    const linked = this.upsertProviderConversation({
+      businessId: input.businessId,
+      provider: "native_sms",
+      customerId: customer.id,
+      externalUserId: sender,
+      externalConversationId: sender,
+      displayName: customer.name,
+      metadata: { automaticRepliesEnabled: false, executionEnvironment: "android-device" },
+      ownerAccountId: auth.account.id,
+      ownerUserId: auth.user.id,
+      now
+    });
+    const ingested = this.ingestProviderMessage({
+      provider: "native_sms",
+      businessId: input.businessId,
+      externalConversationId: linked.channel.externalConversationId,
+      externalUpdateId: `${device.id}:${externalMessageId}`,
+      body: normalizeRequiredBoundedText(input.text, "message", 4000),
+      providerMessageId: externalMessageId,
+      now: new Date(occurredAt)
+    });
+    const touchedDevice = this.touchNativeSmsDevice(device, now);
+    return { device: this.nativeSmsDeviceView(touchedDevice, now), customer, ...ingested };
+  }
+
+  listConnectedMailboxProviders(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ConnectedMailboxProviderSummary[] {
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return this.deps.emailMailboxProviderClient.providers();
+  }
+
+  beginConnectedMailboxOAuth(input: {
+    sessionId: string | null;
+    businessId: string;
+    provider: ConnectedMailboxProvider;
+    redirectUri: string;
+    returnUrl: string;
+    now?: Date;
+  }): ConnectedMailboxOAuthStartSummary {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const configured = this.deps.emailMailboxProviderClient
+      .providers()
+      .find((candidate) => candidate.provider === input.provider)?.configured;
+    if (configured !== true) {
+      throw new Cp2Error(
+        503,
+        "EMAIL_PROVIDER_UNAVAILABLE",
+        "This mailbox provider is not configured."
+      );
+    }
+    const authorization = this.deps.emailMailboxProviderClient.beginAuthorization({
+      provider: input.provider,
+      redirectUri: normalizeAbsoluteHttpUrl(input.redirectUri, "redirectUri")
+    });
+    const expiresAt = new Date(now.getTime() + mailboxOAuthSessionTtlMs).toISOString();
+    const session: ConnectedMailboxOAuthSessionRecord = {
+      id: randomUUID(),
+      accountId: auth.account.id,
+      businessId: input.businessId,
+      provider: input.provider,
+      stateHash: hashOAuthSecret(authorization.state),
+      encryptedCodeVerifier: encryptOAuthToken(authorization.codeVerifier),
+      redirectUri: input.redirectUri,
+      returnUrl: normalizeAbsoluteHttpUrl(input.returnUrl, "returnUrl"),
+      expiresAt,
+      completedAt: null,
+      createdAt: now.toISOString()
+    };
+    this.connectedMailboxOAuthSessions.set(session.id, session);
+    return {
+      provider: input.provider,
+      authorizationUrl: authorization.authorizationUrl,
+      expiresAt
+    };
+  }
+
+  async completeConnectedMailboxOAuth(input: {
+    provider: ConnectedMailboxProvider;
+    code: string;
+    state: string;
+    now?: Date;
+  }): Promise<{ mailbox: ConnectedMailboxSummary; returnUrl: string }> {
+    const now = input.now ?? new Date();
+    const stateHash = hashOAuthSecret(normalizeRequiredBoundedText(input.state, "state", 500));
+    const session = [...this.connectedMailboxOAuthSessions.values()].find(
+      (candidate) => candidate.provider === input.provider && candidate.stateHash === stateHash
+    );
+    if (
+      session === undefined ||
+      session.completedAt !== null ||
+      Date.parse(session.expiresAt) <= now.getTime()
+    ) {
+      throw new Cp2Error(
+        401,
+        "mailbox_oauth_invalid",
+        "Mailbox authorization is invalid or expired."
+      );
+    }
+    const authorization = await this.deps.emailMailboxProviderClient.completeAuthorization({
+      provider: input.provider,
+      code: normalizeRequiredBoundedText(input.code, "code", 4000),
+      codeVerifier: decryptOAuthToken(session.encryptedCodeVerifier),
+      redirectUri: session.redirectUri
+    });
+    const address = normalizeEmailIdentity(authorization.profile.address);
+    const existing = [...this.connectedMailboxes.values()].find(
+      (candidate) =>
+        candidate.businessId === session.businessId &&
+        candidate.provider === input.provider &&
+        candidate.providerAccountId === authorization.profile.providerAccountId
+    );
+    if (existing !== undefined && existing.accountId !== session.accountId) {
+      throw new Cp2Error(
+        409,
+        "mailbox_identity_conflict",
+        "This mailbox is already connected by another account for this business."
+      );
+    }
+    const tokens = authorization.tokens;
+    const canSend = mailboxScopeAllows(input.provider, tokens.scope, "send");
+    const canReceive = mailboxScopeAllows(input.provider, tokens.scope, "receive");
+    if (!canSend || !canReceive) {
+      throw new Cp2Error(
+        403,
+        "mailbox_scope_missing",
+        "Mailbox authorization did not grant both send and receive access."
+      );
+    }
+    const isDefault =
+      existing?.isDefault ??
+      ![...this.connectedMailboxes.values()].some(
+        (candidate) =>
+          candidate.businessId === session.businessId &&
+          candidate.status === "connected" &&
+          candidate.isDefault
+      );
+    const record: ConnectedMailboxRecord = {
+      id: existing?.id ?? randomUUID(),
+      businessId: session.businessId,
+      accountId: session.accountId,
+      address,
+      provider: input.provider,
+      providerAccountId: authorization.profile.providerAccountId,
+      status: "connected",
+      readiness: "READY",
+      canSend,
+      canReceive,
+      isDefault,
+      ingestUnknownSenders: existing?.ingestUnknownSenders ?? false,
+      automaticReplyEnabled: existing?.automaticReplyEnabled ?? false,
+      automaticReplyText: existing?.automaticReplyText ?? null,
+      encryptedAccessToken: encryptOAuthToken(tokens.accessToken),
+      encryptedRefreshToken:
+        tokens.refreshToken === null
+          ? (existing?.encryptedRefreshToken ?? null)
+          : encryptOAuthToken(tokens.refreshToken),
+      tokenExpiresAt: tokens.expiresAt,
+      tokenType: tokens.tokenType,
+      scope: tokens.scope,
+      connectedAt: existing?.connectedAt ?? now.toISOString(),
+      lastSyncAt: existing?.lastSyncAt ?? null,
+      lastErrorCode: null,
+      disconnectedAt: null,
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(record.id, record);
+    this.connectedMailboxOAuthSessions.set(session.id, {
+      ...session,
+      completedAt: now.toISOString()
+    });
+    this.setMailboxChannelStatus(record.id, "available", now);
+    this.deps.recordAuditEvent({
+      type: "mailbox.connected",
+      aggregateType: "connected_mailbox",
+      aggregateId: record.id,
+      actorId: session.accountId,
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: session.accountId,
+        businessId: session.businessId,
+        mailboxId: record.id,
+        provider: record.provider
+      }
+    });
+    return { mailbox: connectedMailboxView(record), returnUrl: session.returnUrl };
+  }
+
+  listConnectedMailboxes(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ConnectedMailboxSummary[] {
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now ?? new Date()
+    );
+    return [...this.connectedMailboxes.values()]
+      .filter((mailbox) => mailbox.businessId === input.businessId)
+      .sort(
+        (left, right) =>
+          Number(right.isDefault) - Number(left.isDefault) ||
+          right.updatedAt.localeCompare(left.updatedAt)
+      )
+      .map(connectedMailboxView);
+  }
+
+  updateConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    isDefault?: boolean;
+    ingestUnknownSenders?: boolean;
+    automaticReplyEnabled?: boolean;
+    automaticReplyText?: string | null;
+    now?: Date;
+  }): ConnectedMailboxSummary {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    if (input.isDefault === true) {
+      for (const candidate of this.connectedMailboxes.values()) {
+        if (candidate.businessId === input.businessId && candidate.id !== mailbox.id) {
+          this.connectedMailboxes.set(candidate.id, {
+            ...candidate,
+            isDefault: false,
+            updatedAt: now.toISOString()
+          });
+        }
+      }
+    }
+    const automaticReplyText =
+      input.automaticReplyText === undefined
+        ? mailbox.automaticReplyText
+        : normalizeOptionalBoundedText(input.automaticReplyText, 1000);
+    const automaticReplyEnabled = input.automaticReplyEnabled ?? mailbox.automaticReplyEnabled;
+    if (automaticReplyEnabled && automaticReplyText === null) {
+      throw new Cp2Error(
+        400,
+        "mailbox_automatic_reply_text_required",
+        "Automatic acknowledgement text is required before enabling automatic replies."
+      );
+    }
+    const updated: ConnectedMailboxRecord = {
+      ...mailbox,
+      isDefault: input.isDefault === true ? true : mailbox.isDefault,
+      ingestUnknownSenders: input.ingestUnknownSenders ?? mailbox.ingestUnknownSenders,
+      automaticReplyEnabled,
+      automaticReplyText,
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(updated.id, updated);
+    if (input.automaticReplyEnabled !== undefined) {
+      for (const channel of this.conversationChannels.values()) {
+        if (channel.provider === "email" && channel.metadata.mailboxId === updated.id) {
+          this.conversationChannels.set(channel.id, {
+            ...channel,
+            metadata: {
+              ...channel.metadata,
+              automaticRepliesEnabled: updated.automaticReplyEnabled
+            },
+            updatedAt: now.toISOString()
+          });
+        }
+      }
+    }
+    return connectedMailboxView(updated);
+  }
+
+  async disconnectConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    now?: Date;
+  }): Promise<ConnectedMailboxSummary> {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    const accessToken =
+      mailbox.encryptedAccessToken === null
+        ? null
+        : decryptOAuthToken(mailbox.encryptedAccessToken);
+    await this.deps.emailMailboxProviderClient.revoke({ provider: mailbox.provider, accessToken });
+    const disconnected: ConnectedMailboxRecord = {
+      ...mailbox,
+      status: "disconnected",
+      readiness: "NOT_CONFIGURED",
+      canSend: false,
+      canReceive: false,
+      isDefault: false,
+      encryptedAccessToken: null,
+      encryptedRefreshToken: null,
+      tokenExpiresAt: null,
+      lastErrorCode: null,
+      disconnectedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(disconnected.id, disconnected);
+    this.setMailboxChannelStatus(disconnected.id, "authorization_required", now);
+    return connectedMailboxView(disconnected);
+  }
+
+  async syncConnectedMailbox(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    historyDays?: number;
+    now?: Date;
+  }): Promise<ConnectedMailboxSyncSummary> {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (mailbox.accountId !== auth.account.id) {
+      throw new Cp2Error(403, "mailbox_forbidden", "This mailbox belongs to another account.");
+    }
+    const historyDays = normalizeMailboxHistoryDays(input.historyDays);
+    return this.syncMailboxRecord(mailbox, now, historyDays);
+  }
+
+  async syncDueConnectedMailboxes(
+    input: {
+      now?: Date;
+      staleAfterMs?: number;
+      limit?: number;
+    } = {}
+  ): Promise<ConnectedMailboxBackgroundSyncSummary> {
+    const now = input.now ?? new Date();
+    const staleAfterMs = normalizePositiveInteger(input.staleAfterMs, 5 * 60_000, 60_000);
+    const limit = Math.min(50, normalizePositiveInteger(input.limit, 20, 1));
+    const due = [...this.connectedMailboxes.values()]
+      .filter(
+        (mailbox) =>
+          mailbox.status === "connected" &&
+          mailbox.canReceive &&
+          Date.parse(mailbox.lastSyncAt ?? mailbox.connectedAt) <= now.getTime() - staleAfterMs
+      )
+      .sort((left, right) =>
+        (left.lastSyncAt ?? left.connectedAt).localeCompare(right.lastSyncAt ?? right.connectedAt)
+      )
+      .slice(0, limit);
+    const summary: ConnectedMailboxBackgroundSyncSummary = {
+      checked: due.length,
+      synchronized: 0,
+      ingested: 0,
+      deduplicated: 0,
+      filtered: 0,
+      failed: 0
+    };
+    for (const mailbox of due) {
+      try {
+        const result = await this.syncMailboxRecord(mailbox, now, null);
+        summary.synchronized += 1;
+        summary.ingested += result.ingested;
+        summary.deduplicated += result.deduplicated;
+        summary.filtered += result.filtered;
+      } catch {
+        summary.failed += 1;
+      }
+    }
+    return summary;
+  }
+
+  private async syncMailboxRecord(
+    mailbox: ConnectedMailboxRecord,
+    now: Date,
+    historyDays: number | null
+  ): Promise<ConnectedMailboxSyncSummary> {
+    try {
+      let authorized = await this.authorizedMailbox(mailbox, now);
+      const since =
+        historyDays === null
+          ? (authorized.mailbox.lastSyncAt ?? authorized.mailbox.connectedAt)
+          : new Date(now.getTime() - historyDays * 24 * 60 * 60_000).toISOString();
+      const limit = historyDays === null ? 25 : 100;
+      let messages: NormalizedProviderEmail[];
+      try {
+        messages = await this.deps.emailMailboxProviderClient.fetchInbound({
+          provider: authorized.mailbox.provider,
+          accessToken: authorized.accessToken,
+          since,
+          limit
+        });
+      } catch (error) {
+        if (!isEmailReauthorizationError(error)) throw error;
+        authorized = await this.refreshMailboxAuthorization(authorized.mailbox, now);
+        messages = await this.deps.emailMailboxProviderClient.fetchInbound({
+          provider: authorized.mailbox.provider,
+          accessToken: authorized.accessToken,
+          since,
+          limit
+        });
+      }
+      let ingested = 0;
+      let deduplicated = 0;
+      let filtered = 0;
+      for (const message of messages) {
+        const result = await this.ingestConnectedMailboxEmail(authorized.mailbox, message, now);
+        if (result === "ingested") ingested += 1;
+        else if (result === "deduplicated") deduplicated += 1;
+        else filtered += 1;
+      }
+      const synchronized: ConnectedMailboxRecord = {
+        ...authorized.mailbox,
+        lastSyncAt: now.toISOString(),
+        lastErrorCode: null,
+        updatedAt: now.toISOString()
+      };
+      this.connectedMailboxes.set(synchronized.id, synchronized);
+      return {
+        mailbox: connectedMailboxView(synchronized),
+        fetched: messages.length,
+        ingested,
+        deduplicated,
+        filtered
+      };
+    } catch (error) {
+      this.handleEmailProviderFailure(mailbox, error, now);
+      throw this.emailProviderCp2Error(error);
+    }
+  }
+
+  createConnectedEmailConversation(input: {
+    sessionId: string | null;
+    businessId: string;
+    mailboxId: string;
+    recipientAddress: string;
+    displayName?: string;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const mailbox = this.requireConnectedMailbox(input.businessId, input.mailboxId);
+    if (
+      mailbox.accountId !== auth.account.id ||
+      mailbox.status !== "connected" ||
+      !mailbox.canSend
+    ) {
+      throw new Cp2Error(
+        403,
+        "EMAIL_MAILBOX_NOT_CONNECTED",
+        "This mailbox is not authorized to send email for the current account."
+      );
+    }
+    const recipientAddress = normalizeEmailIdentity(input.recipientAddress);
+    const existingCustomer = [...this.deps.customers.values()].find(
+      (candidate) =>
+        candidate.businessId === input.businessId &&
+        normalizeStoredEmailIdentity(candidate.email) === recipientAddress
+    );
+    const customer =
+      existingCustomer ??
+      this.deps.createGuestCustomer({
+        businessId: input.businessId,
+        displayName: input.displayName ?? recipientAddress,
+        provider: "email",
+        externalUserId: recipientAddress,
+        now
+      });
+    this.ensureEmailEndpoint({
+      businessId: input.businessId,
+      customer,
+      accountId: auth.account.id,
+      userId: auth.user.id,
+      mailboxId: mailbox.id,
+      conversationId: null,
+      allowUnconnected: false,
+      now
+    });
+    const channel = [...this.conversationChannels.values()].find((candidate) => {
+      const identity = this.platformIdentities.get(candidate.platformIdentityId);
+      return (
+        candidate.provider === "email" &&
+        candidate.businessId === input.businessId &&
+        candidate.metadata.mailboxId === mailbox.id &&
+        identity?.customerId === customer.id
+      );
+    });
+    if (channel === undefined) {
+      throw new Cp2Error(500, "EMAIL_CONVERSATION_FAILED", "Email conversation was not created.");
+    }
+    return this.conversationView(
+      this.requireAccountConversation(channel.conversationId, auth.account.id)
+    );
+  }
+
+  listCustomerChannelEndpoints(input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId?: string;
+    conversationId?: string;
+    now?: Date;
+  }): ChannelEndpointSummary[] {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:read",
+      now
+    );
+    const customer =
+      input.customerId === undefined
+        ? null
+        : this.deps.requireCustomer(input.businessId, input.customerId);
+    if (customer !== null) {
+      this.ensureNativeSmsEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        now
+      });
+      this.ensureEmailEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        mailboxId: null,
+        conversationId: input.conversationId ?? null,
+        allowUnconnected: true,
+        now
+      });
+    }
+    return this.channelEndpoints({
+      businessId: input.businessId,
+      customerId: customer?.id ?? null,
+      conversationId: input.conversationId ?? null
+    });
+  }
+
+  createChannelIdentityLinkGrant(input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId: string;
+    provider: ChannelProvider;
+    conversationId?: string | null;
+    automaticRepliesEnabled?: boolean;
+    now?: Date;
+  }): {
+    grantId: string;
+    provider: ChannelProvider;
+    token: string;
+    linkUrl: string;
+    expiresAt: string;
+  } {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    this.deps.requireCustomer(input.businessId, input.customerId);
+    if (input.conversationId) {
+      const conversation = this.conversations.get(input.conversationId);
+      if (conversation?.activeShopId !== input.businessId) {
+        throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+      }
+    }
+    const token = randomBytes(32).toString("base64url");
+    const linkUrl = this.deps.channelGateway.createLinkUrl(input.provider, token);
+    if (linkUrl === null) {
+      throw new Cp2Error(
+        409,
+        "CHANNEL_NOT_CONNECTED",
+        "This provider is not configured for secure identity linking."
+      );
+    }
+    const grant: ChannelIdentityLinkGrantRecord = {
+      id: randomUUID(),
+      businessId: input.businessId,
+      customerId: input.customerId,
+      conversationId: input.conversationId ?? null,
+      provider: input.provider,
+      tokenHash: hashCustomerCapability(token),
+      automaticRepliesEnabled: input.automaticRepliesEnabled ?? false,
+      expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
+      consumedAt: null,
+      createdBy: auth.user.id,
+      createdAt: now.toISOString()
+    };
+    this.channelIdentityLinkGrants.set(grant.id, grant);
+    this.deps.recordAuditEvent({
+      type: "channel.identity_link_grant_created",
+      aggregateType: "channel_identity_link_grant",
+      aggregateId: grant.id,
+      actorId: auth.user.id,
+      occurredAt: grant.createdAt,
+      payload: {
+        businessId: grant.businessId,
+        customerId: grant.customerId,
+        provider: grant.provider
+      }
+    });
+    return {
+      grantId: grant.id,
+      provider: grant.provider,
+      token,
+      linkUrl,
+      expiresAt: grant.expiresAt
+    };
+  }
+
+  ingestChannelWebhook(input: {
+    provider: ChannelProvider;
+    headers: Record<string, string | string[] | undefined>;
+    payload: unknown;
+    now?: Date;
+  }): { receipt: ProviderUpdateReceiptSummary; message: ConversationMessageSummary | null } {
+    const now = input.now ?? new Date();
+    let inbound;
+    try {
+      inbound = this.deps.channelGateway.normalizeInbound({
+        provider: input.provider,
+        headers: input.headers,
+        payload: input.payload
+      });
+    } catch (error) {
+      throw this.channelError(error);
+    }
+
+    const existingReceipt = [...this.providerUpdateReceipts.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.externalUpdateId === inbound.externalUpdateId
+    );
+    if (existingReceipt) {
+      return {
+        receipt: existingReceipt,
+        message:
+          existingReceipt.messageId === null
+            ? null
+            : (this.conversationMessages.get(existingReceipt.messageId) ?? null)
+      };
+    }
+
+    const matchingChannels = [...this.conversationChannels.values()].filter(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.externalConversationId === inbound.externalConversationId
+    );
+    let channel = matchingChannels.length === 1 ? matchingChannels[0] : undefined;
+    if (inbound.linkToken !== null) {
+      const tokenHash = hashCustomerCapability(inbound.linkToken);
+      const grant = [...this.channelIdentityLinkGrants.values()].find(
+        (candidate) => candidate.provider === input.provider && candidate.tokenHash === tokenHash
+      );
+      if (
+        grant === undefined ||
+        grant.consumedAt !== null ||
+        Date.parse(grant.expiresAt) <= now.getTime()
+      ) {
+        throw new Cp2Error(401, "channel_link_invalid", "This channel link is invalid or expired.");
+      }
+      const ownerMembership = [...this.deps.memberships.values()].find(
+        (membership) => membership.businessId === grant.businessId && membership.role === "owner"
+      );
+      const owner = ownerMembership ? this.deps.users.get(ownerMembership.userId) : undefined;
+      if (owner === undefined) {
+        throw new Cp2Error(409, "storefront_owner_missing", "Storefront owner is unavailable.");
+      }
+      const linked = this.upsertProviderConversation({
+        businessId: grant.businessId,
+        provider: input.provider,
+        customerId: grant.customerId,
+        externalUserId: inbound.externalUserId,
+        externalConversationId: inbound.externalConversationId,
+        displayName: inbound.displayName,
+        metadata: { linkGrantId: grant.id, automaticRepliesEnabled: grant.automaticRepliesEnabled },
+        ownerAccountId: owner.accountId,
+        ownerUserId: owner.id,
+        now
+      });
+      channel = linked.channel;
+      this.channelIdentityLinkGrants.set(grant.id, { ...grant, consumedAt: now.toISOString() });
+    }
+    if (channel === undefined) {
+      throw new Cp2Error(
+        404,
+        "CHANNEL_IDENTITY_NOT_FOUND",
+        "No customer is linked to this provider conversation."
+      );
+    }
+    return this.ingestProviderMessage({
+      provider: input.provider,
+      businessId: channel.businessId,
+      externalConversationId: inbound.externalConversationId,
+      externalUpdateId: inbound.externalUpdateId,
+      body: inbound.linkToken === null ? inbound.text : `[${input.provider} identity linked]`,
+      providerMessageId: inbound.externalMessageId,
+      now
+    });
+  }
+
+  async sendChannelMessage(input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId?: string;
+    customerName?: string;
+    conversationId?: string;
+    provider?: ChannelProvider;
+    mailboxId?: string;
+    subject?: string;
+    replyToMessageId?: string;
+    attachments?: TrustedMessageAttachmentReference[];
+    text: string;
+    idempotencyKey: string;
+    now?: Date;
+  }): Promise<ChannelMessageSendResult> {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:write",
+      now
+    );
+    const text = normalizeRequiredBoundedText(input.text, "message", 4000);
+    const idempotencyKey = normalizeRequiredBoundedText(
+      input.idempotencyKey,
+      "idempotencyKey",
+      200
+    );
+    const customer = this.resolveMessagingCustomer(input.businessId, {
+      customerId: input.customerId,
+      customerName: input.customerName,
+      conversationId: input.conversationId
+    });
+    if (input.provider === "native_sms" || input.provider === undefined) {
+      this.ensureNativeSmsEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        now
+      });
+    }
+    if (input.provider === "email") {
+      this.ensureEmailEndpoint({
+        businessId: input.businessId,
+        customer,
+        accountId: auth.account.id,
+        userId: auth.user.id,
+        mailboxId: input.mailboxId ?? null,
+        conversationId: input.conversationId ?? null,
+        allowUnconnected: false,
+        now
+      });
+    }
+    let endpoints = this.channelEndpoints({
+      businessId: input.businessId,
+      customerId: customer.id,
+      conversationId: input.conversationId ?? null
+    });
+    if (input.mailboxId !== undefined) {
+      endpoints = endpoints.filter(
+        (endpoint) =>
+          endpoint.provider !== "email" || endpoint.executionMailboxId === input.mailboxId
+      );
+    }
+    let selection;
+    try {
+      selection = this.deps.channelGateway.select({
+        endpoints,
+        ...(input.provider === undefined ? {} : { preferredProvider: input.provider })
+      });
+    } catch (error) {
+      throw this.channelError(error);
+    }
+    const existingId = this.messageByIdempotencyKey.get(
+      `${selection.endpoint.conversationId}:${idempotencyKey}`
+    );
+    if (existingId) {
+      return {
+        message: this.conversationMessages.get(existingId) as ConversationMessageSummary,
+        selection
+      };
+    }
+    const replyTo =
+      input.replyToMessageId === undefined
+        ? null
+        : this.requireEmailReplyTarget(selection.endpoint.conversationId, input.replyToMessageId);
+    const subject =
+      selection.endpoint.provider === "email"
+        ? normalizeEmailSubject(input.subject ?? replyTo?.subject ?? "")
+        : null;
+    const resolvedAttachments =
+      selection.endpoint.provider === "email"
+        ? this.resolveTrustedEmailAttachments(
+            input.businessId,
+            customer.id,
+            input.attachments ?? []
+          )
+        : { canonical: [], provider: [] };
+    const message = this.persistOutboundChannelMessage({
+      endpoint: selection.endpoint,
+      authorId: auth.user.id,
+      text,
+      subject,
+      replyToMessageId: replyTo?.id ?? null,
+      externalThreadId: replyTo?.externalThreadId ?? null,
+      attachments: resolvedAttachments.canonical,
+      idempotencyKey,
+      now
+    });
+    try {
+      const dispatched = await this.deps.channelGateway.send({
+        businessId: input.businessId,
+        conversationId: selection.endpoint.conversationId,
+        customerId: customer.id,
+        idempotencyKey,
+        text,
+        ...(subject === null ? {} : { subject }),
+        ...(replyTo === null
+          ? {}
+          : {
+              replyToProviderMessageId: replyTo.providerMessageId ?? null,
+              externalThreadId: replyTo.externalThreadId ?? null
+            }),
+        ...(resolvedAttachments.provider.length === 0
+          ? {}
+          : { attachments: resolvedAttachments.provider }),
+        endpoints,
+        preferredProvider: selection.endpoint.provider
+      });
+      const delivered: ConversationMessageSummary = {
+        ...message,
+        status: dispatched.result.status,
+        sentAt: dispatched.result.status === "queued" ? null : now.toISOString(),
+        deliveredAt: dispatched.result.status === "delivered" ? now.toISOString() : null,
+        failureCode: null,
+        actualChannel: providerToMessageChannel(dispatched.selection.endpoint.provider),
+        providerMessageId: dispatched.result.providerMessageId,
+        externalThreadId: dispatched.result.externalThreadId ?? message.externalThreadId ?? null,
+        externalConversationId:
+          dispatched.result.externalThreadId ?? message.externalConversationId ?? null
+      };
+      this.conversationMessages.set(delivered.id, delivered);
+      if (dispatched.result.status !== "queued") {
+        this.finishChannelDeliveryAttempt(delivered, "succeeded", null, now);
+      }
+      const channel = this.conversationChannels.get(selection.endpoint.channelId);
+      if (channel) {
+        this.conversationChannels.set(channel.id, {
+          ...channel,
+          externalConversationId:
+            dispatched.result.externalThreadId ?? channel.externalConversationId,
+          metadata: subject === null ? channel.metadata : { ...channel.metadata, subject },
+          lastOutboundAt: now.toISOString(),
+          updatedAt: now.toISOString()
+        });
+      }
+      return { message: delivered, selection: dispatched.selection };
+    } catch (error) {
+      const normalized = this.channelError(error);
+      const failed: ConversationMessageSummary = {
+        ...message,
+        status: "failed",
+        failureCode: normalized.code,
+        retryCount: 1,
+        nextRetryAt:
+          error instanceof ChannelGatewayError && error.retryable
+            ? new Date(now.getTime() + 60_000).toISOString()
+            : null
+      };
+      this.conversationMessages.set(failed.id, failed);
+      this.finishChannelDeliveryAttempt(
+        failed,
+        error instanceof ChannelGatewayError && error.retryable
+          ? "transient_failure"
+          : "permanent_failure",
+        normalized.code,
+        now
+      );
+      throw normalized;
+    }
+  }
+
+  ingestProviderMessage(input: {
+    provider: ChannelProvider;
+    businessId: string;
+    externalConversationId: string;
+    externalUpdateId: string;
+    body: string;
+    providerMessageId?: string | null;
+    subject?: string | null;
+    externalThreadId?: string | null;
+    senderAddress?: string | null;
+    recipientAddresses?: string[];
+    ccAddresses?: string[];
+    now?: Date;
+  }): { receipt: ProviderUpdateReceiptSummary; message: ConversationMessageSummary | null } {
+    const now = input.now ?? new Date();
+    const existing = [...this.providerUpdateReceipts.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.externalUpdateId === input.externalUpdateId
+    );
+    if (existing !== undefined) {
+      return {
+        receipt: existing,
+        message: existing.messageId
+          ? (this.conversationMessages.get(existing.messageId) ?? null)
+          : null
+      };
+    }
+    const channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === input.provider &&
+        candidate.businessId === input.businessId &&
+        candidate.externalConversationId === input.externalConversationId
+    );
+    if (channel === undefined) {
+      throw new Cp2Error(
+        404,
+        "conversation_channel_not_found",
+        "Provider relationship was not found."
+      );
+    }
+    const message = this.persistExternalConversationMessage({
+      conversationId: channel.conversationId,
+      provider: input.provider,
+      channelIdentityId: channel.platformIdentityId,
+      externalConversationId: channel.externalConversationId,
+      author: "user",
+      authorId: channel.platformIdentityId,
+      body: normalizeRequiredBoundedText(input.body, "message", 4000),
+      attachmentNames: [],
+      idempotencyKey: `${input.provider}:update:${input.externalUpdateId}`,
+      providerMessageId: input.providerMessageId ?? null,
+      subject: input.subject ?? null,
+      externalThreadId: input.externalThreadId ?? null,
+      senderAddress: input.senderAddress ?? null,
+      recipientAddresses: input.recipientAddresses ?? [],
+      ccAddresses: input.ccAddresses ?? [],
+      now
+    });
+    this.conversationChannels.set(channel.id, {
+      ...channel,
+      lastInboundAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    });
+    const receipt: ProviderUpdateReceiptSummary = {
+      id: randomUUID(),
+      provider: input.provider,
+      externalUpdateId: input.externalUpdateId,
+      businessId: input.businessId,
+      conversationChannelId: channel.id,
+      messageId: message.id,
+      status: "processed",
+      createdAt: now.toISOString(),
+      processedAt: now.toISOString()
+    };
+    this.providerUpdateReceipts.set(receipt.id, receipt);
+    return { receipt, message };
+  }
+
+  listConversations(input: {
+    sessionId: string | null;
+    includeArchived?: boolean;
+    now?: Date;
+  }): ConversationInboxItem[] {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    return [...this.conversations.values()]
+      .map((conversation) => {
+        const participant = this.accountConversationParticipant(
+          conversation.id,
+          session.account.id
+        );
+        if (participant === null || (!input.includeArchived && participant.archivedAt)) return null;
+        const messages = this.messagesForConversation(conversation.id);
+        const lastMessage = messages.at(-1) ?? null;
+        const lastRead =
+          participant.lastReadAt === null || participant.lastReadAt === undefined
+            ? 0
+            : Date.parse(participant.lastReadAt);
+        return {
+          ...conversation,
+          lastMessage,
+          unreadCount: messages.filter(
+            (message) =>
+              message.authorId !== session.user.id &&
+              message.deletedAt == null &&
+              Date.parse(message.createdAt) > lastRead
+          ).length,
+          participant: this.participantView(participant)
+        } satisfies ConversationInboxItem;
+      })
+      .filter((conversation): conversation is ConversationInboxItem => conversation !== null)
+      .sort((left, right) => {
+        const pinned =
+          Number(Boolean(right.participant.pinnedAt)) - Number(Boolean(left.participant.pinnedAt));
+        return pinned || Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+      });
+  }
+
+  getConversation(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): ConversationView {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return this.conversationView(
+      this.requireAccountConversation(input.conversationId, session.account.id)
+    );
+  }
+
+  registerE2eeDevice(input: {
+    sessionId: string | null;
+    deviceId: string;
+    label: string;
+    publicKey: E2eePublicKey;
+    now?: Date;
+  }): E2eeDeviceSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const deviceId = input.deviceId.trim();
+    const label = input.label.trim();
+    if (deviceId.length < 8 || deviceId.length > 120 || label.length < 1 || label.length > 120) {
+      throw new Cp2Error(400, "e2ee_device_invalid", "Device id or label is invalid.");
+    }
+    validateE2eePublicKey(input.publicKey);
+    const current = this.e2eeDevices.get(deviceId);
+    if (current && current.accountId !== session.account.id) {
+      throw new Cp2Error(409, "e2ee_device_conflict", "Device id is already registered.");
+    }
+    const device: E2eeDeviceSummary = {
+      id: deviceId,
+      accountId: session.account.id,
+      label,
+      publicKey: input.publicKey,
+      createdAt: current?.createdAt ?? now.toISOString(),
+      lastSeenAt: now.toISOString(),
+      revokedAt: null
+    };
+    this.e2eeDevices.set(device.id, device);
+    return device;
+  }
+
+  listE2eeDevices(input: { sessionId: string | null; now?: Date }): E2eeDeviceSummary[] {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return [...this.e2eeDevices.values()].filter(
+      (device) => device.accountId === session.account.id && device.revokedAt === null
+    );
+  }
+
+  revokeE2eeDevice(input: {
+    sessionId: string | null;
+    deviceId: string;
+    now?: Date;
+  }): E2eeDeviceSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const current = this.e2eeDevices.get(input.deviceId);
+    if (!current || current.accountId !== session.account.id) {
+      throw new Cp2Error(404, "e2ee_device_not_found", "Encryption device was not found.");
+    }
+    const device = { ...current, revokedAt: now.toISOString() };
+    this.e2eeDevices.set(device.id, device);
+    return device;
+  }
+
+  listConversationE2eeDevices(input: {
+    sessionId: string | null;
+    conversationId: string;
+    now?: Date;
+  }): E2eeDeviceSummary[] {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const accountIds = new Set(this.humanConversationAccountIds(input.conversationId));
+    return [...this.e2eeDevices.values()].filter(
+      (device) => accountIds.has(device.accountId) && device.revokedAt === null
+    );
+  }
+
+  registerPushSubscription(input: {
+    sessionId: string | null;
+    endpoint: string;
+    expirationTime: number | null;
+    keys: { auth: string; p256dh: string };
+    now?: Date;
+  }): PushSubscriptionSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const endpoint = input.endpoint.trim();
+    if (!endpoint.startsWith("https://") || endpoint.length > 2_048) {
+      throw new Cp2Error(400, "push_subscription_invalid", "Push endpoint is invalid.");
+    }
+    if (!isBase64Url(input.keys.auth, 16, 256) || !isBase64Url(input.keys.p256dh, 32, 512)) {
+      throw new Cp2Error(400, "push_subscription_invalid", "Push keys are invalid.");
+    }
+    const currentId = this.pushSubscriptionIdByEndpoint.get(endpoint);
+    const current = currentId ? this.pushSubscriptions.get(currentId) : undefined;
+    if (current && current.accountId !== session.account.id) {
+      throw new Cp2Error(409, "push_subscription_conflict", "Push endpoint is already registered.");
+    }
+    const subscription: PushSubscriptionSummary = {
+      id: current?.id ?? randomUUID(),
+      accountId: session.account.id,
+      endpoint,
+      expirationTime: input.expirationTime,
+      keys: input.keys,
+      createdAt: current?.createdAt ?? now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.pushSubscriptions.set(subscription.id, subscription);
+    this.pushSubscriptionIdByEndpoint.set(endpoint, subscription.id);
+    return subscription;
+  }
+
+  removePushSubscription(input: { sessionId: string | null; endpoint: string; now?: Date }): {
+    removed: boolean;
+  } {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    const id = this.pushSubscriptionIdByEndpoint.get(input.endpoint);
+    const subscription = id ? this.pushSubscriptions.get(id) : undefined;
+    if (!subscription || subscription.accountId !== session.account.id) return { removed: false };
+    this.pushSubscriptions.delete(subscription.id);
+    this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+    return { removed: true };
+  }
+
+  recordMessageHandoff(input: {
+    sessionId: string | null;
+    businessId: string | null;
+    conversationId: string | null;
+    channel: MessageHandoffChannel;
+    status: MessageHandoffStatus;
+    normalizedErrorCode: string | null;
+    now?: Date;
+  }): MessageHandoffSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    if (input.businessId !== null) {
+      this.deps.requireMembership(input.businessId, session.user.id);
+    }
+    if (input.conversationId !== null) {
+      this.requireAccountConversation(input.conversationId, session.account.id);
+    }
+    if (
+      input.normalizedErrorCode !== null &&
+      !/^[a-z0-9_]{1,80}$/.test(input.normalizedErrorCode)
+    ) {
+      throw new Cp2Error(
+        400,
+        "message_handoff_error_invalid",
+        "The normalized handoff error code is invalid."
+      );
+    }
+
+    const handoff: MessageHandoffSummary = {
+      id: randomUUID(),
+      accountId: session.account.id,
+      businessId: input.businessId,
+      conversationId: input.conversationId,
+      channel: input.channel,
+      status: input.status,
+      normalizedErrorCode: input.normalizedErrorCode,
+      createdAt: now.toISOString()
+    };
+    this.deps.recordAuditEvent({
+      type: "message.handoff",
+      aggregateType: "message_handoff",
+      aggregateId: handoff.id,
+      actorId: session.user.id,
+      occurredAt: handoff.createdAt,
+      payload: {
+        accountId: handoff.accountId,
+        businessId: handoff.businessId,
+        conversationId: handoff.conversationId,
+        channel: handoff.channel,
+        status: handoff.status,
+        normalizedErrorCode: handoff.normalizedErrorCode
+      }
+    });
+    return handoff;
+  }
+
+  createConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    clientMessageId: string;
+    idempotencyKey?: string;
+    content: ConversationMessageContent;
+    author?: ConversationMessageAuthor;
+    replyToMessageId?: string | null;
+    forwardedFromMessageId?: string | null;
+    clientTimestamp?: string | null;
+    queuedAt?: string | null;
+    selectedChannel?: MessageChannel;
+    now?: Date;
+  }): ConversationMessageSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const clientMessageId = input.clientMessageId.trim();
+
+    if (clientMessageId.length < 8 || clientMessageId.length > 120) {
+      throw new Cp2Error(
+        400,
+        "client_message_id_invalid",
+        "clientMessageId must be between 8 and 120 characters."
+      );
+    }
+
+    const idempotencyKey = (
+      input.idempotencyKey ?? `soko:${conversation.id}:${clientMessageId}`
+    ).trim();
+    if (idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+      throw new Cp2Error(
+        400,
+        "idempotency_key_invalid",
+        "idempotencyKey must be between 8 and 200 characters."
+      );
+    }
+    const selectedChannel = input.selectedChannel ?? "soko";
+    const externalChannel =
+      selectedChannel === "soko"
+        ? undefined
+        : [...this.conversationChannels.values()].find(
+            (channel) =>
+              channel.conversationId === conversation.id && channel.provider === selectedChannel
+          );
+    if (selectedChannel !== "soko" && externalChannel === undefined) {
+      throw new Cp2Error(
+        400,
+        "message_channel_unavailable",
+        "The requested messaging channel is not configured."
+      );
+    }
+
+    const clientLookupKey = `${conversation.id}:${clientMessageId}`;
+    const idempotencyLookupKey = `${conversation.id}:${idempotencyKey}`;
+    const existingId =
+      this.messageByClientId.get(clientLookupKey) ??
+      this.messageByIdempotencyKey.get(idempotencyLookupKey);
+
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+
+    validateConversationMessageContent(input.content);
+    this.validateConversationEncryption(conversation.id, input.content);
+    for (const referencedId of [input.replyToMessageId, input.forwardedFromMessageId]) {
+      if (
+        referencedId &&
+        this.requireConversationMessage(referencedId, conversation.id).deletedAt
+      ) {
+        throw new Cp2Error(400, "message_reference_invalid", "Referenced message was deleted.");
+      }
+    }
+    if (input.content.type === "owner-controls") {
+      this.deps.requireMembership(input.content.shopId, session.user.id);
+      const context = this.deps.ensureSokoSessionContext(session, now);
+
+      if (context.mode !== "seller" || context.activeShopId !== input.content.shopId) {
+        throw new Cp2Error(
+          403,
+          "seller_context_required",
+          "Owner controls require seller mode for the active shop."
+        );
+      }
+    }
+    if (input.content.type === "storefront" && !this.deps.businesses.has(input.content.shopId)) {
+      throw new Cp2Error(404, "business_not_found", "Storefront shop was not found.");
+    }
+    const author = input.author ?? "user";
+    if (
+      author === "agent" &&
+      [...this.conversationParticipants.values()].some(
+        (participant) =>
+          participant.conversationId === conversation.id &&
+          participant.role === "account" &&
+          participant.accountId !== session.account.id
+      )
+    ) {
+      throw new Cp2Error(
+        403,
+        "agent_message_forbidden",
+        "Agent messages cannot impersonate a direct-message participant."
+      );
+    }
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId,
+      idempotencyKey,
+      author,
+      authorId: author === "agent" ? `account-${session.account.id}-agent` : session.user.id,
+      content: input.content,
+      status: selectedChannel === "soko" ? "delivered" : "queued",
+      queuedAt: input.queuedAt ?? (selectedChannel === "soko" ? null : now.toISOString()),
+      sentAt: selectedChannel === "soko" ? now.toISOString() : null,
+      deliveredAt: selectedChannel === "soko" ? now.toISOString() : null,
+      readAt: null,
+      failureCode: selectedChannel === "soko" ? null : "provider_adapter_unconfigured",
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel,
+      actualChannel: selectedChannel === "soko" ? "soko" : null,
+      providerMessageId: null,
+      importedSource: null,
+      importedExternalId: null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: input.replyToMessageId ?? null,
+      forwardedFromMessageId: input.forwardedFromMessageId ?? null,
+      reactions: [],
+      clientTimestamp: input.clientTimestamp ?? null,
+      createdAt: now.toISOString()
+    };
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(clientLookupKey, message.id);
+    this.messageByIdempotencyKey.set(idempotencyLookupKey, message.id);
+    const attempt: MessageDeliveryAttemptSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: message.id,
+      channel: selectedChannel,
+      provider: selectedChannel,
+      attemptNumber: 1,
+      requestedAt: now.toISOString(),
+      respondedAt: selectedChannel === "soko" ? now.toISOString() : null,
+      result: selectedChannel === "soko" ? "succeeded" : "transient_failure",
+      normalizedFailureCode: selectedChannel === "soko" ? null : "provider_adapter_unconfigured",
+      providerResponseReference: null
+    };
+    this.messageDeliveryAttempts.set(attempt.id, attempt);
+    this.conversations.set(conversation.id, {
+      ...conversation,
+      updatedAt: now.toISOString()
+    });
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      this.conversations.get(conversation.id) as ConversationSummary,
+      now
+    );
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      now
+    );
+    this.deps.recordAuditEvent({
+      type: "message.created",
+      aggregateType: "conversation_message",
+      aggregateId: message.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        clientMessageId,
+        idempotencyKey,
+        contentType: message.content.type,
+        conversationId: conversation.id,
+        selectedChannel
+      }
+    });
+    this.enqueueConversationNotifications(conversation, message, session.account.id, now);
+    return message;
+  }
+
+  async createAgentConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    clientMessageId: string;
+    idempotencyKey?: string;
+    content: ConversationMessageContent;
+    replyToMessageId?: string | null;
+    forwardedFromMessageId?: string | null;
+    clientTimestamp?: string | null;
+    queuedAt?: string | null;
+    selectedChannel?: MessageChannel;
+    businessId: string;
+    message: string;
+    runtimeSessionId?: string;
+    agentProfile?: RuntimeAgentProfile;
+    now?: Date;
+  }): Promise<AgentConversationMessageResult> {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const hasHumanRecipient = [...this.conversationParticipants.values()].some(
+      (participant) =>
+        participant.conversationId === conversation.id &&
+        participant.role === "account" &&
+        participant.accountId !== session.account.id
+    );
+
+    if (hasHumanRecipient) {
+      throw new Cp2Error(
+        409,
+        "agent_processing_requires_agent_conversation",
+        "Encrypted direct messages are not processed by the business agent."
+      );
+    }
+
+    const message = this.createConversationMessage({
+      sessionId: input.sessionId,
+      conversationId: input.conversationId,
+      clientMessageId: input.clientMessageId,
+      ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+      content: input.content,
+      ...(input.replyToMessageId === undefined ? {} : { replyToMessageId: input.replyToMessageId }),
+      ...(input.forwardedFromMessageId === undefined
+        ? {}
+        : { forwardedFromMessageId: input.forwardedFromMessageId }),
+      ...(input.clientTimestamp === undefined ? {} : { clientTimestamp: input.clientTimestamp }),
+      ...(input.queuedAt === undefined ? {} : { queuedAt: input.queuedAt }),
+      ...(input.selectedChannel === undefined ? {} : { selectedChannel: input.selectedChannel }),
+      now
+    });
+    const existingAgentMessage = this.messagesForConversation(conversation.id).find(
+      (candidate) =>
+        candidate.author === "agent" &&
+        candidate.replyToMessageId === message.id &&
+        candidate.deletedAt === null
+    );
+
+    if (existingAgentMessage !== undefined) {
+      return {
+        message,
+        agentMessage: existingAgentMessage,
+        runtime: null,
+        processing: {
+          correlationId: message.id,
+          status: "completed",
+          errorCode: null,
+          retryable: false
+        }
+      };
+    }
+
+    const conversationHistory = this.runtimeConversationHistory(conversation.id, message.id);
+    let runtime: RuntimeTurnResult;
+    try {
+      runtime = await this.deps.createRuntimeTurn({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        ...(input.runtimeSessionId === undefined
+          ? {}
+          : { runtimeSessionId: input.runtimeSessionId }),
+        message: input.message,
+        conversationHistory,
+        ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
+        now
+      });
+    } catch (error) {
+      if (!isRecoverableAgentModelChatError(error)) throw error;
+
+      const agentMessage = this.createConversationMessage({
+        sessionId: input.sessionId,
+        conversationId: conversation.id,
+        clientMessageId: `agent-reply-${message.id}`,
+        idempotencyKey: `soko-agent-reply:${message.id}`,
+        author: "agent",
+        content: {
+          type: "text",
+          text: this.deps.agentModelRecoveryGuidance(input.businessId, error)
+        },
+        replyToMessageId: message.id,
+        clientTimestamp: now.toISOString(),
+        now
+      });
+      return {
+        message: this.markAgentProcessedMessageDelivered(message, now),
+        agentMessage,
+        runtime: null,
+        processing: {
+          correlationId: message.id,
+          status: "completed",
+          errorCode: error.code,
+          retryable: error.retryable ?? true
+        }
+      };
+    }
+    const confirmationToken = runtime.turn.plan.confirmationToken;
+    const agentMessage = this.createConversationMessage({
+      sessionId: input.sessionId,
+      conversationId: conversation.id,
+      clientMessageId: `agent-reply-${message.id}`,
+      idempotencyKey: `soko-agent-reply:${message.id}`,
+      author: "agent",
+      content:
+        confirmationToken === null
+          ? { type: "text", text: runtime.turn.response }
+          : {
+              type: "confirmation",
+              confirmationToken,
+              prompt: runtime.turn.response
+            },
+      replyToMessageId: message.id,
+      clientTimestamp: now.toISOString(),
+      now
+    });
+    const deliveredMessage = this.markAgentProcessedMessageDelivered(message, now);
+
+    return {
+      message: deliveredMessage,
+      agentMessage,
+      runtime,
+      processing: {
+        correlationId: message.id,
+        status: "completed",
+        errorCode: null,
+        retryable: false
+      }
+    };
+  }
+
+  private markAgentProcessedMessageDelivered(
+    message: ConversationMessageSummary,
+    now: Date
+  ): ConversationMessageSummary {
+    if (message.status !== "failed") return message;
+
+    const deliveredMessage: ConversationMessageSummary = {
+      ...message,
+      status: "delivered",
+      failureCode: null,
+      nextRetryAt: null
+    };
+    this.conversationMessages.set(message.id, deliveredMessage);
+    this.recordConversationSyncForParticipants(
+      message.conversationId,
+      "conversation_messages",
+      deliveredMessage.id,
+      deliveredMessage,
+      now
+    );
+    return deliveredMessage;
+  }
+
+  private runtimeConversationHistory(
+    conversationId: string,
+    currentMessageId: string
+  ): RuntimeModelConversationMessage[] {
+    return this.messagesForConversation(conversationId)
+      .filter(
+        (message) =>
+          message.id !== currentMessageId &&
+          message.deletedAt === null &&
+          (message.content.type === "text" || message.content.type === "confirmation")
+      )
+      .slice(-12)
+      .flatMap((message): RuntimeModelConversationMessage[] => {
+        if (message.content.type === "text") {
+          return [
+            {
+              role: message.author === "agent" ? "assistant" : "user",
+              content: message.content.text.slice(0, 1_000)
+            }
+          ];
+        }
+        if (message.content.type === "confirmation") {
+          return [
+            {
+              role: message.author === "agent" ? "assistant" : "user",
+              content: message.content.prompt.slice(0, 1_000)
+            }
+          ];
+        }
+        return [];
+      });
+  }
+
+  listMessageDeliveryAttempts(input: {
+    sessionId: string | null;
+    conversationId: string;
+    messageId: string;
+    now?: Date;
+  }): MessageDeliveryAttemptSummary[] {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    this.requireConversationMessage(input.messageId, conversation.id);
+    return [...this.messageDeliveryAttempts.values()]
+      .filter(
+        (attempt) =>
+          attempt.accountId === session.account.id &&
+          attempt.conversationId === conversation.id &&
+          attempt.messageId === input.messageId
+      )
+      .sort(
+        (left, right) =>
+          left.attemptNumber - right.attemptNumber ||
+          left.requestedAt.localeCompare(right.requestedAt)
+      );
+  }
+
+  async deliverPendingMessageNotifications(
+    input: {
+      messageId?: string;
+      limit?: number;
+      now?: Date;
+    } = {}
+  ): Promise<MessageNotificationDeliveryRunSummary> {
+    const now = input.now ?? new Date();
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const summary: MessageNotificationDeliveryRunSummary = {
+      checked: 0,
+      sent: 0,
+      failed: 0,
+      deadLettered: 0
+    };
+    const due = [...this.messageNotificationDeliveries.values()]
+      .filter(
+        (delivery) =>
+          (delivery.status === "pending" || delivery.status === "failed") &&
+          (input.messageId === undefined || delivery.messageId === input.messageId) &&
+          (delivery.nextAttemptAt === null || Date.parse(delivery.nextAttemptAt) <= now.getTime())
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(0, limit);
+
+    for (const delivery of due) {
+      summary.checked += 1;
+      const result = await this.attemptMessageNotificationDelivery(delivery, now);
+      if (result.status === "sent") summary.sent += 1;
+      else if (result.status === "dead_letter") summary.deadLettered += 1;
+      else summary.failed += 1;
+    }
+    return summary;
+  }
+
+  updateConversationSettings(input: {
+    sessionId: string | null;
+    conversationId: string;
+    archived?: boolean;
+    mutedUntil?: string | null;
+    pinned?: boolean;
+    read?: boolean;
+    title?: string | null;
+    now?: Date;
+  }): ConversationView {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
+    const participant = this.accountConversationParticipant(conversation.id, session.account.id);
+    if (participant === null)
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    const nextParticipant: ConversationParticipantSummary = {
+      ...participant,
+      ...(input.archived !== undefined
+        ? { archivedAt: input.archived ? now.toISOString() : null }
+        : {}),
+      ...(input.mutedUntil !== undefined ? { mutedUntil: input.mutedUntil } : {}),
+      ...(input.pinned !== undefined ? { pinnedAt: input.pinned ? now.toISOString() : null } : {}),
+      ...(input.read ? { lastReadAt: now.toISOString() } : {})
+    };
+    this.conversationParticipants.set(participant.id, nextParticipant);
+    if (input.title !== undefined) {
+      this.conversations.set(conversation.id, {
+        ...conversation,
+        title: input.title?.trim() || null,
+        updatedAt: now.toISOString()
+      });
+    }
+    if (input.read) {
+      for (const message of this.messagesForConversation(conversation.id)) {
+        if (message.authorId !== session.user.id && !message.readAt) {
+          this.conversationMessages.set(message.id, {
+            ...message,
+            status: "read",
+            readAt: now.toISOString()
+          });
+        }
+      }
+    }
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_participants",
+      nextParticipant.id,
+      nextParticipant,
+      now
+    );
+    return this.conversationView(this.conversations.get(conversation.id) ?? conversation);
+  }
+
+  updateConversationMessage(input: {
+    sessionId: string | null;
+    conversationId: string;
+    messageId: string;
+    text?: string;
+    content?: ConversationMessageContent;
+    deleted?: boolean;
+    reaction?: string | null;
+    now?: Date;
+  }): ConversationMessageSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const current = this.requireConversationMessage(input.messageId, input.conversationId);
+    let next = current;
+    if (input.content !== undefined) {
+      if (current.authorId !== session.user.id || current.deletedAt) {
+        throw new Cp2Error(
+          403,
+          "message_edit_forbidden",
+          "Only your active messages can be edited."
+        );
+      }
+      validateConversationMessageContent(input.content);
+      this.validateConversationEncryption(input.conversationId, input.content);
+      next = { ...next, content: input.content, editedAt: now.toISOString() };
+    }
+    if (input.text !== undefined) {
+      if (current.authorId !== session.user.id || current.deletedAt)
+        throw new Cp2Error(
+          403,
+          "message_edit_forbidden",
+          "Only your active messages can be edited."
+        );
+      if (current.content.type !== "text")
+        throw new Cp2Error(400, "message_edit_invalid", "Only text messages can be edited.");
+      const content = { ...current.content, text: input.text };
+      validateConversationMessageContent(content);
+      next = { ...next, content, editedAt: now.toISOString() };
+    }
+    if (input.deleted) {
+      if (current.authorId !== session.user.id)
+        throw new Cp2Error(403, "message_delete_forbidden", "Only your messages can be deleted.");
+      next = {
+        ...next,
+        deletedAt: now.toISOString()
+      };
+    }
+    if (input.reaction !== undefined) {
+      const emoji = input.reaction?.trim() ?? "";
+      if (emoji.length > 16) throw new Cp2Error(400, "reaction_invalid", "Reaction is too long.");
+      const reactions = (next.reactions ?? []).filter(
+        (reaction) => reaction.actorId !== session.user.id
+      );
+      if (emoji) reactions.push({ emoji, actorId: session.user.id, createdAt: now.toISOString() });
+      next = { ...next, reactions };
+    }
+    this.conversationMessages.set(next.id, next);
+    this.recordConversationSyncForParticipants(
+      input.conversationId,
+      "conversation_messages",
+      next.id,
+      next,
+      now
+    );
+    this.deps.recordAuditEvent({
+      type: input.deleted
+        ? "message.deleted"
+        : input.text !== undefined
+          ? "message.edited"
+          : "message.reacted",
+      aggregateType: "conversation_message",
+      aggregateId: next.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: { conversationId: input.conversationId }
+    });
+    return next;
+  }
+
+  setConversationTyping(input: {
+    sessionId: string | null;
+    conversationId: string;
+    typing: boolean;
+    now?: Date;
+  }): ConversationTypingSummary[] {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const key = `${input.conversationId}:${session.user.id}`;
+    if (input.typing) {
+      this.conversationTyping.set(key, {
+        conversationId: input.conversationId,
+        actorId: session.user.id,
+        displayName: session.user.displayName,
+        expiresAt: new Date(now.getTime() + 8_000).toISOString()
+      });
+    } else this.conversationTyping.delete(key);
+    this.recordConversationSyncForParticipants(
+      input.conversationId,
+      "conversation_typing",
+      session.user.id,
+      { typing: input.typing },
+      now
+    );
+    return this.typingForConversation(input.conversationId, now, session.user.id);
+  }
+
+  createPublicStorefrontSession(input: {
+    agentId: string;
+    visitorId: string;
+    displayName?: string | null;
+    now?: Date;
+  }): PublicStorefrontSessionResult {
+    const now = input.now ?? new Date();
+    const business = requirePublicStorefrontBusiness(this.deps.businesses, this.deps.quarantinedBusinessIds, input.agentId);
+    const externalUserId = normalizeRequiredBoundedText(input.visitorId, "visitorId", 100);
+    let identity = [...this.platformIdentities.values()].find(
+      (candidate) =>
+        candidate.provider === "soko" &&
+        candidate.businessId === business.id &&
+        candidate.externalUserId === externalUserId
+    );
+    if (identity === undefined) {
+      const customer = this.deps.createGuestCustomer({
+        businessId: business.id,
+        displayName: input.displayName ?? null,
+        provider: "soko",
+        externalUserId,
+        now
+      });
+      identity = {
+        id: randomUUID(),
+        provider: "soko",
+        externalUserId,
+        accountId: null,
+        customerId: customer.id,
+        verifiedAt: now.toISOString(),
+        optInStatus: "granted",
+        optInSource: "public_storefront_session",
+        optInAt: now.toISOString(),
+        optOutAt: null,
+        businessId: business.id,
+        displayName: normalizeOptionalBoundedText(input.displayName ?? null, 120),
+        metadata: {},
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.platformIdentities.set(identity.id, identity);
+    } else if (identity.customerId === null) {
+      const customer = this.deps.createGuestCustomer({
+        businessId: business.id,
+        displayName: input.displayName ?? identity.displayName,
+        provider: "soko",
+        externalUserId,
+        now
+      });
+      identity = { ...identity, customerId: customer.id, updatedAt: now.toISOString() };
+      this.platformIdentities.set(identity.id, identity);
+    }
+
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === "soko" &&
+        candidate.businessId === business.id &&
+        candidate.externalConversationId === externalUserId
+    );
+    if (channel === undefined) {
+      const ownerMembership = [...this.deps.memberships.values()].find(
+        (membership) => membership.businessId === business.id && membership.role === "owner"
+      );
+      const ownerUser = ownerMembership ? this.deps.users.get(ownerMembership.userId) : undefined;
+      if (ownerUser === undefined) {
+        throw new Cp2Error(409, "storefront_owner_missing", "Storefront owner is unavailable.");
+      }
+      const conversation = this.createAccountConversation({
+        accountId: ownerUser.accountId,
+        userId: ownerUser.id,
+        kind: "storefront",
+        activeShopId: business.id,
+        title: `${business.name} storefront customer`,
+        now
+      });
+      const participant: ConversationParticipantSummary = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "external",
+        accountId: null,
+        businessId: business.id,
+        agentId: null,
+        externalIdentityId: identity.id,
+        displayName: identity.displayName,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: now.toISOString()
+      };
+      this.conversationParticipants.set(participant.id, participant);
+      channel = {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        businessId: business.id,
+        provider: "soko",
+        externalConversationId: externalUserId,
+        platformIdentityId: identity.id,
+        capabilities: ["CAN_RECEIVE", "CAN_REPLY", "CAN_INITIATE", "SUPPORTS_PRODUCT_CARD"],
+        status: "available",
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        metadata: {},
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.conversationChannels.set(channel.id, channel);
+    }
+
+    for (const capability of this.customerRuntimeCapabilities.values()) {
+      if (capability.conversationId === channel.conversationId && capability.revokedAt === null) {
+        this.customerRuntimeCapabilities.set(capability.id, {
+          ...capability,
+          revokedAt: now.toISOString()
+        });
+      }
+    }
+    const capabilityToken = randomBytes(32).toString("base64url");
+    const capability: CustomerRuntimeCapabilityRecord = {
+      id: randomUUID(),
+      businessId: business.id,
+      conversationId: channel.conversationId,
+      platformIdentityId: identity.id,
+      tokenHash: hashCustomerCapability(capabilityToken),
+      expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      revokedAt: null,
+      createdAt: now.toISOString()
+    };
+    this.customerRuntimeCapabilities.set(capability.id, capability);
+    return {
+      conversationId: channel.conversationId,
+      capabilityToken,
+      expiresAt: capability.expiresAt
+    };
+  }
+
+  async createPublicStorefrontMessage(input: {
+    agentId: string;
+    capabilityToken: string;
+    body: string;
+    attachmentNames: string[];
+    now?: Date;
+  }): Promise<
+    PublicStorefrontMessageSummary & { agentReply: PublicStorefrontMessageSummary | null }
+  > {
+    const now = input.now ?? new Date();
+    const business = requirePublicStorefrontBusiness(this.deps.businesses, this.deps.quarantinedBusinessIds, input.agentId);
+    const principal = this.requireCustomerCapability(input.capabilityToken, business.id, now);
+    const identity = this.platformIdentities.get(principal.platformIdentityId);
+    if (identity === undefined) {
+      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
+    }
+    if (input.attachmentNames.length > 10) {
+      throw new Cp2Error(400, "attachments_limit", "A message can include up to 10 attachments.");
+    }
+    const body = normalizeRequiredBoundedText(input.body, "message", 4000);
+    const attachmentNames = input.attachmentNames.map((name) =>
+      normalizeRequiredBoundedText(name, "attachment name", 255)
+    );
+    const canonical = this.persistExternalConversationMessage({
+      conversationId: principal.conversationId,
+      provider: "soko",
+      author: "user",
+      authorId: identity.id,
+      body,
+      attachmentNames,
+      idempotencyKey: `soko-storefront:${principal.id}:${randomUUID()}`,
+      now
+    });
+    const message = this.publicMessageView(canonical, business.id, identity.externalUserId);
+    const agentReply = await this.deps.attemptPublicAgentReply({
+      businessId: business.id,
+      capability: principal,
+      visitorId: identity.externalUserId,
+      body: message.body,
+      now
+    });
+    return { ...message, agentReply };
+  }
+
+  /**
+   * Answers an anonymous storefront visitor's message using the same context-retrieval and
+   * model-routing machinery as the authenticated owner/staff runtime turn, scoped to
+   * audience "customer" (only sources marked customerVisible are ever retrieved) and with no
+   * tools available: an anonymous, non-member caller can never trigger a privileged action, so
+   * the model is never even told a tool exists to propose. If the model nonetheless returns a
+   * tool proposal, it is discarded — never executed, never surfaced to the customer as if it were
+   * a completed action.
+   *
+   * Every failure mode here (agent not ready, rate limited, no model provider, malformed model
+   * output) resolves to `null` rather than throwing: the customer's own message must always be
+   * accepted, whether or not an automatic reply could be produced.
+   */
+  requireCustomerCapability(
+    token: string,
+    businessId: string,
+    now: Date
+  ): CustomerRuntimeCapabilityRecord {
+    const tokenHash = hashCustomerCapability(
+      normalizeRequiredBoundedText(token, "capabilityToken", 200)
+    );
+    const capability = [...this.customerRuntimeCapabilities.values()].find(
+      (candidate) => candidate.tokenHash === tokenHash
+    );
+    if (
+      capability === undefined ||
+      capability.businessId !== businessId ||
+      capability.revokedAt !== null ||
+      Date.parse(capability.expiresAt) <= now.getTime()
+    ) {
+      throw new Cp2Error(401, "customer_capability_invalid", "Customer session is invalid.");
+    }
+    return capability;
+  }
+
+  persistExternalConversationMessage(input: {
+    conversationId: string;
+    provider: ChannelProvider;
+    author: "user" | "agent";
+    authorId: string;
+    body: string;
+    attachmentNames: string[];
+    idempotencyKey: string;
+    providerMessageId?: string | null;
+    channelIdentityId?: string | null;
+    externalConversationId?: string | null;
+    subject?: string | null;
+    externalThreadId?: string | null;
+    senderAddress?: string | null;
+    recipientAddresses?: string[];
+    ccAddresses?: string[];
+    bccAddresses?: string[];
+    now: Date;
+  }): ConversationMessageSummary {
+    const conversation = this.conversations.get(input.conversationId);
+    if (conversation === undefined) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const existingId = this.messageByIdempotencyKey.get(
+      `${conversation.id}:${input.idempotencyKey}`
+    );
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+    const attachments = input.attachmentNames.map((name) => ({
+      id: randomUUID(),
+      name,
+      mimeType: "application/octet-stream",
+      size: 0,
+      category: "other" as const,
+      url: `https://soko.market/attachment-reference/${encodeURIComponent(name)}`
+    }));
+    const content: ConversationMessageContent = {
+      type: "text",
+      text: input.body,
+      ...(attachments.length === 0 ? {} : { attachments })
+    };
+    validateConversationMessageContent(content);
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId: `${input.provider}-${randomUUID()}`,
+      idempotencyKey: input.idempotencyKey,
+      author: input.author,
+      authorId: input.authorId,
+      content,
+      status: "delivered",
+      queuedAt: null,
+      sentAt: input.now.toISOString(),
+      deliveredAt: input.now.toISOString(),
+      readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel: providerToMessageChannel(input.provider),
+      actualChannel: providerToMessageChannel(input.provider),
+      providerMessageId: input.providerMessageId ?? null,
+      subject: input.subject ?? null,
+      externalThreadId: input.externalThreadId ?? null,
+      senderAddress: input.senderAddress ?? null,
+      recipientAddresses: [...(input.recipientAddresses ?? [])],
+      ccAddresses: [...(input.ccAddresses ?? [])],
+      bccAddresses: [...(input.bccAddresses ?? [])],
+      provider: input.provider,
+      direction: input.author === "user" ? "inbound" : "outbound",
+      externalConversationId: input.externalConversationId ?? null,
+      channelIdentityId: input.channelIdentityId ?? null,
+      importedSource: input.provider,
+      importedExternalId: input.providerMessageId ?? null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: null,
+      forwardedFromMessageId: null,
+      reactions: [],
+      clientTimestamp: null,
+      createdAt: input.now.toISOString()
+    };
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(`${conversation.id}:${message.clientMessageId}`, message.id);
+    this.messageByIdempotencyKey.set(`${conversation.id}:${message.idempotencyKey}`, message.id);
+    this.conversations.set(conversation.id, {
+      ...conversation,
+      updatedAt: input.now.toISOString()
+    });
+    const attempt: MessageDeliveryAttemptSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: message.id,
+      channel: providerToMessageChannel(input.provider),
+      provider: input.provider,
+      attemptNumber: 1,
+      requestedAt: input.now.toISOString(),
+      respondedAt: input.now.toISOString(),
+      result: "succeeded",
+      normalizedFailureCode: null,
+      providerResponseReference: input.providerMessageId ?? null
+    };
+    this.messageDeliveryAttempts.set(attempt.id, attempt);
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      input.now
+    );
+    if (input.author === "user") {
+      this.enqueueConversationNotifications(conversation, message, "external", input.now);
+    }
+    return message;
+  }
+
+  persistExternalProductCard(input: {
+    conversationId: string;
+    provider: "soko" | "telegram";
+    product: CatalogueQueryResult["products"][number];
+    runtimeTurnId: string;
+    now: Date;
+  }): ConversationMessageSummary {
+    const conversation = this.conversations.get(input.conversationId);
+    if (conversation === undefined) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const idempotencyKey = `product-card:${input.runtimeTurnId}:${input.product.productId}`;
+    const existingId = this.messageByIdempotencyKey.get(`${conversation.id}:${idempotencyKey}`);
+    if (existingId !== undefined) {
+      return this.conversationMessages.get(existingId) as ConversationMessageSummary;
+    }
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId: `${input.provider}-product-${randomUUID()}`,
+      idempotencyKey,
+      author: "agent",
+      authorId: `shop-${input.product.businessId}-agent`,
+      content: { type: "product-card", product: input.product },
+      status: "delivered",
+      queuedAt: null,
+      sentAt: input.now.toISOString(),
+      deliveredAt: input.now.toISOString(),
+      readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel: input.provider,
+      actualChannel: input.provider,
+      providerMessageId: null,
+      importedSource: input.provider,
+      importedExternalId: null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: null,
+      forwardedFromMessageId: null,
+      reactions: [],
+      clientTimestamp: null,
+      createdAt: input.now.toISOString()
+    };
+    validateConversationMessageContent(message.content);
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(`${conversation.id}:${message.clientMessageId}`, message.id);
+    this.messageByIdempotencyKey.set(`${conversation.id}:${idempotencyKey}`, message.id);
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      input.now
+    );
+    return message;
+  }
+
+  publicMessageView(
+    message: ConversationMessageSummary,
+    businessId: string,
+    visitorId: string
+  ): PublicStorefrontMessageSummary {
+    const content =
+      message.content.type === "text" ? message.content : { text: "", attachments: [] };
+    return {
+      id: message.id,
+      conversationId: message.conversationId,
+      businessId,
+      visitorId,
+      author: message.author === "agent" ? "agent" : "customer",
+      body: content.text,
+      attachmentNames: content.attachments?.map((attachment) => attachment.name) ?? [],
+      createdAt: message.createdAt
+    };
+  }
+
+  listPublicStorefrontMessages(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): PublicStorefrontMessageSummary[] {
+    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    const channels = [...this.conversationChannels.values()].filter(
+      (channel) => channel.businessId === input.businessId
+    );
+    const channelByConversation = new Map(
+      channels.map((channel) => [channel.conversationId, channel])
+    );
+    return [...this.conversationMessages.values()]
+      .filter(
+        (message) =>
+          channelByConversation.has(message.conversationId) && message.content.type === "text"
+      )
+      .map((message) => {
+        const channel = channelByConversation.get(
+          message.conversationId
+        ) as ConversationChannelSummary;
+        const identity = this.platformIdentities.get(channel.platformIdentityId);
+        return this.publicMessageView(
+          message,
+          input.businessId,
+          identity?.externalUserId ?? "external"
+        );
+      });
+  }
+
+  private createAccountConversation(input: {
+    accountId: string;
+    userId: string;
+    kind: ConversationKind;
+    activeShopId: string | null;
+    recipientAccountId?: string | null;
+    title?: string | null;
+    now: Date;
+  }): ConversationSummary {
+    const conversation: ConversationSummary = {
+      id: randomUUID(),
+      accountId: input.accountId,
+      kind: input.kind,
+      activeShopId: input.activeShopId,
+      title: input.title ?? null,
+      createdAt: input.now.toISOString(),
+      updatedAt: input.now.toISOString()
+    };
+    this.conversations.set(conversation.id, conversation);
+    const participants: ConversationParticipantSummary[] = [
+      {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "account",
+        accountId: input.accountId,
+        businessId: null,
+        agentId: null,
+        displayName: this.deps.users.get(input.userId)?.displayName ?? null,
+        lastReadAt: input.now.toISOString(),
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: input.now.toISOString()
+      },
+      {
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "agent",
+        accountId: null,
+        businessId: null,
+        agentId: `account-${input.accountId}-agent`,
+        displayName: "Soko agent",
+        createdAt: input.now.toISOString()
+      }
+    ];
+
+    if (input.recipientAccountId) {
+      const recipientUserId = this.deps.userByAccount.get(input.recipientAccountId);
+      participants.push({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "account",
+        accountId: input.recipientAccountId,
+        businessId: null,
+        agentId: null,
+        displayName: recipientUserId
+          ? (this.deps.users.get(recipientUserId)?.displayName ?? null)
+          : null,
+        lastReadAt: null,
+        archivedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        createdAt: input.now.toISOString()
+      });
+    }
+
+    if (input.activeShopId !== null) {
+      participants.push({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        role: "shop",
+        accountId: null,
+        businessId: input.activeShopId,
+        agentId: null,
+        createdAt: input.now.toISOString()
+      });
+    }
+
+    for (const participant of participants) {
+      this.conversationParticipants.set(participant.id, participant);
+    }
+
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversations",
+      conversation.id,
+      conversation,
+      input.now
+    );
+
+    return conversation;
+  }
+
+  ensurePersonalAccountConversation(input: {
+    accountId: string;
+    userId: string;
+    now: Date;
+  }): ConversationSummary {
+    const existing = [...this.conversations.values()].find(
+      (conversation) =>
+        conversation.accountId === input.accountId &&
+        conversation.kind === "personal" &&
+        conversation.activeShopId === null &&
+        this.accountConversationParticipant(conversation.id, input.accountId) !== null
+    );
+
+    return (
+      existing ??
+      this.createAccountConversation({
+        ...input,
+        kind: "personal",
+        activeShopId: null
+      })
+    );
+  }
+
+  requireAccountConversation(
+    conversationId: string,
+    accountId: string
+  ): ConversationSummary {
+    const conversation = this.conversations.get(conversationId);
+
+    if (
+      conversation === undefined ||
+      this.accountConversationParticipant(conversationId, accountId) === null
+    ) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+
+    return conversation;
+  }
+
+  private conversationView(conversation: ConversationSummary): ConversationView {
+    const now = new Date();
+    const channels = [...this.conversationChannels.values()]
+      .filter((channel) => channel.conversationId === conversation.id)
+      .flatMap((channel) => {
+        const identity = this.platformIdentities.get(channel.platformIdentityId);
+        return identity === undefined ? [] : [this.deps.channelGateway.endpoint(channel, identity)];
+      });
+    return {
+      conversation,
+      participants: [...this.conversationParticipants.values()]
+        .filter((participant) => participant.conversationId === conversation.id)
+        .map((participant) => this.participantView(participant)),
+      messages: this.messagesForConversation(conversation.id),
+      channels,
+      typing: this.typingForConversation(conversation.id, now)
+    };
+  }
+
+  private participantView(
+    participant: ConversationParticipantSummary
+  ): ConversationParticipantSummary {
+    if (participant.role !== "account" || participant.accountId === null) return participant;
+    const userId = this.deps.userByAccount.get(participant.accountId);
+    return {
+      ...participant,
+      displayName: userId
+        ? (this.deps.users.get(userId)?.displayName ?? participant.displayName ?? null)
+        : (participant.displayName ?? null)
+    };
+  }
+
+  private accountConversationParticipant(
+    conversationId: string,
+    accountId: string
+  ): ConversationParticipantSummary | null {
+    return (
+      [...this.conversationParticipants.values()].find(
+        (participant) =>
+          participant.conversationId === conversationId &&
+          participant.role === "account" &&
+          participant.accountId === accountId
+      ) ?? null
+    );
+  }
+
+  private humanConversationAccountIds(conversationId: string): string[] {
+    return [...this.conversationParticipants.values()]
+      .filter(
+        (participant) =>
+          participant.conversationId === conversationId &&
+          participant.role === "account" &&
+          participant.accountId !== null
+      )
+      .map((participant) => participant.accountId as string);
+  }
+
+  private validateConversationEncryption(
+    conversationId: string,
+    content: ConversationMessageContent
+  ): void {
+    const accountIds = this.humanConversationAccountIds(conversationId);
+    if (accountIds.length < 2) return;
+    if (content.type !== "encrypted") {
+      throw new Cp2Error(
+        400,
+        "e2ee_required",
+        "Direct messages between people must be end-to-end encrypted."
+      );
+    }
+    const devices = [...this.e2eeDevices.values()].filter(
+      (device) => accountIds.includes(device.accountId) && device.revokedAt === null
+    );
+    for (const accountId of accountIds) {
+      if (!devices.some((device) => device.accountId === accountId)) {
+        throw new Cp2Error(
+          409,
+          "e2ee_recipient_unavailable",
+          "Every participant must register an encryption device before messaging."
+        );
+      }
+    }
+    const expected = new Set(devices.map((device) => device.id));
+    const actual = new Set(content.envelopes.map((envelope) => envelope.recipientDeviceId));
+    if (
+      actual.size !== content.envelopes.length ||
+      expected.size !== actual.size ||
+      [...expected].some((deviceId) => !actual.has(deviceId))
+    ) {
+      throw new Cp2Error(
+        409,
+        "e2ee_device_set_changed",
+        "Encryption recipients changed. Refresh device keys and retry."
+      );
+    }
+  }
+
+  private enqueueConversationNotifications(
+    conversation: ConversationSummary,
+    message: ConversationMessageSummary,
+    senderAccountId: string,
+    now: Date
+  ): void {
+    const recipientIds = new Set(
+      this.humanConversationAccountIds(conversation.id).filter(
+        (accountId) => accountId !== senderAccountId
+      )
+    );
+    for (const participant of this.conversationParticipants.values()) {
+      if (
+        participant.conversationId === conversation.id &&
+        participant.accountId !== null &&
+        participant.mutedUntil !== null &&
+        participant.mutedUntil !== undefined &&
+        Date.parse(participant.mutedUntil) > now.getTime()
+      ) {
+        recipientIds.delete(participant.accountId);
+      }
+    }
+    if (this.deps.pushNotificationSender !== undefined) {
+      for (const subscription of this.pushSubscriptions.values()) {
+        if (!recipientIds.has(subscription.accountId)) continue;
+        this.addMessageNotificationDelivery({
+          message,
+          accountId: subscription.accountId,
+          channel: "push",
+          targetId: subscription.id,
+          destination: null,
+          now
+        });
+      }
+    }
+    if (this.deps.messageEmailNotificationSender !== undefined) {
+      for (const accountId of recipientIds) {
+        const account = this.deps.accounts.get(accountId);
+        if (account?.primaryAuthChannel !== "email") continue;
+        this.addMessageNotificationDelivery({
+          message,
+          accountId,
+          channel: "email",
+          targetId: `email:${accountId}`,
+          destination: account.primaryAuthDestination,
+          now
+        });
+      }
+    }
+  }
+
+  private addMessageNotificationDelivery(input: {
+    message: ConversationMessageSummary;
+    accountId: string;
+    channel: MessageNotificationDelivery["channel"];
+    targetId: string;
+    destination: string | null;
+    now: Date;
+  }): void {
+    const id = `${input.message.id}:${input.channel}:${input.targetId}`;
+    if (this.messageNotificationDeliveries.has(id)) return;
+    const timestamp = input.now.toISOString();
+    this.messageNotificationDeliveries.set(id, {
+      id,
+      messageId: input.message.id,
+      conversationId: input.message.conversationId,
+      accountId: input.accountId,
+      channel: input.channel,
+      targetId: input.targetId,
+      destination: input.destination,
+      status: "pending",
+      attempts: 0,
+      nextAttemptAt: timestamp,
+      lastAttemptedAt: null,
+      deliveredAt: null,
+      lastError: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
+
+  private async attemptMessageNotificationDelivery(
+    delivery: MessageNotificationDelivery,
+    now: Date
+  ): Promise<MessageNotificationDelivery> {
+    const attempts = delivery.attempts + 1;
+    let outcome: "sent" | "failed" | "expired" = "failed";
+    try {
+      if (delivery.channel === "push") {
+        const subscription = this.pushSubscriptions.get(delivery.targetId);
+        if (subscription === undefined || this.deps.pushNotificationSender === undefined) {
+          outcome = "expired";
+        } else {
+          const conversation = this.conversations.get(delivery.conversationId);
+          outcome = await this.deps.pushNotificationSender(subscription, {
+            type: "message.new",
+            conversationId: delivery.conversationId,
+            messageId: delivery.messageId,
+            title: conversation?.title?.trim() || "New Soko message",
+            body: "Open Soko to read your message."
+          });
+          if (outcome === "expired") {
+            this.pushSubscriptions.delete(subscription.id);
+            this.pushSubscriptionIdByEndpoint.delete(subscription.endpoint);
+          }
+        }
+      } else if (
+        delivery.destination !== null &&
+        this.deps.messageEmailNotificationSender !== undefined
+      ) {
+        const webBaseUrl = (this.deps.messageWebBaseUrl ?? "https://soko.market").replace(
+          /\/+$/u,
+          ""
+        );
+        outcome = await this.deps.messageEmailNotificationSender({
+          conversationId: delivery.conversationId,
+          messageId: delivery.messageId,
+          openUrl: `${webBaseUrl}/?conversation=${encodeURIComponent(delivery.conversationId)}`,
+          to: delivery.destination
+        });
+      }
+    } catch {
+      outcome = "failed";
+    }
+
+    const timestamp = now.toISOString();
+    const terminal = outcome === "expired" || (outcome === "failed" && attempts >= 5);
+    const next: MessageNotificationDelivery = {
+      ...delivery,
+      status: outcome === "sent" ? "sent" : terminal ? "dead_letter" : "failed",
+      attempts,
+      nextAttemptAt:
+        outcome === "sent" || terminal
+          ? null
+          : new Date(
+              now.getTime() + Math.min(60 * 60_000, 60_000 * 2 ** (attempts - 1))
+            ).toISOString(),
+      lastAttemptedAt: timestamp,
+      deliveredAt: outcome === "sent" ? timestamp : null,
+      lastError:
+        outcome === "sent"
+          ? null
+          : outcome === "expired"
+            ? "push_subscription_expired"
+            : "notification_delivery_failed",
+      updatedAt: timestamp
+    };
+    this.messageNotificationDeliveries.set(next.id, next);
+    return next;
+  }
+
+  private messagesForConversation(conversationId: string): ConversationMessageSummary[] {
+    return [...this.conversationMessages.values()]
+      .filter((message) => message.conversationId === conversationId)
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  }
+
+  private requireConversationMessage(
+    messageId: string,
+    conversationId: string
+  ): ConversationMessageSummary {
+    const message = this.conversationMessages.get(messageId);
+    if (!message || message.conversationId !== conversationId)
+      throw new Cp2Error(404, "message_not_found", "Message was not found.");
+    return message;
+  }
+
+  private typingForConversation(
+    conversationId: string,
+    now: Date,
+    excludeActorId?: string
+  ): ConversationTypingSummary[] {
+    const result: ConversationTypingSummary[] = [];
+    for (const [key, typing] of this.conversationTyping) {
+      if (Date.parse(typing.expiresAt) <= now.getTime()) {
+        this.conversationTyping.delete(key);
+      } else if (typing.conversationId === conversationId && typing.actorId !== excludeActorId) {
+        result.push({
+          actorId: typing.actorId,
+          displayName: typing.displayName,
+          expiresAt: typing.expiresAt
+        });
+      }
+    }
+    return result;
+  }
+
+  private recordConversationSyncForParticipants(
+    conversationId: string,
+    collection: SyncCollection,
+    entityId: string,
+    entity: unknown,
+    now: Date
+  ): void {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    const accountIds = new Set(
+      [...this.conversationParticipants.values()]
+        .filter(
+          (participant) => participant.conversationId === conversationId && participant.accountId
+        )
+        .map((participant) => participant.accountId as string)
+    );
+    for (const accountId of accountIds) {
+      this.deps.recordSyncChange({
+        accountId,
+        collection,
+        entityId,
+        operation: "upsert",
+        shopId: conversation.activeShopId,
+        entity,
+        now
+      });
+    }
+  }
+
+  private emailTransportReadiness(businessId: string | undefined) {
+    const providerConfigured = this.deps.emailMailboxProviderClient
+      .providers()
+      .some((provider) => provider.configured);
+    const candidates = [...this.connectedMailboxes.values()].filter(
+      (mailbox) =>
+        (businessId === undefined || mailbox.businessId === businessId) &&
+        mailbox.status !== "disconnected"
+    );
+    const mailbox =
+      candidates.find((candidate) => candidate.isDefault) ??
+      (candidates.length === 1 ? candidates[0] : undefined);
+    if (!providerConfigured) {
+      return {
+        configured: false,
+        authorized: false,
+        status: "unavailable" as const,
+        mailboxId: null,
+        configurationRequirement: "Configure Gmail or Outlook mailbox OAuth credentials.",
+        errorCode: "EMAIL_PROVIDER_UNAVAILABLE" as const
+      };
+    }
+    if (mailbox === undefined) {
+      return {
+        configured: false,
+        authorized: false,
+        status: candidates.length > 1 ? ("error" as const) : ("unavailable" as const),
+        mailboxId: null,
+        configurationRequirement:
+          candidates.length > 1
+            ? "Choose one connected mailbox as the business default."
+            : "Connect and authorize a Gmail or Outlook mailbox.",
+        errorCode:
+          candidates.length > 1
+            ? ("EMAIL_MAILBOX_NOT_FOUND" as const)
+            : ("EMAIL_MAILBOX_NOT_CONNECTED" as const)
+      };
+    }
+    if (mailbox.status === "reauthorization_required") {
+      return {
+        configured: true,
+        authorized: false,
+        status: "authorization_required" as const,
+        mailboxId: mailbox.id,
+        configurationRequirement: "Reconnect this mailbox to restore provider authorization.",
+        errorCode: "EMAIL_REAUTHORIZATION_REQUIRED" as const
+      };
+    }
+    if (mailbox.status === "error" || !mailbox.canSend) {
+      return {
+        configured: true,
+        authorized: mailbox.status === "connected",
+        status: "error" as const,
+        mailboxId: mailbox.id,
+        configurationRequirement: "The connected mailbox cannot currently send email.",
+        errorCode: "EMAIL_PROVIDER_UNAVAILABLE" as const
+      };
+    }
+    return {
+      configured: true,
+      authorized: true,
+      status: "available" as const,
+      mailboxId: mailbox.id,
+      configurationRequirement: null,
+      errorCode: null
+    };
+  }
+
+  private async sendEmailTransport(
+    request: OutboundChannelMessage,
+    now: Date
+  ): Promise<{
+    accepted: true;
+    providerMessageId: string | null;
+    externalThreadId: string | null;
+    status: "sent";
+  }> {
+    const conversation = this.conversations.get(request.conversationId);
+    if (conversation === undefined || conversation.activeShopId !== request.businessId) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "The canonical email conversation is unavailable."
+      );
+    }
+    const messageId = this.messageByIdempotencyKey.get(
+      `${request.conversationId}:${request.idempotencyKey}`
+    );
+    if (messageId === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "The canonical email message is unavailable."
+      );
+    }
+    const mailboxId = request.endpoint.executionMailboxId;
+    if (mailboxId === null || mailboxId === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_MAILBOX_NOT_FOUND",
+        "No sending mailbox was selected for this conversation."
+      );
+    }
+    const mailbox = this.requireConnectedMailbox(request.businessId, mailboxId);
+    if (mailbox.accountId !== conversation.accountId) {
+      throw new ChannelGatewayError(
+        "EMAIL_MAILBOX_NOT_FOUND",
+        "The selected mailbox is not authorized for this account."
+      );
+    }
+    if (request.subject === undefined) {
+      throw new ChannelGatewayError(
+        "EMAIL_SEND_FAILED",
+        "A subject is required when starting an email conversation."
+      );
+    }
+    const subject = normalizeRequiredBoundedText(request.subject, "subject", 200);
+    const recipientAddress = normalizeEmailIdentity(request.endpoint.externalUserId);
+    try {
+      let authorized = await this.authorizedMailbox(mailbox, now);
+      const send = (authorization: { mailbox: ConnectedMailboxRecord; accessToken: string }) =>
+        this.deps.emailMailboxProviderClient.send({
+          provider: authorization.mailbox.provider,
+          accessToken: authorization.accessToken,
+          senderAddress: authorization.mailbox.address,
+          recipientAddress,
+          subject,
+          text: request.text,
+          idempotencyKey: messageId,
+          externalThreadId: request.externalThreadId ?? null,
+          replyToProviderMessageId: request.replyToProviderMessageId ?? null,
+          attachments: request.attachments ?? []
+        });
+      let result;
+      try {
+        result = await send(authorized);
+      } catch (error) {
+        if (!isEmailReauthorizationError(error)) throw error;
+        authorized = await this.refreshMailboxAuthorization(authorized.mailbox, now);
+        result = await send(authorized);
+      }
+      this.deps.recordAuditEvent({
+        type: "email.send_completed",
+        aggregateType: "conversation_message",
+        aggregateId: messageId,
+        actorId: "channel-gateway",
+        occurredAt: now.toISOString(),
+        payload: {
+          accountId: mailbox.accountId,
+          businessId: mailbox.businessId,
+          mailboxId: mailbox.id,
+          conversationId: request.conversationId,
+          messageId,
+          provider: mailbox.provider
+        }
+      });
+      return {
+        accepted: true,
+        providerMessageId: result.externalMessageId,
+        externalThreadId: result.externalThreadId,
+        status: "sent"
+      };
+    } catch (error) {
+      this.handleEmailProviderFailure(mailbox, error, now);
+      const normalized = this.emailProviderCp2Error(error);
+      throw new ChannelGatewayError(
+        normalized.code as
+          "EMAIL_REAUTHORIZATION_REQUIRED" | "EMAIL_SEND_FAILED" | "EMAIL_PROVIDER_UNAVAILABLE",
+        normalized.message,
+        normalized.statusCode >= 500
+      );
+    }
+  }
+
+  private resolveTrustedEmailAttachments(
+    businessId: string,
+    customerId: string,
+    references: TrustedMessageAttachmentReference[]
+  ): {
+    canonical: ConversationAttachment[];
+    provider: Array<{ filename: string; mimeType: string; contentBase64: string }>;
+  } {
+    if (references.length > 3) {
+      throw new Cp2Error(
+        400,
+        "EMAIL_ATTACHMENT_UNAVAILABLE",
+        "At most three trusted attachments may be sent in one email."
+      );
+    }
+    const unique = new Set<string>();
+    const canonical: ConversationAttachment[] = [];
+    const provider: Array<{ filename: string; mimeType: string; contentBase64: string }> = [];
+    for (const reference of references) {
+      if (reference.resourceType !== "invoice" || unique.has(reference.resourceId)) continue;
+      unique.add(reference.resourceId);
+      const invoice = this.deps.requireInvoice(businessId, reference.resourceId);
+      if (invoice.customerId !== customerId) {
+        throw new Cp2Error(
+          403,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "The invoice belongs to a different customer."
+        );
+      }
+      if (invoice.status !== "confirmed") {
+        throw new Cp2Error(
+          409,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "Confirm the invoice before attaching it to an email."
+        );
+      }
+      const text = renderInvoiceAttachment(this.deps.requireBusiness(businessId), invoice);
+      const bytes = Buffer.from(text, "utf8");
+      if (bytes.byteLength > 512 * 1024) {
+        throw new Cp2Error(
+          413,
+          "EMAIL_ATTACHMENT_UNAVAILABLE",
+          "The generated invoice attachment is too large."
+        );
+      }
+      const filename = `invoice-${sanitizeAttachmentFilename(invoice.invoiceNumber)}.txt`;
+      const contentBase64 = bytes.toString("base64");
+      canonical.push({
+        id: `invoice:${invoice.id}`,
+        name: filename,
+        mimeType: "text/plain",
+        size: bytes.byteLength,
+        category: "document",
+        url: `data:text/plain;base64,${contentBase64}`
+      });
+      provider.push({ filename, mimeType: "text/plain", contentBase64 });
+    }
+    return { canonical, provider };
+  }
+
+  private requireConnectedMailbox(businessId: string, mailboxId: string): ConnectedMailboxRecord {
+    const mailbox = this.connectedMailboxes.get(mailboxId);
+    if (mailbox === undefined || mailbox.businessId !== businessId) {
+      throw new Cp2Error(404, "EMAIL_MAILBOX_NOT_FOUND", "Connected mailbox was not found.");
+    }
+    return mailbox;
+  }
+
+  private async authorizedMailbox(
+    mailbox: ConnectedMailboxRecord,
+    now: Date
+  ): Promise<{ mailbox: ConnectedMailboxRecord; accessToken: string }> {
+    if (mailbox.status !== "connected" || mailbox.encryptedAccessToken === null) {
+      throw new EmailProviderClientError(
+        "EMAIL_REAUTHORIZATION_REQUIRED",
+        "Reconnect this mailbox before using it."
+      );
+    }
+    if (mailbox.tokenExpiresAt === null || Date.parse(mailbox.tokenExpiresAt) > now.getTime()) {
+      return { mailbox, accessToken: decryptOAuthToken(mailbox.encryptedAccessToken) };
+    }
+    return this.refreshMailboxAuthorization(mailbox, now);
+  }
+
+  private async refreshMailboxAuthorization(
+    mailbox: ConnectedMailboxRecord,
+    now: Date
+  ): Promise<{ mailbox: ConnectedMailboxRecord; accessToken: string }> {
+    if (mailbox.encryptedRefreshToken === null) {
+      throw new EmailProviderClientError(
+        "EMAIL_REAUTHORIZATION_REQUIRED",
+        "Mailbox offline authorization is unavailable. Reconnect the mailbox."
+      );
+    }
+    const tokens = await this.deps.emailMailboxProviderClient.refreshAuthorization({
+      provider: mailbox.provider,
+      refreshToken: decryptOAuthToken(mailbox.encryptedRefreshToken)
+    });
+    const refreshed = this.withMailboxTokens(mailbox, tokens, now);
+    this.connectedMailboxes.set(refreshed.id, refreshed);
+    return { mailbox: refreshed, accessToken: tokens.accessToken };
+  }
+
+  private withMailboxTokens(
+    mailbox: ConnectedMailboxRecord,
+    tokens: EmailProviderTokens,
+    now: Date
+  ): ConnectedMailboxRecord {
+    return {
+      ...mailbox,
+      encryptedAccessToken: encryptOAuthToken(tokens.accessToken),
+      encryptedRefreshToken:
+        tokens.refreshToken === null
+          ? mailbox.encryptedRefreshToken
+          : encryptOAuthToken(tokens.refreshToken),
+      tokenExpiresAt: tokens.expiresAt,
+      tokenType: tokens.tokenType,
+      scope: tokens.scope,
+      status: "connected",
+      readiness: "READY",
+      canSend: mailboxScopeAllows(mailbox.provider, tokens.scope, "send"),
+      canReceive: mailboxScopeAllows(mailbox.provider, tokens.scope, "receive"),
+      lastErrorCode: null,
+      updatedAt: now.toISOString()
+    };
+  }
+
+  private async ingestConnectedMailboxEmail(
+    mailbox: ConnectedMailboxRecord,
+    inbound: NormalizedProviderEmail,
+    now: Date
+  ): Promise<"ingested" | "deduplicated" | "filtered"> {
+    const senderAddress = normalizeEmailIdentity(inbound.senderAddress);
+    if (inbound.automated || senderAddress === mailbox.address) return "filtered";
+    const externalUpdateId = `${mailbox.id}:${normalizeRequiredBoundedText(inbound.externalMessageId, "externalMessageId", 200)}`;
+    if (
+      [...this.providerUpdateReceipts.values()].some(
+        (receipt) => receipt.provider === "email" && receipt.externalUpdateId === externalUpdateId
+      )
+    ) {
+      return "deduplicated";
+    }
+    const externalThreadId = normalizeRequiredBoundedText(
+      inbound.externalThreadId,
+      "externalThreadId",
+      200
+    );
+    let channel = [...this.conversationChannels.values()].find(
+      (candidate) =>
+        candidate.provider === "email" &&
+        candidate.businessId === mailbox.businessId &&
+        candidate.externalConversationId === externalThreadId &&
+        candidate.metadata.mailboxId === mailbox.id
+    );
+    const hadExistingThread = channel !== undefined;
+    let identity = channel ? this.platformIdentities.get(channel.platformIdentityId) : undefined;
+    if (identity === undefined) {
+      identity = [...this.platformIdentities.values()].find(
+        (candidate) =>
+          candidate.provider === "email" &&
+          candidate.businessId === mailbox.businessId &&
+          normalizeStoredEmailIdentity(candidate.externalUserId) === senderAddress
+      );
+    }
+    let customer =
+      identity?.customerId === null || identity?.customerId === undefined
+        ? undefined
+        : this.deps.customers.get(identity.customerId);
+    if (customer === undefined) {
+      const matches = [...this.deps.customers.values()].filter(
+        (candidate) =>
+          candidate.businessId === mailbox.businessId &&
+          normalizeStoredEmailIdentity(candidate.email) === senderAddress
+      );
+      if (matches.length > 1) return "filtered";
+      customer = matches[0];
+    }
+    if (customer === undefined && !mailbox.ingestUnknownSenders) return "filtered";
+    if (channel === undefined) {
+      const ownerUserId = this.deps.userByAccount.get(mailbox.accountId);
+      if (ownerUserId === undefined) {
+        throw new Cp2Error(409, "mailbox_owner_missing", "Mailbox owner is unavailable.");
+      }
+      const linked = this.upsertProviderConversation({
+        businessId: mailbox.businessId,
+        provider: "email",
+        customerId: customer?.id ?? null,
+        externalUserId: senderAddress,
+        externalConversationId: externalThreadId,
+        displayName: customer?.name ?? null,
+        metadata: {
+          mailboxId: mailbox.id,
+          subject: normalizeEmailSubject(inbound.subject),
+          automaticRepliesEnabled: mailbox.automaticReplyEnabled
+        },
+        ownerAccountId: mailbox.accountId,
+        ownerUserId,
+        now
+      });
+      channel = linked.channel;
+      identity = linked.identity;
+    }
+    const ingested = this.ingestProviderMessage({
+      provider: "email",
+      businessId: mailbox.businessId,
+      externalConversationId: channel.externalConversationId,
+      externalUpdateId,
+      body: inbound.text,
+      providerMessageId: inbound.externalMessageId,
+      subject: normalizeEmailSubject(inbound.subject),
+      externalThreadId,
+      senderAddress,
+      recipientAddresses: inbound.recipientAddresses.map(normalizeEmailIdentity),
+      ccAddresses: inbound.ccAddresses.map(normalizeEmailIdentity),
+      now: new Date(inbound.receivedAt)
+    });
+    this.deps.recordAuditEvent({
+      type: "email.received",
+      aggregateType: "conversation_message",
+      aggregateId: ingested.message?.id ?? ingested.receipt.id,
+      actorId: "email-sync",
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: mailbox.accountId,
+        businessId: mailbox.businessId,
+        mailboxId: mailbox.id,
+        conversationId: channel.conversationId,
+        customerId: identity?.customerId ?? null,
+        messageId: ingested.message?.id ?? null,
+        provider: mailbox.provider
+      }
+    });
+    if (
+      hadExistingThread &&
+      ingested.message !== null &&
+      mailbox.automaticReplyEnabled &&
+      mailbox.automaticReplyText !== null
+    ) {
+      await this.sendMailboxAutomaticReply(mailbox, channel, inbound, ingested.message, now).catch(
+        () => undefined
+      );
+    }
+    return "ingested";
+  }
+
+  private async sendMailboxAutomaticReply(
+    mailbox: ConnectedMailboxRecord,
+    channel: ConversationChannelSummary,
+    inbound: NormalizedProviderEmail,
+    inboundMessage: ConversationMessageSummary,
+    now: Date
+  ): Promise<void> {
+    const automaticReplyText = mailbox.automaticReplyText;
+    if (!mailbox.automaticReplyEnabled || automaticReplyText === null) return;
+    const lastAutomaticReplyAt =
+      typeof channel.metadata.lastAutomaticReplyAt === "string"
+        ? channel.metadata.lastAutomaticReplyAt
+        : null;
+    if (
+      lastAutomaticReplyAt !== null &&
+      Date.parse(lastAutomaticReplyAt) > now.getTime() - 24 * 60 * 60_000
+    ) {
+      return;
+    }
+    const identity = this.platformIdentities.get(channel.platformIdentityId);
+    if (identity?.customerId === null || identity?.customerId === undefined) return;
+    const ownerUserId = this.deps.userByAccount.get(mailbox.accountId);
+    if (ownerUserId === undefined) return;
+    const endpoint = this.deps.channelGateway.endpoint(channel, identity);
+    const idempotencyKey = `email-auto-reply:${mailbox.id}:${inbound.externalMessageId}`;
+    const existingId = this.messageByIdempotencyKey.get(
+      `${channel.conversationId}:${idempotencyKey}`
+    );
+    if (existingId !== undefined) return;
+    const subject = normalizeEmailSubject(inbound.subject);
+    const message = this.persistOutboundChannelMessage({
+      endpoint,
+      authorId: ownerUserId,
+      text: automaticReplyText,
+      subject,
+      replyToMessageId: inboundMessage.id,
+      externalThreadId: inbound.externalThreadId,
+      attachments: [],
+      idempotencyKey,
+      now
+    });
+    try {
+      const dispatched = await this.deps.channelGateway.send({
+        businessId: mailbox.businessId,
+        conversationId: channel.conversationId,
+        customerId: identity.customerId,
+        idempotencyKey,
+        text: automaticReplyText,
+        subject,
+        replyToProviderMessageId: inbound.externalMessageId,
+        externalThreadId: inbound.externalThreadId,
+        endpoints: [endpoint],
+        preferredProvider: "email"
+      });
+      const sent: ConversationMessageSummary = {
+        ...message,
+        status: dispatched.result.status,
+        sentAt: now.toISOString(),
+        actualChannel: "email",
+        providerMessageId: dispatched.result.providerMessageId,
+        externalThreadId: dispatched.result.externalThreadId ?? inbound.externalThreadId
+      };
+      this.conversationMessages.set(sent.id, sent);
+      this.finishChannelDeliveryAttempt(sent, "succeeded", null, now);
+      this.conversationChannels.set(channel.id, {
+        ...channel,
+        metadata: {
+          ...channel.metadata,
+          lastAutomaticReplyAt: now.toISOString(),
+          lastAutomaticReplyMessageId: sent.id
+        },
+        lastOutboundAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      });
+      this.deps.recordAuditEvent({
+        type: "email.automatic_reply_sent",
+        aggregateType: "conversation_message",
+        aggregateId: sent.id,
+        actorId: ownerUserId,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: mailbox.businessId,
+          mailboxId: mailbox.id,
+          conversationId: channel.conversationId,
+          messageId: sent.id,
+          provider: mailbox.provider
+        }
+      });
+    } catch (error) {
+      const normalized = this.channelError(error);
+      const failed: ConversationMessageSummary = {
+        ...message,
+        status: "failed",
+        failureCode: normalized.code,
+        retryCount: 1,
+        nextRetryAt: null
+      };
+      this.conversationMessages.set(failed.id, failed);
+      this.finishChannelDeliveryAttempt(failed, "permanent_failure", normalized.code, now);
+      throw error;
+    }
+  }
+
+  private setMailboxChannelStatus(
+    mailboxId: string,
+    status: "available" | "authorization_required",
+    now: Date
+  ): void {
+    for (const channel of this.conversationChannels.values()) {
+      if (channel.provider === "email" && channel.metadata.mailboxId === mailboxId) {
+        this.conversationChannels.set(channel.id, {
+          ...channel,
+          status,
+          updatedAt: now.toISOString()
+        });
+      }
+    }
+  }
+
+  private handleEmailProviderFailure(
+    mailbox: ConnectedMailboxRecord,
+    error: unknown,
+    now: Date
+  ): void {
+    const reauthorization =
+      error instanceof EmailProviderClientError && error.code === "EMAIL_REAUTHORIZATION_REQUIRED";
+    const failed: ConnectedMailboxRecord = {
+      ...mailbox,
+      status: reauthorization ? "reauthorization_required" : "error",
+      readiness: reauthorization ? "REAUTHORIZATION_REQUIRED" : "ERROR",
+      lastErrorCode:
+        error instanceof EmailProviderClientError ? error.code : "EMAIL_PROVIDER_UNAVAILABLE",
+      updatedAt: now.toISOString()
+    };
+    this.connectedMailboxes.set(failed.id, failed);
+    this.setMailboxChannelStatus(
+      failed.id,
+      reauthorization ? "authorization_required" : "authorization_required",
+      now
+    );
+  }
+
+  private emailProviderCp2Error(error: unknown): Cp2Error {
+    if (error instanceof EmailProviderClientError) {
+      return new Cp2Error(
+        error.code === "EMAIL_REAUTHORIZATION_REQUIRED" ? 401 : error.retryable ? 503 : 502,
+        error.code,
+        error.message
+      );
+    }
+    return new Cp2Error(502, "EMAIL_PROVIDER_UNAVAILABLE", "The mailbox provider is unavailable.");
+  }
+
+  private nativeSmsTransportReadiness(businessId: string | undefined, now: Date) {
+    const accountId =
+      businessId === undefined ? undefined : this.nativeSmsAccountForBusiness(businessId);
+    const candidates = [...this.nativeSmsDevices.values()]
+      .filter(
+        (device) =>
+          device.revokedAt === null &&
+          (accountId === undefined || device.accountId === accountId) &&
+          (businessId === undefined || accountId !== undefined)
+      )
+      .map((device) => this.nativeSmsDeviceView(device, now))
+      .sort(
+        (left, right) =>
+          Number(right.preferred) - Number(left.preferred) ||
+          right.lastSeenAt.localeCompare(left.lastSeenAt) ||
+          left.id.localeCompare(right.id)
+      );
+    const device = candidates[0];
+    if (device === undefined) {
+      return {
+        configured: false,
+        authorized: false,
+        status: "unavailable" as const,
+        deviceId: null,
+        configurationRequirement: "Register an authenticated SMS-capable Android device.",
+        errorCode: "SMS_DEVICE_UNAVAILABLE" as const
+      };
+    }
+    const requirement = nativeSmsDeviceRequirement(device);
+    return {
+      configured: true,
+      authorized: device.revokedAt === null,
+      status:
+        device.readiness === "ready"
+          ? ("available" as const)
+          : device.readiness === "offline"
+            ? ("offline" as const)
+            : device.readiness === "error"
+              ? ("error" as const)
+              : device.readiness === "setup_required"
+                ? ("setup_required" as const)
+                : ("unavailable" as const),
+      deviceId: device.id,
+      configurationRequirement: requirement,
+      errorCode: nativeSmsReadinessErrorCode(device)
+    };
+  }
+
+  private nativeSmsAccountForBusiness(businessId: string): string | undefined {
+    const ownerMembership = [...this.deps.memberships.values()].find(
+      (membership) => membership.businessId === businessId && membership.role === "owner"
+    );
+    return ownerMembership === undefined
+      ? undefined
+      : this.deps.users.get(ownerMembership.userId)?.accountId;
+  }
+
+  private nativeSmsDeviceView(device: NativeSmsDeviceSummary, now: Date): NativeSmsDeviceSummary {
+    if (device.revokedAt !== null) return { ...device, readiness: "unavailable", capabilities: [] };
+    if (!this.hasActiveSessionFamily(device.accountId, device.sessionFamilyId, now)) {
+      return { ...device, readiness: "unavailable", capabilities: [] };
+    }
+    if (
+      device.readiness === "ready" &&
+      now.getTime() - Date.parse(device.lastSeenAt) > nativeSmsOnlineWindowMs
+    ) {
+      return { ...device, readiness: "offline" };
+    }
+    return device;
+  }
+
+  private hasActiveSessionFamily(accountId: string, sessionFamilyId: string, now: Date): boolean {
+    return [...this.deps.sessions.values()].some(
+      (session) =>
+        session.accountId === accountId &&
+        session.sessionFamilyId === sessionFamilyId &&
+        session.revokedAt === null &&
+        Date.parse(session.inactivityExpiresAt) > now.getTime() &&
+        Date.parse(session.absoluteExpiresAt) > now.getTime()
+    );
+  }
+
+  private queueNativeSmsCommand(
+    request: OutboundChannelMessage,
+    now: Date
+  ): { commandId: string; waitingForDevice: boolean } {
+    const conversation = this.conversations.get(request.conversationId);
+    if (conversation === undefined || conversation.activeShopId !== request.businessId) {
+      throw new ChannelGatewayError("SMS_DEVICE_UNAVAILABLE", "SMS conversation is unavailable.");
+    }
+    const existingMessageId = this.messageByIdempotencyKey.get(
+      `${request.conversationId}:${request.idempotencyKey}`
+    );
+    if (existingMessageId === undefined) {
+      throw new ChannelGatewayError("SMS_SEND_FAILED", "Canonical SMS message is unavailable.");
+    }
+    const existing = [...this.nativeSmsDeviceCommands.values()].find(
+      (command) => command.messageId === existingMessageId
+    );
+    if (existing !== undefined) {
+      return {
+        commandId: existing.id,
+        waitingForDevice: existing.status === "waiting_for_device"
+      };
+    }
+    const device = [...this.nativeSmsDevices.values()]
+      .filter(
+        (candidate) =>
+          candidate.accountId === conversation.accountId &&
+          candidate.revokedAt === null &&
+          candidate.capabilities.includes("native_sms_send")
+      )
+      .map((candidate) => this.nativeSmsDeviceView(candidate, now))
+      .filter((candidate) => candidate.readiness === "ready" || candidate.readiness === "offline")
+      .sort(
+        (left, right) =>
+          Number(right.preferred) - Number(left.preferred) ||
+          right.lastSeenAt.localeCompare(left.lastSeenAt) ||
+          left.id.localeCompare(right.id)
+      )[0];
+    if (device === undefined) {
+      throw new ChannelGatewayError(
+        "SMS_DEVICE_UNAVAILABLE",
+        "No eligible Android SMS device is linked to this account."
+      );
+    }
+    const recipient = normalizeInternationalOwnerPhoneNumber(request.endpoint.externalUserId).e164;
+    const waitingForDevice = device.readiness === "offline";
+    const command: NativeSmsDeviceCommandSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      businessId: request.businessId,
+      deviceId: device.id,
+      messageId: existingMessageId,
+      type: "native_sms.send",
+      recipient,
+      status: waitingForDevice ? "waiting_for_device" : "queued",
+      resultCode: null,
+      carrierReference: null,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + nativeSmsCommandTtlMs).toISOString(),
+      dispatchedAt: null,
+      acknowledgedAt: null,
+      completedAt: null,
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDeviceCommands.set(command.id, command);
+    this.deps.recordAuditEvent({
+      type: "native_sms.command_queued",
+      aggregateType: "native_sms_device_command",
+      aggregateId: command.id,
+      actorId: "channel-gateway",
+      occurredAt: now.toISOString(),
+      payload: {
+        accountId: command.accountId,
+        businessId: command.businessId,
+        conversationId: request.conversationId,
+        messageId: command.messageId,
+        deviceId: command.deviceId,
+        status: command.status
+      }
+    });
+    return { commandId: command.id, waitingForDevice };
+  }
+
+  private requireCurrentNativeSmsDevice(
+    sessionId: string | null,
+    capability: NativeSmsDeviceCapability,
+    now: Date
+  ): NativeSmsDeviceSummary {
+    const auth = this.deps.requirePinVerifiedSession(sessionId, now);
+    const session = this.deps.sessions.get(auth.session.id);
+    const device = [...this.nativeSmsDevices.values()].find(
+      (candidate) =>
+        candidate.accountId === auth.account.id &&
+        candidate.deviceId === session?.deviceId &&
+        candidate.sessionFamilyId === session?.sessionFamilyId &&
+        candidate.revokedAt === null
+    );
+    if (device === undefined) {
+      throw new Cp2Error(403, "SMS_DEVICE_UNAVAILABLE", "Native SMS device is not registered.");
+    }
+    if (!device.capabilities.includes(capability)) {
+      throw new Cp2Error(
+        403,
+        nativeSmsMissingCapabilityCode(device, capability),
+        "Native SMS role, permissions, and SIM readiness are required."
+      );
+    }
+    return device;
+  }
+
+  private touchNativeSmsDevice(device: NativeSmsDeviceSummary, now: Date): NativeSmsDeviceSummary {
+    const touched: NativeSmsDeviceSummary = {
+      ...device,
+      readiness:
+        device.roleGranted &&
+        device.sendPermissionGranted &&
+        device.receivePermissionGranted &&
+        device.simReady &&
+        device.lastErrorCode === null
+          ? "ready"
+          : device.readiness,
+      lastSeenAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.nativeSmsDevices.set(touched.id, touched);
+    return touched;
+  }
+
+  private requireNativeSmsCommand(
+    device: NativeSmsDeviceSummary,
+    commandId: string,
+    now: Date
+  ): NativeSmsDeviceCommandSummary {
+    const command = this.nativeSmsDeviceCommands.get(commandId);
+    if (
+      command === undefined ||
+      command.deviceId !== device.id ||
+      command.accountId !== device.accountId
+    ) {
+      throw new Cp2Error(404, "sms_command_not_found", "Native SMS command was not found.");
+    }
+    if (
+      Date.parse(command.expiresAt) <= now.getTime() &&
+      !["completed", "failed", "cancelled"].includes(command.status)
+    ) {
+      const cancelled: NativeSmsDeviceCommandSummary = {
+        ...command,
+        status: "cancelled",
+        resultCode: "SMS_DEVICE_UNAVAILABLE",
+        completedAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      this.nativeSmsDeviceCommands.set(cancelled.id, cancelled);
+      this.failNativeSmsMessage(command.messageId, "SMS_DEVICE_UNAVAILABLE", now);
+      throw new Cp2Error(410, "sms_command_expired", "Native SMS command has expired.");
+    }
+    return command;
+  }
+
+  private failNativeSmsMessage(messageId: string, code: string, now: Date): void {
+    const message = this.conversationMessages.get(messageId);
+    if (message === undefined || message.status === "delivered" || message.status === "sent")
+      return;
+    const failed: ConversationMessageSummary = {
+      ...message,
+      status: "failed",
+      failureCode: code,
+      nextRetryAt: null
+    };
+    this.conversationMessages.set(failed.id, failed);
+    this.finishChannelDeliveryAttempt(failed, "permanent_failure", code, now);
+    this.recordConversationSyncForParticipants(
+      failed.conversationId,
+      "conversation_messages",
+      failed.id,
+      failed,
+      now
+    );
+  }
+
+  private ensureNativeSmsEndpoint(input: {
+    businessId: string;
+    customer: CustomerSummary;
+    accountId: string;
+    userId: string;
+    now: Date;
+  }): void {
+    const phone = normalizeExistingCustomerPhone(input.customer.phone);
+    if (phone === null) return;
+    this.upsertProviderConversation({
+      businessId: input.businessId,
+      provider: "native_sms",
+      customerId: input.customer.id,
+      externalUserId: phone,
+      externalConversationId: phone,
+      displayName: input.customer.name,
+      metadata: { automaticRepliesEnabled: false, executionEnvironment: "android-device" },
+      ownerAccountId: input.accountId,
+      ownerUserId: input.userId,
+      now: input.now
+    });
+  }
+
+  private ensureEmailEndpoint(input: {
+    businessId: string;
+    customer: CustomerSummary;
+    accountId: string;
+    userId: string;
+    mailboxId: string | null;
+    conversationId: string | null;
+    allowUnconnected: boolean;
+    now: Date;
+  }): void {
+    if (input.customer.email === null) {
+      throw new Cp2Error(404, "EMAIL_RECIPIENT_NOT_FOUND", "This customer has no email identity.");
+    }
+    const recipient = normalizeEmailIdentity(input.customer.email);
+    const existing = [...this.conversationChannels.values()].find((channel) => {
+      const identity = this.platformIdentities.get(channel.platformIdentityId);
+      return (
+        channel.provider === "email" &&
+        channel.businessId === input.businessId &&
+        identity?.customerId === input.customer.id &&
+        (input.conversationId === null || channel.conversationId === input.conversationId) &&
+        (input.mailboxId === null || channel.metadata.mailboxId === input.mailboxId)
+      );
+    });
+    const eligible = [...this.connectedMailboxes.values()].filter(
+      (mailbox) =>
+        mailbox.businessId === input.businessId &&
+        mailbox.accountId === input.accountId &&
+        mailbox.status === "connected" &&
+        mailbox.canSend
+    );
+    const mailbox =
+      input.mailboxId === null
+        ? (eligible.find((candidate) => candidate.isDefault) ??
+          (eligible.length === 1 ? eligible[0] : undefined))
+        : eligible.find((candidate) => candidate.id === input.mailboxId);
+    if (mailbox === undefined) {
+      if (input.allowUnconnected) {
+        if (existing !== undefined) return;
+        this.upsertProviderConversation({
+          businessId: input.businessId,
+          provider: "email",
+          customerId: input.customer.id,
+          externalUserId: recipient,
+          externalConversationId: `email:unconnected:${recipient}`,
+          displayName: input.customer.name,
+          metadata: { mailboxId: null, automaticRepliesEnabled: false },
+          ownerAccountId: input.accountId,
+          ownerUserId: input.userId,
+          now: input.now
+        });
+        return;
+      }
+      throw new Cp2Error(
+        eligible.length > 1 ? 409 : 404,
+        eligible.length > 1 ? "EMAIL_MAILBOX_NOT_FOUND" : "EMAIL_MAILBOX_NOT_CONNECTED",
+        eligible.length > 1
+          ? "Choose a default or explicit sending mailbox."
+          : "Connect an authorized mailbox before sending email."
+      );
+    }
+    if (existing !== undefined) {
+      if (existing.metadata.mailboxId === mailbox.id) return;
+      this.conversationChannels.set(existing.id, {
+        ...existing,
+        externalConversationId: `email:${mailbox.id}:${recipient}`,
+        status: "available",
+        metadata: {
+          ...existing.metadata,
+          mailboxId: mailbox.id,
+          senderAddress: mailbox.address,
+          automaticRepliesEnabled: false
+        },
+        updatedAt: input.now.toISOString()
+      });
+      return;
+    }
+    this.upsertProviderConversation({
+      businessId: input.businessId,
+      provider: "email",
+      customerId: input.customer.id,
+      externalUserId: recipient,
+      externalConversationId: `email:${mailbox.id}:${recipient}`,
+      displayName: input.customer.name,
+      metadata: {
+        mailboxId: mailbox.id,
+        senderAddress: mailbox.address,
+        automaticRepliesEnabled: false
+      },
+      ownerAccountId: input.accountId,
+      ownerUserId: input.userId,
+      now: input.now
+    });
+  }
+
+  private requireEmailReplyTarget(
+    conversationId: string,
+    messageId: string
+  ): ConversationMessageSummary {
+    const message = this.conversationMessages.get(messageId);
+    if (
+      message === undefined ||
+      message.conversationId !== conversationId ||
+      message.provider !== "email" ||
+      message.externalThreadId === null ||
+      message.externalThreadId === undefined
+    ) {
+      throw new Cp2Error(404, "email_reply_target_not_found", "Email reply target was not found.");
+    }
+    return message;
+  }
+
+  private resolveMessagingCustomer(
+    businessId: string,
+    input: {
+      customerId: string | undefined;
+      customerName: string | undefined;
+      conversationId: string | undefined;
+    }
+  ): CustomerSummary {
+    if (input.customerId !== undefined) return this.deps.requireCustomer(businessId, input.customerId);
+    if (input.conversationId !== undefined) {
+      const conversation = this.conversations.get(input.conversationId);
+      if (conversation?.activeShopId !== businessId) {
+        throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+      }
+      const customerIds = new Set(
+        [...this.conversationChannels.values()]
+          .filter((channel) => channel.conversationId === input.conversationId)
+          .map((channel) => this.platformIdentities.get(channel.platformIdentityId)?.customerId)
+          .filter(
+            (customerId): customerId is string => customerId !== null && customerId !== undefined
+          )
+      );
+      if (customerIds.size === 1) {
+        return this.deps.requireCustomer(businessId, [...customerIds][0] as string);
+      }
+    }
+    const name = input.customerName?.trim().toLocaleLowerCase();
+    if (name) {
+      const matches = [...this.deps.customers.values()].filter(
+        (customer) =>
+          customer.businessId === businessId && customer.name.toLocaleLowerCase() === name
+      );
+      if (matches.length === 1) return matches[0] as CustomerSummary;
+      if (matches.length > 1) {
+        throw new Cp2Error(409, "customer_ambiguous", "More than one customer has that name.");
+      }
+    }
+    throw new Cp2Error(404, "customer_not_found", "Customer was not found.");
+  }
+
+  private channelEndpoints(input: {
+    businessId: string;
+    customerId: string | null;
+    conversationId: string | null;
+  }): ChannelEndpointSummary[] {
+    return [...this.conversationChannels.values()]
+      .filter((channel) => {
+        if (channel.businessId !== input.businessId) return false;
+        if (input.conversationId !== null && channel.conversationId !== input.conversationId) {
+          return false;
+        }
+        const identity = this.platformIdentities.get(channel.platformIdentityId);
+        return input.customerId === null || identity?.customerId === input.customerId;
+      })
+      .flatMap((channel) => {
+        const identity = this.platformIdentities.get(channel.platformIdentityId);
+        return identity === undefined ? [] : [this.deps.channelGateway.endpoint(channel, identity)];
+      });
+  }
+
+  private persistOutboundChannelMessage(input: {
+    endpoint: ChannelEndpointSummary;
+    authorId: string;
+    text: string;
+    subject: string | null;
+    replyToMessageId: string | null;
+    externalThreadId: string | null;
+    attachments: ConversationAttachment[];
+    idempotencyKey: string;
+    now: Date;
+  }): ConversationMessageSummary {
+    const conversation = this.conversations.get(input.endpoint.conversationId);
+    if (conversation === undefined || conversation.activeShopId !== input.endpoint.businessId) {
+      throw new Cp2Error(404, "conversation_not_found", "Conversation was not found.");
+    }
+    const message: ConversationMessageSummary = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      clientMessageId: `channel-${randomUUID()}`,
+      idempotencyKey: input.idempotencyKey,
+      author: "user",
+      authorId: input.authorId,
+      content: {
+        type: "text",
+        text: input.text,
+        ...(input.attachments.length === 0 ? {} : { attachments: input.attachments })
+      },
+      status: "queued",
+      queuedAt: input.now.toISOString(),
+      sentAt: null,
+      deliveredAt: null,
+      readAt: null,
+      failureCode: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      selectedChannel: providerToMessageChannel(input.endpoint.provider),
+      actualChannel: null,
+      providerMessageId: null,
+      subject: input.subject,
+      externalThreadId: input.externalThreadId,
+      senderAddress:
+        input.endpoint.executionMailboxId === null ||
+        input.endpoint.executionMailboxId === undefined
+          ? null
+          : (this.connectedMailboxes.get(input.endpoint.executionMailboxId)?.address ?? null),
+      recipientAddresses:
+        input.endpoint.provider === "email" ? [input.endpoint.externalUserId] : [],
+      ccAddresses: [],
+      bccAddresses: [],
+      provider: input.endpoint.provider,
+      direction: "outbound",
+      externalConversationId: input.endpoint.externalConversationId,
+      channelIdentityId: input.endpoint.channelIdentityId,
+      importedSource: null,
+      importedExternalId: null,
+      consentRecordId: null,
+      editedAt: null,
+      deletedAt: null,
+      replyToMessageId: input.replyToMessageId,
+      forwardedFromMessageId: null,
+      reactions: [],
+      clientTimestamp: input.now.toISOString(),
+      createdAt: input.now.toISOString()
+    };
+    validateConversationMessageContent(message.content);
+    this.conversationMessages.set(message.id, message);
+    this.messageByClientId.set(`${conversation.id}:${message.clientMessageId}`, message.id);
+    this.messageByIdempotencyKey.set(`${conversation.id}:${message.idempotencyKey}`, message.id);
+    const attempt: MessageDeliveryAttemptSummary = {
+      id: randomUUID(),
+      accountId: conversation.accountId,
+      conversationId: conversation.id,
+      messageId: message.id,
+      channel: providerToMessageChannel(input.endpoint.provider),
+      provider: input.endpoint.provider,
+      attemptNumber: 1,
+      requestedAt: input.now.toISOString(),
+      respondedAt: null,
+      result: "transient_failure",
+      normalizedFailureCode: null,
+      providerResponseReference: null
+    };
+    this.messageDeliveryAttempts.set(attempt.id, attempt);
+    this.recordConversationSyncForParticipants(
+      conversation.id,
+      "conversation_messages",
+      message.id,
+      message,
+      input.now
+    );
+    return message;
+  }
+
+  private finishChannelDeliveryAttempt(
+    message: ConversationMessageSummary,
+    result: MessageDeliveryAttemptSummary["result"],
+    failureCode: string | null,
+    now: Date
+  ): void {
+    const attempt = [...this.messageDeliveryAttempts.values()].find(
+      (candidate) => candidate.messageId === message.id && candidate.attemptNumber === 1
+    );
+    if (attempt) {
+      this.messageDeliveryAttempts.set(attempt.id, {
+        ...attempt,
+        respondedAt: now.toISOString(),
+        result,
+        normalizedFailureCode: failureCode,
+        providerResponseReference: message.providerMessageId ?? null
+      });
+    }
+    this.recordConversationSyncForParticipants(
+      message.conversationId,
+      "conversation_messages",
+      message.id,
+      message,
+      now
+    );
+  }
+
+  private channelError(error: unknown): Cp2Error {
+    if (!(error instanceof ChannelGatewayError)) {
+      return new Cp2Error(503, "CHANNEL_SEND_FAILED", "Channel delivery failed.");
+    }
+    const status =
+      error.code === "CHANNEL_RATE_LIMITED"
+        ? 429
+        : error.code === "CHANNEL_WEBHOOK_INVALID" ||
+            error.code === "EMAIL_REAUTHORIZATION_REQUIRED" ||
+            error.code === "PROVIDER_AUTH_EXPIRED"
+          ? 401
+          : error.code === "CHANNEL_IDENTITY_NOT_FOUND"
+            ? 404
+            : error.retryable
+              ? 503
+              : 409;
+    return new Cp2Error(status, error.code, error.message);
+  }
+
+}

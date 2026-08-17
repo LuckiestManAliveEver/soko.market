@@ -4,6 +4,7 @@
  * validators used across many domains, not commerce-specific - kept here rather than in a
  * commerce-only shared module.
  */
+import type { AccountSummary } from "@soko/shared-types";
 import { Cp2Error } from "./cp2-error.js";
 
 export function normalizeRequiredBoundedText(
@@ -40,4 +41,15 @@ export function normalizeOptionalBoundedText(
     );
   }
   return normalized;
+}
+
+export function normalizeStorefrontLookupId(value: string): string {
+  return value.trim().toLowerCase().replace(/^\+/, "").replace("-", "");
+}
+
+export function destinationAccountKey(
+  channel: AccountSummary["primaryAuthChannel"],
+  destination: string
+): string {
+  return `${channel}:${destination}`;
 }
