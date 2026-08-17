@@ -9,6 +9,7 @@ import {
   type BetaFeatureFlagSummary,
   type BetaReadinessReportSummary,
   type BetaSupportTicketSummary,
+  type BusinessNotificationSummary,
   type BuyFeedSummary,
   type CountryTaxConfigSummary,
   type DeviceTrustSummary,
@@ -21,6 +22,7 @@ import {
   type LaunchSettingsSummary,
   type LogisticsSummary,
   type NetworkGraphSummary,
+  type NotificationInbox,
   type ProductCaptureJobSummary,
   type PurchaseReceiptSummary,
   type ReceiptOCRJobSummary,
@@ -1384,6 +1386,76 @@ describePostgres("CP2 Postgres store", () => {
           owner.sessionCookie
         );
         expect(restoredList.find((job) => job.id === importJob.id)?.status).toBe("confirmed");
+      } finally {
+        await restoredApp.close();
+        await restoredStore.close();
+      }
+    },
+    20_000
+  );
+
+  it(
+    "persists notifications (including read status and the notificationByRuleKey index) across store restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const ownerPhone = `254707${Date.now().toString().slice(-6)}`;
+      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const app = buildApi({ cp2: { store } });
+
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const businessId = owner.business.id;
+
+      const inbox = await getJson<NotificationInbox>(
+        app,
+        `/businesses/${businessId}/notifications`,
+        owner.sessionCookie
+      );
+      expect(inbox.notifications.map((notification) => notification.type).sort()).toEqual([
+        "beta_readiness",
+        "launch_readiness"
+      ]);
+      const target = inbox.notifications.find(
+        (notification) => notification.type === "beta_readiness"
+      );
+      expect(target).toBeDefined();
+
+      const updated = await patchJson<BusinessNotificationSummary>(
+        app,
+        `/businesses/${businessId}/notifications/${target?.id}`,
+        { status: "read" },
+        owner.sessionCookie
+      );
+      expect(updated.status).toBe("read");
+      expect(updated.readAt).not.toBeNull();
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+      const restoredApp = buildApi({ cp2: { store: restoredStore } });
+      try {
+        const restoredInbox = await getJson<NotificationInbox>(
+          restoredApp,
+          `/businesses/${businessId}/notifications`,
+          owner.sessionCookie
+        );
+        expect(restoredInbox.notifications.map((notification) => notification.type).sort()).toEqual(
+          [
+            "beta_readiness",
+            "launch_readiness"
+          ]
+        );
+
+        const restoredTarget = restoredInbox.notifications.find(
+          (notification) => notification.id === target?.id
+        );
+        expect(restoredTarget?.status).toBe("read");
+        expect(restoredTarget?.readAt).toBe(updated.readAt);
+
+        // Re-triggering ensureDeterministicNotifications (via this GET) must upsert onto the
+        // same two records rather than duplicate them - proves notificationByRuleKey survived
+        // the restart and still dedupes by rule key.
+        expect(restoredInbox.notifications).toHaveLength(2);
       } finally {
         await restoredApp.close();
         await restoredStore.close();

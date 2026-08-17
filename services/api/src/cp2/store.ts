@@ -39,6 +39,8 @@ import { LogisticsDomain } from "./domains/logistics/store.js";
 import { summarizeLogistics } from "./domains/logistics/shared.js";
 import { SupplierDomain } from "./domains/suppliers/store.js";
 import { DocumentImportDomain } from "./domains/document-imports/store.js";
+import { NotificationsDomain } from "./domains/notifications/store.js";
+import { notificationRuleKey, summarizeNotifications } from "./domains/notifications/shared.js";
 import type {
   AccountSummary,
   AgentAudience,
@@ -78,7 +80,6 @@ import type {
   BrowserInferenceAssignmentSummary,
   BrowserRuntimeContract,
   BusinessKnowledgeSummary,
-  BusinessNotificationStatus,
   BusinessNotificationSummary,
   BusinessReportSummary,
   BusinessRole,
@@ -160,7 +161,6 @@ import type {
   NativeSmsExecutableCommand,
   NativeSmsInboundResult,
   NativeSmsResultCode,
-  NotificationInbox,
   NetworkInviteSummary,
   OfflineCacheSnapshot,
   OAuthProvider,
@@ -1175,6 +1175,12 @@ export class Cp2Store {
       createSupplier: (input) => this.createSupplier(input),
       createProduct: (input) => this.createProduct(input)
     });
+    this.notificationsDomain = new NotificationsDomain({
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      buildBusinessReport: (businessId, now) => this.buildBusinessReport(businessId, now)
+    });
   }
 
   private readonly accounts = new Map<string, AccountSummary>();
@@ -1269,8 +1275,10 @@ export class Cp2Store {
   private readonly publicOrders = new Map<string, PublicOrderSummary>();
   private readonly compliance: ComplianceDomain;
   private readonly documentImportDomain: DocumentImportDomain;
-  private readonly notifications = new Map<string, BusinessNotificationSummary>();
-  private readonly notificationByRuleKey = new Map<string, string>();
+  // notifications/notificationByRuleKey now live inside `notificationsDomain`
+  // (services/api/src/cp2/domains/notifications/store.ts) - accessed via its map getters
+  // for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  private readonly notificationsDomain: NotificationsDomain;
   private readonly runtimeSessions = new Map<string, RuntimeSessionSummary>();
   private readonly runtimeTurns = new Map<string, RuntimeTurnSummary>();
   private readonly pendingRuntimeActions = new Map<string, PendingRuntimeAction>();
@@ -10190,72 +10198,16 @@ export class Cp2Store {
     return this.buildBusinessKnowledge(input.businessId, now);
   }
 
-  listNotifications(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): NotificationInbox {
-    const now = input.now ?? new Date();
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "notification:read", now);
-    this.ensureDeterministicNotifications(input.businessId, now);
-    const notifications = this.sortedNotifications(input.businessId);
-
-    return {
-      summary: summarizeNotifications(input.businessId, notifications),
-      notifications
-    };
+  listNotifications(
+    ...args: Parameters<NotificationsDomain["listNotifications"]>
+  ): ReturnType<NotificationsDomain["listNotifications"]> {
+    return this.notificationsDomain.listNotifications(...args);
   }
 
-  updateNotificationStatus(input: {
-    sessionId: string | null;
-    businessId: string;
-    notificationId: string;
-    status: BusinessNotificationStatus;
-    now?: Date;
-  }): BusinessNotificationSummary {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "notification:write",
-      now
-    );
-    this.ensureDeterministicNotifications(input.businessId, now);
-    const notification = this.notifications.get(input.notificationId);
-
-    if (notification === undefined || notification.businessId !== input.businessId) {
-      throw new Cp2Error(404, "notification_not_found", "Notification was not found.");
-    }
-
-    const updated: BusinessNotificationSummary = {
-      ...notification,
-      status: input.status,
-      updatedAt: now.toISOString(),
-      readAt:
-        input.status === "read"
-          ? (notification.readAt ?? now.toISOString())
-          : input.status === "archived"
-            ? (notification.readAt ?? now.toISOString())
-            : null,
-      archivedAt:
-        input.status === "archived" ? (notification.archivedAt ?? now.toISOString()) : null
-    };
-
-    this.notifications.set(updated.id, updated);
-    this.recordAuditEvent({
-      type: "notification.status_updated",
-      aggregateType: "notification",
-      aggregateId: updated.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        businessId: input.businessId,
-        status: updated.status,
-        type: updated.type
-      }
-    });
-
-    return updated;
+  updateNotificationStatus(
+    ...args: Parameters<NotificationsDomain["updateNotificationStatus"]>
+  ): ReturnType<NotificationsDomain["updateNotificationStatus"]> {
+    return this.notificationsDomain.updateNotificationStatus(...args);
   }
 
   createDataExport(input: {
@@ -10294,7 +10246,7 @@ export class Cp2Store {
       payments: this.paymentsForBusiness(input.businessId),
       logistics: this.logisticsDomain.logisticsForBusiness(input.businessId),
       documentImports: this.documentImportDomain.importsForBusiness(input.businessId),
-      notifications: this.sortedNotifications(input.businessId),
+      notifications: this.notificationsDomain.sortedNotifications(input.businessId),
       inventoryMovements: this.inventoryMovementsForBusiness(input.businessId),
       auditEvents
     };
@@ -10689,7 +10641,7 @@ export class Cp2Store {
     };
 
     this.accountDeletionRequests.set(deletionRequest.id, deletionRequest);
-    this.recordSecurityNotification({
+    this.notificationsDomain.recordSecurityNotification({
       businessId: input.businessId,
       type: "shop_deletion",
       title: "Shop deletion requested",
@@ -10829,7 +10781,7 @@ export class Cp2Store {
       startedAt: now.toISOString()
     };
     this.accountDeletionRequests.set(running.id, running);
-    this.recordSecurityNotification({
+    this.notificationsDomain.recordSecurityNotification({
       businessId: input.businessId,
       type: "shop_deletion",
       title: "Shop deletion started",
@@ -12539,7 +12491,7 @@ export class Cp2Store {
       launchIncidents: [...this.compliance.launchIncidentsMap.values()],
       documentImports: [...this.documentImportDomain.documentImportsMap.values()],
       documentImportSources: this.documentImportDomain.documentImportSourcesView(),
-      notifications: [...this.notifications.values()],
+      notifications: [...this.notificationsDomain.notificationsMap.values()],
       runtimeSessions: [...this.runtimeSessions.values()],
       runtimeTurns: [...this.runtimeTurns.values()],
       inventoryMovements: [...this.inventoryMovements.values()],
@@ -12638,8 +12590,7 @@ export class Cp2Store {
     this.publicOrders.clear();
     this.compliance.clear();
     this.documentImportDomain.clear();
-    this.notifications.clear();
-    this.notificationByRuleKey.clear();
+    this.notificationsDomain.clear();
     this.runtimeSessions.clear();
     this.runtimeTurns.clear();
     this.pendingRuntimeActions.clear();
@@ -13093,9 +13044,9 @@ export class Cp2Store {
     }
 
     for (const notification of snapshot.notifications) {
-      this.notifications.set(notification.id, notification);
-      this.notificationByRuleKey.set(
-        `${notification.businessId}:${notification.type}`,
+      this.notificationsDomain.notificationsMap.set(notification.id, notification);
+      this.notificationsDomain.notificationByRuleKeyMap.set(
+        notificationRuleKey(notification),
         notification.id
       );
     }
@@ -17555,10 +17506,10 @@ export class Cp2Store {
 
   private buildBusinessKnowledge(businessId: string, now: Date): BusinessKnowledgeSummary {
     const report = this.buildBusinessReport(businessId, now);
-    this.ensureDeterministicNotifications(businessId, now);
+    this.notificationsDomain.ensureDeterministicNotifications(businessId, now);
     const notificationSummary = summarizeNotifications(
       businessId,
-      this.sortedNotifications(businessId)
+      this.notificationsDomain.sortedNotifications(businessId)
     );
     const facts = [
       {
@@ -17642,175 +17593,6 @@ export class Cp2Store {
       notificationSummary,
       facts
     };
-  }
-
-  private ensureDeterministicNotifications(businessId: string, now: Date): void {
-    const report = this.buildBusinessReport(businessId, now);
-
-    if (report.inventory.outOfStockCount > 0 || report.inventory.lowStockCount > 0) {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:inventory.low_stock`,
-        type: "low_stock",
-        severity: report.inventory.outOfStockCount > 0 ? "critical" : "warning",
-        title: "Inventory needs attention",
-        body: `${report.inventory.lowStockCount} low-stock products and ${report.inventory.outOfStockCount} out of stock.`,
-        sourceType: "report",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.debts.totalOutstanding > 0) {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:debt.open`,
-        type: "open_debt",
-        severity: "warning",
-        title: "Open customer debt",
-        body: `${report.debts.customerCount} customers owe ${report.debts.totalOutstanding}.`,
-        sourceType: "report",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.sync.conflict > 0) {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:sync.conflict`,
-        type: "sync_conflict",
-        severity: "critical",
-        title: "Sync conflicts need review",
-        body: `${report.sync.conflict} queued sync item${report.sync.conflict === 1 ? "" : "s"} have conflicts.`,
-        sourceType: "sync_queue",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.imports.failedJobs > 0) {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:import.failed`,
-        type: "import_failed",
-        severity: "warning",
-        title: "Import failed",
-        body: `${report.imports.failedJobs} document import job${report.imports.failedJobs === 1 ? "" : "s"} failed.`,
-        sourceType: "document_import",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.logistics.pendingCount > 0 || report.logistics.readyCount > 0) {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:logistics.pending`,
-        type: "fulfillment_pending",
-        severity: "warning",
-        title: "Fulfillment work is open",
-        body: `${report.logistics.pendingCount} pending and ${report.logistics.readyCount} ready fulfillment records need attention.`,
-        sourceType: "logistics",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.beta.status !== "ready") {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:beta.readiness`,
-        type: "beta_readiness",
-        severity: report.beta.status === "blocked" ? "critical" : "warning",
-        title: "Beta readiness needs review",
-        body: `${report.beta.gates.filter((gate) => !gate.passed).length} CP15 release gates need attention.`,
-        sourceType: "beta_readiness",
-        sourceId: null,
-        now
-      });
-    }
-
-    if (report.launch.status !== "ready") {
-      this.upsertNotification({
-        businessId,
-        ruleKey: `${businessId}:launch.readiness`,
-        type: "launch_readiness",
-        severity: report.launch.status === "blocked" ? "critical" : "warning",
-        title: "Public launch readiness needs review",
-        body: `${report.launch.gates.filter((gate) => !gate.passed).length} CP16 launch gates need attention.`,
-        sourceType: "launch_readiness",
-        sourceId: null,
-        now
-      });
-    }
-  }
-
-  private upsertNotification(input: {
-    businessId: string;
-    ruleKey: string;
-    type: BusinessNotificationSummary["type"];
-    severity: BusinessNotificationSummary["severity"];
-    title: string;
-    body: string;
-    sourceType: BusinessNotificationSummary["sourceType"];
-    sourceId: string | null;
-    now: Date;
-  }): void {
-    const existingId = this.notificationByRuleKey.get(input.ruleKey);
-    const existing = existingId === undefined ? undefined : this.notifications.get(existingId);
-
-    if (existing !== undefined) {
-      if (existing.status === "archived") {
-        return;
-      }
-
-      this.notifications.set(existing.id, {
-        ...existing,
-        severity: input.severity,
-        title: input.title,
-        body: input.body,
-        updatedAt: input.now.toISOString()
-      });
-      return;
-    }
-
-    const notification: BusinessNotificationSummary = {
-      id: randomUUID(),
-      businessId: input.businessId,
-      type: input.type,
-      severity: input.severity,
-      status: "unread",
-      title: input.title,
-      body: input.body,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      createdAt: input.now.toISOString(),
-      updatedAt: input.now.toISOString(),
-      readAt: null,
-      archivedAt: null
-    };
-
-    this.notifications.set(notification.id, notification);
-    this.notificationByRuleKey.set(input.ruleKey, notification.id);
-    this.recordAuditEvent({
-      type: "notification.created",
-      aggregateType: "notification",
-      aggregateId: notification.id,
-      actorId: "system",
-      occurredAt: input.now.toISOString(),
-      payload: {
-        businessId: input.businessId,
-        type: notification.type,
-        severity: notification.severity
-      }
-    });
-  }
-
-  private sortedNotifications(businessId: string): BusinessNotificationSummary[] {
-    return [...this.notifications.values()]
-      .filter((notification) => notification.businessId === businessId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   private membershipsForBusiness(businessId: string): MembershipSummary[] {
@@ -18335,7 +18117,7 @@ export class Cp2Store {
       ...this.logisticsDomain.logisticsForBusiness(businessId).map((item) => item.id),
       ...this.documentImportDomain.importsForBusiness(businessId).map((item) => item.id),
       ...this.inventoryMovementsForBusiness(businessId).map((item) => item.id),
-      ...this.sortedNotifications(businessId).map((item) => item.id),
+      ...this.notificationsDomain.sortedNotifications(businessId).map((item) => item.id),
       ...this.syncItemsForBusiness(businessId).map((item) => item.id),
       ...[...this.dataExports.values()]
         .filter((item) => item.businessId === businessId)
@@ -18397,7 +18179,7 @@ export class Cp2Store {
         salesAgents: this.supplierDomain.salesAgentsForBusiness(businessId).length,
         salesRecords: invoices.length + payments.length,
         messages: this.runtimeTurnsForBusiness(businessId).length,
-        notifications: this.sortedNotifications(businessId).length,
+        notifications: this.notificationsDomain.sortedNotifications(businessId).length,
         connectedProviders: [...this.userIdentities.values()].filter(
           (identity) => identity.accountId === accountId
         ).length,
@@ -18411,27 +18193,6 @@ export class Cp2Store {
       retentionNotice:
         "The shop is removed from active systems. Audit and legally required financial records may be retained with restricted access according to retention rules and backup expiry."
     };
-  }
-
-  private recordSecurityNotification(input: {
-    businessId: string;
-    type: BusinessNotificationSummary["type"];
-    title: string;
-    body: string;
-    sourceId: string;
-    now: Date;
-  }): void {
-    this.upsertNotification({
-      businessId: input.businessId,
-      ruleKey: `${input.businessId}:${input.type}:${input.sourceId}`,
-      type: input.type,
-      severity: "critical",
-      title: input.title,
-      body: input.body,
-      sourceType: input.type === "shop_deletion" ? "shop_deletion" : "security",
-      sourceId: input.sourceId,
-      now: input.now
-    });
   }
 
   private deleteShopOwnedData(businessId: string, accountId: string, now: Date): void {
@@ -18576,10 +18337,10 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, notification] of this.notifications.entries()) {
+    for (const [id, notification] of this.notificationsDomain.notificationsMap.entries()) {
       if (notification.businessId === businessId) {
-        this.notifications.delete(id);
-        this.notificationByRuleKey.delete(`${notification.businessId}:${notification.type}`);
+        this.notificationsDomain.notificationsMap.delete(id);
+        this.notificationsDomain.notificationByRuleKeyMap.delete(notificationRuleKey(notification));
       }
     }
 
@@ -18750,7 +18511,7 @@ export class Cp2Store {
         this.documentImportDomain.documentImportSourcesMap,
         scope
       );
-      deletedRecordCount += deleteScopedMapRecords(this.notifications, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.notificationsDomain.notificationsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.runtimeSessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.runtimeTurns, scope);
       deletedRecordCount += deleteScopedMapRecords(this.pendingRuntimeActions, scope);
@@ -18840,13 +18601,7 @@ export class Cp2Store {
 
     this.logisticsDomain.rebuildLogisticsByInvoiceIndex();
 
-    this.notificationByRuleKey.clear();
-    for (const notification of this.notifications.values()) {
-      this.notificationByRuleKey.set(
-        `${notification.businessId}:${notification.type}`,
-        notification.id
-      );
-    }
+    this.notificationsDomain.rebuildNotificationByRuleKeyIndex();
 
     this.syncQueueIdByIdempotency.clear();
     for (const item of this.syncQueue.values()) {
@@ -21003,25 +20758,6 @@ function countExportRecords(data: DataExportBundle["data"]): Record<string, numb
     inventoryMovements: data.inventoryMovements.length,
     auditEvents: data.auditEvents.length
   };
-}
-
-function summarizeNotifications(
-  businessId: string,
-  notifications: BusinessNotificationSummary[]
-): NotificationInbox["summary"] {
-  const summary = {
-    businessId,
-    unread: 0,
-    read: 0,
-    archived: 0,
-    total: notifications.length
-  };
-
-  for (const notification of notifications) {
-    summary[notification.status] += 1;
-  }
-
-  return summary;
 }
 
 function hashOtp(challengeId: string, code: string): string {
