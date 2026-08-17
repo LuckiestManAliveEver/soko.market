@@ -283,8 +283,10 @@ describe("cloud-to-local recall lifecycle", () => {
     };
     const store = createCp2Store({ runtimeModelProvider: provider });
     const owner = ownerShop(store, "+254700009003", "Failure Isolation Shop");
-    const internal = store as unknown as { persistRecallCandidate: () => void };
-    internal.persistRecallCandidate = vi.fn(() => {
+    const internal = store as unknown as {
+      agentRuntimeDomain: { persistRecallCandidate: () => void };
+    };
+    internal.agentRuntimeDomain.persistRecallCandidate = vi.fn(() => {
       throw new Error("simulated persistence failure");
     });
 

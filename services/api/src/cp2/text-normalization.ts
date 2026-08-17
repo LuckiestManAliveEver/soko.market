@@ -4,7 +4,7 @@
  * validators used across many domains, not commerce-specific - kept here rather than in a
  * commerce-only shared module.
  */
-import type { AccountSummary } from "@soko/shared-types";
+import type { AccountSummary, SupportedLanguage } from "@soko/shared-types";
 import { Cp2Error } from "./cp2-error.js";
 
 export function normalizeRequiredBoundedText(
@@ -52,4 +52,21 @@ export function destinationAccountKey(
   destination: string
 ): string {
   return `${channel}:${destination}`;
+}
+
+export function isSupportedLanguage(value: string): value is SupportedLanguage {
+  return value === "en" || value === "sw";
+}
+
+export function readBoundedSecurityInteger(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const configured = process.env[name]?.trim();
+  if (configured === undefined || configured.length === 0) return fallback;
+  const parsed = Number(configured);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
+  return parsed;
 }

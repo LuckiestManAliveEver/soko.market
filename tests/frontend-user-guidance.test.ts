@@ -157,7 +157,7 @@ describe("frontend user guidance", () => {
   it("connects the Android model library to Hugging Face, GitHub, and device-fit ranking", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
-    const store = readFileSync("services/api/src/cp2/store.ts", "utf8");
+    const store = readFileSync("services/api/src/cp2/domains/agent-runtime/shared.ts", "utf8");
     const githubCatalog = readFileSync("services/api/src/cp2/github-model-catalog.ts", "utf8");
     const huggingFaceCatalog = readFileSync(
       "services/api/src/cp2/huggingface-model-catalog.ts",

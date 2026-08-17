@@ -38,6 +38,7 @@ import {
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
+import { readSessionCookie } from "../services/api/src/cp2/store";
 import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
 
 interface SqlExecutor {
@@ -355,6 +356,225 @@ describePostgres("CP2 Postgres store", () => {
 
     await restoredApp.close();
   }, 30_000);
+
+  it(
+    "persists agent profile, context sources, owner corrections, feedback, installed models, " +
+      "model assignments, and browser inference assignments across restarts",
+    async () => {
+      expect(databaseUrl).toBeDefined();
+      const connectionString = databaseUrl ?? "";
+      const uniquePhone = `254706${Date.now().toString().slice(-6)}`;
+      const deviceId = `postgres-device-${Date.now()}`;
+
+      const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+      const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+      const sessionId = readSessionCookie(sessionCookie);
+      expect(sessionId).not.toBeNull();
+
+      const profile = await putJson<{ name: string; modelId: string }>(
+        app,
+        `/businesses/${business.id}/agent-profile`,
+        {
+          name: "Postgres Runtime Agent",
+          description: "Handles postgres persistence checks.",
+          modelId: "qwen2.5-0.5b-android",
+          role: "sales",
+          language: "en",
+          personality: "Friendly and concise.",
+          instructions: "Always confirm quantities.",
+          knowledge: "Sells household goods.",
+          tools: [],
+          integrations: [],
+          contextScripts: [],
+          status: "active"
+        },
+        sessionCookie
+      );
+
+      const contextSource = await postJson<{ id: string; title: string }>(
+        app,
+        `/businesses/${business.id}/agent-runtime/context-sources`,
+        {
+          type: "policy",
+          title: "Return policy",
+          content: "Returns accepted within 7 days with a receipt.",
+          sensitivity: "internal",
+          customerVisible: false,
+          status: "active"
+        },
+        sessionCookie
+      );
+
+      const correction = await postJson<{ id: string; correction: string }>(
+        app,
+        `/businesses/${business.id}/agent-runtime/corrections`,
+        {
+          correction: "Sugar is sold by the kilogram, not the bag.",
+          category: "business_fact",
+          promoteToInstruction: false
+        },
+        sessionCookie
+      );
+
+      await postJson(
+        app,
+        `/businesses/${business.id}/agent-runtime/feedback`,
+        { correct: true },
+        sessionCookie
+      );
+
+      const runtimeSession = await postJson<{ id: string }>(
+        app,
+        `/businesses/${business.id}/runtime/sessions`,
+        {},
+        sessionCookie
+      );
+
+      const installedModel = store.registerInstalledAgentModel({
+        sessionId,
+        model: {
+          id: `${deviceId}-model`,
+          deviceId,
+          modelId: "tinyllama-1.1b-chat-q4-k-m-android",
+          displayName: "TinyLlama 1.1B (Q4_K_M)",
+          provider: "huggingface",
+          repositoryId: "postgres-test/tinyllama",
+          filename: "tinyllama.gguf",
+          format: "GGUF",
+          quantization: "Q4_K_M",
+          architecture: "llama",
+          parameterCount: 1_100_000_000,
+          contextLength: 2048,
+          fileSizeBytes: 700_000_000,
+          checksum: `sha256:${"a".repeat(64)}`,
+          packageManifestVersion: null,
+          packageSignature: null,
+          packageSigningKeyId: null,
+          license: "Apache-2.0",
+          commercialUseAllowed: true,
+          storageKey: `${deviceId}-storage-key`,
+          runtimeBackend: "LLAMA_CPP_ANDROID",
+          installationStatus: "INSTALLED",
+          compatibilityStatus: "COMPATIBLE",
+          installedAt: new Date().toISOString(),
+          lastVerifiedAt: null,
+          validationError: null
+        }
+      });
+
+      store.assignAgentModel({
+        sessionId,
+        businessId: business.id,
+        deviceId,
+        installationId: installedModel.id,
+        preferredExecutionMode: "LOCAL_FIRST",
+        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
+        readinessStatus: "ATTACHED",
+        lastSuccessfulInferenceAt: null,
+        lastErrorCode: null
+      });
+
+      store.upsertBrowserInferenceAssignment({
+        sessionId,
+        businessId: business.id,
+        deviceId,
+        enabled: false,
+        selectedModelId: null,
+        modelFamilyId: null,
+        modelRevision: null,
+        runtimeContract: null,
+        checkpointCompatibilityContract: null,
+        deviceTier: "medium",
+        readinessStatus: "ATTACHED",
+        lastSuccessfulInferenceAt: null,
+        lastErrorCode: null
+      });
+
+      await store.flush();
+      await app.close();
+
+      const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+      const restoredApp = buildApi({
+        cp2: { store: restoredStore },
+        mutationPersistenceFlush: () => restoredStore.flush()
+      });
+
+      const restoredProfile = await getJson<{ name: string; modelId: string }>(
+        restoredApp,
+        `/businesses/${business.id}/agent-profile`,
+        sessionCookie
+      );
+      expect(restoredProfile).toMatchObject({ name: profile.name, modelId: profile.modelId });
+
+      const restoredSources = await getJson<Array<{ id: string; title: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/agent-runtime/context-sources`,
+        sessionCookie
+      );
+      expect(restoredSources).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: contextSource.id, title: contextSource.title })
+        ])
+      );
+
+      const restoredCorrections = await getJson<Array<{ id: string; correction: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/agent-runtime/corrections`,
+        sessionCookie
+      );
+      expect(restoredCorrections).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: correction.id, correction: correction.correction })
+        ])
+      );
+
+      const restoredEvaluations = await getJson<{ total: number }>(
+        restoredApp,
+        `/businesses/${business.id}/agent-runtime/evaluations`,
+        sessionCookie
+      );
+      expect(restoredEvaluations.total).toBeGreaterThanOrEqual(1);
+
+      const restoredRuntimeSessions = await getJson<Array<{ id: string }>>(
+        restoredApp,
+        `/businesses/${business.id}/runtime/sessions`,
+        sessionCookie
+      );
+      expect(restoredRuntimeSessions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: runtimeSession.id })])
+      );
+
+      const restoredInstalledModels = restoredStore.listInstalledAgentModels({
+        sessionId,
+        deviceId
+      });
+      expect(restoredInstalledModels).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: installedModel.id })])
+      );
+
+      const restoredAssignment = restoredStore.getAgentModelAssignment({
+        sessionId,
+        businessId: business.id,
+        deviceId
+      });
+      expect(restoredAssignment.activeModelInstallationId).toBe(installedModel.id);
+
+      const restoredBrowserAssignment = restoredStore.getBrowserInferenceAssignment({
+        sessionId,
+        businessId: business.id,
+        deviceId
+      });
+      expect(restoredBrowserAssignment).toMatchObject({
+        enabled: false,
+        deviceTier: "medium",
+        readinessStatus: "ATTACHED"
+      });
+
+      await restoredApp.close();
+    },
+    30_000
+  );
 
   it("persists phone-first access, verified recovery email, and password login across restarts", async () => {
     expect(databaseUrl).toBeDefined();
@@ -1770,6 +1990,27 @@ async function postJson<T>(
 ): Promise<T> {
   const response = await app.inject({
     method: "POST",
+    url,
+    headers: {
+      ...jsonHeaders(),
+      ...(cookie === undefined ? {} : { cookie })
+    },
+    payload: JSON.stringify(payload)
+  });
+
+  expect(response.statusCode).toBeGreaterThanOrEqual(200);
+  expect(response.statusCode).toBeLessThan(300);
+  return response.json<T>();
+}
+
+async function putJson<T>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  payload: unknown,
+  cookie?: string
+): Promise<T> {
+  const response = await app.inject({
+    method: "PUT",
     url,
     headers: {
       ...jsonHeaders(),
