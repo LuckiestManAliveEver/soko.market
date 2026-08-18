@@ -137,6 +137,7 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
@@ -224,7 +225,6 @@ import {
   type MarketplaceIntroStateSummary,
   type NetworkGraphSummary,
   type NetworkInvitesResponse,
-  type NetworkNodeSummary,
   type OAuthProviderSummary,
   type OAuthProvidersResponse,
   type OAuthStartResponse,
@@ -241,14 +241,11 @@ import {
   type ProductSummary,
   type PublicStorefrontListResponse,
   type PublicStorefrontSummary,
-  type PurchaseReceiptSummary,
-  type ReceiptOCRJobSummary,
   type RecordPaymentResponse,
   type RoleCheckResponse,
   type RuntimeSessionSummary,
   type RuntimeTurnResult,
   type RuntimeTurnSummary,
-  type SalesAgentSummary,
   type SecurityReviewSummary,
   type SessionResponse,
   type SetupDraft,
@@ -256,9 +253,6 @@ import {
   type ShopPresenceSummary,
   type SocialSignupProvider,
   type StockAdjustmentResponse,
-  type SupplierBusinessCardSummary,
-  type SupplierFormState,
-  type SupplierSummary,
   type SupportedLanguage,
   type SyncQueueItem,
   type SyncQueueResponse,
@@ -527,8 +521,6 @@ export function OwnerApp() {
   const [productFields, setProductFields] = useState<ProductFieldDefinition[]>(() =>
     createDefaultProductFieldDefinitions()
   );
-  const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
-  const [purchaseReceipts, setPurchaseReceipts] = useState<PurchaseReceiptSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
@@ -564,7 +556,6 @@ export function OwnerApp() {
   const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
-  const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
@@ -719,6 +710,30 @@ export function OwnerApp() {
       registerReset: domainResetRegistry.registerReset,
       registerRefresh
     });
+  const {
+    suppliers,
+    purchaseReceipts,
+    supplierForm,
+    setSupplierForm,
+    loadSuppliers,
+    saveSupplier,
+    deleteSupplierCard,
+    saveSalesAgent,
+    deleteSalesAgentCard,
+    searchSupplierContacts,
+    linkSupplierPhoneContact,
+    createSupplierFromPhoneContact,
+    linkSalesAgentPhoneContact,
+    createSalesAgentFromPhoneContact,
+    uploadSupplierReceipt,
+    confirmSupplierReceipt
+  } = useSuppliersState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    loadReports,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1288,10 +1303,6 @@ export function OwnerApp() {
         refreshes.push(loadProducts(businessId), loadProductFields(businessId));
       }
 
-      if (view === "suppliers") {
-        refreshes.push(loadSuppliers(businessId), loadPurchaseReceipts(businessId));
-      }
-
       if (view === "invoices") {
         refreshes.push(
           loadProducts(businessId),
@@ -1325,11 +1336,7 @@ export function OwnerApp() {
       }
 
       if (view === "imports") {
-        refreshes.push(
-          loadDocumentImports(businessId),
-          loadSuppliers(businessId),
-          loadProducts(businessId)
-        );
+        refreshes.push(loadDocumentImports(businessId), loadProducts(businessId));
       }
 
       if (view === "logistics") {
@@ -2166,277 +2173,6 @@ export function OwnerApp() {
       );
       setProductFields(schema.fields);
       setStatusMessage("Product field structure saved");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadSuppliers(businessId: string) {
-    try {
-      setSuppliers(
-        await getJson<SupplierBusinessCardSummary[]>(
-          `/businesses/${businessId}/suppliers`,
-          setSuppliers
-        )
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  // Business-wide purchase history across every supplier, distinct from the per-supplier receipts
-  // already embedded in SupplierBusinessCardSummary - this is the flat ledger view.
-  async function loadPurchaseReceipts(businessId: string) {
-    try {
-      setPurchaseReceipts(
-        await getJson<PurchaseReceiptSummary[]>(
-          `/businesses/${businessId}/purchase-receipts`,
-          setPurchaseReceipts
-        )
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveSupplier() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const payload = {
-        name: supplierForm.name,
-        phone: supplierForm.phone,
-        email: supplierForm.email,
-        notes: supplierForm.notes
-      };
-
-      if (supplierForm.id === null) {
-        await postJson<SupplierSummary>(`/businesses/${business.id}/suppliers`, payload);
-      } else {
-        await patchJson<SupplierSummary>(
-          `/businesses/${business.id}/suppliers/${supplierForm.id}`,
-          payload
-        );
-      }
-
-      setSupplierForm(emptySupplierForm);
-      await loadSuppliers(business.id);
-      await loadReports(business.id);
-      setStatusMessage(supplierForm.id === null ? "Supplier created" : "Supplier updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function deleteSupplierCard(supplierId: string) {
-    if (business === null) {
-      return;
-    }
-    const supplierName =
-      suppliers.find((supplier) => supplier.id === supplierId)?.name ?? "this supplier";
-    if (!window.confirm(`Delete ${supplierName}? This cannot be undone.`)) return;
-
-    try {
-      await deleteJson<{ deleted: true; supplierId: string }>(
-        `/businesses/${business.id}/suppliers/${supplierId}`
-      );
-      await loadSuppliers(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Supplier deleted");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveSalesAgent(supplierId: string, agent: SupplierFormState) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const payload = {
-        name: agent.name,
-        phone: agent.phone,
-        email: agent.email,
-        notes: agent.notes
-      };
-
-      if (agent.id === null) {
-        await postJson<SalesAgentSummary>(
-          `/businesses/${business.id}/suppliers/${supplierId}/sales-agents`,
-          payload
-        );
-      } else {
-        await patchJson<SalesAgentSummary>(
-          `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/${agent.id}`,
-          payload
-        );
-      }
-
-      await loadSuppliers(business.id);
-      setStatusMessage(agent.id === null ? "Sales agent added" : "Sales agent updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function deleteSalesAgentCard(supplierId: string, salesAgentId: string) {
-    if (business === null) {
-      return;
-    }
-    if (!window.confirm("Delete this sales agent? This cannot be undone.")) return;
-
-    try {
-      await deleteJson<{ deleted: true; salesAgentId: string }>(
-        `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/${salesAgentId}`
-      );
-      await loadSuppliers(business.id);
-      setStatusMessage("Sales agent deleted");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function searchSupplierContacts(query: string): Promise<NetworkNodeSummary[]> {
-    if (business === null) {
-      return [];
-    }
-
-    try {
-      return await getJson<NetworkNodeSummary[]>(
-        `/businesses/${business.id}/suppliers/phonebook/search?q=${encodeURIComponent(query)}`
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-      return [];
-    }
-  }
-
-  async function linkSupplierPhoneContact(supplierId: string, networkNodeId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<SupplierBusinessCardSummary>(
-        `/businesses/${business.id}/suppliers/${supplierId}/link-contact`,
-        { networkNodeId }
-      );
-      await loadSuppliers(business.id);
-      setStatusMessage("Supplier phone contact linked");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createSupplierFromPhoneContact(networkNodeId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<SupplierBusinessCardSummary>(
-        `/businesses/${business.id}/suppliers/from-phonebook`,
-        { networkNodeId }
-      );
-      await loadSuppliers(business.id);
-      setStatusMessage("Supplier created from phone contact");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function linkSalesAgentPhoneContact(salesAgentId: string, networkNodeId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<SalesAgentSummary>(
-        `/businesses/${business.id}/sales-agents/${salesAgentId}/link-contact`,
-        { networkNodeId }
-      );
-      await loadSuppliers(business.id);
-      setStatusMessage("Sales agent phone contact linked");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createSalesAgentFromPhoneContact(supplierId: string, networkNodeId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<SalesAgentSummary>(
-        `/businesses/${business.id}/suppliers/${supplierId}/sales-agents/from-phonebook`,
-        { networkNodeId }
-      );
-      await loadSuppliers(business.id);
-      setStatusMessage("Sales agent created from phone contact");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function readFileSignature(file: File): Promise<string> {
-    const buffer = await file.slice(0, 16).arrayBuffer();
-    return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-
-  async function uploadSupplierReceipt(file: File): Promise<ReceiptOCRJobSummary | null> {
-    if (business === null) {
-      return null;
-    }
-
-    try {
-      const requiresOCR = file.type.startsWith("image/") || file.type === "application/pdf";
-      const extractedText = requiresOCR ? "" : await file.text();
-      const contentBase64 = requiresOCR ? dataUrlPayload(await readFileAsDataUrl(file)) : undefined;
-      const job = await postJson<ReceiptOCRJobSummary>(
-        `/businesses/${business.id}/receipt-ocr/jobs`,
-        {
-          fileName: file.name,
-          contentType: file.type || "application/octet-stream",
-          extractedText,
-          ...(contentBase64 === undefined ? {} : { contentBase64 }),
-          fileSizeBytes: file.size,
-          fileSignature: await readFileSignature(file)
-        }
-      );
-      setStatusMessage(
-        job.status === "failed" || job.status === "FAILED"
-          ? "Receipt OCR failed. Retry or enter the receipt manually."
-          : "Receipt OCR complete. Confirm matched supplier and agent."
-      );
-      return job;
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-      return null;
-    }
-  }
-
-  async function confirmSupplierReceipt(job: ReceiptOCRJobSummary) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<PurchaseReceiptSummary>(
-        `/businesses/${business.id}/receipt-ocr/jobs/${job.id}/confirm`,
-        {
-          supplierId: job.matchedSupplierId,
-          salesAgentId: job.matchedSalesAgentId,
-          createSupplier: job.matchedSupplierId === null,
-          createSalesAgent: job.matchedSalesAgentId === null && job.salesAgentName !== null
-        }
-      );
-      await loadSuppliers(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Receipt saved. Uploaded image was deleted after processing.");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4154,7 +3890,6 @@ export function OwnerApp() {
     setProducts([]);
     setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
-    setSuppliers([]);
     setInvoices([]);
     setPayments([]);
     setInvoicePayments([]);
@@ -4185,7 +3920,6 @@ export function OwnerApp() {
     setLaunchIncidents([]);
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
-    setSupplierForm(emptySupplierForm);
     setInvoiceForm(emptyInvoiceForm);
     setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
