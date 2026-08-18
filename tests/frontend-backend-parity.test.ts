@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const productCapture = readFileSync("apps/web/src/ProductCapturePanel.tsx", "utf8");
 const accountControls = readFileSync("apps/web/src/AccountBackendControls.tsx", "utf8");
 const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
@@ -9,7 +10,7 @@ const phoneLogin = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "ut
 
 describe("frontend coverage for backend-owned lifecycles", () => {
   it("renders the staged backend signup transaction as a dedicated frontend flow", () => {
-    expect(application).toContain('import("./PhoneSignup")');
+    expect(sharedModule).toContain('import("./PhoneSignup")');
     expect(application).toContain("<PhoneSignup");
     expect(phoneSignup).toContain('"/auth/signup/start"');
     expect(phoneSignup).toContain('"/auth/signup/complete"');
@@ -34,7 +35,7 @@ describe("frontend coverage for backend-owned lifecycles", () => {
   });
 
   it("completes the camera catalogue capture lifecycle", () => {
-    expect(application).toContain('import("./ProductCapturePanel")');
+    expect(sharedModule).toContain('import("./ProductCapturePanel")');
     expect(productCapture).toContain("function ProductCapturePanel");
     expect(productCapture).toContain('capture="environment"');
     expect(productCapture).toContain("/product-captures`");
@@ -47,7 +48,7 @@ describe("frontend coverage for backend-owned lifecycles", () => {
   });
 
   it("lets owners update the account name exposed by the backend", () => {
-    expect(application).toContain('import("./AccountBackendControls")');
+    expect(sharedModule).toContain('import("./AccountBackendControls")');
     expect(accountControls).toContain('"/account/display-name"');
     expect(accountControls).toContain('aria-label="Account display name"');
     expect(application).toContain("onOwnerUserChange({ ...ownerUser, displayName })");

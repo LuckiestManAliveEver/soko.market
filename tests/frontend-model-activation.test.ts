@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
 describe("frontend model activation contracts", () => {
@@ -126,7 +127,7 @@ describe("frontend model activation contracts", () => {
     expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
     expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");
     expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
-    expect(application).toContain("backendModelProbeRequestTimeoutMs = 105_000");
+    expect(sharedModule).toContain("backendModelProbeRequestTimeoutMs = 105_000");
     expect(serverActivation).toContain("timeoutMs: backendModelProbeRequestTimeoutMs");
     expect(serverActivation).toContain("setTestingBackendModelId(model.id)");
     expect(application).toContain('testingBackendModelId === model.id ? "Testing…" : "Test model"');
