@@ -13,7 +13,6 @@ import type {
   AuthChannel,
   BuyCheckoutItemInput,
   BuyResultSourceKind,
-  BusinessNotificationStatus,
   BetaAccessStatus,
   BetaDeviceClass,
   BetaDeviceTestStatus,
@@ -108,6 +107,7 @@ import {
   parseLogisticsStatusBody,
   registerLogisticsRoutes
 } from "./domains/logistics/routes.js";
+import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -769,10 +769,6 @@ interface RuntimeSessionParams extends BusinessParams {
   runtimeSessionId: string;
 }
 
-interface NotificationParams extends BusinessParams {
-  notificationId: string;
-}
-
 interface DocumentImportParams extends BusinessParams {
   importJobId: string;
 }
@@ -967,10 +963,6 @@ interface RecallEffectivenessBody {
   outcome?: unknown;
   localRuntime?: unknown;
   modelId?: unknown;
-}
-
-interface NotificationStatusBody {
-  status?: string;
 }
 
 interface AccountDeletionBody {
@@ -5941,38 +5933,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.get(
-    "/businesses/:businessId/notifications",
-    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
-      try {
-        return store.listNotifications({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.patch(
-    "/businesses/:businessId/notifications/:notificationId",
-    async (
-      request: FastifyRequest<{ Params: NotificationParams; Body: NotificationStatusBody }>,
-      reply
-    ) => {
-      try {
-        return store.updateNotificationStatus({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          notificationId: request.params.notificationId,
-          status: parseNotificationStatus(request.body?.status)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerNotificationsRoutes(app, store);
 
   app.get(
     "/businesses/:businessId/compliance/security-review",
@@ -8196,16 +8157,6 @@ function parseRecallEffectivenessBody(body: RecallEffectivenessBody | null | und
     localRuntime,
     modelId: parseString(record.modelId, "modelId")
   };
-}
-
-function parseNotificationStatus(value: unknown): BusinessNotificationStatus {
-  const status = parseString(value, "status");
-
-  if (status === "unread" || status === "read" || status === "archived") {
-    return status;
-  }
-
-  throw new Cp2Error(400, "notification_status_invalid", "Notification status is not supported.");
 }
 
 function parseAccountDeletionBody(body: AccountDeletionBody | null | undefined) {
