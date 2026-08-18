@@ -194,6 +194,7 @@ describe("frontend user guidance", () => {
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
+    const otpRoutes = readFileSync("services/api/src/cp2/domains/otp/routes.ts", "utf8");
 
     expect(phoneSignup).toContain('"/auth/signup/start"');
     expect(phoneSignup).toContain('"/auth/signup/complete"');
@@ -203,9 +204,10 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).not.toContain("firebaseIdToken");
     expect(application).not.toContain("async function requestOtp");
     expect(application).not.toContain("async function signupWithPhonePin");
-    expect(authRoutes).toContain("phone_pin_only");
+    expect(otpRoutes).toContain("phone_pin_only");
     expect(authRoutes).toContain("emailProvider.sendOtp");
     expect(authRoutes).not.toContain("firebase");
+    expect(otpRoutes).not.toContain("firebase");
     expect(existsSync("apps/web/src/firebase-auth.ts")).toBe(false);
     expect(existsSync("services/api/src/cp2/otp-provider.ts")).toBe(false);
   });

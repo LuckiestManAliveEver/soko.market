@@ -8,6 +8,7 @@
  * instead of from routes.ts, avoiding a circular import back into the file being split apart.
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { AuthChannel } from "@soko/shared-types";
 import { Cp2Error } from "./cp2-error.js";
 import {
   type Cp2Store,
@@ -120,10 +121,7 @@ export function parseNonNegativeInteger(value: unknown, name: string): number {
   return value;
 }
 
-export function parseOptionalNonNegativeInteger(
-  value: unknown,
-  name: string
-): number | undefined {
+export function parseOptionalNonNegativeInteger(value: unknown, name: string): number | undefined {
   return value === undefined ? undefined : parseNonNegativeInteger(value, name);
 }
 
@@ -153,6 +151,15 @@ export function parseIsoTimestamp(value: unknown, name: string): string {
   }
 
   return timestamp;
+}
+
+/** Shared between CORE's auth routes (identify, PIN login, merge) and the OTP domain. */
+export function parseAuthChannel(value: string | undefined): AuthChannel {
+  if (value === "email" || value === "phone") {
+    return value;
+  }
+
+  throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
 }
 
 export function parseContactRecordBody(body: ContactRecordBody | null | undefined) {

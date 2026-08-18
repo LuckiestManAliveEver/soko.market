@@ -25,6 +25,7 @@ import {
   type Cp2Store
 } from "./store.js";
 import {
+  parseAuthChannel,
   parseBoolean,
   parseContactRecordBody,
   parseIntegerString,
@@ -64,6 +65,7 @@ import {
 } from "./domains/sales/routes.js";
 import { registerAgentRuntimeRoutes } from "./domains/agent-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
+import { registerOtpRoutes } from "./domains/otp/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -93,23 +95,6 @@ export interface Cp2RouteOptions {
   receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
   vapidPublicKey?: string;
-}
-
-interface OtpRequestBody {
-  channel?: string;
-  contact?: string;
-  deliveryChannel?: string;
-  destination?: string;
-  method?: string;
-  purpose?: string;
-}
-
-interface OtpVerifyBody {
-  challengeId?: string;
-  code?: string;
-  contact?: string;
-  method?: string;
-  otp?: string;
 }
 
 interface SyncPullQuery {
@@ -265,60 +250,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       const oldest = authAttemptsByIp.keys().next().value;
       if (oldest !== undefined) authAttemptsByIp.delete(oldest);
     }
-  }
-
-  async function requestOtpForBody(body: OtpRequestBody) {
-    const channel = parseAuthChannel(body.method ?? body.channel);
-    const destination = parseString(body.contact ?? body.destination, "contact");
-
-    if (channel === "phone") {
-      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
-    }
-    parseOtpDeliveryChannel(body.deliveryChannel, channel);
-    const purpose = parseOtpPurpose(body.purpose);
-
-    const otp = store.requestOtp({ channel, destination, purpose });
-
-    if (channel === "email") {
-      await emailProvider.sendOtp({
-        challengeId: otp.challengeId,
-        code: otp.devOtp,
-        expiresAt: otp.expiresAt,
-        to: otp.destination
-      });
-
-      if (emailProvider.exposesDevOtp) {
-        return otp;
-      }
-
-      return {
-        challengeId: otp.challengeId,
-        destination: otp.destination,
-        expiresAt: otp.expiresAt
-      };
-    }
-
-    return otp;
-  }
-
-  async function verifyOtpForBody(body: OtpVerifyBody) {
-    if (body.method !== undefined && parseAuthChannel(body.method) === "phone") {
-      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
-    }
-    const challenge =
-      body.challengeId === undefined
-        ? store.getOtpChallengeDeliveryByContact({
-            channel: parseAuthChannel(body.method),
-            destination: parseString(body.contact, "contact")
-          })
-        : store.getOtpChallengeDelivery(parseString(body.challengeId, "challengeId"));
-
-    if (challenge.channel === "phone") {
-      throw new Cp2Error(403, "phone_pin_only", "Phone accounts use PIN-only signup and login.");
-    }
-
-    const code = parseString(body.otp ?? body.code, "otp");
-    return store.verifyOtp({ challengeId: challenge.challengeId, code });
   }
 
   function readIdentifier(body: IdentifierBody): { channel: AuthChannel; value: string } {
@@ -861,98 +792,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.post(
-    "/auth/otp/request",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody(request.body);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/otp/request",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody(request.body);
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/auth/email/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({ ...request.body, method: "email" });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/email/request-otp",
-    async (request: FastifyRequest<{ Body: OtpRequestBody }>, reply) => {
-      try {
-        return await requestOtpForBody({ ...request.body, method: "email" });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post("/auth/otp/verify", async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-    try {
-      const result = await verifyOtpForBody(request.body);
-      setAuthSessionCookies(reply, request, store, result.session.id);
-      return result;
-    } catch (error) {
-      return sendCp2Error(reply, error);
-    }
-  });
-
-  app.post(
-    "/api/auth/otp/verify",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody(request.body);
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/auth/email/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "email" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/api/auth/email/verify-otp",
-    async (request: FastifyRequest<{ Body: OtpVerifyBody }>, reply) => {
-      try {
-        const result = await verifyOtpForBody({ ...request.body, method: "email" });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerOtpRoutes(app, store, emailProvider);
 
   registerPasskeysRoutes(app, store, authRuntime);
 
@@ -2253,36 +2093,6 @@ function parseSyncMutationPayload(
   }
 }
 
-function parseAuthChannel(value: string | undefined): AuthChannel {
-  if (value === "email" || value === "phone") {
-    return value;
-  }
-
-  throw new Cp2Error(400, "channel_invalid", "Auth channel must be email or phone.");
-}
-
-function parseOtpPurpose(value: string | undefined): "signup" | "recovery" {
-  if (value === undefined || value === "signup") {
-    return "signup";
-  }
-
-  if (value === "recovery") {
-    return "recovery";
-  }
-
-  throw new Cp2Error(400, "otp_purpose_invalid", "OTP purpose must be signup or recovery.");
-}
-
-function parseOtpDeliveryChannel(value: string | undefined, authChannel: AuthChannel): "email" {
-  const deliveryChannel = value ?? "email";
-
-  if (authChannel !== "email" || deliveryChannel !== "email") {
-    throw new Cp2Error(400, "otp_delivery_channel_invalid", "OTP delivery channel must be email.");
-  }
-
-  return "email";
-}
-
 function parseLanguage(value: string | undefined) {
   if (value === undefined || !isSupportedLanguage(value)) {
     throw new Cp2Error(400, "language_invalid", "Language must be en or sw.");
@@ -2463,4 +2273,3 @@ const businessPermissions: BusinessPermission[] = [
   "launch:write",
   "launch:support"
 ];
-
