@@ -215,3 +215,31 @@ export function setAuthSessionCookies(
     serializeRefreshCookie(store.consumeSessionRefreshToken(sessionId))
   ]);
 }
+
+/**
+ * Shared between CORE's signup/identity/password/recovery/PIN auth routes and the
+ * device-bootstrap domain's routes - `authAttemptsByIp` is created once in `registerCp2Routes`'s
+ * scope and passed explicitly rather than captured by closure, so both CORE and the domain file
+ * can call it.
+ */
+export function enforceAuthIpRate(
+  authAttemptsByIp: Map<string, number[]>,
+  request: FastifyRequest,
+  purpose: string,
+  maximum: number
+): void {
+  const now = Date.now();
+  const key = `${purpose}:${request.ip}`;
+  const attempts = (authAttemptsByIp.get(key) ?? []).filter(
+    (attemptedAt) => attemptedAt > now - 10 * 60_000
+  );
+  if (attempts.length >= maximum) {
+    throw new Cp2Error(429, "auth_rate_limited", "Too many attempts. Please try again later.");
+  }
+  attempts.push(now);
+  authAttemptsByIp.set(key, attempts);
+  if (authAttemptsByIp.size > 10_000) {
+    const oldest = authAttemptsByIp.keys().next().value;
+    if (oldest !== undefined) authAttemptsByIp.delete(oldest);
+  }
+}

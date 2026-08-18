@@ -25,6 +25,7 @@ import {
   type Cp2Store
 } from "./store.js";
 import {
+  enforceAuthIpRate,
   parseAuthChannel,
   parseBoolean,
   parseContactRecordBody,
@@ -37,7 +38,6 @@ import {
   parseRequestBody,
   parseString,
   readDeviceSessionMetadata,
-  readHeader,
   sendCp2Error,
   setAuthSessionCookies,
   type BusinessParams,
@@ -66,6 +66,7 @@ import {
 import { registerAgentRuntimeRoutes } from "./domains/agent-runtime/routes.js";
 import { registerMessagingRoutes } from "./domains/messaging/routes.js";
 import { registerOtpRoutes } from "./domains/otp/routes.js";
+import { registerDeviceBootstrapRoutes } from "./domains/device-bootstrap/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -235,23 +236,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     if (!enabled) throw new Cp2Error(503, code, message);
   }
 
-  function enforceAuthIpRate(request: FastifyRequest, purpose: string, maximum: number): void {
-    const now = Date.now();
-    const key = `${purpose}:${request.ip}`;
-    const attempts = (authAttemptsByIp.get(key) ?? []).filter(
-      (attemptedAt) => attemptedAt > now - 10 * 60_000
-    );
-    if (attempts.length >= maximum) {
-      throw new Cp2Error(429, "auth_rate_limited", "Too many attempts. Please try again later.");
-    }
-    attempts.push(now);
-    authAttemptsByIp.set(key, attempts);
-    if (authAttemptsByIp.size > 10_000) {
-      const oldest = authAttemptsByIp.keys().next().value;
-      if (oldest !== undefined) authAttemptsByIp.delete(oldest);
-    }
-  }
-
   function readIdentifier(body: IdentifierBody): { channel: AuthChannel; value: string } {
     const channel = parseAuthChannel(body.type);
     const identifier = parseString(body.identifier, "identifier");
@@ -313,7 +297,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/signup/start",
     async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
       try {
-        enforceAuthIpRate(request, "signup_start", 10);
+        enforceAuthIpRate(authAttemptsByIp, request, "signup_start", 10);
         const identifier = readIdentifier({ ...request.body, type: "phone" });
         if (
           store.identifyAccount({ channel: "phone", identifier: identifier.value }).next === "login"
@@ -407,7 +391,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/identity/email/start",
     async (request: FastifyRequest<{ Body: { email?: string } }>, reply) => {
       try {
-        enforceAuthIpRate(request, "identity_email_start", 10);
+        enforceAuthIpRate(authAttemptsByIp, request, "identity_email_start", 10);
         const upgrade = store.beginEmailIdentityUpgrade({
           sessionId: readSessionCookie(request.headers.cookie),
           email: parseString(request.body.email, "email")
@@ -474,35 +458,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
-    "/auth/identity/merge/pin",
-    async (
-      request: FastifyRequest<{
-        Body: { method?: string; contact?: string; pin?: string };
-      }>,
-      reply
-    ) => {
-      try {
-        enforceAuthIpRate(request, "identity_merge_pin", 10);
-        const result = store.mergeCurrentDeviceAccountWithPin({
-          sessionId: readSessionCookie(request.headers.cookie),
-          channel: parseAuthChannel(request.body.method ?? "phone"),
-          destination: parseString(request.body.contact, "contact"),
-          pin: parseString(request.body.pin, "pin")
-        });
-        const { refreshToken, ...session } = result;
-        store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
-        reply.header("set-cookie", [
-          serializeSessionCookie(session.session.id),
-          serializeRefreshCookie(refreshToken)
-        ]);
-        return session;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
     "/auth/identity/email/merge/verify",
     async (request: FastifyRequest<{ Body: { challengeId?: string; code?: string } }>, reply) => {
       try {
@@ -533,7 +488,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           "password_fallback_disabled",
           "Password fallback is disabled."
         );
-        enforceAuthIpRate(request, "password_login", 30);
+        enforceAuthIpRate(authAttemptsByIp, request, "password_login", 30);
         const identifier = readIdentifier(request.body);
         const result = store.loginWithPassword({
           channel: identifier.channel,
@@ -656,7 +611,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/recovery/start",
     async (request: FastifyRequest<{ Body: IdentifierBody }>, reply) => {
       try {
-        enforceAuthIpRate(request, "recovery_challenge", 10);
+        enforceAuthIpRate(authAttemptsByIp, request, "recovery_challenge", 10);
         const identifier = readIdentifier(request.body);
         if (identifier.channel === "phone") {
           throw new Cp2Error(
@@ -773,7 +728,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
           "password_fallback_disabled",
           "Password fallback is disabled."
         );
-        enforceAuthIpRate(request, "password_change", 10);
+        enforceAuthIpRate(authAttemptsByIp, request, "password_change", 10);
         const password = parseString(request.body.password, "password");
         if (password !== request.body.passwordConfirmation)
           throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
@@ -810,102 +765,11 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
-  app.post(
-    "/auth/continue",
-    async (
-      request: FastifyRequest<{ Body: { devicePublicKeyJwk?: unknown } | undefined }>,
-      reply
-    ) => {
-      try {
-        enforceAuthIpRate(request, "device_continue", 10);
-        const result = store.continueWithDevice({
-          sessionId: readSessionCookie(request.headers.cookie),
-          idempotencyKey: readHeader(request, "idempotency-key"),
-          devicePublicKeyJwk: request.body?.devicePublicKeyJwk
-        });
-        const { refreshToken, ...session } = result;
-        if (refreshToken !== null) {
-          store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
-          reply.header("set-cookie", [
-            serializeSessionCookie(session.session.id),
-            serializeRefreshCookie(refreshToken)
-          ]);
-        }
-        request.log.info(
-          {
-            event: session.isNewAccount
-              ? "auth.device_account_created"
-              : "auth.device_account_restored",
-            accountId: session.account.id,
-            sessionId: session.session.id,
-            requestCorrelationId: request.id
-          },
-          "One-tap Soko access completed."
-        );
-        return session;
-      } catch (error) {
-        request.log.warn(
-          {
-            event: "auth.device_continue_failed",
-            code: error instanceof Cp2Error ? error.code : "device_continue_failed",
-            requestCorrelationId: request.id
-          },
-          "One-tap Soko access failed."
-        );
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/auth/device/recover",
-    async (
-      request: FastifyRequest<{
-        Body: { credentialId?: string; nonce?: string; issuedAt?: number; signature?: string };
-      }>,
-      reply
-    ) => {
-      try {
-        enforceAuthIpRate(request, "device_recover", 10);
-        const result = store.recoverWithDeviceCredential({
-          credentialId: parseString(request.body.credentialId, "credentialId"),
-          nonce: parseString(request.body.nonce, "nonce"),
-          issuedAt: request.body.issuedAt ?? Number.NaN,
-          signature: parseString(request.body.signature, "signature")
-        });
-        const { refreshToken, ...session } = result;
-        store.prepareDeviceSession(session.session.id, readDeviceSessionMetadata(request));
-        reply.header("set-cookie", [
-          serializeSessionCookie(session.session.id),
-          serializeRefreshCookie(refreshToken)
-        ]);
-        request.log.info(
-          {
-            event: "auth.device_recovered",
-            accountId: session.account.id,
-            sessionId: session.session.id,
-            requestCorrelationId: request.id
-          },
-          "Device-bound Soko account recovered."
-        );
-        return session;
-      } catch (error) {
-        request.log.warn(
-          {
-            event: "auth.device_recovery_failed",
-            code: error instanceof Cp2Error ? error.code : "device_recovery_failed",
-            requestCorrelationId: request.id
-          },
-          "Device-bound Soko account recovery failed."
-        );
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerDeviceBootstrapRoutes(app, store, authAttemptsByIp);
 
   app.post("/auth/pin/signup", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
-      enforceAuthIpRate(request, "pin_signup", 10);
+      enforceAuthIpRate(authAttemptsByIp, request, "pin_signup", 10);
       const channel = parseAuthChannel(request.body.method ?? request.body.channel ?? "phone");
 
       if (channel !== "phone") {
@@ -938,7 +802,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   // silently repurposing whatever 4 digits were typed as a new credential.
   app.post("/auth/pin/continue", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
-      enforceAuthIpRate(request, "pin_continue", 10);
+      enforceAuthIpRate(authAttemptsByIp, request, "pin_continue", 10);
       const channel = parseAuthChannel(request.body.method ?? request.body.channel ?? "phone");
       const rawDestination = parseString(
         request.body.contact ?? request.body.destination,
@@ -972,7 +836,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     "/auth/pin/store-login",
     async (request: FastifyRequest<{ Body: StoreLoginBody }>, reply) => {
       try {
-        enforceAuthIpRate(request, "store_login", 10);
+        enforceAuthIpRate(authAttemptsByIp, request, "store_login", 10);
         const result = store.loginWithSokoIdPin({
           sokoId: parseString(request.body.sokoId, "sokoId"),
           pin: parseString(request.body.pin, "pin")
@@ -1009,7 +873,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/pin/login", async (request: FastifyRequest<{ Body: PinLoginBody }>, reply) => {
     try {
-      enforceAuthIpRate(request, "pin_login", 30);
+      enforceAuthIpRate(authAttemptsByIp, request, "pin_login", 30);
       const channel = parseAuthChannel(request.body.method ?? request.body.channel);
       const rawDestination = parseString(
         request.body.contact ?? request.body.destination,
