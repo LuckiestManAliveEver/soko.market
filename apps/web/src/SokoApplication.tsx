@@ -135,6 +135,7 @@ import {
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
+import { useCustomersState } from "./hooks/useCustomersState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
@@ -528,7 +529,6 @@ export function OwnerApp() {
   );
   const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[]>([]);
   const [purchaseReceipts, setPurchaseReceipts] = useState<PurchaseReceiptSummary[]>([]);
-  const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
@@ -565,7 +565,6 @@ export function OwnerApp() {
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [supplierForm, setSupplierForm] = useState<SupplierFormState>(emptySupplierForm);
-  const [customerForm, setCustomerForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
@@ -712,6 +711,14 @@ export function OwnerApp() {
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
+  const { customers, customerForm, setCustomerForm, loadCustomers, saveCustomer } =
+    useCustomersState({
+      businessId: business?.id ?? null,
+      setStatusMessage,
+      queueMutationAfterNetworkFailure,
+      registerReset: domainResetRegistry.registerReset,
+      registerRefresh
+    });
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1283,10 +1290,6 @@ export function OwnerApp() {
 
       if (view === "suppliers") {
         refreshes.push(loadSuppliers(businessId), loadPurchaseReceipts(businessId));
-      }
-
-      if (view === "customers") {
-        refreshes.push(loadCustomers(businessId));
       }
 
       if (view === "invoices") {
@@ -2168,16 +2171,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadCustomers(businessId: string) {
-    try {
-      setCustomers(
-        await getJson<CustomerSummary[]>(`/businesses/${businessId}/customers`, setCustomers)
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   async function loadSuppliers(businessId: string) {
     try {
       setSuppliers(
@@ -2445,48 +2438,6 @@ export function OwnerApp() {
       await loadReports(business.id);
       setStatusMessage("Receipt saved. Uploaded image was deleted after processing.");
     } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveCustomer() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const payload = {
-        name: customerForm.name,
-        phone: customerForm.phone,
-        email: customerForm.email,
-        notes: customerForm.notes
-      };
-
-      if (customerForm.id === null) {
-        await postJson<CustomerSummary>(`/businesses/${business.id}/customers`, payload);
-      } else {
-        await patchJson<CustomerSummary>(
-          `/businesses/${business.id}/customers/${customerForm.id}`,
-          payload
-        );
-      }
-
-      setCustomerForm(emptyCustomerForm);
-      await loadCustomers(business.id);
-      setStatusMessage(customerForm.id === null ? "Customer created" : "Customer updated");
-    } catch (error) {
-      if (
-        customerForm.id === null &&
-        (await queueMutationAfterNetworkFailure(error, "customer.create", {
-          name: customerForm.name,
-          phone: customerForm.phone,
-          email: customerForm.email,
-          notes: customerForm.notes
-        }))
-      ) {
-        setCustomerForm(emptyCustomerForm);
-        return;
-      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -4204,7 +4155,6 @@ export function OwnerApp() {
     setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
     setSuppliers([]);
-    setCustomers([]);
     setInvoices([]);
     setPayments([]);
     setInvoicePayments([]);
@@ -4236,7 +4186,6 @@ export function OwnerApp() {
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setSupplierForm(emptySupplierForm);
-    setCustomerForm(emptyCustomerForm);
     setInvoiceForm(emptyInvoiceForm);
     setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
