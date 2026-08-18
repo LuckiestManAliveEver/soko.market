@@ -1,0 +1,155 @@
+import { useRef, useState } from "react";
+
+import { getErrorMessage, runtimeManagerKey } from "../chat-message-plumbing";
+import { getJson, postJson } from "../api-helpers";
+import {
+  runtimeManager,
+  type RuntimeSessionSummary,
+  type RuntimeTurnSummary
+} from "../soko-application-shared";
+
+interface UseRuntimeHistoryStateDeps {
+  business: { id: string } | null;
+  session: { account: { id: string } } | null;
+  setRuntimeSessionId: (sessionId: string) => void;
+  setStatusMessage: (message: string) => void;
+  registerReset: (domainKey: string, fn: () => void) => void;
+  registerRefresh: (
+    domainKey: string,
+    views: readonly string[],
+    fn: (businessId: string) => Promise<void>
+  ) => void;
+}
+
+export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
+  const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
+  const [selectedRuntimeHistorySessionId, setSelectedRuntimeHistorySessionId] = useState<
+    string | null
+  >(null);
+  const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
+  const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
+
+  async function loadRuntimeTurns(businessId: string, sessionId: string) {
+    try {
+      setRuntimeTurns(
+        await getJson<RuntimeTurnSummary[]>(
+          `/businesses/${businessId}/runtime/sessions/${sessionId}/turns`
+        )
+      );
+    } catch (error) {
+      deps.setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadRuntimeSessions(businessId: string) {
+    try {
+      const sessions = await getJson<RuntimeSessionSummary[]>(
+        `/businesses/${businessId}/runtime/sessions`
+      );
+      setRuntimeSessions(sessions);
+      const nextSessionId = selectedRuntimeHistorySessionId ?? sessions.at(-1)?.id ?? null;
+      setSelectedRuntimeHistorySessionId(nextSessionId);
+      if (nextSessionId !== null) {
+        await loadRuntimeTurns(businessId, nextSessionId);
+      } else {
+        setRuntimeTurns([]);
+      }
+    } catch (error) {
+      deps.setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function createManagedRuntimeSession(): Promise<string> {
+    if (deps.business === null || deps.session === null) {
+      throw new Error("Sign in and select a shop before starting the AI runtime.");
+    }
+    const created = await postJson<RuntimeSessionSummary>(
+      `/businesses/${deps.business.id}/runtime/sessions`,
+      {}
+    );
+    setRuntimeSessions((sessions) =>
+      sessions.some((item) => item.id === created.id) ? sessions : [...sessions, created]
+    );
+    setSelectedRuntimeHistorySessionId(created.id);
+    return created.id;
+  }
+
+  async function createRuntimeHistorySession() {
+    if (deps.business === null || deps.session === null) {
+      return;
+    }
+
+    try {
+      runtimeManager.stop();
+      const runtimeSessionId = await createManagedRuntimeSession();
+      runtimeManager.adoptSession(
+        runtimeManagerKey(deps.session.account.id, deps.business.id),
+        runtimeSessionId
+      );
+      setRuntimeTurns([]);
+      deps.setRuntimeSessionId(runtimeSessionId);
+      deps.setStatusMessage("Runtime session created");
+    } catch (error) {
+      deps.setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function ensureRuntimeSession(): Promise<string> {
+    if (deps.business === null || deps.session === null) {
+      throw new Error("Sign in and select a shop before starting the AI runtime.");
+    }
+
+    const key = runtimeManagerKey(deps.session.account.id, deps.business.id);
+    const runtimeSessionId = await runtimeManager.ensureSession(key, createManagedRuntimeSession);
+    deps.setRuntimeSessionId(runtimeSessionId);
+    return runtimeSessionId;
+  }
+
+  async function restoreOrCreateRuntimeSession(): Promise<string> {
+    if (deps.business === null || deps.session === null) {
+      throw new Error("Sign in and select a shop before restoring the AI runtime.");
+    }
+    if (runtimeRestoreInFlightRef.current !== null) return runtimeRestoreInFlightRef.current;
+
+    const businessId = deps.business.id;
+    const key = runtimeManagerKey(deps.session.account.id, businessId);
+    const restore = (async () => {
+      const sessions = await getJson<RuntimeSessionSummary[]>(
+        `/businesses/${businessId}/runtime/sessions`
+      );
+      setRuntimeSessions(sessions);
+      const existing = [...sessions].reverse().find((candidate) => candidate.status === "active");
+      if (existing !== undefined) {
+        runtimeManager.adoptSession(key, existing.id);
+        deps.setRuntimeSessionId(existing.id);
+        setSelectedRuntimeHistorySessionId(existing.id);
+        return existing.id;
+      }
+      return ensureRuntimeSession();
+    })().finally(() => {
+      runtimeRestoreInFlightRef.current = null;
+    });
+    runtimeRestoreInFlightRef.current = restore;
+    return restore;
+  }
+
+  deps.registerReset("runtime-history", () => {
+    setRuntimeSessions([]);
+    setSelectedRuntimeHistorySessionId(null);
+    setRuntimeTurns([]);
+  });
+  deps.registerRefresh("runtime-history", ["runtime"], loadRuntimeSessions);
+
+  return {
+    runtimeSessions,
+    selectedRuntimeHistorySessionId,
+    setSelectedRuntimeHistorySessionId,
+    runtimeTurns,
+    loadRuntimeSessions,
+    loadRuntimeTurns,
+    createRuntimeHistorySession,
+    createManagedRuntimeSession,
+    ensureRuntimeSession,
+    restoreOrCreateRuntimeSession
+  };
+}

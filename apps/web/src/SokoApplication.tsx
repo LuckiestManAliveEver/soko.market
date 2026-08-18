@@ -125,6 +125,7 @@ import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useReportsState } from "./hooks/useReportsState";
+import { useRuntimeHistoryState } from "./hooks/useRuntimeHistoryState";
 import { useNetworkState } from "./hooks/useNetworkState";
 import { useProductsState } from "./hooks/useProductsState";
 import { useSyncState } from "./hooks/useSyncState";
@@ -209,9 +210,7 @@ import {
   type PublicStorefrontListResponse,
   type PublicStorefrontSummary,
   type RoleCheckResponse,
-  type RuntimeSessionSummary,
   type RuntimeTurnResult,
-  type RuntimeTurnSummary,
   type SecurityReviewSummary,
   type SessionResponse,
   type SetupDraft,
@@ -460,11 +459,6 @@ export function OwnerApp() {
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     initialOwnerRoute?.productId ?? null
   );
-  const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
-  const [selectedRuntimeHistorySessionId, setSelectedRuntimeHistorySessionId] = useState<
-    string | null
-  >(null);
-  const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
   const [storefrontCareRequests, setStorefrontCareRequests] = useState<
     PublicCustomerCareRequestSummary[]
   >([]);
@@ -485,7 +479,6 @@ export function OwnerApp() {
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
-  const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
   const sessionRefreshInFlightRef = useRef(false);
   const restoredModelInstallationRef = useRef<string | null>(null);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
@@ -775,6 +768,25 @@ export function OwnerApp() {
     loadCustomers,
     authenticateSocialProfile,
     setChatMessages,
+    setStatusMessage,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    runtimeSessions,
+    selectedRuntimeHistorySessionId,
+    setSelectedRuntimeHistorySessionId,
+    runtimeTurns,
+    loadRuntimeSessions,
+    loadRuntimeTurns,
+    createRuntimeHistorySession,
+    createManagedRuntimeSession,
+    ensureRuntimeSession,
+    restoreOrCreateRuntimeSession
+  } = useRuntimeHistoryState({
+    business,
+    session,
+    setRuntimeSessionId,
     setStatusMessage,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
@@ -1888,97 +1900,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadRuntimeSessions(businessId: string) {
-    try {
-      const sessions = await getJson<RuntimeSessionSummary[]>(
-        `/businesses/${businessId}/runtime/sessions`
-      );
-      setRuntimeSessions(sessions);
-      const nextSessionId = selectedRuntimeHistorySessionId ?? sessions.at(-1)?.id ?? null;
-      setSelectedRuntimeHistorySessionId(nextSessionId);
-      if (nextSessionId !== null) {
-        await loadRuntimeTurns(businessId, nextSessionId);
-      } else {
-        setRuntimeTurns([]);
-      }
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createRuntimeHistorySession() {
-    if (business === null || session === null) {
-      return;
-    }
-
-    try {
-      runtimeManager.stop();
-      const runtimeSessionId = await createManagedRuntimeSession();
-      runtimeManager.adoptSession(
-        runtimeManagerKey(session.account.id, business.id),
-        runtimeSessionId
-      );
-      setRuntimeTurns([]);
-      setRuntimeSessionId(runtimeSessionId);
-      setStatusMessage("Runtime session created");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createManagedRuntimeSession(): Promise<string> {
-    if (business === null || session === null) {
-      throw new Error("Sign in and select a shop before starting the AI runtime.");
-    }
-    const created = await postJson<RuntimeSessionSummary>(
-      `/businesses/${business.id}/runtime/sessions`,
-      {}
-    );
-    setRuntimeSessions((sessions) =>
-      sessions.some((item) => item.id === created.id) ? sessions : [...sessions, created]
-    );
-    setSelectedRuntimeHistorySessionId(created.id);
-    return created.id;
-  }
-
-  async function ensureRuntimeSession(): Promise<string> {
-    if (business === null || session === null) {
-      throw new Error("Sign in and select a shop before starting the AI runtime.");
-    }
-
-    const key = runtimeManagerKey(session.account.id, business.id);
-    const runtimeSessionId = await runtimeManager.ensureSession(key, createManagedRuntimeSession);
-    setRuntimeSessionId(runtimeSessionId);
-    return runtimeSessionId;
-  }
-
-  async function restoreOrCreateRuntimeSession(): Promise<string> {
-    if (business === null || session === null) {
-      throw new Error("Sign in and select a shop before restoring the AI runtime.");
-    }
-    if (runtimeRestoreInFlightRef.current !== null) return runtimeRestoreInFlightRef.current;
-
-    const key = runtimeManagerKey(session.account.id, business.id);
-    const restore = (async () => {
-      const sessions = await getJson<RuntimeSessionSummary[]>(
-        `/businesses/${business.id}/runtime/sessions`
-      );
-      setRuntimeSessions(sessions);
-      const existing = [...sessions].reverse().find((candidate) => candidate.status === "active");
-      if (existing !== undefined) {
-        runtimeManager.adoptSession(key, existing.id);
-        setRuntimeSessionId(existing.id);
-        setSelectedRuntimeHistorySessionId(existing.id);
-        return existing.id;
-      }
-      return ensureRuntimeSession();
-    })().finally(() => {
-      runtimeRestoreInFlightRef.current = null;
-    });
-    runtimeRestoreInFlightRef.current = restore;
-    return restore;
-  }
-
   async function restoreDeviceModelForLaunch(
     businessId: string
   ): Promise<DeviceAgentModelAssignment> {
@@ -2046,18 +1967,6 @@ export function OwnerApp() {
           "sokoclaw-local");
     setAgentSettings((current) => ({ ...current, model: localModelId }));
     setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
-  }
-
-  async function loadRuntimeTurns(businessId: string, sessionId: string) {
-    try {
-      setRuntimeTurns(
-        await getJson<RuntimeTurnSummary[]>(
-          `/businesses/${businessId}/runtime/sessions/${sessionId}/turns`
-        )
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
   }
 
   async function loadStorefrontInbox(businessId: string) {
@@ -2947,9 +2856,6 @@ export function OwnerApp() {
     setShopPhoneNumber("");
     setRoutedProductId(null);
     setSecurityReview(null);
-    setRuntimeSessions([]);
-    setSelectedRuntimeHistorySessionId(null);
-    setRuntimeTurns([]);
     setStorefrontCareRequests([]);
     setStorefrontMessages([]);
     setStorefrontOrders([]);
