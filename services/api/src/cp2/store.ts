@@ -1,14 +1,11 @@
 import {
   createHash,
   createHmac,
-  createPublicKey,
   randomBytes,
   randomUUID,
   scryptSync,
-  timingSafeEqual,
-  verify as verifySignature
+  timingSafeEqual
 } from "node:crypto";
-import type { JsonWebKey as NodeJsonWebKey } from "node:crypto";
 import type { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
@@ -78,6 +75,11 @@ import {
   type OtpChallengeDelivery,
   type SmsDeliveryAttemptRecord
 } from "./domains/otp/shared.js";
+import { DeviceBootstrapDomain } from "./domains/device-bootstrap/store.js";
+import {
+  type DeviceAccountBootstrapRecord,
+  type DeviceRecoveryCredentialRecord
+} from "./domains/device-bootstrap/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -252,7 +254,6 @@ export const refreshCookieName = "soko_refresh";
  * legitimate reasons to present an already-superseded token minutes or hours later.
  */
 const refreshTokenReuseGracePeriodMs = 15_000;
-const deviceAccountBootstrapTtlMs = 10 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const pinAttemptWindowMs = 15 * 60 * 1000;
 const pinMaximumFailedAttempts = 5;
@@ -339,6 +340,10 @@ export type {
   OtpRequestResult,
   VerifyOtpResult
 } from "./domains/otp/shared.js";
+export type {
+  DeviceAccountBootstrapRecord,
+  DeviceRecoveryCredentialRecord
+} from "./domains/device-bootstrap/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -361,31 +366,6 @@ export interface SessionRecord extends SessionSummary {
   pinVerifiedAt: string | null;
   revokedAt: string | null;
   createdAt: string;
-}
-
-export interface DeviceAccountBootstrapRecord {
-  id: string;
-  accountId: string;
-  sessionId: string;
-  expiresAt: string;
-  createdAt: string;
-}
-
-export interface DeviceRecoveryCredentialRecord {
-  id: string;
-  accountId: string;
-  publicKeyJwk: Record<string, unknown>;
-  lastAssertionHash: string | null;
-  lastAssertionAt: string | null;
-  lastSessionId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  revokedAt: string | null;
-}
-
-interface DeviceAccountBootstrapCredentials {
-  sessionId: string;
-  refreshToken: string;
 }
 
 export interface DeviceSessionMetadata {
@@ -748,6 +728,41 @@ export class Cp2Store {
       accountByDestination: this.accountByDestination,
       userByAccount: this.userByAccount
     });
+    this.deviceBootstrapDomain = new DeviceBootstrapDomain({
+      getSession: (sessionId, now) => this.getSession(sessionId, now),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      requireUser: (userId) => this.requireUser(userId),
+      requireAccountAuthenticationAllowed: (account) =>
+        this.requireAccountAuthenticationAllowed(account),
+      requireAnySession: (sessionId, now) => this.requireAnySession(sessionId, now),
+      createAccount: (channel, destination, now, identityLevel) =>
+        this.createAccount(channel, destination, now, identityLevel),
+      createSession: (account, user, now) => this.createSession(account, user, now),
+      consumeSessionRefreshToken: (sessionId) => this.consumeSessionRefreshToken(sessionId),
+      revokeSessionFamily: (familyId, reason, now) =>
+        this.revokeSessionFamily(familyId, reason, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      recordSecurityEvent: (type, accountId, outcome, now, metadata) =>
+        this.recordSecurityEvent(type, accountId, outcome, now, metadata),
+      markSessionPinVerified: (sessionId, now) => this.markSessionPinVerified(sessionId, now),
+      resolveIdentityAccount: (type, normalizedValue) =>
+        this.resolveIdentityAccount(type, normalizedValue),
+      requirePinAttemptAllowed: (key, now) => this.requirePinAttemptAllowed(key, now),
+      recordFailedPinAttempt: (key, now) => this.recordFailedPinAttempt(key, now),
+      verifyStoredPin: (accountId, pin, storedHash) =>
+        this.verifyStoredPin(accountId, pin, storedHash),
+      simulateFailedPinCheck: (pin) => {
+        verifyPinHash("unknown-account", pin, dummyPinHash);
+      },
+      normalizePin: (pin) => normalizePin(pin),
+      mergeDeviceAccountData: (sourceAccountId, sourceUserId, targetAccountId, targetUserId) =>
+        this.mergeDeviceAccountData(sourceAccountId, sourceUserId, targetAccountId, targetUserId),
+      sessions: this.sessions,
+      users: this.users,
+      userByAccount: this.userByAccount,
+      accountPinHashes: this.accountPinHashes,
+      failedPinAttempts: this.failedPinAttempts
+    });
     this.networkDomain = new NetworkDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       accounts: this.accounts,
@@ -948,16 +963,11 @@ export class Cp2Store {
   private readonly accountByDestination = new Map<string, string>();
   private readonly users = new Map<string, UserSummary>();
   private readonly userByAccount = new Map<string, string>();
-  private readonly deviceAccountBootstraps = new Map<string, DeviceAccountBootstrapRecord>();
-  private readonly deviceAccountBootstrapCredentials = new Map<
-    string,
-    DeviceAccountBootstrapCredentials
-  >();
-  private readonly deviceRecoveryCredentials = new Map<string, DeviceRecoveryCredentialRecord>();
-  private readonly deviceRecoverySessionCredentials = new Map<
-    string,
-    DeviceAccountBootstrapCredentials
-  >();
+  // deviceAccountBootstraps/deviceAccountBootstrapCredentials/deviceRecoveryCredentials/
+  // deviceRecoverySessionCredentials now live inside `deviceBootstrapDomain`
+  // (services/api/src/cp2/domains/device-bootstrap/store.ts) - accessed via its map getters for
+  // the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  private readonly deviceBootstrapDomain: DeviceBootstrapDomain;
   private readonly businesses = new Map<string, BusinessSummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
   private readonly phoneUpdateAttemptsByAccount = new Map<string, number[]>();
@@ -1062,250 +1072,15 @@ export class Cp2Store {
   private readonly networkDomain: NetworkDomain;
   private readonly auditEvents: BusinessEvent[] = [];
 
-  continueWithDevice(input: {
-    sessionId: string | null;
-    idempotencyKey: string | null;
-    devicePublicKeyJwk?: unknown;
-    now?: Date;
-  }): AuthSessionView & { refreshToken: string | null } {
-    const now = input.now ?? new Date();
-    const existingSession = this.getSession(input.sessionId, now);
-    if (existingSession !== null) {
-      if (input.devicePublicKeyJwk === undefined) {
-        return { ...existingSession, isNewAccount: false, refreshToken: null };
-      }
-      const deviceCredential = this.ensureDeviceRecoveryCredential(
-        existingSession.account.id,
-        normalizeDeviceRecoveryPublicKey(input.devicePublicKeyJwk),
-        now
-      );
-      return {
-        ...existingSession,
-        isNewAccount: false,
-        deviceRecoveryCredentialId: deviceCredential.id,
-        refreshToken: null
-      };
-    }
-
-    const idempotencyKey = normalizeDeviceBootstrapIdempotencyKey(input.idempotencyKey);
-    const keyHash = hashDeviceBootstrapKey(idempotencyKey);
-    const devicePublicKeyJwk = normalizeDeviceRecoveryPublicKey(input.devicePublicKeyJwk);
-    this.pruneDeviceAccountBootstraps(now);
-    const existingBootstrap = this.deviceAccountBootstraps.get(keyHash);
-
-    if (existingBootstrap !== undefined) {
-      const account = this.requireAccount(existingBootstrap.accountId);
-      this.requireAccountAuthenticationAllowed(account);
-      const user = this.requireUser(this.userByAccount.get(account.id));
-      const deviceCredential = this.ensureDeviceRecoveryCredential(
-        account.id,
-        devicePublicKeyJwk,
-        now
-      );
-      const credentials = this.deviceAccountBootstrapCredentials.get(keyHash);
-      const replayedSession = this.getSession(existingBootstrap.sessionId, now);
-
-      if (
-        replayedSession !== null &&
-        credentials !== undefined &&
-        credentials.sessionId === replayedSession.session.id
-      ) {
-        return {
-          ...replayedSession,
-          isNewAccount: false,
-          deviceRecoveryCredentialId: deviceCredential.id,
-          refreshToken: credentials.refreshToken
-        };
-      }
-
-      if (replayedSession !== null) {
-        const replayedSessionRecord = this.sessions.get(replayedSession.session.id);
-        if (replayedSessionRecord !== undefined) {
-          this.revokeSessionFamily(
-            replayedSessionRecord.sessionFamilyId,
-            "device_bootstrap_replayed",
-            now
-          );
-        }
-      }
-
-      const replacement = this.createSession(account, user, now);
-      const refreshToken = this.consumeSessionRefreshToken(replacement.id);
-      this.deviceAccountBootstraps.set(keyHash, {
-        ...existingBootstrap,
-        sessionId: replacement.id,
-        expiresAt: new Date(now.getTime() + deviceAccountBootstrapTtlMs).toISOString()
-      });
-      this.deviceAccountBootstrapCredentials.set(keyHash, {
-        sessionId: replacement.id,
-        refreshToken
-      });
-      return {
-        ...this.requireAnySession(replacement.id, now),
-        isNewAccount: false,
-        deviceRecoveryCredentialId: deviceCredential.id,
-        refreshToken
-      };
-    }
-
-    const account = this.createAccount(
-      "device",
-      `device:${randomBytes(24).toString("base64url")}`,
-      now,
-      "device"
-    );
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    this.users.set(user.id, { ...user, displayName: "Soko user" });
-    const deviceCredential = this.ensureDeviceRecoveryCredential(
-      account.id,
-      devicePublicKeyJwk,
-      now
-    );
-    const session = this.createSession(account, this.requireUser(user.id), now);
-    const refreshToken = this.consumeSessionRefreshToken(session.id);
-    const bootstrap: DeviceAccountBootstrapRecord = {
-      id: keyHash,
-      accountId: account.id,
-      sessionId: session.id,
-      expiresAt: new Date(now.getTime() + deviceAccountBootstrapTtlMs).toISOString(),
-      createdAt: now.toISOString()
-    };
-    this.deviceAccountBootstraps.set(keyHash, bootstrap);
-    this.deviceAccountBootstrapCredentials.set(keyHash, { sessionId: session.id, refreshToken });
-
-    this.recordAuditEvent({
-      type: "auth.device_account_created",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
-      occurredAt: now.toISOString(),
-      payload: { identityLevel: "device" }
-    });
-    this.recordAuditEvent({
-      type: "account.created",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
-      occurredAt: now.toISOString(),
-      payload: { primaryAuthChannel: "device", identityLevel: "device" }
-    });
-
-    return {
-      ...this.requireAnySession(session.id, now),
-      isNewAccount: true,
-      deviceRecoveryCredentialId: deviceCredential.id,
-      refreshToken
-    };
+  continueWithDevice(
+    ...args: Parameters<DeviceBootstrapDomain["continueWithDevice"]>
+  ): ReturnType<DeviceBootstrapDomain["continueWithDevice"]> {
+    return this.deviceBootstrapDomain.continueWithDevice(...args);
   }
-
-  recoverWithDeviceCredential(input: {
-    credentialId: string;
-    nonce: string;
-    issuedAt: number;
-    signature: string;
-    now?: Date;
-  }): AuthSessionView & { refreshToken: string } {
-    const now = input.now ?? new Date();
-    const credentialId = normalizeDeviceRecoveryCredentialId(input.credentialId);
-    const nonce = input.nonce.trim();
-    const signature = input.signature.trim();
-    if (!/^[A-Za-z0-9_-]{32,128}$/u.test(nonce) || !/^[A-Za-z0-9_-]{64,256}$/u.test(signature)) {
-      throw new Cp2Error(401, "device_recovery_invalid", "Device recovery failed.");
-    }
-    if (
-      !Number.isSafeInteger(input.issuedAt) ||
-      Math.abs(now.getTime() - input.issuedAt) > 2 * 60 * 1000
-    ) {
-      throw new Cp2Error(401, "device_recovery_expired", "Device recovery has expired.");
-    }
-
-    const credential = this.deviceRecoveryCredentials.get(credentialId);
-    if (credential === undefined || credential.revokedAt !== null) {
-      throw new Cp2Error(401, "device_recovery_invalid", "Device recovery failed.");
-    }
-    const payload = deviceRecoveryAssertionPayload(credentialId, nonce, input.issuedAt);
-    const assertionHash = createHash("sha256")
-      .update(`${payload}.${signature}`)
-      .digest("base64url");
-    const isReplay = credential.lastAssertionHash === assertionHash;
-    if (!isReplay && !verifyDeviceRecoverySignature(credential.publicKeyJwk, payload, signature)) {
-      throw new Cp2Error(401, "device_recovery_invalid", "Device recovery failed.");
-    }
-
-    const account = this.requireAccount(credential.accountId);
-    this.requireAccountAuthenticationAllowed(account);
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    if (isReplay && credential.lastSessionId !== null) {
-      const replayed = this.getSession(credential.lastSessionId, now);
-      const credentials = this.deviceRecoverySessionCredentials.get(assertionHash);
-      if (
-        replayed !== null &&
-        credentials !== undefined &&
-        credentials.sessionId === replayed.session.id
-      ) {
-        return { ...replayed, isNewAccount: false, refreshToken: credentials.refreshToken };
-      }
-      if (replayed !== null) {
-        const record = this.sessions.get(replayed.session.id);
-        if (record !== undefined) {
-          this.revokeSessionFamily(record.sessionFamilyId, "device_recovery_replayed", now);
-        }
-      }
-    }
-
-    const session = this.createSession(account, user, now);
-    const refreshToken = this.consumeSessionRefreshToken(session.id);
-    credential.lastAssertionHash = assertionHash;
-    credential.lastAssertionAt = now.toISOString();
-    credential.lastSessionId = session.id;
-    credential.updatedAt = now.toISOString();
-    this.deviceRecoverySessionCredentials.set(assertionHash, {
-      sessionId: session.id,
-      refreshToken
-    });
-    this.recordSecurityEvent("auth.device_recovered", account.id, "success", now, {});
-    return { ...this.requireAnySession(session.id, now), isNewAccount: false, refreshToken };
-  }
-
-  private ensureDeviceRecoveryCredential(
-    accountId: string,
-    publicKeyJwk: Record<string, unknown>,
-    now: Date
-  ): DeviceRecoveryCredentialRecord {
-    const fingerprint = deviceRecoveryPublicKeyFingerprint(publicKeyJwk);
-    const existing = [...this.deviceRecoveryCredentials.values()].find(
-      (credential) =>
-        deviceRecoveryPublicKeyFingerprint(credential.publicKeyJwk) === fingerprint &&
-        credential.revokedAt === null
-    );
-    if (existing !== undefined) {
-      if (existing.accountId !== accountId) {
-        throw new Cp2Error(409, "device_credential_in_use", "This device is already linked.");
-      }
-      return existing;
-    }
-    const credential: DeviceRecoveryCredentialRecord = {
-      id: randomUUID(),
-      accountId,
-      publicKeyJwk,
-      lastAssertionHash: null,
-      lastAssertionAt: null,
-      lastSessionId: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      revokedAt: null
-    };
-    this.deviceRecoveryCredentials.set(credential.id, credential);
-    return credential;
-  }
-
-  private pruneDeviceAccountBootstraps(now: Date): void {
-    for (const [keyHash, bootstrap] of this.deviceAccountBootstraps) {
-      if (Date.parse(bootstrap.expiresAt) <= now.getTime()) {
-        this.deviceAccountBootstraps.delete(keyHash);
-        this.deviceAccountBootstrapCredentials.delete(keyHash);
-      }
-    }
+  recoverWithDeviceCredential(
+    ...args: Parameters<DeviceBootstrapDomain["recoverWithDeviceCredential"]>
+  ): ReturnType<DeviceBootstrapDomain["recoverWithDeviceCredential"]> {
+    return this.deviceBootstrapDomain.recoverWithDeviceCredential(...args);
   }
 
   requestOtp(...args: Parameters<OtpDomain["requestOtp"]>): ReturnType<OtpDomain["requestOtp"]> {
@@ -1618,12 +1393,14 @@ export class Cp2Store {
         revoked += 1;
       }
     }
-    for (const credential of this.deviceRecoveryCredentials.values()) {
+    for (const credential of this.deviceBootstrapDomain.deviceRecoveryCredentialsMap.values()) {
       if (credential.accountId === session.account.id && credential.revokedAt === null) {
         credential.revokedAt = now.toISOString();
         credential.updatedAt = now.toISOString();
         if (credential.lastAssertionHash !== null) {
-          this.deviceRecoverySessionCredentials.delete(credential.lastAssertionHash);
+          this.deviceBootstrapDomain.deviceRecoverySessionCredentialsMap.delete(
+            credential.lastAssertionHash
+          );
         }
         recoveryCredentialsRevoked += 1;
       }
@@ -1664,68 +1441,10 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  mergeCurrentDeviceAccountWithPin(input: {
-    sessionId: string | null;
-    channel: AuthChannel;
-    destination: string;
-    pin: string;
-    now?: Date;
-  }): AuthSessionView & { refreshToken: string } {
-    const now = input.now ?? new Date();
-    const sourceSession = this.requireAnySession(input.sessionId, now);
-    if (sourceSession.account.primaryAuthChannel !== "device") {
-      throw new Cp2Error(
-        409,
-        "account_merge_not_available",
-        "Only a device account can be joined to an existing account."
-      );
-    }
-    const destination = normalizeDestination(input.channel, input.destination);
-    const targetAccountId = this.resolveIdentityAccount(input.channel, destination);
-    if (targetAccountId === undefined || targetAccountId === sourceSession.account.id) {
-      throw invalidLoginCredentialsError();
-    }
-    const targetAccount = this.requireAccount(targetAccountId);
-    this.requireAccountAuthenticationAllowed(targetAccount);
-    const pin = normalizePin(input.pin);
-    const attemptKey = `merge:${input.channel}:${destination}`;
-    this.requirePinAttemptAllowed(attemptKey, now);
-    const pinHash = this.accountPinHashes.get(targetAccount.id);
-    if (pinHash === undefined) {
-      verifyPinHash("unknown-account", pin, dummyPinHash);
-      this.recordFailedPinAttempt(attemptKey, now);
-      throw invalidLoginCredentialsError();
-    }
-    if (!this.verifyStoredPin(targetAccount.id, pin, pinHash)) {
-      this.recordFailedPinAttempt(attemptKey, now);
-      throw invalidLoginCredentialsError();
-    }
-    this.failedPinAttempts.delete(attemptKey);
-
-    const targetUserId = this.requireUser(this.userByAccount.get(targetAccount.id)).id;
-    this.mergeDeviceAccountData(
-      sourceSession.account.id,
-      sourceSession.user.id,
-      targetAccount.id,
-      targetUserId
-    );
-    const session = this.createSession(
-      this.requireAccount(targetAccount.id),
-      this.requireUser(targetUserId),
-      now
-    );
-    this.markSessionPinVerified(session.id, now);
-    const refreshToken = this.consumeSessionRefreshToken(session.id);
-    for (const bootstrap of this.deviceAccountBootstraps.values()) {
-      if (bootstrap.accountId === targetAccount.id && !this.sessions.has(bootstrap.sessionId)) {
-        bootstrap.sessionId = session.id;
-      }
-    }
-    this.recordSecurityEvent("auth.device_account_merged", targetAccount.id, "success", now, {
-      sourceIdentityLevel: sourceSession.account.identityLevel,
-      proof: "pin"
-    });
-    return { ...this.requireAnySession(session.id, now), isNewAccount: false, refreshToken };
+  mergeCurrentDeviceAccountWithPin(
+    ...args: Parameters<DeviceBootstrapDomain["mergeCurrentDeviceAccountWithPin"]>
+  ): ReturnType<DeviceBootstrapDomain["mergeCurrentDeviceAccountWithPin"]> {
+    return this.deviceBootstrapDomain.mergeCurrentDeviceAccountWithPin(...args);
   }
 
   private mergeDeviceAccountData(
@@ -5074,8 +4793,10 @@ export class Cp2Store {
     return {
       accounts: [...this.accounts.values()],
       users: [...this.users.values()],
-      deviceAccountBootstraps: [...this.deviceAccountBootstraps.values()],
-      deviceRecoveryCredentials: [...this.deviceRecoveryCredentials.values()],
+      deviceAccountBootstraps: [...this.deviceBootstrapDomain.deviceAccountBootstrapsMap.values()],
+      deviceRecoveryCredentials: [
+        ...this.deviceBootstrapDomain.deviceRecoveryCredentialsMap.values()
+      ],
       businesses: [...this.businesses.values()],
       memberships: [...this.memberships.values()],
       sessionContexts: [...this.sessionContexts.values()],
@@ -5219,10 +4940,7 @@ export class Cp2Store {
     this.accountByDestination.clear();
     this.users.clear();
     this.userByAccount.clear();
-    this.deviceAccountBootstraps.clear();
-    this.deviceAccountBootstrapCredentials.clear();
-    this.deviceRecoveryCredentials.clear();
-    this.deviceRecoverySessionCredentials.clear();
+    this.deviceBootstrapDomain.clear();
     this.businesses.clear();
     this.memberships.clear();
     this.phoneUpdateAttemptsByAccount.clear();
@@ -5281,13 +4999,7 @@ export class Cp2Store {
       this.userByAccount.set(user.accountId, user.id);
     }
 
-    for (const bootstrap of snapshot.deviceAccountBootstraps ?? []) {
-      this.deviceAccountBootstraps.set(bootstrap.id, bootstrap);
-    }
-
-    for (const credential of snapshot.deviceRecoveryCredentials ?? []) {
-      this.deviceRecoveryCredentials.set(credential.id, credential);
-    }
+    this.deviceBootstrapDomain.restore(snapshot);
 
     for (const business of snapshot.businesses) {
       this.businesses.set(business.id, business);
@@ -5892,7 +5604,7 @@ export class Cp2Store {
     );
     this.markSessionPinVerified(session.id, now);
     const refreshToken = this.consumeSessionRefreshToken(session.id);
-    for (const bootstrap of this.deviceAccountBootstraps.values()) {
+    for (const bootstrap of this.deviceBootstrapDomain.deviceAccountBootstrapsMap.values()) {
       if (bootstrap.accountId === targetAccountId && !this.sessions.has(bootstrap.sessionId)) {
         bootstrap.sessionId = session.id;
       }
@@ -7968,8 +7680,14 @@ export class Cp2Store {
       previousScopeSize = scope.size;
       deletedRecordCount += deleteScopedMapRecords(this.accounts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.users, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.deviceAccountBootstraps, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.deviceRecoveryCredentials, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.deviceBootstrapDomain.deviceAccountBootstrapsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.deviceBootstrapDomain.deviceRecoveryCredentialsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.businesses, scope);
       deletedRecordCount += deleteScopedMapRecords(this.memberships, scope);
       deletedRecordCount += deleteScopedMapRecords(this.sessionContexts, scope);
@@ -8127,17 +7845,9 @@ export class Cp2Store {
   }
 
   private rebuildDerivedIndexesAfterAccountPurge(): void {
-    for (const keyHash of this.deviceAccountBootstrapCredentials.keys()) {
-      if (!this.deviceAccountBootstraps.has(keyHash)) {
-        this.deviceAccountBootstrapCredentials.delete(keyHash);
-      }
-    }
-    for (const assertionHash of this.deviceRecoverySessionCredentials.keys()) {
-      const sessionId = this.deviceRecoverySessionCredentials.get(assertionHash)?.sessionId;
-      if (sessionId === undefined || !this.sessions.has(sessionId)) {
-        this.deviceRecoverySessionCredentials.delete(assertionHash);
-      }
-    }
+    this.deviceBootstrapDomain.pruneOrphanedEphemeralCredentials((sessionId) =>
+      this.sessions.has(sessionId)
+    );
 
     this.accountByDestination.clear();
     for (const account of this.accounts.values()) {
@@ -8451,88 +8161,6 @@ function deepFreeze<TValue>(value: TValue): TValue {
   }
 
   return Object.freeze(value);
-}
-
-function normalizeDeviceBootstrapIdempotencyKey(value: string | null): string {
-  const normalized = value?.trim() ?? "";
-  if (!/^[A-Za-z0-9_-]{32,128}$/u.test(normalized)) {
-    throw new Cp2Error(
-      400,
-      "auth_continue_idempotency_required",
-      "A secure Continue request key is required."
-    );
-  }
-  return normalized;
-}
-
-function hashDeviceBootstrapKey(value: string): string {
-  return createHash("sha256").update(`soko-device-bootstrap:${value}`).digest("base64url");
-}
-
-function normalizeDeviceRecoveryCredentialId(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(normalized)
-  ) {
-    throw new Cp2Error(401, "device_recovery_invalid", "Device recovery failed.");
-  }
-  return normalized;
-}
-
-function normalizeDeviceRecoveryPublicKey(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Cp2Error(400, "device_recovery_key_required", "A device recovery key is required.");
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    record.kty !== "EC" ||
-    record.crv !== "P-256" ||
-    typeof record.x !== "string" ||
-    typeof record.y !== "string" ||
-    !/^[A-Za-z0-9_-]{40,64}$/u.test(record.x) ||
-    !/^[A-Za-z0-9_-]{40,64}$/u.test(record.y)
-  ) {
-    throw new Cp2Error(400, "device_recovery_key_invalid", "The device recovery key is invalid.");
-  }
-  const normalized = { kty: "EC", crv: "P-256", x: record.x, y: record.y };
-  try {
-    createPublicKey({ key: normalized as NodeJsonWebKey, format: "jwk" });
-  } catch {
-    throw new Cp2Error(400, "device_recovery_key_invalid", "The device recovery key is invalid.");
-  }
-  return normalized;
-}
-
-function deviceRecoveryPublicKeyFingerprint(publicKeyJwk: Record<string, unknown>): string {
-  return createHash("sha256")
-    .update(`${publicKeyJwk.kty}:${publicKeyJwk.crv}:${publicKeyJwk.x}:${publicKeyJwk.y}`)
-    .digest("base64url");
-}
-
-function deviceRecoveryAssertionPayload(
-  credentialId: string,
-  nonce: string,
-  issuedAt: number
-): string {
-  return `soko-device-recovery:v1:${credentialId}:${issuedAt}:${nonce}`;
-}
-
-function verifyDeviceRecoverySignature(
-  publicKeyJwk: Record<string, unknown>,
-  payload: string,
-  signature: string
-): boolean {
-  try {
-    const key = createPublicKey({ key: publicKeyJwk as NodeJsonWebKey, format: "jwk" });
-    return verifySignature(
-      "sha256",
-      Buffer.from(payload, "utf8"),
-      { key, dsaEncoding: "ieee-p1363" },
-      Buffer.from(signature, "base64url")
-    );
-  } catch {
-    return false;
-  }
 }
 
 function replaceExactStringReferences(
