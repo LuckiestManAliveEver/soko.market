@@ -124,6 +124,7 @@ import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useReportsState } from "./hooks/useReportsState";
 import { useNetworkState } from "./hooks/useNetworkState";
 import { useProductsState } from "./hooks/useProductsState";
 import { useSyncState } from "./hooks/useSyncState";
@@ -181,8 +182,6 @@ import {
   type BetaSupportTicketStatus,
   type BetaSupportTicketSummary,
   type BusinessAgentProfileSummary,
-  type BusinessKnowledgeSummary,
-  type BusinessReportSummary,
   type BusinessResponse,
   type BuyCartItem,
   type ComplianceFormState,
@@ -466,8 +465,6 @@ export function OwnerApp() {
     string | null
   >(null);
   const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
-  const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
-  const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
   const [storefrontCareRequests, setStorefrontCareRequests] = useState<
     PublicCustomerCareRequestSummary[]
   >([]);
@@ -608,6 +605,15 @@ export function OwnerApp() {
   });
   const { notificationInbox, loadNotifications, updateNotification } = useNotificationsState({
     businessId: business?.id ?? null,
+    setStatusMessage,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  // useReportsState is called early, before any hook whose deps object references loadReports
+  // (Logistics, Suppliers, Imports), for the same reason Sync is called first: those hooks
+  // reference loadReports by name at hook-call time, which requires the const it resolves to
+  // already exist.
+  const { reportSummary, knowledgeSummary, loadReports } = useReportsState({
     setStatusMessage,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
@@ -1256,10 +1262,6 @@ export function OwnerApp() {
 
       if (view === "runtime") {
         refreshes.push(loadRuntimeSessions(businessId));
-      }
-
-      if (view === "home" || view === "reports") {
-        refreshes.push(loadReports(businessId));
       }
 
       if (view === "home" || view === "notifications") {
@@ -2053,25 +2055,6 @@ export function OwnerApp() {
           `/businesses/${businessId}/runtime/sessions/${sessionId}/turns`
         )
       );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadReports(businessId: string) {
-    try {
-      const [report, knowledge] = await Promise.all([
-        getJson<BusinessReportSummary>(
-          `/businesses/${businessId}/reports/summary`,
-          setReportSummary
-        ),
-        getJson<BusinessKnowledgeSummary>(
-          `/businesses/${businessId}/knowledge`,
-          setKnowledgeSummary
-        )
-      ]);
-      setReportSummary(report);
-      setKnowledgeSummary(knowledge);
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -2967,8 +2950,6 @@ export function OwnerApp() {
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
-    setReportSummary(null);
-    setKnowledgeSummary(null);
     setStorefrontCareRequests([]);
     setStorefrontMessages([]);
     setStorefrontOrders([]);
