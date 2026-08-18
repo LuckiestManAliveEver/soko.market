@@ -510,6 +510,15 @@ import {
 } from "./contacts-import";
 import { useInstallPrompt } from "./misc-browser-utils";
 
+import { PrimaryNavigation } from "./PrimaryNavigation";
+import { NetworkNodeList } from "./NetworkNodeList";
+import { LogisticsSurface } from "./LogisticsSurface";
+import { CustomerSurface } from "./CustomerSurface";
+import { InvoiceDocument } from "./InvoiceDocument";
+import { ReportRow } from "./ReportRow";
+import { ShopPresenceButtons } from "./ShopPresenceButtons";
+import { EmptyStateSurface } from "./EmptyStateSurface";
+
 function BuildIdentity() {
   if (!showBuildIdentity) {
     return null;
@@ -6669,58 +6678,6 @@ export function OwnerApp() {
   );
 }
 
-const primaryNavigationItems: Array<{
-  view: ShellView;
-  label: string;
-  shortLabel: string;
-}> = [
-  { view: "chat", label: "Business overview", shortLabel: "Home" },
-  { view: "products", label: "Catalogue", shortLabel: "Stock" },
-  { view: "invoices", label: "Sales and invoices", shortLabel: "Sales" },
-  { view: "imports", label: "Documents and receipts", shortLabel: "Docs" },
-  { view: "reports", label: "Business reports", shortLabel: "Reports" },
-  { view: "agent", label: "Agent and offline settings", shortLabel: "Settings" }
-];
-
-function PrimaryNavigation({
-  activeView,
-  notificationCount,
-  onNavigate,
-  onPrefetch
-}: {
-  activeView: ShellView;
-  notificationCount: number;
-  onNavigate: (view: ShellView) => void;
-  onPrefetch: (view: ShellView) => void;
-}) {
-  return (
-    <nav className="primary-navigation" aria-label="Business navigation">
-      {primaryNavigationItems.map((item) => (
-        <button
-          className={activeView === item.view ? "active" : ""}
-          type="button"
-          key={item.view}
-          aria-current={activeView === item.view ? "page" : undefined}
-          aria-label={item.label}
-          title={item.label}
-          onClick={() => onNavigate(item.view)}
-          onPointerDown={() => onPrefetch(item.view)}
-          onPointerEnter={() => onPrefetch(item.view)}
-          onFocus={() => onPrefetch(item.view)}
-        >
-          <span className="primary-navigation-icon" aria-hidden="true">
-            {item.shortLabel.slice(0, 1)}
-          </span>
-          <span>{item.shortLabel}</span>
-          {item.view === "reports" && notificationCount > 0 ? (
-            <small aria-label={`${notificationCount} unread alerts`}>{notificationCount}</small>
-          ) : null}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
 interface BusinessSetupPanelProps {
   step: "phone" | "details";
   businessName: string;
@@ -7035,24 +6992,6 @@ function NetworkSurface(props: NetworkSurfaceProps) {
         </div>
       ) : null}
     </section>
-  );
-}
-
-function NetworkNodeList({ nodes, title }: { nodes: NetworkNodeSummary[]; title: string }) {
-  return (
-    <div className="network-list">
-      <h4>{title}</h4>
-      {nodes.length === 0 ? (
-        <p className="shell-note">No entries yet.</p>
-      ) : (
-        nodes.map((node) => (
-          <article key={node.id}>
-            <span>{node.displayName}</span>
-            <small>{node.sourcePlatform ?? node.sourceType}</small>
-          </article>
-        ))
-      )}
-    </div>
   );
 }
 
@@ -8057,158 +7996,6 @@ function ProductImportRowEditor(props: ImportRowEditorProps) {
         Save row
       </button>
     </article>
-  );
-}
-
-interface LogisticsSurfaceProps {
-  invoices: InvoiceSummary[];
-  logistics: LogisticsSummary[];
-  form: LogisticsFormState;
-  onFormChange: (form: LogisticsFormState) => void;
-  onCreate: () => void;
-  onStatusChange: (logisticsId: string, status: FulfillmentStatus) => void;
-  onRefresh: () => void;
-}
-
-function LogisticsSurface(props: LogisticsSurfaceProps) {
-  const linkedInvoiceIds = new Set(props.logistics.map((item) => item.invoiceId));
-  const availableInvoices = props.invoices.filter(
-    (invoice) => invoice.status === "confirmed" && !linkedInvoiceIds.has(invoice.id)
-  );
-  const activeCount = props.logistics.filter(
-    (item) => item.status !== "completed" && item.status !== "cancelled"
-  ).length;
-
-  return (
-    <div className="records-surface">
-      <section className="record-form" aria-label="Logistics form">
-        <div className="section-heading">
-          <p className="eyebrow">Logistics</p>
-          <h3>Create fulfillment</h3>
-        </div>
-        <label>
-          Confirmed invoice
-          <select
-            value={props.form.invoiceId}
-            onChange={(event) =>
-              props.onFormChange({ ...props.form, invoiceId: event.target.value })
-            }
-          >
-            <option value="">Select invoice</option>
-            {availableInvoices.map((invoice) => (
-              <option key={invoice.id} value={invoice.id}>
-                {invoice.invoiceNumber} - {invoice.customerName ?? "Walk-in customer"}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="segmented" aria-label="Fulfillment method">
-          <button
-            className={props.form.method === "delivery" ? "active" : ""}
-            type="button"
-            onClick={() => props.onFormChange({ ...props.form, method: "delivery" })}
-          >
-            Delivery
-          </button>
-          <button
-            className={props.form.method === "pickup" ? "active" : ""}
-            type="button"
-            onClick={() => props.onFormChange({ ...props.form, method: "pickup" })}
-          >
-            Pickup
-          </button>
-        </div>
-        <label>
-          Destination
-          <input
-            value={props.form.destination}
-            onChange={(event) =>
-              props.onFormChange({ ...props.form, destination: event.target.value })
-            }
-          />
-        </label>
-        <label>
-          Note
-          <input
-            value={props.form.note}
-            onChange={(event) => props.onFormChange({ ...props.form, note: event.target.value })}
-          />
-        </label>
-        <div className="actions">
-          <button type="button" onClick={props.onCreate} disabled={props.form.invoiceId === ""}>
-            Create
-          </button>
-          <button className="secondary" type="button" onClick={props.onRefresh}>
-            Refresh
-          </button>
-        </div>
-      </section>
-
-      <section className="record-list" aria-label="Logistics records">
-        <div className="section-heading">
-          <p className="eyebrow">{activeCount} active</p>
-          <h3>Fulfillment work</h3>
-        </div>
-        {props.logistics.length === 0 ? (
-          <div className="empty-record">
-            <h3>No logistics yet</h3>
-            <p>Create fulfillment work from a confirmed invoice.</p>
-          </div>
-        ) : (
-          props.logistics.map((item) => (
-            <article className="record-row logistics-row" key={item.id}>
-              <div>
-                <strong>
-                  {item.invoiceNumber} - {item.status.replaceAll("_", " ")}
-                </strong>
-                <span>
-                  {item.method} - {item.customerName ?? "Walk-in customer"}
-                  {item.destination === null ? "" : ` - ${item.destination}`}
-                </span>
-              </div>
-              <div className="compact-actions">
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => props.onStatusChange(item.id, "ready")}
-                  disabled={item.status !== "pending"}
-                >
-                  Ready
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => props.onStatusChange(item.id, "out_for_delivery")}
-                  disabled={item.method !== "delivery" || item.status !== "ready"}
-                >
-                  Dispatch
-                </button>
-                <button
-                  type="button"
-                  onClick={() => props.onStatusChange(item.id, "completed")}
-                  disabled={
-                    item.status === "completed" ||
-                    item.status === "cancelled" ||
-                    (item.method === "delivery" && item.status !== "out_for_delivery") ||
-                    (item.method === "pickup" && item.status !== "ready")
-                  }
-                >
-                  Complete
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => props.onStatusChange(item.id, "cancelled")}
-                  disabled={item.status === "completed" || item.status === "cancelled"}
-                >
-                  Back
-                </button>
-              </div>
-            </article>
-          ))
-        )}
-      </section>
-    </div>
   );
 }
 
@@ -9372,90 +9159,6 @@ function ProductSurface(props: ProductSurfaceProps) {
   );
 }
 
-interface CustomerSurfaceProps {
-  customers: CustomerSummary[];
-  form: CustomerFormState;
-  onFormChange: (form: CustomerFormState) => void;
-  onSave: () => void;
-  onReset: () => void;
-  onEdit: (customer: CustomerSummary) => void;
-}
-
-function CustomerSurface(props: CustomerSurfaceProps) {
-  return (
-    <div className="records-surface">
-      <section className="record-form" aria-label="Customer form">
-        <div className="section-heading">
-          <p className="eyebrow">{props.form.id === null ? "New customer" : "Edit customer"}</p>
-          <h3>{props.form.id === null ? "Add customer" : "Update customer"}</h3>
-        </div>
-        <label>
-          Name
-          <input
-            value={props.form.name}
-            onChange={(event) => props.onFormChange({ ...props.form, name: event.target.value })}
-          />
-        </label>
-        <div className="form-row">
-          <label>
-            Phone
-            <input
-              value={props.form.phone}
-              onChange={(event) => props.onFormChange({ ...props.form, phone: event.target.value })}
-              inputMode="tel"
-            />
-          </label>
-          <label>
-            Email
-            <input
-              value={props.form.email}
-              onChange={(event) => props.onFormChange({ ...props.form, email: event.target.value })}
-              inputMode="email"
-            />
-          </label>
-        </div>
-        <label>
-          Notes
-          <textarea
-            value={props.form.notes}
-            onChange={(event) => props.onFormChange({ ...props.form, notes: event.target.value })}
-            rows={3}
-          />
-        </label>
-        <div className="actions">
-          <button type="button" onClick={props.onSave}>
-            {props.form.id === null ? "Create" : "Save"}
-          </button>
-          <button className="secondary" type="button" onClick={props.onReset}>
-            Clear
-          </button>
-        </div>
-      </section>
-
-      <section className="record-list" aria-label="Customers">
-        {props.customers.length === 0 ? (
-          <div className="empty-record">
-            <h3>No customers yet</h3>
-            <p>Add the first customer to start customer records.</p>
-          </div>
-        ) : (
-          props.customers.map((customer) => (
-            <article className="record-row" key={customer.id}>
-              <div>
-                <strong>{customer.name}</strong>
-                <span>{customer.phone ?? customer.email ?? "No contact saved"}</span>
-              </div>
-              <button type="button" onClick={() => props.onEdit(customer)}>
-                Edit
-              </button>
-            </article>
-          ))
-        )}
-      </section>
-    </div>
-  );
-}
-
 interface SupplierSurfaceProps {
   suppliers: SupplierBusinessCardSummary[];
   purchaseReceipts: PurchaseReceiptSummary[];
@@ -10120,43 +9823,6 @@ function InvoiceSurface(props: InvoiceSurfaceProps) {
           ))
         )}
       </section>
-    </div>
-  );
-}
-
-function InvoiceDocument({ invoice }: { invoice: InvoicePreview | InvoiceSummary }) {
-  const invoiceNumber = "invoiceNumber" in invoice ? invoice.invoiceNumber : "Preview";
-  const status = "status" in invoice ? invoice.status : "preview";
-
-  return (
-    <div className="invoice-document">
-      <div className="invoice-document-header">
-        <div>
-          <p className="eyebrow">{status}</p>
-          <h3>{invoiceNumber}</h3>
-        </div>
-        <strong>{formatMoney(invoice.total)}</strong>
-      </div>
-      <p>{invoice.customerName ?? "Walk-in customer"}</p>
-      <div className="invoice-lines">
-        {invoice.items.map((item) => (
-          <div className="invoice-line" key={item.productId}>
-            <span>{item.productName}</span>
-            <span>
-              {item.quantity} x {formatMoney(item.unitPrice)}
-            </span>
-            <strong>{formatMoney(item.lineTotal)}</strong>
-          </div>
-        ))}
-      </div>
-      <div className="invoice-totals">
-        <span>Subtotal</span>
-        <strong>{formatMoney(invoice.subtotal)}</strong>
-        <span>Tax ({Math.round(invoice.taxRate * 100)}%)</span>
-        <strong>{formatMoney(invoice.taxTotal)}</strong>
-        <span>Total</span>
-        <strong>{formatMoney(invoice.total)}</strong>
-      </div>
     </div>
   );
 }
@@ -11050,26 +10716,6 @@ function ReportsSurface({ report, knowledge, onRefresh }: ReportsSurfaceProps) {
         )) ?? null}
       </section>
     </div>
-  );
-}
-
-interface ReportRowProps {
-  eyebrow: string;
-  title: string;
-  body: string;
-  value: string;
-}
-
-function ReportRow(props: ReportRowProps) {
-  return (
-    <article className="record-row">
-      <div>
-        <p className="eyebrow">{props.eyebrow}</p>
-        <h4>{props.title}</h4>
-        <p>{props.body}</p>
-      </div>
-      <strong>{props.value}</strong>
-    </article>
   );
 }
 
@@ -19056,59 +18702,6 @@ function ProductNestedEditor({
           Save
         </button>
       </div>
-    </div>
-  );
-}
-
-function ShopPresenceButtons({
-  activeStatus,
-  onStatusChange
-}: {
-  activeStatus: ShopPresenceStatus;
-  onStatusChange: (status: ShopPresenceStatus) => void;
-}) {
-  const statuses: Array<{ id: ShopPresenceStatus; label: string }> = [
-    { id: "online", label: "Online" },
-    { id: "private", label: "Private" },
-    { id: "offline", label: "Offline" }
-  ];
-
-  return (
-    <span className="shop-presence-buttons" aria-label="Shop status">
-      {statuses.map((status) => (
-        <button
-          aria-label={`${status.label} shop status`}
-          className={`presence-dot ${status.id} ${activeStatus === status.id ? "active" : ""}`}
-          key={status.id}
-          type="button"
-          title={`${status.label} across devices`}
-          onClick={() => onStatusChange(status.id)}
-        />
-      ))}
-    </span>
-  );
-}
-
-interface EmptyStateSurfaceProps {
-  title: string;
-  body: string;
-  onChat: () => void;
-  actionLabel?: string;
-}
-
-function EmptyStateSurface({
-  title,
-  body,
-  onChat,
-  actionLabel = "Draft in chat"
-}: EmptyStateSurfaceProps) {
-  return (
-    <div className="empty-state">
-      <h3>{title}</h3>
-      <p>{body}</p>
-      <button type="button" onClick={onChat}>
-        {actionLabel}
-      </button>
     </div>
   );
 }

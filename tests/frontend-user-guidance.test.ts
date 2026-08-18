@@ -139,12 +139,13 @@ describe("frontend user guidance", () => {
 
   it("keeps primary seller destinations visible and changes modes without animation delay", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const primaryNavigation = readFileSync("apps/web/src/PrimaryNavigation.tsx", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
-    expect(application).toContain('aria-label="Business navigation"');
-    expect(application).toContain('shortLabel: "Stock"');
-    expect(application).toContain('shortLabel: "Sales"');
-    expect(application).toContain('shortLabel: "Docs"');
+    expect(primaryNavigation).toContain('aria-label="Business navigation"');
+    expect(primaryNavigation).toContain('shortLabel: "Stock"');
+    expect(primaryNavigation).toContain('shortLabel: "Sales"');
+    expect(primaryNavigation).toContain('shortLabel: "Docs"');
     expect(application).not.toContain("runViewTransition");
     expect(application).toContain("markNavigationCommitted(measurement)");
     expect(styles).toContain(".primary-navigation");
