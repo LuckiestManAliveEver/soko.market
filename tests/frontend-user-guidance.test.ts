@@ -54,6 +54,10 @@ describe("frontend user guidance", () => {
 
   it("keeps Messages beside Marketplace as a pill and labels the network card My Network", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const contextualBusinessCards = readFileSync(
+      "apps/web/src/ContextualBusinessCards.tsx",
+      "utf8"
+    );
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
     const marketplaceIndex = application.indexOf('data-testid="marketplace-button"');
     const messagesIndex = application.indexOf('data-testid="messages-button"');
@@ -63,7 +67,7 @@ describe("frontend user guidance", () => {
     expect(messagesIndex).toBeGreaterThan(marketplaceIndex);
     expect(messagesIndex).toBeLessThan(sellIndex);
     expect(styles).toContain(".header-action-button.messages");
-    expect(application).toContain('title: "My Network"');
+    expect(contextualBusinessCards).toContain('title: "My Network"');
   });
 
   it("refreshes the active owner view on a bounded foreground schedule", () => {
@@ -106,7 +110,8 @@ describe("frontend user guidance", () => {
     expect(sharedModule).toContain(
       'const documentUploadRuntimeMarker = "[document-upload: active]"'
     );
-    expect(application).toContain(
+    const importSurface = readFileSync("apps/web/src/ImportSurface.tsx", "utf8");
+    expect(importSurface).toContain(
       "PDF, DOCX, XLS, XLSX, and ODS files are extracted on the server"
     );
     const chatMessagePlumbing = readFileSync(
@@ -259,10 +264,7 @@ describe("frontend user guidance", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
-    const shopSetup = application.slice(
-      application.indexOf("function BusinessSetupPanel"),
-      application.indexOf("interface SyncSurfaceProps")
-    );
+    const shopSetup = readFileSync("apps/web/src/BusinessSetupPanel.tsx", "utf8");
     const switchMode = application.slice(
       application.indexOf("function switchMode"),
       application.indexOf("async function logout")
@@ -367,6 +369,10 @@ describe("frontend user guidance", () => {
 
   it("offers a read-only guest marketplace without forcing signup", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const marketplaceModeCard = readFileSync(
+      "apps/web/src/MarketplaceModeCard.tsx",
+      "utf8"
+    );
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
@@ -376,7 +382,7 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
     );
-    expect(application).toContain("routes.publicAgent(storefront.agentId)");
+    expect(marketplaceModeCard).toContain("routes.publicAgent(storefront.agentId)");
     expect(application).toContain(
       "marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}"
     );
