@@ -137,6 +137,7 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
@@ -202,7 +203,6 @@ import {
   type ContactPickerNavigator,
   type CountryDialCode,
   type CountryTaxConfigSummary,
-  type CustomerDebtSummary,
   type CustomerFormState,
   type CustomerSummary,
   type DataExportBundle,
@@ -213,7 +213,6 @@ import {
   type DocumentImportPreviewRow,
   type ImportFormState,
   type InvoiceFormState,
-  type InvoicePaymentSummary,
   type InvoicePreview,
   type InvoiceSummary,
   type LaunchChecklistItemSummary,
@@ -230,8 +229,6 @@ import {
   type OAuthStartResponse,
   type OfflineCacheSnapshot,
   type OwnerAuthRecord,
-  type PaymentFormState,
-  type PaymentSummary,
   type PendingOAuthLogin,
   PhoneFirstAuthentication,
   PhoneSignup,
@@ -241,7 +238,6 @@ import {
   type ProductSummary,
   type PublicStorefrontListResponse,
   type PublicStorefrontSummary,
-  type RecordPaymentResponse,
   type RoleCheckResponse,
   type RuntimeSessionSummary,
   type RuntimeTurnResult,
@@ -269,7 +265,6 @@ import {
   emptyImportForm,
   emptyInvoiceForm,
   emptyLaunchForm,
-  emptyPaymentForm,
   emptyProductForm,
   emptySupplierForm,
   emptySyncSummary,
@@ -522,9 +517,6 @@ export function OwnerApp() {
     createDefaultProductFieldDefinitions()
   );
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
-  const [payments, setPayments] = useState<PaymentSummary[]>([]);
-  const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
-  const [customerDebts, setCustomerDebts] = useState<CustomerDebtSummary[]>([]);
   const [importJobs, setImportJobs] = useState<DocumentImportJobSummary[]>([]);
   const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
@@ -557,7 +549,6 @@ export function OwnerApp() {
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
-  const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
@@ -731,6 +722,21 @@ export function OwnerApp() {
     businessId: business?.id ?? null,
     setStatusMessage,
     loadReports,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    payments,
+    invoicePayments,
+    customerDebts,
+    paymentForm,
+    setPaymentForm,
+    loadPaymentData,
+    recordPayment
+  } = usePaymentsState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    queueMutationAfterNetworkFailure,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
@@ -1332,7 +1338,7 @@ export function OwnerApp() {
       }
 
       if (view === "payments") {
-        refreshes.push(loadInvoices(businessId), loadPaymentData(businessId));
+        refreshes.push(loadInvoices(businessId));
       }
 
       if (view === "imports") {
@@ -2540,24 +2546,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadPaymentData(businessId: string) {
-    try {
-      const [nextPayments, nextSummaries, nextDebts] = await Promise.all([
-        getJson<PaymentSummary[]>(`/businesses/${businessId}/payments`, setPayments),
-        getJson<InvoicePaymentSummary[]>(
-          `/businesses/${businessId}/payment-summaries`,
-          setInvoicePayments
-        ),
-        getJson<CustomerDebtSummary[]>(`/businesses/${businessId}/customer-debts`, setCustomerDebts)
-      ]);
-      setPayments(nextPayments);
-      setInvoicePayments(nextSummaries);
-      setCustomerDebts(nextDebts);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   async function loadReports(businessId: string) {
     try {
       const [report, knowledge] = await Promise.all([
@@ -3101,50 +3089,6 @@ export function OwnerApp() {
         } row${response.job.confirmedCount === 1 ? "" : "s"} imported`
       );
     } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function recordPayment() {
-    if (business === null || paymentForm.invoiceId.length === 0) {
-      return;
-    }
-
-    try {
-      const response = await postJson<RecordPaymentResponse>(
-        `/businesses/${business.id}/payments`,
-        {
-          invoiceId: paymentForm.invoiceId,
-          amount: Number(paymentForm.amount),
-          method: paymentForm.method,
-          reference: paymentForm.reference,
-          note: paymentForm.note
-        }
-      );
-      setPaymentForm({
-        ...emptyPaymentForm,
-        invoiceId:
-          response.invoicePayment.status === "paid" ? "" : response.invoicePayment.invoiceId,
-        amount:
-          response.invoicePayment.status === "paid"
-            ? ""
-            : String(response.invoicePayment.balanceDue)
-      });
-      await loadPaymentData(business.id);
-      setStatusMessage("Payment recorded");
-    } catch (error) {
-      if (
-        await queueMutationAfterNetworkFailure(error, "payment.record", {
-          invoiceId: paymentForm.invoiceId,
-          amount: Number(paymentForm.amount),
-          method: paymentForm.method,
-          reference: paymentForm.reference,
-          note: paymentForm.note
-        })
-      ) {
-        setPaymentForm(emptyPaymentForm);
-        return;
-      }
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -3891,9 +3835,6 @@ export function OwnerApp() {
     setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
     setInvoices([]);
-    setPayments([]);
-    setInvoicePayments([]);
-    setCustomerDebts([]);
     setImportJobs([]);
     setSelectedImportJobId(null);
     setSyncQueue([]);
@@ -3921,7 +3862,6 @@ export function OwnerApp() {
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setInvoiceForm(emptyInvoiceForm);
-    setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
