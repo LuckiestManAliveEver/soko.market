@@ -121,6 +121,7 @@ import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useReadinessState } from "./hooks/useReadinessState";
 import { useReportsState } from "./hooks/useReportsState";
 import { useRuntimeHistoryState } from "./hooks/useRuntimeHistoryState";
 import { useStorefrontCareState } from "./hooks/useStorefrontCareState";
@@ -168,32 +169,15 @@ import {
 } from "./auth-bootstrap";
 
 import {
-  type AccountDeletionRequestSummary,
   AccountRestorationPanel,
   type ActiveAiModelSummary,
   type ActiveBusiness,
   type AgentSettings,
   type AiModelSummary,
-  type BetaAccessSummary,
-  type BetaFeatureFlagSummary,
-  type BetaFormState,
-  type BetaReadinessReportSummary,
-  type BetaSupportTicketStatus,
-  type BetaSupportTicketSummary,
   type BusinessAgentProfileSummary,
   type BusinessResponse,
   type BuyCartItem,
-  type ComplianceFormState,
   type CountryDialCode,
-  type CountryTaxConfigSummary,
-  type DataExportBundle,
-  type DeviceTrustSummary,
-  type LaunchChecklistItemSummary,
-  type LaunchFormState,
-  type LaunchIncidentStatus,
-  type LaunchIncidentSummary,
-  type LaunchReadinessReportSummary,
-  type LaunchSettingsSummary,
   type MarketplaceIntroStateSummary,
   type NetworkGraphSummary,
   type OAuthProviderSummary,
@@ -209,23 +193,18 @@ import {
   type PublicStorefrontSummary,
   type RoleCheckResponse,
   type RuntimeTurnResult,
-  type SecurityReviewSummary,
   type SessionResponse,
   type SetupDraft,
   type ShopPresenceStatus,
   type ShopPresenceSummary,
   type SocialSignupProvider,
   type SupportedLanguage,
-  type VerificationTierSummary,
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
   clientInferenceFeatureFlags,
-  emptyBetaForm,
-  emptyComplianceForm,
   emptyCustomerForm,
   emptyInvoiceForm,
-  emptyLaunchForm,
   emptyProductForm,
   emptySupplierForm,
   guestBrowsingStorageKey,
@@ -457,18 +436,6 @@ export function OwnerApp() {
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     initialOwnerRoute?.productId ?? null
   );
-  const [securityReview, setSecurityReview] = useState<SecurityReviewSummary | null>(null);
-  const [dataExport, setDataExport] = useState<DataExportBundle | null>(null);
-  const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
-  const [taxConfig, setTaxConfig] = useState<CountryTaxConfigSummary | null>(null);
-  const [deviceTrust, setDeviceTrust] = useState<DeviceTrustSummary | null>(null);
-  const [betaReadiness, setBetaReadiness] = useState<BetaReadinessReportSummary | null>(null);
-  const [betaSupportTickets, setBetaSupportTickets] = useState<BetaSupportTicketSummary[]>([]);
-  const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
-  const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
-  const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
-  const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
-  const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const sessionRefreshInFlightRef = useRef(false);
   const restoredModelInstallationRef = useRef<string | null>(null);
@@ -788,6 +755,50 @@ export function OwnerApp() {
       registerReset: domainResetRegistry.registerReset,
       registerRefresh
     });
+  const {
+    securityReview,
+    dataExport,
+    verificationTier,
+    taxConfig,
+    deviceTrust,
+    complianceForm,
+    setComplianceForm,
+    loadCompliance,
+    createDataExport,
+    saveVerificationTier,
+    saveTaxConfig,
+    saveDeviceTrust,
+    scheduleAccountDeletion,
+    betaReadiness,
+    betaSupportTickets,
+    betaForm,
+    setBetaForm,
+    loadBetaReadiness,
+    updateBetaAccess,
+    enableBetaFlags,
+    recordBetaDeviceTest,
+    createBetaSupportTicket,
+    updateBetaSupportTicketStatus,
+    recordBetaTelemetry,
+    launchReadiness,
+    launchIncidents,
+    launchForm,
+    setLaunchForm,
+    loadLaunchReadiness,
+    updateLaunchSettings,
+    updateLaunchChecklist,
+    createLaunchIncident,
+    updateLaunchIncidentStatus
+  } = useReadinessState({
+    business,
+    session,
+    isOnline,
+    setStatusMessage,
+    loadReports,
+    resetClientToStartup,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1271,18 +1282,6 @@ export function OwnerApp() {
 
       if (view === "runtime") {
         refreshes.push(loadRuntimeSessions(businessId));
-      }
-
-      if (view === "compliance") {
-        refreshes.push(loadCompliance(businessId));
-      }
-
-      if (view === "home" || view === "beta") {
-        refreshes.push(loadBetaReadiness(businessId));
-      }
-
-      if (view === "home" || view === "launch") {
-        refreshes.push(loadLaunchReadiness(businessId));
       }
 
       await Promise.allSettled(refreshes);
@@ -1962,393 +1961,6 @@ export function OwnerApp() {
     setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
   }
 
-  async function loadCompliance(businessId: string) {
-    try {
-      const [review, verification, tax, trust] = await Promise.all([
-        getJson<SecurityReviewSummary>(`/businesses/${businessId}/compliance/security-review`),
-        getJson<VerificationTierSummary>(`/businesses/${businessId}/compliance/verification`),
-        getJson<CountryTaxConfigSummary>(`/businesses/${businessId}/compliance/tax-config`),
-        getJson<DeviceTrustSummary>(`/businesses/${businessId}/compliance/device-trust`)
-      ]);
-      setSecurityReview(review);
-      setVerificationTier(verification);
-      setTaxConfig(tax);
-      setDeviceTrust(trust);
-      setComplianceForm((form) => ({
-        ...form,
-        verificationTier: verification.tier,
-        verificationNote: verification.note ?? "",
-        defaultTaxRate: String(tax.defaultTaxRate),
-        taxId: tax.taxId ?? "",
-        pricesIncludeTax: tax.pricesIncludeTax,
-        deviceId: trust.deviceId,
-        deviceTrustLevel: trust.level,
-        deviceTrustReason: trust.reason ?? ""
-      }));
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createDataExport() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const exportBundle = await postJson<DataExportBundle>(
-        `/businesses/${business.id}/compliance/export`,
-        {}
-      );
-      setDataExport(exportBundle);
-      await loadCompliance(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Data export ready");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveVerificationTier() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const verification = await patchJson<VerificationTierSummary>(
-        `/businesses/${business.id}/compliance/verification`,
-        {
-          tier: complianceForm.verificationTier,
-          evidenceType:
-            complianceForm.verificationTier === "unverified" ? "none" : "owner_attestation",
-          note: complianceForm.verificationNote
-        }
-      );
-      setVerificationTier(verification);
-      await loadCompliance(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Verification tier updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveTaxConfig() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const tax = await patchJson<CountryTaxConfigSummary>(
-        `/businesses/${business.id}/compliance/tax-config`,
-        {
-          countryCode: "KE",
-          defaultTaxRate: Number(complianceForm.defaultTaxRate),
-          taxId: complianceForm.taxId,
-          pricesIncludeTax: complianceForm.pricesIncludeTax
-        }
-      );
-      setTaxConfig(tax);
-      await loadReports(business.id);
-      setStatusMessage("Tax configuration updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveDeviceTrust() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const trust = await patchJson<DeviceTrustSummary>(
-        `/businesses/${business.id}/compliance/device-trust`,
-        {
-          deviceId: complianceForm.deviceId,
-          level: complianceForm.deviceTrustLevel,
-          reason: complianceForm.deviceTrustReason
-        }
-      );
-      setDeviceTrust(trust);
-      await loadCompliance(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Device trust updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function scheduleAccountDeletion(input: {
-    pin: string;
-    confirmation: string;
-    reason: string;
-  }): Promise<boolean> {
-    if (business === null) {
-      return false;
-    }
-
-    try {
-      const accountId = session?.account.id ?? null;
-      await postJson<{ verified: boolean }>("/auth/pin/verify", { pin: input.pin });
-      await postJson<AccountDeletionRequestSummary>(
-        `/businesses/${business.id}/compliance/account-deletion`,
-        {
-          confirmation: input.confirmation,
-          reason: input.reason
-        }
-      );
-      await resetClientToStartup(
-        accountId,
-        "Account deactivated and deletion scheduled. You have been returned to startup."
-      );
-      return true;
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-      return false;
-    }
-  }
-
-  async function loadBetaReadiness(businessId: string) {
-    try {
-      const [readiness, tickets] = await Promise.all([
-        getJson<BetaReadinessReportSummary>(`/businesses/${businessId}/beta/readiness`),
-        getJson<BetaSupportTicketSummary[]>(`/businesses/${businessId}/beta/support-tickets`)
-      ]);
-      setBetaReadiness(readiness);
-      setBetaSupportTickets(tickets);
-      setBetaForm((form) => ({
-        ...form,
-        accessStatus: readiness.access.status,
-        invitedMerchantCount: String(readiness.access.invitedMerchantCount),
-        pauseReason: readiness.access.pauseReason ?? ""
-      }));
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateBetaAccess() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<BetaAccessSummary>(`/businesses/${business.id}/beta/access`, {
-        status: betaForm.accessStatus,
-        invitedMerchantCount: Number(betaForm.invitedMerchantCount),
-        pauseReason: betaForm.pauseReason
-      });
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta access updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function enableBetaFlags() {
-    if (business === null || betaReadiness === null) {
-      return;
-    }
-
-    try {
-      await Promise.all(
-        betaReadiness.featureFlags.map((flag) =>
-          patchJson<BetaFeatureFlagSummary>(
-            `/businesses/${business.id}/beta/feature-flags/${flag.key}`,
-            {
-              enabled: true,
-              reason: "Enabled for closed beta readiness."
-            }
-          )
-        )
-      );
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta feature flags enabled");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function recordBetaDeviceTest() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson(`/businesses/${business.id}/beta/device-tests`, {
-        deviceClass: betaForm.deviceClass,
-        workflow: betaForm.deviceWorkflow,
-        status: betaForm.deviceStatus,
-        durationMs: Number(betaForm.deviceDurationMs),
-        notes: "Recorded from owner shell"
-      });
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta device test recorded");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createBetaSupportTicket() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<BetaSupportTicketSummary>(`/businesses/${business.id}/beta/support-tickets`, {
-        severity: betaForm.supportSeverity,
-        title: betaForm.supportTitle,
-        body: betaForm.supportBody,
-        source: "operator"
-      });
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta support ticket created");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateBetaSupportTicketStatus(
-    supportTicketId: string,
-    status: BetaSupportTicketStatus
-  ) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<BetaSupportTicketSummary>(
-        `/businesses/${business.id}/beta/support-tickets/${supportTicketId}`,
-        { status }
-      );
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta support ticket updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function recordBetaTelemetry() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson(`/businesses/${business.id}/beta/telemetry`, {
-        kind: betaForm.telemetryKind,
-        message: betaForm.telemetryMessage,
-        metadata: {
-          surface: "web",
-          online: isOnline
-        }
-      });
-      await loadBetaReadiness(business.id);
-      setStatusMessage("Beta telemetry recorded");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadLaunchReadiness(businessId: string) {
-    try {
-      const [readiness, incidents] = await Promise.all([
-        getJson<LaunchReadinessReportSummary>(`/businesses/${businessId}/launch/readiness`),
-        getJson<LaunchIncidentSummary[]>(`/businesses/${businessId}/launch/incidents`)
-      ]);
-      setLaunchReadiness(readiness);
-      setLaunchIncidents(incidents);
-      setLaunchForm((form) => ({
-        ...form,
-        status: readiness.settings.status,
-        publicOnboardingEnabled: readiness.settings.publicOnboardingEnabled,
-        rollbackArmed: readiness.settings.rollbackArmed,
-        freezeActive: readiness.settings.freezeActive,
-        allowedSignupCount: String(readiness.settings.allowedSignupCount),
-        pauseReason: readiness.settings.pauseReason ?? ""
-      }));
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateLaunchSettings() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<LaunchSettingsSummary>(`/businesses/${business.id}/launch/settings`, {
-        status: launchForm.status,
-        publicOnboardingEnabled: launchForm.publicOnboardingEnabled,
-        rollbackArmed: launchForm.rollbackArmed,
-        freezeActive: launchForm.freezeActive,
-        allowedSignupCount: Number(launchForm.allowedSignupCount),
-        pauseReason: launchForm.pauseReason
-      });
-      await loadLaunchReadiness(business.id);
-      setStatusMessage("Launch settings updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateLaunchChecklist() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<LaunchChecklistItemSummary>(
-        `/businesses/${business.id}/launch/checklist/${launchForm.checklistKey}`,
-        {
-          status: launchForm.checklistStatus,
-          evidence: launchForm.checklistEvidence
-        }
-      );
-      await loadLaunchReadiness(business.id);
-      setStatusMessage("Launch checklist updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createLaunchIncident() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson<LaunchIncidentSummary>(`/businesses/${business.id}/launch/incidents`, {
-        severity: launchForm.incidentSeverity,
-        category: launchForm.incidentCategory,
-        title: launchForm.incidentTitle,
-        body: launchForm.incidentBody
-      });
-      await loadLaunchReadiness(business.id);
-      setStatusMessage("Launch incident created");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateLaunchIncidentStatus(incidentId: string, status: LaunchIncidentStatus) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<LaunchIncidentSummary>(
-        `/businesses/${business.id}/launch/incidents/${incidentId}`,
-        { status }
-      );
-      await loadLaunchReadiness(business.id);
-      setStatusMessage("Launch incident updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   function switchMode(nextMode: SokoMode) {
     if (nextMode === "seller" && business === null) {
       if (session === null) {
@@ -2831,19 +2443,7 @@ export function OwnerApp() {
     setBusinessName("");
     setShopPhoneNumber("");
     setRoutedProductId(null);
-    setSecurityReview(null);
-    setDataExport(null);
-    setVerificationTier(null);
-    setTaxConfig(null);
-    setDeviceTrust(null);
-    setBetaReadiness(null);
-    setBetaSupportTickets([]);
-    setLaunchReadiness(null);
-    setLaunchIncidents([]);
     setRuntimeSessionId(null);
-    setComplianceForm(emptyComplianceForm);
-    setBetaForm(emptyBetaForm);
-    setLaunchForm(emptyLaunchForm);
     setPendingAttachments([]);
     setChatDraft("");
     setChatMessages(createInitialChatMessages("Soko.market"));

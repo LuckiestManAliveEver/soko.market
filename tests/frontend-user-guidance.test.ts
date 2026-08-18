@@ -397,6 +397,7 @@ describe("frontend user guidance", () => {
 
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const readinessState = readFileSync("apps/web/src/hooks/useReadinessState.ts", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const complianceSurface = readFileSync("apps/web/src/ComplianceSurface.tsx", "utf8");
     const settingsSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
@@ -408,7 +409,7 @@ describe("frontend user guidance", () => {
     expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
     expect(application).toContain('accountDeletionIntent ? "agent"');
     expect(application).toContain("await resetClientToStartup(");
-    expect(application).toContain(
+    expect(readinessState).toContain(
       "Account deactivated and deletion scheduled. You have been returned to startup."
     );
     expect(application).toContain("<PhoneFirstAuthentication");
