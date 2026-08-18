@@ -1,154 +1,148 @@
 # Frontend modularization roadmap
 
+**Status: complete.** All 34 originally-identified presentational
+components extracted, plus 11 shared-foundation files split out ahead of
+them. `apps/web/src/SokoApplication.tsx` went from 22,869 lines to 6,521
+lines - now containing only `OwnerApp` itself, the `PublicStorefrontChat`
+re-export (for `AppRouter.tsx`), and the imports both need.
+
 ## Why this exists
 
-`apps/web/src/SokoApplication.tsx` is 22,869 lines - the frontend
-counterpart to the now-fully-modularized `services/api/src/cp2/store.ts`
-and `routes.ts`. Unlike those two, it has never been split at all.
+`apps/web/src/SokoApplication.tsx` was the frontend counterpart to the
+now-fully-modularized `services/api/src/cp2/store.ts` and `routes.ts`.
+Unlike those two, it had never been split at all.
 
-The file has three parts:
+The file had three parts:
 
-1. **Import block + shared types/constants** (lines 1-2183): 56 npm/local
-   imports, then 107 interfaces, 33 type aliases, and 51 consts
-   (including ~10 `lazy()`-loaded component references) used across
-   almost everything below.
-2. **`OwnerApp`** (lines 2211-8354, ~6,143 lines): one giant stateful
-   root component - all the app's `useState`/`useEffect`/event-handler
-   logic lives here as closures. This is the single hardest part of the
-   file to decompose safely (extracting its state would mean introducing
-   custom hooks or context, a real architecture decision with UI-visible
-   risk) and is explicitly **out of scope for this roadmap** - a
-   separate, later effort once this phase's approach is proven out.
-3. **~34 presentational components** (lines 8354-22869, ~14,500 lines):
-   already-separate top-level function components taking typed props
-   (`ProductSurface`, `ChatSurface`, `AgentProfileSurface`,
-   `InvoiceSurface`, etc.), each rendered by `OwnerApp` by name.
-   **This is the scope of this roadmap.**
+1. **Import block + shared types/constants**: 56 npm/local imports, then
+   107 interfaces, 33 type aliases, and 51 consts (including ~10
+   `lazy()`-loaded component references) used across almost everything
+   below.
+2. **`OwnerApp`** (~6,143 lines): one giant stateful root component -
+   all the app's `useState`/`useEffect`/event-handler logic lives here as
+   closures. Confirmed out of scope for this roadmap from the start -
+   decomposing its state would mean introducing custom hooks or context,
+   a real architecture decision with UI-visible risk, and is a candidate
+   for a separate, later effort.
+3. **34 presentational components** (~14,500 lines): already-separate
+   top-level function components taking typed props, each rendered by
+   `OwnerApp` by name (or, for `PublicStorefrontChat`, consumed
+   externally by `AppRouter.tsx`). **This was the scope of this
+   roadmap, and it's now fully extracted.**
 
-Confirmed via a full structural research pass (every boundary
-line-verified against the live file): none of the 34 components are
-nested inside one another or inside `OwnerApp` - every one is a
-top-level sibling declaration. That makes this mechanically similar to
+A full structural research pass (every boundary line-verified against
+the live file before any edit) confirmed none of the 34 components were
+nested inside one another or inside `OwnerApp` - every one was a
+top-level sibling declaration. That made this mechanically similar to
 the backend's domain extraction (find the boundary, move it, wire
-imports) but with one added wrinkle the backend never had: **~150
-shared identifiers** (formatters, API helpers, bootstrap functions, the
-merchant-command NLU engine, etc.) currently live as free functions
-*after* the components, in a ~3,000-line tail (lines 19852-22869),
-interleaved with 6 of the 34 components themselves.
+imports) but with one added wrinkle the backend never had: ~150 shared
+identifiers (formatters, API helpers, bootstrap functions, the
+merchant-command NLU engine, etc.) lived as free functions in a tail
+block, interleaved with 6 of the 34 components themselves.
 
-## The circular-import trap this roadmap exists to avoid
+## The circular-import trap this roadmap was built to avoid
 
-If shared helpers stay in `SokoApplication.tsx` and each extracted
-component just imports them from `"./SokoApplication.tsx"`, that creates
-a real module-level circular import: `SokoApplication.tsx` imports the
-19 components it renders from their new files, and those files import
-shared helpers back from `SokoApplication.tsx`. This is fragile with
-bundlers/lazy-loading even where it technically resolves.
+If shared helpers had stayed in `SokoApplication.tsx` with each
+extracted component importing them from `"./SokoApplication.tsx"`, that
+would have created a real module-level circular import:
+`SokoApplication.tsx` imports the components it renders from their new
+files, and those files import shared helpers back from
+`SokoApplication.tsx`. Fixed the same way the backend's
+`route-helpers.ts` was: every genuinely shared piece was pulled into its
+own neutral file *before* any component moved, so both
+`SokoApplication.tsx` and every new component file import from the same
+neutral source - never from each other. This held for all 5 phases with
+one exception (§ Phase 4 below), caught and fixed the same way.
 
-**The fix, mirroring the backend's `route-helpers.ts` precedent**: pull
-every genuinely shared piece into its own neutral file *before* moving
-any component, so both `SokoApplication.tsx` (for `OwnerApp`) and every
-new component file import from the same neutral source - never from
-each other.
+## What was extracted, in the order it actually happened
 
-## Extraction order
+| Phase | What | Files | Notes |
+|---|---|---|---|
+| 0a | Shared types/constants | `soko-application-shared.ts` (1,941 lines) | All 107 interfaces + 33 type aliases + 51 consts, exported and re-imported via a single generated import statement. |
+| 0b | Shared utility modules | `api-helpers.ts`, `formatters.ts`, `sokoid-and-storefront.ts`, `country-dial-codes.ts`, `owner-app-bootstrap.ts` (512 lines), `agent-command-engine.ts` (395 lines), `chat-message-plumbing.ts` (435 lines), `contacts-import.ts` (188 lines), `misc-browser-utils.ts` | 8 files. Several functions turned out to be transitively needed by more than one of these modules (`ensureRequiredAgentContextScripts`, `sanitizeContextScripts`, `isAgentModel`, `dataUrlPayload`, `createProductFieldDraft`) - caught by tsc name-resolution errors, moved to whichever new file needed them first, still available for the not-yet-extracted components that also needed them. |
+| 1 | 8 low-coupling components | `PrimaryNavigation.tsx`, `NetworkNodeList.tsx`, `LogisticsSurface.tsx`, `CustomerSurface.tsx`, `InvoiceDocument.tsx`, `ReportRow.tsx`, `ShopPresenceButtons.tsx`, `EmptyStateSurface.tsx` | Zero new cross-component coupling found - the research pass's prediction held exactly. |
+| 2 | 20 mid-tier components | `BusinessSetupPanel.tsx`, `NetworkSurface.tsx`, `SyncSurface.tsx`, `RuntimeSurface.tsx`, `PaymentSurface.tsx`, `ImportSurface.tsx` (454 lines), `ImportRowEditors.tsx`, `ProductSurface.tsx`, `SupplierSurface.tsx` (498 lines), `InvoiceSurface.tsx`, `ComplianceSurface.tsx`, `BetaSurface.tsx`, `LaunchSurface.tsx`, `ReportsSurface.tsx`, `NotificationsSurface.tsx`, `MarketplaceModeCard.tsx`, `StorefrontPreviewCard.tsx`, `ContextualBusinessCards.tsx`, `NetworkSyncNestedCard.tsx` (436 lines, combined with `NetworkContactGroup`), `CatalogueNestedCard.tsx` (469 lines, combined with `ProductNestedEditor`) | Paired components sharing a Props type or tight caller/callee coupling combined into one file each (`ImportRowEditors.tsx`, `NetworkSyncNestedCard.tsx`, `CatalogueNestedCard.tsx`) rather than one-file-per-component, to avoid cross-importing a shared Props interface. |
+| 3 | The 2 large ones | `AgentProfileSurface.tsx` (5,393 lines), `ChatSurface.tsx` (1,527 lines) | `AgentProfileSurface` moved as one file, as planned - splitting its ~8 merged account-settings sub-panels further stays out of scope. By far the largest test-repoint batch (22 assertions across 7 files), expected since these two carried most of the file's UI copy. |
+| 4 | `PublicStorefrontChat` | `PublicStorefrontChat.tsx` (1,009 lines) + `BuildIdentity.tsx` (new, 30 lines) | The one circular-import case this roadmap actually hit: `PublicStorefrontChat` renders `<BuildIdentity />`, which lived in `SokoApplication.tsx` next to `OwnerApp`. Re-exporting `PublicStorefrontChat` from `SokoApplication.tsx` (needed so `AppRouter.tsx` stays unchanged) while `PublicStorefrontChat.tsx` imported `BuildIdentity` back from `SokoApplication.tsx` would have been a genuine two-way cycle. Fixed by moving `BuildIdentity`/`NativeLaunchScreen`/`formatShortCommit` into their own third file, same "shared piece → neutral file" rule as everywhere else - just discovered one phase later than ideal. Zero test-assertion breakage this phase, the only phase where the full suite passed clean on the first run. |
 
-### Phase 0 - shared foundation (must land first, everything depends on it)
+**mcp-tokens** has no equivalent here - token issuance is entirely a
+backend concern with no dedicated frontend component.
 
-1. **Shared types/constants file(s)** - the 107 interfaces + 33 type
-   aliases + the non-component consts from lines 269-2183, plus the
-   `lazy()` component references. Likely split into a couple of files
-   (e.g. `soko-application-types.ts` for the type/interface block,
-   `soko-application-lazy-modules.ts` for the `lazy()` bindings) rather
-   than one - decide the exact split when executing, based on what
-   groups cleanly.
-2. **Shared utility modules**, per the research pass's grouping (each
-   verified to have zero component-specific coupling):
-   - `api-helpers.ts` - `postJson`/`patchJson`/`putJson`/`deleteJson`/`getJson`
-   - `formatters.ts` - `formatMoney`/`formatOptionalMoney`/`formatPercent`/`formatDate`/`formatLatency`/etc. (~18 functions)
-   - `sokoid-and-storefront.ts` - `isSokoId`/`normalizeSokoId`/`createFallbackSokoId`/`createStorefrontUrl`/etc.
-   - `country-dial-codes.ts` - `getCountryDialCode`/`getCountryDialCodeByCountry`/`inferCountryCode`/`isCountryDialCode`
-   - `owner-app-bootstrap.ts` - the `readStored*`/`readSetupDraft`/agent-defaults family (stays imported only by `OwnerApp`, but needs to be somewhere importable)
-   - `agent-command-engine.ts` - the ~20-function merchant-command NLU engine rooted at `createAgentRuntimeDecision`
-   - chat/message plumbing, contacts-import helpers - grouped per the research pass, exact file names decided at execution time
+## Two tooling bugs found and fixed mid-effort
 
-### Phase 1 - low-coupling components first
+Both were caught immediately by the verification gate (typecheck or a
+corrupted-file diff), never shipped, and are worth naming since they'd
+recur on any similar future extraction:
 
-Components with the smallest external-dependency surface, sequenced
-before the ones that need Phase 0's modules to already exist:
-`PrimaryNavigation`, `NetworkNodeList`, `CustomerSurface`,
-`EmptyStateSurface`, `ShopPresenceButtons`, `LogisticsSurface`,
-`ReportRow`, `InvoiceDocument`.
+1. **ESLint's per-message unused-import fix ranges aren't safe to
+   compose.** The first attempt patched `soko-application-shared.ts`'s
+   massively over-inclusive candidate header by applying each `no-unused-vars`
+   suggestion's `fix.range` as an independent text edit. When several
+   adjacent names in the same import statement were all unused, their
+   fix ranges overlapped in ways that corrupted the file (concatenating
+   unrelated import statements together). Fixed by abandoning
+   range-patching entirely in favor of parsing each import statement's
+   specifier list and rebuilding it from the known set of unused names -
+   more robust because it doesn't depend on any assumption about how
+   ESLint computed the fix.
+2. **Brace-counting for function boundaries breaks on same-line default
+   parameter values with their own balanced braces.** e.g.
+   `options: { signal?: AbortSignal } = {}` nets to brace-depth zero
+   before the actual function body starts, since both the parameter's
+   object-type annotation and its default value are balanced
+   sub-expressions. This silently truncated `postJson`/`putJson` on the
+   first Phase-0b extraction attempt. Fixed by first skipping the
+   parameter list via paren-depth counting (ignoring any nested braces
+   entirely during that phase), then only starting brace-depth counting
+   from the first `{` found after the parameter list closes - the true
+   function-body opening brace.
 
-### Phase 2 - the rest of the ~34, grouped by shared-helper cluster
+A third, smaller bug (an off-by-one hardcoded line count for the header
+boundary, corrupting `AgentProfileSurface.tsx`/`ChatSurface.tsx` on the
+first Phase-3 attempt) was fixed by switching to marker-based string
+slicing (`content[: content.index("function BuildIdentity()")]`)
+instead of any hardcoded line number - immune to this entire class of
+error, and should have been the approach from the first extraction.
 
-Grouped so a component and the helpers it alone needs move together
-where the research pass found tight 1:1 coupling (e.g. `ImportSurface` +
-`SupplierImportRowEditor` + `ProductImportRowEditor` + their import-parsing
-helpers; `NetworkSyncNestedCard` + `NetworkContactGroup` + their contact
-helpers; `CatalogueNestedCard` + `ProductNestedEditor` + product-field
-helpers). Remaining Surfaces (`BusinessSetupPanel`, `NetworkSurface`,
-`SyncSurface`, `RuntimeSurface`, `PaymentSurface`, `SupplierSurface`,
-`ComplianceSurface`, `BetaSurface`, `LaunchSurface`, `ReportsSurface`,
-`NotificationsSurface`, `MarketplaceModeCard`, `StorefrontPreviewCard`,
-`ContextualBusinessCards`) follow, each importing Phase 0's shared
-modules directly.
+## Verification gate that held for every slice
 
-### Phase 3 - the two large ones
+1. `pnpm --filter @soko/web typecheck` clean.
+2. `pnpm exec eslint apps/web/src --max-warnings=0` clean (full-package
+   sweep, not just changed files, after every slice).
+3. `pnpm exec prettier --write` on changed files, then re-verify 1-2.
+4. Full test suite (`pnpm vitest run tests/`) at the same baseline
+   before and after every slice: **657 passed / 27 skipped / 1
+   pre-existing unrelated failure** (the migration-051 checksum test,
+   unrelated to this work) - unchanged from the first commit to the
+   last. Literal-string test assertions against `SokoApplication.tsx`'s
+   raw source text broke in 5 of the 6 slices (every phase except
+   Phase 4) as content moved out from under them; each was repointed to
+   `readFileSync` the new file instead, same pattern used throughout the
+   backend routes.ts effort - dozens of individual assertion repoints
+   across 9 different test files over the whole effort, heavily
+   concentrated in Phase 3 (`AgentProfileSurface`/`ChatSurface` carried
+   most of the file's UI copy and test coverage).
+5. **The one gate the backend roadmaps didn't need**: since no
+   browser-automation tool is available in this environment, UI
+   rendering was verified by starting the Vite dev server and fetching
+   every changed file through its transform pipeline (confirms Rollup/
+   esbuild resolve the whole module graph with no import errors, which a
+   clean `tsc` alone does not guarantee), plus running `pnpm build` for
+   Phase 5's final check - a full production build succeeded, and
+   `tests/web-bundle-budget.test.ts` still passed. None of this is a
+   substitute for a human clicking through the actual UI in a browser -
+   that gap is real and was flagged in every commit message rather than
+   quietly treated as full coverage.
 
-- **`ChatSurface`** (1,313 lines) - moves as one file; internally simple
-  (7 closures, straightforward hooks), needs 6 of the other extracted
-  components as JSX children plus several Phase-0 modules.
-- **`AgentProfileSurface`** (5,060 lines) - moves as one file for this
-  phase; internally it's really ~8 merged account-settings sub-panels
-  (AI models, mailboxes, social accounts, security/MFA, phone/email, MCP
-  tokens, deletion, context scripts) with 82 closures and 45 `useState`
-  calls, none of which escape the function. Splitting it further is a
-  candidate for a later, separately-scoped effort - not this roadmap.
+No live-Postgres or persistence-layer re-verification was needed - this
+was a pure client-side code-organization refactor with zero backend
+surface touched.
 
-### Phase 4 - `PublicStorefrontChat` + wiring
+## What's next (not part of this roadmap)
 
-`PublicStorefrontChat` (953 lines, exported, not rendered by `OwnerApp`
-but consumed externally by `AppRouter.tsx:21` via
-`loadSokoApplication().then((m) => ({ default: m.PublicStorefrontChat }))`).
-Moves to its own file; `SokoApplication.tsx` re-exports it
-(`export { PublicStorefrontChat } from "./PublicStorefrontChat";`) so
-`AppRouter.tsx` needs no change.
-
-### Phase 5 - final `SokoApplication.tsx` shape
-
-After all 34 components move, `SokoApplication.tsx` should contain only:
-the npm/local imports it still needs, `OwnerApp` itself, named imports
-of the 19 components `OwnerApp` actually renders (confirmed exact list:
-`PrimaryNavigation`, `BusinessSetupPanel`, `AgentProfileSurface`,
-`ChatSurface`, `ProductSurface`, `SupplierSurface`, `CustomerSurface`,
-`InvoiceSurface`, `NetworkSurface`, `SyncSurface`, `RuntimeSurface`,
-`PaymentSurface`, `ImportSurface`, `LogisticsSurface`,
-`ComplianceSurface`, `BetaSurface`, `LaunchSurface`, `ReportsSurface`,
-`NotificationsSurface`), the `PublicStorefrontChat` re-export, and
-imports from the Phase-0 shared modules for whatever `OwnerApp` itself
-still calls directly (the bootstrap functions, the agent command engine
-entry point, chat/message plumbing, contacts-import helpers - all
-confirmed `OwnerApp`-needed by the research pass).
-
-## Ground rule for every slice (same as the backend roadmaps)
-
-One slice per commit. After each slice:
-1. `pnpm --filter @soko/web typecheck` (or the equivalent build check)
-   clean.
-2. `pnpm exec eslint <changed files> --max-warnings=0` clean.
-3. `pnpm exec prettier --check <changed files>`, fix if needed.
-4. **Start the dev server and manually exercise the affected surface in
-   a browser** - this is the one gate the backend roadmaps didn't need.
-   A clean typecheck proves the types line up, not that the UI renders
-   or behaves correctly. Per CLAUDE.md: "For UI or frontend changes,
-   start the dev server and use the feature in a browser before
-   reporting the task as complete."
-5. Full test suite (`pnpm vitest run tests/`) stays at the pre-existing
-   baseline - 657 passed / 27 skipped / 1 pre-existing unrelated
-   failure (migration-051 checksum, unrelated to this work).
-6. Commit, push.
-
-No live-Postgres or persistence-layer re-verification needed - this is
-a pure client-side code-organization refactor, zero backend surface
-touched.
+`OwnerApp` itself (~6,143 lines, still one component) is the natural
+next target if `SokoApplication.tsx` needs to shrink further - but
+splitting its state requires deciding how to carve up React state across
+custom hooks or context, a real architecture decision with UI-visible
+risk that deserves its own scoped plan and its own reference/critic
+loop, not a continuation of this file-move-only effort.
