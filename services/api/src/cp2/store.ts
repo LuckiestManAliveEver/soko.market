@@ -3,7 +3,6 @@ import {
   createHmac,
   createPublicKey,
   randomBytes,
-  randomInt,
   randomUUID,
   scryptSync,
   timingSafeEqual,
@@ -17,10 +16,12 @@ import { Cp2Error, assertValid } from "./cp2-error.js";
 import { roundMoney } from "./money.js";
 import {
   destinationAccountKey,
+  hashMatches,
+  hashOtp,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
   normalizeStorefrontLookupId,
-  otpTtlMs
+  pinAttemptTrackerMaximumEntries
 } from "./text-normalization.js";
 import { CommerceDomain } from "./domains/commerce/store.js";
 import { ComplianceDomain } from "./domains/compliance/store.js";
@@ -71,6 +72,12 @@ import {
 } from "./domains/passkeys/shared.js";
 import { OAuthDomain } from "./domains/oauth/store.js";
 import { type OAuthSessionRecord, type UserIdentityRecord } from "./domains/oauth/shared.js";
+import { OtpDomain } from "./domains/otp/store.js";
+import {
+  type OtpChallenge,
+  type OtpChallengeDelivery,
+  type SmsDeliveryAttemptRecord
+} from "./domains/otp/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -247,10 +254,8 @@ export const refreshCookieName = "soko_refresh";
 const refreshTokenReuseGracePeriodMs = 15_000;
 const deviceAccountBootstrapTtlMs = 10 * 60 * 1000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
-const maxOtpAttempts = 5;
 const pinAttemptWindowMs = 15 * 60 * 1000;
 const pinMaximumFailedAttempts = 5;
-const pinAttemptTrackerMaximumEntries = 10_000;
 const pinScryptCost = 16_384;
 const pinScryptBlockSize = 8;
 const pinScryptParallelization = 1;
@@ -266,7 +271,6 @@ const dummyPasswordHash = createScryptPasswordHash(
   "not-a-real-password",
   "soko-market-local-password-hash-secret"
 );
-const maxPendingOtpChallenges = 10_000;
 const sellerOnlySurfaces = new Set<SokoChatSurface>(["catalogue", "owner-controls", "receipt"]);
 const marketplacePermissions = [
   "marketplace:search",
@@ -295,45 +299,6 @@ export interface PublicStorefrontSummary {
 
 export { Cp2Error } from "./cp2-error.js";
 export { normalizeDestination } from "./phone-identity.js";
-
-interface OtpChallenge {
-  id: string;
-  channel: AuthChannel;
-  destination: string;
-  purpose: "signup" | "recovery";
-  codeHash: string;
-  attempts: number;
-  maxAttempts: number;
-  expiresAt: string;
-  verifiedAt: string | null;
-  consumedAt?: string | null;
-  resendCount?: number;
-  nextResendAt?: string | null;
-  provider?: string | null;
-  providerMessageId?: string | null;
-  createdAt: string;
-}
-
-/** Historical delivery records retained only so old database snapshots remain readable. */
-export interface SmsDeliveryAttemptRecord {
-  id: string;
-  challengeId: string;
-  provider: string;
-  providerMessageId: string | null;
-  status: "accepted" | "delivered" | "failed" | "rejected" | "unknown";
-  errorCode: string | null;
-  attemptNumber: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface OtpChallengeDelivery {
-  challengeId: string;
-  channel: AuthChannel;
-  destination: string;
-  purpose: "signup" | "recovery";
-  expiresAt: string;
-}
 
 export type {
   NetworkImportConnectionInput,
@@ -369,6 +334,11 @@ export type {
   OAuthCallbackResult,
   OAuthStartResult
 } from "./domains/oauth/shared.js";
+export type {
+  OtpChallengeDelivery,
+  OtpRequestResult,
+  VerifyOtpResult
+} from "./domains/otp/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -479,17 +449,6 @@ export interface RecoveryCodeRecord {
   codeHash: string;
   usedAt: string | null;
   createdAt: string;
-}
-
-export interface OtpRequestResult {
-  challengeId: string;
-  destination: string;
-  expiresAt: string;
-  devOtp: string;
-}
-
-export interface VerifyOtpResult extends AuthSessionView {
-  resumed: boolean;
 }
 
 export interface ShopDeletionPreviewSummary {
@@ -773,6 +732,22 @@ export class Cp2Store {
         this.resolveAnyIdentityAccount(type, normalizedValue),
       hasAccountPinHash: (accountId) => this.hasAccountPinHash(accountId)
     });
+    this.otpDomain = new OtpDomain({
+      findIdentityByVerifiedEmail: (email) => this.oauthDomain.findIdentityByVerifiedEmail(email),
+      resolveIdentityAccount: (type, normalizedValue) =>
+        this.resolveIdentityAccount(type, normalizedValue),
+      resolveAnyIdentityAccount: (type, normalizedValue) =>
+        this.resolveAnyIdentityAccount(type, normalizedValue),
+      createAccount: (channel, destination, now) => this.createAccount(channel, destination, now),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      requireUser: (userId) => this.requireUser(userId),
+      addAccountIdentity: (account, user, type, value, isPrimary, now, verified) =>
+        this.addAccountIdentity(account, user, type, value, isPrimary, now, verified),
+      createSession: (account, user, now) => this.createSession(account, user, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      accountByDestination: this.accountByDestination,
+      userByAccount: this.userByAccount
+    });
     this.networkDomain = new NetworkDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       accounts: this.accounts,
@@ -1045,9 +1020,10 @@ export class Cp2Store {
   private readonly notificationsDomain: NotificationsDomain;
   private readonly syncQueue = new Map<string, SyncQueueItem>();
   private readonly syncQueueIdByIdempotency = new Map<string, string>();
-  private readonly otpChallenges = new Map<string, OtpChallenge>();
-  private readonly smsDeliveryAttempts = new Map<string, SmsDeliveryAttemptRecord>();
-  private readonly otpRequestHistory = new Map<string, number[]>();
+  // otpChallenges/smsDeliveryAttempts/otpRequestHistory now live inside `otpDomain`
+  // (services/api/src/cp2/domains/otp/store.ts) - accessed via its map getters for the generic
+  // snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  private readonly otpDomain: OtpDomain;
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly pendingRefreshTokens = new Map<string, string>();
   /**
@@ -1332,164 +1308,26 @@ export class Cp2Store {
     }
   }
 
-  requestOtp(input: {
-    channel: AuthChannel;
-    destination: string;
-    purpose?: "signup" | "recovery";
-    now?: Date;
-  }): OtpRequestResult {
-    if (input.channel === "phone") {
-      throw new Cp2Error(
-        403,
-        "phone_pin_only",
-        "Phone accounts use a PIN. SMS verification is not available."
-      );
-    }
-    const now = input.now ?? new Date();
-    const destination = normalizeDestination(input.channel, input.destination);
-    const purpose = input.purpose ?? "signup";
-    const requestKey = `${purpose}:${input.channel}:${destination}`;
-    this.requireOtpRequestAllowed(requestKey, now);
-    this.pruneOtpChallenges(now);
-    if (this.otpChallenges.size >= maxPendingOtpChallenges) {
-      throw new Cp2Error(
-        503,
-        "otp_capacity_exceeded",
-        "Verification codes are temporarily unavailable."
-      );
-    }
-    const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-    const challengeId = randomUUID();
-    const expiresAt = new Date(now.getTime() + otpTtlMs).toISOString();
-    const createdAt = now.toISOString();
-
-    this.otpChallenges.set(challengeId, {
-      id: challengeId,
-      channel: input.channel,
-      destination,
-      purpose,
-      codeHash: hashOtp(challengeId, code),
-      attempts: 0,
-      maxAttempts: maxOtpAttempts,
-      expiresAt,
-      verifiedAt: null,
-      createdAt
-    });
-    this.recordOtpRequest(requestKey, now);
-
-    return {
-      challengeId,
-      destination,
-      expiresAt,
-      devOtp: code
-    };
+  requestOtp(...args: Parameters<OtpDomain["requestOtp"]>): ReturnType<OtpDomain["requestOtp"]> {
+    return this.otpDomain.requestOtp(...args);
   }
-
-  private requireOtpRequestAllowed(key: string, now: Date): void {
-    const windowMs =
-      readBoundedSecurityInteger("OTP_RATE_LIMIT_WINDOW_SECONDS", 300, 60, 3_600) * 1000;
-    const maximumRequests = readBoundedSecurityInteger("OTP_RATE_LIMIT_MAX_REQUESTS", 5, 1, 20);
-    const cooldownMs = readBoundedSecurityInteger("OTP_COOLDOWN_SECONDS", 60, 0, 600) * 1000;
-    const cutoff = now.getTime() - windowMs;
-    const requests = (this.otpRequestHistory.get(key) ?? []).filter(
-      (requestedAt) => requestedAt > cutoff
-    );
-
-    if (requests.length === 0) {
-      this.otpRequestHistory.delete(key);
-      return;
-    }
-
-    this.otpRequestHistory.set(key, requests);
-    const lastRequestAt = requests.at(-1) ?? 0;
-    if (
-      requests.length >= maximumRequests ||
-      (cooldownMs > 0 && now.getTime() - lastRequestAt < cooldownMs)
-    ) {
-      throw new Cp2Error(
-        429,
-        "otp_rate_limited",
-        "Please wait before requesting another verification code."
-      );
-    }
+  verifyOtp(...args: Parameters<OtpDomain["verifyOtp"]>): ReturnType<OtpDomain["verifyOtp"]> {
+    return this.otpDomain.verifyOtp(...args);
   }
-
-  private recordOtpRequest(key: string, now: Date): void {
-    if (
-      !this.otpRequestHistory.has(key) &&
-      this.otpRequestHistory.size >= pinAttemptTrackerMaximumEntries
-    ) {
-      const oldestKey = this.otpRequestHistory.keys().next().value as string | undefined;
-      if (oldestKey !== undefined) this.otpRequestHistory.delete(oldestKey);
-    }
-    const requests = this.otpRequestHistory.get(key) ?? [];
-    requests.push(now.getTime());
-    this.otpRequestHistory.set(key, requests);
+  getOtpChallengeDelivery(
+    ...args: Parameters<OtpDomain["getOtpChallengeDelivery"]>
+  ): ReturnType<OtpDomain["getOtpChallengeDelivery"]> {
+    return this.otpDomain.getOtpChallengeDelivery(...args);
   }
-
-  private pruneOtpChallenges(now: Date): void {
-    for (const [challengeId, challenge] of this.otpChallenges) {
-      if (Date.parse(challenge.expiresAt) <= now.getTime()) {
-        this.otpChallenges.delete(challengeId);
-        for (const [attemptId, attempt] of this.smsDeliveryAttempts) {
-          if (attempt.challengeId === challengeId) this.smsDeliveryAttempts.delete(attemptId);
-        }
-      }
-    }
-  }
-
-  verifyOtp(input: { challengeId: string; code: string; now?: Date }): VerifyOtpResult {
-    const now = input.now ?? new Date();
-    const challenge = this.otpChallenges.get(input.challengeId);
-
-    this.validateOtpChallenge(challenge, now);
-
-    if (!hashMatches(hashOtp(challenge.id, input.code), challenge.codeHash)) {
-      challenge.attempts += 1;
-      throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
-    }
-
-    return this.completeOtpVerification(challenge, now);
-  }
-
-  getOtpChallengeDelivery(challengeId: string, now = new Date()): OtpChallengeDelivery {
-    const challenge = this.otpChallenges.get(challengeId);
-    this.validateOtpChallenge(challenge, now);
-
-    return {
-      challengeId: challenge.id,
-      channel: challenge.channel,
-      destination: challenge.destination,
-      purpose: challenge.purpose,
-      expiresAt: challenge.expiresAt
-    };
-  }
-
   getOtpChallengeDeliveryByContact(
-    input: { channel: AuthChannel; destination: string },
-    now = new Date()
-  ): OtpChallengeDelivery {
-    const destination = normalizeDestination(input.channel, input.destination);
-    const challenge = [...this.otpChallenges.values()]
-      .reverse()
-      .find((item) => item.channel === input.channel && item.destination === destination);
-    this.validateOtpChallenge(challenge, now);
-
-    return {
-      challengeId: challenge.id,
-      channel: challenge.channel,
-      destination: challenge.destination,
-      purpose: challenge.purpose,
-      expiresAt: challenge.expiresAt
-    };
+    ...args: Parameters<OtpDomain["getOtpChallengeDeliveryByContact"]>
+  ): ReturnType<OtpDomain["getOtpChallengeDeliveryByContact"]> {
+    return this.otpDomain.getOtpChallengeDeliveryByContact(...args);
   }
-
-  verifyExternallyApprovedOtp(input: { challengeId: string; now?: Date }): VerifyOtpResult {
-    const now = input.now ?? new Date();
-    const challenge = this.otpChallenges.get(input.challengeId);
-    this.validateOtpChallenge(challenge, now);
-
-    return this.completeOtpVerification(challenge, now);
+  verifyExternallyApprovedOtp(
+    ...args: Parameters<OtpDomain["verifyExternallyApprovedOtp"]>
+  ): ReturnType<OtpDomain["verifyExternallyApprovedOtp"]> {
+    return this.otpDomain.verifyExternallyApprovedOtp(...args);
   }
 
   authenticateSocialProfile(
@@ -1517,113 +1355,6 @@ export class Cp2Store {
   ): ReturnType<OAuthDomain["completeOAuthProfileAuthentication"]> {
     return this.oauthDomain.completeOAuthProfileAuthentication(...args);
   }
-  private validateOtpChallenge(
-    challenge: OtpChallenge | undefined,
-    now: Date
-  ): asserts challenge is OtpChallenge {
-    if (challenge === undefined) {
-      throw new Cp2Error(404, "otp_not_found", "OTP challenge was not found.");
-    }
-
-    if (challenge.verifiedAt !== null) {
-      throw new Cp2Error(409, "otp_already_verified", "OTP challenge is already verified.");
-    }
-
-    if (challenge.consumedAt != null) {
-      throw new Cp2Error(409, "otp_invalidated", "OTP challenge is no longer active.");
-    }
-
-    if (Date.parse(challenge.expiresAt) <= now.getTime()) {
-      throw new Cp2Error(410, "otp_expired", "OTP challenge has expired.");
-    }
-
-    if (challenge.attempts >= challenge.maxAttempts) {
-      throw new Cp2Error(429, "otp_attempts_exceeded", "OTP attempts exceeded.");
-    }
-  }
-
-  private completeOtpVerification(challenge: OtpChallenge, now: Date): VerifyOtpResult {
-    challenge.verifiedAt = now.toISOString();
-    const destinationKey = destinationAccountKey(challenge.channel, challenge.destination);
-    const linkedIdentity =
-      challenge.channel === "email"
-        ? this.oauthDomain.findIdentityByVerifiedEmail(challenge.destination)
-        : undefined;
-    const existingIdentityAccountId = this.resolveAnyIdentityAccount(
-      challenge.channel,
-      challenge.destination
-    );
-    const existingAccountId =
-      this.resolveIdentityAccount(challenge.channel, challenge.destination) ??
-      this.accountByDestination.get(destinationKey) ??
-      linkedIdentity?.accountId;
-
-    if (
-      existingIdentityAccountId !== undefined &&
-      existingIdentityAccountId !== existingAccountId
-    ) {
-      throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
-    }
-
-    if (challenge.purpose === "recovery" && existingAccountId === undefined) {
-      throw new Cp2Error(
-        404,
-        "recovery_account_not_found",
-        "No Soko account is linked to this recovery contact."
-      );
-    }
-
-    const resumed = existingAccountId !== undefined;
-    const account =
-      existingAccountId === undefined
-        ? this.createAccount(challenge.channel, challenge.destination, now)
-        : this.requireAccount(existingAccountId);
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    this.addAccountIdentity(
-      account,
-      user,
-      challenge.channel,
-      challenge.destination,
-      account.primaryAuthChannel === challenge.channel &&
-        account.primaryAuthDestination === challenge.destination,
-      now,
-      true
-    );
-    const session = this.createSession(account, user, now);
-
-    this.recordAuditEvent({
-      type: "auth.otp_verified",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        challengeId: challenge.id,
-        channel: challenge.channel,
-        destination: challenge.destination
-      }
-    });
-
-    this.recordAuditEvent({
-      type: resumed ? "account.resumed" : "account.created",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        primaryAuthChannel: account.primaryAuthChannel,
-        primaryAuthDestination: account.primaryAuthDestination
-      }
-    });
-
-    return {
-      account,
-      user,
-      session,
-      resumed
-    };
-  }
-
   getSession(sessionId: string | null, now = new Date()): AuthSessionView | null {
     if (sessionId === null) {
       return null;
@@ -5455,8 +5186,8 @@ export class Cp2Store {
       runtimeTurns: [...this.agentRuntimeDomain.runtimeTurnsMap.values()],
       inventoryMovements: [...this.salesDomain.inventoryMovementsMap.values()],
       syncQueue: [...this.syncQueue.values()],
-      otpChallenges: [...this.otpChallenges.values()],
-      smsDeliveryAttempts: [...this.smsDeliveryAttempts.values()],
+      otpChallenges: [...this.otpDomain.otpChallengesMap.values()],
+      smsDeliveryAttempts: [...this.otpDomain.smsDeliveryAttemptsMap.values()],
       sessions: [...this.sessions.values()],
       passkeys: [...this.passkeyDomain.passkeysMap.values()],
       passkeyCeremonies: [...this.passkeyDomain.passkeyCeremoniesMap.values()],
@@ -5516,8 +5247,7 @@ export class Cp2Store {
     this.notificationsDomain.clear();
     this.syncQueue.clear();
     this.syncQueueIdByIdempotency.clear();
-    this.otpChallenges.clear();
-    this.smsDeliveryAttempts.clear();
+    this.otpDomain.clear();
     this.sessions.clear();
     this.passkeyDomain.clear();
     this.accountIdentities.clear();
@@ -5752,23 +5482,7 @@ export class Cp2Store {
       );
     }
 
-    for (const challenge of snapshot.otpChallenges ?? []) {
-      this.otpChallenges.set(challenge.id, {
-        ...challenge,
-        purpose: challenge.purpose ?? "signup",
-        consumedAt: challenge.consumedAt ?? null,
-        resendCount: challenge.resendCount ?? 0,
-        nextResendAt: challenge.nextResendAt ?? null,
-        provider: challenge.provider ?? null,
-        providerMessageId: challenge.providerMessageId ?? null
-      });
-    }
-
-    for (const attempt of snapshot.smsDeliveryAttempts ?? []) {
-      if (this.otpChallenges.has(attempt.challengeId)) {
-        this.smsDeliveryAttempts.set(attempt.id, attempt);
-      }
-    }
+    this.otpDomain.restore(snapshot);
 
     for (const session of snapshot.sessions) {
       this.sessions.set(session.id, normalizeRestoredSession(session));
@@ -5901,7 +5615,7 @@ export class Cp2Store {
     ) {
       throw new Cp2Error(401, "recovery_verification_invalid", "Recovery verification failed.");
     }
-    const challenge = this.otpChallenges.get(input.challengeId);
+    const challenge = this.otpDomain.otpChallengesMap.get(input.challengeId);
     if (
       !challenge ||
       challenge.purpose !== "recovery" ||
@@ -6137,7 +5851,7 @@ export class Cp2Store {
         candidate.providerChallengeId === input.challengeId &&
         candidate.consumedAt === null
     );
-    const challenge = this.otpChallenges.get(input.challengeId);
+    const challenge = this.otpDomain.otpChallengesMap.get(input.challengeId);
     const targetAccountId = transaction?.metadata.targetAccountId;
     if (
       transaction === undefined ||
@@ -6218,7 +5932,7 @@ export class Cp2Store {
   } {
     const now = input.now ?? new Date();
     const identity = this.getPendingEmailIdentity({ sessionId: input.sessionId, now });
-    const challenge = this.otpChallenges.get(input.challengeId);
+    const challenge = this.otpDomain.otpChallengesMap.get(input.challengeId);
     if (
       !challenge ||
       challenge.destination !== identity.normalizedValue ||
@@ -7140,36 +6854,6 @@ export class Cp2Store {
     );
     attempts.push(now.getTime());
     this.failedPinAttempts.set(key, attempts);
-  }
-
-  private verifyOtpCodeOnly(input: { challengeId: string; code: string; now: Date }): void {
-    const challenge = this.otpChallenges.get(input.challengeId);
-    this.validateOtpChallenge(challenge, input.now);
-
-    if (!hashMatches(hashOtp(challenge.id, input.code), challenge.codeHash)) {
-      challenge.attempts += 1;
-      throw new Cp2Error(401, "otp_invalid", "OTP code is invalid.");
-    }
-
-    challenge.verifiedAt = input.now.toISOString();
-  }
-
-  private markOtpCodeExternallyVerified(input: { challengeId: string; now: Date }): void {
-    const challenge = this.otpChallenges.get(input.challengeId);
-    this.validateOtpChallenge(challenge, input.now);
-    challenge.verifiedAt = input.now.toISOString();
-  }
-
-  private getDeletionOtpDelivery(challengeId: string, now: Date): OtpRequestResult {
-    const challenge = this.otpChallenges.get(challengeId);
-    this.validateOtpChallenge(challenge, now);
-
-    return {
-      challengeId: challenge.id,
-      destination: challenge.destination,
-      expiresAt: challenge.expiresAt,
-      devOtp: ""
-    };
   }
 
   private publicStorefrontForBusiness(business: BusinessSummary): PublicStorefrontSummary {
@@ -8404,8 +8088,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.pendingRuntimeActionsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.inventoryMovementsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.otpChallenges, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.smsDeliveryAttempts, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.otpDomain.otpChallengesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.otpDomain.smsDeliveryAttemptsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.sessions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.passkeyDomain.passkeysMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.passkeyDomain.passkeyCeremoniesMap, scope);
@@ -8903,36 +8587,6 @@ function countExportRecords(data: DataExportBundle["data"]): Record<string, numb
   };
 }
 
-function hashOtp(challengeId: string, code: string): string {
-  return createHmac("sha256", otpHmacSecret()).update(`${challengeId}:${code}`).digest("hex");
-}
-
-function otpHmacSecret(): string {
-  const configured = process.env.OTP_HMAC_SECRET?.trim();
-  if (configured !== undefined && configured.length >= 32) return configured;
-  if (process.env.NODE_ENV === "production") {
-    throw new Cp2Error(
-      503,
-      "otp_secret_unconfigured",
-      "Verification codes are temporarily unavailable."
-    );
-  }
-  return "soko-market-local-otp-hmac-secret";
-}
-
-function readBoundedSecurityInteger(
-  name: string,
-  fallback: number,
-  minimum: number,
-  maximum: number
-): number {
-  const configured = process.env[name]?.trim();
-  if (configured === undefined || configured.length === 0) return fallback;
-  const parsed = Number(configured);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
-  return parsed;
-}
-
 function marketplaceIntroStateKey(accountId: string, businessId: string | null): string {
   return `${accountId}:${businessId ?? "marketplace"}`;
 }
@@ -9204,10 +8858,6 @@ function parseDeletionOtpChallengeId(value: string | null | undefined): string |
   }
 
   return value.slice("otp:".length);
-}
-
-function hashMatches(actual: string, expected: string): boolean {
-  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
 }
 
 function sessionView(session: SessionRecord): SessionSummary {

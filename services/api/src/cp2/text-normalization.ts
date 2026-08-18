@@ -4,6 +4,7 @@
  * validators used across many domains, not commerce-specific - kept here rather than in a
  * commerce-only shared module.
  */
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AccountSummary, SupportedLanguage } from "@soko/shared-types";
 import { Cp2Error } from "./cp2-error.js";
 
@@ -73,3 +74,42 @@ export function readBoundedSecurityInteger(
 
 /** Shared between the OAuth domain (`beginOAuthSession`) and OTP challenges (`requestOtp`). */
 export const otpTtlMs = 5 * 60 * 1000;
+
+/**
+ * Shared between the OTP-request rate limiter (`otpRequestHistory`, in the OTP domain) and the
+ * failed-PIN-attempt tracker (`failedPinAttempts`, which stays on `Cp2Store` as core-kernel
+ * state) - both are bounded in-memory `Map`s evicting their oldest entry at this same capacity.
+ */
+export const pinAttemptTrackerMaximumEntries = 10_000;
+
+/**
+ * Shared between the OTP domain (`requestOtp`/`verifyOtp`) and three `Cp2Store` methods
+ * (`verifyEmailRecovery`, `verifyEmailIdentityMerge`, `verifyPendingEmail`) that validate an OTP
+ * code against an `otpChallenges` record with their own inlined checks rather than going through
+ * the OTP domain's `validateOtpChallenge`/`completeOtpVerification`.
+ */
+export function hashOtp(challengeId: string, code: string): string {
+  return createHmac("sha256", otpHmacSecret()).update(`${challengeId}:${code}`).digest("hex");
+}
+
+export function otpHmacSecret(): string {
+  const configured = process.env.OTP_HMAC_SECRET?.trim();
+  if (configured !== undefined && configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Cp2Error(
+      503,
+      "otp_secret_unconfigured",
+      "Verification codes are temporarily unavailable."
+    );
+  }
+  return "soko-market-local-otp-hmac-secret";
+}
+
+/**
+ * Generic constant-time hex-digest comparison. Shared between the OTP domain and the legacy
+ * SHA-256 PIN-hash fallback comparison on `Cp2Store` (`resolvePinHashOutcome`), so it lives here
+ * rather than in either domain's own `shared.ts`.
+ */
+export function hashMatches(actual: string, expected: string): boolean {
+  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}

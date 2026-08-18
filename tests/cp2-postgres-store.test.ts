@@ -283,6 +283,50 @@ describePostgres("CP2 Postgres store", () => {
     await restoredApp.close();
   }, 30_000);
 
+  it("persists an unverified OTP challenge across store restarts and completes it afterward", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const unique = Date.now().toString();
+    const uniqueEmail = `otp-user-${unique}@example.test`;
+
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+
+    const otpResponse = await postJson<{ challengeId: string; destination: string; devOtp: string }>(
+      app,
+      "/auth/otp/request",
+      { channel: "email", destination: uniqueEmail }
+    );
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const restoredApp = buildApi({
+      cp2: { store: restoredStore },
+      mutationPersistenceFlush: () => restoredStore.flush()
+    });
+
+    const verifyResponse = await postJson<{
+      account: { id: string };
+      session: { id: string };
+    }>(restoredApp, "/auth/otp/verify", {
+      challengeId: otpResponse.challengeId,
+      code: otpResponse.devOtp
+    });
+    expect(verifyResponse.account.id).toBeDefined();
+
+    const sessionCookie = `${sessionCookieName}=${verifyResponse.session.id}`;
+    const sessionCheck = await getJson<{ account: { id: string } }>(
+      restoredApp,
+      "/auth/session",
+      sessionCookie
+    );
+    expect(sessionCheck.account.id).toBe(verifyResponse.account.id);
+
+    await restoredApp.close();
+  }, 30_000);
+
   it("does not expose retired phone verification routes", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";
