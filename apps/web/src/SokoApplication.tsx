@@ -135,6 +135,7 @@ import {
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
+import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
@@ -208,7 +209,6 @@ import {
   type DocumentImportDraft,
   type DocumentImportJobSummary,
   type DocumentImportPreviewRow,
-  type FulfillmentStatus,
   type ImportFormState,
   type InvoiceFormState,
   type InvoicePaymentSummary,
@@ -220,8 +220,6 @@ import {
   type LaunchIncidentSummary,
   type LaunchReadinessReportSummary,
   type LaunchSettingsSummary,
-  type LogisticsFormState,
-  type LogisticsSummary,
   type MarketplaceIntroStateSummary,
   type NetworkGraphSummary,
   type NetworkInvitesResponse,
@@ -276,7 +274,6 @@ import {
   emptyImportForm,
   emptyInvoiceForm,
   emptyLaunchForm,
-  emptyLogisticsForm,
   emptyPaymentForm,
   emptyProductForm,
   emptySupplierForm,
@@ -480,12 +477,6 @@ export function OwnerApp() {
   const { hasPending, isPending, runAction } = useAsyncActions();
   const domainResetRegistry = useDomainResetRegistry();
   const { registerRefresh, refreshersFor } = useViewRefreshRegistry();
-  const { notificationInbox, loadNotifications, updateNotification } = useNotificationsState({
-    businessId: business?.id ?? null,
-    setStatusMessage,
-    registerReset: domainResetRegistry.registerReset,
-    registerRefresh
-  });
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
@@ -540,7 +531,6 @@ export function OwnerApp() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
-  const [logistics, setLogistics] = useState<LogisticsSummary[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[]>([]);
   const [customerDebts, setCustomerDebts] = useState<CustomerDebtSummary[]>([]);
   const [importJobs, setImportJobs] = useState<DocumentImportJobSummary[]>([]);
@@ -579,7 +569,6 @@ export function OwnerApp() {
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(emptyPaymentForm);
   const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
-  const [logisticsForm, setLogisticsForm] = useState<LogisticsFormState>(emptyLogisticsForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
@@ -694,6 +683,35 @@ export function OwnerApp() {
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setStatusMessage("Browsing as a guest. Sign in only when you want to message, order, or sell.");
   }
+
+  // Domain hooks extracted from OwnerApp's state (see docs/architecture/frontend-modularization-
+  // roadmap.md's OwnerApp decomposition). Grouped together and placed after every raw useState/
+  // useRef declaration above (not interspersed among them) since several of these hooks take
+  // still-inline OwnerApp state as a dependency (e.g. `invoices`) - a `const` declared earlier in
+  // this function via useState, which would throw a temporal-dead-zone error if referenced by a
+  // hook call positioned before that declaration.
+  const { notificationInbox, loadNotifications, updateNotification } = useNotificationsState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    logistics,
+    logisticsForm,
+    setLogisticsForm,
+    loadLogistics,
+    createLogistics,
+    updateLogisticsStatus
+  } = useLogisticsState({
+    businessId: business?.id ?? null,
+    invoices,
+    setStatusMessage,
+    loadReports,
+    queueMutationAfterNetworkFailure,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1312,7 +1330,7 @@ export function OwnerApp() {
       }
 
       if (view === "logistics") {
-        refreshes.push(loadInvoices(businessId), loadLogistics(businessId));
+        refreshes.push(loadInvoices(businessId));
       }
 
       if (view === "compliance") {
@@ -2853,27 +2871,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadLogistics(businessId: string) {
-    try {
-      const nextLogistics = await getJson<LogisticsSummary[]>(
-        `/businesses/${businessId}/logistics`,
-        setLogistics
-      );
-      setLogistics(nextLogistics);
-      if (logisticsForm.invoiceId.length === 0) {
-        const existingInvoiceIds = new Set(nextLogistics.map((item) => item.invoiceId));
-        const invoice = invoices.find(
-          (item) => item.status === "confirmed" && !existingInvoiceIds.has(item.id)
-        );
-        if (invoice !== undefined) {
-          setLogisticsForm((form) => ({ ...form, invoiceId: invoice.id }));
-        }
-      }
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   async function loadReports(businessId: string) {
     try {
       const [report, knowledge] = await Promise.all([
@@ -3459,65 +3456,6 @@ export function OwnerApp() {
         })
       ) {
         setPaymentForm(emptyPaymentForm);
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createLogistics() {
-    if (business === null || logisticsForm.invoiceId.length === 0) {
-      return;
-    }
-
-    try {
-      await postJson<LogisticsSummary>(`/businesses/${business.id}/logistics`, {
-        invoiceId: logisticsForm.invoiceId,
-        method: logisticsForm.method,
-        destination: logisticsForm.destination,
-        note: logisticsForm.note
-      });
-      setLogisticsForm(emptyLogisticsForm);
-      await loadLogistics(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Logistics record created");
-    } catch (error) {
-      if (
-        await queueMutationAfterNetworkFailure(error, "logistics.create", {
-          invoiceId: logisticsForm.invoiceId,
-          method: logisticsForm.method,
-          destination: logisticsForm.destination,
-          note: logisticsForm.note
-        })
-      ) {
-        setLogisticsForm(emptyLogisticsForm);
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateLogisticsStatus(logisticsId: string, status: FulfillmentStatus) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<LogisticsSummary>(`/businesses/${business.id}/logistics/${logisticsId}`, {
-        status,
-        note: ""
-      });
-      await loadLogistics(business.id);
-      await loadReports(business.id);
-      setStatusMessage("Logistics status updated");
-    } catch (error) {
-      if (
-        await queueMutationAfterNetworkFailure(error, "logistics.update_status", {
-          logisticsId,
-          status,
-          note: ""
-        })
-      ) {
         return;
       }
       setStatusMessage(getErrorMessage(error));
@@ -4269,7 +4207,6 @@ export function OwnerApp() {
     setCustomers([]);
     setInvoices([]);
     setPayments([]);
-    setLogistics([]);
     setInvoicePayments([]);
     setCustomerDebts([]);
     setImportJobs([]);
@@ -4303,7 +4240,6 @@ export function OwnerApp() {
     setInvoiceForm(emptyInvoiceForm);
     setPaymentForm(emptyPaymentForm);
     setImportForm(emptyImportForm);
-    setLogisticsForm(emptyLogisticsForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
