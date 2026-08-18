@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
+const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 const productCapture = readFileSync("apps/web/src/ProductCapturePanel.tsx", "utf8");
 const accountControls = readFileSync("apps/web/src/AccountBackendControls.tsx", "utf8");
 const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
@@ -51,7 +52,7 @@ describe("frontend coverage for backend-owned lifecycles", () => {
     expect(sharedModule).toContain('import("./AccountBackendControls")');
     expect(accountControls).toContain('"/account/display-name"');
     expect(accountControls).toContain('aria-label="Account display name"');
-    expect(application).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
+    expect(agentProfileSurface).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
   });
 
   it("lists and revokes inactive end-to-end encryption keys", () => {
@@ -66,13 +67,13 @@ describe("frontend coverage for backend-owned lifecycles", () => {
   });
 
   it("uses structured backend agent controls instead of editable compatibility fields", () => {
-    expect(application).toContain("draftAgent.personalityConfig.tone");
-    expect(application).toContain("draftAgent.instructionPolicy.maximumDiscountPercent");
-    expect(application).toContain("draftAgent.skillBindings.map");
-    expect(application).toContain("draftAgent.memoryPolicy.ownerCorrectionsEnabled");
-    expect(application).not.toContain("Compatibility fields");
-    expect(application).not.toContain("Advanced knowledge and integration labels");
-    expect(application).not.toContain("value={draftAgent.tools.join");
-    expect(application).not.toContain("value={draftAgent.integrations.join");
+    expect(agentProfileSurface).toContain("draftAgent.personalityConfig.tone");
+    expect(agentProfileSurface).toContain("draftAgent.instructionPolicy.maximumDiscountPercent");
+    expect(agentProfileSurface).toContain("draftAgent.skillBindings.map");
+    expect(agentProfileSurface).toContain("draftAgent.memoryPolicy.ownerCorrectionsEnabled");
+    expect(agentProfileSurface).not.toContain("Compatibility fields");
+    expect(agentProfileSurface).not.toContain("Advanced knowledge and integration labels");
+    expect(agentProfileSurface).not.toContain("value={draftAgent.tools.join");
+    expect(agentProfileSurface).not.toContain("value={draftAgent.integrations.join");
   });
 });

@@ -37,11 +37,14 @@ describe("frontend navigation performance contracts", () => {
 
   it("keeps navigation, model discovery, and runtime initialization decoupled", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const navigationBlock = sourceFunction(application, "navigateToView");
-    const settingsEffectStart = application.indexOf("void loadConnectedSocialAccounts();");
-    const settingsMountEffect = application.slice(
+    const settingsEffectStart = agentProfileSurface.indexOf(
+      "void loadConnectedSocialAccounts();"
+    );
+    const settingsMountEffect = agentProfileSurface.slice(
       settingsEffectStart,
-      application.indexOf("}, [accountId, business.id]);", settingsEffectStart)
+      agentProfileSurface.indexOf("}, [accountId, business.id]);", settingsEffectStart)
     );
 
     expect(navigationBlock).toContain("navigateToOwnerRoute");
@@ -52,7 +55,7 @@ describe("frontend navigation performance contracts", () => {
     expect(settingsMountEffect).not.toContain("loadAiModels(");
     expect(settingsMountEffect).not.toContain("inspectDeviceModelCapability(");
     expect(settingsMountEffect).not.toContain("loadBrowserInferenceState(");
-    expect(application).toContain('setProfileMessage("Opening model settings…")');
+    expect(agentProfileSurface).toContain('setProfileMessage("Opening model settings…")');
   });
 
   it("does not precache model files and enables route/API performance measurements", () => {
@@ -89,14 +92,14 @@ describe("frontend navigation performance contracts", () => {
   });
 
   it("warms likely follow-up screens without keeping message-heavy chat UI mounted", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
 
     expect(likelyNextOwnerViews("chat")).toEqual(["products", "invoices"]);
     expect(likelyNextOwnerViews("invoices")).toEqual(["payments", "logistics"]);
-    expect(application).toContain('const showMessageThread = activeView === "chat"');
-    expect(application).toContain("const visibleConversations = showMessageThread");
-    expect(application).toContain("showMessageThread && isInboxOpen");
-    expect(application).toContain('behavior: "auto"');
+    expect(chatSurface).toContain('const showMessageThread = activeView === "chat"');
+    expect(chatSurface).toContain("const visibleConversations = showMessageThread");
+    expect(chatSurface).toContain("showMessageThread && isInboxOpen");
+    expect(chatSurface).toContain('behavior: "auto"');
   });
 
   it("invalidates related active-model reads after either model selection changes", async () => {

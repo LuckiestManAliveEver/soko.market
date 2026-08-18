@@ -19,11 +19,13 @@ describe("shared phone-number field", () => {
     const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const businessSetupPanel = readFileSync("apps/web/src/BusinessSetupPanel.tsx", "utf8");
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     expect(phoneFirst).toContain("<PhoneNumberField");
     expect(phoneSignup).toContain("<PhoneNumberField");
     const ownerUsageCount =
       (application.match(/<PhoneNumberField/gu) ?? []).length +
-      (businessSetupPanel.match(/<PhoneNumberField/gu) ?? []).length;
+      (businessSetupPanel.match(/<PhoneNumberField/gu) ?? []).length +
+      (agentProfileSurface.match(/<PhoneNumberField/gu) ?? []).length;
     expect(ownerUsageCount).toBe(2);
     expect(application).not.toContain("function SetupPanel");
     expect(application).not.toContain("function LoginPanel");

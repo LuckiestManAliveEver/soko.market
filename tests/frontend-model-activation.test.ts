@@ -2,20 +2,24 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
 describe("frontend model activation contracts", () => {
   it("validates and tests a local model before assigning it through the backend", () => {
     const backendValidation = sourceBetween(
+      agentProfileSurface,
       "async function validateInstalledModelOnBackend",
       "async function useModelWithAgent"
     );
     const activation = sourceBetween(
+      agentProfileSurface,
       "async function useModelWithAgent",
       "async function useBackendModelWithAgent"
     );
     const binding = sourceBetween(
+      agentProfileSurface,
       "async function synchronizeAgentModelAssignment",
       "async function useModelWithAgent"
     );
@@ -30,7 +34,7 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("assignmentAfterReadiness(pending, result)");
     expect(activation).toContain("synchronizeAgentModelAssignment(readyAssignment, signal)");
     expect(activation).toContain("The previous working model was left unchanged");
-    expect(application).toContain("new ModelActivationCoordinator()");
+    expect(agentProfileSurface).toContain("new ModelActivationCoordinator()");
     expect(activation).toContain("withActivationTimeout");
     expect(activation).toContain("activationApiReachable");
 
@@ -44,6 +48,7 @@ describe("frontend model activation contracts", () => {
 
   it("sets a cloud fallback without detaching the downloaded model", () => {
     const activation = sourceBetween(
+      agentProfileSurface,
       "async function useBackendModelWithAgent",
       "async function testServerBackendModel"
     );
@@ -59,14 +64,15 @@ describe("frontend model activation contracts", () => {
     expect(activation).not.toContain("updateAgent({ model: activated.modelId })");
     expect(activation).not.toContain("onAgentChange({ ...agent, model: activated.modelId })");
     expect(activation).toContain("inferencePreferences.cloudConsent");
-    expect(application).toContain('aria-label="Cloud fallback models"');
-    expect(application).toContain('"Set as fallback"');
-    expect(application).toContain('"Default fallback"');
-    expect(application).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');
+    expect(agentProfileSurface).toContain('aria-label="Cloud fallback models"');
+    expect(agentProfileSurface).toContain('"Set as fallback"');
+    expect(agentProfileSurface).toContain('"Default fallback"');
+    expect(agentProfileSurface).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');
   });
 
   it("uses the provider-neutral route in the actual chat send path", () => {
     const chat = sourceBetween(
+      application,
       "async function sendChatDraft",
       "async function confirmRuntimeAction"
     );
@@ -91,27 +97,36 @@ describe("frontend model activation contracts", () => {
   });
 
   it("shows installation-scoped red and green model usage controls", () => {
-    expect(application).toContain("agentModelAssignment?.activeModelInstallationId === model.id");
-    expect(application).toContain("className={`model-use-button ${");
-    expect(application).toContain("aria-pressed={modelInUse}");
-    expect(application).toContain('"Not active · Activate on this device"');
-    expect(application).toContain('"Active on this device"');
-    expect(application).toContain("It is separate from the persisted backend");
+    expect(agentProfileSurface).toContain(
+      "agentModelAssignment?.activeModelInstallationId === model.id"
+    );
+    expect(agentProfileSurface).toContain("className={`model-use-button ${");
+    expect(agentProfileSurface).toContain("aria-pressed={modelInUse}");
+    expect(agentProfileSurface).toContain('"Not active · Activate on this device"');
+    expect(agentProfileSurface).toContain('"Active on this device"');
+    expect(agentProfileSurface).toContain("It is separate from the persisted backend");
     expect(styles).toContain(".model-use-button.in-use");
     expect(styles).toContain(".model-use-button {");
   });
 
   it("loads canonical agent binding state and uses server test and activation APIs", () => {
     const profile = sourceBetween(
+      agentProfileSurface,
       "function AgentProfileSurface",
       "function editFirstContextPhrase"
     );
-    const models = sourceBetween("async function loadAiModels", "async function loadGitHubModels");
+    const models = sourceBetween(
+      agentProfileSurface,
+      "async function loadAiModels",
+      "async function loadGitHubModels"
+    );
     const binding = sourceBetween(
+      agentProfileSurface,
       "async function loadCanonicalAgentModelBinding",
       "async function registerInstalledModel"
     );
     const serverActivation = sourceBetween(
+      agentProfileSurface,
       "async function testServerBackendModel",
       "async function testAssignedModel"
     );
@@ -123,29 +138,35 @@ describe("frontend model activation contracts", () => {
     expect(binding).not.toContain("agent.globalAgentId");
     expect(serverActivation).toContain("canonicalRuntimeAgentId");
     expect(serverActivation).not.toContain("agent.globalAgentId");
-    expect(application).toContain("/api/agents/${encodeURIComponent(");
-    expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(");
-    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/test");
-    expect(application).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
+    expect(agentProfileSurface).toContain("/api/agents/${encodeURIComponent(");
+    expect(agentProfileSurface).toContain(")}/model-binding?shopId=${encodeURIComponent(");
+    expect(agentProfileSurface).toContain(")}/models/${encodeURIComponent(model.id)}/test");
+    expect(agentProfileSurface).toContain(")}/models/${encodeURIComponent(model.id)}/activate");
     expect(sharedModule).toContain("backendModelProbeRequestTimeoutMs = 105_000");
     expect(serverActivation).toContain("timeoutMs: backendModelProbeRequestTimeoutMs");
     expect(serverActivation).toContain("setTestingBackendModelId(model.id)");
-    expect(application).toContain('testingBackendModelId === model.id ? "Testing…" : "Test model"');
-    expect(application).toContain(")}/model-binding?shopId=${encodeURIComponent(business.id)}");
-    expect(application).toContain("setActiveAgentModelBinding(result.binding)");
-    expect(application).toContain("removeServerBackendModelFromAgent(model)");
-    expect(application).toContain('"Remove from agent"');
-    expect(application).toContain('executionTarget: "backend"');
-    expect(application).toContain("Active for ${agent.name}");
-    expect(application).toContain("Browser-local inference is unavailable in this deployment");
-    expect(application).toContain("<summary>Advanced routing</summary>");
+    expect(agentProfileSurface).toContain(
+      'testingBackendModelId === model.id ? "Testing…" : "Test model"'
+    );
+    expect(agentProfileSurface).toContain(
+      ")}/model-binding?shopId=${encodeURIComponent(business.id)}"
+    );
+    expect(agentProfileSurface).toContain("setActiveAgentModelBinding(result.binding)");
+    expect(agentProfileSurface).toContain("removeServerBackendModelFromAgent(model)");
+    expect(agentProfileSurface).toContain('"Remove from agent"');
+    expect(agentProfileSurface).toContain('executionTarget: "backend"');
+    expect(agentProfileSurface).toContain("Active for ${agent.name}");
+    expect(agentProfileSurface).toContain(
+      "Browser-local inference is unavailable in this deployment"
+    );
+    expect(agentProfileSurface).toContain("<summary>Advanced routing</summary>");
   });
 });
 
-function sourceBetween(startMarker: string, endMarker: string): string {
-  const start = application.indexOf(startMarker);
-  const end = application.indexOf(endMarker, start + startMarker.length);
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
-  return application.slice(start, end);
+  return source.slice(start, end);
 }

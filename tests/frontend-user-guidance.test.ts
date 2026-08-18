@@ -92,13 +92,12 @@ describe("frontend user guidance", () => {
   });
 
   it("accepts only Markdown files in the protected context-file importer", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    expect(application).toContain('accept=".md,.markdown,text/markdown"');
-    expect(application).toContain("Markdown context files");
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    expect(agentProfileSurface).toContain('accept=".md,.markdown,text/markdown"');
+    expect(agentProfileSurface).toContain("Markdown context files");
   });
 
   it("marks document uploads and includes the required model context", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
     const context = readFileSync("context/agent/document-upload.md", "utf8");
 
@@ -123,21 +122,24 @@ describe("frontend user guidance", () => {
     expect(agentCommandEngine).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
-    expect(application).toContain("OCR ready for scans and images");
+    const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
+    expect(chatSurface).toContain("OCR ready for scans and images");
     expect(chatMessagePlumbing).toContain("/documents/ocr");
-    expect(application).toContain("Extract all readable text");
+    expect(chatSurface).toContain("Extract all readable text");
   });
 
   it("separates installed Android models from the commercially permitted download catalog", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
-    expect(application).toContain("Predownload & install");
-    expect(application).toContain("Installed on this device. Choose ‘Activate on this device’");
-    expect(application).toContain("Activate on this device");
-    expect(application).toContain("Test model");
-    expect(application).not.toContain("Ready without a connection");
-    expect(application).not.toContain("offline ready");
-    expect(application).toContain("Install offline starter");
+    expect(agentProfileSurface).toContain("Predownload & install");
+    expect(agentProfileSurface).toContain(
+      "Installed on this device. Choose ‘Activate on this device’"
+    );
+    expect(agentProfileSurface).toContain("Activate on this device");
+    expect(agentProfileSurface).toContain("Test model");
+    expect(agentProfileSurface).not.toContain("Ready without a connection");
+    expect(agentProfileSurface).not.toContain("offline ready");
+    expect(agentProfileSurface).toContain("Install offline starter");
     expect(manager).toContain("defaultOfflineAiModels");
     expect(manager).toContain("Qwen2.5 0.5B offline default");
   });
@@ -169,12 +171,13 @@ describe("frontend user guidance", () => {
       `normalized.includes("you've just experienced an error")`
     );
     expect(chatMessagePlumbing).toContain('normalized.includes("ask the agent for help")');
-    expect(application).toContain("const visibleMessages = showMessageThread");
-    expect(application).toContain("!isRedundantAgentErrorMessage(message.body)");
+    const chatSurfaceForRedundancy = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
+    expect(chatSurfaceForRedundancy).toContain("const visibleMessages = showMessageThread");
+    expect(chatSurfaceForRedundancy).toContain("!isRedundantAgentErrorMessage(message.body)");
   });
 
   it("connects the Android model library to Hugging Face, GitHub, and device-fit ranking", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const application = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
     const store = readFileSync("services/api/src/cp2/domains/agent-runtime/shared.ts", "utf8");
     const githubCatalog = readFileSync("services/api/src/cp2/github-model-catalog.ts", "utf8");
@@ -298,18 +301,19 @@ describe("frontend user guidance", () => {
 
   it("shows explicit signup and login actions connected to separate end-to-end flows", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const welcomeMessage = readFileSync("apps/web/src/app-shell.ts", "utf8");
 
-    expect(application).toContain('data-testid={message.id === "welcome"');
-    expect(application).toContain('<div className="welcome-auth-actions"');
-    expect(application).toContain('data-testid="welcome-signup-button"');
-    expect(application).toContain('data-testid="welcome-login-button"');
+    expect(chatSurface).toContain('data-testid={message.id === "welcome"');
+    expect(chatSurface).toContain('<div className="welcome-auth-actions"');
+    expect(chatSurface).toContain('data-testid="welcome-signup-button"');
+    expect(chatSurface).toContain('data-testid="welcome-login-button"');
     expect(application).toContain('data-testid="header-signup-button"');
     expect(application).toContain('data-testid="header-login-button"');
-    expect(application).toContain("onClick={onSignUp}");
-    expect(application).toContain("onClick={onLogIn}");
+    expect(chatSurface).toContain("onClick={onSignUp}");
+    expect(chatSurface).toContain("onClick={onLogIn}");
     expect(application).toContain("openAuth(target)");
     expect(application).toContain("<PhoneSignup");
     expect(application).toContain('authenticationView === "signup"');
@@ -376,8 +380,9 @@ describe("frontend user guidance", () => {
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
+    const chatSurfaceForGuest = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
     expect(application).toContain("function browseAsGuest()");
-    expect(application).toContain("Browse as guest");
+    expect(chatSurfaceForGuest).toContain("Browse as guest");
     expect(application).toContain("Browsing as a guest");
     expect(application).toContain(
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
@@ -393,14 +398,8 @@ describe("frontend user guidance", () => {
   it("merges shop and full-account deletion under one Settings action", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
-    const complianceSurface = application.slice(
-      application.indexOf("function ComplianceSurface"),
-      application.indexOf("interface BetaSurfaceProps")
-    );
-    const settingsSurface = application.slice(
-      application.indexOf("function AgentProfileSurface"),
-      application.indexOf("interface ChatSurfaceProps")
-    );
+    const complianceSurface = readFileSync("apps/web/src/ComplianceSurface.tsx", "utf8");
+    const settingsSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 
     expect(settingsSurface).toContain("<h3>Delete account</h3>");
     expect(settingsSurface).toContain("Delete this shop");
@@ -420,6 +419,7 @@ describe("frontend user guidance", () => {
 
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const networkRoutes = readFileSync(
       "services/api/src/cp2/domains/network/routes.ts",
       "utf8"
@@ -427,16 +427,18 @@ describe("frontend user guidance", () => {
     const salesRoutes = readFileSync("services/api/src/cp2/domains/sales/routes.ts", "utf8");
 
     expect(application).toContain('"/auth/logout-all"');
-    expect(application).toContain("onClick={onLogoutAll}");
-    expect(application).toContain("Signing out all devices…");
+    expect(agentProfileSurface).toContain("onClick={onLogoutAll}");
+    expect(agentProfileSurface).toContain("Signing out all devices…");
     expect(application).toContain(
       'navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true })'
     );
     expect(application).toContain("setBusiness(null)");
     expect(application).toContain("localStorage.removeItem(ownerAuthStorageKey)");
     expect(application).toContain('deleteJson("/v1/push/subscriptions"');
-    expect(application).toContain('getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")');
-    expect(application).toContain("MCP access tokens");
+    expect(agentProfileSurface).toContain(
+      'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
+    );
+    expect(agentProfileSurface).toContain("MCP access tokens");
     expect(application).toContain("/storefront/customer-care");
     expect(application).toContain("/storefront/messages");
     expect(application).toContain("/storefront/orders");
