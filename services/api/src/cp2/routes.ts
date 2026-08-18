@@ -26,8 +26,6 @@ import type {
   BrowserRuntimeContract,
   ClientInferenceCompletion,
   DeviceTrustLevel,
-  FulfillmentMethod,
-  FulfillmentStatus,
   AgentModelFallbackPolicy,
   AgentModelBindingPermissions,
   AgentModelReadinessStatus,
@@ -88,6 +86,28 @@ import {
   type PhoneContactNetworkInput,
   type SocialProfileNetworkInput
 } from "./store.js";
+import {
+  parseBoolean,
+  parseIntegerString,
+  parseIsoTimestamp,
+  parseNonNegativeInteger,
+  parseNullableNumber,
+  parseNullableString,
+  parseNumber,
+  parseOptionalNonNegativeInteger,
+  parseOptionalString,
+  parsePositiveInteger,
+  parseRequestBody,
+  parseString,
+  parseStringArray,
+  sendCp2Error,
+  type BusinessParams
+} from "./route-helpers.js";
+import {
+  parseLogisticsBody,
+  parseLogisticsStatusBody,
+  registerLogisticsRoutes
+} from "./domains/logistics/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -585,10 +605,6 @@ interface MessageParams extends ConversationParams {
   messageId: string;
 }
 
-interface BusinessParams {
-  businessId: string;
-}
-
 interface StorefrontParams {
   agentId: string;
 }
@@ -757,10 +773,6 @@ interface NotificationParams extends BusinessParams {
   notificationId: string;
 }
 
-interface LogisticsParams extends BusinessParams {
-  logisticsId: string;
-}
-
 interface DocumentImportParams extends BusinessParams {
   importJobId: string;
 }
@@ -842,18 +854,6 @@ interface PaymentBody {
   amount?: number;
   method?: string;
   reference?: string | null;
-  note?: string | null;
-}
-
-interface LogisticsBody {
-  invoiceId?: string;
-  method?: string;
-  destination?: string | null;
-  note?: string | null;
-}
-
-interface LogisticsStatusBody {
-  status?: string;
   note?: string | null;
 }
 
@@ -5911,53 +5911,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.get(
-    "/businesses/:businessId/logistics",
-    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
-      try {
-        return store.listLogistics({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/logistics",
-    async (request: FastifyRequest<{ Params: BusinessParams; Body: LogisticsBody }>, reply) => {
-      try {
-        return store.createLogistics({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          logistics: parseLogisticsBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.patch(
-    "/businesses/:businessId/logistics/:logisticsId",
-    async (
-      request: FastifyRequest<{ Params: LogisticsParams; Body: LogisticsStatusBody }>,
-      reply
-    ) => {
-      try {
-        return store.updateLogisticsStatus({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          logisticsId: request.params.logisticsId,
-          status: parseLogisticsStatusBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerLogisticsRoutes(app, store);
 
   app.get(
     "/businesses/:businessId/reports/summary",
@@ -7453,14 +7407,6 @@ function parseSyncMutationPayload(
   }
 }
 
-function parseString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
-  }
-
-  return value.trim();
-}
-
 function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInput {
   const language = parseString(body.language, "language");
   if (!isSupportedLanguage(language)) {
@@ -7621,19 +7567,6 @@ function parseStructuredArray<T>(value: unknown, name: string, maximumItems: num
     );
   }
   return value.map((item) => parseRequestBody(item) as unknown as T);
-}
-
-function parseOptionalString(value: unknown): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  if (typeof value !== "string") {
-    throw new Cp2Error(400, "value_invalid", "Expected a string value.");
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function isMessageChannel(value: string): value is MessageChannel {
@@ -8013,52 +7946,6 @@ function parsePaymentBody(body: PaymentBody | null | undefined) {
     reference: parseNullableString(record.reference),
     note: parseNullableString(record.note)
   };
-}
-
-function parseLogisticsBody(body: LogisticsBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    invoiceId: parseString(record.invoiceId, "invoiceId"),
-    method: parseFulfillmentMethod(record.method),
-    destination: parseNullableString(record.destination),
-    note: parseNullableString(record.note)
-  };
-}
-
-function parseLogisticsStatusBody(body: LogisticsStatusBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    status: parseFulfillmentStatus(record.status),
-    note: parseNullableString(record.note)
-  };
-}
-
-function parseFulfillmentMethod(value: unknown): FulfillmentMethod {
-  const method = parseString(value, "method");
-
-  if (method === "delivery" || method === "pickup") {
-    return method;
-  }
-
-  throw new Cp2Error(400, "fulfillment_method_invalid", "Fulfillment method is not supported.");
-}
-
-function parseFulfillmentStatus(value: unknown): FulfillmentStatus {
-  const status = parseString(value, "status");
-
-  if (
-    status === "pending" ||
-    status === "ready" ||
-    status === "out_for_delivery" ||
-    status === "completed" ||
-    status === "cancelled"
-  ) {
-    return status;
-  }
-
-  throw new Cp2Error(400, "fulfillment_status_invalid", "Fulfillment status is not supported.");
 }
 
 function parseDocumentImportBody(
@@ -8875,14 +8762,6 @@ function parseInvoiceItems(value: unknown) {
   });
 }
 
-function parseRequestBody(value: unknown): Record<string, unknown> {
-  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
-    throw new Cp2Error(400, "body_invalid", "Request body must be a JSON object.");
-  }
-
-  return value as Record<string, unknown>;
-}
-
 function parseSokoMode(value: unknown): SokoMode {
   if (value === "marketplace" || value === "seller") {
     return value;
@@ -9058,14 +8937,6 @@ function parsePublicCustomerCareType(value: unknown): PublicCustomerCareRequestT
   throw new Cp2Error(400, "customer_care_type_invalid", "Customer-care request type is invalid.");
 }
 
-function parseStringArray(value: unknown, name: string, maximumItems: number): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > maximumItems) {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} is invalid.`);
-  }
-  return value.map((item, index) => parseString(item, `${name}[${index}]`));
-}
-
 function parseBuySourceKind(value: unknown): BuyResultSourceKind {
   if (value === "contact" || value === "catalogue" || value === "marketplace_connector") {
     return value;
@@ -9149,18 +9020,6 @@ function parsePublicOrderItems(value: unknown): Array<{ productId: string; quant
       quantity: parsePositiveInteger(record.quantity, `items[${index}].quantity`)
     };
   });
-}
-
-function parseNullableString(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  if (typeof value !== "string") {
-    throw new Cp2Error(400, "value_invalid", "Expected a string value.");
-  }
-
-  return value;
 }
 
 function parseOwnerInferenceRequest(value: unknown): InferenceRequest {
@@ -9434,70 +9293,6 @@ function parseNullablePositiveInteger(value: unknown, name: string): number | nu
   return value === null ? null : parsePositiveInteger(value, name);
 }
 
-function parseNumber(value: unknown, name: string): number {
-  if (typeof value !== "number") {
-    throw new Cp2Error(400, `${name}_required`, `${name} is required.`);
-  }
-
-  return value;
-}
-
-function parsePositiveInteger(value: unknown, name: string): number {
-  if (!Number.isInteger(value) || typeof value !== "number" || value < 1) {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a positive integer.`);
-  }
-
-  return value;
-}
-
-function parseNonNegativeInteger(value: unknown, name: string): number {
-  if (!Number.isInteger(value) || typeof value !== "number" || value < 0) {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a non-negative integer.`);
-  }
-
-  return value;
-}
-
-function parseOptionalNonNegativeInteger(value: unknown, name: string): number | undefined {
-  return value === undefined ? undefined : parseNonNegativeInteger(value, name);
-}
-
-function parseIntegerString(value: string, name: string): number {
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a positive integer.`);
-  }
-
-  return parsed;
-}
-
-function parseBoolean(value: unknown, name: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} must be a boolean.`);
-  }
-
-  return value;
-}
-
-function parseNullableNumber(value: unknown, name: string): number | null {
-  if (value === null) {
-    return null;
-  }
-
-  return parseNumber(value, name);
-}
-
-function parseIsoTimestamp(value: unknown, name: string): string {
-  const timestamp = parseString(value, name);
-
-  if (Number.isNaN(Date.parse(timestamp))) {
-    throw new Cp2Error(400, `${name}_invalid`, `${name} must be an ISO timestamp.`);
-  }
-
-  return timestamp;
-}
-
 function parseOptionalPermission(value: string | undefined): BusinessPermission | undefined {
   if (value === undefined) {
     return undefined;
@@ -9608,15 +9403,3 @@ function observeRequestAbort(
   };
 }
 
-function sendCp2Error(reply: FastifyReply, error: unknown) {
-  if (error instanceof Cp2Error) {
-    return reply.code(error.statusCode).send({
-      code: error.code,
-      message: error.message,
-      ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
-      ...(error.details === undefined ? {} : { details: error.details })
-    });
-  }
-
-  throw error;
-}
