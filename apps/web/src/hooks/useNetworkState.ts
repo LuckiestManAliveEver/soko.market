@@ -31,7 +31,6 @@ interface UseNetworkStateDeps {
   business: ActiveBusiness | null;
   getCustomers: () => CustomerSummary[];
   loadCustomers: (businessId: string) => Promise<void>;
-  authenticateSocialProfile: (provider: SocialSignupProvider) => Promise<void>;
   setStatusMessage: (message: string) => void;
   registerReset: (domainKey: string, fn: () => void) => void;
   registerRefresh: (
@@ -140,8 +139,11 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     return response.invites.length;
   }
 
-  async function syncSocialNetwork(provider: SocialSignupProvider) {
-    await deps.authenticateSocialProfile(provider);
+  async function syncSocialNetwork(
+    provider: SocialSignupProvider,
+    authenticateSocialProfile: (provider: SocialSignupProvider) => Promise<void>
+  ) {
+    await authenticateSocialProfile(provider);
   }
 
   async function requestNetworkRoute(targetNodeId?: string) {

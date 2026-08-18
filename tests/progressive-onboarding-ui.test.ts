@@ -3,16 +3,17 @@ import { describe, expect, it } from "vitest";
 
 describe("progressive onboarding UI", () => {
   it("opens the current phone-first signup instead of the legacy continue screen", async () => {
-    const [applicationSource, signupSource, styles] = await Promise.all([
+    const [applicationSource, authStateSource, signupSource, styles] = await Promise.all([
       readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/hooks/useAuthState.ts", import.meta.url), "utf8"),
       readFile(new URL("../apps/web/src/PhoneSignup.tsx", import.meta.url), "utf8"),
       readFile(new URL("../apps/web/src/styles.css", import.meta.url), "utf8")
     ]);
 
-    expect(applicationSource).toContain(
-      'initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "signup")'
+    expect(authStateSource).toContain(
+      'deps.initialAuthenticationTarget ?? (deps.initialOwnerAuth !== null ? "login" : "signup")'
     );
-    expect(applicationSource).toContain('authenticationView === "signup"');
+    expect(applicationSource).toContain('shouldShowAuth && authenticationView === "signup"');
     expect(applicationSource).toContain("<PhoneSignup");
     expect(applicationSource).not.toContain("ProgressiveAuthentication");
     expect(applicationSource).not.toContain('authenticationView === "continue"');
@@ -24,9 +25,9 @@ describe("progressive onboarding UI", () => {
   });
 
   it("recovers a device account from its device-bound signing key before onboarding", async () => {
-    const [recoverySource, applicationSource] = await Promise.all([
+    const [recoverySource, authStateSource] = await Promise.all([
       readFile(new URL("../apps/web/src/device-recovery.ts", import.meta.url), "utf8"),
-      readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8")
+      readFile(new URL("../apps/web/src/hooks/useAuthState.ts", import.meta.url), "utf8")
     ]);
 
     expect(recoverySource).toContain('const databaseName = "soko-device-recovery-v1"');
@@ -35,9 +36,9 @@ describe("progressive onboarding UI", () => {
     expect(recoverySource).toContain('namedCurve: "P-256"');
     expect(recoverySource).toContain('false,\n    ["sign"]');
     expect(recoverySource).toContain('"/auth/device/recover"');
-    const recoveryBranch = applicationSource.slice(
-      applicationSource.indexOf("if (isDefinitiveAuthenticationError(error))"),
-      applicationSource.indexOf("if (cached !== null) setSession(cached)")
+    const recoveryBranch = authStateSource.slice(
+      authStateSource.indexOf("if (isDefinitiveAuthenticationError(error))"),
+      authStateSource.indexOf("if (cached !== null) setSession(cached)")
     );
     const recoveryIndex = recoveryBranch.indexOf("recoverDeviceAccount()");
     const onboardingIndex = recoveryBranch.indexOf("setAuthenticationView(nextAuthenticationView)");

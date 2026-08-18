@@ -2,16 +2,17 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const authStateHook = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
 const syncStateHook = readFileSync("apps/web/src/hooks/useSyncState.ts", "utf8");
 
 describe("persistent authenticated app shell", () => {
   it("restores cached session and shop state before background authentication refresh", () => {
     expect(application).toContain("const initialCachedSession = readCachedAuthSession()");
     expect(application).toContain("useState<SessionResponse | null>(initialCachedSession)");
-    expect(application).toContain(
+    expect(authStateHook).toContain(
       'initialCachedSession === null ? "initializing" : "offline-authenticated"'
     );
-    expect(application).toContain(
+    expect(authStateHook).toContain(
       'current === "offline-authenticated" ? current : "restoring-session"'
     );
   });

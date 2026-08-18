@@ -1,15 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Surface } from "@soko/ui";
-import type {
-  AccountShopSummary,
-  AuthBootstrapResponse,
-  AuthBootstrapState,
-  BuyFeedSummary,
-  E2eeDeviceSummary,
-  SokoChatSurface,
-  SokoSessionContext
-} from "@soko/shared-types";
+import type { BuyFeedSummary, E2eeDeviceSummary, SokoSessionContext } from "@soko/shared-types";
 import {
   createInitialChatMessages,
   type ChatMessage,
@@ -42,8 +34,7 @@ import {
   pathForOwnerView,
   readAuthenticationRouteHash,
   readAuthenticationRoutePath,
-  readOwnerRoute,
-  routes
+  readOwnerRoute
 } from "./routes";
 import {
   canNavigateBackWithinApp,
@@ -60,6 +51,7 @@ import {
   scheduleOwnerNavigationSessionWrite
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useAuthState } from "./hooks/useAuthState";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
@@ -79,13 +71,7 @@ import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
-import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
-import {
-  ApiRequestError,
-  apiFetch,
-  isDefinitiveAuthenticationError,
-  isRetryableApiRequestError
-} from "./lib/api";
+import { surfaceForShellView } from "./cross-device-session-context";
 import { clearPersistentApiRequestCache } from "./api-request-cache";
 import { detectCapabilitySettings } from "./capability-profile";
 import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
@@ -95,18 +81,16 @@ import { setConnectivityAuthentication } from "./connectivity";
 
 import { clearMessagingOutbox } from "./messaging/outbox";
 
-import type { AccountRestorationResult } from "./features/account-restoration/AccountRestorationPanel";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
-import { clearDeviceRecoveryCredential, recoverDeviceAccount } from "./device-recovery";
+import { clearDeviceRecoveryCredential } from "./device-recovery";
 import type { RememberedAccount } from "./PhoneFirstAuthentication";
 
 import {
   bootstrapProgressMessage,
   clearCachedAuthSession,
   isAuthBootstrapPending,
-  readCachedAuthSession,
-  saveCachedAuthSession
+  readCachedAuthSession
 } from "./auth-bootstrap";
 
 import {
@@ -117,12 +101,6 @@ import {
   type BuyCartItem,
   type CountryDialCode,
   type MarketplaceIntroStateSummary,
-  type NetworkGraphSummary,
-  type OAuthProviderSummary,
-  type OAuthProvidersResponse,
-  type OAuthStartResponse,
-  type OwnerAuthRecord,
-  type PendingOAuthLogin,
   PhoneFirstAuthentication,
   PhoneSignup,
   type ProductSummary,
@@ -133,7 +111,6 @@ import {
   type SetupDraft,
   type ShopPresenceStatus,
   type ShopPresenceSummary,
-  type SocialSignupProvider,
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
@@ -146,7 +123,6 @@ import {
   ownerAuthStorageKey,
   pendingOAuthStorageKey,
   setupDraftStorageKey,
-  socialSignupProviders,
   uiBackgroundRefreshIntervalMs
 } from "./soko-application-shared";
 
@@ -159,7 +135,6 @@ import {
   readStoredSokoMode,
   readStoredAgent,
   readStoredOwnerAuth,
-  readPendingOAuthLogin,
   readSetupDraft,
   createDefaultAgent,
   agentSettingsFromBusinessProfile
@@ -167,7 +142,6 @@ import {
 
 import {
   isHumanDirectConversation,
-  logAuthenticationLifecycle,
   isRedundantAgentErrorMessage,
   getErrorMessage
 } from "./chat-message-plumbing";
@@ -243,11 +217,6 @@ export function OwnerApp() {
     initialOwnerAuth?.countryCode ?? initialSetupDraft?.countryCode ?? "+254";
   const [session, setSession] = useState<SessionResponse | null>(initialCachedSession);
   const [sokoSessionContext, setSokoSessionContext] = useState<SokoSessionContext | null>(null);
-  const [authBootstrapState, setAuthBootstrapState] = useState<AuthBootstrapState>(
-    initialCachedSession === null ? "initializing" : "offline-authenticated"
-  );
-  const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
-  const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
@@ -285,14 +254,6 @@ export function OwnerApp() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(
-    accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
-  );
-  const [authenticationView, setAuthenticationView] = useState<"signup" | "login">(
-    initialAuthenticationTarget ?? (initialOwnerAuth !== null ? "login" : "signup")
-  );
-  const [isAccountRestorationOpen, setIsAccountRestorationOpen] =
-    useState(accountRestorationIntent);
   const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
     () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
   );
@@ -306,13 +267,8 @@ export function OwnerApp() {
     initialOwnerRoute?.productId ?? null
   );
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
-  const sessionRefreshInFlightRef = useRef(false);
   const restoredModelInstallationRef = useRef<string | null>(null);
 
-  const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
-  const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
-  const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
-  const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
 
@@ -375,10 +331,6 @@ export function OwnerApp() {
     setAuthenticationView(intent);
     setStatusMessage(intent === "signup" ? "Create your Soko account." : "Log in to your account.");
     navigateToBrowserUrl(authenticationRoute(intent), { state: window.history.state });
-  }
-
-  function forgetRememberedOwnerAuth() {
-    localStorage.removeItem(ownerAuthStorageKey);
   }
 
   function browseAsGuest() {
@@ -592,7 +544,6 @@ export function OwnerApp() {
     business,
     getCustomers: () => customers,
     loadCustomers,
-    authenticateSocialProfile,
     setStatusMessage,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
@@ -751,6 +702,58 @@ export function OwnerApp() {
     initialOwnerRoute,
     registerReset: domainResetRegistry.registerReset
   });
+  // useAuthState is called after useNetworkState/useChatState (whose setNetworkGraph escape hatch
+  // and requireMessagingSignIn/setConversationInbox/setActiveConversationId/loadConversationThread
+  // it depends on) and before useBusinessSetupState (whose deps object references refreshSession by
+  // name at hook-call time) - same TDZ-avoidance reasoning as every other domain hook ordering
+  // decision in this effort.
+  const {
+    authBootstrapState,
+    setAuthBootstrapState,
+    oauthProviders,
+    oauthProvidersLoaded,
+    isAuthOpen,
+    setIsAuthOpen,
+    authenticationView,
+    setAuthenticationView,
+    isAccountRestorationOpen,
+    setIsAccountRestorationOpen,
+    forgetRememberedOwnerAuth,
+    handleOAuthCallback,
+    loadOAuthProviders,
+    acceptAuthenticatedSession,
+    completePhoneFirstAuthentication,
+    refreshSession,
+    authenticateSocialProfile,
+    completeAccountRestoration,
+    loadSokoSessionContext,
+    patchSokoSessionContext,
+    switchActiveBusiness
+  } = useAuthState({
+    business,
+    setBusiness,
+    setSession,
+    sokoSessionContext,
+    setSokoSessionContext,
+    setAgentSettings,
+    setMode,
+    setView,
+    setStatusMessage,
+    setNetworkGraph,
+    navigateToView,
+    loadMarketplaceIntroState,
+    validateStoredBusiness,
+    accountDeletionIntent,
+    accountRestorationIntent,
+    initialAuthenticationTarget,
+    initialCountryCode,
+    initialOwnerAuth,
+    registerReset: domainResetRegistry.registerReset
+  });
+  const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
+  const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
+  const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
+  const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const {
     businessName,
     setBusinessName,
@@ -832,7 +835,7 @@ export function OwnerApp() {
       setSokoSessionContext(null);
       return;
     }
-    void loadSokoSessionContext();
+    void loadSokoSessionContext(setActiveConversationId);
   }, [session?.account.id]);
 
   useEffect(() => {
@@ -1348,224 +1351,6 @@ export function OwnerApp() {
     };
   }, [business?.id, setupComplete, view]);
 
-  async function handleOAuthCallback(): Promise<boolean> {
-    if (window.location.pathname !== routes.oauthCallback) {
-      return false;
-    }
-
-    const parameters = new URLSearchParams(window.location.search);
-    const code = parameters.get("code");
-    const state = parameters.get("state");
-    const pendingOAuth = readPendingOAuthLogin();
-
-    if (code === null || state === null || pendingOAuth === null || state !== pendingOAuth.state) {
-      setStatusMessage("Social sign-in could not be verified. Please try again.");
-      sessionStorage.removeItem(pendingOAuthStorageKey);
-      navigateToBrowserUrl(routes.marketplace, { replace: true });
-      return true;
-    }
-
-    try {
-      const response = await postJson<SessionResponse>("/auth/oauth/callback", {
-        provider: pendingOAuth.provider,
-        state,
-        code,
-        csrfToken: pendingOAuth.csrfToken
-      });
-      sessionStorage.removeItem(pendingOAuthStorageKey);
-      navigateToBrowserUrl(routes.marketplace, { replace: true });
-      await completeOAuthSession(response, pendingOAuth.provider);
-    } catch (error) {
-      sessionStorage.removeItem(pendingOAuthStorageKey);
-      navigateToBrowserUrl(routes.marketplace, { replace: true });
-      setStatusMessage(getErrorMessage(error));
-    }
-
-    return true;
-  }
-
-  async function loadOAuthProviders() {
-    try {
-      const response = await getJson<OAuthProvidersResponse>("/auth/oauth/providers");
-      setOauthProviders(response.providers);
-    } catch {
-      setOauthProviders([]);
-    } finally {
-      setOauthProvidersLoaded(true);
-    }
-  }
-
-  function acceptAuthenticatedSession(response: SessionResponse) {
-    sessionStorage.removeItem(guestBrowsingStorageKey);
-    logAuthenticationLifecycle("session_response_received", response);
-    setSession(response);
-    saveCachedAuthSession(response);
-    logAuthenticationLifecycle("frontend_session_stored", response);
-    setAuthBootstrapState("authenticated");
-    setIsAuthOpen(false);
-  }
-
-  function completePhoneFirstAuthentication(response: SessionResponse) {
-    acceptAuthenticatedSession(response);
-
-    const nextOwnerAuth: OwnerAuthRecord = {
-      contact: response.account.primaryAuthDestination,
-      countryCode:
-        response.account.primaryAuthChannel === "phone"
-          ? (inferCountryCode(response.account.primaryAuthDestination) ?? initialCountryCode)
-          : initialCountryCode
-    };
-    localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-    setIsAuthOpen(false);
-    logAuthenticationLifecycle("redirect_issued", response);
-    navigateToView("chat", { replace: true, mode: "marketplace" });
-    setStatusMessage("Authentication complete");
-  }
-
-  async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
-    const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
-    acceptAuthenticatedSession(response);
-    let networkStatus = "";
-
-    try {
-      const graph = await postJson<NetworkGraphSummary>(
-        `/network/providers/${encodeURIComponent(provider)}/sync`,
-        {}
-      );
-      setNetworkGraph(graph);
-      networkStatus = " Network source connected.";
-    } catch (error) {
-      networkStatus = ` Network sync needs attention: ${getErrorMessage(error)}`;
-    }
-
-    if (business !== null) {
-      const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
-        businessId: business.id,
-        role: "owner"
-      });
-
-      if (!roleCheck.allowed) {
-        setStatusMessage("This social profile is not linked to this Soko shop yet");
-        return;
-      }
-
-      const nextOwnerAuth: OwnerAuthRecord = {
-        contact: `oauth:${provider}:${response.account.id}`,
-        countryCode: initialCountryCode,
-        provider
-      };
-      localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-      navigateToView("chat", { replace: true });
-      setStatusMessage(`${selectedProvider?.label ?? "Social"} login complete.${networkStatus}`);
-      return;
-    }
-
-    const nextOwnerAuth: OwnerAuthRecord = {
-      contact: `oauth:${provider}:${response.account.id}`,
-      countryCode: initialCountryCode,
-      provider
-    };
-    localStorage.setItem(ownerAuthStorageKey, JSON.stringify(nextOwnerAuth));
-    localStorage.removeItem(setupDraftStorageKey);
-    navigateToView("chat", { replace: true, mode: "marketplace" });
-    setIsAuthOpen(false);
-    setStatusMessage(
-      `${selectedProvider?.label ?? "Social"} signup complete. Browse the marketplace or tap Sell to set up a business.${networkStatus}`
-    );
-  }
-
-  async function refreshSession() {
-    if (sessionRefreshInFlightRef.current) return;
-    sessionRefreshInFlightRef.current = true;
-    setAuthBootstrapState((current) =>
-      current === "offline-authenticated" ? current : "restoring-session"
-    );
-    try {
-      const nextSession = await apiFetch<AuthBootstrapResponse>("/auth/bootstrap");
-      logAuthenticationLifecycle("authenticated_user_loaded", nextSession);
-      setSession(nextSession);
-      saveCachedAuthSession(nextSession);
-      setAuthBootstrapState("authenticated");
-      if (!accountDeletionIntent && !accountRestorationIntent) {
-        setIsAuthOpen(false);
-        if (initialAuthenticationTarget !== null) {
-          navigateToView("chat", { replace: true, mode: "marketplace" });
-        }
-      }
-      setStatusMessage("Session active");
-      await loadMarketplaceIntroState();
-      await validateStoredBusiness();
-    } catch (error) {
-      const cached = readCachedAuthSession();
-      const storedBusiness = readStoredBusiness();
-      if (!navigator.onLine && cached !== null && storedBusiness !== null) {
-        setSession(cached);
-        setBusiness(storedBusiness);
-        setAuthBootstrapState("offline-authenticated");
-        setIsAuthOpen(false);
-        setStatusMessage("Offline workspace restored. Cloud data will refresh after reconnect.");
-        return;
-      }
-
-      if (isDefinitiveAuthenticationError(error)) {
-        try {
-          const recovered = await recoverDeviceAccount();
-          if (recovered !== null) {
-            logAuthenticationLifecycle("device_account_recovered", recovered);
-            setSession(recovered);
-            saveCachedAuthSession(recovered);
-            setAuthBootstrapState("authenticated");
-            setIsAuthOpen(false);
-            setStatusMessage("Soko restored this device account.");
-            await loadMarketplaceIntroState();
-            await validateStoredBusiness();
-            return;
-          }
-        } catch (recoveryError) {
-          if (isRetryableApiRequestError(recoveryError)) {
-            setAuthBootstrapState("failed");
-            setStatusMessage(
-              "Soko could not restore this device. Check your connection and retry."
-            );
-            return;
-          }
-        }
-        setSession(null);
-        clearCachedAuthSession();
-        setAuthBootstrapState("reauthentication-required");
-        if (storedBusiness === null) setBusiness(null);
-        if (!accountDeletionIntent && !accountRestorationIntent) {
-          const nextAuthenticationView =
-            initialAuthenticationTarget ?? (initialOwnerAuth === null ? "signup" : "login");
-          setIsAuthOpen(true);
-          setAuthenticationView(nextAuthenticationView);
-          window.history.replaceState(
-            window.history.state,
-            "",
-            authenticationRoute(nextAuthenticationView)
-          );
-          setStatusMessage(
-            nextAuthenticationView === "signup"
-              ? "Create your Soko account."
-              : "Sign in to continue"
-          );
-        }
-        return;
-      }
-
-      if (cached !== null) setSession(cached);
-      if (storedBusiness !== null) setBusiness(storedBusiness);
-      setAuthBootstrapState("failed");
-      if (cached === null) {
-        setIsAuthOpen(true);
-        setAuthenticationView(initialAuthenticationTarget ?? "signup");
-      }
-      setStatusMessage("Soko could not restore this session. Check your connection and retry.");
-    } finally {
-      sessionRefreshInFlightRef.current = false;
-    }
-  }
-
   async function loadMarketplaceIntroState() {
     try {
       const state = await getJson<MarketplaceIntroStateSummary>("/v1/marketplace-intro");
@@ -1637,141 +1422,6 @@ export function OwnerApp() {
 
     setBusiness(storedBusiness);
     setStatusMessage("Saved workspace loaded");
-  }
-
-  async function authenticateSocialProfile(provider: SocialSignupProvider) {
-    const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
-    const providerConfig = oauthProviders.find((item) => item.id === provider);
-
-    if (!oauthProvidersLoaded) {
-      setStatusMessage("Social sign-in is still loading. Try again in a moment.");
-      return;
-    }
-
-    if (providerConfig?.implemented === false || providerConfig?.configured !== true) {
-      setStatusMessage("This login provider is not configured yet.");
-      return;
-    }
-
-    try {
-      const response = await postJson<OAuthStartResponse>("/auth/oauth/start", {
-        provider,
-        redirectUri: `${window.location.origin}${routes.oauthCallback}`
-      });
-      const pendingOAuth: PendingOAuthLogin = {
-        csrfToken: response.csrfToken,
-        provider: response.provider,
-        state: response.state
-      };
-      sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));
-      setStatusMessage(
-        `Redirecting to ${selectedProvider?.label ?? "social"} to continue with your account.`
-      );
-      window.location.assign(response.authorizationUrl);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  function completeAccountRestoration(result: AccountRestorationResult) {
-    const nextBusiness: ActiveBusiness = {
-      ...result.business,
-      role: result.membership.role
-    };
-    const nextAgent = createDefaultAgent(nextBusiness);
-    setBusiness(nextBusiness);
-    setAgentSettings(nextAgent);
-    setIsAccountRestorationOpen(false);
-    setMode("seller");
-    setView("chat");
-    localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
-    localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-    navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
-    setStatusMessage("Account restored. Shop access is active again.");
-  }
-
-  // Account-authoritative record of where the owner last worked. Device-only state such as model
-  // downloads, E2EE private keys, and unsent drafts deliberately stays in browser storage.
-  async function loadSokoSessionContext() {
-    try {
-      const context = await apiFetch<SokoSessionContext>("/v1/session/context");
-      setSokoSessionContext(context);
-      const activeShop =
-        context.shops.find((shop) => shop.business.id === context.activeShopId) ?? context.shops[0];
-      const restoredMode =
-        context.mode === "seller" && activeShop === undefined ? "marketplace" : context.mode;
-      const restoredView = shellViewForSurface(context.activeSurface, restoredMode);
-
-      if (activeShop !== undefined) {
-        const nextBusiness: ActiveBusiness = {
-          ...activeShop.business,
-          role: activeShop.membership.role
-        };
-        const nextAgent = createDefaultAgent(nextBusiness);
-        setBusiness(nextBusiness);
-        setAgentSettings(nextAgent);
-        localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
-        localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-      }
-
-      setMode(restoredMode);
-      setView(restoredView);
-      setActiveConversationId(context.conversationId);
-      localStorage.setItem(activeModeStorageKey, restoredMode);
-      navigateToOwnerRoute(
-        {
-          mode: restoredMode,
-          view: restoredView,
-          ...(restoredView === "chat" ? { conversationId: context.conversationId } : {})
-        },
-        { replace: true }
-      );
-    } catch {
-      // Offline launch continues from the device cache and catches up after reconnecting.
-    }
-  }
-
-  async function patchSokoSessionContext(patch: {
-    mode?: SokoMode;
-    activeShopId?: string | null;
-    activeSurface?: SokoChatSurface;
-    conversationId?: string;
-  }) {
-    if (sokoSessionContext === null) return;
-    try {
-      const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
-        ...patch,
-        expectedSessionVersion: sokoSessionContext.sessionVersion
-      });
-      setSokoSessionContext(updated);
-    } catch (error) {
-      if (!(error instanceof ApiRequestError) || error.code !== "session_context_conflict") return;
-      try {
-        const latest = await apiFetch<SokoSessionContext>("/v1/session/context");
-        const updated = await patchJson<SokoSessionContext>("/v1/session/context", {
-          ...patch,
-          expectedSessionVersion: latest.sessionVersion
-        });
-        setSokoSessionContext(updated);
-      } catch {
-        // Offline navigation remains available; the next connected state change retries sync.
-      }
-    }
-  }
-
-  function switchActiveBusiness(shop: AccountShopSummary, options?: { announce?: boolean }) {
-    const nextBusiness: ActiveBusiness = { ...shop.business, role: shop.membership.role };
-    const nextAgent = createDefaultAgent(nextBusiness);
-    setBusiness(nextBusiness);
-    setAgentSettings(nextAgent);
-    setMode("seller");
-    setView("chat");
-    localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
-    localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-    navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
-    if (options?.announce !== false) {
-      setStatusMessage(`Switched to ${nextBusiness.name}.`);
-    }
   }
 
   function switchMode(nextMode: SokoMode) {
@@ -2054,7 +1704,9 @@ export function OwnerApp() {
             }}
             onSyncContacts={() => void runAction("network-sync", syncPhoneNetwork)}
             onSyncSocial={(provider) =>
-              void runAction("network-social", () => syncSocialNetwork(provider))
+              void runAction("network-social", () =>
+                syncSocialNetwork(provider, authenticateSocialProfile)
+              )
             }
             onRoute={(targetNodeId) =>
               void runAction("network-route", () => requestNetworkRoute(targetNodeId))

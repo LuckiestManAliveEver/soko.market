@@ -75,7 +75,7 @@ describe("frontend user guidance", () => {
     const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
     const refreshEffect = application.slice(
       application.indexOf("async function refreshActiveView"),
-      application.indexOf("async function handleOAuthCallback")
+      application.indexOf("async function loadMarketplaceIntroState")
     );
 
     expect(sharedModule).toContain("const uiBackgroundRefreshIntervalMs = 30_000");
@@ -113,10 +113,7 @@ describe("frontend user guidance", () => {
     expect(importSurface).toContain(
       "PDF, DOCX, XLS, XLSX, and ODS files are extracted on the server"
     );
-    const chatMessagePlumbing = readFileSync(
-      "apps/web/src/chat-message-plumbing.ts",
-      "utf8"
-    );
+    const chatMessagePlumbing = readFileSync("apps/web/src/chat-message-plumbing.ts", "utf8");
     expect(chatMessagePlumbing).toContain('attachment.category === "document"');
     const agentCommandEngine = readFileSync("apps/web/src/agent-command-engine.ts", "utf8");
     expect(agentCommandEngine).toContain(
@@ -161,10 +158,7 @@ describe("frontend user guidance", () => {
 
   it("suppresses the redundant persistent agent error prompt", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const chatMessagePlumbing = readFileSync(
-      "apps/web/src/chat-message-plumbing.ts",
-      "utf8"
-    );
+    const chatMessagePlumbing = readFileSync("apps/web/src/chat-message-plumbing.ts", "utf8");
 
     expect(application).toContain("isRedundantAgentErrorMessage");
     expect(chatMessagePlumbing).toContain(
@@ -236,6 +230,7 @@ describe("frontend user guidance", () => {
 
   it("uses one phone-first surface for login and account recovery", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const authState = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
 
     expect(application).toContain("<PhoneFirstAuthentication");
@@ -256,10 +251,10 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).not.toContain("Send SMS code");
     expect(phoneFirst).not.toContain("SMS verification code");
     expect(phoneFirst).not.toContain("firebase-recaptcha");
-    expect(application).toContain('logAuthenticationLifecycle("session_response_received"');
-    expect(application).toContain('logAuthenticationLifecycle("frontend_session_stored"');
-    expect(application).toContain('logAuthenticationLifecycle("redirect_issued"');
-    expect(application).toContain('logAuthenticationLifecycle("authenticated_user_loaded"');
+    expect(authState).toContain('logAuthenticationLifecycle("session_response_received"');
+    expect(authState).toContain('logAuthenticationLifecycle("frontend_session_stored"');
+    expect(authState).toContain('logAuthenticationLifecycle("redirect_issued"');
+    expect(authState).toContain('logAuthenticationLifecycle("authenticated_user_loaded"');
     expect(application).not.toContain("firebase-auth");
   });
 
@@ -373,10 +368,7 @@ describe("frontend user guidance", () => {
 
   it("offers a read-only guest marketplace without forcing signup", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const marketplaceModeCard = readFileSync(
-      "apps/web/src/MarketplaceModeCard.tsx",
-      "utf8"
-    );
+    const marketplaceModeCard = readFileSync("apps/web/src/MarketplaceModeCard.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
@@ -427,11 +419,9 @@ describe("frontend user guidance", () => {
       "utf8"
     );
     const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
+    const authState = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
     const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
-    const networkRoutes = readFileSync(
-      "services/api/src/cp2/domains/network/routes.ts",
-      "utf8"
-    );
+    const networkRoutes = readFileSync("services/api/src/cp2/domains/network/routes.ts", "utf8");
     const salesRoutes = readFileSync("services/api/src/cp2/domains/sales/routes.ts", "utf8");
 
     expect(application).toContain('"/auth/logout-all"');
@@ -451,7 +441,7 @@ describe("frontend user guidance", () => {
     expect(storefrontCareState).toContain("/storefront/messages");
     expect(storefrontCareState).toContain("/storefront/orders");
     expect(networkState).toContain("/network/invites");
-    expect(application).toContain("/network/providers/");
+    expect(authState).toContain("/network/providers/");
     expect(productsState).toContain("/products/fields");
     expect(salesRoutes).toContain("store.saveProductFieldSchema");
     expect(networkRoutes).toContain("store.syncConnectedSocialProvider");
