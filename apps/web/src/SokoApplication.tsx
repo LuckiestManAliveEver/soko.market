@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
 import {
@@ -134,6 +134,8 @@ import {
   scheduleOwnerNavigationSessionWrite
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useDomainResetRegistry } from "./hooks/useDomainReset";
+import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import {
@@ -386,6 +388,7 @@ import {
 import { ChatSurface } from "./ChatSurface";
 
 import { BuildIdentity, NativeLaunchScreen } from "./BuildIdentity";
+import { OwnerCoreProvider, type OwnerCoreState } from "./hooks/OwnerCoreContext";
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
 export function OwnerApp() {
@@ -456,7 +459,29 @@ export function OwnerApp() {
   const activeViewRef = useRef(view);
   activeViewRef.current = view;
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
+  // Memoized so OwnerCoreContext consumers only re-render when one of these four pieces of state
+  // actually changes, not on every OwnerApp render (i.e. every keystroke in any unrelated domain
+  // form) - see docs/architecture/frontend-modularization-roadmap.md's OwnerApp decomposition notes.
+  const ownerCoreValue: OwnerCoreState = useMemo(
+    () => ({
+      session,
+      setSession,
+      sokoSessionContext,
+      setSokoSessionContext,
+      business,
+      setBusiness,
+      agentSettings,
+      setAgentSettings,
+      view,
+      setView,
+      mode,
+      setMode
+    }),
+    [session, sokoSessionContext, business, agentSettings, view, mode]
+  );
   const { hasPending, isPending, runAction } = useAsyncActions();
+  const domainResetRegistry = useDomainResetRegistry();
+  const { refreshersFor } = useViewRefreshRegistry();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
@@ -1229,7 +1254,10 @@ export function OwnerApp() {
       }
 
       refreshInFlight = true;
-      const refreshes: Promise<void>[] = [];
+      // Domain hooks extracted from OwnerApp register their own `load*` here (keyed by which
+      // views should trigger them) instead of adding another inline `if (view === ...)` branch
+      // below - see apps/web/src/hooks/useViewRefresh.ts. Empty until the first hook registers.
+      const refreshes: Promise<void>[] = refreshersFor(view).map((refresh) => refresh(businessId));
 
       if (view === "chat") refreshes.push(loadNotifications(businessId));
 
@@ -4260,6 +4288,11 @@ export function OwnerApp() {
     sessionStorage.removeItem(guestBrowsingStorageKey);
     setSession(null);
     setBusiness(null);
+    // Fires every domain hook's registered reset (empty until each phase of the OwnerApp state
+    // decomposition lands its hook - see docs/architecture/frontend-modularization-roadmap.md).
+    // Ordered after session/business so any in-flight request's `business === null` guard already
+    // sees the logged-out state before a domain's own reset could race a just-completed response.
+    domainResetRegistry.resetAll();
     setAgentSettings(createDefaultAgent(null));
     setAuthBootstrapState("unauthenticated");
     setBusinessName("");
@@ -6040,482 +6073,493 @@ export function OwnerApp() {
   }
 
   return (
-    <Surface title="Soko.market">
-      <div
-        className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
-        data-shell-instance={shellInstanceIdRef.current}
-        data-capability-profile={capabilitySettingsRef.current.profile}
-      >
-        <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
-          {business === null ? (
-            <div className="auth-brand-title">
-              <AppIcon className="auth-header-icon" />
-              <span>soko.market</span>
-            </div>
-          ) : (
-            <button
-              className="brand-lockup"
-              type="button"
-              onClick={() => setupComplete && openAgentProfile()}
-              onPointerEnter={() => prefetchOwnerView("agent", business.id)}
-              onFocus={() => prefetchOwnerView("agent", business.id)}
-            >
-              <AppIcon className="logo-mark" />
-              <span>
-                <strong>Soko.market</strong>
-                <span>{business.name}</span>
-                <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
-                <small>{business.sokoId}</small>
-              </span>
-            </button>
-          )}
-          {isAuthScreen && installPrompt.canInstall ? (
-            <button
-              className="header-action-button workspace"
-              type="button"
-              data-testid="install-app-button"
-              onClick={() => void installPrompt.installApp()}
-            >
-              Install app
-            </button>
-          ) : null}
-          {!isAuthScreen ? (
-            <div className="header-actions">
-              {installPrompt.canInstall ? (
-                <button
-                  className="header-action-button workspace"
-                  type="button"
-                  data-testid="install-app-button"
-                  onClick={() => void installPrompt.installApp()}
-                >
-                  Install app
-                </button>
-              ) : null}
+    <OwnerCoreProvider value={ownerCoreValue}>
+      <Surface title="Soko.market">
+        <div
+          className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
+          data-shell-instance={shellInstanceIdRef.current}
+          data-capability-profile={capabilitySettingsRef.current.profile}
+        >
+          <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
+            {business === null ? (
+              <div className="auth-brand-title">
+                <AppIcon className="auth-header-icon" />
+                <span>soko.market</span>
+              </div>
+            ) : (
               <button
-                className={`header-action-button marketplace ${
-                  mode === "marketplace" ? "mode-active" : ""
-                }`}
+                className="brand-lockup"
                 type="button"
-                data-testid="marketplace-button"
-                aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
-                onClick={() => {
-                  if (mode === "marketplace") {
-                    navigateToView("chat");
-                    setIsMarketplaceShortcutOpen((open) => !open);
-                    return;
-                  }
-                  switchMode("marketplace");
-                }}
+                onClick={() => setupComplete && openAgentProfile()}
+                onPointerEnter={() => prefetchOwnerView("agent", business.id)}
+                onFocus={() => prefetchOwnerView("agent", business.id)}
               >
-                Marketplace
+                <AppIcon className="logo-mark" />
+                <span>
+                  <strong>Soko.market</strong>
+                  <span>{business.name}</span>
+                  <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
+                  <small>{business.sokoId}</small>
+                </span>
               </button>
-              <button
-                className="header-action-button messages"
-                type="button"
-                data-testid="messages-button"
-                aria-expanded={isMessagingInboxOpen}
-                onClick={() => {
-                  navigateToView("chat");
-                  setIsMessagingInboxOpen((open) => !open);
-                }}
-              >
-                Messages
-              </button>
-              <button
-                className={
-                  mode === "seller"
-                    ? "header-action-button mode-active"
-                    : "header-action-button sell"
-                }
-                type="button"
-                data-testid="sell-button"
-                onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
-                aria-pressed={mode === "seller"}
-              >
-                {mode === "seller" ? "Shop" : "Sell"}
-              </button>
-              {session === null ? (
-                <>
-                  <button
-                    className="header-auth-button secondary"
-                    type="button"
-                    data-testid="header-signup-button"
-                    onClick={() => openAuth("signup")}
-                  >
-                    Sign up
-                  </button>
-                  <button
-                    className="header-auth-button"
-                    type="button"
-                    data-testid="header-login-button"
-                    onClick={() => openAuth("login")}
-                  >
-                    Log in
-                  </button>
-                </>
-              ) : null}
-              {business !== null && mode === "seller" ? (
-                <button
-                  className="header-action-button"
-                  type="button"
-                  onClick={() => setIsWorkspacePanelOpen(true)}
-                  aria-haspopup="dialog"
-                >
-                  Workspace
-                </button>
-              ) : null}
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => {
-                  if (business === null) {
-                    openAuth();
-                  } else {
-                    openAgentProfile();
-                  }
-                }}
-                aria-label={business === null ? "Owner login" : "Account and agent settings"}
-                data-testid={business === null ? undefined : "agent-profile-link"}
-                onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
-                onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
-              >
-                <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
-              </button>
-            </div>
-          ) : null}
-        </header>
-
-        {!isAuthScreen &&
-        statusMessage.length > 0 &&
-        !isRedundantAgentErrorMessage(statusMessage) ? (
-          <div className="app-action-notice" role="status" aria-live="polite">
-            {hasPending ? "Working…" : <AuthenticationActionMessage message={statusMessage} />}
-          </div>
-        ) : null}
-
-        {authBootstrapPending ? (
-          <NativeLaunchScreen
-            message={bootstrapProgressMessage(
-              authBootstrapState,
-              business !== null,
-              agentSettings.name.trim().length > 0
             )}
-          />
-        ) : shouldShowAuth && authenticationView === "signup" ? (
-          <PhoneSignup
-            onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
-            onLogIn={() => openAuth("login")}
-            onCancel={browseAsGuest}
-          />
-        ) : shouldShowAuth ? (
-          <PhoneFirstAuthentication
-            key={authenticationView}
-            remembered={rememberedAccount}
-            onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
-            onSignUp={() => openAuth("signup")}
-            onForgetRemembered={forgetRememberedOwnerAuth}
-            onCancel={browseAsGuest}
-          />
-        ) : isAccountRestorationOpen && session !== null ? (
-          <Suspense fallback={<NativeLaunchScreen message="Opening account restoration…" />}>
-            <AccountRestorationPanel
-              onRestored={completeAccountRestoration}
-              onCancel={() => {
-                setIsAccountRestorationOpen(false);
-                navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
-                setStatusMessage("Account restoration cancelled.");
-              }}
-            />
-          </Suspense>
-        ) : isBusinessSetupOpen && business === null ? (
-          <BusinessSetupPanel
-            step={businessSetupStep}
-            businessName={businessName}
-            language={language}
-            phoneCountryCode={shopPhoneCountryCode}
-            phoneNumber={shopPhoneNumber}
-            statusMessage={statusMessage}
-            isPending={isPending("business-create") || isPending("owner-phone-save")}
-            onBusinessNameChange={setBusinessName}
-            onLanguageChange={setLanguage}
-            onPhoneCountryCodeChange={setShopPhoneCountryCode}
-            onPhoneNumberChange={setShopPhoneNumber}
-            onContinuePhone={(phoneNumber, country) =>
-              void runAction("owner-phone-save", () => saveOwnerPhoneForShop(phoneNumber, country))
-            }
-            onEditPhone={() => setBusinessSetupStep("phone")}
-            onBackToLoginOptions={() => {
-              setIsBusinessSetupOpen(false);
-              openAuth();
-            }}
-            onCancel={() => {
-              setIsBusinessSetupOpen(false);
-              setStatusMessage("Business setup cancelled. You can keep browsing the marketplace.");
-            }}
-            onCreateBusiness={() => void runAction("business-create", createBusiness)}
-          />
-        ) : view === "agent" && business !== null ? (
-          <AgentProfileSurface
-            agent={agentSettings}
-            accountId={session?.account.id ?? ""}
-            identityLevel={session?.account.identityLevel ?? "device"}
-            business={business}
-            oauthProviders={oauthProviders}
-            ownerLabel={userLabel}
-            ownerUser={session?.user ?? null}
-            registeredEmail={
-              session?.user.emailAddress ??
-              (session?.account.primaryAuthChannel === "email"
-                ? session.account.primaryAuthDestination
-                : null)
-            }
-            storefrontUrl={publicStorefrontUrl}
-            shops={sokoSessionContext?.shops ?? []}
-            onSwitchBusiness={switchActiveBusiness}
-            onAgentChange={setAgentSettings}
-            onIdentityLevelChange={(identityLevel) =>
-              setSession((current) =>
-                current === null
-                  ? current
-                  : { ...current, account: { ...current.account, identityLevel } }
-              )
-            }
-            onAccountMerged={(response) => {
-              acceptAuthenticatedSession(response);
-              setStatusMessage("Accounts joined after identity verification.");
-            }}
-            onOwnerUserChange={(user) =>
-              setSession((current) => (current === null ? current : { ...current, user }))
-            }
-            onBack={returnToChat}
-            onEnableNotifications={requestMessagingNotifications}
-            onDisableNotifications={disableMessagingNotifications}
-            onEnsureRuntimeSession={ensureRuntimeSession}
-            onLogout={() => void runAction("logout", logout)}
-            onLogoutAll={() => void runAction("logout-all", () => logout(true))}
-            onScheduleAccountDeletion={scheduleAccountDeletion}
-            isLoggingOut={isPending("logout") || isPending("logout-all")}
-          />
-        ) : (
-          <main
-            className={`chat-workspace-shell ${
-              business !== null && mode === "seller" ? "with-primary-navigation" : ""
-            }`}
-          >
-            {business !== null && mode === "seller" ? (
-              <PrimaryNavigation
-                activeView={view}
-                notificationCount={notificationInbox.summary.unread}
-                onNavigate={navigateToView}
-                onPrefetch={(nextView) => prefetchOwnerView(nextView, business.id)}
-              />
-            ) : null}
-            {deviceCloudFallbackModelId !== null ? (
-              <section
-                className="device-model-fallback-notice"
-                aria-labelledby="device-model-fallback-title"
+            {isAuthScreen && installPrompt.canInstall ? (
+              <button
+                className="header-action-button workspace"
+                type="button"
+                data-testid="install-app-button"
+                onClick={() => void installPrompt.installApp()}
               >
-                <div>
-                  <strong id="device-model-fallback-title">
-                    Use your selected OpenAI fallback here?
-                  </strong>
-                  <p>
-                    This device does not have a ready copy of your preferred local model. Soko can
-                    use the OpenAI model you explicitly selected while leaving the downloaded model
-                    on the other device unchanged.
-                  </p>
-                </div>
-                <div className="device-model-fallback-actions">
-                  <button type="button" onClick={enableDeviceCloudFallback}>
-                    Allow OpenAI fallback here
-                  </button>
-                  <button className="secondary" type="button" onClick={declineDeviceCloudFallback}>
-                    Keep OpenAI off
-                  </button>
-                </div>
-                <small>
-                  OpenAI receives chat context only after this explicit approval and only when no
-                  downloaded model is ready on this device. You can turn it off in Agent settings.
-                </small>
-              </section>
+                Install app
+              </button>
             ) : null}
-            <ChatSurface
-              activeView={view}
-              agent={agentSettings}
-              businessId={business?.id ?? null}
-              businessName={business?.name ?? "Your shop"}
-              hasBusiness={business !== null}
-              chatDraft={chatDraft}
-              initialEmailSubject={
-                activeConversation?.messages
-                  .slice()
-                  .reverse()
-                  .find((message) => message.provider === "email" && message.subject)?.subject ?? ""
-              }
-              customerCount={customers.length}
-              invoiceCount={invoices.length}
-              invoices={invoices}
-              messages={chatMessages}
-              isAuthenticated={session !== null}
-              conversations={conversationInbox}
-              activeConversationId={activeConversationId}
-              isInboxOpen={isMessagingInboxOpen}
-              isContactTyping={isContactTyping}
-              isConfirming={isPending("runtime-confirm")}
-              isSending={isPending("chat-send")}
-              isBrowserGenerating={isBrowserGenerating}
-              securityLabel={
-                isBrowserGenerating
-                  ? "On-device · generating"
-                  : session === null
-                    ? "Sign in for end-to-end encrypted messaging"
-                    : isHumanDirectConversation(activeConversation, session)
-                      ? "End-to-end encrypted"
-                      : "Messages are processed by the Soko agent"
-              }
-              smsDefaultCountry={
-                (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE"
-              }
-              replyToMessageId={replyToMessageId}
-              mode={mode}
-              networkGraph={networkGraph}
-              notificationCount={notificationInbox.summary.unread}
-              oauthProviders={oauthProviders}
-              oauthProvidersLoaded={oauthProvidersLoaded}
-              pendingAttachments={pendingAttachments}
-              productForm={productForm}
-              productFields={productFields}
-              productCount={products.length}
-              products={products}
-              publicStorefronts={publicStorefronts}
-              publicStorefrontsLoading={publicStorefrontsLoading}
-              sokoId={business?.sokoId ?? "Not set up yet"}
-              report={reportSummary}
-              shopPresenceStatus={shopPresenceStatus}
-              workspaceOpen={isWorkspacePanelOpen}
-              syncSummary={syncSummary}
-              buyFeed={buyFeed}
-              isSearchingBuyFeed={isPending("buy-search")}
-              buyCart={buyCart}
-              isCheckingOut={isPending("buy-checkout")}
-              onAttachmentChange={handleChatAttachmentChange}
-              onSellerPhotoCapture={(file) => void handleSellerPhotoCapture(file)}
-              onStatusBroadcastPosted={handleStatusBroadcastPosted}
-              onSearchBuyFeed={(query) => void handleSearchBuyFeed(query)}
-              onAddToCart={handleAddToCart}
-              onRemoveFromCart={handleRemoveFromCart}
-              onCheckout={() => void handleCheckout()}
-              onBackToChat={returnToChat}
-              onConfirm={(token) =>
-                void runAction("runtime-confirm", () => confirmRuntimeAction(token))
-              }
-              onDraftChange={(draft) => void signalTyping(draft)}
-              onSelectConversation={(conversationId) => void selectConversation(conversationId)}
-              onCreateConversation={(recipient, title) =>
-                void runAction("conversation-create", () =>
-                  createDirectConversation(recipient, title)
-                )
-              }
-              onRequireSignIn={requireMessagingSignIn}
-              onBrowseAsGuest={browseAsGuest}
-              onSignUp={() => openAuth("signup")}
+            {!isAuthScreen ? (
+              <div className="header-actions">
+                {installPrompt.canInstall ? (
+                  <button
+                    className="header-action-button workspace"
+                    type="button"
+                    data-testid="install-app-button"
+                    onClick={() => void installPrompt.installApp()}
+                  >
+                    Install app
+                  </button>
+                ) : null}
+                <button
+                  className={`header-action-button marketplace ${
+                    mode === "marketplace" ? "mode-active" : ""
+                  }`}
+                  type="button"
+                  data-testid="marketplace-button"
+                  aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
+                  onClick={() => {
+                    if (mode === "marketplace") {
+                      navigateToView("chat");
+                      setIsMarketplaceShortcutOpen((open) => !open);
+                      return;
+                    }
+                    switchMode("marketplace");
+                  }}
+                >
+                  Marketplace
+                </button>
+                <button
+                  className="header-action-button messages"
+                  type="button"
+                  data-testid="messages-button"
+                  aria-expanded={isMessagingInboxOpen}
+                  onClick={() => {
+                    navigateToView("chat");
+                    setIsMessagingInboxOpen((open) => !open);
+                  }}
+                >
+                  Messages
+                </button>
+                <button
+                  className={
+                    mode === "seller"
+                      ? "header-action-button mode-active"
+                      : "header-action-button sell"
+                  }
+                  type="button"
+                  data-testid="sell-button"
+                  onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
+                  aria-pressed={mode === "seller"}
+                >
+                  {mode === "seller" ? "Shop" : "Sell"}
+                </button>
+                {session === null ? (
+                  <>
+                    <button
+                      className="header-auth-button secondary"
+                      type="button"
+                      data-testid="header-signup-button"
+                      onClick={() => openAuth("signup")}
+                    >
+                      Sign up
+                    </button>
+                    <button
+                      className="header-auth-button"
+                      type="button"
+                      data-testid="header-login-button"
+                      onClick={() => openAuth("login")}
+                    >
+                      Log in
+                    </button>
+                  </>
+                ) : null}
+                {business !== null && mode === "seller" ? (
+                  <button
+                    className="header-action-button"
+                    type="button"
+                    onClick={() => setIsWorkspacePanelOpen(true)}
+                    aria-haspopup="dialog"
+                  >
+                    Workspace
+                  </button>
+                ) : null}
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => {
+                    if (business === null) {
+                      openAuth();
+                    } else {
+                      openAgentProfile();
+                    }
+                  }}
+                  aria-label={business === null ? "Owner login" : "Account and agent settings"}
+                  data-testid={business === null ? undefined : "agent-profile-link"}
+                  onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
+                  onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
+                >
+                  <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
+                </button>
+              </div>
+            ) : null}
+          </header>
+
+          {!isAuthScreen &&
+          statusMessage.length > 0 &&
+          !isRedundantAgentErrorMessage(statusMessage) ? (
+            <div className="app-action-notice" role="status" aria-live="polite">
+              {hasPending ? "Working…" : <AuthenticationActionMessage message={statusMessage} />}
+            </div>
+          ) : null}
+
+          {authBootstrapPending ? (
+            <NativeLaunchScreen
+              message={bootstrapProgressMessage(
+                authBootstrapState,
+                business !== null,
+                agentSettings.name.trim().length > 0
+              )}
+            />
+          ) : shouldShowAuth && authenticationView === "signup" ? (
+            <PhoneSignup
+              onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
               onLogIn={() => openAuth("login")}
-              onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
-              onConversationPreference={(conversationId, preference) =>
-                void runAction("conversation-preference", () =>
-                  updateConversationPreference(conversationId, preference)
+              onCancel={browseAsGuest}
+            />
+          ) : shouldShowAuth ? (
+            <PhoneFirstAuthentication
+              key={authenticationView}
+              remembered={rememberedAccount}
+              onAuthenticated={(response) => void completePhoneFirstAuthentication(response)}
+              onSignUp={() => openAuth("signup")}
+              onForgetRemembered={forgetRememberedOwnerAuth}
+              onCancel={browseAsGuest}
+            />
+          ) : isAccountRestorationOpen && session !== null ? (
+            <Suspense fallback={<NativeLaunchScreen message="Opening account restoration…" />}>
+              <AccountRestorationPanel
+                onRestored={completeAccountRestoration}
+                onCancel={() => {
+                  setIsAccountRestorationOpen(false);
+                  navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
+                  setStatusMessage("Account restoration cancelled.");
+                }}
+              />
+            </Suspense>
+          ) : isBusinessSetupOpen && business === null ? (
+            <BusinessSetupPanel
+              step={businessSetupStep}
+              businessName={businessName}
+              language={language}
+              phoneCountryCode={shopPhoneCountryCode}
+              phoneNumber={shopPhoneNumber}
+              statusMessage={statusMessage}
+              isPending={isPending("business-create") || isPending("owner-phone-save")}
+              onBusinessNameChange={setBusinessName}
+              onLanguageChange={setLanguage}
+              onPhoneCountryCodeChange={setShopPhoneCountryCode}
+              onPhoneNumberChange={setShopPhoneNumber}
+              onContinuePhone={(phoneNumber, country) =>
+                void runAction("owner-phone-save", () =>
+                  saveOwnerPhoneForShop(phoneNumber, country)
                 )
               }
-              onEnableNotifications={() =>
-                void runAction("push-notifications", requestMessagingNotifications)
-              }
-              onInboxOpenChange={setIsMessagingInboxOpen}
-              onReply={setReplyToMessageId}
-              onCancelReply={() => setReplyToMessageId(null)}
-              onEditMessage={(messageId, text) =>
-                void runAction("message-edit", () => updateMessageAction(messageId, { text }))
-              }
-              onDeleteMessage={(messageId) =>
-                void runAction("message-delete", () =>
-                  updateMessageAction(messageId, { deleted: true })
-                )
-              }
-              onReactMessage={(messageId, reaction) =>
-                void runAction(`message-reaction-${messageId}`, () =>
-                  updateMessageAction(messageId, { reaction })
-                )
-              }
-              onAgentFeedback={(messageId, correct) =>
-                void runAction(`agent-feedback-${messageId}`, () =>
-                  submitAgentResponseFeedback(messageId, correct)
-                )
-              }
-              onForwardMessage={(messageId, conversationId) =>
-                void runAction("message-forward", () => forwardMessage(messageId, conversationId))
-              }
-              onRetryMessages={() => void runAction("message-retry", retryQueuedMessages)}
-              onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
-              onOpenWorkspace={() => setIsWorkspacePanelOpen(true)}
-              onNavigate={navigateToView}
-              onModeChange={switchMode}
-              onProductEdit={(product) => {
-                setProductForm({
-                  id: product.id,
-                  name: product.name,
-                  sku: product.sku ?? "",
-                  unit: product.unit,
-                  quantity: String(product.quantity),
-                  buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
-                  sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
-                });
-                setStockProductId(product.id);
-                setStockQuantityAfter(String(product.quantity));
+              onEditPhone={() => setBusinessSetupStep("phone")}
+              onBackToLoginOptions={() => {
+                setIsBusinessSetupOpen(false);
+                openAuth();
               }}
-              onProductFieldsSave={(fields) =>
-                void runAction("product-fields-save", () => saveProductFieldStructure(fields))
+              onCancel={() => {
+                setIsBusinessSetupOpen(false);
+                setStatusMessage(
+                  "Business setup cancelled. You can keep browsing the marketplace."
+                );
+              }}
+              onCreateBusiness={() => void runAction("business-create", createBusiness)}
+            />
+          ) : view === "agent" && business !== null ? (
+            <AgentProfileSurface
+              agent={agentSettings}
+              accountId={session?.account.id ?? ""}
+              identityLevel={session?.account.identityLevel ?? "device"}
+              business={business}
+              oauthProviders={oauthProviders}
+              ownerLabel={userLabel}
+              ownerUser={session?.user ?? null}
+              registeredEmail={
+                session?.user.emailAddress ??
+                (session?.account.primaryAuthChannel === "email"
+                  ? session.account.primaryAuthDestination
+                  : null)
               }
-              onProductFormChange={setProductForm}
-              onProductRemove={(productId) =>
-                void runAction("product-delete", () => deleteProduct(productId))
-              }
-              onProductReset={() => setProductForm(emptyProductForm)}
-              onProductSave={async () => (await runAction("product-save", saveProduct)) ?? false}
-              onNetworkDisconnectSource={(sourceId) =>
-                void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
-              }
-              onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
-              onNetworkInviteContacts={(contacts) =>
-                runAction("network-invite", () => inviteNetworkContacts(contacts)).then(
-                  (count) => count ?? 0
+              storefrontUrl={publicStorefrontUrl}
+              shops={sokoSessionContext?.shops ?? []}
+              onSwitchBusiness={switchActiveBusiness}
+              onAgentChange={setAgentSettings}
+              onIdentityLevelChange={(identityLevel) =>
+                setSession((current) =>
+                  current === null
+                    ? current
+                    : { ...current, account: { ...current.account, identityLevel } }
                 )
               }
-              onNetworkProviderOAuth={authenticateSocialProfile}
-              onNetworkRefresh={() => void loadNetworkGraph()}
-              onRemoveAttachment={removePendingAttachment}
-              onStatusChange={updateShopPresenceStatus}
-              onOpenAgentProfile={() => openAgentProfile()}
-              onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
-              marketplaceIntroComplete={isMarketplaceIntroComplete}
-              marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}
-              onSend={(draft, provider, subject, invoiceId) =>
-                void runAction("chat-send", () =>
-                  sendChatDraft(draft, provider, subject, invoiceId)
-                )
+              onAccountMerged={(response) => {
+                acceptAuthenticatedSession(response);
+                setStatusMessage("Accounts joined after identity verification.");
+              }}
+              onOwnerUserChange={(user) =>
+                setSession((current) => (current === null ? current : { ...current, user }))
               }
-              channelEndpoints={activeConversation?.channels ?? []}
-              onCancelGeneration={() => void cancelBrowserGeneration()}
-              onSmsHandoff={recordSmsHandoff}
-              onPlatformHandoff={recordPlatformHandoff}
+              onBack={returnToChat}
+              onEnableNotifications={requestMessagingNotifications}
+              onDisableNotifications={disableMessagingNotifications}
+              onEnsureRuntimeSession={ensureRuntimeSession}
+              onLogout={() => void runAction("logout", logout)}
+              onLogoutAll={() => void runAction("logout-all", () => logout(true))}
+              onScheduleAccountDeletion={scheduleAccountDeletion}
+              isLoggingOut={isPending("logout") || isPending("logout-all")}
+            />
+          ) : (
+            <main
+              className={`chat-workspace-shell ${
+                business !== null && mode === "seller" ? "with-primary-navigation" : ""
+              }`}
             >
-              {renderActiveWorkspace()}
-            </ChatSurface>
-          </main>
-        )}
-        <footer className="app-credits">
-          <span>Karibu Soko</span>
-          <BuildIdentity />
-        </footer>
-      </div>
-    </Surface>
+              {business !== null && mode === "seller" ? (
+                <PrimaryNavigation
+                  activeView={view}
+                  notificationCount={notificationInbox.summary.unread}
+                  onNavigate={navigateToView}
+                  onPrefetch={(nextView) => prefetchOwnerView(nextView, business.id)}
+                />
+              ) : null}
+              {deviceCloudFallbackModelId !== null ? (
+                <section
+                  className="device-model-fallback-notice"
+                  aria-labelledby="device-model-fallback-title"
+                >
+                  <div>
+                    <strong id="device-model-fallback-title">
+                      Use your selected OpenAI fallback here?
+                    </strong>
+                    <p>
+                      This device does not have a ready copy of your preferred local model. Soko can
+                      use the OpenAI model you explicitly selected while leaving the downloaded
+                      model on the other device unchanged.
+                    </p>
+                  </div>
+                  <div className="device-model-fallback-actions">
+                    <button type="button" onClick={enableDeviceCloudFallback}>
+                      Allow OpenAI fallback here
+                    </button>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={declineDeviceCloudFallback}
+                    >
+                      Keep OpenAI off
+                    </button>
+                  </div>
+                  <small>
+                    OpenAI receives chat context only after this explicit approval and only when no
+                    downloaded model is ready on this device. You can turn it off in Agent settings.
+                  </small>
+                </section>
+              ) : null}
+              <ChatSurface
+                activeView={view}
+                agent={agentSettings}
+                businessId={business?.id ?? null}
+                businessName={business?.name ?? "Your shop"}
+                hasBusiness={business !== null}
+                chatDraft={chatDraft}
+                initialEmailSubject={
+                  activeConversation?.messages
+                    .slice()
+                    .reverse()
+                    .find((message) => message.provider === "email" && message.subject)?.subject ??
+                  ""
+                }
+                customerCount={customers.length}
+                invoiceCount={invoices.length}
+                invoices={invoices}
+                messages={chatMessages}
+                isAuthenticated={session !== null}
+                conversations={conversationInbox}
+                activeConversationId={activeConversationId}
+                isInboxOpen={isMessagingInboxOpen}
+                isContactTyping={isContactTyping}
+                isConfirming={isPending("runtime-confirm")}
+                isSending={isPending("chat-send")}
+                isBrowserGenerating={isBrowserGenerating}
+                securityLabel={
+                  isBrowserGenerating
+                    ? "On-device · generating"
+                    : session === null
+                      ? "Sign in for end-to-end encrypted messaging"
+                      : isHumanDirectConversation(activeConversation, session)
+                        ? "End-to-end encrypted"
+                        : "Messages are processed by the Soko agent"
+                }
+                smsDefaultCountry={
+                  (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE"
+                }
+                replyToMessageId={replyToMessageId}
+                mode={mode}
+                networkGraph={networkGraph}
+                notificationCount={notificationInbox.summary.unread}
+                oauthProviders={oauthProviders}
+                oauthProvidersLoaded={oauthProvidersLoaded}
+                pendingAttachments={pendingAttachments}
+                productForm={productForm}
+                productFields={productFields}
+                productCount={products.length}
+                products={products}
+                publicStorefronts={publicStorefronts}
+                publicStorefrontsLoading={publicStorefrontsLoading}
+                sokoId={business?.sokoId ?? "Not set up yet"}
+                report={reportSummary}
+                shopPresenceStatus={shopPresenceStatus}
+                workspaceOpen={isWorkspacePanelOpen}
+                syncSummary={syncSummary}
+                buyFeed={buyFeed}
+                isSearchingBuyFeed={isPending("buy-search")}
+                buyCart={buyCart}
+                isCheckingOut={isPending("buy-checkout")}
+                onAttachmentChange={handleChatAttachmentChange}
+                onSellerPhotoCapture={(file) => void handleSellerPhotoCapture(file)}
+                onStatusBroadcastPosted={handleStatusBroadcastPosted}
+                onSearchBuyFeed={(query) => void handleSearchBuyFeed(query)}
+                onAddToCart={handleAddToCart}
+                onRemoveFromCart={handleRemoveFromCart}
+                onCheckout={() => void handleCheckout()}
+                onBackToChat={returnToChat}
+                onConfirm={(token) =>
+                  void runAction("runtime-confirm", () => confirmRuntimeAction(token))
+                }
+                onDraftChange={(draft) => void signalTyping(draft)}
+                onSelectConversation={(conversationId) => void selectConversation(conversationId)}
+                onCreateConversation={(recipient, title) =>
+                  void runAction("conversation-create", () =>
+                    createDirectConversation(recipient, title)
+                  )
+                }
+                onRequireSignIn={requireMessagingSignIn}
+                onBrowseAsGuest={browseAsGuest}
+                onSignUp={() => openAuth("signup")}
+                onLogIn={() => openAuth("login")}
+                onRefreshPublicStorefronts={() => void loadPublicStorefronts()}
+                onConversationPreference={(conversationId, preference) =>
+                  void runAction("conversation-preference", () =>
+                    updateConversationPreference(conversationId, preference)
+                  )
+                }
+                onEnableNotifications={() =>
+                  void runAction("push-notifications", requestMessagingNotifications)
+                }
+                onInboxOpenChange={setIsMessagingInboxOpen}
+                onReply={setReplyToMessageId}
+                onCancelReply={() => setReplyToMessageId(null)}
+                onEditMessage={(messageId, text) =>
+                  void runAction("message-edit", () => updateMessageAction(messageId, { text }))
+                }
+                onDeleteMessage={(messageId) =>
+                  void runAction("message-delete", () =>
+                    updateMessageAction(messageId, { deleted: true })
+                  )
+                }
+                onReactMessage={(messageId, reaction) =>
+                  void runAction(`message-reaction-${messageId}`, () =>
+                    updateMessageAction(messageId, { reaction })
+                  )
+                }
+                onAgentFeedback={(messageId, correct) =>
+                  void runAction(`agent-feedback-${messageId}`, () =>
+                    submitAgentResponseFeedback(messageId, correct)
+                  )
+                }
+                onForwardMessage={(messageId, conversationId) =>
+                  void runAction("message-forward", () => forwardMessage(messageId, conversationId))
+                }
+                onRetryMessages={() => void runAction("message-retry", retryQueuedMessages)}
+                onCloseWorkspace={() => setIsWorkspacePanelOpen(false)}
+                onOpenWorkspace={() => setIsWorkspacePanelOpen(true)}
+                onNavigate={navigateToView}
+                onModeChange={switchMode}
+                onProductEdit={(product) => {
+                  setProductForm({
+                    id: product.id,
+                    name: product.name,
+                    sku: product.sku ?? "",
+                    unit: product.unit,
+                    quantity: String(product.quantity),
+                    buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
+                    sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
+                  });
+                  setStockProductId(product.id);
+                  setStockQuantityAfter(String(product.quantity));
+                }}
+                onProductFieldsSave={(fields) =>
+                  void runAction("product-fields-save", () => saveProductFieldStructure(fields))
+                }
+                onProductFormChange={setProductForm}
+                onProductRemove={(productId) =>
+                  void runAction("product-delete", () => deleteProduct(productId))
+                }
+                onProductReset={() => setProductForm(emptyProductForm)}
+                onProductSave={async () => (await runAction("product-save", saveProduct)) ?? false}
+                onNetworkDisconnectSource={(sourceId) =>
+                  void runAction("network-disconnect", () => disconnectNetworkSource(sourceId))
+                }
+                onNetworkPhoneContactsSync={syncSelectedNetworkPhoneContacts}
+                onNetworkInviteContacts={(contacts) =>
+                  runAction("network-invite", () => inviteNetworkContacts(contacts)).then(
+                    (count) => count ?? 0
+                  )
+                }
+                onNetworkProviderOAuth={authenticateSocialProfile}
+                onNetworkRefresh={() => void loadNetworkGraph()}
+                onRemoveAttachment={removePendingAttachment}
+                onStatusChange={updateShopPresenceStatus}
+                onOpenAgentProfile={() => openAgentProfile()}
+                onCompleteMarketplaceIntro={() => void completeMarketplaceIntro()}
+                marketplaceIntroComplete={isMarketplaceIntroComplete}
+                marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}
+                onSend={(draft, provider, subject, invoiceId) =>
+                  void runAction("chat-send", () =>
+                    sendChatDraft(draft, provider, subject, invoiceId)
+                  )
+                }
+                channelEndpoints={activeConversation?.channels ?? []}
+                onCancelGeneration={() => void cancelBrowserGeneration()}
+                onSmsHandoff={recordSmsHandoff}
+                onPlatformHandoff={recordPlatformHandoff}
+              >
+                {renderActiveWorkspace()}
+              </ChatSurface>
+            </main>
+          )}
+          <footer className="app-credits">
+            <span>Karibu Soko</span>
+            <BuildIdentity />
+          </footer>
+        </div>
+      </Surface>
+    </OwnerCoreProvider>
   );
 }
