@@ -36,12 +36,10 @@ describe("frontend navigation performance contracts", () => {
   });
 
   it("keeps navigation, model discovery, and runtime initialization decoupled", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
     const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
-    const navigationBlock = sourceFunction(application, "navigateToView");
-    const settingsEffectStart = agentProfileSurface.indexOf(
-      "void loadConnectedSocialAccounts();"
-    );
+    const navigationBlock = sourceFunction(navigationState, "navigateToView");
+    const settingsEffectStart = agentProfileSurface.indexOf("void loadConnectedSocialAccounts();");
     const settingsMountEffect = agentProfileSurface.slice(
       settingsEffectStart,
       agentProfileSurface.indexOf("}, [accountId, business.id]);", settingsEffectStart)

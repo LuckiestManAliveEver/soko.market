@@ -31,15 +31,12 @@ import { readClientInferencePreferences } from "./inference/preferences";
 import { ensureE2eeIdentity, type E2eeIdentity } from "./e2ee";
 import {
   authenticationRoute,
-  pathForOwnerView,
   readAuthenticationRouteHash,
   readAuthenticationRoutePath,
   readOwnerRoute
 } from "./routes";
 import {
-  canNavigateBackWithinApp,
   initializeOwnerHistory,
-  navigateToBrowserUrl,
   navigateToOwnerRoute,
   readCurrentOwnerRoute,
   readSokoHistoryState,
@@ -60,6 +57,7 @@ import { useAgentModelState } from "./hooks/useAgentModelState";
 import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
 import { useChatState } from "./hooks/useChatState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useNavigationState } from "./hooks/useNavigationState";
 import { useReadinessState } from "./hooks/useReadinessState";
 import { useReportsState } from "./hooks/useReportsState";
 import { useRuntimeHistoryState } from "./hooks/useRuntimeHistoryState";
@@ -76,7 +74,6 @@ import { clearPersistentApiRequestCache } from "./api-request-cache";
 import { detectCapabilitySettings } from "./capability-profile";
 import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
 import { likelyNextOwnerViews, prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
-import { createScreenStateCache, restoreScreenScroll } from "./screen-state-cache";
 import { setConnectivityAuthentication } from "./connectivity";
 
 import { clearMessagingOutbox } from "./messaging/outbox";
@@ -103,13 +100,11 @@ import {
   type MarketplaceIntroStateSummary,
   PhoneFirstAuthentication,
   PhoneSignup,
-  type ProductSummary,
   type PublicStorefrontListResponse,
   type PublicStorefrontSummary,
   type RoleCheckResponse,
   type SessionResponse,
   type SetupDraft,
-  type ShopPresenceStatus,
   type ShopPresenceSummary,
   activeAgentStorageKey,
   activeBusinessStorageKey,
@@ -126,7 +121,7 @@ import {
   uiBackgroundRefreshIntervalMs
 } from "./soko-application-shared";
 
-import { postJson, patchJson, getJson } from "./api-helpers";
+import { postJson, getJson } from "./api-helpers";
 
 import { createPublicStorefrontUrl } from "./sokoid-and-storefront";
 import { inferCountryCode } from "./country-dial-codes";
@@ -179,9 +174,6 @@ export { PublicStorefrontChat } from "./PublicStorefrontChat";
 export function OwnerApp() {
   const installPrompt = useInstallPrompt();
   const capabilitySettingsRef = useRef(detectCapabilitySettings());
-  const screenStateCacheRef = useRef(
-    createScreenStateCache(capabilitySettingsRef.current.preservedScreenLimit)
-  );
   const shellInstanceIdRef = useRef(
     typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
@@ -225,8 +217,6 @@ export function OwnerApp() {
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
   );
-  const activeViewRef = useRef(view);
-  activeViewRef.current = view;
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
   // Memoized so OwnerCoreContext consumers only re-render when one of these four pieces of state
   // actually changes, not on every OwnerApp render (i.e. every keystroke in any unrelated domain
@@ -252,99 +242,20 @@ export function OwnerApp() {
   const domainResetRegistry = useDomainResetRegistry();
   const { registerRefresh, refreshersFor } = useViewRefreshRegistry();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
-  const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
     () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
   );
-  const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(false);
   const [publicStorefronts, setPublicStorefronts] = useState<PublicStorefrontSummary[]>([]);
   const [publicStorefrontsLoading, setPublicStorefrontsLoading] = useState(false);
   const [buyFeed, setBuyFeed] = useState<BuyFeedSummary | null>(null);
   const [buyCart, setBuyCart] = useState<BuyCartItem[]>([]);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
-  const [routedProductId, setRoutedProductId] = useState<string | null>(
-    initialOwnerRoute?.productId ?? null
-  );
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const restoredModelInstallationRef = useRef<string | null>(null);
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
-
-  function navigateToView(nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) {
-    const nextMode = options?.mode ?? mode;
-    const nextRoute = { mode: nextMode, view: nextView };
-    const nextPath = pathForOwnerView(nextView, nextMode);
-    const measurement = startNavigationMeasurement(nextPath);
-    screenStateCacheRef.current.write(activeViewRef.current, {
-      scrollX: window.scrollX,
-      scrollY: window.scrollY
-    });
-    setMode(nextMode);
-    setView(nextView);
-    setRoutedProductId(null);
-    navigateToOwnerRoute(nextRoute, { replace: options?.replace });
-    markNavigationCommitted(measurement);
-    restoreScreenScroll(screenStateCacheRef.current, nextView);
-  }
-
-  function openProduct(product: ProductSummary, options?: { replace?: boolean }) {
-    populateProductForm(product);
-    setMode("seller");
-    setView("products");
-    setRoutedProductId(product.id);
-    navigateToOwnerRoute(
-      { mode: "seller", view: "products", productId: product.id },
-      { replace: options?.replace }
-    );
-  }
-
-  function openAgentProfile(options?: { replace?: boolean }) {
-    if (business === null) return;
-    setMode("seller");
-    setView("agent");
-    navigateToOwnerRoute(
-      { mode: "seller", view: "agent", agentId: agentSettings.id },
-      { replace: options?.replace }
-    );
-  }
-
-  function returnToChat() {
-    const currentState = readSokoHistoryState(window.history.state);
-    if (currentState?.view !== "chat" && canNavigateBackWithinApp()) {
-      window.history.back();
-      return;
-    }
-    navigateToView("chat", { replace: currentState?.view !== "chat" });
-  }
-
-  function requireMessagingSignIn() {
-    openAuth();
-    setStatusMessage("Sign in to send end-to-end encrypted messages.");
-  }
-
-  function openAuth(intent: "signup" | "login" = "login") {
-    sessionStorage.removeItem(guestBrowsingStorageKey);
-    setIsBusinessSetupOpen(false);
-    setIsAuthOpen(true);
-    setAuthenticationView(intent);
-    setStatusMessage(intent === "signup" ? "Create your Soko account." : "Log in to your account.");
-    navigateToBrowserUrl(authenticationRoute(intent), { state: window.history.state });
-  }
-
-  function browseAsGuest() {
-    sessionStorage.setItem(guestBrowsingStorageKey, "true");
-    setIsAuthOpen(false);
-    setIsBusinessSetupOpen(false);
-    setIsAccountRestorationOpen(false);
-    setIsMessagingInboxOpen(false);
-    setMode("marketplace");
-    setView("chat");
-    setIsMarketplaceShortcutOpen(true);
-    navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
-    setStatusMessage("Browsing as a guest. Sign in only when you want to message, order, or sell.");
-  }
 
   // Domain hooks extracted from OwnerApp's state (see docs/architecture/frontend-modularization-
   // roadmap.md's OwnerApp decomposition). Grouped together and placed after every raw useState/
@@ -476,11 +387,51 @@ export function OwnerApp() {
     queueMutationAfterNetworkFailure,
     supplierForm,
     setSupplierForm,
+    getNavigationHelpers: () => ({ routedProductId, setRoutedProductId, navigateToView }),
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  // useNavigationState is called right after useProductsState (needs its populateProductForm as an
+  // eager dep) and before useChatState/useAuthState (whose deps objects reference navigateToView/
+  // requireMessagingSignIn by name at hook-call time). Its own dependencies on Auth/BusinessSetup/
+  // Chat setters - all called later - are deferred behind getters (see useNavigationState.ts) to
+  // avoid the reverse TDZ problem; useProductsState's dependency on this hook's routedProductId/
+  // setRoutedProductId/navigateToView is deferred the same way, via getNavigationHelpers above.
+  const {
+    isMarketplaceShortcutOpen,
+    setIsMarketplaceShortcutOpen,
+    shopPresenceStatus,
+    setShopPresenceStatus,
     routedProductId,
     setRoutedProductId,
     navigateToView,
-    registerReset: domainResetRegistry.registerReset,
-    registerRefresh
+    openProduct,
+    openAgentProfile,
+    returnToChat,
+    requireMessagingSignIn,
+    openAuth,
+    browseAsGuest,
+    switchMode,
+    updateShopPresenceStatus
+  } = useNavigationState({
+    business,
+    session,
+    mode,
+    setMode,
+    view,
+    setView,
+    agentSettings,
+    isMarketplaceIntroComplete,
+    preservedScreenLimit: capabilitySettingsRef.current.preservedScreenLimit,
+    initialRoutedProductId: initialOwnerRoute?.productId ?? null,
+    populateProductForm,
+    setStatusMessage,
+    setIsWorkspacePanelOpen,
+    runAction,
+    getAuthSetters: () => ({ setIsAuthOpen, setAuthenticationView, setIsAccountRestorationOpen }),
+    getBusinessSetupSetters: () => ({ setIsBusinessSetupOpen, setBusinessSetupStep }),
+    getChatSetters: () => ({ setIsMessagingInboxOpen, setChatMessages }),
+    registerReset: domainResetRegistry.registerReset
   });
   const {
     importJobs,
@@ -1422,72 +1373,6 @@ export function OwnerApp() {
 
     setBusiness(storedBusiness);
     setStatusMessage("Saved workspace loaded");
-  }
-
-  function switchMode(nextMode: SokoMode) {
-    if (nextMode === "seller" && business === null) {
-      if (session === null) {
-        setIsBusinessSetupOpen(false);
-        setStatusMessage(
-          "Sign up or log in from the welcome message before registering your first shop."
-        );
-        return;
-      }
-
-      setBusinessSetupStep(
-        typeof session.user.phoneNumberE164 === "string" && session.user.phoneNumberE164.length > 0
-          ? "details"
-          : "phone"
-      );
-      setIsBusinessSetupOpen(true);
-      setStatusMessage(
-        session.user.phoneNumberE164
-          ? "Set up your business to start selling."
-          : "Add your phone number to register your first shop."
-      );
-      return;
-    }
-
-    if (nextMode === mode) {
-      return;
-    }
-
-    const nextPath = pathForOwnerView("chat", nextMode);
-    const measurement = startNavigationMeasurement(nextPath);
-    setMode(nextMode);
-    navigateToOwnerRoute({ mode: nextMode, view: "chat" });
-    setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
-    setView("chat");
-    setIsWorkspacePanelOpen(false);
-    markNavigationCommitted(measurement);
-    setChatMessages((messages) => [
-      ...messages,
-      {
-        id: `mode-${nextMode}-${Date.now()}`,
-        author: "sokoclaw",
-        body:
-          nextMode === "seller"
-            ? `Seller controls are ready for ${business?.name ?? "your shop"}. You can use a card below or tell me what to change.`
-            : "Marketplace mode restored. Tell me what you want to find, or explore a storefront below."
-      }
-    ]);
-  }
-
-  function updateShopPresenceStatus(nextStatus: ShopPresenceStatus) {
-    if (business === null) return;
-
-    void runAction("presence-update", async () => {
-      try {
-        const presence = await patchJson<ShopPresenceSummary>(
-          `/businesses/${business.id}/presence`,
-          { status: nextStatus }
-        );
-        setShopPresenceStatus(presence.status);
-        setStatusMessage(`Shop status set to ${presence.status} across devices`);
-      } catch (error) {
-        setStatusMessage(getErrorMessage(error));
-      }
-    });
   }
 
   async function resetClientToStartup(accountId: string | null, message: string) {

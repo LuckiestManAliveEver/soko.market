@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
 const authStateHook = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
+const navigationStateHook = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
 const syncStateHook = readFileSync("apps/web/src/hooks/useSyncState.ts", "utf8");
 
 describe("persistent authenticated app shell", () => {
@@ -18,9 +19,9 @@ describe("persistent authenticated app shell", () => {
   });
 
   it("uses history state for ordinary routes and keeps one stable shell instance", () => {
-    const navigationStart = application.indexOf("function navigateToView");
-    const navigationEnd = application.indexOf("function returnToChat", navigationStart);
-    const navigation = application.slice(navigationStart, navigationEnd);
+    const navigationStart = navigationStateHook.indexOf("function navigateToView");
+    const navigationEnd = navigationStateHook.indexOf("function returnToChat", navigationStart);
+    const navigation = navigationStateHook.slice(navigationStart, navigationEnd);
 
     expect(navigation).toContain("navigateToOwnerRoute");
     expect(navigation).not.toContain("window.history.pushState");

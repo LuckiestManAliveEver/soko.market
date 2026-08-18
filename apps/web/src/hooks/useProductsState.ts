@@ -40,12 +40,15 @@ interface UseProductsStateDeps {
   // mechanical one.
   supplierForm: SupplierFormState;
   setSupplierForm: Dispatch<SetStateAction<SupplierFormState>>;
-  // routedProductId is a navigation concern (still inline in OwnerApp, Phase 19's domain), not
-  // moving here - deleteProduct only needs to clear it and navigate away when the deleted product
-  // happens to be the one currently deep-linked.
-  routedProductId: string | null;
-  setRoutedProductId: Dispatch<SetStateAction<string | null>>;
-  navigateToView: (nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) => void;
+  // routedProductId/setRoutedProductId/navigateToView all live in Navigation's own hook (Phase 19),
+  // called after Products (Navigation needs Products' populateProductForm as an eager dep) -
+  // deferred behind a getter so deleteProduct reads Navigation's current values at click time
+  // instead of at Products' own hook-call time, which would otherwise be a TDZ error.
+  getNavigationHelpers: () => {
+    routedProductId: string | null;
+    setRoutedProductId: (productId: string | null) => void;
+    navigateToView: (nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) => void;
+  };
   registerReset: (domainKey: string, fn: () => void) => void;
   registerRefresh: (
     domainKey: string,
@@ -181,9 +184,10 @@ export function useProductsState(deps: UseProductsStateDeps) {
       }
 
       await loadProducts(deps.businessId);
-      if (deps.routedProductId === product.id) {
-        deps.setRoutedProductId(null);
-        deps.navigateToView("products", { replace: true, mode: "seller" });
+      const { routedProductId, setRoutedProductId, navigateToView } = deps.getNavigationHelpers();
+      if (routedProductId === product.id) {
+        setRoutedProductId(null);
+        navigateToView("products", { replace: true, mode: "seller" });
       }
       deps.setStatusMessage("Product removed");
     } catch (error) {

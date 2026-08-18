@@ -259,13 +259,13 @@ describe("frontend user guidance", () => {
   });
 
   it("captures a compulsory unverified phone before authenticated first-shop registration", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
     const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
     const authRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const shopSetup = readFileSync("apps/web/src/BusinessSetupPanel.tsx", "utf8");
-    const switchMode = application.slice(
-      application.indexOf("function switchMode"),
-      application.indexOf("async function logout")
+    const switchMode = navigationState.slice(
+      navigationState.indexOf("function switchMode"),
+      navigationState.indexOf("function updateShopPresenceStatus")
     );
 
     expect(phoneSignup).toContain('"/auth/signup/start"');
@@ -368,14 +368,15 @@ describe("frontend user guidance", () => {
 
   it("offers a read-only guest marketplace without forcing signup", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
     const marketplaceModeCard = readFileSync("apps/web/src/MarketplaceModeCard.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
 
     const chatSurfaceForGuest = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
-    expect(application).toContain("function browseAsGuest()");
+    expect(navigationState).toContain("function browseAsGuest()");
     expect(chatSurfaceForGuest).toContain("Browse as guest");
-    expect(application).toContain("Browsing as a guest");
+    expect(navigationState).toContain("Browsing as a guest");
     expect(application).toContain(
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
     );
