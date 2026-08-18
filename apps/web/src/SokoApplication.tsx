@@ -29,8 +29,6 @@ import type {
   MessageHandoffStatus,
   NetworkInviteSummary,
   ProductCaptureJobSummary,
-  ProductFieldDefinition,
-  ProductFieldSchemaSummary,
   PublicCustomerCareRequestSummary,
   PublicOrderSummary,
   PublicStorefrontMessageSummary,
@@ -126,6 +124,7 @@ import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useProductsState } from "./hooks/useProductsState";
 import { useSyncState } from "./hooks/useSyncState";
 import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
@@ -217,8 +216,6 @@ import {
   PhoneFirstAuthentication,
   PhoneSignup,
   type ProcessedConversationMessageResponse,
-  type ProductFieldDraft,
-  type ProductFormState,
   type ProductSummary,
   type PublicStorefrontListResponse,
   type PublicStorefrontSummary,
@@ -232,7 +229,6 @@ import {
   type ShopPresenceStatus,
   type ShopPresenceSummary,
   type SocialSignupProvider,
-  type StockAdjustmentResponse,
   type SupportedLanguage,
   type VerificationTierSummary,
   activeAgentStorageKey,
@@ -273,9 +269,7 @@ import {
   readPendingOAuthLogin,
   readSetupDraft,
   createDefaultAgent,
-  agentSettingsFromBusinessProfile,
-  createDefaultProductFieldDefinitions,
-  productFieldDefinitionsFromDrafts
+  agentSettingsFromBusinessProfile
 } from "./owner-app-bootstrap";
 import {
   viewLabel,
@@ -487,12 +481,8 @@ export function OwnerApp() {
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isContactTyping, setIsContactTyping] = useState(false);
-  const [products, setProducts] = useState<ProductSummary[]>([]);
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     initialOwnerRoute?.productId ?? null
-  );
-  const [productFields, setProductFields] = useState<ProductFieldDefinition[]>(() =>
-    createDefaultProductFieldDefinitions()
   );
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
@@ -520,15 +510,11 @@ export function OwnerApp() {
   const [betaSupportTickets, setBetaSupportTickets] = useState<BetaSupportTicketSummary[]>([]);
   const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
-  const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
-  const [stockProductId, setStockProductId] = useState("");
-  const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
-  const [stockReason, setStockReason] = useState("Manual stock count");
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
   const sessionRefreshInFlightRef = useRef(false);
@@ -557,20 +543,6 @@ export function OwnerApp() {
     navigateToOwnerRoute(nextRoute, { replace: options?.replace });
     markNavigationCommitted(measurement);
     restoreScreenScroll(screenStateCacheRef.current, nextView);
-  }
-
-  function populateProductForm(product: ProductSummary) {
-    setProductForm({
-      id: product.id,
-      name: product.name,
-      sku: product.sku ?? "",
-      unit: product.unit,
-      quantity: String(product.quantity),
-      buyingPrice: product.buyingPrice === null ? "" : String(product.buyingPrice),
-      sellingPrice: product.sellingPrice === null ? "" : String(product.sellingPrice)
-    });
-    setStockProductId(product.id);
-    setStockQuantityAfter(String(product.quantity));
   }
 
   function openProduct(product: ProductSummary, options?: { replace?: boolean }) {
@@ -728,6 +700,36 @@ export function OwnerApp() {
     businessId: business?.id ?? null,
     setStatusMessage,
     queueMutationAfterNetworkFailure,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    products,
+    productFields,
+    productForm,
+    setProductForm,
+    stockProductId,
+    setStockProductId,
+    stockQuantityAfter,
+    setStockQuantityAfter,
+    stockReason,
+    setStockReason,
+    populateProductForm,
+    loadProducts,
+    loadProductFields,
+    saveProduct,
+    deleteProduct,
+    adjustStock,
+    saveProductFieldStructure
+  } = useProductsState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    queueMutationAfterNetworkFailure,
+    supplierForm,
+    setSupplierForm,
+    routedProductId,
+    setRoutedProductId,
+    navigateToView,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
@@ -1229,16 +1231,8 @@ export function OwnerApp() {
       // below - see apps/web/src/hooks/useViewRefresh.ts. Empty until the first hook registers.
       const refreshes: Promise<void>[] = refreshersFor(view).map((refresh) => refresh(businessId));
 
-      if (view === "products") {
-        refreshes.push(loadProducts(businessId), loadProductFields(businessId));
-      }
-
       if (view === "invoices") {
-        refreshes.push(
-          loadProducts(businessId),
-          loadCustomers(businessId),
-          loadInvoices(businessId)
-        );
+        refreshes.push(loadCustomers(businessId), loadInvoices(businessId));
       }
 
       if (view === "home" || view === "network") {
@@ -1259,10 +1253,6 @@ export function OwnerApp() {
 
       if (view === "payments") {
         refreshes.push(loadInvoices(businessId));
-      }
-
-      if (view === "imports") {
-        refreshes.push(loadProducts(businessId));
       }
 
       if (view === "logistics") {
@@ -1886,180 +1876,6 @@ export function OwnerApp() {
     } catch {
       // Shop creation remains successful if messaging is temporarily unavailable.
       // The idempotent client message ID allows a later retry without duplicates.
-    }
-  }
-
-  async function loadProducts(businessId: string) {
-    try {
-      const response = await getJson<ProductSummary[]>(
-        `/businesses/${businessId}/products`,
-        setProducts
-      );
-      setProducts(response);
-      if (stockProductId.length === 0 && response[0] !== undefined) {
-        setStockProductId(response[0].id);
-        setStockQuantityAfter(String(response[0].quantity));
-      }
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadProductFields(businessId: string) {
-    try {
-      const schema = await getJson<ProductFieldSchemaSummary>(
-        `/businesses/${businessId}/products/fields`,
-        (refreshed) => setProductFields(refreshed.fields)
-      );
-      setProductFields(schema.fields);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveProduct(): Promise<boolean> {
-    if (business === null) {
-      return false;
-    }
-
-    try {
-      const payload = {
-        name: productForm.name,
-        sku: productForm.sku,
-        unit: productForm.unit,
-        quantity: Number(productForm.quantity),
-        buyingPrice:
-          productForm.buyingPrice.trim().length === 0 ? null : Number(productForm.buyingPrice),
-        sellingPrice:
-          productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice)
-      };
-      const product =
-        productForm.id === null
-          ? await postJson<ProductSummary>(`/businesses/${business.id}/products`, payload)
-          : await patchJson<ProductSummary>(
-              `/businesses/${business.id}/products/${productForm.id}`,
-              payload
-            );
-
-      setProductForm(emptyProductForm);
-      setStockProductId(product.id);
-      setStockQuantityAfter(String(product.quantity));
-      await loadProducts(business.id);
-      setStatusMessage(productForm.id === null ? "Product created" : "Product updated");
-      return true;
-    } catch (error) {
-      if (
-        productForm.id === null &&
-        (await queueMutationAfterNetworkFailure(error, "product.create", {
-          name: productForm.name,
-          sku: productForm.sku,
-          unit: productForm.unit,
-          quantity: Number(productForm.quantity),
-          buyingPrice:
-            productForm.buyingPrice.trim().length === 0 ? null : Number(productForm.buyingPrice),
-          sellingPrice:
-            productForm.sellingPrice.trim().length === 0 ? null : Number(productForm.sellingPrice)
-        }))
-      ) {
-        setProductForm(emptyProductForm);
-        return true;
-      }
-      setStatusMessage(getErrorMessage(error));
-      return false;
-    }
-  }
-
-  async function deleteProduct(productId: string) {
-    if (business === null) {
-      return;
-    }
-    const productName =
-      products.find((product) => product.id === productId)?.name ?? "this product";
-    if (!window.confirm(`Delete ${productName}? This cannot be undone.`)) return;
-
-    try {
-      const product = await deleteJson<ProductSummary>(
-        `/businesses/${business.id}/products/${productId}`
-      );
-
-      if (productForm.id === product.id) {
-        setProductForm(emptyProductForm);
-      }
-
-      if (stockProductId === product.id) {
-        setStockProductId("");
-        setStockQuantityAfter("");
-      }
-
-      await loadProducts(business.id);
-      if (routedProductId === product.id) {
-        setRoutedProductId(null);
-        navigateToView("products", { replace: true, mode: "seller" });
-      }
-      setStatusMessage("Product removed");
-    } catch (error) {
-      if (
-        await queueMutationAfterNetworkFailure(error, "inventory.adjust", {
-          productId: stockProductId,
-          quantityAfter: Number(stockQuantityAfter),
-          reason: stockReason
-        })
-      ) {
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function adjustStock() {
-    if (business === null || stockProductId.length === 0) {
-      return;
-    }
-
-    try {
-      const response = await postJson<StockAdjustmentResponse>(
-        `/businesses/${business.id}/products/${stockProductId}/stock-adjustments`,
-        {
-          quantityAfter: Number(stockQuantityAfter),
-          reason: stockReason
-        }
-      );
-      await loadProducts(business.id);
-      setStockQuantityAfter(String(response.product.quantity));
-      setStatusMessage("Stock adjusted");
-    } catch (error) {
-      if (
-        supplierForm.id === null &&
-        (await queueMutationAfterNetworkFailure(error, "supplier.create", {
-          name: supplierForm.name,
-          phone: supplierForm.phone,
-          email: supplierForm.email,
-          notes: supplierForm.notes
-        }))
-      ) {
-        setSupplierForm(emptySupplierForm);
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveProductFieldStructure(fields: ProductFieldDraft[]) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const schema = await postJson<ProductFieldSchemaSummary>(
-        `/businesses/${business.id}/products/fields`,
-        {
-          fields: productFieldDefinitionsFromDrafts(fields)
-        }
-      );
-      setProductFields(schema.fields);
-      setStatusMessage("Product field structure saved");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
     }
   }
 
@@ -3526,9 +3342,7 @@ export function OwnerApp() {
     setAuthBootstrapState("unauthenticated");
     setBusinessName("");
     setShopPhoneNumber("");
-    setProducts([]);
     setRoutedProductId(null);
-    setProductFields(createDefaultProductFieldDefinitions());
     setInvoices([]);
     setSecurityReview(null);
     setRuntimeSessions([]);
@@ -3550,7 +3364,6 @@ export function OwnerApp() {
     setLaunchReadiness(null);
     setLaunchIncidents([]);
     setRuntimeSessionId(null);
-    setProductForm(emptyProductForm);
     setInvoiceForm(emptyInvoiceForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
