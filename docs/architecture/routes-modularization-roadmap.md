@@ -1,126 +1,136 @@
 # Routes modularization roadmap
 
+**Status: complete.** All 15 domains extracted. `routes.ts` went from
+9,622 lines (one exported function, `registerCp2Routes`, ~8,500 lines,
+registering all 307 Fastify routes inline) to 2,139 lines - a thin
+composition root that creates the store, derives a handful of
+composition-root values (`emailProvider`, `oauthAllowedRedirectOrigins`,
+`authAttemptsByIp`, etc.), calls each domain's `registerXRoutes(...)`,
+and keeps only the genuinely irreducible CORE auth/session/account/
+business/membership routes.
+
 ## Why this exists
 
 `services/api/src/cp2/routes.ts` is the HTTP layer's counterpart to
 `services/api/src/cp2/store.ts` (see `domain-modularization-roadmap.md`,
-now complete - all 15 business-logic domains extracted into
-`services/api/src/cp2/domains/<name>/store.ts`). `routes.ts` itself was
-never split: one 9,622-line file, one giant exported function
-(`registerCp2Routes`, ~8,500 lines), registering all 307 Fastify routes
-inline, even though the store-side logic each route calls into is now
-cleanly domain-owned. The HTTP layer is the one place left where the
-domain boundaries store.ts now has aren't reflected in the file structure.
-
-This roadmap does the same **in-process modularization** for routes:
-split `registerCp2Routes` into a `registerXRoutes(app, store, ...)`
-function per domain, living in `services/api/src/cp2/domains/<name>/
-routes.ts` next to that domain's existing `store.ts`/`shared.ts`. The
-remaining `registerCp2Routes` in `routes.ts` becomes a thin composition
-root: call every domain's `registerXRoutes`, plus keep the genuinely
-irreducible CORE routes (auth/session/account/business/membership) that
-don't belong to any domain.
+completed earlier - all 15 business-logic domains extracted into
+`services/api/src/cp2/domains/<name>/store.ts`). `routes.ts` itself had
+never been split, even though the store-side logic each route calls into
+was already cleanly domain-owned. This roadmap did the same
+**in-process modularization** for routes: one `registerXRoutes(app,
+store, ...)` function per domain, living in
+`services/api/src/cp2/domains/<name>/routes.ts` next to that domain's
+existing `store.ts`/`shared.ts`.
 
 ## The pattern (established by the first slice: Logistics)
 
 `services/api/src/cp2/route-helpers.ts` was split out first, before any
 domain route file existed - the same "move-it-out-first" reasoning that
-produced `cp2-error.ts`/`text-normalization.ts` on the store.ts side.
-It holds the genuinely domain-agnostic request-parsing and error-response
-helpers used across nearly every route: `sendCp2Error` (used by ~250 of
-307 routes), `parseString`/`parseOptionalString`/`parseNullableString`/
-`parseRequestBody`/`parseStringArray`, the numeric parsers
-(`parseNumber`/`parseNullableNumber`/`parsePositiveInteger`/
-`parseNonNegativeInteger`/`parseOptionalNonNegativeInteger`/
-`parseIntegerString`/`parseBoolean`/`parseIsoTimestamp`), and the
-`BusinessParams` interface (`{ businessId: string }`, extended by 25+
-domain-specific param interfaces). Every future domain route file imports
-from `route-helpers.ts`, never from `routes.ts` itself - avoiding a
-circular import back into the file being split apart.
+produced `cp2-error.ts`/`text-normalization.ts` on the store.ts side. It
+holds the genuinely domain-agnostic request-parsing and error-response
+helpers used across nearly every route: `sendCp2Error`, the string/number/
+boolean parsers, `BusinessParams`, and - added incrementally as later
+rows found genuine cross-domain need - `ContactRecordBody`,
+`StorefrontParams`, `CustomerParams`, `parseAuthChannel`, and
+`enforceAuthIpRate`. Every domain route file imports from
+`route-helpers.ts`, never from `routes.ts` itself, avoiding a circular
+import back into the file being split apart. Final size: 245 lines.
 
-`services/api/src/cp2/domains/logistics/routes.ts` is the reference
-implementation: a single exported `registerLogisticsRoutes(app, store)`
-function containing the domain's 3 route registrations, plus the
-domain-local param/body interfaces and body-parsing helpers that only
-that domain needs (`LogisticsParams`, `LogisticsBody`,
-`LogisticsStatusBody`, `parseFulfillmentMethod`, `parseFulfillmentStatus`).
-`registerCp2Routes` calls `registerLogisticsRoutes(app, store)` in place
-of the 3 routes that used to be inline. Picked as the first slice for the
-same reason it was picked first on the store.ts side: smallest route
-footprint, zero cross-domain coupling.
+Each domain file follows the same shape: an exported
+`registerXRoutes(app, store, ...extraDeps)` function containing that
+domain's route registrations, plus domain-local param/body interfaces
+and body-parsing helpers used only by that domain.
+`registerCp2Routes` calls `registerXRoutes(app, store, ...)` in place of
+the routes that used to be inline.
 
-**One real wrinkle already found**: `routes.ts`'s own
-`parseSyncMutationPayload` (part of the offline sync-queue mutation-replay
-dispatcher, genuinely CORE - it fans out across every domain's body
-shape by `mutationType`) had two `case` branches
-(`"logistics.create"`/`"logistics.update_status"`) calling
-`parseLogisticsBody`/`parseLogisticsStatusBody` directly. Fixed by
-exporting those two parsers from `domains/logistics/routes.ts` and
-importing them back into `routes.ts` - the same "some helpers stay
-genuinely cross-domain, export and re-import rather than duplicate"
-lesson the store.ts side hit repeatedly (`otpTtlMs`, `hashOtp`, etc.).
-**Expect every future domain extraction with sync-queue support to hit
-this same dispatcher** - grep `parseSyncMutationPayload`'s `switch`
-before extracting a domain that owns a `*.create`/`*.update_status`-style
-sync mutation type.
+**Two sharing patterns recurred across almost every row:**
 
-## Domain route slices, sequenced low-coupling first
+1. **"Genuinely shared → route-helpers.ts."** When a type or helper is
+   used by two or more domains (or by CORE and a domain), it lives in
+   `route-helpers.ts`, not in either caller. Used for `StorefrontParams`
+   (CORE + sales + messaging), `CustomerParams` (sales + messaging),
+   `ContactRecordBody` (suppliers + sales + the sync-mutation
+   dispatcher), `parseAuthChannel` (CORE + otp), and `enforceAuthIpRate`
+   (CORE + device-bootstrap, the latter needed it converted from a
+   closure over `authAttemptsByIp` into a plain function taking the map
+   explicitly).
+2. **"Export from the owning domain, re-import into the caller."** When
+   a helper is conceptually owned by one domain but called by another
+   (usually `routes.ts`'s own `parseSyncMutationPayload`, the offline
+   sync-queue mutation-replay dispatcher, or a route that still lives in
+   `routes.ts`), the owning domain exports it and the caller imports it
+   back. Hit repeatedly: `parseLogisticsBody`/`parseLogisticsStatusBody`
+   (logistics, for the sync dispatcher), `decodeReceiptBase64`
+   (suppliers, chained through document-imports and commerce),
+   `parseDocumentImportBody`/`assertDocumentOcrSignature`
+   (document-imports, for suppliers/commerce), `defaultOAuthRedirectUri`
+   (oauth, for messaging's connected-mailbox OAuth flow),
+   `parseProductBody`/`parseStockAdjustmentBody`/`parseInvoiceBody`/
+   `parsePaymentBody` (sales, for the sync dispatcher), and
+   `parseRuntimeTurnBody`/`RuntimeTurnBody` (agent-runtime, for
+   messaging's `POST /v1/messages`, which parses an embedded
+   agent-authored turn).
 
-Route counts, approximate line footprint, and coupling assessment come
-from a structural research pass over the whole file (307 total route
-registrations: 110 GET, 147 POST, 7 PUT, 25 PATCH, 18 DELETE) that
-matched every route's `store.<method>(...)` call against the domain each
-method belongs to. That mapping is ~95% mechanical (most `Cp2Store`
-public methods are one-line delegators to a domain, e.g.
-`return this.xxxDomain.method(...args)`) but not 100% - a handful of
-`Cp2Store` methods aggregate across domains or make an incidental
-side-effect call into another domain's map. Re-check the store method
-body directly before trusting a route's domain assignment, the same
-"read the method bodies, not just the names" lesson the store.ts roadmap
-learned the hard way on its own first slice.
+**Every domain extraction with sync-queue support should grep
+`parseSyncMutationPayload`'s `switch` first** - logistics and sales both
+had cases there; most domains didn't.
 
-| Order | Domain | Routes | Coupling | Notes |
-|---|---|---|---|---|
-| 1 | **Logistics** ✅ done | 3 | Low (confirmed - zero cross-domain calls) | `services/api/src/cp2/domains/logistics/routes.ts`. The reference implementation - see "The pattern" above. `parseLogisticsBody`/`parseLogisticsStatusBody` exported for `routes.ts`'s sync-mutation-replay dispatcher. |
-| 2 | **Notifications** | 2 | Low (expected - smallest surface after logistics) | `GET/PATCH /businesses/:businessId/notifications*`. Even smaller than logistics but a thinner slice, less representative as a template - good second warm-up regardless. |
-| 3 | **Passkeys** | 8 | Low-Medium | Needs the `passkeyRelyingParty` closure (routes.ts:1134 as of the research pass, will drift - re-grep before extracting), which is passkey-specific and moves with the domain. |
-| 4 | **Network** | 11 | Low-Medium | Self-contained per the research pass - re-verify, since the store-side network domain had real reverse coupling into core-kernel Maps that a route-level pass might not have surfaced. |
-| 5 | **Suppliers** | 16 | Medium | Receipt-OCR-confirm route (`POST /businesses/:businessId/receipt-ocr/jobs`) is one of the 9 genuinely cross-domain routes (also calls `document-imports`'s `assertDocumentImportWriteAccess` guard) - decide whether that guard moves with document-imports and gets imported, or gets duplicated. |
-| 6 | **Document imports** | 10 | Medium | Shares `prepareDocumentUpload` (a mid-body closure inside `registerCp2Routes`, not module-level) with the commerce product-captures route - same cross-domain-closure question as suppliers' receipt-OCR route. Also owns `assertDocumentImportWriteAccess`, needed by both suppliers and commerce routes above/below. |
-| 7 | **OAuth** | 20 | Medium | Needs `oauthRedirectUriForRequest`, `enabledAuthProviders`, `startOAuthSession`, `completeOAuthSession` closures (all oauth-specific, clean to move) - re-verify against the current file before extracting, closures may have shifted. |
-| 8 | **Compliance** | 20 | Low-Medium | verification/tax-config/device-trust/beta/launch routes - large single-use body-parser cluster (`parseVerificationTierBody` through `parseBetaTelemetryMetadata`) moves wholesale, no cross-domain routes found. |
-| 9 | **Commerce** | 17 | Medium | `POST /businesses/:businessId/product-captures` is cross-domain (calls `document-imports`'s `assertDocumentImportWriteAccess`) - same guard-sharing question as suppliers/document-imports above. Sequence after document-imports so the guard's home is already decided. |
-| 10 | **Sales** | 27 | Medium-High | Products/customers/invoices/payments/purchase-receipts/storefront-orders. `GET /public/storefronts` is checked by literal-string assertion in `tests/frontend-user-guidance.test.ts:401` (`apiRoutes` variable, raw `readFileSync` of `routes.ts`) - **that test's read target must be repointed to this domain's new route file when this row is extracted**, confirmed the only such literal-string breakage among the 4 read-sites in that test. |
-| 11 | **Agent-runtime** | 37 | Medium-High | Large single-use body-parser cluster (ai-models, agent-profile, agent-model/browser-inference assignment bodies) moves wholesale; check for cross-references into `mcp-tokens` before extracting (mcp-tokens has 0 routes of its own - issuance lives in the separate `services/api/src/mcp/routes.ts` file, not this one - so no actual coupling expected, just verify). |
-| 12 | **Messaging** | 42 | High | Biggest slice by route count - conversations, e2ee, push, mailboxes, native-sms, channels, webhooks, handoffs, typing. `updateSokoSessionContext` (CORE, stays put) calls `messagingDomain.requireAccountConversation(...)` for a real authorization check - confirm that store-level call survives untouched (it's on the store side, not routes, so likely unaffected, but verify the route handler for `PATCH /v1/session/context` doesn't need anything messaging-specific moved with it). |
-| — | **OTP** | 10 pure + 5 shared with CORE | High (shared-closure entanglement, not route-body complexity) | `requestOtpForBody`/`verifyOtpForBody` closures (routes.ts:1191/1225 as of the research pass) are called from CORE signup/recovery/merge routes (`/auth/email/verification/start`, `/auth/identity/email/start`, `/auth/recovery/start`, `/auth/recovery/verify`, `/auth/identity/email/merge/verify`) as well as the pure `/auth/otp/*` routes. Extracting this domain means deciding whether those two closures move to `domains/otp/routes.ts` and get imported back into the CORE routes that need them, or stay as CORE closures that the otp route file also imports - mirrors the store-side `otpChallengesMap` escape-hatch decision, just one layer up. |
-| — | **Device bootstrap** | 3 pure + 3 shared with CORE | Medium (shared-closure entanglement) | `/auth/continue`, `/auth/device/recover`, `/auth/identity/merge/pin` all also call `prepareDeviceSession`(CORE)/`readDeviceSessionMetadata`. Same "does the CORE closure move or does the domain import it back" question as OTP, smaller surface. |
-| — | **Irreducible CORE** (not a row) | 69 pure + 9 shared with otp/device-bootstrap | N/A | Auth/session/account/business/membership routes, plus `enforceAuthIpRate`, `requireAuthFeature`, `readIdentifier`, `normalizeAuthPhone`, `handleSessionRefresh`, `setAuthSessionCookies`, `parseAuthChannel`, `parseSyncMutationPayload` and its dispatcher siblings, `businessPermissions`/`parseOptionalPermission`. Whether this shrinks further once OTP/device-bootstrap are extracted (by moving their shared closures out) is a decision for those two rows, not assumed here. |
+## Domain route slices, in the order actually extracted
+
+| Order | Domain | Routes | File | Coupling found | Notes |
+|---|---|---|---|---|---|
+| 1 | **Logistics** ✅ | 3 | 132 lines | Low, confirmed | Reference implementation. `parseLogisticsBody`/`parseLogisticsStatusBody` exported for the sync-mutation dispatcher. |
+| 2 | **Notifications** ✅ | 2 | 63 lines | Low, confirmed | Smallest slice. Zero cross-domain calls. |
+| 3 | **Passkeys** ✅ | 8 | 209 lines | Low | `passkeyRelyingParty` closure moved with the domain, no external callers. |
+| 4 | **Network** ✅ | 11 | 326 lines | Low | Self-contained, as predicted. |
+| 5 | **Suppliers** ✅ | 17 | 467 lines | Medium, confirmed | `decodeReceiptBase64` exported for document-imports/commerce chain. |
+| 6 | **Document imports** ✅ | 10 | 527 lines | Medium, confirmed | `parseDocumentImportBody`/`assertDocumentOcrSignature`/`ProductCatalogueImportBody` exported for suppliers/commerce. |
+| 7 | **Commerce** ✅ | 18 | 535 lines | Medium, confirmed | Product-captures route needed document-imports's guard, imported per the plan. |
+| 8 | **OAuth** ✅ | 21 | 513 lines | Medium, confirmed | `defaultOAuthRedirectUri` exported - later needed again by messaging (row 12), not just at extraction time. |
+| 9 | **Compliance** ✅ | 20 | 897 lines | Low-Medium, confirmed | Large single-use body-parser cluster moved wholesale, no cross-domain routes. |
+| 10 | **Sales** ✅ | 26 | 652 lines | Medium-High, confirmed | Least contiguous domain to date at the time - interleaved with CORE's public-storefront handling, messaging's channel-link-grant, and a network-invites cluster. `StorefrontParams`/`CustomerParams` moved to `route-helpers.ts`; a **pre-existing duplicate `CustomerParams` interface** (declared twice verbatim in `routes.ts`) was found and consolidated as a side effect. `parseProductBody`/`parseStockAdjustmentBody`/`parseInvoiceBody`/`parsePaymentBody` exported for the sync dispatcher. `tests/frontend-user-guidance.test.ts`'s `saveProductFieldSchema`/`product_fields_not_implemented` assertions repointed to the new file. |
+| 11 | **Agent-runtime** ✅ | 37 | 1,605 lines | Medium-High, confirmed | Split into two widely separated clusters (AI-models/agent-model/browser-inference/profile, then runtime sessions/turns much later) - combined into one `registerAgentRuntimeRoutes` call. `parseRuntimeTurnBody`/`RuntimeTurnBody` exported - needed by messaging (row 12), confirming the row-11 prediction. mcp-tokens had zero coupling as predicted (it has no routes in this file at all). |
+| 12 | **Messaging** ✅ | 40 | 1,525 lines | High, confirmed - the largest slice | Also split into two clusters, the second tightly interleaved with CORE/sales/network routes. Grepped every messaging-only identifier and every other domain file for the 42 `MessagingDomain` store-method names before concluding nothing needed exporting - clean extraction, nothing to re-import elsewhere. `PATCH /v1/session/context`'s internal call into `messagingDomain.requireAccountConversation(...)` is store-side only, confirmed to need no route-level change. |
+| 13 | **OTP** ✅ | 8 | 234 lines | **Low, not High as predicted** | The "high coupling, shared-closure entanglement" flag was a false positive from route-name pattern-matching, not from reading the route bodies. The 5 CORE routes assumed to share `requestOtpForBody`/`verifyOtpForBody` (`/auth/email/verification/start`, `/auth/identity/email/start`, `/auth/recovery/start`, `/auth/recovery/verify`, `/auth/identity/email/merge/verify`) turned out to call `store.requestOtp`/`store.verifyPendingEmail`/`store.verifyEmailIdentityMerge` directly, with their own bespoke orchestration - ordinary cross-domain store calls. The two closures had exactly 8 call sites, all inside this domain's own routes - a fully self-contained extraction with nothing to export back. `parseAuthChannel` moved to `route-helpers.ts` (genuinely shared with CORE's identify/PIN-login/merge routes). **Lesson reconfirmed**: verify a flagged coupling by reading the actual route bodies before believing the flag, the same lesson the doc already stated in its "Ground rule" section and had proven once already on the store.ts side. |
+| 14 | **Device bootstrap** ✅ | 3 | 166 lines | **Low-Medium, smaller than predicted** | `store.prepareDeviceSession`/`readDeviceSessionMetadata` were non-issues (ordinary store method + already-shared helper). `enforceAuthIpRate` was the one real shared closure (9 other CORE routes call it) - moved to `route-helpers.ts` as a plain function taking `authAttemptsByIp` as an explicit parameter instead of closure capture, mirroring the OTP row's `requestOtpForBody`/`verifyOtpForBody` treatment. Last domain extracted. |
 
 **mcp-tokens has no row** - it has 0 HTTP routes in this file; token
 issuance lives entirely in the separate `services/api/src/mcp/routes.ts`
-file, already its own module.
+file, already its own module. Confirmed at row 11, as predicted.
 
-## Ground rule for every future slice
+## What's left in `routes.ts` (irreducible CORE)
 
-One domain per PR, same as the store.ts side. Full test suite must stay
-at the same pass/skip/fail count before and after (baseline at the time
-this doc was created: 657 passed / 27 skipped / 1 pre-existing unrelated
-failure - the migration-051 checksum test - unchanged by any routes-layer
-work, since it's a pure HTTP-registration refactor with no persistence
-surface of its own). Typecheck (`pnpm --filter @soko/api typecheck`) and
-lint (`pnpm exec eslint . --max-warnings=0`) are the two reliable gates
-for this kind of extraction - a clean typecheck after the mechanical move
-is the real proof of completeness, not a re-read of the diff. Grep
-`tests/frontend-user-guidance.test.ts` for literal route-path/string
-assertions against `routes.ts`'s raw source text before extracting any
-domain - `/public/storefronts` (sales) is the one confirmed hit so far,
-but re-check per-row since new hits could exist for domains not yet
-extracted.
+Auth/session/account/business/membership routes, plus the shared
+composition-root closures and helpers that don't belong to any single
+domain: `requireAuthFeature`, `readIdentifier`, `normalizeAuthPhone`,
+`handleSessionRefresh`, `parseSyncMutationPayload` and its dispatcher
+siblings, `businessPermissions`/`parseOptionalPermission`, and the
+`/v1/realtime` + owner-node inference cluster (an unclaimed cluster
+related to agent-runtime/inference dispatch, discovered during the
+messaging row's research but out of scope for this roadmap - flagged as
+a candidate for a future `owner-node`/`inference-broker` domain if
+`routes.ts` ever needs to shrink further).
 
-No live-Postgres re-verification is needed per row here (unlike the
-store.ts roadmap) - this refactor only moves HTTP route registration and
-request parsing, never touches `Cp2Snapshot`, `snapshot()`,
-`hydrateSnapshot()`, or any persistence sweep. The regular test suite
-(which exercises routes end-to-end via `app.inject(...)`) is the correct
-and sufficient gate.
+## Ground rule that held for every slice
+
+One domain per PR, same as the store.ts side. Full test suite stayed at
+the same pass/skip/fail count before and after every single row: **657
+passed / 27 skipped / 1 pre-existing unrelated failure** (the
+migration-051 checksum test, unrelated to this refactor) - unchanged
+from the first commit to the last. Typecheck
+(`pnpm --filter @soko/api typecheck`) and lint
+(`pnpm exec eslint <changed files> --max-warnings=0`) were the two
+reliable mechanical gates; `tests/frontend-user-guidance.test.ts`'s
+literal-string assertions against `routes.ts`'s raw source text broke
+exactly three times across all 15 rows (network's
+`store.syncConnectedSocialProvider`/`network_provider_sync_not_implemented`,
+sales's `saveProductFieldSchema`/`product_fields_not_implemented`, and
+OTP's `phone_pin_only`) - each fixed by adding a second `readFileSync` of
+the new domain file and repointing the specific assertion, never by
+changing product behavior.
+
+No live-Postgres re-verification was needed for any row - this refactor
+only moved HTTP route registration and request parsing, never touched
+`Cp2Snapshot`, `snapshot()`, `hydrateSnapshot()`, or any persistence
+sweep. The regular test suite (which exercises routes end-to-end via
+`app.inject(...)`) was the correct and sufficient gate throughout.
