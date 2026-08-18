@@ -29,6 +29,16 @@ export interface ContactRecordBody {
   notes?: string | null;
 }
 
+/** Shared between CORE's getPublicStorefront and the sales/messaging public-storefront routes. */
+export interface StorefrontParams {
+  agentId: string;
+}
+
+/** Shared between sales customer routes and messaging's channel-link-grant route. */
+export interface CustomerParams extends BusinessParams {
+  customerId: string;
+}
+
 export function parseRequestBody(value: unknown): Record<string, unknown> {
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
     throw new Cp2Error(400, "body_invalid", "Request body must be a JSON object.");

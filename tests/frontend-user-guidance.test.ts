@@ -398,11 +398,11 @@ describe("frontend user guidance", () => {
 
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const routes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
     const networkRoutes = readFileSync(
       "services/api/src/cp2/domains/network/routes.ts",
       "utf8"
     );
+    const salesRoutes = readFileSync("services/api/src/cp2/domains/sales/routes.ts", "utf8");
 
     expect(application).toContain('"/auth/logout-all"');
     expect(application).toContain("onClick={onLogoutAll}");
@@ -421,9 +421,9 @@ describe("frontend user guidance", () => {
     expect(application).toContain("/network/invites");
     expect(application).toContain("/network/providers/");
     expect(application).toContain("/products/fields");
-    expect(routes).toContain("store.saveProductFieldSchema");
+    expect(salesRoutes).toContain("store.saveProductFieldSchema");
     expect(networkRoutes).toContain("store.syncConnectedSocialProvider");
-    expect(routes).not.toContain("product_fields_not_implemented");
+    expect(salesRoutes).not.toContain("product_fields_not_implemented");
     expect(networkRoutes).not.toContain("network_provider_sync_not_implemented");
     expect(application).not.toContain("This feature is not available yet.");
     expect(application).not.toContain("TIEL placeholder");
