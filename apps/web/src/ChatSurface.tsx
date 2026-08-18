@@ -30,9 +30,9 @@ import { normalizeSmsRecipient } from "./messaging/sms-handoff";
 import { shareMessageExternally } from "./messaging/platform-handoff";
 
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
+import { useOwnerCore } from "./hooks/OwnerCoreContext";
 
 import {
-  type AgentSettings,
   type BusinessReportSummary,
   type BuyCartItem,
   type ContactPickerContact,
@@ -80,11 +80,6 @@ import { CatalogueNestedCard } from "./CatalogueNestedCard";
 
 export interface ChatSurfaceProps {
   activeConversationId: string | null;
-  activeView: ShellView;
-  agent: AgentSettings;
-  businessId: string | null;
-  businessName: string;
-  hasBusiness: boolean;
   chatDraft: string;
   initialEmailSubject: string;
   channelEndpoints: ChannelEndpointSummary[];
@@ -94,16 +89,13 @@ export interface ChatSurfaceProps {
   invoiceCount: number;
   invoices: InvoiceSummary[];
   messages: ChatMessage[];
-  isAuthenticated: boolean;
   isInboxOpen: boolean;
   isContactTyping: boolean;
   isConfirming: boolean;
   isSending: boolean;
   isBrowserGenerating: boolean;
   securityLabel: string;
-  smsDefaultCountry: CountryCode;
   replyToMessageId: string | null;
-  mode: SokoMode;
   marketplaceIntroComplete: boolean;
   marketplaceShortcutOpen: boolean;
   networkGraph: NetworkGraphSummary | null;
@@ -117,7 +109,6 @@ export interface ChatSurfaceProps {
   products: ProductSummary[];
   publicStorefronts: PublicStorefrontSummary[];
   publicStorefrontsLoading: boolean;
-  sokoId: string;
   report: BusinessReportSummary | null;
   shopPresenceStatus: ShopPresenceStatus;
   syncSummary: SyncQueueSummary;
@@ -186,11 +177,6 @@ export interface ChatSurfaceProps {
 
 export function ChatSurface({
   activeConversationId,
-  activeView,
-  agent,
-  businessId,
-  businessName,
-  hasBusiness,
   chatDraft,
   initialEmailSubject,
   channelEndpoints,
@@ -200,16 +186,13 @@ export function ChatSurface({
   invoiceCount,
   invoices,
   messages,
-  isAuthenticated,
   isInboxOpen,
   isContactTyping,
   isConfirming,
   isSending,
   isBrowserGenerating,
   securityLabel,
-  smsDefaultCountry,
   replyToMessageId,
-  mode,
   marketplaceIntroComplete,
   marketplaceShortcutOpen,
   networkGraph,
@@ -223,7 +206,6 @@ export function ChatSurface({
   products,
   publicStorefronts,
   publicStorefrontsLoading,
-  sokoId,
   report,
   shopPresenceStatus,
   syncSummary,
@@ -284,6 +266,21 @@ export function ChatSurface({
   onSmsHandoff,
   onPlatformHandoff
 }: ChatSurfaceProps) {
+  // Identity/business/agent/nav state ChatSurface doesn't own itself but forwards to the domain
+  // surfaces it wraps (renderActiveWorkspace()'s switch result renders inside ChatSurface's
+  // children) - read directly from OwnerCoreContext instead of threading through OwnerApp's JSX
+  // call site as props, since ChatSurface is the parent of those surfaces, not a peer of them.
+  // Kept under the same local names the rest of this component already uses throughout.
+  const { session, business, agentSettings, view, mode } = useOwnerCore();
+  const activeView = view;
+  const agent = agentSettings;
+  const businessId = business?.id ?? null;
+  const businessName = business?.name ?? "Your shop";
+  const hasBusiness = business !== null;
+  const isAuthenticated = session !== null;
+  const sokoId = business?.sokoId ?? "Not set up yet";
+  const smsDefaultCountry = (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE";
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sellerPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);

@@ -1,7 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
-import type { CountryCode } from "libphonenumber-js";
-
 import { Surface } from "@soko/ui";
 import type {
   AccountShopSummary,
@@ -2638,11 +2636,6 @@ export function OwnerApp() {
                 </section>
               ) : null}
               <ChatSurface
-                activeView={view}
-                agent={agentSettings}
-                businessId={business?.id ?? null}
-                businessName={business?.name ?? "Your shop"}
-                hasBusiness={business !== null}
                 chatDraft={chatDraft}
                 initialEmailSubject={
                   activeConversation?.messages
@@ -2655,7 +2648,6 @@ export function OwnerApp() {
                 invoiceCount={invoices.length}
                 invoices={invoices}
                 messages={chatMessages}
-                isAuthenticated={session !== null}
                 conversations={conversationInbox}
                 activeConversationId={activeConversationId}
                 isInboxOpen={isMessagingInboxOpen}
@@ -2672,11 +2664,7 @@ export function OwnerApp() {
                         ? "End-to-end encrypted"
                         : "Messages are processed by the Soko agent"
                 }
-                smsDefaultCountry={
-                  (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE"
-                }
                 replyToMessageId={replyToMessageId}
-                mode={mode}
                 networkGraph={networkGraph}
                 notificationCount={notificationInbox.summary.unread}
                 oauthProviders={oauthProviders}
@@ -2688,7 +2676,6 @@ export function OwnerApp() {
                 products={products}
                 publicStorefronts={publicStorefronts}
                 publicStorefrontsLoading={publicStorefrontsLoading}
-                sokoId={business?.sokoId ?? "Not set up yet"}
                 report={reportSummary}
                 shopPresenceStatus={shopPresenceStatus}
                 workspaceOpen={isWorkspacePanelOpen}
