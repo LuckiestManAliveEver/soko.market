@@ -14,7 +14,12 @@ import {
 
 interface UseLogisticsStateDeps {
   businessId: string | null;
-  invoices: InvoiceSummary[];
+  // A getter, not a direct value: Logistics is called early among the domain hooks (Sync needs it
+  // for queueMutationAfterNetworkFailure's transitive consumers), before Invoices exists as a
+  // const. A getter's body isn't evaluated until actually called (at real refresh time, after every
+  // hook in OwnerApp has run), so it sidesteps the ordering constraint a direct value dependency
+  // would hit.
+  getInvoices: () => InvoiceSummary[];
   setStatusMessage: (message: string) => void;
   loadReports: (businessId: string) => Promise<void>;
   queueMutationAfterNetworkFailure: (
@@ -43,9 +48,9 @@ export function useLogisticsState(deps: UseLogisticsStateDeps) {
       setLogistics(nextLogistics);
       if (logisticsForm.invoiceId.length === 0) {
         const existingInvoiceIds = new Set(nextLogistics.map((item) => item.invoiceId));
-        const invoice = deps.invoices.find(
-          (item) => item.status === "confirmed" && !existingInvoiceIds.has(item.id)
-        );
+        const invoice = deps
+          .getInvoices()
+          .find((item) => item.status === "confirmed" && !existingInvoiceIds.has(item.id));
         if (invoice !== undefined) {
           setLogisticsForm((form) => ({ ...form, invoiceId: invoice.id }));
         }

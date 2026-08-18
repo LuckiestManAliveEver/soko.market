@@ -123,6 +123,7 @@ import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
+import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useProductsState } from "./hooks/useProductsState";
 import { useSyncState } from "./hooks/useSyncState";
@@ -187,7 +188,6 @@ import {
   type BusinessResponse,
   type BuyCartItem,
   type ComplianceFormState,
-  type ConfirmInvoiceResponse,
   type ContactPickerContact,
   type ContactPickerNavigator,
   type CountryDialCode,
@@ -196,9 +196,6 @@ import {
   type CustomerSummary,
   type DataExportBundle,
   type DeviceTrustSummary,
-  type InvoiceFormState,
-  type InvoicePreview,
-  type InvoiceSummary,
   type LaunchChecklistItemSummary,
   type LaunchFormState,
   type LaunchIncidentStatus,
@@ -484,7 +481,6 @@ export function OwnerApp() {
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     initialOwnerRoute?.productId ?? null
   );
-  const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
   const [selectedRuntimeHistorySessionId, setSelectedRuntimeHistorySessionId] = useState<
     string | null
@@ -510,11 +506,9 @@ export function OwnerApp() {
   const [betaSupportTickets, setBetaSupportTickets] = useState<BetaSupportTicketSummary[]>([]);
   const [launchReadiness, setLaunchReadiness] = useState<LaunchReadinessReportSummary | null>(null);
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
-  const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
-  const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
   const sessionRefreshInFlightRef = useRef(false);
@@ -649,7 +643,7 @@ export function OwnerApp() {
     updateLogisticsStatus
   } = useLogisticsState({
     businessId: business?.id ?? null,
-    invoices,
+    getInvoices: () => invoices,
     setStatusMessage,
     loadReports,
     queueMutationAfterNetworkFailure,
@@ -751,6 +745,25 @@ export function OwnerApp() {
     loadProducts,
     loadSuppliers,
     loadReports,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    invoices,
+    invoiceForm,
+    setInvoiceForm,
+    invoicePreview,
+    setInvoicePreview,
+    loadInvoices,
+    previewInvoice,
+    saveInvoice,
+    confirmInvoice,
+    printInvoice
+  } = useInvoicesState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    loadProducts,
+    queueMutationAfterNetworkFailure,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
@@ -1232,7 +1245,7 @@ export function OwnerApp() {
       const refreshes: Promise<void>[] = refreshersFor(view).map((refresh) => refresh(businessId));
 
       if (view === "invoices") {
-        refreshes.push(loadCustomers(businessId), loadInvoices(businessId));
+        refreshes.push(loadCustomers(businessId));
       }
 
       if (view === "home" || view === "network") {
@@ -1249,14 +1262,6 @@ export function OwnerApp() {
 
       if (view === "home" || view === "notifications") {
         refreshes.push(loadStorefrontInbox(businessId));
-      }
-
-      if (view === "payments") {
-        refreshes.push(loadInvoices(businessId));
-      }
-
-      if (view === "logistics") {
-        refreshes.push(loadInvoices(businessId));
       }
 
       if (view === "compliance") {
@@ -1876,16 +1881,6 @@ export function OwnerApp() {
     } catch {
       // Shop creation remains successful if messaging is temporarily unavailable.
       // The idempotent client message ID allows a later retry without duplicates.
-    }
-  }
-
-  async function loadInvoices(businessId: string) {
-    try {
-      setInvoices(
-        await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`, setInvoices)
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
     }
   }
 
@@ -2829,104 +2824,6 @@ export function OwnerApp() {
     setStatusMessage(`Exported ${customers.length} contact${customers.length === 1 ? "" : "s"}`);
   }
 
-  function createInvoicePayload() {
-    return {
-      customerId: invoiceForm.customerId || null,
-      customerName: invoiceForm.customerName,
-      taxRate: Number(invoiceForm.taxRate),
-      items: [
-        {
-          productId: invoiceForm.productId,
-          quantity: Number(invoiceForm.quantity),
-          unitPrice: Number(invoiceForm.unitPrice)
-        }
-      ]
-    };
-  }
-
-  async function previewInvoice() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const preview = await postJson<InvoicePreview>(
-        `/businesses/${business.id}/invoices/preview`,
-        createInvoicePayload()
-      );
-      setInvoicePreview(preview);
-      setStatusMessage("Invoice preview ready");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function saveInvoice() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const payload = createInvoicePayload();
-      const invoice =
-        invoiceForm.id === null
-          ? await postJson<InvoiceSummary>(`/businesses/${business.id}/invoices`, payload)
-          : await patchJson<InvoiceSummary>(
-              `/businesses/${business.id}/invoices/${invoiceForm.id}`,
-              payload
-            );
-
-      setInvoiceForm({
-        ...invoiceForm,
-        id: invoice.id
-      });
-      setInvoicePreview(invoice);
-      await loadInvoices(business.id);
-      setStatusMessage(invoiceForm.id === null ? "Invoice draft saved" : "Invoice draft updated");
-    } catch (error) {
-      if (
-        invoiceForm.id === null &&
-        (await queueMutationAfterNetworkFailure(error, "invoice.create", createInvoicePayload()))
-      ) {
-        setInvoiceForm(emptyInvoiceForm);
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function confirmInvoice(invoiceId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const response = await postJson<ConfirmInvoiceResponse>(
-        `/businesses/${business.id}/invoices/${invoiceId}/confirm`,
-        {}
-      );
-      setInvoicePreview(response.invoice);
-      setInvoiceForm(emptyInvoiceForm);
-      await loadInvoices(business.id);
-      await loadProducts(business.id);
-      setStatusMessage("Invoice confirmed and stock moved");
-    } catch (error) {
-      if (
-        await queueMutationAfterNetworkFailure(error, "invoice.confirm", {
-          invoiceId
-        })
-      ) {
-        return;
-      }
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  function printInvoice(invoice: InvoiceSummary | InvoicePreview) {
-    setInvoicePreview(invoice);
-    window.setTimeout(() => window.print(), 0);
-  }
-
   async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
     if (session === null) return;
     try {
@@ -3343,7 +3240,6 @@ export function OwnerApp() {
     setBusinessName("");
     setShopPhoneNumber("");
     setRoutedProductId(null);
-    setInvoices([]);
     setSecurityReview(null);
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
@@ -3364,11 +3260,9 @@ export function OwnerApp() {
     setLaunchReadiness(null);
     setLaunchIncidents([]);
     setRuntimeSessionId(null);
-    setInvoiceForm(emptyInvoiceForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
-    setInvoicePreview(null);
     setPendingAttachments([]);
     setChatDraft("");
     setChatMessages(createInitialChatMessages("Soko.market"));
