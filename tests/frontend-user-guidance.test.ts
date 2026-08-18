@@ -420,6 +420,7 @@ describe("frontend user guidance", () => {
   it("exposes backend session, push, MCP, storefront inbox, invite, and product-field controls", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const productsState = readFileSync("apps/web/src/hooks/useProductsState.ts", "utf8");
+    const networkState = readFileSync("apps/web/src/hooks/useNetworkState.ts", "utf8");
     const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const networkRoutes = readFileSync(
       "services/api/src/cp2/domains/network/routes.ts",
@@ -443,7 +444,7 @@ describe("frontend user guidance", () => {
     expect(application).toContain("/storefront/customer-care");
     expect(application).toContain("/storefront/messages");
     expect(application).toContain("/storefront/orders");
-    expect(application).toContain("/network/invites");
+    expect(networkState).toContain("/network/invites");
     expect(application).toContain("/network/providers/");
     expect(productsState).toContain("/products/fields");
     expect(salesRoutes).toContain("store.saveProductFieldSchema");
