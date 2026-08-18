@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
-import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { isPaymentMethod, type BusinessPermission } from "@soko/business-core";
 import type {
   AgentContextSource,
@@ -81,7 +80,6 @@ import {
   serializeSessionCookie,
   type BusinessAgentProfileInput,
   type Cp2Store,
-  type DeviceSessionMetadata,
   type PhoneContactNetworkInput,
   type SocialProfileNetworkInput
 } from "./store.js";
@@ -99,7 +97,10 @@ import {
   parseRequestBody,
   parseString,
   parseStringArray,
+  readDeviceSessionMetadata,
+  readHeader,
   sendCp2Error,
+  setAuthSessionCookies,
   type BusinessParams
 } from "./route-helpers.js";
 import {
@@ -108,6 +109,7 @@ import {
   registerLogisticsRoutes
 } from "./domains/logistics/routes.js";
 import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
+import { registerPasskeysRoutes } from "./domains/passkeys/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -335,21 +337,6 @@ interface PinLoginBody extends PinBody {
 
 interface StoreLoginBody extends PinBody {
   sokoId?: string;
-}
-
-interface PasskeyRegistrationVerifyBody {
-  ceremonyId?: string;
-  label?: string;
-  response?: RegistrationResponseJSON;
-}
-
-interface PasskeyAuthenticationVerifyBody {
-  ceremonyId?: string;
-  response?: AuthenticationResponseJSON;
-}
-
-interface PasskeyAuthenticationOptionsBody {
-  purpose?: string;
 }
 
 interface IdentifierBody {
@@ -1121,33 +1108,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       const oldest = authAttemptsByIp.keys().next().value;
       if (oldest !== undefined) authAttemptsByIp.delete(oldest);
     }
-  }
-
-  function passkeyRelyingParty(request: FastifyRequest): { origin: string; rpId: string } {
-    const origin = request.headers.origin;
-
-    if (
-      !authRuntime.passkeysEnabled ||
-      origin === undefined ||
-      !authRuntime.expectedPasskeyOrigins.has(origin)
-    ) {
-      throw new Cp2Error(
-        403,
-        "passkey_origin_not_allowed",
-        "Passkeys are not available from this origin."
-      );
-    }
-
-    const url = new URL(origin);
-    const configuredRpId = process.env.WEBAUTHN_RP_ID?.trim();
-    const rpId =
-      configuredRpId && configuredRpId.length > 0
-        ? configuredRpId
-        : url.hostname.startsWith("www.")
-          ? url.hostname.slice(4)
-          : url.hostname;
-
-    return { origin: url.origin, rpId };
   }
 
   function oauthRedirectUriForRequest(
@@ -1968,115 +1928,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.post("/auth/passkeys/register/options", async (request, reply) => {
-    try {
-      const relyingParty = passkeyRelyingParty(request);
-      return await store.beginPasskeyRegistration({
-        sessionId: readSessionCookie(request.headers.cookie),
-        rpId: relyingParty.rpId
-      });
-    } catch (error) {
-      return sendCp2Error(reply, error);
-    }
-  });
-
-  app.post(
-    "/auth/passkeys/register/verify",
-    async (request: FastifyRequest<{ Body: PasskeyRegistrationVerifyBody }>, reply) => {
-      try {
-        const relyingParty = passkeyRelyingParty(request);
-        const label = parseOptionalString(request.body.label);
-        return await store.completePasskeyRegistration({
-          sessionId: readSessionCookie(request.headers.cookie),
-          ceremonyId: parseString(request.body.ceremonyId, "ceremonyId"),
-          ...(label === undefined ? {} : { label }),
-          origin: relyingParty.origin,
-          rpId: relyingParty.rpId,
-          response: parsePasskeyResponse<RegistrationResponseJSON>(request.body.response)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/auth/passkeys/login/options",
-    async (request: FastifyRequest<{ Body: PasskeyAuthenticationOptionsBody }>, reply) => {
-      try {
-        const relyingParty = passkeyRelyingParty(request);
-        return await store.beginPasskeyAuthentication({
-          rpId: relyingParty.rpId,
-          purpose: parsePasskeyAuthenticationPurpose(request.body?.purpose)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/auth/passkeys/login/verify",
-    async (request: FastifyRequest<{ Body: PasskeyAuthenticationVerifyBody }>, reply) => {
-      try {
-        const relyingParty = passkeyRelyingParty(request);
-        const result = await store.completePasskeyAuthentication({
-          ceremonyId: parseString(request.body.ceremonyId, "ceremonyId"),
-          origin: relyingParty.origin,
-          rpId: relyingParty.rpId,
-          response: parsePasskeyResponse<AuthenticationResponseJSON>(request.body.response)
-        });
-        setAuthSessionCookies(reply, request, store, result.session.id);
-        return result;
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get("/auth/passkeys", async (request, reply) => {
-    try {
-      return {
-        passkeys: store.listPasskeys({
-          sessionId: readSessionCookie(request.headers.cookie)
-        })
-      };
-    } catch (error) {
-      return sendCp2Error(reply, error);
-    }
-  });
-
-  app.patch(
-    "/auth/passkeys/:credentialId",
-    async (
-      request: FastifyRequest<{ Params: { credentialId: string }; Body: { label?: string } }>,
-      reply
-    ) => {
-      try {
-        return store.renamePasskey({
-          sessionId: readSessionCookie(request.headers.cookie),
-          credentialId: parseString(request.params.credentialId, "credentialId"),
-          label: parseString(request.body.label, "label")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.delete(
-    "/auth/passkeys/:credentialId",
-    async (request: FastifyRequest<{ Params: { credentialId: string } }>, reply) => {
-      try {
-        return store.revokePasskey({
-          sessionId: readSessionCookie(request.headers.cookie),
-          credentialId: parseString(request.params.credentialId, "credentialId")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerPasskeysRoutes(app, store, authRuntime);
 
   app.get("/auth/oauth/providers", async () => ({
     providers: listOAuthProviders()
@@ -2613,20 +2465,6 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       return sendCp2Error(reply, error);
     }
   });
-
-  app.post(
-    "/auth/pin/recover/passkey",
-    async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
-      try {
-        return store.recoverPhoneAccountPinWithPasskey({
-          sessionId: readSessionCookie(request.headers.cookie),
-          pin: parseString(request.body.pin, "pin")
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
 
   app.get("/session", async (request, reply) => {
     const session = store.getSession(readSessionCookie(request.headers.cookie));
@@ -7626,14 +7464,6 @@ function isMessageHandoffChannel(value: string): value is MessageHandoffChannel 
   return value === "sms_external_app" || value === "platform_share_sheet";
 }
 
-function parsePasskeyResponse<T>(value: unknown): T {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Cp2Error(400, "passkey_response_required", "Passkey response is required.");
-  }
-
-  return value as T;
-}
-
 function defaultOAuthRedirectUri(request: FastifyRequest): string {
   const origin = request.headers.origin ?? process.env.APP_URL?.trim() ?? "http://127.0.0.1:5173";
   let url: URL;
@@ -7667,17 +7497,6 @@ function parseOtpPurpose(value: string | undefined): "signup" | "recovery" {
   throw new Cp2Error(400, "otp_purpose_invalid", "OTP purpose must be signup or recovery.");
 }
 
-function parsePasskeyAuthenticationPurpose(value: string | undefined): "login" | "pin_recovery" {
-  if (value === undefined || value === "login") {
-    return "login";
-  }
-
-  if (value === "pin_recovery") {
-    return "pin_recovery";
-  }
-
-  throw new Cp2Error(400, "passkey_purpose_invalid", "Passkey purpose is invalid.");
-}
 
 function parseOtpDeliveryChannel(value: string | undefined, authChannel: AuthChannel): "email" {
   const deliveryChannel = value ?? "email";
@@ -9297,35 +9116,6 @@ const businessPermissions: BusinessPermission[] = [
   "launch:write",
   "launch:support"
 ];
-
-function setAuthSessionCookies(
-  reply: FastifyReply,
-  request: FastifyRequest,
-  store: Cp2Store,
-  sessionId: string
-): void {
-  store.prepareDeviceSession(sessionId, readDeviceSessionMetadata(request));
-  reply.header("set-cookie", [
-    serializeSessionCookie(sessionId),
-    serializeRefreshCookie(store.consumeSessionRefreshToken(sessionId))
-  ]);
-}
-
-function readDeviceSessionMetadata(request: FastifyRequest): DeviceSessionMetadata {
-  return {
-    deviceId: readHeader(request, "x-soko-device-id") ?? "unknown-device",
-    deviceName: readHeader(request, "x-soko-device-name") ?? "This device",
-    platform: readHeader(request, "x-soko-platform") ?? "unknown",
-    browserOrApp: readHeader(request, "x-soko-client") ?? "web",
-    userAgent: request.headers["user-agent"] ?? ""
-  };
-}
-
-function readHeader(request: FastifyRequest, name: string): string | null {
-  const value = request.headers[name];
-  if (Array.isArray(value)) return value[0]?.trim() || null;
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function observeRequestAbort(
   request: FastifyRequest,

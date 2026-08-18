@@ -7,8 +7,14 @@
  * ~250 of the file's 307 route handlers); every future domain route file imports from here
  * instead of from routes.ts, avoiding a circular import back into the file being split apart.
  */
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { Cp2Error } from "./cp2-error.js";
+import {
+  type Cp2Store,
+  type DeviceSessionMetadata,
+  serializeRefreshCookie,
+  serializeSessionCookie
+} from "./store.js";
 
 /** Nearly every business-scoped route's `Params` type extends this. */
 export interface BusinessParams {
@@ -142,4 +148,34 @@ export function sendCp2Error(reply: FastifyReply, error: unknown) {
   }
 
   throw error;
+}
+
+export function readHeader(request: FastifyRequest, name: string): string | null {
+  const value = request.headers[name];
+  if (Array.isArray(value)) return value[0]?.trim() || null;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function readDeviceSessionMetadata(request: FastifyRequest): DeviceSessionMetadata {
+  return {
+    deviceId: readHeader(request, "x-soko-device-id") ?? "unknown-device",
+    deviceName: readHeader(request, "x-soko-device-name") ?? "This device",
+    platform: readHeader(request, "x-soko-platform") ?? "unknown",
+    browserOrApp: readHeader(request, "x-soko-client") ?? "web",
+    userAgent: request.headers["user-agent"] ?? ""
+  };
+}
+
+/** Sets the session+refresh cookies after any login/signup/session-issuing flow completes. */
+export function setAuthSessionCookies(
+  reply: FastifyReply,
+  request: FastifyRequest,
+  store: Cp2Store,
+  sessionId: string
+): void {
+  store.prepareDeviceSession(sessionId, readDeviceSessionMetadata(request));
+  reply.header("set-cookie", [
+    serializeSessionCookie(sessionId),
+    serializeRefreshCookie(store.consumeSessionRefreshToken(sessionId))
+  ]);
 }
