@@ -28,9 +28,6 @@ import type {
   InferenceRouteDecision,
   MessageHandoffStatus,
   ProductCaptureJobSummary,
-  PublicCustomerCareRequestSummary,
-  PublicOrderSummary,
-  PublicStorefrontMessageSummary,
   SokoChatSurface,
   SokoSessionContext,
   RuntimeRecallEscalation,
@@ -126,6 +123,7 @@ import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useReportsState } from "./hooks/useReportsState";
 import { useRuntimeHistoryState } from "./hooks/useRuntimeHistoryState";
+import { useStorefrontCareState } from "./hooks/useStorefrontCareState";
 import { useNetworkState } from "./hooks/useNetworkState";
 import { useProductsState } from "./hooks/useProductsState";
 import { useSyncState } from "./hooks/useSyncState";
@@ -459,13 +457,6 @@ export function OwnerApp() {
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     initialOwnerRoute?.productId ?? null
   );
-  const [storefrontCareRequests, setStorefrontCareRequests] = useState<
-    PublicCustomerCareRequestSummary[]
-  >([]);
-  const [storefrontMessages, setStorefrontMessages] = useState<PublicStorefrontMessageSummary[]>(
-    []
-  );
-  const [storefrontOrders, setStorefrontOrders] = useState<PublicOrderSummary[]>([]);
   const [securityReview, setSecurityReview] = useState<SecurityReviewSummary | null>(null);
   const [dataExport, setDataExport] = useState<DataExportBundle | null>(null);
   const [verificationTier, setVerificationTier] = useState<VerificationTierSummary | null>(null);
@@ -791,6 +782,12 @@ export function OwnerApp() {
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
+  const { storefrontCareRequests, storefrontMessages, storefrontOrders, loadStorefrontInbox } =
+    useStorefrontCareState({
+      setStatusMessage,
+      registerReset: domainResetRegistry.registerReset,
+      registerRefresh
+    });
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1274,10 +1271,6 @@ export function OwnerApp() {
 
       if (view === "runtime") {
         refreshes.push(loadRuntimeSessions(businessId));
-      }
-
-      if (view === "home" || view === "notifications") {
-        refreshes.push(loadStorefrontInbox(businessId));
       }
 
       if (view === "compliance") {
@@ -1967,23 +1960,6 @@ export function OwnerApp() {
           "sokoclaw-local");
     setAgentSettings((current) => ({ ...current, model: localModelId }));
     setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
-  }
-
-  async function loadStorefrontInbox(businessId: string) {
-    try {
-      const [careRequests, messages, orders] = await Promise.all([
-        getJson<PublicCustomerCareRequestSummary[]>(
-          `/businesses/${businessId}/storefront/customer-care`
-        ),
-        getJson<PublicStorefrontMessageSummary[]>(`/businesses/${businessId}/storefront/messages`),
-        getJson<PublicOrderSummary[]>(`/businesses/${businessId}/storefront/orders`)
-      ]);
-      setStorefrontCareRequests(careRequests);
-      setStorefrontMessages(messages);
-      setStorefrontOrders(orders);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
   }
 
   async function loadCompliance(businessId: string) {
@@ -2856,9 +2832,6 @@ export function OwnerApp() {
     setShopPhoneNumber("");
     setRoutedProductId(null);
     setSecurityReview(null);
-    setStorefrontCareRequests([]);
-    setStorefrontMessages([]);
-    setStorefrontOrders([]);
     setDataExport(null);
     setVerificationTier(null);
     setTaxConfig(null);
