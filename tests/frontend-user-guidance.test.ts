@@ -109,12 +109,17 @@ describe("frontend user guidance", () => {
     expect(application).toContain(
       "PDF, DOCX, XLS, XLSX, and ODS files are extracted on the server"
     );
-    expect(application).toContain('attachment.category === "document"');
-    expect(application).toContain(
+    const chatMessagePlumbing = readFileSync(
+      "apps/web/src/chat-message-plumbing.ts",
+      "utf8"
+    );
+    expect(chatMessagePlumbing).toContain('attachment.category === "document"');
+    const agentCommandEngine = readFileSync("apps/web/src/agent-command-engine.ts", "utf8");
+    expect(agentCommandEngine).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
     expect(application).toContain("OCR ready for scans and images");
-    expect(application).toContain("/documents/ocr");
+    expect(chatMessagePlumbing).toContain("/documents/ocr");
     expect(application).toContain("Extract all readable text");
   });
 
@@ -148,10 +153,16 @@ describe("frontend user guidance", () => {
 
   it("suppresses the redundant persistent agent error prompt", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatMessagePlumbing = readFileSync(
+      "apps/web/src/chat-message-plumbing.ts",
+      "utf8"
+    );
 
     expect(application).toContain("isRedundantAgentErrorMessage");
-    expect(application).toContain(`normalized.includes("you've just experienced an error")`);
-    expect(application).toContain('normalized.includes("ask the agent for help")');
+    expect(chatMessagePlumbing).toContain(
+      `normalized.includes("you've just experienced an error")`
+    );
+    expect(chatMessagePlumbing).toContain('normalized.includes("ask the agent for help")');
     expect(application).toContain("const visibleMessages = showMessageThread");
     expect(application).toContain("!isRedundantAgentErrorMessage(message.body)");
   });
