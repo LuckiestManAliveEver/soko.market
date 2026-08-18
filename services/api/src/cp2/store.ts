@@ -19,7 +19,8 @@ import {
   destinationAccountKey,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
-  normalizeStorefrontLookupId
+  normalizeStorefrontLookupId,
+  otpTtlMs
 } from "./text-normalization.js";
 import { CommerceDomain } from "./domains/commerce/store.js";
 import { ComplianceDomain } from "./domains/compliance/store.js";
@@ -37,7 +38,6 @@ import { DocumentImportDomain } from "./domains/document-imports/store.js";
 import { NotificationsDomain } from "./domains/notifications/store.js";
 import { notificationRuleKey, summarizeNotifications } from "./domains/notifications/shared.js";
 import { NetworkDomain } from "./domains/network/store.js";
-import { providerDisplayName } from "./domains/network/shared.js";
 import { MessagingDomain } from "./domains/messaging/store.js";
 import {
   requirePublicStorefrontBusiness,
@@ -69,6 +69,8 @@ import {
   type PasskeyCeremonyRecord,
   type PasskeyCredentialRecord
 } from "./domains/passkeys/shared.js";
+import { OAuthDomain } from "./domains/oauth/store.js";
+import { type OAuthSessionRecord, type UserIdentityRecord } from "./domains/oauth/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -132,8 +134,6 @@ import type {
   NativeSmsDeviceSummary,
   NetworkInviteSummary,
   OfflineCacheSnapshot,
-  OAuthProvider,
-  OAuthSessionSummary,
   PaymentSummary,
   ProductFieldSchemaSummary,
   ProductSummary,
@@ -167,7 +167,6 @@ import type {
   SupplierContactLinkSummary,
   SupplierSummary,
   SupportedLanguage,
-  UserIdentitySummary,
   VerificationTierSummary,
   SecurityReviewSummary,
   SokoChatSurface,
@@ -204,14 +203,7 @@ import {
   markSyncSynced,
   summarizeSyncQueue
 } from "@soko/sync-core";
-import {
-  assertOAuthSecretMatches,
-  decryptOAuthToken,
-  encryptOAuthToken,
-  hashOAuthSecret,
-  type OAuthProfile,
-  type OAuthTokenResponse
-} from "./oauth.js";
+import { decryptOAuthToken, encryptOAuthToken } from "./oauth.js";
 import {
   maskPhoneNumber,
   normalizeDestination,
@@ -246,7 +238,6 @@ import {
 export const sessionCookieName = "soko_session";
 export const refreshCookieName = "soko_refresh";
 
-const otpTtlMs = 5 * 60 * 1000;
 /**
  * How long a just-rotated refresh token's replacement credentials stay available for a
  * near-simultaneous reuse of the old token to claim, before further reuse is treated as theft.
@@ -373,6 +364,11 @@ export type {
   PasskeyCeremonyRecord,
   PasskeyCredentialRecord
 } from "./domains/passkeys/shared.js";
+export type {
+  ConnectedSocialAccountSummary,
+  OAuthCallbackResult,
+  OAuthStartResult
+} from "./domains/oauth/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -485,25 +481,6 @@ export interface RecoveryCodeRecord {
   createdAt: string;
 }
 
-interface UserIdentityRecord extends UserIdentitySummary {
-  encryptedAccessToken: string | null;
-  encryptedRefreshToken: string | null;
-  encryptedIdToken: string | null;
-  tokenType: string | null;
-  tokenExpiresAt: string | null;
-  scope: string | null;
-  updatedAt: string;
-}
-
-interface OAuthSessionRecord extends OAuthSessionSummary {
-  accountId: string | null;
-  stateHash: string;
-  csrfHash: string;
-  codeChallenge: string;
-  codeVerifier: string;
-  redirectUri: string;
-}
-
 export interface OtpRequestResult {
   challengeId: string;
   destination: string;
@@ -513,31 +490,6 @@ export interface OtpRequestResult {
 
 export interface VerifyOtpResult extends AuthSessionView {
   resumed: boolean;
-}
-
-export interface OAuthStartResult {
-  authorizationUrl: string;
-  csrfToken: string;
-  expiresAt: string;
-  provider: OAuthProvider;
-  state: string;
-}
-
-export interface OAuthCallbackResult extends AuthSessionView {
-  identity: UserIdentitySummary;
-  linked: boolean;
-  resumed: boolean;
-}
-
-export interface ConnectedSocialAccountSummary {
-  id: string;
-  provider: OAuthProvider;
-  providerName: string;
-  connected: boolean;
-  displayName: string | null;
-  email: string | null;
-  connectedAt: string;
-  lastUsedAt: string | null;
 }
 
 export interface ShopDeletionPreviewSummary {
@@ -670,8 +622,8 @@ export interface Cp2Snapshot {
   authTransactions?: AuthTransactionRecord[];
   mfaFactors?: MfaFactorRecord[];
   recoveryCodes?: RecoveryCodeRecord[];
-  userIdentities: UserIdentitySummary[];
-  oauthSessions: OAuthSessionSummary[];
+  userIdentities: UserIdentityRecord[];
+  oauthSessions: OAuthSessionRecord[];
   accountPinHashes: Array<{
     accountId: string;
     pinHash: string;
@@ -799,13 +751,35 @@ export class Cp2Store {
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
     this.emailMailboxProviderClient =
       options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
+    this.oauthDomain = new OAuthDomain({
+      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      requireAuthorizedSession: (sessionId, businessId, permission, now) =>
+        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      createAccount: (channel, destination, now) => this.createAccount(channel, destination, now),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      userForAccount: (accountId) => this.userForAccount(accountId),
+      updateUserDisplayName: (userId, displayName) =>
+        this.updateUserDisplayName(userId, displayName),
+      linkEmailAccountDestination: (email, accountId) =>
+        this.linkEmailAccountDestination(email, accountId),
+      addAccountIdentity: (account, user, type, value, isPrimary, now, verified) =>
+        this.addAccountIdentity(account, user, type, value, isPrimary, now, verified),
+      promoteAccountIdentityLevel: (accountId, nextLevel) =>
+        this.promoteAccountIdentityLevel(accountId, nextLevel),
+      createSession: (account, user, now) => this.createSession(account, user, now),
+      markSessionPinVerified: (sessionId, now) => this.markSessionPinVerified(sessionId, now),
+      resolveAnyIdentityAccount: (type, normalizedValue) =>
+        this.resolveAnyIdentityAccount(type, normalizedValue),
+      hasAccountPinHash: (accountId) => this.hasAccountPinHash(accountId)
+    });
     this.networkDomain = new NetworkDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       accounts: this.accounts,
       userByAccount: this.userByAccount,
       memberships: this.memberships,
       businesses: this.businesses,
-      userIdentities: this.userIdentities
+      userIdentities: this.oauthDomain.userIdentitiesMap
     });
     this.salesDomain = new SalesDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1098,10 +1072,10 @@ export class Cp2Store {
   private readonly authTransactions = new Map<string, AuthTransactionRecord>();
   private readonly mfaFactors = new Map<string, MfaFactorRecord>();
   private readonly recoveryCodes = new Map<string, RecoveryCodeRecord>();
-  private readonly userIdentities = new Map<string, UserIdentityRecord>();
-  private readonly identityByProviderSubject = new Map<string, string>();
-  private readonly identityByEmail = new Map<string, string>();
-  private readonly oauthSessions = new Map<string, OAuthSessionRecord>();
+  // userIdentities/identityByProviderSubject/identityByEmail/oauthSessions now live inside
+  // `oauthDomain` (services/api/src/cp2/domains/oauth/store.ts) - accessed via its map getters
+  // for the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  private readonly oauthDomain: OAuthDomain;
   private readonly accountPinHashes = new Map<string, string>();
   private readonly failedPinAttempts = new Map<string, number[]>();
   // networkNodes/networkEdges/networkSources/networkPermissions/networkRoutes/contactHashes/
@@ -1518,282 +1492,31 @@ export class Cp2Store {
     return this.completeOtpVerification(challenge, now);
   }
 
-  authenticateSocialProfile(input: {
-    provider: string;
-    email: string;
-    displayName?: string;
-    now?: Date;
-  }): VerifyOtpResult {
-    const result = this.completeOAuthProfileAuthentication({
-      provider: input.provider as OAuthProvider,
-      profile: {
-        providerSubject: normalizeDestination("email", input.email),
-        email: input.email,
-        emailVerified: true,
-        displayName: input.displayName ?? null
-      },
-      tokens: {},
-      ...(input.now === undefined ? {} : { now: input.now })
-    });
-
-    return {
-      account: result.account,
-      user: result.user,
-      session: result.session,
-      resumed: result.resumed
-    };
+  authenticateSocialProfile(
+    ...args: Parameters<OAuthDomain["authenticateSocialProfile"]>
+  ): ReturnType<OAuthDomain["authenticateSocialProfile"]> {
+    return this.oauthDomain.authenticateSocialProfile(...args);
   }
-
-  beginOAuthSession(input: {
-    accountSessionId: string | null;
-    authorizationUrl: string;
-    codeChallenge: string;
-    codeVerifier: string;
-    csrfToken: string;
-    provider: OAuthProvider;
-    redirectUri: string;
-    state: string;
-    now?: Date;
-  }): OAuthStartResult {
-    const now = input.now ?? new Date();
-    const accountSession =
-      input.accountSessionId === null
-        ? null
-        : this.requirePinVerifiedSession(input.accountSessionId, now);
-    const oauthSession: OAuthSessionRecord = {
-      id: randomUUID(),
-      provider: input.provider,
-      accountId: accountSession?.account.id ?? null,
-      stateHash: hashOAuthSecret(input.state),
-      csrfHash: hashOAuthSecret(input.csrfToken),
-      codeChallenge: input.codeChallenge,
-      codeVerifier: input.codeVerifier,
-      redirectUri: input.redirectUri,
-      expiresAt: new Date(now.getTime() + otpTtlMs).toISOString(),
-      completedAt: null,
-      createdAt: now.toISOString()
-    };
-
-    this.oauthSessions.set(oauthSession.id, oauthSession);
-    this.recordAuditEvent({
-      type: "auth.oauth_started",
-      aggregateType: "oauth_session",
-      aggregateId: oauthSession.id,
-      actorId: accountSession?.user.id ?? "anonymous",
-      occurredAt: now.toISOString(),
-      payload: {
-        provider: input.provider,
-        accountId: accountSession?.account.id ?? null
-      }
-    });
-
-    return {
-      authorizationUrl: input.authorizationUrl,
-      csrfToken: input.csrfToken,
-      expiresAt: oauthSession.expiresAt,
-      provider: input.provider,
-      state: input.state
-    };
+  beginOAuthSession(
+    ...args: Parameters<OAuthDomain["beginOAuthSession"]>
+  ): ReturnType<OAuthDomain["beginOAuthSession"]> {
+    return this.oauthDomain.beginOAuthSession(...args);
   }
-
-  getOAuthExchangeData(input: {
-    provider: OAuthProvider;
-    state: string;
-    csrfToken: string;
-    now?: Date;
-  }): { codeVerifier: string; redirectUri: string } {
-    const oauthSession = this.getOAuthSessionForCallback(input);
-
-    return {
-      codeVerifier: oauthSession.codeVerifier,
-      redirectUri: oauthSession.redirectUri
-    };
+  getOAuthExchangeData(
+    ...args: Parameters<OAuthDomain["getOAuthExchangeData"]>
+  ): ReturnType<OAuthDomain["getOAuthExchangeData"]> {
+    return this.oauthDomain.getOAuthExchangeData(...args);
   }
-
-  private getOAuthSessionForCallback(input: {
-    provider: OAuthProvider;
-    state: string;
-    csrfToken: string;
-    now?: Date;
-  }): OAuthSessionRecord {
-    const now = input.now ?? new Date();
-    const stateHash = hashOAuthSecret(input.state);
-    const oauthSession = [...this.oauthSessions.values()].find(
-      (session) =>
-        session.provider === input.provider &&
-        session.completedAt === null &&
-        session.stateHash === stateHash
-    );
-
-    if (oauthSession === undefined) {
-      throw new Cp2Error(404, "oauth_session_not_found", "OAuth session was not found.");
-    }
-
-    if (Date.parse(oauthSession.expiresAt) <= now.getTime()) {
-      throw new Cp2Error(410, "oauth_session_expired", "OAuth session has expired.");
-    }
-
-    assertOAuthSecretMatches(input.state, oauthSession.stateHash, "oauth_state_invalid");
-    assertOAuthSecretMatches(input.csrfToken, oauthSession.csrfHash, "oauth_csrf_invalid");
-
-    return oauthSession;
+  completeOAuthCallback(
+    ...args: Parameters<OAuthDomain["completeOAuthCallback"]>
+  ): ReturnType<OAuthDomain["completeOAuthCallback"]> {
+    return this.oauthDomain.completeOAuthCallback(...args);
   }
-
-  completeOAuthCallback(input: {
-    provider: OAuthProvider;
-    state: string;
-    csrfToken: string;
-    profile: OAuthProfile;
-    tokens: OAuthTokenResponse;
-    now?: Date;
-  }): OAuthCallbackResult {
-    const now = input.now ?? new Date();
-    const oauthSession = this.getOAuthSessionForCallback({
-      provider: input.provider,
-      state: input.state,
-      csrfToken: input.csrfToken,
-      now
-    });
-    const result = this.completeOAuthProfileAuthentication({
-      provider: input.provider,
-      profile: input.profile,
-      tokens: input.tokens,
-      linkAccountId: oauthSession.accountId,
-      now
-    });
-
-    oauthSession.completedAt = now.toISOString();
-
-    return result;
+  completeOAuthProfileAuthentication(
+    ...args: Parameters<OAuthDomain["completeOAuthProfileAuthentication"]>
+  ): ReturnType<OAuthDomain["completeOAuthProfileAuthentication"]> {
+    return this.oauthDomain.completeOAuthProfileAuthentication(...args);
   }
-
-  completeOAuthProfileAuthentication(input: {
-    provider: OAuthProvider;
-    profile: OAuthProfile;
-    tokens: OAuthTokenResponse;
-    linkAccountId?: string | null;
-    now?: Date;
-  }): OAuthCallbackResult {
-    const now = input.now ?? new Date();
-    const normalizedEmail =
-      input.profile.email === null || !input.profile.emailVerified
-        ? null
-        : normalizeDestination("email", input.profile.email);
-    const providerSubject = input.profile.providerSubject.trim();
-
-    if (providerSubject.length === 0) {
-      throw new Cp2Error(400, "oauth_profile_invalid", "OAuth profile subject is required.");
-    }
-
-    const linkedIdentityId = this.identityByProviderSubject.get(
-      oauthProviderSubjectKey(input.provider, providerSubject)
-    );
-    const emailIdentityId =
-      normalizedEmail === null
-        ? undefined
-        : this.identityByEmail.get(oauthIdentityEmailKey(input.provider, normalizedEmail));
-    const emailAccountId =
-      normalizedEmail === null
-        ? undefined
-        : this.resolveAnyIdentityAccount("email", normalizedEmail);
-    const accountId =
-      input.linkAccountId ??
-      (linkedIdentityId === undefined
-        ? undefined
-        : this.userIdentities.get(linkedIdentityId)?.accountId) ??
-      (emailIdentityId === undefined
-        ? undefined
-        : this.userIdentities.get(emailIdentityId)?.accountId) ??
-      emailAccountId;
-
-    if (normalizedEmail !== null && emailAccountId !== undefined && accountId !== emailAccountId) {
-      throw new Cp2Error(409, "identity_in_use", "This sign-in method is already linked.");
-    }
-    const primaryDestination =
-      normalizedEmail ??
-      `${input.provider}.${oauthEmailLocalPart(providerSubject)}@oauth.soko.local`;
-    const account =
-      accountId === undefined
-        ? this.createAccount("email", primaryDestination, now)
-        : this.requireAccount(accountId);
-    const user = this.requireUser(this.userByAccount.get(account.id));
-    const displayName = input.profile.displayName?.trim();
-
-    if (displayName !== undefined && displayName.length > 0 && user.displayName !== displayName) {
-      this.users.set(user.id, {
-        ...user,
-        displayName
-      });
-    }
-
-    if (normalizedEmail !== null) {
-      this.accountByDestination.set(destinationAccountKey("email", normalizedEmail), account.id);
-    }
-
-    const nextUser = this.requireUser(user.id);
-    if (normalizedEmail !== null) {
-      this.addAccountIdentity(
-        account,
-        nextUser,
-        "email",
-        normalizedEmail,
-        account.primaryAuthChannel === "email" &&
-          account.primaryAuthDestination === normalizedEmail,
-        now,
-        true
-      );
-    }
-    const identity = this.upsertUserIdentity({
-      account,
-      user: nextUser,
-      provider: input.provider,
-      providerSubject,
-      email: normalizedEmail,
-      displayName: displayName ?? null,
-      tokens: input.tokens,
-      now
-    });
-    this.promoteAccountIdentityLevel(account.id, "verified_contact");
-    const session = this.createSession(account, nextUser, now);
-    this.markSessionPinVerified(session.id, now);
-    const resumed = accountId !== undefined;
-
-    this.recordAuditEvent({
-      type: "auth.oauth_completed",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: nextUser.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        provider: input.provider,
-        identityId: identity.id,
-        linked: resumed,
-        email: normalizedEmail
-      }
-    });
-
-    this.recordAuditEvent({
-      type: resumed ? "account.resumed" : "account.created",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: nextUser.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        primaryAuthChannel: account.primaryAuthChannel,
-        primaryAuthDestination: account.primaryAuthDestination
-      }
-    });
-
-    return {
-      account,
-      user: nextUser,
-      session,
-      identity: userIdentityView(identity),
-      linked: resumed,
-      resumed
-    };
-  }
-
   private validateOtpChallenge(
     challenge: OtpChallenge | undefined,
     now: Date
@@ -1824,7 +1547,7 @@ export class Cp2Store {
     const destinationKey = destinationAccountKey(challenge.channel, challenge.destination);
     const linkedIdentity =
       challenge.channel === "email"
-        ? this.findIdentityByVerifiedEmail(challenge.destination)
+        ? this.oauthDomain.findIdentityByVerifiedEmail(challenge.destination)
         : undefined;
     const existingIdentityAccountId = this.resolveAnyIdentityAccount(
       challenge.channel,
@@ -4685,173 +4408,26 @@ export class Cp2Store {
     };
   }
 
-  listLoginAccounts(input: {
-    sessionId: string | null;
-    now?: Date;
-  }): ConnectedSocialAccountSummary[] {
-    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
-
-    return [...this.userIdentities.values()]
-      .filter((identity) => identity.accountId === session.account.id)
-      .map((identity) => ({
-        id: identity.id,
-        provider: identity.provider,
-        providerName: providerDisplayName(identity.provider),
-        connected: true,
-        displayName: identity.displayName,
-        email: identity.email,
-        connectedAt: identity.linkedAt,
-        lastUsedAt: identity.updatedAt
-      }))
-      .sort((left, right) => left.provider.localeCompare(right.provider));
+  listLoginAccounts(
+    ...args: Parameters<OAuthDomain["listLoginAccounts"]>
+  ): ReturnType<OAuthDomain["listLoginAccounts"]> {
+    return this.oauthDomain.listLoginAccounts(...args);
   }
-
-  disconnectLoginAccount(input: { sessionId: string | null; identityId: string; now?: Date }): {
-    disconnected: true;
-    identityId: string;
-  } {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const identity = this.userIdentities.get(input.identityId);
-
-    if (identity === undefined || identity.accountId !== session.account.id) {
-      throw new Cp2Error(
-        404,
-        "social_identity_not_found",
-        "Connected login account was not found."
-      );
-    }
-
-    const remainingIdentities = [...this.userIdentities.values()].filter(
-      (candidate) => candidate.accountId === session.account.id && candidate.id !== identity.id
-    );
-
-    if (!this.accountPinHashes.has(session.account.id) && remainingIdentities.length === 0) {
-      throw new Cp2Error(
-        409,
-        "last_login_method",
-        "Add and verify another login method before disconnecting the last login account."
-      );
-    }
-
-    this.userIdentities.delete(identity.id);
-    this.identityByProviderSubject.delete(
-      oauthProviderSubjectKey(identity.provider, identity.providerSubject)
-    );
-
-    if (identity.email !== null) {
-      this.identityByEmail.delete(oauthIdentityEmailKey(identity.provider, identity.email));
-    }
-
-    this.recordAuditEvent({
-      type: "auth.login_identity_disconnected",
-      aggregateType: "account",
-      aggregateId: session.account.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        provider: identity.provider,
-        identityId: identity.id
-      }
-    });
-
-    return {
-      disconnected: true,
-      identityId: identity.id
-    };
+  disconnectLoginAccount(
+    ...args: Parameters<OAuthDomain["disconnectLoginAccount"]>
+  ): ReturnType<OAuthDomain["disconnectLoginAccount"]> {
+    return this.oauthDomain.disconnectLoginAccount(...args);
   }
-
-  listConnectedSocialAccounts(input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }): ConnectedSocialAccountSummary[] {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "business:read",
-      now
-    );
-
-    return [...this.userIdentities.values()]
-      .filter((identity) => identity.accountId === session.account.id)
-      .map((identity) => ({
-        id: identity.id,
-        provider: identity.provider,
-        providerName: providerDisplayName(identity.provider),
-        connected: true,
-        displayName: identity.displayName,
-        email: identity.email,
-        connectedAt: identity.linkedAt,
-        lastUsedAt: identity.updatedAt
-      }))
-      .sort((left, right) => left.provider.localeCompare(right.provider));
+  listConnectedSocialAccounts(
+    ...args: Parameters<OAuthDomain["listConnectedSocialAccounts"]>
+  ): ReturnType<OAuthDomain["listConnectedSocialAccounts"]> {
+    return this.oauthDomain.listConnectedSocialAccounts(...args);
   }
-
-  disconnectSocialAccount(input: {
-    sessionId: string | null;
-    businessId: string;
-    identityId: string;
-    now?: Date;
-  }): { disconnected: true; identityId: string } {
-    const now = input.now ?? new Date();
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "business:read",
-      now
-    );
-    const identity = this.userIdentities.get(input.identityId);
-
-    if (identity === undefined || identity.accountId !== session.account.id) {
-      throw new Cp2Error(
-        404,
-        "social_identity_not_found",
-        "Connected social account was not found."
-      );
-    }
-
-    const remainingIdentities = [...this.userIdentities.values()].filter(
-      (candidate) => candidate.accountId === session.account.id && candidate.id !== identity.id
-    );
-
-    if (!this.accountPinHashes.has(session.account.id) && remainingIdentities.length === 0) {
-      throw new Cp2Error(
-        409,
-        "last_login_method",
-        "Add and verify another login method before disconnecting the last social account."
-      );
-    }
-
-    this.userIdentities.delete(identity.id);
-    this.identityByProviderSubject.delete(
-      oauthProviderSubjectKey(identity.provider, identity.providerSubject)
-    );
-
-    if (identity.email !== null) {
-      this.identityByEmail.delete(oauthIdentityEmailKey(identity.provider, identity.email));
-    }
-
-    this.recordAuditEvent({
-      type: "auth.social_identity_disconnected",
-      aggregateType: "account",
-      aggregateId: session.account.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        businessId: input.businessId,
-        provider: identity.provider,
-        identityId: identity.id
-      }
-    });
-
-    return {
-      disconnected: true,
-      identityId: identity.id
-    };
+  disconnectSocialAccount(
+    ...args: Parameters<OAuthDomain["disconnectSocialAccount"]>
+  ): ReturnType<OAuthDomain["disconnectSocialAccount"]> {
+    return this.oauthDomain.disconnectSocialAccount(...args);
   }
-
   getShopDeletionPreview(input: {
     sessionId: string | null;
     businessId: string;
@@ -5193,7 +4769,7 @@ export class Cp2Store {
 
       summary.checked += 1;
       const account = this.accounts.get(request.accountId);
-      const identities = [...this.userIdentities.values()].filter(
+      const identities = [...this.oauthDomain.userIdentitiesMap.values()].filter(
         (identity) => identity.accountId === request.accountId
       );
       const subjects = deduplicateDeletionSubjects([
@@ -5889,8 +5465,8 @@ export class Cp2Store {
       authTransactions: [...this.authTransactions.values()],
       mfaFactors: [...this.mfaFactors.values()],
       recoveryCodes: [...this.recoveryCodes.values()],
-      userIdentities: [...this.userIdentities.values()].map(userIdentityView),
-      oauthSessions: [...this.oauthSessions.values()].map(oauthSessionView),
+      userIdentities: [...this.oauthDomain.userIdentitiesMap.values()],
+      oauthSessions: [...this.oauthDomain.oauthSessionsMap.values()],
       accountPinHashes: [...this.accountPinHashes.entries()].map(([accountId, pinHash]) => ({
         accountId,
         pinHash
@@ -5950,10 +5526,7 @@ export class Cp2Store {
     this.authTransactions.clear();
     this.mfaFactors.clear();
     this.recoveryCodes.clear();
-    this.userIdentities.clear();
-    this.identityByProviderSubject.clear();
-    this.identityByEmail.clear();
-    this.oauthSessions.clear();
+    this.oauthDomain.clear();
     this.accountPinHashes.clear();
     this.networkDomain.clear();
     this.auditEvents.splice(0, this.auditEvents.length);
@@ -6219,64 +5792,7 @@ export class Cp2Store {
     for (const factor of snapshot.mfaFactors ?? []) this.mfaFactors.set(factor.id, factor);
     for (const code of snapshot.recoveryCodes ?? []) this.recoveryCodes.set(code.id, code);
 
-    for (const identity of snapshot.userIdentities) {
-      const persistedIdentity = identity as UserIdentitySummary &
-        Partial<
-          Pick<
-            UserIdentityRecord,
-            | "encryptedAccessToken"
-            | "encryptedRefreshToken"
-            | "encryptedIdToken"
-            | "tokenType"
-            | "tokenExpiresAt"
-            | "scope"
-            | "updatedAt"
-          >
-        >;
-      const record = {
-        ...persistedIdentity,
-        encryptedAccessToken: persistedIdentity.encryptedAccessToken ?? null,
-        encryptedRefreshToken: persistedIdentity.encryptedRefreshToken ?? null,
-        encryptedIdToken: persistedIdentity.encryptedIdToken ?? null,
-        tokenType: persistedIdentity.tokenType ?? null,
-        tokenExpiresAt: persistedIdentity.tokenExpiresAt ?? null,
-        scope: persistedIdentity.scope ?? null,
-        updatedAt: persistedIdentity.updatedAt ?? identity.linkedAt
-      };
-      this.userIdentities.set(record.id, record);
-      this.identityByProviderSubject.set(
-        oauthProviderSubjectKey(record.provider, record.providerSubject),
-        record.id
-      );
-
-      if (record.email !== null) {
-        this.identityByEmail.set(oauthIdentityEmailKey(record.provider, record.email), record.id);
-      }
-    }
-
-    for (const oauthSession of snapshot.oauthSessions) {
-      const persistedSession = oauthSession as OAuthSessionSummary &
-        Partial<
-          Pick<
-            OAuthSessionRecord,
-            | "accountId"
-            | "stateHash"
-            | "csrfHash"
-            | "codeChallenge"
-            | "codeVerifier"
-            | "redirectUri"
-          >
-        >;
-      this.oauthSessions.set(persistedSession.id, {
-        ...persistedSession,
-        accountId: persistedSession.accountId ?? null,
-        stateHash: persistedSession.stateHash ?? "",
-        csrfHash: persistedSession.csrfHash ?? "",
-        codeChallenge: persistedSession.codeChallenge ?? "",
-        codeVerifier: persistedSession.codeVerifier ?? "",
-        redirectUri: persistedSession.redirectUri ?? ""
-      });
-    }
+    this.oauthDomain.restore(snapshot);
 
     for (const pinHash of snapshot.accountPinHashes ?? []) {
       this.accountPinHashes.set(pinHash.accountId, pinHash.pinHash);
@@ -7041,65 +6557,6 @@ export class Cp2Store {
     if (ranks[nextLevel] <= ranks[account.identityLevel]) return account;
     account.identityLevel = nextLevel;
     return account;
-  }
-
-  private upsertUserIdentity(input: {
-    account: AccountSummary;
-    user: UserSummary;
-    provider: OAuthProvider;
-    providerSubject: string;
-    email: string | null;
-    displayName: string | null;
-    tokens: OAuthTokenResponse;
-    now: Date;
-  }): UserIdentityRecord {
-    const providerSubjectKey = oauthProviderSubjectKey(input.provider, input.providerSubject);
-    const existingIdentityId = this.identityByProviderSubject.get(providerSubjectKey);
-    const tokenExpiresAt =
-      input.tokens.expiresIn === undefined
-        ? null
-        : new Date(input.now.getTime() + input.tokens.expiresIn * 1000).toISOString();
-    const existingIdentity =
-      existingIdentityId === undefined ? undefined : this.userIdentities.get(existingIdentityId);
-    const identity: UserIdentityRecord = {
-      id: existingIdentity?.id ?? randomUUID(),
-      accountId: input.account.id,
-      userId: input.user.id,
-      provider: input.provider,
-      providerSubject: input.providerSubject,
-      email: input.email,
-      displayName: input.displayName,
-      encryptedAccessToken:
-        input.tokens.accessToken === undefined
-          ? (existingIdentity?.encryptedAccessToken ?? null)
-          : encryptOAuthToken(input.tokens.accessToken),
-      encryptedRefreshToken:
-        input.tokens.refreshToken === undefined
-          ? (existingIdentity?.encryptedRefreshToken ?? null)
-          : encryptOAuthToken(input.tokens.refreshToken),
-      encryptedIdToken:
-        input.tokens.idToken === undefined
-          ? (existingIdentity?.encryptedIdToken ?? null)
-          : encryptOAuthToken(input.tokens.idToken),
-      tokenType: input.tokens.tokenType ?? existingIdentity?.tokenType ?? null,
-      tokenExpiresAt: tokenExpiresAt ?? existingIdentity?.tokenExpiresAt ?? null,
-      scope: input.tokens.scope ?? existingIdentity?.scope ?? null,
-      linkedAt: existingIdentity?.linkedAt ?? input.now.toISOString(),
-      updatedAt: input.now.toISOString()
-    };
-
-    this.userIdentities.set(identity.id, identity);
-    this.identityByProviderSubject.set(providerSubjectKey, identity.id);
-
-    if (input.email !== null) {
-      this.identityByEmail.set(oauthIdentityEmailKey(input.provider, input.email), identity.id);
-    }
-
-    return identity;
-  }
-
-  private findIdentityByVerifiedEmail(email: string): UserIdentityRecord | undefined {
-    return [...this.userIdentities.values()].find((identity) => identity.email === email);
   }
 
   private createSession(account: AccountSummary, user: UserSummary, now: Date): SessionSummary {
@@ -8542,6 +7999,19 @@ export class Cp2Store {
     return this.passwordCredentials.has(accountId);
   }
 
+  private userForAccount(accountId: string): UserSummary {
+    return this.requireUser(this.userByAccount.get(accountId));
+  }
+
+  private updateUserDisplayName(userId: string, displayName: string): void {
+    const user = this.requireUser(userId);
+    this.users.set(user.id, { ...user, displayName });
+  }
+
+  private linkEmailAccountDestination(email: string, accountId: string): void {
+    this.accountByDestination.set(destinationAccountKey("email", email), accountId);
+  }
+
   private buildShopDeletionPreview(
     businessId: string,
     accountId: string,
@@ -8564,7 +8034,7 @@ export class Cp2Store {
         salesRecords: invoices.length + payments.length,
         messages: this.agentRuntimeDomain.runtimeTurnsForBusiness(businessId).length,
         notifications: this.notificationsDomain.sortedNotifications(businessId).length,
-        connectedProviders: [...this.userIdentities.values()].filter(
+        connectedProviders: [...this.oauthDomain.userIdentitiesMap.values()].filter(
           (identity) => identity.accountId === accountId
         ).length,
         uploadedFiles:
@@ -8605,9 +8075,9 @@ export class Cp2Store {
       }
     }
 
-    for (const [id, identity] of this.userIdentities.entries()) {
+    for (const [id, identity] of this.oauthDomain.userIdentitiesMap.entries()) {
       if (identity.accountId === accountId) {
-        this.userIdentities.set(id, {
+        this.oauthDomain.userIdentitiesMap.set(id, {
           ...identity,
           encryptedAccessToken: null,
           encryptedRefreshToken: null,
@@ -8944,8 +8414,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.authTransactions, scope);
       deletedRecordCount += deleteScopedMapRecords(this.mfaFactors, scope);
       deletedRecordCount += deleteScopedMapRecords(this.recoveryCodes, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.userIdentities, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.oauthSessions, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.oauthDomain.userIdentitiesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.oauthDomain.oauthSessionsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountPinHashes, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkNodesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkEdgesMap, scope);
@@ -9018,20 +8488,7 @@ export class Cp2Store {
       );
     }
 
-    this.identityByProviderSubject.clear();
-    this.identityByEmail.clear();
-    for (const identity of this.userIdentities.values()) {
-      this.identityByProviderSubject.set(
-        oauthProviderSubjectKey(identity.provider, identity.providerSubject),
-        identity.id
-      );
-      if (identity.email !== null) {
-        this.identityByEmail.set(
-          oauthIdentityEmailKey(identity.provider, identity.email),
-          identity.id
-        );
-      }
-    }
+    this.oauthDomain.rebuildIdentityIndex();
 
     this.mcpTokensDomain.rebuildTokenIndex();
 
@@ -9408,24 +8865,6 @@ function replaceExactStringReferences(
     replaced[key] = replaceExactStringReferences(item, replacements);
   }
   return replaced;
-}
-
-function oauthProviderSubjectKey(provider: OAuthProvider, subject: string): string {
-  return `${provider}:${subject}`;
-}
-
-function oauthIdentityEmailKey(provider: OAuthProvider, email: string): string {
-  return `${provider}:${email}`;
-}
-
-function oauthEmailLocalPart(subject: string): string {
-  return (
-    subject
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]/g, "-")
-      .replace(/-+/g, "-")
-      .slice(0, 64) || "profile"
-  );
 }
 
 function syncQueueIdempotencyKey(businessId: string, idempotencyKey: string): string {
@@ -9866,29 +9305,6 @@ function constantTimeHashMatches(actual: string | undefined, expected: string): 
 function normalizeDeviceSessionValue(value: string, fallback: string): string {
   const normalized = value.trim().slice(0, 200);
   return normalized.length > 0 ? normalized : fallback;
-}
-
-function userIdentityView(identity: UserIdentityRecord): UserIdentitySummary {
-  return {
-    id: identity.id,
-    accountId: identity.accountId,
-    userId: identity.userId,
-    provider: identity.provider,
-    providerSubject: identity.providerSubject,
-    email: identity.email,
-    displayName: identity.displayName,
-    linkedAt: identity.linkedAt
-  };
-}
-
-function oauthSessionView(session: OAuthSessionRecord): OAuthSessionSummary {
-  return {
-    id: session.id,
-    provider: session.provider,
-    expiresAt: session.expiresAt,
-    completedAt: session.completedAt,
-    createdAt: session.createdAt
-  };
 }
 
 function defaultDisplayName(destination: string): string {

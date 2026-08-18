@@ -823,8 +823,9 @@ export class NetworkDomain {
         continue;
       }
 
+      const channel = contactHash.hashType === "email" ? "email" : "phone";
       const matchingAccount = [...this.deps.accounts.values()].find((account) => {
-        const channel = contactHash.hashType === "email" ? "email" : "phone";
+        if (account.primaryAuthChannel !== channel) return false;
         return createContactHash(channel, account.primaryAuthDestination) === contactHash.hashValue;
       });
 

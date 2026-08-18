@@ -70,3 +70,6 @@ export function readBoundedSecurityInteger(
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
   return parsed;
 }
+
+/** Shared between the OAuth domain (`beginOAuthSession`) and OTP challenges (`requestOtp`). */
+export const otpTtlMs = 5 * 60 * 1000;

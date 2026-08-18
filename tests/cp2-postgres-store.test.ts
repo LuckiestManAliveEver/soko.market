@@ -38,7 +38,7 @@ import {
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
 import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
-import { readSessionCookie } from "../services/api/src/cp2/store";
+import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
 import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
 
 interface SqlExecutor {
@@ -215,6 +215,70 @@ describePostgres("CP2 Postgres store", () => {
         expect.objectContaining({ id: credentialId, label: "Postgres Passkey" })
       ])
     );
+
+    await restoredApp.close();
+  }, 30_000);
+
+  it("persists an OAuth-linked identity and OAuth session across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const unique = Date.now().toString();
+    const uniqueEmail = `oauth-user-${unique}@example.test`;
+    const uniqueState = `postgres-oauth-state-${unique}`;
+    const uniqueCsrfToken = `postgres-csrf-token-${unique}`;
+
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+
+    const authResult = store.authenticateSocialProfile({
+      provider: "google",
+      email: uniqueEmail,
+      displayName: "OAuth Tester"
+    });
+    const sessionCookie = `${sessionCookieName}=${authResult.session.id}`;
+
+    const oauthSession = store.beginOAuthSession({
+      accountSessionId: null,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      codeChallenge: "postgres-code-challenge",
+      codeVerifier: "postgres-code-verifier",
+      csrfToken: uniqueCsrfToken,
+      provider: "google",
+      redirectUri: "https://soko.market/auth/oauth/google/callback",
+      state: uniqueState
+    });
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const restoredApp = buildApi({
+      cp2: { store: restoredStore },
+      mutationPersistenceFlush: () => restoredStore.flush()
+    });
+
+    const listed = await getJson<{
+      accounts: Array<{ id: string; provider: string; email: string | null }>;
+    }>(restoredApp, "/auth/accounts", sessionCookie);
+    expect(listed.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "google",
+          email: uniqueEmail
+        })
+      ])
+    );
+
+    expect(oauthSession.state).toBe(uniqueState);
+    const restoredExchangeData = restoredStore.getOAuthExchangeData({
+      provider: "google",
+      state: uniqueState,
+      csrfToken: uniqueCsrfToken
+    });
+    expect(restoredExchangeData).toEqual({
+      codeVerifier: "postgres-code-verifier",
+      redirectUri: "https://soko.market/auth/oauth/google/callback"
+    });
 
     await restoredApp.close();
   }, 30_000);
