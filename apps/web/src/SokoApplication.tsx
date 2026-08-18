@@ -135,6 +135,7 @@ import {
 } from "./owner-navigation-session";
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
+import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { shellViewForSurface, surfaceForShellView } from "./cross-device-session-context";
 import { getUserFacingErrorMessage } from "./user-facing-error";
@@ -189,7 +190,6 @@ import {
   type BetaSupportTicketSummary,
   type BusinessAgentProfileSummary,
   type BusinessKnowledgeSummary,
-  type BusinessNotificationSummary,
   type BusinessReportSummary,
   type BusinessResponse,
   type BuyCartItem,
@@ -226,7 +226,6 @@ import {
   type NetworkGraphSummary,
   type NetworkInvitesResponse,
   type NetworkNodeSummary,
-  type NotificationInbox,
   type OAuthProviderSummary,
   type OAuthProvidersResponse,
   type OAuthStartResponse,
@@ -278,7 +277,6 @@ import {
   emptyInvoiceForm,
   emptyLaunchForm,
   emptyLogisticsForm,
-  emptyNotificationSummary,
   emptyPaymentForm,
   emptyProductForm,
   emptySupplierForm,
@@ -481,7 +479,13 @@ export function OwnerApp() {
   );
   const { hasPending, isPending, runAction } = useAsyncActions();
   const domainResetRegistry = useDomainResetRegistry();
-  const { refreshersFor } = useViewRefreshRegistry();
+  const { registerRefresh, refreshersFor } = useViewRefreshRegistry();
+  const { notificationInbox, loadNotifications, updateNotification } = useNotificationsState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
@@ -553,10 +557,6 @@ export function OwnerApp() {
   const [networkInvites, setNetworkInvites] = useState<NetworkInviteSummary[]>([]);
   const [reportSummary, setReportSummary] = useState<BusinessReportSummary | null>(null);
   const [knowledgeSummary, setKnowledgeSummary] = useState<BusinessKnowledgeSummary | null>(null);
-  const [notificationInbox, setNotificationInbox] = useState<NotificationInbox>({
-    summary: emptyNotificationSummary,
-    notifications: []
-  });
   const [storefrontCareRequests, setStorefrontCareRequests] = useState<
     PublicCustomerCareRequestSummary[]
   >([]);
@@ -1259,8 +1259,6 @@ export function OwnerApp() {
       // below - see apps/web/src/hooks/useViewRefresh.ts. Empty until the first hook registers.
       const refreshes: Promise<void>[] = refreshersFor(view).map((refresh) => refresh(businessId));
 
-      if (view === "chat") refreshes.push(loadNotifications(businessId));
-
       if (view === "products") {
         refreshes.push(loadProducts(businessId), loadProductFields(businessId));
       }
@@ -1298,7 +1296,7 @@ export function OwnerApp() {
       }
 
       if (view === "home" || view === "notifications") {
-        refreshes.push(loadNotifications(businessId), loadStorefrontInbox(businessId));
+        refreshes.push(loadStorefrontInbox(businessId));
       }
 
       if (view === "payments") {
@@ -2895,19 +2893,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadNotifications(businessId: string) {
-    try {
-      setNotificationInbox(
-        await getJson<NotificationInbox>(
-          `/businesses/${businessId}/notifications`,
-          setNotificationInbox
-        )
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   async function loadStorefrontInbox(businessId: string) {
     try {
       const [careRequests, messages, orders] = await Promise.all([
@@ -3307,26 +3292,6 @@ export function OwnerApp() {
       );
       await loadLaunchReadiness(business.id);
       setStatusMessage("Launch incident updated");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function updateNotification(
-    notificationId: string,
-    status: BusinessNotificationSummary["status"]
-  ) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await patchJson<BusinessNotificationSummary>(
-        `/businesses/${business.id}/notifications/${notificationId}`,
-        { status }
-      );
-      await loadNotifications(business.id);
-      setStatusMessage("Notification updated");
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
     }
@@ -4320,7 +4285,6 @@ export function OwnerApp() {
     setNetworkInvites([]);
     setReportSummary(null);
     setKnowledgeSummary(null);
-    setNotificationInbox({ summary: emptyNotificationSummary, notifications: [] });
     setStorefrontCareRequests([]);
     setStorefrontMessages([]);
     setStorefrontOrders([]);
