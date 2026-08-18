@@ -41,7 +41,6 @@ import {
   type SokoMode
 } from "./app-shell";
 import { replaceActorReaction, replaceMessageReactions } from "./optimistic-message-reactions";
-import { normalizeOwnerPhoneInput } from "./phone-identity";
 
 import {
   browserGgufRuntimeSupported,
@@ -120,6 +119,7 @@ import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
+import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useReadinessState } from "./hooks/useReadinessState";
 import { useReportsState } from "./hooks/useReportsState";
@@ -175,7 +175,6 @@ import {
   type AgentSettings,
   type AiModelSummary,
   type BusinessAgentProfileSummary,
-  type BusinessResponse,
   type BuyCartItem,
   type CountryDialCode,
   type MarketplaceIntroStateSummary,
@@ -198,7 +197,6 @@ import {
   type ShopPresenceStatus,
   type ShopPresenceSummary,
   type SocialSignupProvider,
-  type SupportedLanguage,
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
@@ -217,7 +215,7 @@ import {
   uiBackgroundRefreshIntervalMs
 } from "./soko-application-shared";
 
-import { postJson, patchJson, putJson, deleteJson, getJson } from "./api-helpers";
+import { postJson, patchJson, deleteJson, getJson } from "./api-helpers";
 import {
   formatLatency,
   formatAgentDisplayName,
@@ -225,7 +223,7 @@ import {
   formatRuntimeTurnStatus
 } from "./formatters";
 import { createPublicStorefrontUrl } from "./sokoid-and-storefront";
-import { getCountryDialCode, inferCountryCode } from "./country-dial-codes";
+import { inferCountryCode } from "./country-dial-codes";
 import {
   readStoredBusiness,
   readStoredSokoMode,
@@ -346,16 +344,6 @@ export function OwnerApp() {
   );
   const [oauthProviders, setOauthProviders] = useState<OAuthProviderSummary[]>([]);
   const [oauthProvidersLoaded, setOauthProvidersLoaded] = useState(false);
-  const [businessName, setBusinessName] = useState(initialSetupDraft?.businessName ?? "");
-  const [language, setLanguage] = useState<SupportedLanguage>(initialSetupDraft?.language ?? "en");
-  const [businessSetupStep, setBusinessSetupStep] = useState<"phone" | "details">("phone");
-  const [shopPhoneCountryCode, setShopPhoneCountryCode] =
-    useState<CountryDialCode>(initialCountryCode);
-  const [shopPhoneNumber, setShopPhoneNumber] = useState(
-    initialOwnerAuth !== null && !initialOwnerAuth.contact.includes("@")
-      ? initialOwnerAuth.contact
-      : ""
-  );
   const [business, setBusiness] = useState<ActiveBusiness | null>(initialBusiness);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
@@ -394,7 +382,6 @@ export function OwnerApp() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
-  const [isBusinessSetupOpen, setIsBusinessSetupOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(
     accountDeletionIntent || accountRestorationIntent || initialAuthenticationTarget !== null
   );
@@ -798,6 +785,38 @@ export function OwnerApp() {
     resetClientToStartup,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
+  });
+  const {
+    businessName,
+    setBusinessName,
+    language,
+    setLanguage,
+    businessSetupStep,
+    setBusinessSetupStep,
+    shopPhoneCountryCode,
+    setShopPhoneCountryCode,
+    shopPhoneNumber,
+    setShopPhoneNumber,
+    isBusinessSetupOpen,
+    setIsBusinessSetupOpen,
+    saveOwnerPhoneForShop,
+    createBusiness
+  } = useBusinessSetupState({
+    business,
+    setBusiness,
+    session,
+    setSession,
+    setAgentSettings,
+    setMode,
+    setView,
+    refreshSession,
+    setConversationInbox,
+    setActiveConversationId,
+    loadConversationThread,
+    setStatusMessage,
+    initialSetupDraft,
+    initialCountryCode,
+    registerReset: domainResetRegistry.registerReset
   });
 
   useEffect(() => {
@@ -1776,122 +1795,6 @@ export function OwnerApp() {
     }
   }
 
-  async function saveOwnerPhoneForShop(phoneNumber: string, country: CountryCode) {
-    if (session === null) {
-      setStatusMessage("Your session has expired. Sign in again.");
-      return;
-    }
-
-    try {
-      const response = await putJson<{ user: SessionResponse["user"] }>("/account/phone", {
-        phoneNumber,
-        country
-      });
-      setSession((current) =>
-        current === null
-          ? current
-          : {
-              ...current,
-              user: response.user
-            }
-      );
-      setShopPhoneNumber(response.user.phoneNumberE164 ?? phoneNumber);
-      setBusinessSetupStep("details");
-      setStatusMessage("Phone number saved. Add your shop details.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createBusiness() {
-    if (business !== null) {
-      setIsBusinessSetupOpen(false);
-      setStatusMessage("This account has already registered a store.");
-      return;
-    }
-
-    if (businessName.trim().length === 0) {
-      setStatusMessage("Business name is required");
-      return;
-    }
-
-    if (session === null) {
-      setStatusMessage("Sign up or log in before setting up a business");
-      return;
-    }
-
-    try {
-      const selectedPhoneCountry = getCountryDialCode(shopPhoneCountryCode);
-      const normalizedPhone = normalizeOwnerPhoneInput(
-        shopPhoneNumber,
-        selectedPhoneCountry.countryCode
-      );
-      const response = await postJson<BusinessResponse>("/businesses", {
-        name: businessName.trim(),
-        language,
-        phoneNumber: normalizedPhone,
-        phoneCountry: selectedPhoneCountry.countryCode
-      });
-      const nextBusiness = {
-        ...response.business,
-        role: response.membership.role
-      };
-      const nextAgent = createDefaultAgent(nextBusiness);
-      setBusiness(nextBusiness);
-      setAgentSettings(nextAgent);
-      setIsBusinessSetupOpen(false);
-      setMode("seller");
-      navigateToOwnerRoute({ mode: "seller", view: "chat" }, { replace: true });
-      localStorage.setItem(activeBusinessStorageKey, JSON.stringify(nextBusiness));
-      localStorage.removeItem(legacyActiveBusinessStorageKey);
-      localStorage.setItem(activeAgentStorageKey, JSON.stringify(nextAgent));
-      localStorage.removeItem(setupDraftStorageKey);
-      await refreshSession();
-      await createInitialOwnerControlsMessage(nextBusiness.id);
-      setView("chat");
-      setStatusMessage("Business ready. Seller controls are now active.");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createInitialOwnerControlsMessage(shopId: string) {
-    try {
-      let response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
-      let conversationId =
-        response.conversations.find(
-          (conversation) =>
-            conversation.kind === "personal" &&
-            (conversation.activeShopId === shopId || conversation.activeShopId === null)
-        )?.id ?? null;
-
-      if (conversationId === null) {
-        const created = await postJson<ConversationView>("/v1/conversations", {
-          kind: "personal",
-          activeShopId: shopId,
-          title: "Soko agent"
-        });
-        conversationId = created.conversation.id;
-        response = await getJson<{ conversations: ConversationInboxItem[] }>("/v1/conversations");
-        setConversationInbox(response.conversations);
-      }
-
-      await postJson<ConversationMessageSummary>("/v1/messages", {
-        conversationId,
-        clientMessageId: `shop-welcome-owner-controls-${shopId}`,
-        author: "agent",
-        content: { type: "owner-controls", shopId },
-        clientTimestamp: new Date().toISOString()
-      });
-      setActiveConversationId(conversationId);
-      navigateToOwnerRoute({ mode: "seller", view: "chat", conversationId }, { replace: true });
-      await loadConversationThread(conversationId);
-    } catch {
-      // Shop creation remains successful if messaging is temporarily unavailable.
-      // The idempotent client message ID allows a later retry without duplicates.
-    }
-  }
-
   async function restoreDeviceModelForLaunch(
     businessId: string
   ): Promise<DeviceAgentModelAssignment> {
@@ -2440,8 +2343,6 @@ export function OwnerApp() {
     domainResetRegistry.resetAll();
     setAgentSettings(createDefaultAgent(null));
     setAuthBootstrapState("unauthenticated");
-    setBusinessName("");
-    setShopPhoneNumber("");
     setRoutedProductId(null);
     setRuntimeSessionId(null);
     setPendingAttachments([]);
