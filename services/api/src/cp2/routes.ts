@@ -82,6 +82,7 @@ import {
 } from "./store.js";
 import {
   parseBoolean,
+  parseContactRecordBody,
   parseIntegerString,
   parseIsoTimestamp,
   parseNonNegativeInteger,
@@ -98,7 +99,8 @@ import {
   readHeader,
   sendCp2Error,
   setAuthSessionCookies,
-  type BusinessParams
+  type BusinessParams,
+  type ContactRecordBody
 } from "./route-helpers.js";
 import {
   parseLogisticsBody,
@@ -108,6 +110,7 @@ import {
 import { registerNotificationsRoutes } from "./domains/notifications/routes.js";
 import { registerPasskeysRoutes } from "./domains/passkeys/routes.js";
 import { registerNetworkRoutes } from "./domains/network/routes.js";
+import { decodeReceiptBase64, registerSuppliersRoutes } from "./domains/suppliers/routes.js";
 import { createEmailProviderFromEnvironment, type EmailProvider } from "./email-provider.js";
 import {
   normalizeInternationalOwnerPhoneNumber,
@@ -135,7 +138,7 @@ import {
   extractUploadedDocument,
   type DocumentUploadInput
 } from "./document-extraction.js";
-import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
+import type { ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
 import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
@@ -722,26 +725,6 @@ interface CustomerParams extends BusinessParams {
   customerId: string;
 }
 
-interface SupplierParams extends BusinessParams {
-  supplierId: string;
-}
-
-interface SalesAgentParams extends BusinessParams {
-  salesAgentId: string;
-}
-
-interface SupplierSalesAgentParams extends SupplierParams {
-  salesAgentId: string;
-}
-
-interface ReceiptOCRParams extends BusinessParams {
-  ocrJobId: string;
-}
-
-interface PurchaseReceiptParams extends BusinessParams {
-  receiptId: string;
-}
-
 interface InvoiceParams extends BusinessParams {
   invoiceId: string;
 }
@@ -778,38 +761,6 @@ interface ProductBody {
 
 interface ProductFieldStructureBody {
   fields?: unknown[];
-}
-
-interface ContactRecordBody {
-  name?: string;
-  phone?: string | null;
-  email?: string | null;
-  notes?: string | null;
-}
-
-interface PhonebookSearchQuery {
-  q?: string;
-}
-
-interface PhonebookLinkBody {
-  networkNodeId?: string;
-  notes?: string | null;
-}
-
-interface ReceiptOCRBody {
-  fileName?: string;
-  contentType?: string;
-  contentBase64?: string;
-  extractedText?: string;
-  fileSizeBytes?: number;
-  fileSignature?: string;
-}
-
-interface ReceiptOCRConfirmBody {
-  supplierId?: string | null;
-  salesAgentId?: string | null;
-  createSupplier?: boolean;
-  createSalesAgent?: boolean;
 }
 
 interface StockAdjustmentBody {
@@ -5067,329 +5018,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  app.get(
-    "/businesses/:businessId/suppliers",
-    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
-      try {
-        return store.listSuppliers({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/suppliers",
-    async (request: FastifyRequest<{ Params: BusinessParams; Body: ContactRecordBody }>, reply) => {
-      try {
-        return store.createSupplier({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplier: parseContactRecordBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.patch(
-    "/businesses/:businessId/suppliers/:supplierId",
-    async (request: FastifyRequest<{ Params: SupplierParams; Body: ContactRecordBody }>, reply) => {
-      try {
-        return store.updateSupplier({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId,
-          supplier: parseContactRecordBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.delete(
-    "/businesses/:businessId/suppliers/:supplierId",
-    async (request: FastifyRequest<{ Params: SupplierParams }>, reply) => {
-      try {
-        return store.deleteSupplier({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/suppliers/phonebook/search",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Querystring: PhonebookSearchQuery }>,
-      reply
-    ) => {
-      try {
-        return store.searchSupplierPhonebookContacts({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          query: request.query.q ?? ""
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/suppliers/from-phonebook",
-    async (request: FastifyRequest<{ Params: BusinessParams; Body: PhonebookLinkBody }>, reply) => {
-      try {
-        const body = parsePhonebookLinkBody(request.body);
-        return store.createSupplierFromPhoneContact({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          networkNodeId: body.networkNodeId,
-          notes: body.notes
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/suppliers/:supplierId/link-contact",
-    async (request: FastifyRequest<{ Params: SupplierParams; Body: PhonebookLinkBody }>, reply) => {
-      try {
-        return store.linkSupplierContact({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId,
-          networkNodeId: parsePhonebookLinkBody(request.body).networkNodeId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/suppliers/:supplierId/sales-agents",
-    async (request: FastifyRequest<{ Params: SupplierParams }>, reply) => {
-      try {
-        return store.listSalesAgents({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/suppliers/:supplierId/sales-agents",
-    async (request: FastifyRequest<{ Params: SupplierParams; Body: ContactRecordBody }>, reply) => {
-      try {
-        return store.createSalesAgent({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId,
-          agent: parseContactRecordBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/suppliers/:supplierId/sales-agents/from-phonebook",
-    async (request: FastifyRequest<{ Params: SupplierParams; Body: PhonebookLinkBody }>, reply) => {
-      try {
-        const body = parsePhonebookLinkBody(request.body);
-        return store.createSalesAgentFromPhoneContact({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          supplierId: request.params.supplierId,
-          networkNodeId: body.networkNodeId,
-          notes: body.notes
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.patch(
-    "/businesses/:businessId/suppliers/:supplierId/sales-agents/:salesAgentId",
-    async (
-      request: FastifyRequest<{ Params: SupplierSalesAgentParams; Body: ContactRecordBody }>,
-      reply
-    ) => {
-      try {
-        return store.updateSalesAgent({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          salesAgentId: request.params.salesAgentId,
-          agent: parseContactRecordBody(request.body)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.delete(
-    "/businesses/:businessId/suppliers/:supplierId/sales-agents/:salesAgentId",
-    async (request: FastifyRequest<{ Params: SupplierSalesAgentParams }>, reply) => {
-      try {
-        return store.deleteSalesAgent({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          salesAgentId: request.params.salesAgentId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/sales-agents/:salesAgentId/link-contact",
-    async (
-      request: FastifyRequest<{ Params: SalesAgentParams; Body: PhonebookLinkBody }>,
-      reply
-    ) => {
-      try {
-        return store.linkSalesAgentContact({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          salesAgentId: request.params.salesAgentId,
-          networkNodeId: parsePhonebookLinkBody(request.body).networkNodeId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/receipt-ocr/jobs",
-    async (request: FastifyRequest<{ Params: BusinessParams; Body: ReceiptOCRBody }>, reply) => {
-      try {
-        const body = parseReceiptOCRBody(request.body);
-        store.assertDocumentImportWriteAccess({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
-        });
-        let extraction: ReceiptOCRExtractionResult | undefined;
-        let fileSizeBytes = body.fileSizeBytes;
-        let fileSignature = body.fileSignature;
-        let sourceChecksum: string | undefined;
-
-        if (body.extractedText.trim().length === 0 && body.contentBase64 !== null) {
-          if (receiptOCRProcessor === undefined) {
-            throw new Cp2Error(
-              503,
-              "receipt_ocr_worker_unconfigured",
-              "Receipt OCR is not configured on this deployment."
-            );
-          }
-          const binary = decodeReceiptBase64(body.contentBase64);
-          fileSizeBytes = binary.byteLength;
-          fileSignature = binary.subarray(0, 16).toString("hex");
-          sourceChecksum = createHash("sha256").update(binary).digest("hex");
-          await binaryUploadPipeline?.process(
-            {
-              businessId: request.params.businessId,
-              fileName: body.fileName,
-              contentType: body.contentType,
-              bytes: binary
-            },
-            { retain: false }
-          );
-          extraction = await receiptOCRProcessor.process({
-            fileName: body.fileName,
-            contentType: body.contentType,
-            contentBase64: binary.toString("base64")
-          });
-        }
-
-        return store.createReceiptOCRJob({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          sourceFileName: body.fileName,
-          contentType: body.contentType,
-          extractedText: extraction?.fullText ?? body.extractedText,
-          fileSizeBytes,
-          fileSignature,
-          ...(sourceChecksum === undefined ? {} : { sourceChecksum }),
-          ...(extraction === undefined ? {} : { extraction })
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/receipt-ocr/jobs/:ocrJobId/confirm",
-    async (
-      request: FastifyRequest<{ Params: ReceiptOCRParams; Body: ReceiptOCRConfirmBody }>,
-      reply
-    ) => {
-      try {
-        const body = parseReceiptOCRConfirmBody(request.body);
-        return store.confirmReceiptOCRJob({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          ocrJobId: request.params.ocrJobId,
-          supplierId: body.supplierId,
-          salesAgentId: body.salesAgentId,
-          createSupplier: body.createSupplier,
-          createSalesAgent: body.createSalesAgent
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/purchase-receipts",
-    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
-      try {
-        return store.listPurchaseReceipts({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.get(
-    "/businesses/:businessId/purchase-receipts/:receiptId",
-    async (request: FastifyRequest<{ Params: PurchaseReceiptParams }>, reply) => {
-      try {
-        return store.getPurchaseReceipt({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          receiptId: request.params.receiptId
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
+  registerSuppliersRoutes(app, store, binaryUploadPipeline, receiptOCRProcessor);
 
   app.post(
     "/businesses/:businessId/invoices/preview",
@@ -7363,66 +6992,6 @@ function isProductFieldInputType(value: string): value is ProductFieldInputType 
   return ["text", "number", "select", "textarea", "yes_no"].includes(value);
 }
 
-function parseContactRecordBody(body: ContactRecordBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    name: parseString(record.name, "name"),
-    phone: parseNullableString(record.phone),
-    email: parseNullableString(record.email),
-    notes: parseNullableString(record.notes)
-  };
-}
-
-function parsePhonebookLinkBody(body: PhonebookLinkBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    networkNodeId: parseString(record.networkNodeId, "networkNodeId"),
-    notes: parseNullableString(record.notes)
-  };
-}
-
-function parseReceiptOCRBody(body: ReceiptOCRBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    fileName: parseString(record.fileName, "fileName"),
-    contentType: parseString(record.contentType, "contentType"),
-    contentBase64:
-      typeof record.contentBase64 === "string" && record.contentBase64.trim().length > 0
-        ? record.contentBase64.trim()
-        : null,
-    extractedText: typeof record.extractedText === "string" ? record.extractedText : "",
-    fileSizeBytes:
-      record.fileSizeBytes === undefined
-        ? null
-        : parsePositiveInteger(record.fileSizeBytes, "fileSizeBytes"),
-    fileSignature:
-      typeof record.fileSignature === "string" && record.fileSignature.trim().length > 0
-        ? record.fileSignature.trim()
-        : null
-  };
-}
-
-function decodeReceiptBase64(value: string): Buffer {
-  const normalized = value.includes(",") ? (value.split(",", 2)[1] ?? "") : value;
-
-  if (
-    normalized.length === 0 ||
-    normalized.length % 4 === 1 ||
-    !/^[a-z0-9+/]*={0,2}$/iu.test(normalized)
-  ) {
-    throw new Cp2Error(400, "receipt_ocr_base64_invalid", "Receipt file content is invalid.");
-  }
-
-  const buffer = Buffer.from(normalized, "base64");
-  if (buffer.byteLength === 0) {
-    throw new Cp2Error(400, "receipt_ocr_content_required", "Receipt file content is required.");
-  }
-  return buffer;
-}
-
 const documentOcrContentTypes = new Set([
   "image/jpeg",
   "image/png",
@@ -7469,23 +7038,6 @@ function decodePipelineBase64(value: string): Buffer {
     throw new Cp2Error(400, "document_content_required", "Document file content is required.");
   }
   return buffer;
-}
-
-function parseReceiptOCRConfirmBody(body: ReceiptOCRConfirmBody | null | undefined) {
-  const record = parseRequestBody(body);
-
-  return {
-    supplierId: parseNullableString(record.supplierId),
-    salesAgentId: parseNullableString(record.salesAgentId),
-    createSupplier:
-      record.createSupplier === undefined
-        ? false
-        : parseBoolean(record.createSupplier, "createSupplier"),
-    createSalesAgent:
-      record.createSalesAgent === undefined
-        ? false
-        : parseBoolean(record.createSalesAgent, "createSalesAgent")
-  };
 }
 
 function parseStockAdjustmentBody(body: StockAdjustmentBody | null | undefined) {

@@ -21,6 +21,14 @@ export interface BusinessParams {
   businessId: string;
 }
 
+/** Shared between suppliers, sales/customers, and the sync-queue mutation-replay dispatcher. */
+export interface ContactRecordBody {
+  name?: string;
+  phone?: string | null;
+  email?: string | null;
+  notes?: string | null;
+}
+
 export function parseRequestBody(value: unknown): Record<string, unknown> {
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
     throw new Cp2Error(400, "body_invalid", "Request body must be a JSON object.");
@@ -135,6 +143,17 @@ export function parseIsoTimestamp(value: unknown, name: string): string {
   }
 
   return timestamp;
+}
+
+export function parseContactRecordBody(body: ContactRecordBody | null | undefined) {
+  const record = parseRequestBody(body);
+
+  return {
+    name: parseString(record.name, "name"),
+    phone: parseNullableString(record.phone),
+    email: parseNullableString(record.email),
+    notes: parseNullableString(record.notes)
+  };
 }
 
 export function sendCp2Error(reply: FastifyReply, error: unknown) {
