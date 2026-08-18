@@ -37,8 +37,6 @@ import type {
   SokoChatSurface,
   SokoSessionContext,
   RuntimeRecallEscalation,
-  SyncMutationPayload,
-  SyncMutationType,
   UnifiedCheckoutSummary
 } from "@soko/shared-types";
 import {
@@ -49,18 +47,8 @@ import {
   type SokoMode
 } from "./app-shell";
 import { replaceActorReaction, replaceMessageReactions } from "./optimistic-message-reactions";
-import {
-  openIndexedDbSyncRepository,
-  type IndexedDbSyncRepository
-} from "./sync/indexeddb-repository";
 import { normalizeOwnerPhoneInput } from "./phone-identity";
 
-import {
-  catchUpAccountSync,
-  createLocalSyncMutation,
-  flushLocalSyncMutations
-} from "./sync/sync-client";
-import { subscribeToAccountRealtime } from "./sync/realtime-client";
 import {
   browserGgufRuntimeSupported,
   listLocalAiModels,
@@ -138,6 +126,7 @@ import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useSyncState } from "./hooks/useSyncState";
 import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
@@ -223,7 +212,6 @@ import {
   type OAuthProviderSummary,
   type OAuthProvidersResponse,
   type OAuthStartResponse,
-  type OfflineCacheSnapshot,
   type OwnerAuthRecord,
   type PendingOAuthLogin,
   PhoneFirstAuthentication,
@@ -246,14 +234,10 @@ import {
   type SocialSignupProvider,
   type StockAdjustmentResponse,
   type SupportedLanguage,
-  type SyncQueueItem,
-  type SyncQueueResponse,
-  type SyncQueueSummary,
   type VerificationTierSummary,
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
-  apiBaseUrl,
   clientInferenceFeatureFlags,
   emptyBetaForm,
   emptyComplianceForm,
@@ -262,7 +246,6 @@ import {
   emptyLaunchForm,
   emptyProductForm,
   emptySupplierForm,
-  emptySyncSummary,
   guestBrowsingStorageKey,
   legacyActiveBusinessStorageKey,
   ownerAuthStorageKey,
@@ -512,9 +495,6 @@ export function OwnerApp() {
     createDefaultProductFieldDefinitions()
   );
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
-  const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
-  const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
-  const [offlineCache, setOfflineCache] = useState<OfflineCacheSnapshot | null>(null);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionSummary[]>([]);
   const [selectedRuntimeHistorySessionId, setSelectedRuntimeHistorySessionId] = useState<
     string | null
@@ -549,7 +529,6 @@ export function OwnerApp() {
   const [stockProductId, setStockProductId] = useState("");
   const [stockQuantityAfter, setStockQuantityAfter] = useState("0");
   const [stockReason, setStockReason] = useState("Manual stock count");
-  const syncRepositoryRef = useRef<IndexedDbSyncRepository | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
   const sessionRefreshInFlightRef = useRef(false);
@@ -661,6 +640,28 @@ export function OwnerApp() {
   // still-inline OwnerApp state as a dependency (e.g. `invoices`) - a `const` declared earlier in
   // this function via useState, which would throw a temporal-dead-zone error if referenced by a
   // hook call positioned before that declaration.
+  //
+  // useSyncState is called first, ahead of every other domain hook, because its
+  // queueMutationAfterNetworkFailure is itself an injected dependency several other domain hooks'
+  // deps objects need (Logistics/Customers/Payments) - those hooks reference it by name in their
+  // own deps, which is only TDZ-safe if the const it resolves to already exists by then.
+  const {
+    syncQueue,
+    syncSummary,
+    offlineCache,
+    syncRepositoryRef,
+    loadSyncQueue,
+    loadOfflineCache,
+    replaySyncQueue,
+    replaySyncQueueItem,
+    queueMutationAfterNetworkFailure
+  } = useSyncState({
+    businessId: business?.id ?? null,
+    session,
+    setStatusMessage,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
   const { notificationInbox, loadNotifications, updateNotification } = useNotificationsState({
     businessId: business?.id ?? null,
     setStatusMessage,
@@ -933,94 +934,6 @@ export function OwnerApp() {
   useEffect(() => {
     localStorage.setItem(activeModeStorageKey, mode);
   }, [mode]);
-
-  useEffect(() => {
-    if (session === null || globalThis.indexedDB === undefined) {
-      return;
-    }
-
-    let cancelled = false;
-    let closeRepository: (() => void) | undefined;
-    let closeRealtime: (() => void) | undefined;
-    let openedRepository: IndexedDbSyncRepository | null = null;
-    let catchUpPromise: Promise<void> | null = null;
-    let synchronize: (() => Promise<void>) | null = null;
-    const synchronizeWhenOnline = () => {
-      if (navigator.onLine) void synchronize?.();
-    };
-    window.addEventListener("online", synchronizeWhenOnline);
-    void openIndexedDbSyncRepository()
-      .then(async (repository) => {
-        if (cancelled) {
-          repository.close();
-          return;
-        }
-        closeRepository = () => repository.close();
-        openedRepository = repository;
-        syncRepositoryRef.current = repository;
-        const catchUp = () => {
-          if (catchUpPromise === null) {
-            catchUpPromise = catchUpAccountSync({
-              accountId: session.account.id,
-              repository,
-              endpoint: `${apiBaseUrl}/v1/sync/changes`
-            })
-              .then(() => undefined)
-              .finally(() => {
-                catchUpPromise = null;
-              });
-          }
-          return catchUpPromise;
-        };
-        const startRealtime = () => {
-          if (cancelled || closeRealtime !== undefined || !navigator.onLine) return;
-          const realtimeUrl = new URL("/v1/realtime", apiBaseUrl);
-          realtimeUrl.protocol = realtimeUrl.protocol === "https:" ? "wss:" : "ws:";
-          closeRealtime = subscribeToAccountRealtime({
-            accountId: session.account.id,
-            endpoint: realtimeUrl.toString(),
-            onChangesAvailable: catchUp
-          });
-        };
-        synchronize = async () => {
-          if (cancelled || !navigator.onLine) return;
-          const transferred = await flushLocalSyncMutations({
-            accountId: session.account.id,
-            repository,
-            apiBaseUrl
-          });
-          await catchUp();
-          if (!cancelled && transferred.transferred > 0) {
-            setStatusMessage(
-              `${transferred.transferred} offline change${
-                transferred.transferred === 1 ? "" : "s"
-              } synced`
-            );
-          }
-          startRealtime();
-        };
-        if (navigator.onLine) {
-          await synchronize();
-        } else {
-          setStatusMessage("Offline data loaded; pending changes will sync after reconnect");
-        }
-      })
-      .catch(() => {
-        if (!cancelled && !navigator.onLine) {
-          setStatusMessage("Offline data loaded; catch-up will resume when connected");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener("online", synchronizeWhenOnline);
-      closeRealtime?.();
-      if (syncRepositoryRef.current === openedRepository) {
-        syncRepositoryRef.current = null;
-      }
-      closeRepository?.();
-    };
-  }, [session?.account.id]);
 
   useEffect(() => {
     if (session === null) return;
@@ -1326,10 +1239,6 @@ export function OwnerApp() {
           loadCustomers(businessId),
           loadInvoices(businessId)
         );
-      }
-
-      if (view === "home" || view === "sync") {
-        refreshes.push(loadSyncQueue(businessId), loadOfflineCache(businessId));
       }
 
       if (view === "home" || view === "network") {
@@ -2008,47 +1917,6 @@ export function OwnerApp() {
     }
   }
 
-  async function queueMutationAfterNetworkFailure(
-    error: unknown,
-    mutationType: SyncMutationType,
-    payload: SyncMutationPayload
-  ): Promise<boolean> {
-    if (
-      business === null ||
-      session === null ||
-      globalThis.indexedDB === undefined ||
-      (navigator.onLine && !(error instanceof TypeError))
-    ) {
-      return false;
-    }
-
-    let repository = syncRepositoryRef.current;
-    let closeAfterWrite = false;
-
-    if (repository === null) {
-      repository = await openIndexedDbSyncRepository();
-      closeAfterWrite = true;
-    }
-
-    try {
-      await repository.putMutation(
-        createLocalSyncMutation({
-          accountId: session.account.id,
-          actorId: session.user.id,
-          businessId: business.id,
-          mutationType,
-          payload
-        })
-      );
-      setStatusMessage("Saved offline. This change will sync automatically after reconnect.");
-      return true;
-    } finally {
-      if (closeAfterWrite) {
-        repository.close();
-      }
-    }
-  }
-
   async function saveProduct(): Promise<boolean> {
     if (business === null) {
       return false;
@@ -2199,26 +2067,6 @@ export function OwnerApp() {
     try {
       setInvoices(
         await getJson<InvoiceSummary[]>(`/businesses/${businessId}/invoices`, setInvoices)
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadSyncQueue(businessId: string) {
-    try {
-      const response = await getJson<SyncQueueResponse>(`/businesses/${businessId}/sync-queue`);
-      setSyncSummary(response.summary);
-      setSyncQueue(response.items);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadOfflineCache(businessId: string) {
-    try {
-      setOfflineCache(
-        await getJson<OfflineCacheSnapshot>(`/businesses/${businessId}/offline-cache`)
       );
     } catch (error) {
       setStatusMessage(getErrorMessage(error));
@@ -3165,46 +3013,6 @@ export function OwnerApp() {
     setStatusMessage(`Exported ${customers.length} contact${customers.length === 1 ? "" : "s"}`);
   }
 
-  async function replaySyncQueue() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson(`/businesses/${business.id}/sync-queue/replay`, {});
-      await loadSyncQueue(business.id);
-      await loadOfflineCache(business.id);
-      await loadProducts(business.id);
-      await loadCustomers(business.id);
-      await loadInvoices(business.id);
-      await loadPaymentData(business.id);
-      await loadLogistics(business.id);
-      setStatusMessage("Sync queue replayed");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function replaySyncQueueItem(syncItemId: string) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      await postJson(`/businesses/${business.id}/sync-queue/${syncItemId}/replay`, {});
-      await loadSyncQueue(business.id);
-      await loadOfflineCache(business.id);
-      await loadProducts(business.id);
-      await loadCustomers(business.id);
-      await loadInvoices(business.id);
-      await loadPaymentData(business.id);
-      await loadLogistics(business.id);
-      setStatusMessage("Sync item replayed");
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   function createInvoicePayload() {
     return {
       customerId: invoiceForm.customerId || null,
@@ -3722,10 +3530,7 @@ export function OwnerApp() {
     setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
     setInvoices([]);
-    setSyncQueue([]);
-    setSyncSummary(emptySyncSummary);
     setSecurityReview(null);
-    setOfflineCache(null);
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
@@ -5322,9 +5127,27 @@ export function OwnerApp() {
               void loadSyncQueue(business.id);
               void loadOfflineCache(business.id);
             }}
-            onReplay={() => void runAction("sync-replay", replaySyncQueue)}
+            onReplay={() =>
+              void runAction("sync-replay", () =>
+                replaySyncQueue({
+                  loadProducts,
+                  loadCustomers,
+                  loadInvoices,
+                  loadPaymentData,
+                  loadLogistics
+                })
+              )
+            }
             onReplayItem={(syncItemId) =>
-              void runAction("sync-replay-item", () => replaySyncQueueItem(syncItemId))
+              void runAction("sync-replay-item", () =>
+                replaySyncQueueItem(syncItemId, {
+                  loadProducts,
+                  loadCustomers,
+                  loadInvoices,
+                  loadPaymentData,
+                  loadLogistics
+                })
+              )
             }
           />
         );

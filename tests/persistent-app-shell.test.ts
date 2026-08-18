@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const syncStateHook = readFileSync("apps/web/src/hooks/useSyncState.ts", "utf8");
 
 describe("persistent authenticated app shell", () => {
   it("restores cached session and shop state before background authentication refresh", () => {
@@ -28,15 +29,15 @@ describe("persistent authenticated app shell", () => {
   });
 
   it("does not recreate IndexedDB or realtime when online state changes", () => {
-    const repositoryEffectStart = application.indexOf("void openIndexedDbSyncRepository()");
-    const repositoryEffectEnd = application.indexOf(
-      "if (session === null) return;",
+    const repositoryEffectStart = syncStateHook.indexOf("void openIndexedDbSyncRepository()");
+    const repositoryEffectEnd = syncStateHook.indexOf(
+      "async function loadSyncQueue",
       repositoryEffectStart
     );
-    const repositoryEffect = application.slice(repositoryEffectStart, repositoryEffectEnd);
+    const repositoryEffect = syncStateHook.slice(repositoryEffectStart, repositoryEffectEnd);
 
     expect(repositoryEffect).toContain("subscribeToAccountRealtime");
-    expect(repositoryEffect).toContain("}, [session?.account.id]);");
-    expect(repositoryEffect).not.toContain("}, [session?.account.id, isOnline]);");
+    expect(repositoryEffect).toContain("}, [deps.session?.account.id]);");
+    expect(repositoryEffect).not.toContain("}, [deps.session?.account.id, isOnline]);");
   });
 });
