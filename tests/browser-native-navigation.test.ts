@@ -146,11 +146,12 @@ describe("browser-native navigation", () => {
 
   it("keeps all application pushes behind the central adapter", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
     const router = readFileSync("apps/web/src/AppRouter.tsx", "utf8");
     const worker = readFileSync("apps/web/public/sw.js", "utf8");
 
     expect(application).not.toContain("window.history.pushState");
-    expect(application).toContain('navigateToOwnerRoute({ mode, view: "chat", conversationId })');
+    expect(chatState).toContain('navigateToOwnerRoute({ mode, view: "chat", conversationId })');
     expect(application).toContain("scheduleOwnerNavigationSessionWrite");
     expect(router).toContain("installBrowserLinkInterceptor");
     expect(worker).toContain("/marketplace/conversations/");

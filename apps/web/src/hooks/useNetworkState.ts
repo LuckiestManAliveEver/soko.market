@@ -32,7 +32,6 @@ interface UseNetworkStateDeps {
   getCustomers: () => CustomerSummary[];
   loadCustomers: (businessId: string) => Promise<void>;
   authenticateSocialProfile: (provider: SocialSignupProvider) => Promise<void>;
-  setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setStatusMessage: (message: string) => void;
   registerReset: (domainKey: string, fn: () => void) => void;
   registerRefresh: (
@@ -258,7 +257,11 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     }
   }
 
-  async function syncOwnerPhoneContacts() {
+  // setChatMessages is a call-time argument, not a hook-level dep: it's owned by the Chat domain
+  // hook (Phase 16), which itself needs getCustomers/loadCustomers from this hook - the same
+  // two-way dependency class fixed for Sync (Phase 7) and Runtime history (Phase 16) by passing
+  // the setter at call time instead of hook-invocation time.
+  async function syncOwnerPhoneContacts(setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>) {
     const contactNavigator = navigator as ContactPickerNavigator;
 
     if (contactNavigator.contacts?.select === undefined) {
@@ -286,7 +289,7 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
             record !== null
         );
       await importContactRecords(records);
-      deps.setChatMessages((messages) => [
+      setChatMessages((messages) => [
         ...messages,
         {
           id: `sokoclaw-contacts-${Date.now()}`,

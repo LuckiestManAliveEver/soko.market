@@ -79,10 +79,10 @@ describe("frontend navigation performance contracts", () => {
   });
 
   it("batches streamed model tokens to animation frames", () => {
-    const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const start = application.indexOf("const updateStreamingMessage");
-    const end = application.indexOf("async function runRoutedRuntimeTurn", start);
-    const streamingBlock = application.slice(start, end);
+    const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
+    const start = chatState.indexOf("const updateStreamingMessage");
+    const end = chatState.indexOf("async function runRoutedRuntimeTurn", start);
+    const streamingBlock = chatState.slice(start, end);
 
     expect(streamingBlock).toContain("window.requestAnimationFrame");
     expect(streamingBlock).toContain("if (streamingFrame !== null) return");

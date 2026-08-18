@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
+const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
 const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const styles = readFileSync("apps/web/src/styles.css", "utf8");
@@ -72,7 +72,7 @@ describe("frontend model activation contracts", () => {
 
   it("uses the provider-neutral route in the actual chat send path", () => {
     const chat = sourceBetween(
-      application,
+      chatState,
       "async function sendChatDraft",
       "async function confirmRuntimeAction"
     );

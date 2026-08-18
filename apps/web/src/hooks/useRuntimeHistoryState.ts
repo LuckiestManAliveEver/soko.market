@@ -11,7 +11,6 @@ import {
 interface UseRuntimeHistoryStateDeps {
   business: { id: string } | null;
   session: { account: { id: string } } | null;
-  setRuntimeSessionId: (sessionId: string) => void;
   setStatusMessage: (message: string) => void;
   registerReset: (domainKey: string, fn: () => void) => void;
   registerRefresh: (
@@ -74,7 +73,12 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
     return created.id;
   }
 
-  async function createRuntimeHistorySession() {
+  // setRuntimeSessionId is a call-time argument, not a hook-level dep: it's owned by the Chat
+  // domain hook (Phase 16), which itself needs createManagedRuntimeSession/ensureRuntimeSession/
+  // loadRuntimeSessions from this hook - a genuine two-way dependency no hook-call ordering can
+  // satisfy. Same "call-time argument" pattern used for Sync's replaySyncQueue/replaySyncQueueItem
+  // in Phase 7.
+  async function createRuntimeHistorySession(setRuntimeSessionId: (sessionId: string) => void) {
     if (deps.business === null || deps.session === null) {
       return;
     }
@@ -87,25 +91,29 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
         runtimeSessionId
       );
       setRuntimeTurns([]);
-      deps.setRuntimeSessionId(runtimeSessionId);
+      setRuntimeSessionId(runtimeSessionId);
       deps.setStatusMessage("Runtime session created");
     } catch (error) {
       deps.setStatusMessage(getErrorMessage(error));
     }
   }
 
-  async function ensureRuntimeSession(): Promise<string> {
+  async function ensureRuntimeSession(
+    setRuntimeSessionId: (sessionId: string) => void
+  ): Promise<string> {
     if (deps.business === null || deps.session === null) {
       throw new Error("Sign in and select a shop before starting the AI runtime.");
     }
 
     const key = runtimeManagerKey(deps.session.account.id, deps.business.id);
     const runtimeSessionId = await runtimeManager.ensureSession(key, createManagedRuntimeSession);
-    deps.setRuntimeSessionId(runtimeSessionId);
+    setRuntimeSessionId(runtimeSessionId);
     return runtimeSessionId;
   }
 
-  async function restoreOrCreateRuntimeSession(): Promise<string> {
+  async function restoreOrCreateRuntimeSession(
+    setRuntimeSessionId: (sessionId: string) => void
+  ): Promise<string> {
     if (deps.business === null || deps.session === null) {
       throw new Error("Sign in and select a shop before restoring the AI runtime.");
     }
@@ -121,11 +129,11 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
       const existing = [...sessions].reverse().find((candidate) => candidate.status === "active");
       if (existing !== undefined) {
         runtimeManager.adoptSession(key, existing.id);
-        deps.setRuntimeSessionId(existing.id);
+        setRuntimeSessionId(existing.id);
         setSelectedRuntimeHistorySessionId(existing.id);
         return existing.id;
       }
-      return ensureRuntimeSession();
+      return ensureRuntimeSession(setRuntimeSessionId);
     })().finally(() => {
       runtimeRestoreInFlightRef.current = null;
     });

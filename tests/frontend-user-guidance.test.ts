@@ -426,6 +426,7 @@ describe("frontend user guidance", () => {
       "apps/web/src/hooks/useStorefrontCareState.ts",
       "utf8"
     );
+    const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
     const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const networkRoutes = readFileSync(
       "services/api/src/cp2/domains/network/routes.ts",
@@ -441,7 +442,7 @@ describe("frontend user guidance", () => {
     );
     expect(application).toContain("setBusiness(null)");
     expect(application).toContain("localStorage.removeItem(ownerAuthStorageKey)");
-    expect(application).toContain('deleteJson("/v1/push/subscriptions"');
+    expect(chatState).toContain('deleteJson("/v1/push/subscriptions"');
     expect(agentProfileSurface).toContain(
       'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
     );

@@ -19,19 +19,19 @@ describe("browser inference frontend integration", () => {
   });
 
   it("streams into the existing chat, supports cancellation, and retains server routing", async () => {
-    const application = await readFile("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatState = await readFile("apps/web/src/hooks/useChatState.ts", "utf8");
     const chatSurface = await readFile("apps/web/src/ChatSurface.tsx", "utf8");
     const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
-    expect(application).toContain("generateBrowserAgentResponse");
-    expect(application).toContain("setChatMessages((messages) =>");
+    expect(chatState).toContain("generateBrowserAgentResponse");
+    expect(chatState).toContain("setChatMessages((messages) =>");
     expect(chatSurface).toContain("Cancel on-device generation");
-    expect(application).toContain("executeInferenceRoute");
-    expect(application).toContain("decideClientInferenceRoute");
-    expect(application).toContain("createRemoteInferenceProvider");
+    expect(chatState).toContain("executeInferenceRoute");
+    expect(chatState).toContain("decideClientInferenceRoute");
+    expect(chatState).toContain("createRemoteInferenceProvider");
     expect(agentProfileSurface).toContain("Client-first route permissions");
-    expect(application).toContain("requestRequiresServerTool(runtimeMessage)");
-    expect(application).toContain("queueMessagingOutbox");
-    expect(application).toContain("postJson<RuntimeTurnResult>");
+    expect(chatState).toContain("requestRequiresServerTool(runtimeMessage)");
+    expect(chatState).toContain("queueMessagingOutbox");
+    expect(chatState).toContain("postJson<RuntimeTurnResult>");
     const session = await readFile("apps/web/src/browser-inference-session.ts", "utf8");
     expect(session).toContain("browserInferenceMaxNewTokens");
     expect(session).toContain('__DEPLOYMENT_ENV__ !== "staging"');
@@ -55,11 +55,11 @@ describe("browser inference frontend integration", () => {
   });
 
   it("synchronizes activation and health metadata without sending prompts or generated text", async () => {
-    const application = await readFile("apps/web/src/SokoApplication.tsx", "utf8");
+    const chatState = await readFile("apps/web/src/hooks/useChatState.ts", "utf8");
     const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const synchronization = await readFile("apps/web/src/browser-inference-sync.ts", "utf8");
     expect(agentProfileSurface).toContain("synchronizeBrowserInferenceAssignment");
-    expect(application).toContain("recordSyncedBrowserInferenceExecution");
+    expect(chatState).toContain("recordSyncedBrowserInferenceExecution");
     expect(agentProfileSurface).toContain("Database workflow:");
     expect(synchronization).toContain("/browser-inference/executions");
     expect(synchronization).toContain("runtimeContract");
