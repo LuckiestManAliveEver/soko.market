@@ -10,17 +10,7 @@ import {
   verify as verifySignature
 } from "node:crypto";
 import type { JsonWebKey as NodeJsonWebKey } from "node:crypto";
-import {
-  generateAuthenticationOptions,
-  generateRegistrationOptions,
-  verifyAuthenticationResponse,
-  verifyRegistrationResponse,
-  type AuthenticationResponseJSON,
-  type AuthenticatorTransportFuture,
-  type PublicKeyCredentialCreationOptionsJSON,
-  type PublicKeyCredentialRequestOptionsJSON,
-  type RegistrationResponseJSON
-} from "@simplewebauthn/server";
+import type { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "./cp2-error.js";
@@ -74,6 +64,11 @@ import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
 import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
 import { type McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
+import { PasskeyDomain } from "./domains/passkeys/store.js";
+import {
+  type PasskeyCeremonyRecord,
+  type PasskeyCredentialRecord
+} from "./domains/passkeys/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -140,7 +135,6 @@ import type {
   OAuthProvider,
   OAuthSessionSummary,
   PaymentSummary,
-  PasskeySummary,
   ProductFieldSchemaSummary,
   ProductSummary,
   BuyOrderSummary,
@@ -260,10 +254,7 @@ const otpTtlMs = 5 * 60 * 1000;
  * legitimate reasons to present an already-superseded token minutes or hours later.
  */
 const refreshTokenReuseGracePeriodMs = 15_000;
-const passkeyCeremonyTtlMs = 5 * 60 * 1000;
-const passkeyPinRecoveryGrantTtlMs = 5 * 60 * 1000;
 const deviceAccountBootstrapTtlMs = 10 * 60 * 1000;
-const maxPendingPasskeyCeremonies = 1_000;
 const syncTombstoneRetentionMs = 90 * 24 * 60 * 60 * 1000;
 const maxOtpAttempts = 5;
 const pinAttemptWindowMs = 15 * 60 * 1000;
@@ -378,6 +369,10 @@ export type {
 } from "./domains/agent-runtime/shared.js";
 export type { ProductMediaRecord } from "./domains/sales/shared.js";
 export type { McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
+export type {
+  PasskeyCeremonyRecord,
+  PasskeyCredentialRecord
+} from "./domains/passkeys/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -433,25 +428,6 @@ export interface DeviceSessionMetadata {
   platform: string;
   browserOrApp: string;
   userAgent: string;
-}
-
-export interface PasskeyCredentialRecord extends PasskeySummary {
-  accountId: string;
-  userId: string;
-  webauthnUserId: string;
-  publicKey: string;
-  counter: number;
-}
-
-export interface PasskeyCeremonyRecord {
-  id: string;
-  kind: "registration" | "authentication";
-  purpose?: "login" | "pin_recovery";
-  accountId: string | null;
-  challenge: string;
-  webauthnUserId: string | null;
-  expiresAt: string;
-  createdAt: string;
 }
 
 export interface AccountIdentityRecord {
@@ -862,6 +838,32 @@ export class Cp2Store {
       listAccountShops: (input) => this.listAccountShops(input),
       getSession: (sessionId, now) => this.getSession(sessionId, now)
     });
+    this.passkeyDomain = new PasskeyDomain({
+      requireAnySession: (sessionId, now) => this.requireAnySession(sessionId, now),
+      requireRecentlyAuthenticatedSession: (sessionId, now) =>
+        this.requireRecentlyAuthenticatedSession(sessionId, now),
+      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      markSessionPinVerified: (sessionId, now) => this.markSessionPinVerified(sessionId, now),
+      getSession: (sessionId, now) => this.getSession(sessionId, now),
+      requireAccount: (accountId) => this.requireAccount(accountId),
+      requireUser: (userId) => this.requireUser(userId),
+      requireAccountAuthenticationAllowed: (account) =>
+        this.requireAccountAuthenticationAllowed(account),
+      createSession: (account, user, now) => this.createSession(account, user, now),
+      promoteAccountIdentityLevel: (accountId, nextLevel) =>
+        this.promoteAccountIdentityLevel(accountId, nextLevel),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      normalizePin: (pin) => normalizePin(pin),
+      hasAccountPinHash: (accountId) => this.hasAccountPinHash(accountId),
+      resetAccountPinHash: (accountId, normalizedPin) =>
+        this.resetAccountPinHash(accountId, normalizedPin),
+      hasPasswordCredential: (accountId) => this.hasPasswordCredential(accountId),
+      revokeOtherSessionsForAccount: (accountId, exceptSessionId, reason, now) =>
+        this.revokeOtherSessionsForAccount(accountId, exceptSessionId, reason, now),
+      ...(this.options.passkeyAuthenticationVerifier === undefined
+        ? {}
+        : { passkeyAuthenticationVerifier: this.options.passkeyAuthenticationVerifier })
+    });
     this.commerce = new CommerceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
@@ -1084,9 +1086,12 @@ export class Cp2Store {
     string,
     { replacementSessionId: string; replacementRefreshToken: string; rotatedAt: string }
   >();
-  private readonly passkeys = new Map<string, PasskeyCredentialRecord>();
-  private readonly passkeyCeremonies = new Map<string, PasskeyCeremonyRecord>();
-  private readonly passkeyPinRecoveryGrants = new Map<string, string>();
+  // passkeys/passkeyCeremonies/passkeyPinRecoveryGrants now live inside `passkeyDomain`
+  // (services/api/src/cp2/domains/passkeys/store.ts) - accessed via its map getters for the
+  // generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
+  // `passkeyPinRecoveryGrants` is deliberately never swept by the account-deletion purge - see
+  // that domain's shared.ts header comment.
+  private readonly passkeyDomain: PasskeyDomain;
   private readonly accountIdentities = new Map<string, AccountIdentityRecord>();
   private readonly identityAccountByValue = new Map<string, string>();
   private readonly passwordCredentials = new Map<string, PasswordCredentialRecord>();
@@ -2514,66 +2519,11 @@ export class Cp2Store {
     return this.requireAnySession(input.sessionId, now);
   }
 
-  recoverPhoneAccountPinWithPasskey(input: {
-    sessionId: string | null;
-    pin: string;
-    now?: Date;
-  }): AuthSessionView {
-    const now = input.now ?? new Date();
-    const pin = normalizePin(input.pin);
-    const session = this.requireAnySession(input.sessionId, now);
-    this.prunePasskeyPinRecoveryGrants(now);
-    const grantExpiresAt = this.passkeyPinRecoveryGrants.get(session.session.id);
-    this.passkeyPinRecoveryGrants.delete(session.session.id);
-
-    if (grantExpiresAt === undefined || Date.parse(grantExpiresAt) <= now.getTime()) {
-      throw new Cp2Error(
-        401,
-        "passkey_pin_recovery_required",
-        "Verify a passkey before resetting this phone account PIN."
-      );
-    }
-
-    if (session.account.primaryAuthChannel !== "phone") {
-      throw new Cp2Error(
-        409,
-        "phone_pin_recovery_not_applicable",
-        "Passkey PIN recovery is available only for phone accounts."
-      );
-    }
-
-    if (!this.accountPinHashes.has(session.account.id)) {
-      throw new Cp2Error(409, "pin_not_set", "Login PIN has not been set.");
-    }
-
-    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
-
-    for (const existingSession of this.sessions.values()) {
-      if (
-        existingSession.accountId === session.account.id &&
-        existingSession.id !== session.session.id &&
-        existingSession.revokedAt === null
-      ) {
-        existingSession.revokedAt = now.toISOString();
-        existingSession.revocationReason = "pin_recovery";
-      }
-    }
-
-    this.markSessionPinVerified(session.session.id, now);
-    this.recordAuditEvent({
-      type: "auth.pin_recovered",
-      aggregateType: "account",
-      aggregateId: session.account.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        method: "passkey"
-      }
-    });
-
-    return this.requireAnySession(session.session.id, now);
+  recoverPhoneAccountPinWithPasskey(
+    ...args: Parameters<PasskeyDomain["recoverPhoneAccountPinWithPasskey"]>
+  ): ReturnType<PasskeyDomain["recoverPhoneAccountPinWithPasskey"]> {
+    return this.passkeyDomain.recoverPhoneAccountPinWithPasskey(...args);
   }
-
   verifyAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
     const now = input.now ?? new Date();
     const session = this.requireAnySession(input.sessionId, now);
@@ -2933,304 +2883,41 @@ export class Cp2Store {
     return this.requireAnySession(sessionRecord.id, now);
   }
 
-  renamePasskey(input: {
-    sessionId: string | null;
-    credentialId: string;
-    label: string;
-    now?: Date;
-  }): PasskeySummary {
-    const now = input.now ?? new Date();
-    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
-    const passkey = this.passkeys.get(input.credentialId);
-    if (!passkey || passkey.accountId !== session.account.id)
-      throw new Cp2Error(404, "passkey_not_found", "Passkey was not found.");
-    passkey.label = normalizePasskeyLabel(input.label);
-    return passkeyView(passkey);
+  renamePasskey(
+    ...args: Parameters<PasskeyDomain["renamePasskey"]>
+  ): ReturnType<PasskeyDomain["renamePasskey"]> {
+    return this.passkeyDomain.renamePasskey(...args);
   }
-
-  async beginPasskeyRegistration(input: {
-    sessionId: string | null;
-    rpId: string;
-    now?: Date;
-  }): Promise<{
-    ceremonyId: string;
-    options: PublicKeyCredentialCreationOptionsJSON;
-  }> {
-    const now = input.now ?? new Date();
-    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
-    this.prunePasskeyCeremonies(now);
-    const accountPasskeys = [...this.passkeys.values()].filter(
-      (passkey) => passkey.accountId === session.account.id
-    );
-    const userName = session.account.primaryAuthDestination;
-    const displayName = session.user.displayName.trim() || userName;
-    const options = await generateRegistrationOptions({
-      rpName: "Soko.market",
-      rpID: input.rpId,
-      userID: new TextEncoder().encode(session.account.id),
-      userName,
-      userDisplayName: displayName,
-      attestationType: "none",
-      excludeCredentials: accountPasskeys.map((passkey) => ({
-        id: passkey.id,
-        transports: passkey.transports as AuthenticatorTransportFuture[]
-      })),
-      authenticatorSelection: {
-        residentKey: "required",
-        userVerification: "required"
-      },
-      supportedAlgorithmIDs: [-7, -257]
-    });
-    const ceremony: PasskeyCeremonyRecord = {
-      id: randomUUID(),
-      kind: "registration",
-      accountId: session.account.id,
-      challenge: options.challenge,
-      webauthnUserId: options.user.id,
-      expiresAt: new Date(now.getTime() + passkeyCeremonyTtlMs).toISOString(),
-      createdAt: now.toISOString()
-    };
-    this.passkeyCeremonies.set(ceremony.id, ceremony);
-
-    return {
-      ceremonyId: ceremony.id,
-      options
-    };
+  beginPasskeyRegistration(
+    ...args: Parameters<PasskeyDomain["beginPasskeyRegistration"]>
+  ): ReturnType<PasskeyDomain["beginPasskeyRegistration"]> {
+    return this.passkeyDomain.beginPasskeyRegistration(...args);
   }
-
-  async completePasskeyRegistration(input: {
-    sessionId: string | null;
-    ceremonyId: string;
-    label?: string;
-    origin: string;
-    rpId: string;
-    response: RegistrationResponseJSON;
-    now?: Date;
-  }): Promise<PasskeySummary> {
-    const now = input.now ?? new Date();
-    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
-    const ceremony = this.takePasskeyCeremony(input.ceremonyId, "registration", now);
-
-    if (ceremony.accountId !== session.account.id || ceremony.webauthnUserId === null) {
-      throw new Cp2Error(403, "passkey_ceremony_invalid", "Passkey registration is invalid.");
-    }
-
-    let verification;
-    try {
-      verification = await verifyRegistrationResponse({
-        response: input.response,
-        expectedChallenge: ceremony.challenge,
-        expectedOrigin: input.origin,
-        expectedRPID: input.rpId,
-        requireUserPresence: true,
-        requireUserVerification: true,
-        supportedAlgorithmIDs: [-7, -257]
-      });
-    } catch {
-      throw new Cp2Error(401, "passkey_registration_invalid", "Passkey registration failed.");
-    }
-
-    if (!verification.verified) {
-      throw new Cp2Error(401, "passkey_registration_invalid", "Passkey registration failed.");
-    }
-
-    const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
-    if (this.passkeys.has(credential.id)) {
-      throw new Cp2Error(409, "passkey_exists", "This passkey is already registered.");
-    }
-
-    const passkey: PasskeyCredentialRecord = {
-      id: credential.id,
-      accountId: session.account.id,
-      userId: session.user.id,
-      webauthnUserId: ceremony.webauthnUserId,
-      publicKey: Buffer.from(credential.publicKey).toString("base64url"),
-      counter: credential.counter,
-      label: normalizePasskeyLabel(input.label),
-      deviceType: credentialDeviceType,
-      backedUp: credentialBackedUp,
-      transports: [...(credential.transports ?? [])],
-      createdAt: now.toISOString(),
-      lastUsedAt: null
-    };
-    this.passkeys.set(passkey.id, passkey);
-    this.promoteAccountIdentityLevel(session.account.id, "strong");
-    this.recordAuditEvent({
-      type: "auth.passkey_registered",
-      aggregateType: "account",
-      aggregateId: session.account.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        credentialId: passkey.id,
-        deviceType: passkey.deviceType,
-        backedUp: passkey.backedUp
-      }
-    });
-
-    return passkeyView(passkey);
+  completePasskeyRegistration(
+    ...args: Parameters<PasskeyDomain["completePasskeyRegistration"]>
+  ): ReturnType<PasskeyDomain["completePasskeyRegistration"]> {
+    return this.passkeyDomain.completePasskeyRegistration(...args);
   }
-
-  async beginPasskeyAuthentication(input: {
-    rpId: string;
-    purpose?: "login" | "pin_recovery";
-    now?: Date;
-  }): Promise<{
-    ceremonyId: string;
-    options: PublicKeyCredentialRequestOptionsJSON;
-  }> {
-    const now = input.now ?? new Date();
-    this.prunePasskeyCeremonies(now);
-    this.prunePasskeyPinRecoveryGrants(now);
-    const options = await generateAuthenticationOptions({
-      rpID: input.rpId,
-      userVerification: "required"
-    });
-    const ceremony: PasskeyCeremonyRecord = {
-      id: randomUUID(),
-      kind: "authentication",
-      purpose: input.purpose ?? "login",
-      accountId: null,
-      challenge: options.challenge,
-      webauthnUserId: null,
-      expiresAt: new Date(now.getTime() + passkeyCeremonyTtlMs).toISOString(),
-      createdAt: now.toISOString()
-    };
-    this.passkeyCeremonies.set(ceremony.id, ceremony);
-
-    return {
-      ceremonyId: ceremony.id,
-      options
-    };
+  beginPasskeyAuthentication(
+    ...args: Parameters<PasskeyDomain["beginPasskeyAuthentication"]>
+  ): ReturnType<PasskeyDomain["beginPasskeyAuthentication"]> {
+    return this.passkeyDomain.beginPasskeyAuthentication(...args);
   }
-
-  async completePasskeyAuthentication(input: {
-    ceremonyId: string;
-    origin: string;
-    rpId: string;
-    response: AuthenticationResponseJSON;
-    now?: Date;
-  }): Promise<AuthSessionView> {
-    const now = input.now ?? new Date();
-    const ceremony = this.takePasskeyCeremony(input.ceremonyId, "authentication", now);
-    const passkey = this.passkeys.get(input.response.id);
-
-    if (passkey === undefined) {
-      throw new Cp2Error(401, "passkey_unknown", "Passkey sign-in failed.");
-    }
-
-    if (
-      input.response.response.userHandle !== undefined &&
-      input.response.response.userHandle !== passkey.webauthnUserId
-    ) {
-      throw new Cp2Error(401, "passkey_user_mismatch", "Passkey sign-in failed.");
-    }
-
-    let verification;
-    try {
-      verification = await (
-        this.options.passkeyAuthenticationVerifier ?? verifyAuthenticationResponse
-      )({
-        response: input.response,
-        expectedChallenge: ceremony.challenge,
-        expectedOrigin: input.origin,
-        expectedRPID: input.rpId,
-        credential: {
-          id: passkey.id,
-          publicKey: Buffer.from(passkey.publicKey, "base64url"),
-          counter: passkey.counter,
-          transports: passkey.transports as AuthenticatorTransportFuture[]
-        },
-        requireUserVerification: true
-      });
-    } catch {
-      throw new Cp2Error(401, "passkey_authentication_invalid", "Passkey sign-in failed.");
-    }
-
-    if (!verification.verified) {
-      throw new Cp2Error(401, "passkey_authentication_invalid", "Passkey sign-in failed.");
-    }
-
-    passkey.counter = verification.authenticationInfo.newCounter;
-    passkey.backedUp = verification.authenticationInfo.credentialBackedUp;
-    passkey.deviceType = verification.authenticationInfo.credentialDeviceType;
-    passkey.lastUsedAt = now.toISOString();
-    const account = this.requireAccount(passkey.accountId);
-    this.requireAccountAuthenticationAllowed(account);
-    const user = this.requireUser(passkey.userId);
-    const createdSession = this.createSession(account, user, now);
-    this.markSessionPinVerified(createdSession.id, now);
-    if (ceremony.purpose === "pin_recovery") {
-      this.passkeyPinRecoveryGrants.set(
-        createdSession.id,
-        new Date(now.getTime() + passkeyPinRecoveryGrantTtlMs).toISOString()
-      );
-    }
-    this.recordAuditEvent({
-      type: "auth.passkey_login",
-      aggregateType: "account",
-      aggregateId: account.id,
-      actorId: user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        credentialId: passkey.id,
-        purpose: ceremony.purpose ?? "login"
-      }
-    });
-
-    return this.requireAnySession(createdSession.id, now);
+  completePasskeyAuthentication(
+    ...args: Parameters<PasskeyDomain["completePasskeyAuthentication"]>
+  ): ReturnType<PasskeyDomain["completePasskeyAuthentication"]> {
+    return this.passkeyDomain.completePasskeyAuthentication(...args);
   }
-
-  listPasskeys(input: { sessionId: string | null; now?: Date }): PasskeySummary[] {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    return [...this.passkeys.values()]
-      .filter((passkey) => passkey.accountId === session.account.id)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .map(passkeyView);
+  listPasskeys(
+    ...args: Parameters<PasskeyDomain["listPasskeys"]>
+  ): ReturnType<PasskeyDomain["listPasskeys"]> {
+    return this.passkeyDomain.listPasskeys(...args);
   }
-
-  revokePasskey(input: { sessionId: string | null; credentialId: string; now?: Date }): {
-    revoked: true;
-  } {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const passkey = this.passkeys.get(input.credentialId);
-
-    if (passkey === undefined || passkey.accountId !== session.account.id) {
-      throw new Cp2Error(404, "passkey_not_found", "Passkey was not found.");
-    }
-
-    const remainingPasskeys = [...this.passkeys.values()].filter(
-      (candidate) => candidate.accountId === session.account.id && candidate.id !== passkey.id
-    );
-    if (
-      remainingPasskeys.length === 0 &&
-      !this.passwordCredentials.has(session.account.id) &&
-      !this.accountPinHashes.has(session.account.id)
-    ) {
-      throw new Cp2Error(
-        409,
-        "final_login_method_required",
-        "Add another login method before removing this passkey."
-      );
-    }
-
-    this.passkeys.delete(passkey.id);
-    this.recordAuditEvent({
-      type: "auth.passkey_revoked",
-      aggregateType: "account",
-      aggregateId: session.account.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {
-        credentialId: passkey.id
-      }
-    });
-
-    return { revoked: true };
+  revokePasskey(
+    ...args: Parameters<PasskeyDomain["revokePasskey"]>
+  ): ReturnType<PasskeyDomain["revokePasskey"]> {
+    return this.passkeyDomain.revokePasskey(...args);
   }
-
   createBusiness(input: {
     sessionId: string | null;
     name: string;
@@ -6195,8 +5882,8 @@ export class Cp2Store {
       otpChallenges: [...this.otpChallenges.values()],
       smsDeliveryAttempts: [...this.smsDeliveryAttempts.values()],
       sessions: [...this.sessions.values()],
-      passkeys: [...this.passkeys.values()],
-      passkeyCeremonies: [...this.passkeyCeremonies.values()],
+      passkeys: [...this.passkeyDomain.passkeysMap.values()],
+      passkeyCeremonies: [...this.passkeyDomain.passkeyCeremoniesMap.values()],
       accountIdentities: [...this.accountIdentities.values()],
       passwordCredentials: [...this.passwordCredentials.values()],
       authTransactions: [...this.authTransactions.values()],
@@ -6256,9 +5943,7 @@ export class Cp2Store {
     this.otpChallenges.clear();
     this.smsDeliveryAttempts.clear();
     this.sessions.clear();
-    this.passkeys.clear();
-    this.passkeyCeremonies.clear();
-    this.passkeyPinRecoveryGrants.clear();
+    this.passkeyDomain.clear();
     this.accountIdentities.clear();
     this.identityAccountByValue.clear();
     this.passwordCredentials.clear();
@@ -6516,13 +6201,7 @@ export class Cp2Store {
       this.sessions.set(session.id, normalizeRestoredSession(session));
     }
 
-    for (const passkey of snapshot.passkeys ?? []) {
-      this.passkeys.set(passkey.id, passkey);
-    }
-
-    for (const ceremony of snapshot.passkeyCeremonies ?? []) {
-      this.passkeyCeremonies.set(ceremony.id, ceremony);
-    }
+    this.passkeyDomain.restore(snapshot);
 
     for (const identity of snapshot.accountIdentities ?? []) {
       this.accountIdentities.set(identity.id, identity);
@@ -7682,49 +7361,6 @@ export class Cp2Store {
     }
   }
 
-  private prunePasskeyCeremonies(now: Date): void {
-    for (const [ceremonyId, ceremony] of this.passkeyCeremonies) {
-      if (Date.parse(ceremony.expiresAt) <= now.getTime()) {
-        this.passkeyCeremonies.delete(ceremonyId);
-      }
-    }
-
-    if (this.passkeyCeremonies.size < maxPendingPasskeyCeremonies) {
-      return;
-    }
-
-    const overflow = [...this.passkeyCeremonies.values()]
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .slice(0, this.passkeyCeremonies.size - maxPendingPasskeyCeremonies + 1);
-    for (const ceremony of overflow) {
-      this.passkeyCeremonies.delete(ceremony.id);
-    }
-  }
-
-  private prunePasskeyPinRecoveryGrants(now: Date): void {
-    for (const [sessionId, expiresAt] of this.passkeyPinRecoveryGrants) {
-      if (Date.parse(expiresAt) <= now.getTime() || this.getSession(sessionId, now) === null) {
-        this.passkeyPinRecoveryGrants.delete(sessionId);
-      }
-    }
-  }
-
-  private takePasskeyCeremony(
-    ceremonyId: string,
-    kind: PasskeyCeremonyRecord["kind"],
-    now: Date
-  ): PasskeyCeremonyRecord {
-    this.prunePasskeyCeremonies(now);
-    const ceremony = this.passkeyCeremonies.get(ceremonyId);
-    this.passkeyCeremonies.delete(ceremonyId);
-
-    if (ceremony === undefined || ceremony.kind !== kind) {
-      throw new Cp2Error(400, "passkey_ceremony_invalid", "Passkey request expired or is invalid.");
-    }
-
-    return ceremony;
-  }
-
   private requireAnySession(sessionId: string | null, now: Date): AuthSessionView {
     const session = this.getSession(sessionId, now);
 
@@ -8880,6 +8516,32 @@ export class Cp2Store {
     }
   }
 
+  private revokeOtherSessionsForAccount(
+    accountId: string,
+    exceptSessionId: string,
+    reason: string,
+    now: Date
+  ): void {
+    for (const session of this.sessions.values()) {
+      if (session.accountId === accountId && session.id !== exceptSessionId && session.revokedAt === null) {
+        session.revokedAt = now.toISOString();
+        session.revocationReason = reason;
+      }
+    }
+  }
+
+  private hasAccountPinHash(accountId: string): boolean {
+    return this.accountPinHashes.has(accountId);
+  }
+
+  private resetAccountPinHash(accountId: string, normalizedPin: string): void {
+    this.accountPinHashes.set(accountId, hashPin(accountId, normalizedPin));
+  }
+
+  private hasPasswordCredential(accountId: string): boolean {
+    return this.passwordCredentials.has(accountId);
+  }
+
   private buildShopDeletionPreview(
     businessId: string,
     accountId: string,
@@ -9275,8 +8937,8 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.otpChallenges, scope);
       deletedRecordCount += deleteScopedMapRecords(this.smsDeliveryAttempts, scope);
       deletedRecordCount += deleteScopedMapRecords(this.sessions, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.passkeys, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.passkeyCeremonies, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.passkeyDomain.passkeysMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.passkeyDomain.passkeyCeremoniesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.accountIdentities, scope);
       deletedRecordCount += deleteScopedMapRecords(this.passwordCredentials, scope);
       deletedRecordCount += deleteScopedMapRecords(this.authTransactions, scope);
@@ -10204,23 +9866,6 @@ function constantTimeHashMatches(actual: string | undefined, expected: string): 
 function normalizeDeviceSessionValue(value: string, fallback: string): string {
   const normalized = value.trim().slice(0, 200);
   return normalized.length > 0 ? normalized : fallback;
-}
-
-function passkeyView(passkey: PasskeyCredentialRecord): PasskeySummary {
-  return {
-    id: passkey.id,
-    label: passkey.label,
-    deviceType: passkey.deviceType,
-    backedUp: passkey.backedUp,
-    transports: [...passkey.transports],
-    createdAt: passkey.createdAt,
-    lastUsedAt: passkey.lastUsedAt
-  };
-}
-
-function normalizePasskeyLabel(label: string | undefined): string {
-  const normalized = label?.trim();
-  return normalized === undefined || normalized.length === 0 ? "Passkey" : normalized.slice(0, 80);
 }
 
 function userIdentityView(identity: UserIdentityRecord): UserIdentitySummary {

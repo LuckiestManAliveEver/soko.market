@@ -151,6 +151,74 @@ describePostgres("CP2 Postgres store", () => {
     }
   }, 15_000);
 
+  it("persists a registered passkey credential across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const uniquePhone = `254708${Date.now().toString().slice(-6)}`;
+
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
+    const { sessionCookie } = await createOwnerBusiness(app, uniquePhone);
+    const sessionId = readSessionCookie(sessionCookie);
+    expect(sessionId).not.toBeNull();
+
+    const snapshot = store.snapshot();
+    const ownerSession = snapshot.sessions.find((candidate) => candidate.id === sessionId);
+    expect(ownerSession).toBeDefined();
+    const ownerAccount = snapshot.accounts.find(
+      (candidate) => candidate.id === ownerSession!.accountId
+    );
+    const ownerUser = snapshot.users.find((candidate) => candidate.accountId === ownerAccount?.id);
+    expect(ownerAccount).toBeDefined();
+    expect(ownerUser).toBeDefined();
+    const credentialId = `postgres-passkey-${Date.now()}`;
+    snapshot.passkeys = [
+      ...(snapshot.passkeys ?? []),
+      {
+        id: credentialId,
+        accountId: ownerAccount!.id,
+        userId: ownerUser!.id,
+        webauthnUserId: "postgres-webauthn-user",
+        publicKey: "AQID",
+        counter: 0,
+        label: "Postgres Passkey (unsaved)",
+        deviceType: "multiDevice",
+        backedUp: true,
+        transports: ["internal", "hybrid"],
+        createdAt: new Date().toISOString(),
+        lastUsedAt: null
+      }
+    ];
+    // hydrateSnapshot() bypasses the Postgres persistence proxy's method-interception, so the
+    // injected passkey above is in-memory only until a real intercepted mutating method call
+    // (renamePasskey, listed in postgres-store.ts's mutatingMethodNames) triggers a full-snapshot
+    // persist that picks up the current in-memory state, passkey included.
+    store.hydrateSnapshot(snapshot);
+    store.renamePasskey({ sessionId, credentialId, label: "Postgres Passkey" });
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const restoredApp = buildApi({
+      cp2: { store: restoredStore },
+      mutationPersistenceFlush: () => restoredStore.flush()
+    });
+
+    const listed = await getJson<{ passkeys: Array<{ id: string; label: string }> }>(
+      restoredApp,
+      "/auth/passkeys",
+      sessionCookie
+    );
+    expect(listed.passkeys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: credentialId, label: "Postgres Passkey" })
+      ])
+    );
+
+    await restoredApp.close();
+  }, 30_000);
+
   it("does not expose retired phone verification routes", async () => {
     expect(databaseUrl).toBeDefined();
     const connectionString = databaseUrl ?? "";
