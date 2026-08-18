@@ -72,6 +72,8 @@ import {
 } from "./domains/agent-runtime/shared.js";
 import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
+import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
+import { type McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
 import type {
   AccountSummary,
   AgentContextSource,
@@ -125,10 +127,6 @@ import type {
   LaunchSettingsSummary,
   LogisticsSummary,
   MarketplaceIntroStateSummary,
-  McpAccessScope,
-  McpAccessTokenCreated,
-  McpAccessTokenSummary,
-  McpPrincipal,
   MembershipSummary,
   ModelExecutionTarget,
   NetworkEdgeSummary,
@@ -379,6 +377,7 @@ export type {
   RuntimeAgentProfile
 } from "./domains/agent-runtime/shared.js";
 export type { ProductMediaRecord } from "./domains/sales/shared.js";
+export type { McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
 
 export interface SessionRecord extends SessionSummary {
   accountId: string;
@@ -712,12 +711,6 @@ export interface Cp2Snapshot {
   auditEvents: BusinessEvent[];
 }
 
-export interface McpAccessTokenRecord extends McpAccessTokenSummary {
-  userId: string;
-  sessionId: string;
-  tokenHash: string;
-}
-
 export interface Cp2StoreOptions {
   passkeyAuthenticationVerifier?: typeof verifyAuthenticationResponse;
   runtimeModelProvider?: RuntimeModelProvider;
@@ -862,6 +855,12 @@ export class Cp2Store {
       },
       businesses: this.businesses,
       quarantinedBusinessIds: this.quarantinedBusinessIds
+    });
+    this.mcpTokensDomain = new McpTokensDomain({
+      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      recordAuditEvent: (input) => this.recordAuditEvent(input),
+      listAccountShops: (input) => this.listAccountShops(input),
+      getSession: (sessionId, now) => this.getSession(sessionId, now)
     });
     this.commerce = new CommerceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -1034,8 +1033,11 @@ export class Cp2Store {
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
-  private readonly mcpAccessTokens = new Map<string, McpAccessTokenRecord>();
-  private readonly mcpTokenIdByHash = new Map<string, string>();
+  // mcpAccessTokens/mcpTokenIdByHash now live inside `mcpTokensDomain`
+  // (services/api/src/cp2/domains/mcp-tokens/store.ts) - accessed via its map getters for the
+  // generic snapshot/Postgres-persistence/account-deletion sweeps below. hydrateSnapshot()
+  // deliberately does NOT call its clear() - see that domain's shared.ts header comment.
+  private readonly mcpTokensDomain: McpTokensDomain;
   private readonly syncChangeListeners = new Map<
     string,
     Set<(event: SyncRealtimeChangesAvailableEvent) => void>
@@ -3478,136 +3480,25 @@ export class Cp2Store {
     };
   }
 
-  createMcpAccessToken(input: {
-    sessionId: string | null;
-    name: string;
-    scopes: McpAccessScope[];
-    shopId?: string | null;
-    expiresInSeconds?: number;
-    now?: Date;
-  }): McpAccessTokenCreated {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const name = input.name.trim();
-    if (name.length < 3 || name.length > 80) {
-      throw new Cp2Error(400, "mcp_token_name_invalid", "Token name must be 3 to 80 characters.");
-    }
-    const scopes = [...new Set(input.scopes)];
-    if (
-      scopes.length === 0 ||
-      scopes.some((scope) => scope !== "mcp:read" && scope !== "mcp:act")
-    ) {
-      throw new Cp2Error(400, "mcp_scope_invalid", "At least one supported MCP scope is required.");
-    }
-    const shopId = input.shopId ?? null;
-    if (
-      shopId !== null &&
-      !this.listAccountShops({ sessionId: session.session.id, now }).some(
-        ({ business }) => business.id === shopId
-      )
-    ) {
-      throw new Cp2Error(403, "mcp_shop_forbidden", "The MCP token cannot access that shop.");
-    }
-    const expiresInSeconds = input.expiresInSeconds ?? 3_600;
-    if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 86_400) {
-      throw new Cp2Error(
-        400,
-        "mcp_token_ttl_invalid",
-        "MCP token lifetime must be between 60 and 86400 seconds."
-      );
-    }
-    const expiresAt = new Date(
-      Math.min(now.getTime() + expiresInSeconds * 1_000, Date.parse(session.session.expiresAt))
-    ).toISOString();
-    const accessToken = `soko_mcp_${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
-    const record: McpAccessTokenRecord = {
-      id: randomUUID(),
-      accountId: session.account.id,
-      userId: session.user.id,
-      sessionId: session.session.id,
-      tokenHash: hashMcpAccessToken(accessToken),
-      name,
-      scopes,
-      shopId,
-      createdAt: now.toISOString(),
-      expiresAt,
-      lastUsedAt: null,
-      revokedAt: null
-    };
-    this.mcpAccessTokens.set(record.id, record);
-    this.mcpTokenIdByHash.set(record.tokenHash, record.id);
-    this.recordAuditEvent({
-      type: "mcp.token_created",
-      aggregateType: "mcp_access_token",
-      aggregateId: record.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: { scopes, shopId, expiresAt }
-    });
-    return { accessToken, token: mcpAccessTokenSummary(record) };
+  createMcpAccessToken(
+    ...args: Parameters<McpTokensDomain["createMcpAccessToken"]>
+  ): ReturnType<McpTokensDomain["createMcpAccessToken"]> {
+    return this.mcpTokensDomain.createMcpAccessToken(...args);
   }
-
-  listMcpAccessTokens(input: { sessionId: string | null; now?: Date }): McpAccessTokenSummary[] {
-    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
-    return [...this.mcpAccessTokens.values()]
-      .filter((token) => token.accountId === session.account.id)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .map(mcpAccessTokenSummary);
+  listMcpAccessTokens(
+    ...args: Parameters<McpTokensDomain["listMcpAccessTokens"]>
+  ): ReturnType<McpTokensDomain["listMcpAccessTokens"]> {
+    return this.mcpTokensDomain.listMcpAccessTokens(...args);
   }
-
-  revokeMcpAccessToken(input: {
-    sessionId: string | null;
-    tokenId: string;
-    now?: Date;
-  }): McpAccessTokenSummary {
-    const now = input.now ?? new Date();
-    const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const token = this.mcpAccessTokens.get(input.tokenId);
-    if (token === undefined || token.accountId !== session.account.id) {
-      throw new Cp2Error(404, "mcp_token_not_found", "MCP token was not found.");
-    }
-    token.revokedAt ??= now.toISOString();
-    this.recordAuditEvent({
-      type: "mcp.token_revoked",
-      aggregateType: "mcp_access_token",
-      aggregateId: token.id,
-      actorId: session.user.id,
-      occurredAt: now.toISOString(),
-      payload: {}
-    });
-    return mcpAccessTokenSummary(token);
+  revokeMcpAccessToken(
+    ...args: Parameters<McpTokensDomain["revokeMcpAccessToken"]>
+  ): ReturnType<McpTokensDomain["revokeMcpAccessToken"]> {
+    return this.mcpTokensDomain.revokeMcpAccessToken(...args);
   }
-
-  authenticateMcpAccessToken(input: {
-    accessToken: string;
-    requiredScope?: McpAccessScope;
-    now?: Date;
-  }): McpPrincipal {
-    const now = input.now ?? new Date();
-    const tokenHash = hashMcpAccessToken(input.accessToken);
-    const tokenId = this.mcpTokenIdByHash.get(tokenHash);
-    const token = tokenId === undefined ? undefined : this.mcpAccessTokens.get(tokenId);
-    if (
-      token === undefined ||
-      token.revokedAt !== null ||
-      Date.parse(token.expiresAt) <= now.getTime() ||
-      this.getSession(token.sessionId, now) === null
-    ) {
-      throw new Cp2Error(401, "mcp_token_invalid", "MCP access token is invalid or expired.");
-    }
-    if (input.requiredScope !== undefined && !token.scopes.includes(input.requiredScope)) {
-      throw new Cp2Error(403, "mcp_scope_forbidden", "MCP token lacks the required scope.");
-    }
-    token.lastUsedAt = now.toISOString();
-    return {
-      tokenId: token.id,
-      accountId: token.accountId,
-      userId: token.userId,
-      sessionId: token.sessionId,
-      scopes: [...token.scopes],
-      shopId: token.shopId,
-      expiresAt: token.expiresAt
-    };
+  authenticateMcpAccessToken(
+    ...args: Parameters<McpTokensDomain["authenticateMcpAccessToken"]>
+  ): ReturnType<McpTokensDomain["authenticateMcpAccessToken"]> {
+    return this.mcpTokensDomain.authenticateMcpAccessToken(...args);
   }
 
   subscribeSyncChanges(input: {
@@ -6253,7 +6144,7 @@ export class Cp2Store {
         cloneAgentModelBinding
       ),
       syncChanges: [...this.syncChanges],
-      mcpAccessTokens: [...this.mcpAccessTokens.values()],
+      mcpAccessTokens: [...this.mcpTokensDomain.mcpAccessTokensMap.values()],
       productFieldSchemas: [...this.salesDomain.productFieldSchemasMap.values()],
       products: [...this.salesDomain.productsMap.values()],
       productMedia: [...this.salesDomain.productMediaMap.values()],
@@ -6760,10 +6651,7 @@ export class Cp2Store {
       );
     }
 
-    for (const token of snapshot.mcpAccessTokens ?? []) {
-      this.mcpAccessTokens.set(token.id, token);
-      this.mcpTokenIdByHash.set(token.tokenHash, token.id);
-    }
+    this.mcpTokensDomain.restore(snapshot);
 
     if (this.syncChanges.length === 0) {
       this.backfillSyncChanges();
@@ -9330,7 +9218,7 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentModelAssignmentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.browserInferenceAssignmentsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentModelBindingsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.mcpAccessTokens, scope);
+      deletedRecordCount += deleteScopedMapRecords(this.mcpTokensDomain.mcpAccessTokensMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productFieldSchemasMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productMediaMap, scope);
@@ -9483,10 +9371,7 @@ export class Cp2Store {
       }
     }
 
-    this.mcpTokenIdByHash.clear();
-    for (const token of this.mcpAccessTokens.values()) {
-      this.mcpTokenIdByHash.set(token.tokenHash, token.id);
-    }
+    this.mcpTokensDomain.rebuildTokenIndex();
 
     this.networkDomain.rebuildDerivedIndexes();
 
@@ -10210,24 +10095,6 @@ function pinHashSecret(): string {
 
 function invalidLoginCredentialsError(): Cp2Error {
   return new Cp2Error(401, "auth_credentials_invalid", "The account credentials are invalid.");
-}
-
-function hashMcpAccessToken(accessToken: string): string {
-  return createHash("sha256").update(accessToken).digest("hex");
-}
-
-function mcpAccessTokenSummary(token: McpAccessTokenRecord): McpAccessTokenSummary {
-  return {
-    id: token.id,
-    accountId: token.accountId,
-    name: token.name,
-    scopes: [...token.scopes],
-    shopId: token.shopId,
-    createdAt: token.createdAt,
-    expiresAt: token.expiresAt,
-    lastUsedAt: token.lastUsedAt,
-    revokedAt: token.revokedAt
-  };
 }
 
 function parseDeletionOtpChallengeId(value: string | null | undefined): string | null {
