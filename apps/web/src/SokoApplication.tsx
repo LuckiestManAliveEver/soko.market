@@ -136,6 +136,7 @@ import {
 import { useAsyncActions } from "./hooks/useAsyncActions";
 import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
+import { useImportsState } from "./hooks/useImportsState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
@@ -207,11 +208,6 @@ import {
   type CustomerSummary,
   type DataExportBundle,
   type DeviceTrustSummary,
-  type DocumentImportConfirmResult,
-  type DocumentImportDraft,
-  type DocumentImportJobSummary,
-  type DocumentImportPreviewRow,
-  type ImportFormState,
   type InvoiceFormState,
   type InvoicePreview,
   type InvoiceSummary,
@@ -262,7 +258,6 @@ import {
   emptyBetaForm,
   emptyComplianceForm,
   emptyCustomerForm,
-  emptyImportForm,
   emptyInvoiceForm,
   emptyLaunchForm,
   emptyProductForm,
@@ -517,8 +512,6 @@ export function OwnerApp() {
     createDefaultProductFieldDefinitions()
   );
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
-  const [importJobs, setImportJobs] = useState<DocumentImportJobSummary[]>([]);
-  const [selectedImportJobId, setSelectedImportJobId] = useState<string | null>(null);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncQueueSummary>(emptySyncSummary);
   const [offlineCache, setOfflineCache] = useState<OfflineCacheSnapshot | null>(null);
@@ -549,7 +542,6 @@ export function OwnerApp() {
   const [launchIncidents, setLaunchIncidents] = useState<LaunchIncidentSummary[]>([]);
   const [productForm, setProductForm] = useState<ProductFormState>(emptyProductForm);
   const [invoiceForm, setInvoiceForm] = useState<InvoiceFormState>(emptyInvoiceForm);
-  const [importForm, setImportForm] = useState<ImportFormState>(emptyImportForm);
   const [complianceForm, setComplianceForm] = useState<ComplianceFormState>(emptyComplianceForm);
   const [betaForm, setBetaForm] = useState<BetaFormState>(emptyBetaForm);
   const [launchForm, setLaunchForm] = useState<LaunchFormState>(emptyLaunchForm);
@@ -570,8 +562,6 @@ export function OwnerApp() {
   const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
-  const activeImportJob =
-    importJobs.find((job) => job.id === selectedImportJobId) ?? importJobs[0] ?? null;
 
   function navigateToView(nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) {
     const nextMode = options?.mode ?? mode;
@@ -737,6 +727,27 @@ export function OwnerApp() {
     businessId: business?.id ?? null,
     setStatusMessage,
     queueMutationAfterNetworkFailure,
+    registerReset: domainResetRegistry.registerReset,
+    registerRefresh
+  });
+  const {
+    importJobs,
+    selectedImportJobId,
+    setSelectedImportJobId,
+    importForm,
+    setImportForm,
+    activeImportJob,
+    loadDocumentImports,
+    createDocumentImport,
+    updateImportRowLocal,
+    saveImportRow,
+    confirmImport
+  } = useImportsState({
+    businessId: business?.id ?? null,
+    setStatusMessage,
+    loadProducts,
+    loadSuppliers,
+    loadReports,
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
@@ -1342,7 +1353,7 @@ export function OwnerApp() {
       }
 
       if (view === "imports") {
-        refreshes.push(loadDocumentImports(businessId), loadProducts(businessId));
+        refreshes.push(loadProducts(businessId));
       }
 
       if (view === "logistics") {
@@ -2969,130 +2980,6 @@ export function OwnerApp() {
     }
   }
 
-  async function loadDocumentImports(businessId: string) {
-    try {
-      const jobs = await getJson<DocumentImportJobSummary[]>(`/businesses/${businessId}/imports`);
-      setImportJobs(jobs);
-      if (selectedImportJobId === null && jobs[0] !== undefined) {
-        setSelectedImportJobId(jobs[0].id);
-      }
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createDocumentImport() {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const endpoint = importForm.target === "product" ? "product-catalogue" : "supplier-csv";
-      const job = await postJson<DocumentImportJobSummary>(
-        `/businesses/${business.id}/imports/${endpoint}`,
-        {
-          fileName: importForm.fileName,
-          contentType: importForm.contentType,
-          sourceType: importForm.sourceType,
-          sourceLocator: importForm.sourceLocator.trim() || null,
-          ...(importForm.contentBase64 === null
-            ? { content: importForm.content }
-            : { contentBase64: importForm.contentBase64 })
-        }
-      );
-      setImportJobs((jobs) => [job, ...jobs.filter((item) => item.id !== job.id)]);
-      setSelectedImportJobId(job.id);
-      setStatusMessage(
-        job.status === "failed"
-          ? (job.errorMessage ??
-              "The document could not be imported because it did not contain any usable rows.")
-          : "Import preview ready"
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  function updateImportRowLocal(input: {
-    importJobId: string;
-    rowNumber: number;
-    mapped: DocumentImportDraft;
-    selected: boolean;
-  }) {
-    setImportJobs((jobs) =>
-      jobs.map((job) =>
-        job.id === input.importJobId
-          ? {
-              ...job,
-              rows: job.rows.map((row) =>
-                row.rowNumber === input.rowNumber
-                  ? {
-                      ...row,
-                      mapped: input.mapped,
-                      selected: input.selected
-                    }
-                  : row
-              )
-            }
-          : job
-      )
-    );
-  }
-
-  async function saveImportRow(job: DocumentImportJobSummary, row: DocumentImportPreviewRow) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const rowEndpoint = job.target === "product" ? "product-rows" : "rows";
-      const updated = await patchJson<DocumentImportJobSummary>(
-        `/businesses/${business.id}/imports/${job.id}/${rowEndpoint}/${row.rowNumber}`,
-        {
-          mapped: row.mapped,
-          selected: row.selected
-        }
-      );
-      setImportJobs((jobs) => jobs.map((item) => (item.id === updated.id ? updated : item)));
-      setStatusMessage(`Import row ${row.rowNumber} saved`);
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
-  async function confirmImport(job: DocumentImportJobSummary) {
-    if (business === null) {
-      return;
-    }
-
-    try {
-      const confirmEndpoint = job.target === "product" ? "confirm-products" : "confirm";
-      const response = await postJson<DocumentImportConfirmResult>(
-        `/businesses/${business.id}/imports/${job.id}/${confirmEndpoint}`,
-        {
-          selectedRowNumbers: job.rows.filter((row) => row.selected).map((row) => row.rowNumber)
-        }
-      );
-      setImportJobs((jobs) =>
-        jobs.map((item) => (item.id === response.job.id ? response.job : item))
-      );
-      await loadDocumentImports(business.id);
-      if (response.job.target === "product") {
-        await loadProducts(business.id);
-      } else {
-        await loadSuppliers(business.id);
-      }
-      await loadReports(business.id);
-      setStatusMessage(
-        `${response.job.confirmedCount} ${
-          response.job.target === "product" ? "product" : "supplier"
-        } row${response.job.confirmedCount === 1 ? "" : "s"} imported`
-      );
-    } catch (error) {
-      setStatusMessage(getErrorMessage(error));
-    }
-  }
-
   function switchMode(nextMode: SokoMode) {
     if (nextMode === "seller" && business === null) {
       if (session === null) {
@@ -3835,8 +3722,6 @@ export function OwnerApp() {
     setRoutedProductId(null);
     setProductFields(createDefaultProductFieldDefinitions());
     setInvoices([]);
-    setImportJobs([]);
-    setSelectedImportJobId(null);
     setSyncQueue([]);
     setSyncSummary(emptySyncSummary);
     setSecurityReview(null);
@@ -3862,7 +3747,6 @@ export function OwnerApp() {
     setRuntimeSessionId(null);
     setProductForm(emptyProductForm);
     setInvoiceForm(emptyInvoiceForm);
-    setImportForm(emptyImportForm);
     setComplianceForm(emptyComplianceForm);
     setBetaForm(emptyBetaForm);
     setLaunchForm(emptyLaunchForm);
