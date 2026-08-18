@@ -6,7 +6,6 @@ import type {
   AuthBootstrapResponse,
   AuthBootstrapState,
   BuyFeedSummary,
-  AgentModelAssignmentSummary,
   E2eeDeviceSummary,
   SokoChatSurface,
   SokoSessionContext
@@ -25,10 +24,8 @@ import {
 } from "./ai-model-manager";
 import {
   assignmentAfterReadiness,
-  assignmentFromServer,
   readDeviceAgentModelAssignment,
-  saveDeviceAgentModelAssignment,
-  type DeviceAgentModelAssignment
+  saveDeviceAgentModelAssignment
 } from "./agent-model-assignment";
 import { testAgentModelRuntime, type AgentModelRuntime } from "./agent-model-runtime";
 import { createAdaptiveAgentModelRuntime } from "./browser-gguf-runtime";
@@ -37,10 +34,7 @@ import {
   clearBrowserInferenceAccountData
 } from "./browser-inference-session";
 
-import {
-  readClientInferencePreferences,
-  saveClientInferencePreferences
-} from "./inference/preferences";
+import { readClientInferencePreferences } from "./inference/preferences";
 
 import { ensureE2eeIdentity, type E2eeIdentity } from "./e2ee";
 import {
@@ -70,6 +64,7 @@ import { useDomainResetRegistry } from "./hooks/useDomainReset";
 import { useCustomersState } from "./hooks/useCustomersState";
 import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
+import { useAgentModelState } from "./hooks/useAgentModelState";
 import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
 import { useChatState } from "./hooks/useChatState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
@@ -116,10 +111,8 @@ import {
 
 import {
   AccountRestorationPanel,
-  type ActiveAiModelSummary,
   type ActiveBusiness,
   type AgentSettings,
-  type AiModelSummary,
   type BusinessAgentProfileSummary,
   type BuyCartItem,
   type CountryDialCode,
@@ -144,7 +137,6 @@ import {
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
-  clientInferenceFeatureFlags,
   emptyCustomerForm,
   emptyInvoiceForm,
   emptyProductForm,
@@ -260,7 +252,6 @@ export function OwnerApp() {
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     () => readStoredAgent() ?? createDefaultAgent(initialBusiness)
   );
-  const [deviceCloudFallbackModelId, setDeviceCloudFallbackModelId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>(
     accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
@@ -790,6 +781,20 @@ export function OwnerApp() {
     setStatusMessage,
     initialSetupDraft,
     initialCountryCode,
+    registerReset: domainResetRegistry.registerReset
+  });
+  const {
+    deviceCloudFallbackModelId,
+    setDeviceCloudFallbackModelId,
+    restoreDeviceModelForLaunch,
+    findSelectedCloudFallback,
+    enableDeviceCloudFallback,
+    declineDeviceCloudFallback
+  } = useAgentModelState({
+    business,
+    session,
+    setAgentSettings,
+    setStatusMessage,
     registerReset: domainResetRegistry.registerReset
   });
 
@@ -1767,75 +1772,6 @@ export function OwnerApp() {
     if (options?.announce !== false) {
       setStatusMessage(`Switched to ${nextBusiness.name}.`);
     }
-  }
-
-  async function restoreDeviceModelForLaunch(
-    businessId: string
-  ): Promise<DeviceAgentModelAssignment> {
-    const deviceId = getOrCreateDeviceModelScopeId();
-    const serverAssignment = assignmentFromServer(
-      await getJson<AgentModelAssignmentSummary>(
-        `/businesses/${businessId}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-      )
-    );
-    const installationAvailable =
-      serverAssignment.activeModelInstallationId === null ||
-      listLocalAiModels().some((model) => model.id === serverAssignment.activeModelInstallationId);
-    const restoredAssignment = installationAvailable
-      ? serverAssignment
-      : {
-          ...serverAssignment,
-          activeModelInstallationId: null,
-          preferredExecutionMode: "LOCAL_FIRST" as const,
-          readinessStatus: "FAILED" as const,
-          runtimeBackend: null,
-          lastSuccessfulInferenceAt: null,
-          lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE",
-          updatedAt: new Date().toISOString()
-        };
-    saveDeviceAgentModelAssignment(restoredAssignment);
-    return restoredAssignment;
-  }
-
-  async function findSelectedCloudFallback(businessId: string): Promise<string | null> {
-    if (!navigator.onLine || !clientInferenceFeatureFlags.cloudFallback) return null;
-    const [registry, selectedFallback] = await Promise.all([
-      getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] })),
-      getJson<ActiveAiModelSummary>(`/businesses/${businessId}/ai-model`).catch(() => null)
-    ]);
-    const cloudModel = registry.models.find(
-      (model) =>
-        model.id === selectedFallback?.modelId &&
-        model.available &&
-        model.provider === "openai" &&
-        model.source === "hosted"
-    );
-    return cloudModel?.id ?? null;
-  }
-
-  function enableDeviceCloudFallback() {
-    if (session === null || business === null || deviceCloudFallbackModelId === null) return;
-    const preferences = readClientInferencePreferences(session.account.id, business.id);
-    saveClientInferencePreferences(session.account.id, business.id, {
-      ...preferences,
-      cloudConsent: true
-    });
-    setAgentSettings((current) => ({ ...current, model: deviceCloudFallbackModelId }));
-    setDeviceCloudFallbackModelId(null);
-    setStatusMessage(
-      "The explicitly selected OpenAI model is enabled only as a fallback on this device."
-    );
-  }
-
-  function declineDeviceCloudFallback() {
-    setDeviceCloudFallbackModelId(null);
-    const localModelId =
-      business === null
-        ? "sokoclaw-local"
-        : (readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId())?.modelId ??
-          "sokoclaw-local");
-    setAgentSettings((current) => ({ ...current, model: localModelId }));
-    setStatusMessage("OpenAI remains off. Downloaded-model-first routing is unchanged.");
   }
 
   function switchMode(nextMode: SokoMode) {
