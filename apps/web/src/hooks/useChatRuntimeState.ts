@@ -127,6 +127,8 @@ interface UseChatRuntimeStateDeps {
   setInvoiceForm: Dispatch<SetStateAction<InvoiceFormState>>;
   setInvoicePreview: Dispatch<SetStateAction<InvoicePreview | null>>;
   setPaymentForm: Dispatch<SetStateAction<PaymentFormState>>;
+  loadReports: (businessId: string) => Promise<void>;
+  loadNotifications: (businessId: string) => Promise<void>;
   loadNetworkGraph: () => Promise<void>;
   requestNetworkRoute: (targetNodeId?: string, requestText?: string) => Promise<void>;
   loadRuntimeSessions: (businessId: string) => Promise<void>;
@@ -218,6 +220,8 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     setInvoiceForm,
     setInvoicePreview,
     setPaymentForm,
+    loadReports,
+    loadNotifications,
     loadNetworkGraph,
     requestNetworkRoute,
     loadRuntimeSessions,
@@ -1417,6 +1421,16 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           business.id,
           customerIdFromToolResult(result.turn.toolResult)
         );
+      }
+
+      if (result.turn.plan.toolName === "reports.summary" && business !== null) {
+        await loadReports(business.id);
+        navigateToView("reports");
+      }
+
+      if (result.turn.plan.toolName === "notifications.list" && business !== null) {
+        await loadNotifications(business.id);
+        navigateToView("notifications");
       }
 
       if (result.turn.plan.toolName === "invoices.list" && business !== null) {

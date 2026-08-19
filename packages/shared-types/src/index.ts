@@ -3015,6 +3015,8 @@ export interface BusinessKnowledgeSummary {
 export type RuntimeToolName =
   | "products.list"
   | "invoices.list"
+  | "reports.summary"
+  | "notifications.list"
   | "product.create"
   | "product.update"
   | "product.delete"
@@ -3053,6 +3055,8 @@ export type RuntimeParserIntent =
   | "check_debt"
   | "show_products"
   | "show_invoices"
+  | "show_reports"
+  | "show_notifications"
   | "confirm_document_import"
   | "unknown";
 

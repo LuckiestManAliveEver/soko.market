@@ -80,6 +80,7 @@ import type {
   BrowserDeviceTier,
   BrowserInferenceAssignmentSummary,
   BrowserRuntimeContract,
+  BusinessReportSummary,
   BusinessSummary,
   CatalogueQueryResult,
   ChannelProvider,
@@ -93,6 +94,7 @@ import type {
   MembershipSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
+  NotificationInbox,
   PreferredExecutionMode,
   ProductSummary,
   PurchaseReceiptSummary,
@@ -245,6 +247,16 @@ export interface AgentRuntimeDomainDeps {
     now?: Date;
   }) => ProductSummary[];
   listInvoices: (input: { sessionId: string | null; businessId: string; now?: Date }) => unknown;
+  getBusinessReport: (input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }) => BusinessReportSummary;
+  listNotifications: (input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }) => NotificationInbox;
   createProduct: (input: {
     sessionId: string | null;
     businessId: string;
@@ -3208,6 +3220,20 @@ export class AgentRuntimeDomain {
 
       case "invoices.list":
         return this.deps.listInvoices({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        });
+
+      case "reports.summary":
+        return this.deps.getBusinessReport({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          now: input.now
+        });
+
+      case "notifications.list":
+        return this.deps.listNotifications({
           sessionId: input.sessionId,
           businessId: input.businessId,
           now: input.now

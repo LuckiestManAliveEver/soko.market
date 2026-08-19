@@ -221,6 +221,55 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("executes reports.summary and notifications.list as safe read tools through a runtime turn (Phase 4l)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const reportsTurn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "show reports" },
+      sessionCookie
+    );
+    expect(reportsTurn.turn).toMatchObject({
+      status: "completed",
+      parserIntent: "show_reports",
+      plan: {
+        toolName: "reports.summary",
+        risk: "low",
+        requiresConfirmation: false,
+        confirmationToken: null
+      }
+    });
+    expect(reportsTurn.turn.toolResult).toMatchObject({
+      businessId
+    });
+
+    const notificationsTurn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "show notifications" },
+      sessionCookie
+    );
+    expect(notificationsTurn.turn).toMatchObject({
+      status: "completed",
+      parserIntent: "show_notifications",
+      plan: {
+        toolName: "notifications.list",
+        risk: "low",
+        requiresConfirmation: false,
+        confirmationToken: null
+      }
+    });
+    expect(notificationsTurn.turn.toolResult).toMatchObject({
+      summary: expect.any(Object),
+      notifications: expect.any(Array)
+    });
+
+    await app.close();
+  });
+
   it("requires confirmation before high-risk runtime tools can mutate records", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

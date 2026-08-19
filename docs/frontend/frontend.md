@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4j implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4l implemented (all ShellViews audited), Phase 5 not started
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -796,6 +796,101 @@ full and found correct.
 either domain. Both permanent pages stay exactly as important as they
 are today.
 
+## Compliance + Beta + Launch audit (Phase 4k — no card, no bug)
+
+Confirms the prediction this document's own "When a permanent page is
+still correct" section already made before this phase started: these
+three domains are internal-operator/admin readiness dashboards, not
+merchant-facing actions, and audited out that way.
+
+`useReadinessState.ts` (all three domains share one hook, mirroring the
+backend `domain-modularization-roadmap.md`'s own decision to keep them
+together) exposes: security review, verification tier, tax config,
+device trust, and account-deletion scheduling for **compliance**; access
+status, feature-flag rollout, device tests, support tickets, and
+telemetry for **beta**; launch status, rollout settings, checklist items,
+and incidents for **launch**. Every one of these is an operator
+configuring the *business's platform posture* (is this shop verified,
+is beta access paused, is launch frozen) — not an action a merchant
+would ever phrase as a chat sentence the way "mark delivered" or "add
+customer Mary" are. None of it maps to a `RuntimeToolName` a merchant's
+free text could plausibly trigger, and no `RuleIntent` covers any of it
+today. Grepped for a fourth trigger mechanism the way 4g found one for
+network — none exists; every mutation here is only reachable from its
+own permanent page.
+
+**No bug found** — every load/save/update path was read in full and
+correctly threads through to its REST endpoint and `loadReports`
+follow-up refresh.
+
+**Verdict**: no generated card, no new runtime tool, no code change, for
+all three domains. All three permanent pages stay exactly as important
+as they are today.
+
+## Reports + Notifications chat navigation (Phase 4l — implemented)
+
+Unlike sync/runtime (4i-4j) and compliance/beta/launch (4k), reports and
+notifications turned out to be genuinely chat-relevant, not operator
+dashboards — but the audit found the gap in an unexpected place.
+
+**What the audit found:**
+
+- Both domains were already advertised as reachable through chat:
+  `createAgentHelpReply()` (`agent-command-engine.ts`) tells every
+  merchant "I can open Products, Suppliers, Customers, Invoices,
+  Payments, My Network, Purchase receipts, Reports, or Alerts" — and
+  `resolveAgentHelpDestination` already maps `reports`/`notifications`
+  aliases to their `ShellView`s. But that path only fires through the
+  `extractAgentHelpCommand` prefix ("help me...", "can you help me...").
+  A bare **"show reports"** — the exact phrasing `show_products`/
+  `show_invoices` already support with no prefix required — fell through
+  to `unknown` and got a generic clarification reply instead of
+  navigating, even though the agent's own help text implies it should
+  work.
+- Confirmed this is a real, load-bearing precedent to extend, not a new
+  pattern to invent: `show_products`/`show_invoices` are plain
+  `RuleIntent`s in the shared `@soko/tool-core` parser (used by both the
+  frontend's local fallback decision engine and the real backend
+  `/runtime/turns` HTTP route, since it's the same package on both
+  sides), mapping to a `type: "navigate"` next-action that short-circuits
+  locally — no card, no draft, no confirmation.
+- Both `reports.summary` and `notifications.list` needed real backend
+  wiring, not just a frontend regex: the actual data (`getBusinessReport`,
+  `NotificationsDomain.listNotifications`) already existed as working
+  public store methods (same ones the permanent pages' REST routes call),
+  simply never exposed through the runtime-tool system.
+- **A second real bug, one layer deeper than expected**: after wiring the
+  new tools with `requiresConfirmation: false` on their own registry
+  definitions, "show reports" still came back `needs_confirmation`. Root
+  cause was a *third* place read-only tools must be listed: `services/api/src/cp2/agent-business-runtime.ts`'s
+  `skillRequiresOwnerConfirmation()` is a hard-coded allowlist of tool
+  names exempt from the default per-skill confirmation requirement —
+  `products.list`/`invoices.list` were on it, the two new tools were not,
+  so every default agent skill binding for them required explicit owner
+  confirmation despite the tool definition itself saying otherwise. This
+  is the same "forgot to add the new tool to an existing allowlist" bug
+  class as every other phase's dropped-input bug, just one hop further
+  from the parser than usual — found by running the real HTTP route
+  end-to-end rather than trusting the registry definition alone, per the
+  standing "verify the real path" discipline from Phase 4a.
+
+**What was built:** `show_reports`/`show_notifications` `RuleIntent`s
+(EN keywords/phrases mirroring `show_products`/`show_invoices` exactly),
+`reports.summary`/`notifications.list` read-only `RuntimeToolName`s,
+`"reports"`/`"notifications"` added to the navigate `view` union, backend
+execution wired to the existing `getBusinessReport`/`listNotifications`
+store methods, `skillRequiresOwnerConfirmation` extended, and the
+frontend trigger (`useChatRuntimeState.ts`) loads the fresh data and
+navigates as soon as either tool executes — identical shape to the
+existing `products.list`/`invoices.list` triggers.
+
+Regression tests: `tests/cp4-rule-parser.test.ts` (parser-level, verified
+against real parser output first), `tests/cp10-sokoclaw-runtime.test.ts`
+(new end-to-end test proving both tools execute for real through the
+HTTP route and return real report/notification data, not just a
+clarification), `tests/reports-notifications-navigation.test.ts`
+(frontend wiring — verified to fail without the frontend implementation).
+
 ## Target architecture
 
 ```text
@@ -912,7 +1007,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4h | Logistics: judged genuinely chat-relevant (unlike 4g) - "mark delivered"/"picked up" are natural merchant sentences and the backend mutation already existed, just never wired into the runtime-tool system. Same "composer card, no backend mutation change" shape as 4d/4e | **Implemented** (this change) — see "Logistics chat-invokable capability" above |
 | 4i | Sync: audited honestly - offline mutation queue/IndexedDB machinery with no natural chat phrasing (both actions need a `syncItemId` chat can't carry) and already only reachable from its own page. No fourth trigger mechanism found hiding here (unlike 4g's network). No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
 | 4j | Runtime: audited honestly - session/turn browsing for the AI runtime itself, the plumbing chat runs on rather than a peer domain chat could invoke. No mutation exists to route through the runtime-tool system. No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
-| 4k–4o | One phase per remaining `ShellView` (compliance, beta, launch, reports, notifications) - each gets its own honest audit; `docs/frontend/frontend.md`'s own "When a permanent page is still correct" section already flags compliance/beta/launch as likely permanent-page candidates | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4k | Compliance + Beta + Launch: audited together (one hook, `useReadinessState.ts`, mirrors the backend's own combined-phase decision) - confirmed the doc's own prediction that these are internal-operator platform-posture dashboards, not merchant-facing actions. No card, no bug | **Implemented** (this change) — see "Compliance + Beta + Launch audit" above |
+| 4l | Reports + Notifications: audited together - both already advertised as chat-reachable via the help-prefixed path, but the bare `show_products`/`show_invoices`-style phrasing didn't work. Built the missing `show_reports`/`show_notifications` navigate intents, wired to the existing `getBusinessReport`/`listNotifications` store methods, and fixed a second confirmation-allowlist bug found only by testing the real HTTP route | **Implemented** (this change) — see "Reports + Notifications chat navigation" above |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

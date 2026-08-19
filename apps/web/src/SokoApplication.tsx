@@ -733,6 +733,8 @@ export function OwnerApp() {
     setInvoiceForm,
     setInvoicePreview,
     setPaymentForm,
+    loadReports,
+    loadNotifications,
     loadNetworkGraph,
     requestNetworkRoute,
     loadRuntimeSessions,

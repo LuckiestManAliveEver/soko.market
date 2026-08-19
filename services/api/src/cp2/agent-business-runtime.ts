@@ -264,6 +264,8 @@ const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] |
   check_debt: ["customer", "order"],
   show_products: ["catalogue", "inventory"],
   show_invoices: ["order", "customer"],
+  show_reports: ["catalogue", "inventory", "order", "customer"],
+  show_notifications: [],
   confirm_document_import: ["document"],
   unknown: null
 };
@@ -429,6 +431,8 @@ function skillRequiresOwnerConfirmation(toolName: RuntimeToolName): boolean {
   return ![
     "products.list",
     "invoices.list",
+    "reports.summary",
+    "notifications.list",
     "receipt.lookup",
     "receipt.list",
     "unknown.clarify"

@@ -34,12 +34,14 @@ export type RuleIntent =
   | "check_debt"
   | "show_products"
   | "show_invoices"
+  | "show_reports"
+  | "show_notifications"
   | "unknown";
 
 export type ParserNextAction =
   | {
       type: "navigate";
-      view: "products" | "invoices" | "payments";
+      view: "products" | "invoices" | "payments" | "reports" | "notifications";
       reason: string;
     }
   | {
@@ -94,6 +96,8 @@ export interface AgentTool<TInput extends Record<string, unknown>, TOutput> {
 export type RuntimeToolName =
   | "products.list"
   | "invoices.list"
+  | "reports.summary"
+  | "notifications.list"
   | "product.create"
   | "product.update"
   | "product.delete"
@@ -572,6 +576,26 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     inputSchema: { type: "object", properties: {} },
     mcpExposable: false
   },
+  "reports.summary": {
+    name: "reports.summary",
+    description: "Get the active business's sales, inventory, and knowledge report summary.",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "report:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
+  },
+  "notifications.list": {
+    name: "notifications.list",
+    description: "List the active business's alerts and notifications.",
+    risk: "low",
+    requiresConfirmation: false,
+    readOnly: true,
+    requiredPermission: "notification:read",
+    inputSchema: { type: "object", properties: {} },
+    mcpExposable: false
+  },
   "product.create": {
     name: "product.create",
     description: "Create a new catalogue product with a name, unit, and starting quantity.",
@@ -993,6 +1017,22 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
         toolName: "invoices.list",
         input: {},
         reason: "List invoices for the active business.",
+        validation: valid()
+      };
+
+    case "show_reports":
+      return {
+        toolName: "reports.summary",
+        input: {},
+        reason: "Get the report summary for the active business.",
+        validation: valid()
+      };
+
+    case "show_notifications":
+      return {
+        toolName: "notifications.list",
+        input: {},
+        reason: "List notifications for the active business.",
         validation: valid()
       };
 
@@ -1667,6 +1707,8 @@ export function validateRuntimeToolInput(
   switch (toolName) {
     case "products.list":
     case "invoices.list":
+    case "reports.summary":
+    case "notifications.list":
     case "receipt.review":
     case "receipt.lookup":
     case "receipt.list":
@@ -1893,6 +1935,32 @@ const intentRules: IntentRule[] = [
       "list sales",
       "onyesha ankara",
       "invoice list"
+    ],
+    weight: 1
+  },
+  {
+    intent: "show_reports",
+    keywords: ["reports", "report", "ripoti", "insights", "knowledge"],
+    phrases: [
+      "show reports",
+      "show report",
+      "list reports",
+      "open reports",
+      "business summary",
+      "onyesha ripoti"
+    ],
+    weight: 1
+  },
+  {
+    intent: "show_notifications",
+    keywords: ["notifications", "notification", "alerts", "alert"],
+    phrases: [
+      "show notifications",
+      "show alerts",
+      "list notifications",
+      "list alerts",
+      "open notifications",
+      "open alerts"
     ],
     weight: 1
   },
@@ -2858,6 +2926,22 @@ function getNextAction(intent: Exclude<RuleIntent, "unknown">): ParserNextAction
       type: "navigate",
       view: "payments",
       reason: "Debt checking routes to the payment placeholder until CP8."
+    };
+  }
+
+  if (intent === "show_reports") {
+    return {
+      type: "navigate",
+      view: "reports",
+      reason: "Read-only report navigation is safe."
+    };
+  }
+
+  if (intent === "show_notifications") {
+    return {
+      type: "navigate",
+      view: "notifications",
+      reason: "Read-only notification navigation is safe."
     };
   }
 

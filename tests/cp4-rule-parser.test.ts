@@ -64,6 +64,20 @@ describe("CP4 rule parser", () => {
         view: "invoices"
       }
     });
+    expect(parseMerchantCommand("show reports")).toMatchObject({
+      intent: "show_reports",
+      nextAction: {
+        type: "navigate",
+        view: "reports"
+      }
+    });
+    expect(parseMerchantCommand("show notifications")).toMatchObject({
+      intent: "show_notifications",
+      nextAction: {
+        type: "navigate",
+        view: "notifications"
+      }
+    });
   });
 
   it("keeps state-changing commands as drafts only", () => {
