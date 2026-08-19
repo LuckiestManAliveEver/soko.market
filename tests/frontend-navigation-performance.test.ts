@@ -39,7 +39,9 @@ describe("frontend navigation performance contracts", () => {
     const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
     const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const navigationBlock = sourceFunction(navigationState, "navigateToView");
-    const settingsEffectStart = agentProfileSurface.indexOf("void loadConnectedSocialAccounts();");
+    const settingsEffectStart = agentProfileSurface.indexOf(
+      "setInferencePreferences(readClientInferencePreferences(accountId, business.id));"
+    );
     const settingsMountEffect = agentProfileSurface.slice(
       settingsEffectStart,
       agentProfileSurface.indexOf("}, [accountId, business.id]);", settingsEffectStart)

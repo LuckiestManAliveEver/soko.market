@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+const identitySecurityPanel = readFileSync("apps/web/src/IdentitySecurityPanel.tsx", "utf8");
 const productCapture = readFileSync("apps/web/src/ProductCapturePanel.tsx", "utf8");
 const accountControls = readFileSync("apps/web/src/AccountBackendControls.tsx", "utf8");
 const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
@@ -52,7 +53,7 @@ describe("frontend coverage for backend-owned lifecycles", () => {
     expect(sharedModule).toContain('import("./AccountBackendControls")');
     expect(accountControls).toContain('"/account/display-name"');
     expect(accountControls).toContain('aria-label="Account display name"');
-    expect(agentProfileSurface).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
+    expect(identitySecurityPanel).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
   });
 
   it("lists and revokes inactive end-to-end encryption keys", () => {
