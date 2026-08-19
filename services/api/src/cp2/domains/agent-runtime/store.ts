@@ -293,6 +293,13 @@ export interface AgentRuntimeDomainDeps {
     };
     now?: Date;
   }) => CustomerSummary;
+  updateCustomer: (input: {
+    sessionId: string | null;
+    businessId: string;
+    customerId: string;
+    customer: { name: string; phone: string | null; email: string | null; notes: string | null };
+    now?: Date;
+  }) => CustomerSummary;
   createSupplier: (input: {
     sessionId: string | null;
     businessId: string;
@@ -3328,12 +3335,37 @@ export class AgentRuntimeDomain {
           businessId: input.businessId,
           customer: {
             name: String(input.action.input.name ?? ""),
-            phone: null,
+            phone: typeof input.action.input.phone === "string" ? input.action.input.phone : null,
             email: null,
             notes: null
           },
           now: input.now
         });
+
+      case "customer.update": {
+        const customer = this.findRuntimeCustomerByName(
+          input.businessId,
+          String(input.action.input.customerName ?? "")
+        );
+
+        if (customer === null) {
+          throw new Cp2Error(404, "runtime_customer_not_found", "The customer was not found.");
+        }
+
+        return this.deps.updateCustomer({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          customerId: customer.id,
+          customer: {
+            name: customer.name,
+            phone:
+              typeof input.action.input.phone === "string" ? input.action.input.phone : customer.phone,
+            email: customer.email,
+            notes: customer.notes
+          },
+          now: input.now
+        });
+      }
 
       case "supplier.create":
         return this.deps.createSupplier({
@@ -3644,6 +3676,24 @@ export class AgentRuntimeDomain {
     return (
       suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name) === normalizedName) ??
       suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name).includes(normalizedName)) ??
+      null
+    );
+  }
+
+  private findRuntimeCustomerByName(businessId: string, customerName: string): CustomerSummary | null {
+    const normalizedName = normalizeRuntimeLookup(customerName);
+
+    if (normalizedName.length === 0) {
+      return null;
+    }
+
+    const customers = [...this.deps.customers.values()].filter(
+      (customer) => customer.businessId === businessId
+    );
+
+    return (
+      customers.find((customer) => normalizeRuntimeLookup(customer.name) === normalizedName) ??
+      customers.find((customer) => normalizeRuntimeLookup(customer.name).includes(normalizedName)) ??
       null
     );
   }

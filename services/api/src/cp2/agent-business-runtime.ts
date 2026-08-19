@@ -255,6 +255,7 @@ const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] |
   update_product: ["catalogue", "inventory"],
   adjust_stock: ["catalogue", "inventory"],
   add_customer: ["customer"],
+  update_customer: ["customer"],
   add_supplier: ["supplier"],
   update_supplier: ["supplier"],
   create_invoice: ["catalogue", "inventory", "customer", "order"],

@@ -25,6 +25,7 @@ export type RuleIntent =
   | "update_product"
   | "adjust_stock"
   | "add_customer"
+  | "update_customer"
   | "add_supplier"
   | "update_supplier"
   | "create_invoice"
@@ -99,6 +100,7 @@ export type RuntimeToolName =
   | "product.field.add"
   | "product.field.remove"
   | "customer.create"
+  | "customer.update"
   | "supplier.create"
   | "supplier.update"
   | "invoice.draft"
@@ -683,7 +685,24 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", required: true, description: "Customer name." }
+        name: { type: "string", required: true, description: "Customer name." },
+        phone: { type: "string", description: "Customer phone number, if mentioned." }
+      }
+    },
+    mcpExposable: false
+  },
+  "customer.update": {
+    name: "customer.update",
+    description: "Update an existing customer's details.",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "customer:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string", required: true, description: "Customer to update." },
+        phone: { type: "string", description: "New phone number, if changing." }
       }
     },
     mcpExposable: false
@@ -1011,13 +1030,30 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
       return {
         toolName: "customer.create",
         input: {
-          name: result.slots.customerName ?? ""
+          name: result.slots.customerName ?? "",
+          ...(result.slots.phone === undefined ? {} : { phone: result.slots.phone })
         },
         reason: "Draft a customer creation action from the merchant command.",
         validation:
           result.slots.customerName === undefined
             ? invalid("Customer name is required before a customer can be drafted.")
             : valid()
+      };
+
+    case "update_customer":
+      return {
+        toolName: "customer.update",
+        input: {
+          customerName: result.slots.customerName ?? "",
+          ...(result.slots.phone === undefined ? {} : { phone: result.slots.phone })
+        },
+        reason: "Draft a customer update action from the merchant command.",
+        validation:
+          result.slots.customerName === undefined
+            ? invalid("Which customer should I edit?")
+            : result.slots.phone === undefined
+              ? invalid("What should the new phone number be?")
+              : valid()
       };
 
     case "add_supplier":
@@ -1234,10 +1270,14 @@ export function parseProductContextScriptCommand(input: {
 
   // Several built-in phrases (a bare "edit", "badilisha") match on the verb alone, with no
   // requirement that a product noun also be present - "edit supplier John" would otherwise be
-  // misread as PRODUCT_EDIT with "supplier john" as the product name. Suppliers have no vocabulary
-  // of their own to route to instead, so a message naming a different domain noun skips product
-  // matching entirely and falls through to the primary parser.
-  if (/\b(supplier|suppliers|msambazaji|wasambazaji)\b/u.test(normalizeContextText(input.message))) {
+  // misread as PRODUCT_EDIT with "supplier john" as the product name. Suppliers and customers have
+  // no vocabulary of their own to route to instead, so a message naming a different domain noun
+  // skips product matching entirely and falls through to the primary parser.
+  if (
+    /\b(supplier|suppliers|msambazaji|wasambazaji|customer|customers|client|clients|mteja|wateja)\b/u.test(
+      normalizeContextText(input.message)
+    )
+  ) {
     return null;
   }
 
@@ -1743,6 +1783,14 @@ export function validateRuntimeToolInput(
         : valid();
     }
 
+    case "customer.update": {
+      const customerName = typeof input.customerName === "string" ? input.customerName.trim() : "";
+
+      return customerName.length === 0
+        ? invalid("Which customer should I edit?")
+        : valid();
+    }
+
     case "supplier.create": {
       const name = typeof input.name === "string" ? input.name.trim() : "";
 
@@ -1895,6 +1943,21 @@ const intentRules: IntentRule[] = [
       "new client",
       "new mteja",
       "mteja mpya"
+    ],
+    weight: 1.08
+  },
+  {
+    intent: "update_customer",
+    keywords: ["edit", "update", "modify", "change", "customer", "client", "mteja"],
+    phrases: [
+      "edit customer",
+      "update customer",
+      "modify customer",
+      "change customer",
+      "edit client",
+      "update client",
+      "hariri mteja",
+      "badilisha mteja"
     ],
     weight: 1.08
   },
@@ -2780,6 +2843,18 @@ function getMissingSlotQuestion(intent: RuleIntent, slots: ParserSlots): string 
     return "What is the customer name?";
   }
 
+  if (intent === "update_customer" && slots.customerName === undefined) {
+    return "Which customer should I edit?";
+  }
+
+  if (
+    intent === "update_customer" &&
+    slots.customerName !== undefined &&
+    slots.phone === undefined
+  ) {
+    return "What should the new phone number be?";
+  }
+
   if (intent === "create_invoice" && slots.customerName === undefined) {
     return "Who is this invoice for?";
   }
@@ -2851,7 +2926,12 @@ function extractSlots(input: string, intent: RuleIntent): ParserSlots {
     }
   }
 
-  if (intent === "add_customer" || intent === "create_invoice" || intent === "check_debt") {
+  if (
+    intent === "add_customer" ||
+    intent === "update_customer" ||
+    intent === "create_invoice" ||
+    intent === "check_debt"
+  ) {
     const customerName = extractNamedValue(input, ["customer", "client", "mteja", "for", "ya"]);
 
     if (customerName !== undefined) {

@@ -182,6 +182,33 @@ describe("CP4 rule parser", () => {
     });
   });
 
+  it("routes customer edit commands to their own intent, and never through the product vocabulary (Phase 4c)", () => {
+    expect(parseProductContextScriptCommand({ message: "edit customer Mary Wanjiru 0700111222" })).toBeNull();
+    expect(parseProductContextScriptCommand({ message: "add customer Jane" })).toBeNull();
+
+    expect(parseMerchantCommand("add customer Mary Wanjiru 0722334455")).toMatchObject({
+      intent: "add_customer",
+      slots: { customerName: "Mary Wanjiru", phone: "0722334455" }
+    });
+    expect(
+      createRuntimeToolProposal(parseMerchantCommand("add customer Mary Wanjiru 0722334455"))
+    ).toMatchObject({
+      toolName: "customer.create",
+      input: { name: "Mary Wanjiru", phone: "0722334455" }
+    });
+
+    expect(parseMerchantCommand("edit customer Mary Wanjiru 0700111222")).toMatchObject({
+      intent: "update_customer",
+      slots: { customerName: "Mary Wanjiru", phone: "0700111222" }
+    });
+    expect(parseMerchantCommand("edit customer Mary Wanjiru 0700111222").slots.quantity).toBeUndefined();
+
+    // Product commands are unaffected by the customer/supplier exclusion guard.
+    expect(parseProductContextScriptCommand({ message: "edit product sugar" })).toMatchObject({
+      intent: "PRODUCT_EDIT"
+    });
+  });
+
   it("uses structured fallback only after repeated clarification results", () => {
     const result = parseMerchantCommand("hello there");
 

@@ -441,6 +441,73 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("creates and edits a customer through confirmed runtime turns, not the product vocabulary (Phase 4c)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const createProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "add customer Mary Wanjiru 0722334455" },
+      sessionCookie
+    );
+    expect(createProposed.turn).toMatchObject({
+      parserIntent: "add_customer",
+      plan: { toolName: "customer.create" }
+    });
+    const createConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: createProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(createConfirmed.turn.toolResult).toMatchObject({
+      name: "Mary Wanjiru",
+      phone: "0722334455"
+    });
+
+    const editProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "edit customer Mary Wanjiru 0700111222"
+      },
+      sessionCookie
+    );
+    expect(editProposed.turn).toMatchObject({
+      parserIntent: "update_customer",
+      plan: { toolName: "customer.update" }
+    });
+    const editConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: editProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(editConfirmed.turn.toolResult).toMatchObject({
+      name: "Mary Wanjiru",
+      phone: "0700111222"
+    });
+
+    const finalCustomers = store.snapshot().customers;
+    expect(finalCustomers).toHaveLength(1);
+    expect(finalCustomers[0]).toMatchObject({ name: "Mary Wanjiru", phone: "0700111222" });
+    // Confirms the product vocabulary's bare "edit" phrase never fired a phantom product.update.
+    expect(store.snapshot().products).toHaveLength(0);
+
+    await app.close();
+  });
+
   it("keeps incomplete runtime mutations as clarifications without writing payments", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

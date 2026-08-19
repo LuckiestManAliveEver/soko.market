@@ -86,6 +86,7 @@ export const IdentitySecurityPanel = lazy(() =>
 export const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsCard"));
 export const ProductManagementCard = lazy(() => import("./ProductManagementCard"));
 export const SupplierManagementCard = lazy(() => import("./SupplierManagementCard"));
+export const CustomerManagementCard = lazy(() => import("./CustomerManagementCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
 export const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
 export const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));

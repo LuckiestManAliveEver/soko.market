@@ -181,6 +181,17 @@ function supplierIdFromToolResult(toolResult: unknown): string | undefined {
   return undefined;
 }
 
+const customerMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>([
+  "customer.create",
+  "customer.update"
+]);
+
+function customerIdFromToolResult(toolResult: unknown): string | undefined {
+  if (toolResult === null || typeof toolResult !== "object") return undefined;
+  if ("id" in toolResult && typeof toolResult.id === "string") return toolResult.id;
+  return undefined;
+}
+
 export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
   const [clarificationCount, setClarificationCount] = useState(0);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
@@ -1013,6 +1024,35 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Mirrors postProductManagementCard/postSupplierManagementCard for the customers domain - see
+    // generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4c.
+    async function postCustomerManagementCard(businessId: string, customerId: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        customerId === undefined
+          ? { type: "customer-management", businessId }
+          : { type: "customer-management", businessId, customerId };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Customers remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1237,6 +1277,18 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         await postSupplierManagementCard(
           business.id,
           supplierIdFromToolResult(result.turn.toolResult)
+        );
+      }
+
+      if (
+        customerMutationToolNames.has(result.turn.plan.toolName) &&
+        result.turn.plan.executedAt !== null &&
+        business !== null
+      ) {
+        await loadCustomers(business.id);
+        await postCustomerManagementCard(
+          business.id,
+          customerIdFromToolResult(result.turn.toolResult)
         );
       }
 
