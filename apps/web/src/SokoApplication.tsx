@@ -1343,17 +1343,18 @@ export function OwnerApp() {
     domainResetRegistry.resetAll();
     setAgentSettings(createDefaultAgent(null));
     setAuthBootstrapState("unauthenticated");
-    setRoutedProductId(null);
     setE2eeIdentity(null);
     setView("chat");
     setMode("marketplace");
     navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true });
     setIsWorkspacePanelOpen(false);
-    setIsBusinessSetupOpen(false);
+    // isBusinessSetupOpen/isAccountRestorationOpen/routedProductId are already closed/cleared by
+    // domainResetRegistry.resetAll() above (BusinessSetup/Auth/Navigation's own registered resets) -
+    // setIsAuthOpen(true)/setAuthenticationView("signup") are the one deliberate override Auth's own
+    // reset doesn't make (its reset closes the auth screen; post-logout wants it open on signup).
     setIsAuthOpen(true);
     setAuthenticationView("signup");
     window.history.replaceState(window.history.state, "", authenticationRoute("signup"));
-    setIsAccountRestorationOpen(false);
     setStatusMessage(message);
   }
 
