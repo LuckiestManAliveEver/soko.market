@@ -1,0 +1,509 @@
+import { useState } from "react";
+
+import type {
+  ConnectedMailboxSummary,
+  ConversationInboxItem,
+  ConversationMessageContent,
+  ConversationMessageSummary,
+  ConversationView,
+  MessageHandoffStatus
+} from "@soko/shared-types";
+
+import { deleteJson, getJson, patchJson, postJson } from "../api-helpers";
+import {
+  createInitialChatMessages,
+  type ChatMessage,
+  type ShellView,
+  type SokoMode
+} from "../app-shell";
+import { navigateToOwnerRoute } from "../browser-navigation";
+import {
+  agentProcessingFailureMessage,
+  base64UrlToBytes,
+  chatAttachmentsToConversationAttachments,
+  conversationMessageText,
+  conversationTitle,
+  createClientMessageId,
+  getConversationEncryptionDevices,
+  getErrorMessage,
+  isHumanDirectConversation,
+  mapConversationMessage,
+  mergePersistedEncryptedMessage,
+  showMessageNotification
+} from "../chat-message-plumbing";
+import { decryptDirectMessage, encryptDirectMessage, type E2eeIdentity } from "../e2ee";
+import { isRetryableApiRequestError } from "../lib/api";
+import { readMessagingOutbox, removeMessagingOutboxEntry } from "../messaging/outbox";
+import { replaceActorReaction, replaceMessageReactions } from "../optimistic-message-reactions";
+import type {
+  ActiveBusiness,
+  ProcessedConversationMessageResponse,
+  SessionResponse
+} from "../soko-application-shared";
+
+interface UseChatInboxStateDeps {
+  business: ActiveBusiness | null;
+  session: SessionResponse | null;
+  e2eeIdentity: E2eeIdentity | null;
+  mode: SokoMode;
+  setStatusMessage: (message: string) => void;
+  setView: (view: ShellView) => void;
+  requireMessagingSignIn: () => void;
+  chatMessages: ChatMessage[];
+  setChatMessages: (messages: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) => void;
+  setChatDraft: (draft: string) => void;
+  setReplyToMessageId: (messageId: string | null) => void;
+  registerReset: (domainKey: string, fn: () => void) => void;
+}
+
+export function useChatInboxState(deps: UseChatInboxStateDeps) {
+  const [isMessagingInboxOpen, setIsMessagingInboxOpen] = useState(
+    () => window.matchMedia("(min-width: 760px)").matches
+  );
+  const [conversationInbox, setConversationInbox] = useState<ConversationInboxItem[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversation, setActiveConversation] = useState<ConversationView | null>(null);
+  const [isContactTyping, setIsContactTyping] = useState(false);
+
+  const {
+    business,
+    session,
+    e2eeIdentity,
+    mode,
+    setStatusMessage,
+    setView,
+    requireMessagingSignIn,
+    chatMessages,
+    setChatMessages,
+    setChatDraft,
+    setReplyToMessageId
+  } = deps;
+
+  async function loadMessagingInbox(preferredConversationId: string | null = activeConversationId) {
+    if (session === null) return;
+    try {
+      let response = await getJson<{ conversations: ConversationInboxItem[] }>(
+        "/v1/conversations",
+        (refreshed) => setConversationInbox(refreshed.conversations)
+      );
+      if (response.conversations.length === 0) {
+        const created = await postJson<ConversationView>("/v1/conversations", {
+          kind: "personal",
+          activeShopId: business?.id ?? null,
+          title: "Soko agent"
+        });
+        response = await getJson<{ conversations: ConversationInboxItem[] }>(
+          "/v1/conversations",
+          (refreshed) => setConversationInbox(refreshed.conversations)
+        );
+        preferredConversationId = created.conversation.id;
+      }
+      setConversationInbox(response.conversations);
+      const selectedId =
+        preferredConversationId !== null &&
+        response.conversations.some((conversation) => conversation.id === preferredConversationId)
+          ? preferredConversationId
+          : (response.conversations[0]?.id ?? null);
+      if (selectedId !== null) {
+        setActiveConversationId(selectedId);
+        await loadConversationThread(selectedId);
+      }
+    } catch (error) {
+      if (navigator.onLine) setStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadConversationThread(conversationId: string) {
+    if (session === null) return;
+    const view = await getJson<ConversationView>(`/v1/conversations/${conversationId}`);
+    setActiveConversation(view);
+    setIsContactTyping((view.typing ?? []).some((typing) => typing.actorId !== session.user.id));
+    const mapped = await Promise.all(
+      view.messages.map(async (message) => {
+        if (message.content.type !== "encrypted") {
+          return mapConversationMessage(message, view.participants, session);
+        }
+        if (e2eeIdentity === null) {
+          return mapConversationMessage(message, view.participants, session, null);
+        }
+        try {
+          const decrypted = await decryptDirectMessage({
+            conversationId,
+            content: message.content,
+            identity: e2eeIdentity
+          });
+          return mapConversationMessage(message, view.participants, session, decrypted);
+        } catch {
+          return mapConversationMessage(message, view.participants, session, null);
+        }
+      })
+    );
+    setChatMessages(
+      mapped.length > 0
+        ? mapped
+        : createInitialChatMessages(conversationTitle(view, session.account.id))
+    );
+    if (document.visibilityState === "visible") {
+      await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, { read: true });
+    } else {
+      const newest = view.messages.at(-1);
+      if (
+        newest !== undefined &&
+        newest.authorId !== session.user.id &&
+        Notification.permission === "granted"
+      ) {
+        void showMessageNotification({
+          title: conversationTitle(view, session.account.id),
+          body: conversationMessageText(newest),
+          tag: `soko-message-${newest.id}`,
+          conversationId
+        });
+      }
+    }
+  }
+
+  async function selectConversation(conversationId: string) {
+    setActiveConversationId(conversationId);
+    setReplyToMessageId(null);
+    setView("chat");
+    navigateToOwnerRoute({ mode, view: "chat", conversationId });
+    await loadConversationThread(conversationId);
+  }
+
+  async function createDirectConversation(recipient: string, title: string) {
+    if (session === null) {
+      requireMessagingSignIn();
+      return;
+    }
+    let created: ConversationView;
+    if (business !== null && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(recipient.trim())) {
+      const response = await getJson<{ mailboxes: ConnectedMailboxSummary[] }>(
+        `/businesses/${business.id}/mailboxes`
+      );
+      const eligible = response.mailboxes.filter(
+        (mailbox) => mailbox.status === "connected" && mailbox.canSend
+      );
+      const mailbox = eligible.find((candidate) => candidate.isDefault) ?? eligible[0];
+      if (mailbox === undefined) {
+        throw new Error(
+          "Connect an authorized Gmail or Outlook mailbox in Agent settings before starting email."
+        );
+      }
+      created = await postJson<ConversationView>(
+        `/businesses/${business.id}/mailboxes/${encodeURIComponent(mailbox.id)}/conversations`,
+        {
+          recipientAddress: recipient.trim(),
+          ...(title.trim().length === 0 ? {} : { displayName: title.trim() })
+        }
+      );
+    } else {
+      created = await postJson<ConversationView>("/v1/conversations", {
+        kind: "personal",
+        activeShopId: null,
+        recipient,
+        title
+      });
+    }
+    await loadMessagingInbox(created.conversation.id);
+    navigateToOwnerRoute({
+      mode,
+      view: "chat",
+      conversationId: created.conversation.id
+    });
+    setStatusMessage(
+      created.channels?.some((channel) => channel.provider === "email") === true
+        ? "Email draft ready. Add a subject and message."
+        : "Conversation created"
+    );
+  }
+
+  async function updateConversationPreference(
+    conversationId: string,
+    preference: "archive" | "mute" | "pin"
+  ) {
+    const item = conversationInbox.find((conversation) => conversation.id === conversationId);
+    if (!item) return;
+    const body =
+      preference === "archive"
+        ? { archived: true }
+        : preference === "pin"
+          ? { pinned: !item.participant.pinnedAt }
+          : {
+              mutedUntil: item.participant.mutedUntil
+                ? null
+                : new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString()
+            };
+    await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, body);
+    await loadMessagingInbox(preference === "archive" ? null : conversationId);
+  }
+
+  async function updateMessageAction(
+    messageId: string,
+    action: { text?: string; deleted?: boolean; reaction?: string | null }
+  ) {
+    if (activeConversationId === null) return;
+    if (action.reaction !== undefined && session !== null) {
+      const previousReactions =
+        chatMessages.find((message) => message.id === messageId)?.reactions ?? [];
+      setChatMessages((messages) =>
+        replaceActorReaction(messages, messageId, session.user.id, action.reaction ?? null)
+      );
+      try {
+        const updated = await patchJson<ConversationMessageSummary>(
+          `/v1/conversations/${activeConversationId}/messages/${messageId}`,
+          action
+        );
+        const confirmedReactions = (updated.reactions ?? []).map(({ actorId, emoji }) => ({
+          actorId,
+          emoji
+        }));
+        setChatMessages((messages) =>
+          replaceMessageReactions(messages, messageId, confirmedReactions)
+        );
+        setActiveConversation((conversation) =>
+          conversation === null
+            ? conversation
+            : {
+                ...conversation,
+                messages: conversation.messages.map((message) =>
+                  message.id === updated.id ? updated : message
+                )
+              }
+        );
+      } catch (error) {
+        setChatMessages((messages) =>
+          replaceMessageReactions(messages, messageId, previousReactions)
+        );
+        throw error;
+      }
+      return;
+    }
+    let request: typeof action | { content: ConversationMessageContent } = action;
+    if (action.text !== undefined && isHumanDirectConversation(activeConversation, session)) {
+      const current = chatMessages.find((message) => message.id === messageId);
+      const devices = await getConversationEncryptionDevices(activeConversationId);
+      request = {
+        content: await encryptDirectMessage({
+          conversationId: activeConversationId,
+          devices,
+          message: {
+            text: action.text,
+            attachments: chatAttachmentsToConversationAttachments(current?.attachments ?? [])
+          }
+        })
+      };
+    }
+    await patchJson<ConversationMessageSummary>(
+      `/v1/conversations/${activeConversationId}/messages/${messageId}`,
+      request
+    );
+    await loadConversationThread(activeConversationId);
+  }
+
+  async function forwardMessage(messageId: string, targetConversationId: string) {
+    if (activeConversation === null || session === null) return;
+    const source = activeConversation.messages.find((message) => message.id === messageId);
+    const rendered = chatMessages.find((message) => message.id === messageId);
+    if (!source || !rendered) return;
+    const target = await getJson<ConversationView>(`/v1/conversations/${targetConversationId}`);
+    let content: ConversationMessageContent = {
+      type: "text",
+      text: rendered.body,
+      attachments: chatAttachmentsToConversationAttachments(rendered.attachments ?? [])
+    };
+    if (isHumanDirectConversation(target, session)) {
+      const devices = await getConversationEncryptionDevices(targetConversationId);
+      content = await encryptDirectMessage({
+        conversationId: targetConversationId,
+        devices,
+        message: {
+          text: rendered.body,
+          attachments: chatAttachmentsToConversationAttachments(rendered.attachments ?? [])
+        }
+      });
+    }
+    await postJson<ConversationMessageSummary>("/v1/messages", {
+      conversationId: targetConversationId,
+      clientMessageId: createClientMessageId("forward"),
+      content,
+      forwardedFromMessageId: source.id,
+      clientTimestamp: new Date().toISOString()
+    });
+    setStatusMessage("Message forwarded");
+  }
+
+  async function requestMessagingNotifications() {
+    if (!("Notification" in window)) {
+      setStatusMessage("This browser does not support message notifications");
+      return;
+    }
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setStatusMessage("This browser does not support background push notifications");
+      return;
+    }
+    const config = await getJson<{ enabled: boolean; publicKey: string | null }>("/v1/push/config");
+    if (!config.enabled || !config.publicKey) {
+      setStatusMessage("Background notifications are not configured on this deployment");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setStatusMessage("Notifications were not enabled");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const subscription =
+      (await registration.pushManager.getSubscription()) ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToBytes(config.publicKey)
+      }));
+    const subscriptionJson = subscription.toJSON();
+    await postJson("/v1/push/subscriptions", {
+      endpoint: subscriptionJson.endpoint,
+      expirationTime: subscriptionJson.expirationTime,
+      keys: subscriptionJson.keys
+    });
+    setStatusMessage("Background message notifications enabled");
+  }
+
+  async function disableMessagingNotifications() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setStatusMessage("This browser does not support background push notifications");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription === null) {
+      setStatusMessage("Background message notifications are already disabled");
+      return;
+    }
+    await deleteJson("/v1/push/subscriptions", { endpoint: subscription.endpoint });
+    await subscription.unsubscribe();
+    setStatusMessage("Background message notifications disabled on this device");
+  }
+
+  async function signalTyping(draft: string) {
+    setChatDraft(draft);
+    if (activeConversationId === null || session === null) return;
+    await postJson<{ typing: unknown[] }>(`/v1/conversations/${activeConversationId}/typing`, {
+      typing: draft.trim().length > 0
+    }).catch(() => undefined);
+  }
+
+  function recordMessageHandoff(
+    channel: "sms_external_app" | "platform_share_sheet",
+    status: MessageHandoffStatus,
+    normalizedErrorCode: string | null
+  ) {
+    if (session === null) return;
+    void postJson("/v1/message-handoffs", {
+      businessId: business?.id ?? null,
+      conversationId: activeConversationId,
+      channel,
+      status,
+      normalizedErrorCode
+    }).catch(() => {
+      // External handoffs must not be blocked by optional telemetry.
+    });
+  }
+
+  function recordSmsHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+    recordMessageHandoff("sms_external_app", status, normalizedErrorCode);
+  }
+
+  function recordPlatformHandoff(status: MessageHandoffStatus, normalizedErrorCode: string | null) {
+    recordMessageHandoff("platform_share_sheet", status, normalizedErrorCode);
+  }
+
+  async function retryQueuedMessages() {
+    if (!navigator.onLine || session === null) return;
+    const accountId = session.account.id;
+    const queued = readMessagingOutbox(accountId);
+    for (const entry of queued) {
+      try {
+        const sent = await postJson<ProcessedConversationMessageResponse>(
+          "/v1/messages",
+          entry.payload
+        );
+        setChatMessages((messages) => {
+          const reconciled = messages.map((message) =>
+            (message.id === entry.clientMessageId || message.id === sent.id) &&
+            session !== null &&
+            activeConversation !== null
+              ? sent.content.type === "encrypted"
+                ? mergePersistedEncryptedMessage(message, sent)
+                : mapConversationMessage(sent, activeConversation.participants, session)
+              : message
+          );
+          if (
+            sent.agentMessage === undefined ||
+            session === null ||
+            activeConversation === null ||
+            reconciled.some((message) => message.id === sent.agentMessage?.id)
+          ) {
+            return reconciled;
+          }
+          return [
+            ...reconciled,
+            mapConversationMessage(sent.agentMessage, activeConversation.participants, session)
+          ];
+        });
+        if (sent.processing?.status === "failed") {
+          setStatusMessage(agentProcessingFailureMessage(sent.processing.errorCode));
+          break;
+        }
+        removeMessagingOutboxEntry(accountId, entry.clientMessageId);
+      } catch (error) {
+        if (isRetryableApiRequestError(error)) break;
+        removeMessagingOutboxEntry(accountId, entry.clientMessageId);
+        setStatusMessage(getErrorMessage(error));
+      }
+    }
+  }
+
+  async function submitAgentResponseFeedback(messageId: string, correct: boolean) {
+    if (business === null) return;
+    await postJson(`/businesses/${business.id}/agent-runtime/feedback`, {
+      messageId,
+      correct
+    });
+    setStatusMessage(
+      correct ? "Agent response marked correct." : "Agent response flagged for review."
+    );
+  }
+
+  deps.registerReset("chat-inbox", () => {
+    setConversationInbox([]);
+    setActiveConversationId(null);
+    setActiveConversation(null);
+    setIsContactTyping(false);
+    setIsMessagingInboxOpen(window.matchMedia("(min-width: 760px)").matches);
+  });
+
+  return {
+    isMessagingInboxOpen,
+    setIsMessagingInboxOpen,
+    conversationInbox,
+    setConversationInbox,
+    activeConversationId,
+    setActiveConversationId,
+    activeConversation,
+    setActiveConversation,
+    isContactTyping,
+    loadMessagingInbox,
+    loadConversationThread,
+    selectConversation,
+    createDirectConversation,
+    updateConversationPreference,
+    updateMessageAction,
+    forwardMessage,
+    requestMessagingNotifications,
+    disableMessagingNotifications,
+    signalTyping,
+    recordSmsHandoff,
+    recordPlatformHandoff,
+    retryQueuedMessages,
+    submitAgentResponseFeedback
+  };
+}

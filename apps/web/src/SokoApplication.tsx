@@ -55,7 +55,11 @@ import { useImportsState } from "./hooks/useImportsState";
 import { useInvoicesState } from "./hooks/useInvoicesState";
 import { useAgentModelState } from "./hooks/useAgentModelState";
 import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
-import { useChatState } from "./hooks/useChatState";
+import { useBuyCartState } from "./hooks/useBuyCartState";
+import { useChatAttachmentsState } from "./hooks/useChatAttachmentsState";
+import { useChatInboxState } from "./hooks/useChatInboxState";
+import { useChatRuntimeState } from "./hooks/useChatRuntimeState";
+import { useChatThreadState } from "./hooks/useChatThreadState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
 import { useMarketplaceState } from "./hooks/useMarketplaceState";
 import { useNavigationState } from "./hooks/useNavigationState";
@@ -378,8 +382,8 @@ export function OwnerApp() {
     registerRefresh
   });
   // useNavigationState is called right after useProductsState (needs its populateProductForm as an
-  // eager dep) and before useChatState/useAuthState (whose deps objects reference navigateToView/
-  // requireMessagingSignIn by name at hook-call time). Its own dependencies on Auth/BusinessSetup/
+  // eager dep) and before the chat hook group/useAuthState (whose deps objects reference
+  // navigateToView/requireMessagingSignIn by name at hook-call time). Its own dependencies on Auth/BusinessSetup/
   // Chat setters - all called later - are deferred behind getters (see useNavigationState.ts) to
   // avoid the reverse TDZ problem; useProductsState's dependency on this hook's routedProductId/
   // setRoutedProductId/navigateToView is deferred the same way, via getNavigationHelpers above.
@@ -422,8 +426,8 @@ export function OwnerApp() {
   // useMarketplaceState is called after useNavigationState (completeMarketplaceIntro/
   // validateStoredBusiness need its setIsMarketplaceShortcutOpen/setShopPresenceStatus, deferred
   // behind a getter since they're only read inside those two functions, not at Marketplace's own
-  // hook-call time) and before useChatState/useAuthState (whose deps objects reference buyFeed/
-  // setBuyCart/setBuyFeed and loadMarketplaceIntroState/validateStoredBusiness by name, eagerly).
+  // hook-call time) and before the chat hook group/useAuthState (whose deps objects reference
+  // buyFeed/setBuyCart/setBuyFeed and loadMarketplaceIntroState/validateStoredBusiness by name, eagerly).
   const {
     isMarketplaceIntroComplete,
     publicStorefronts,
@@ -578,28 +582,40 @@ export function OwnerApp() {
     registerReset: domainResetRegistry.registerReset,
     registerRefresh
   });
-  // useChatState is called before useBusinessSetupState because BusinessSetup's own deps object
-  // references setConversationInbox/setActiveConversationId/loadConversationThread, all three now
-  // returned by this hook - same TDZ-avoidance reasoning as every other domain hook ordering
-  // decision in this effort.
+  // Chat/messaging was originally one useChatState hook (Phase 16); later split into five smaller
+  // hooks (Thread/Inbox/Attachments/BuyCart/Runtime) once it was the only remaining hook mixing
+  // several loosely-related sub-concerns. Thread is the state hub (chatMessages/chatDraft/
+  // pendingAttachments/replyToMessageId/runtimeSessionId) and is called first so every sibling can
+  // take its setters as plain deps - same "core-context values never relocate" shape as
+  // OwnerCoreContext, just scoped to chat. Called before useBusinessSetupState because BusinessSetup's
+  // own deps object references setConversationInbox/setActiveConversationId/loadConversationThread,
+  // all three returned by useChatInboxState - same TDZ-avoidance reasoning as every other domain
+  // hook ordering decision in this effort.
   const {
-    isMessagingInboxOpen,
-    setIsMessagingInboxOpen,
     chatDraft,
+    setChatDraft,
     pendingAttachments,
+    setPendingAttachments,
     runtimeSessionId,
     setRuntimeSessionId,
     chatMessages,
     setChatMessages,
+    replyToMessageId,
+    setReplyToMessageId
+  } = useChatThreadState({
+    initialNavigationSession,
+    initialBusiness,
+    registerReset: domainResetRegistry.registerReset
+  });
+  const {
+    isMessagingInboxOpen,
+    setIsMessagingInboxOpen,
     conversationInbox,
     setConversationInbox,
     activeConversationId,
     setActiveConversationId,
     activeConversation,
-    replyToMessageId,
-    setReplyToMessageId,
     isContactTyping,
-    isBrowserGenerating,
     loadMessagingInbox,
     loadConversationThread,
     selectConversation,
@@ -613,29 +629,50 @@ export function OwnerApp() {
     recordSmsHandoff,
     recordPlatformHandoff,
     retryQueuedMessages,
-    submitAgentResponseFeedback,
-    sendChatDraft,
-    confirmRuntimeAction,
-    handleChatAttachmentChange,
-    removePendingAttachment,
-    handleSellerPhotoCapture,
+    submitAgentResponseFeedback
+  } = useChatInboxState({
+    business,
+    session,
+    e2eeIdentity,
+    mode,
+    setStatusMessage,
+    setView,
+    requireMessagingSignIn,
+    chatMessages,
+    setChatMessages,
+    setChatDraft,
+    setReplyToMessageId,
+    registerReset: domainResetRegistry.registerReset
+  });
+  const { handleChatAttachmentChange, removePendingAttachment, handleSellerPhotoCapture } =
+    useChatAttachmentsState({
+      business,
+      setStatusMessage,
+      setPendingAttachments,
+      setChatMessages
+    });
+  const {
     handleSearchBuyFeed,
     handleAddToCart,
     handleRemoveFromCart,
     handleCheckout,
     handleStatusBroadcastPosted
-  } = useChatState({
+  } = useBuyCartState({
+    runAction,
+    setStatusMessage,
+    buyCart,
+    setBuyCart,
+    setBuyFeed,
+    setChatMessages
+  });
+  const { isBrowserGenerating, sendChatDraft, confirmRuntimeAction } = useChatRuntimeState({
     business,
     session,
     agentSettings,
-    e2eeIdentity,
     chatModelRuntimeRef,
-    mode,
     setStatusMessage,
-    setView,
     navigateToView,
     requireMessagingSignIn,
-    runAction,
     products,
     loadProducts,
     setProductForm,
@@ -656,19 +693,26 @@ export function OwnerApp() {
     createManagedRuntimeSession,
     ensureRuntimeSession,
     loadDocumentImports,
-    buyCart,
-    setBuyCart,
-    setBuyFeed,
-    initialNavigationSession,
-    initialBusiness,
-    initialOwnerRoute,
+    chatMessages,
+    setChatMessages,
+    chatDraft,
+    setChatDraft,
+    pendingAttachments,
+    setPendingAttachments,
+    runtimeSessionId,
+    setRuntimeSessionId,
+    replyToMessageId,
+    setReplyToMessageId,
+    activeConversationId,
+    activeConversation,
+    loadMessagingInbox,
     registerReset: domainResetRegistry.registerReset
   });
-  // useAuthState is called after useNetworkState/useChatState (whose setNetworkGraph escape hatch
-  // and requireMessagingSignIn/setConversationInbox/setActiveConversationId/loadConversationThread
-  // it depends on) and before useBusinessSetupState (whose deps object references refreshSession by
-  // name at hook-call time) - same TDZ-avoidance reasoning as every other domain hook ordering
-  // decision in this effort.
+  // useAuthState is called after useNetworkState/the chat hook group (whose setNetworkGraph escape
+  // hatch and requireMessagingSignIn/setConversationInbox/setActiveConversationId/
+  // loadConversationThread it depends on) and before useBusinessSetupState (whose deps object
+  // references refreshSession by name at hook-call time) - same TDZ-avoidance reasoning as every
+  // other domain hook ordering decision in this effort.
   const {
     authBootstrapState,
     setAuthBootstrapState,

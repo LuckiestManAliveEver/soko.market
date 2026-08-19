@@ -19,7 +19,7 @@ describe("browser inference frontend integration", () => {
   });
 
   it("streams into the existing chat, supports cancellation, and retains server routing", async () => {
-    const chatState = await readFile("apps/web/src/hooks/useChatState.ts", "utf8");
+    const chatState = await readFile("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
     const chatSurface = await readFile("apps/web/src/ChatSurface.tsx", "utf8");
     const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
     expect(chatState).toContain("generateBrowserAgentResponse");
@@ -55,7 +55,7 @@ describe("browser inference frontend integration", () => {
   });
 
   it("synchronizes activation and health metadata without sending prompts or generated text", async () => {
-    const chatState = await readFile("apps/web/src/hooks/useChatState.ts", "utf8");
+    const chatState = await readFile("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
     const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
     const synchronization = await readFile("apps/web/src/browser-inference-sync.ts", "utf8");
     expect(agentProfileSurface).toContain("synchronizeBrowserInferenceAssignment");

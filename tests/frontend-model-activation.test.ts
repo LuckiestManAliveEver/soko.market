@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const chatState = readFileSync("apps/web/src/hooks/useChatState.ts", "utf8");
+const chatState = readFileSync("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
 const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
 const styles = readFileSync("apps/web/src/styles.css", "utf8");
