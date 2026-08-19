@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Surface } from "@soko/ui";
-import type { BuyFeedSummary, E2eeDeviceSummary, SokoSessionContext } from "@soko/shared-types";
+import type { E2eeDeviceSummary, SokoSessionContext } from "@soko/shared-types";
 import {
   createInitialChatMessages,
   type ChatMessage,
@@ -57,6 +57,7 @@ import { useAgentModelState } from "./hooks/useAgentModelState";
 import { useBusinessSetupState } from "./hooks/useBusinessSetupState";
 import { useChatState } from "./hooks/useChatState";
 import { useLogisticsState } from "./hooks/useLogisticsState";
+import { useMarketplaceState } from "./hooks/useMarketplaceState";
 import { useNavigationState } from "./hooks/useNavigationState";
 import { useReadinessState } from "./hooks/useReadinessState";
 import { useReportsState } from "./hooks/useReportsState";
@@ -94,18 +95,11 @@ import {
   AccountRestorationPanel,
   type ActiveBusiness,
   type AgentSettings,
-  type BusinessAgentProfileSummary,
-  type BuyCartItem,
   type CountryDialCode,
-  type MarketplaceIntroStateSummary,
   PhoneFirstAuthentication,
   PhoneSignup,
-  type PublicStorefrontListResponse,
-  type PublicStorefrontSummary,
-  type RoleCheckResponse,
   type SessionResponse,
   type SetupDraft,
-  type ShopPresenceSummary,
   activeAgentStorageKey,
   activeBusinessStorageKey,
   activeModeStorageKey,
@@ -121,7 +115,7 @@ import {
   uiBackgroundRefreshIntervalMs
 } from "./soko-application-shared";
 
-import { postJson, getJson } from "./api-helpers";
+import { postJson } from "./api-helpers";
 
 import { createPublicStorefrontUrl } from "./sokoid-and-storefront";
 import { inferCountryCode } from "./country-dial-codes";
@@ -131,8 +125,7 @@ import {
   readStoredAgent,
   readStoredOwnerAuth,
   readSetupDraft,
-  createDefaultAgent,
-  agentSettingsFromBusinessProfile
+  createDefaultAgent
 } from "./owner-app-bootstrap";
 
 import {
@@ -243,13 +236,6 @@ export function OwnerApp() {
   const { registerRefresh, refreshersFor } = useViewRefreshRegistry();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
-  const [isMarketplaceIntroComplete, setIsMarketplaceIntroComplete] = useState(
-    () => localStorage.getItem("soko.market.marketplace-intro.completed.v1") === "true"
-  );
-  const [publicStorefronts, setPublicStorefronts] = useState<PublicStorefrontSummary[]>([]);
-  const [publicStorefrontsLoading, setPublicStorefrontsLoading] = useState(false);
-  const [buyFeed, setBuyFeed] = useState<BuyFeedSummary | null>(null);
-  const [buyCart, setBuyCart] = useState<BuyCartItem[]>([]);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const restoredModelInstallationRef = useRef<string | null>(null);
@@ -421,7 +407,7 @@ export function OwnerApp() {
     view,
     setView,
     agentSettings,
-    isMarketplaceIntroComplete,
+    getIsMarketplaceIntroComplete: () => isMarketplaceIntroComplete,
     preservedScreenLimit: capabilitySettingsRef.current.preservedScreenLimit,
     initialRoutedProductId: initialOwnerRoute?.productId ?? null,
     populateProductForm,
@@ -431,6 +417,31 @@ export function OwnerApp() {
     getAuthSetters: () => ({ setIsAuthOpen, setAuthenticationView, setIsAccountRestorationOpen }),
     getBusinessSetupSetters: () => ({ setIsBusinessSetupOpen, setBusinessSetupStep }),
     getChatSetters: () => ({ setIsMessagingInboxOpen, setChatMessages }),
+    registerReset: domainResetRegistry.registerReset
+  });
+  // useMarketplaceState is called after useNavigationState (completeMarketplaceIntro/
+  // validateStoredBusiness need its setIsMarketplaceShortcutOpen/setShopPresenceStatus, deferred
+  // behind a getter since they're only read inside those two functions, not at Marketplace's own
+  // hook-call time) and before useChatState/useAuthState (whose deps objects reference buyFeed/
+  // setBuyCart/setBuyFeed and loadMarketplaceIntroState/validateStoredBusiness by name, eagerly).
+  const {
+    isMarketplaceIntroComplete,
+    publicStorefronts,
+    publicStorefrontsLoading,
+    buyFeed,
+    setBuyFeed,
+    buyCart,
+    setBuyCart,
+    loadMarketplaceIntroState,
+    loadPublicStorefronts,
+    completeMarketplaceIntro,
+    validateStoredBusiness
+  } = useMarketplaceState({
+    session,
+    setBusiness,
+    setAgentSettings,
+    setStatusMessage,
+    getNavigationSetters: () => ({ setIsMarketplaceShortcutOpen, setShopPresenceStatus }),
     registerReset: domainResetRegistry.registerReset
   });
   const {
@@ -1301,79 +1312,6 @@ export function OwnerApp() {
       window.clearTimeout(timeoutId);
     };
   }, [business?.id, setupComplete, view]);
-
-  async function loadMarketplaceIntroState() {
-    try {
-      const state = await getJson<MarketplaceIntroStateSummary>("/v1/marketplace-intro");
-      if (state.completedAt !== null) {
-        localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
-        setIsMarketplaceIntroComplete(true);
-      }
-    } catch {
-      // Anonymous and offline visitors use the local completion marker.
-    }
-  }
-
-  async function loadPublicStorefronts() {
-    setPublicStorefrontsLoading(true);
-    try {
-      const response = await getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24");
-      setPublicStorefronts(response.storefronts);
-    } catch {
-      setPublicStorefronts([]);
-    } finally {
-      setPublicStorefrontsLoading(false);
-    }
-  }
-
-  async function completeMarketplaceIntro() {
-    localStorage.setItem("soko.market.marketplace-intro.completed.v1", "true");
-    setIsMarketplaceIntroComplete(true);
-    setIsMarketplaceShortcutOpen(false);
-    setStatusMessage("Marketplace ready. Use the Marketplace button to return anytime.");
-
-    if (session !== null) {
-      try {
-        await postJson<MarketplaceIntroStateSummary>("/v1/marketplace-intro/complete", {
-          businessId: null
-        });
-      } catch (error) {
-        setStatusMessage(getErrorMessage(error));
-      }
-    }
-  }
-
-  async function validateStoredBusiness() {
-    const storedBusiness = readStoredBusiness();
-
-    if (storedBusiness === null) {
-      return;
-    }
-
-    try {
-      const roleCheck = await postJson<RoleCheckResponse>("/roles/check", {
-        businessId: storedBusiness.id,
-        role: "owner"
-      });
-
-      if (roleCheck.allowed) {
-        setBusiness(storedBusiness);
-        const [presence, agentProfile] = await Promise.all([
-          getJson<ShopPresenceSummary>(`/businesses/${storedBusiness.id}/presence`),
-          getJson<BusinessAgentProfileSummary>(`/businesses/${storedBusiness.id}/agent-profile`)
-        ]);
-        setShopPresenceStatus(presence.status);
-        setAgentSettings(agentSettingsFromBusinessProfile(agentProfile, storedBusiness));
-        setStatusMessage("Owner shell active");
-        return;
-      }
-    } catch {
-      // Local development uses an in-memory API store; stale cached business views are expected after restarts.
-    }
-
-    setBusiness(storedBusiness);
-    setStatusMessage("Saved workspace loaded");
-  }
 
   async function resetClientToStartup(accountId: string | null, message: string) {
     if (accountId !== null) {

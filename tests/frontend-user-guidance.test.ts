@@ -75,7 +75,7 @@ describe("frontend user guidance", () => {
     const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "utf8");
     const refreshEffect = application.slice(
       application.indexOf("async function refreshActiveView"),
-      application.indexOf("async function loadMarketplaceIntroState")
+      application.indexOf("async function resetClientToStartup")
     );
 
     expect(sharedModule).toContain("const uiBackgroundRefreshIntervalMs = 30_000");
@@ -369,6 +369,7 @@ describe("frontend user guidance", () => {
   it("offers a read-only guest marketplace without forcing signup", () => {
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
     const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
+    const marketplaceState = readFileSync("apps/web/src/hooks/useMarketplaceState.ts", "utf8");
     const marketplaceModeCard = readFileSync("apps/web/src/MarketplaceModeCard.tsx", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const apiRoutes = readFileSync("services/api/src/cp2/routes.ts", "utf8");
@@ -377,7 +378,7 @@ describe("frontend user guidance", () => {
     expect(navigationState).toContain("function browseAsGuest()");
     expect(chatSurfaceForGuest).toContain("Browse as guest");
     expect(navigationState).toContain("Browsing as a guest");
-    expect(application).toContain(
+    expect(marketplaceState).toContain(
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
     );
     expect(marketplaceModeCard).toContain("routes.publicAgent(storefront.agentId)");

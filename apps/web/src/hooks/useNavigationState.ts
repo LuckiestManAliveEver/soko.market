@@ -30,7 +30,11 @@ interface UseNavigationStateDeps {
   view: ShellView;
   setView: (view: ShellView) => void;
   agentSettings: AgentSettings;
-  isMarketplaceIntroComplete: boolean;
+  // Marketplace is called after Navigation (Marketplace's completeMarketplaceIntro needs
+  // Navigation's setIsMarketplaceShortcutOpen), so Navigation can't take isMarketplaceIntroComplete
+  // as a plain dep without a TDZ error - deferred behind a getter, same reasoning as the Auth/
+  // BusinessSetup/Chat setter getters below.
+  getIsMarketplaceIntroComplete: () => boolean;
   preservedScreenLimit: number;
   initialRoutedProductId: string | null;
   populateProductForm: (product: ProductSummary) => void;
@@ -75,7 +79,6 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setMode,
     setView,
     agentSettings,
-    isMarketplaceIntroComplete,
     populateProductForm,
     setStatusMessage,
     setIsWorkspacePanelOpen,
@@ -196,7 +199,9 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     const measurement = startNavigationMeasurement(nextPath);
     setMode(nextMode);
     navigateToOwnerRoute({ mode: nextMode, view: "chat" });
-    setIsMarketplaceShortcutOpen(nextMode === "marketplace" && isMarketplaceIntroComplete);
+    setIsMarketplaceShortcutOpen(
+      nextMode === "marketplace" && deps.getIsMarketplaceIntroComplete()
+    );
     setView("chat");
     setIsWorkspacePanelOpen(false);
     markNavigationCommitted(measurement);
