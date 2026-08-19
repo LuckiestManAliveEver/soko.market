@@ -6,6 +6,8 @@ const sharedModule = readFileSync("apps/web/src/soko-application-shared.ts", "ut
 const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
 const identitySecurityPanel = readFileSync("apps/web/src/IdentitySecurityPanel.tsx", "utf8");
 const agentPolicyPanels = readFileSync("apps/web/src/AgentPolicyPanels.tsx", "utf8");
+const agentRuntimeAccessPanel = readFileSync("apps/web/src/AgentRuntimeAccessPanel.tsx", "utf8");
+const agentRetentionPanel = readFileSync("apps/web/src/AgentRetentionPanel.tsx", "utf8");
 const productCapture = readFileSync("apps/web/src/ProductCapturePanel.tsx", "utf8");
 const accountControls = readFileSync("apps/web/src/AccountBackendControls.tsx", "utf8");
 const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
@@ -71,8 +73,8 @@ describe("frontend coverage for backend-owned lifecycles", () => {
   it("uses structured backend agent controls instead of editable compatibility fields", () => {
     expect(agentPolicyPanels).toContain("draftAgent.personalityConfig.tone");
     expect(agentPolicyPanels).toContain("draftAgent.instructionPolicy.maximumDiscountPercent");
-    expect(agentProfileSurface).toContain("draftAgent.skillBindings.map");
-    expect(agentProfileSurface).toContain("draftAgent.memoryPolicy.ownerCorrectionsEnabled");
+    expect(agentRuntimeAccessPanel).toContain("draftAgent.skillBindings.map");
+    expect(agentRetentionPanel).toContain("draftAgent.memoryPolicy.ownerCorrectionsEnabled");
     expect(agentProfileSurface).not.toContain("Compatibility fields");
     expect(agentProfileSurface).not.toContain("Advanced knowledge and integration labels");
     expect(agentProfileSurface).not.toContain("value={draftAgent.tools.join");

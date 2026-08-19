@@ -20,6 +20,9 @@ import type {
 
 import { copyTextToClipboard } from "./misc-browser-utils";
 import { SalesPricingEscalationPanel, VoiceAndCarePanel } from "./AgentPolicyPanels";
+import { AgentReadinessPanel } from "./AgentReadinessPanel";
+import { AgentRetentionPanel } from "./AgentRetentionPanel";
+import { AgentRuntimeAccessPanel } from "./AgentRuntimeAccessPanel";
 import { DeleteAccountPanel } from "./DeleteAccountPanel";
 import { IdentitySecurityPanel } from "./IdentitySecurityPanel";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
@@ -1644,69 +1647,18 @@ export function AgentProfileSurface({
           </label>
         </div>
 
-        <div className="record-form agent-runtime-panel">
-          <div className="section-heading">
-            <p className="eyebrow">Business runtime</p>
-            <h3>Readiness and versions</h3>
-            <p>
-              The server binds this agent to {business.name}, compiles policy, retrieves permitted
-              context, and records the exact runtime version used for every turn.
-            </p>
-          </div>
-          <div className="runtime-status-grid" aria-live="polite">
-            <span
-              className={`model-badge ${runtimeReadiness?.ready ? "status-ready" : "status-loading"}`}
-            >
-              {runtimeDetailsLoading
-                ? "Checking…"
-                : runtimeReadiness?.ready
-                  ? "Ready"
-                  : "Needs attention"}
-            </span>
-            <strong>
-              Active version {runtimeReadiness?.runtimeVersion ?? draftAgent.runtimeVersion}
-            </strong>
-            {hasUnsavedRuntimeChanges ? (
-              <span className="runtime-unsaved">Unsaved draft changes</span>
-            ) : null}
-          </div>
-          {runtimeReadiness?.issues.map((issue) => (
-            <p className="security-warning" key={issue.code}>
-              {issue.message}
-            </p>
-          ))}
-          <div className="runtime-version-list" aria-label="Agent runtime version history">
-            {runtimeVersions.slice(0, 5).map((version) => (
-              <article key={version.id}>
-                <div>
-                  <strong>Version {version.version}</strong>
-                  <small>
-                    {version.changeSummary} · {formatDate(version.createdAt)}
-                  </small>
-                </div>
-                {version.version !== runtimeReadiness?.runtimeVersion ? (
-                  <button
-                    className="secondary"
-                    type="button"
-                    disabled={isEditing || pendingProfileAction !== null}
-                    onClick={() =>
-                      void runProfileAction(`runtime-rollback-${version.version}`, () =>
-                        rollbackAgentRuntime(version.version)
-                      )
-                    }
-                  >
-                    Restore as new version
-                  </button>
-                ) : (
-                  <span className="model-badge status-ready">Active</span>
-                )}
-              </article>
-            ))}
-            {!runtimeDetailsLoading && runtimeVersions.length === 0 ? (
-              <p className="shell-note">Save the profile to create its first version.</p>
-            ) : null}
-          </div>
-        </div>
+        <AgentReadinessPanel
+          business={business}
+          draftAgent={draftAgent}
+          isEditing={isEditing}
+          hasUnsavedRuntimeChanges={hasUnsavedRuntimeChanges}
+          runtimeReadiness={runtimeReadiness}
+          runtimeVersions={runtimeVersions}
+          runtimeDetailsLoading={runtimeDetailsLoading}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          rollbackAgentRuntime={rollbackAgentRuntime}
+        />
 
         <VoiceAndCarePanel
           draftAgent={draftAgent}
@@ -1720,214 +1672,31 @@ export function AgentProfileSurface({
           updateAgent={updateAgent}
         />
 
-        <div className="record-form agent-runtime-panel">
-          <div className="section-heading">
-            <p className="eyebrow">Context manifest and executable skills</p>
-            <h3>Runtime access</h3>
-            <p>
-              Context is retrieved only when relevant and authorized. Skill availability is
-              independent of the active model.
-            </p>
-          </div>
-          <div className="runtime-context-list">
-            {runtimeContextSources.map((source) => (
-              <article key={source.id}>
-                <div>
-                  <strong>{source.title}</strong>
-                  <small>
-                    {source.type} · {source.sensitivity} · version {source.version}
-                  </small>
-                </div>
-                <span className={`model-badge ${source.status === "active" ? "status-ready" : ""}`}>
-                  {source.status}
-                </span>
-              </article>
-            ))}
-            {!runtimeDetailsLoading && runtimeContextSources.length === 0 ? (
-              <p className="shell-note">No authorized context sources are available yet.</p>
-            ) : null}
-          </div>
-          <div className="runtime-skill-list">
-            {draftAgent.skillBindings.map((binding) => (
-              <label className="checkbox-row" key={binding.skillId}>
-                <input
-                  type="checkbox"
-                  checked={binding.enabled}
-                  disabled={!isEditing}
-                  onChange={(event) =>
-                    updateAgent({
-                      skillBindings: draftAgent.skillBindings.map((candidate) =>
-                        candidate.skillId === binding.skillId
-                          ? { ...candidate, enabled: event.target.checked }
-                          : candidate
-                      )
-                    })
-                  }
-                />
-                <span>
-                  <strong>{binding.skillId}</strong>
-                  <small>
-                    v{binding.version} · confirmation {binding.requiredConfirmationLevel}
-                  </small>
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
+        <AgentRuntimeAccessPanel
+          draftAgent={draftAgent}
+          isEditing={isEditing}
+          updateAgent={updateAgent}
+          runtimeContextSources={runtimeContextSources}
+          runtimeDetailsLoading={runtimeDetailsLoading}
+        />
 
-        <div className="record-form agent-runtime-panel">
-          <div className="section-heading">
-            <p className="eyebrow">Memory and evaluation</p>
-            <h3>Retention, feedback, and corrections</h3>
-            <p>
-              Memory is bounded by shop and policy. Evaluation records outcomes, not hidden
-              reasoning.
-            </p>
-          </div>
-          <div className="runtime-policy-toggles">
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={draftAgent.memoryPolicy.ownerCorrectionsEnabled}
-                disabled={!isEditing}
-                onChange={(event) =>
-                  updateAgent({
-                    memoryPolicy: {
-                      ...draftAgent.memoryPolicy,
-                      ownerCorrectionsEnabled: event.target.checked
-                    }
-                  })
-                }
-              />
-              Remember active owner corrections
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={draftAgent.memoryPolicy.customerConversationMemoryEnabled}
-                disabled={!isEditing}
-                onChange={(event) =>
-                  updateAgent({
-                    memoryPolicy: {
-                      ...draftAgent.memoryPolicy,
-                      customerConversationMemoryEnabled: event.target.checked
-                    }
-                  })
-                }
-              />
-              Customer conversation memory (consent required)
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={draftAgent.evaluationPolicy.enabled}
-                disabled={!isEditing}
-                onChange={(event) =>
-                  updateAgent({
-                    evaluationPolicy: {
-                      ...draftAgent.evaluationPolicy,
-                      enabled: event.target.checked
-                    }
-                  })
-                }
-              />
-              Record privacy-safe evaluation events
-            </label>
-          </div>
-          <div className="runtime-evaluation-summary">
-            <strong>{evaluationSummary?.total ?? 0} evaluated events</strong>
-            <span>{evaluationSummary?.success ?? 0} successful</span>
-            <span>{evaluationSummary?.blocked ?? 0} policy-blocked</span>
-            <span>{evaluationSummary?.failure ?? 0} failed</span>
-          </div>
-          <div className="runtime-context-list" role="list" aria-label="Recent agent issues">
-            {evaluationSummary?.recentEvents
-              .filter((event) => event.outcome === "failure" || event.outcome === "blocked")
-              .slice(0, 5)
-              .map((event) => (
-                <article key={event.id} role="listitem">
-                  <div>
-                    <strong>{event.eventType.replaceAll("_", " ")}</strong>
-                    <small>
-                      Runtime {event.runtimeVersion} · {event.reason ?? "No reason recorded"} ·{" "}
-                      {formatDate(event.createdAt)}
-                    </small>
-                  </div>
-                  <span className="model-badge">{event.outcome}</span>
-                </article>
-              ))}
-          </div>
-          <label>
-            Owner correction
-            <textarea
-              value={correctionDraft}
-              rows={3}
-              placeholder="Example: Never offer free delivery outside Nairobi."
-              onChange={(event) => setCorrectionDraft(event.target.value)}
-            />
-          </label>
-          <div className="runtime-field-grid">
-            <label>
-              Correction type
-              <select
-                value={correctionCategory}
-                onChange={(event) =>
-                  setCorrectionCategory(event.target.value as AgentOwnerCorrection["category"])
-                }
-              >
-                <option value="instruction">Instruction</option>
-                <option value="business_fact">Business fact</option>
-                <option value="memory">Memory</option>
-                <option value="response">Response</option>
-              </select>
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={promoteCorrection}
-                onChange={(event) => setPromoteCorrection(event.target.checked)}
-              />
-              Promote to versioned instructions
-            </label>
-          </div>
-          <button
-            type="button"
-            disabled={correctionDraft.trim().length === 0 || pendingProfileAction !== null}
-            onClick={() => void runProfileAction("agent-owner-correction", submitOwnerCorrection)}
-          >
-            Save correction
-          </button>
-          <div className="runtime-correction-list">
-            {ownerCorrections.slice(0, 5).map((correction) => (
-              <article key={correction.id}>
-                <div>
-                  <strong>{correction.category.replace("_", " ")}</strong>
-                  <p>{correction.correction}</p>
-                  <small>
-                    Runtime {correction.runtimeVersion}
-                    {correction.promotedToInstruction ? " · promoted" : " · memory only"}
-                  </small>
-                </div>
-                {correction.status === "active" ? (
-                  <button
-                    className="secondary"
-                    type="button"
-                    disabled={pendingProfileAction !== null}
-                    onClick={() =>
-                      void runProfileAction(`disable-correction-${correction.id}`, () =>
-                        disableOwnerCorrection(correction.id)
-                      )
-                    }
-                  >
-                    Disable
-                  </button>
-                ) : (
-                  <span className="model-badge">Disabled</span>
-                )}
-              </article>
-            ))}
-          </div>
-        </div>
+        <AgentRetentionPanel
+          draftAgent={draftAgent}
+          isEditing={isEditing}
+          updateAgent={updateAgent}
+          evaluationSummary={evaluationSummary}
+          correctionDraft={correctionDraft}
+          setCorrectionDraft={setCorrectionDraft}
+          correctionCategory={correctionCategory}
+          setCorrectionCategory={setCorrectionCategory}
+          promoteCorrection={promoteCorrection}
+          setPromoteCorrection={setPromoteCorrection}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          submitOwnerCorrection={submitOwnerCorrection}
+          ownerCorrections={ownerCorrections}
+          disableOwnerCorrection={disableOwnerCorrection}
+        />
 
         <div className="record-form agent-model-panel">
           <div className="section-heading">
