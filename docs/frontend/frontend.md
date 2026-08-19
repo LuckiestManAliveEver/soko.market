@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4f implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4g implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -637,6 +637,60 @@ Regression tests: `tests/document-agent-import.e2e.test.ts` (extended),
 `tests/import-management-card.test.ts` (frontend wiring — verified to
 fail without the frontend implementation).
 
+## Network audit (Phase 4g — no card; one bug fixed)
+
+The first domain where the honest verdict is "mostly stays a permanent
+page" — the user explicitly asked for honest per-domain judgment rather
+than forcing every domain into the chat-capability pattern, and this is
+that judgment applied.
+
+**What the audit found:**
+
+- The domain's highest-value read action — "find suppliers through my
+  network" — was **already fully chat-invokable**, via a mechanism none
+  of the earlier phases used: `isNetworkDiscoveryRequest`
+  (`contacts-import.ts`), a frontend-only phrase match, separate from the
+  entire `RuntimeToolName`/`parseMerchantCommand` system this session has
+  worked in through Phase 4a-4f. A fourth distinct trigger mechanism in
+  this codebase, confirmed by reading it rather than assuming continuity
+  with the runtime-tool system.
+- The rest of the domain's actions — phone contact picker sync, social
+  OAuth network sync, CSV contact import/export — are gated behind
+  native browser APIs (`navigator.contacts.select`, OAuth redirects,
+  file pickers) that a chat text message cannot replace. This is a
+  permanent constraint, the same class of finding as imports' "can't
+  upload a file via text," not a gap to close.
+- Approving/rejecting a specific agent route needs a route ID a normal
+  chat message wouldn't reference, and routes are already visible where
+  they're proposed — building a separate chat trigger for "approve that
+  route" was judged lower-value than the domain's real gap below, so it
+  was not built this phase.
+
+**The one real bug found**: `requestNetworkRoute()` — the function the
+existing chat trigger calls — sent a **hard-coded** `requestText: "Find
+suppliers through my network"` regardless of what the owner actually
+typed, even though the server (`services/api/src/cp2/domains/network/store.ts:910`)
+matches `requestText` against network node names to find relevant
+suppliers. "Find a supplier for rice through my network" was silently
+losing "rice" and searching generically — the same class of bug as
+4a's product-price-drop and 4c's customer-phone-drop, just found in a
+domain this session judged mostly complete rather than one it built new
+capability for. Fixed by threading the real chat message through as
+`requestText`, keeping `targetNodeId` as the first parameter (an
+existing `SokoApplication.tsx` button already calls
+`requestNetworkRoute(targetNodeId)` positionally — reordering would have
+silently broken it, caught by checking every call site before changing
+the signature, not just the one this phase touched).
+
+**Verdict**: no generated card, no new runtime tool. The domain's
+permanent page stays exactly as important as it is today — most of what
+it does cannot move to chat, and the one thing that already had before
+this fix was quietly broken.
+
+Regression tests: `tests/network-route-request-text.test.ts` (both the
+fix and the call-site-safety check — verified to fail against the
+pre-fix code before restoring it).
+
 ## Target architecture
 
 ```text
@@ -749,7 +803,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4d | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed | **Implemented** (this change) — see "Invoices chat-invokable capability" above |
 | 4e | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text) | **Implemented** (this change) — see "Payments chat-invokable capability" above |
 | 4f | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming | **Implemented** (this change) — see "Imports chat-invokable capability" above |
-| 4g–4o | One phase per remaining `ShellView` (network, sync, runtime, logistics, compliance, beta, launch, reports, notifications) - each gets its own audit; several are read-only diagnostic dashboards or are already flagged as likely permanent-page candidates per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4g | Network: audited honestly rather than forced into the pattern - the domain's real chat capability (find suppliers through network) already existed via a separate mechanism, the rest is browser-API-gated (contact picker, OAuth) and cannot move to chat. No card; fixed one real bug (requestNetworkRoute always sent a hard-coded request, dropping the owner's real message) | **Implemented** (this change) — see "Network audit" above |
+| 4h–4o | One phase per remaining `ShellView` (sync, runtime, logistics, compliance, beta, launch, reports, notifications) - each gets its own honest audit; several are likely to land the same way as 4g (audit + targeted fix, no new card) rather than 4a-4f's full capability build | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

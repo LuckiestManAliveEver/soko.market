@@ -146,10 +146,16 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
     await authenticateSocialProfile(provider);
   }
 
-  async function requestNetworkRoute(targetNodeId?: string) {
+  // targetNodeId stays the first parameter to match the existing SokoApplication.tsx call site
+  // (requesting a route to one specific node); requestText is additive.
+  async function requestNetworkRoute(targetNodeId?: string, requestText?: string) {
     try {
       const route = await postJson<AgentRouteSummary>("/network/routes", {
-        requestText: "Find suppliers through my network",
+        // Falls back to a generic search only when no chat message drove this call - the server
+        // matches requestText against network node names (services/api/src/cp2/domains/network/
+        // store.ts), so a specific owner request ("find a supplier for rice") must reach it
+        // instead of being silently replaced. See docs/frontend/frontend.md Phase 4g.
+        requestText: requestText?.trim() || "Find suppliers through my network",
         ...(targetNodeId === undefined ? {} : { targetNodeId })
       });
       setNetworkGraph((graph) =>

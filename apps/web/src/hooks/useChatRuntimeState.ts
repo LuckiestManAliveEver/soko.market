@@ -128,7 +128,7 @@ interface UseChatRuntimeStateDeps {
   setInvoicePreview: Dispatch<SetStateAction<InvoicePreview | null>>;
   setPaymentForm: Dispatch<SetStateAction<PaymentFormState>>;
   loadNetworkGraph: () => Promise<void>;
-  requestNetworkRoute: (targetNodeId?: string) => Promise<void>;
+  requestNetworkRoute: (targetNodeId?: string, requestText?: string) => Promise<void>;
   loadRuntimeSessions: (businessId: string) => Promise<void>;
   createManagedRuntimeSession: () => Promise<string>;
   ensureRuntimeSession: (setRuntimeSessionId: (sessionId: string) => void) => Promise<string>;
@@ -1422,7 +1422,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
 
       if (isNetworkDiscoveryRequest(agentRequest)) {
         await loadNetworkGraph();
-        await requestNetworkRoute();
+        await requestNetworkRoute(undefined, agentRequest);
         navigateToView("network");
       }
 
