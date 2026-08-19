@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phase 4a implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4b implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -414,6 +414,66 @@ route, the test that caught both bugs above), `tests/product-management-card.tes
 pre-Phase-4a code (stashed the implementation, kept the tests, confirmed
 real failures) before restoring the fix.
 
+## Suppliers chat-invokable capability (Phase 4b — implemented)
+
+Same pattern as 4a, applied to suppliers — with a genuinely new failure
+mode Phase 4a hadn't surfaced yet.
+
+**What the audit found:**
+
+- No supplier runtime tools existed at all (`RuntimeToolName` had zero
+  `supplier.*` entries) — a bigger gap than products, which at least had
+  two of four tools working. Added `supplier.create`/`supplier.update`
+  (`supplier.delete` deliberately left off the chat-invokable surface,
+  matching the existing `product.delete` precedent of requiring a more
+  deliberate trigger than loose free-text scoring — see "What Phase 4a
+  deliberately left alone").
+- Suppliers have no context-script vocabulary of their own (that matcher
+  is product-only, `scriptId: "product-vocabulary"`), so the primary
+  parser (`parseMerchantCommand`) is the *only* path — no dual-parser
+  sync risk like 4a's.
+- **The real catch, found by writing the end-to-end test before trusting
+  the parser in isolation (same discipline that caught 4a's bugs)**: the
+  product vocabulary's built-in phrase list includes a *bare* `"edit"`
+  and `"badilisha"` entry for `PRODUCT_EDIT` — matching on the verb alone,
+  with no requirement that a product noun also be present. `"edit
+  supplier John Doe 0798765432"` matched `PRODUCT_EDIT` before it ever
+  reached the primary parser, with `"supplier john doe"` misread as a
+  product name. This is a pre-existing looseness in the product
+  vocabulary (several other intents have similarly bare single-word
+  phrases — `PRODUCT_LIST` matches on bare `"stock"`/`"product"`/etc. too)
+  that was latent and harmless until a second domain started using
+  overlapping verbs. Rewriting the whole vocabulary's specificity was out
+  of scope for this phase; instead `parseProductContextScriptCommand`
+  gained a narrow guard — a message naming another domain noun
+  (`supplier`/`msambazaji`) skips product-vocabulary matching entirely
+  and falls through to the primary parser, which owns `update_supplier`.
+- Reused Phase 4a's currency/quantity double-counting fix pattern for
+  phone numbers: `"0712345678"` in a message must not also be read as a
+  quantity. `extractSlots` now extracts a phone-shaped run of 7+ digits
+  before the generic quantity match, the same way it already excludes a
+  currency-tagged price.
+
+**What changed:** `supplier.create`/`supplier.update` tool definitions,
+new `add_supplier`/`update_supplier` primary-parser intents (EN/SW), the
+product-vocabulary exclusion guard above, `executeRuntimeAction` cases
+resolving the named supplier and calling the sales domain's existing
+`createSupplier`/`updateSupplier`, a new self-contained
+`SupplierManagementCard` (mirrors `ProductManagementCard` — fetches its
+own data from `businessId`, not `useSuppliersState`, which needs
+`loadReports`/`registerReset`/`registerRefresh` tied to sibling hooks),
+registered under a new `"supplier-management"` content type. Permanent
+`suppliers` nav entry kept, same reasoning as 4a.
+
+Regression tests: `tests/cp4-rule-parser.test.ts` (new intents, and the
+`parseProductContextScriptCommand` exclusion guard — asserts `"edit
+supplier..."` returns `null` from the product matcher), `tests/cp10-sokoclaw-runtime.test.ts`
+("creates and edits a supplier through confirmed runtime turns, not the
+product vocabulary" — asserts zero products exist after the run, the
+guard against the exact regression this phase found), `tests/supplier-management-card.test.ts`
+(frontend wiring). Verified to fail against the pre-Phase-4b code before
+restoring the fix.
+
 ## Target architecture
 
 ```text
@@ -521,7 +581,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Per-conversation session context" above                                                                    |
 | 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | **Implemented** (this change) — see "Multi-session UI" above                                                                                     |
 | 4a | Products: give the domain a chat-invokable capability/tool that renders inline in a session (found to need fixing two runtime-tool execution stubs, adding two new parser intents to both the primary and context-script parsers, and a currency/quantity parsing bug - not a small phase). Permanent `products` nav entry kept until a generated-surface replacement can be proven live in a browser | **Implemented** (this change) — see "Products chat-invokable capability" above |
-| 4b–4o | One phase per remaining `ShellView` (suppliers, customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a. Order: highest chat-relevance first (customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline. Expect each to be comparably sized to 4a, not a mechanical extraction |
+| 4b | Suppliers: same pattern as 4a (found zero existing supplier runtime tools, and a product-vocabulary false-positive that would have silently misrouted supplier edits as product edits) | **Implemented** (this change) — see "Suppliers chat-invokable capability" above |
+| 4c–4o | One phase per remaining `ShellView` (customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a/4b. Order: highest chat-relevance first (customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline. Expect each to be comparably sized to 4a/4b, not a mechanical extraction |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

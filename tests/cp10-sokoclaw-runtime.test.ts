@@ -370,6 +370,77 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("creates and edits a supplier through confirmed runtime turns, not the product vocabulary (Phase 4b)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const createProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "add supplier John Doe 0712345678" },
+      sessionCookie
+    );
+    // The prior draft of this phase would have this misrouted through the product vocabulary
+    // matcher (a bare "edit"/"update" verb alone was enough to match PRODUCT_EDIT) - asserting the
+    // parser intent here is the guard against that regression coming back.
+    expect(createProposed.turn).toMatchObject({
+      parserIntent: "add_supplier",
+      plan: { toolName: "supplier.create" }
+    });
+    const createConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: createProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(createConfirmed.turn.toolResult).toMatchObject({
+      name: "John Doe",
+      phone: "0712345678"
+    });
+
+    const editProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "edit supplier John Doe 0798765432"
+      },
+      sessionCookie
+    );
+    expect(editProposed.turn).toMatchObject({
+      parserIntent: "update_supplier",
+      plan: { toolName: "supplier.update" }
+    });
+    const editConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: editProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(editConfirmed.turn.toolResult).toMatchObject({
+      name: "John Doe",
+      phone: "0798765432"
+    });
+
+    const finalSuppliers = store.snapshot().suppliers;
+    expect(finalSuppliers).toHaveLength(1);
+    expect(finalSuppliers[0]).toMatchObject({ name: "John Doe", phone: "0798765432" });
+    // Confirms the product vocabulary's bare "edit" phrase never fired a phantom product.update -
+    // the supplier flow above must not have created or touched any product record.
+    expect(store.snapshot().products).toHaveLength(0);
+
+    await app.close();
+  });
+
   it("keeps incomplete runtime mutations as clarifications without writing payments", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

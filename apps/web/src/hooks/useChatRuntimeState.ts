@@ -170,6 +170,17 @@ function productIdFromToolResult(toolResult: unknown): string | undefined {
   return undefined;
 }
 
+const supplierMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>([
+  "supplier.create",
+  "supplier.update"
+]);
+
+function supplierIdFromToolResult(toolResult: unknown): string | undefined {
+  if (toolResult === null || typeof toolResult !== "object") return undefined;
+  if ("id" in toolResult && typeof toolResult.id === "string") return toolResult.id;
+  return undefined;
+}
+
 export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
   const [clarificationCount, setClarificationCount] = useState(0);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
@@ -973,6 +984,35 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Mirrors postProductManagementCard for the suppliers domain - see
+    // generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4b.
+    async function postSupplierManagementCard(businessId: string, supplierId: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        supplierId === undefined
+          ? { type: "supplier-management", businessId }
+          : { type: "supplier-management", businessId, supplierId };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Suppliers remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1186,6 +1226,18 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       ) {
         await loadProducts(business.id);
         await postProductManagementCard(business.id, productIdFromToolResult(result.turn.toolResult));
+      }
+
+      if (
+        supplierMutationToolNames.has(result.turn.plan.toolName) &&
+        result.turn.plan.executedAt !== null &&
+        business !== null
+      ) {
+        await loadSuppliers(business.id);
+        await postSupplierManagementCard(
+          business.id,
+          supplierIdFromToolResult(result.turn.toolResult)
+        );
       }
 
       if (result.turn.plan.toolName === "invoices.list" && business !== null) {

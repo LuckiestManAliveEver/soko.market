@@ -458,7 +458,8 @@ export type ConversationMessageContent =
   | { type: "product-capture-progress"; captureJobId: string }
   | { type: "status-broadcast"; statusBroadcastId: string }
   | { type: "unified-checkout"; unifiedCheckoutId: string }
-  | { type: "product-management"; businessId: string; productId?: string };
+  | { type: "product-management"; businessId: string; productId?: string }
+  | { type: "supplier-management"; businessId: string; supplierId?: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;
@@ -3016,6 +3017,8 @@ export type RuntimeToolName =
   | "product.field.add"
   | "product.field.remove"
   | "customer.create"
+  | "supplier.create"
+  | "supplier.update"
   | "invoice.draft"
   | "payment.record"
   | "receipt.scan"
@@ -3034,6 +3037,8 @@ export type RuntimeParserIntent =
   | "update_product"
   | "adjust_stock"
   | "add_customer"
+  | "add_supplier"
+  | "update_supplier"
   | "create_invoice"
   | "record_payment"
   | "check_debt"

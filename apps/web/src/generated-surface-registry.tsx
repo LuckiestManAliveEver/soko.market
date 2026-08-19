@@ -6,7 +6,8 @@ import {
   FulfilmentSplitCard,
   ProductCaptureItemsCard,
   ProductManagementCard,
-  StatusBroadcastCard
+  StatusBroadcastCard,
+  SupplierManagementCard
 } from "./soko-application-shared";
 
 /**
@@ -71,6 +72,17 @@ const generatedSurfaceRegistry: Partial<
         <ProductManagementCard
           businessId={content.businessId}
           {...(content.productId === undefined ? {} : { productId: content.productId })}
+        />
+      </Suspense>
+    );
+  },
+  "supplier-management": (content) => {
+    if (content.type !== "supplier-management") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening suppliers…</div>}>
+        <SupplierManagementCard
+          businessId={content.businessId}
+          {...(content.supplierId === undefined ? {} : { supplierId: content.supplierId })}
         />
       </Suspense>
     );

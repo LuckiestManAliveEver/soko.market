@@ -25,6 +25,8 @@ export type RuleIntent =
   | "update_product"
   | "adjust_stock"
   | "add_customer"
+  | "add_supplier"
+  | "update_supplier"
   | "create_invoice"
   | "record_payment"
   | "check_debt"
@@ -54,6 +56,8 @@ export interface ParserSlots {
   productName?: string;
   quantity?: number;
   unit?: string;
+  supplierName?: string;
+  phone?: string;
 }
 
 export interface ParseResult {
@@ -95,6 +99,8 @@ export type RuntimeToolName =
   | "product.field.add"
   | "product.field.remove"
   | "customer.create"
+  | "supplier.create"
+  | "supplier.update"
   | "invoice.draft"
   | "payment.record"
   | "receipt.scan"
@@ -682,6 +688,38 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     },
     mcpExposable: false
   },
+  "supplier.create": {
+    name: "supplier.create",
+    description: "Create a new supplier contact.",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "supplier:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", required: true, description: "Supplier name." },
+        phone: { type: "string", description: "Supplier phone number, if mentioned." }
+      }
+    },
+    mcpExposable: false
+  },
+  "supplier.update": {
+    name: "supplier.update",
+    description: "Update an existing supplier contact's details.",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "supplier:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        supplierName: { type: "string", required: true, description: "Supplier to update." },
+        phone: { type: "string", description: "New phone number, if changing." }
+      }
+    },
+    mcpExposable: false
+  },
   "invoice.draft": {
     name: "invoice.draft",
     description: "Draft a new invoice for a customer.",
@@ -982,6 +1020,36 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
             : valid()
       };
 
+    case "add_supplier":
+      return {
+        toolName: "supplier.create",
+        input: {
+          name: result.slots.supplierName ?? "",
+          ...(result.slots.phone === undefined ? {} : { phone: result.slots.phone })
+        },
+        reason: "Draft a supplier creation action from the merchant command.",
+        validation:
+          result.slots.supplierName === undefined
+            ? invalid("Supplier name is required before a supplier can be drafted.")
+            : valid()
+      };
+
+    case "update_supplier":
+      return {
+        toolName: "supplier.update",
+        input: {
+          supplierName: result.slots.supplierName ?? "",
+          ...(result.slots.phone === undefined ? {} : { phone: result.slots.phone })
+        },
+        reason: "Draft a supplier update action from the merchant command.",
+        validation:
+          result.slots.supplierName === undefined
+            ? invalid("Which supplier should I edit?")
+            : result.slots.phone === undefined
+              ? invalid("What should the new phone number be?")
+              : valid()
+      };
+
     case "create_invoice":
       return {
         toolName: "invoice.draft",
@@ -1161,6 +1229,15 @@ export function parseProductContextScriptCommand(input: {
   });
 
   if (!script.enabled) {
+    return null;
+  }
+
+  // Several built-in phrases (a bare "edit", "badilisha") match on the verb alone, with no
+  // requirement that a product noun also be present - "edit supplier John" would otherwise be
+  // misread as PRODUCT_EDIT with "supplier john" as the product name. Suppliers have no vocabulary
+  // of their own to route to instead, so a message naming a different domain noun skips product
+  // matching entirely and falls through to the primary parser.
+  if (/\b(supplier|suppliers|msambazaji|wasambazaji)\b/u.test(normalizeContextText(input.message))) {
     return null;
   }
 
@@ -1666,6 +1743,22 @@ export function validateRuntimeToolInput(
         : valid();
     }
 
+    case "supplier.create": {
+      const name = typeof input.name === "string" ? input.name.trim() : "";
+
+      return name.length === 0
+        ? invalid("Supplier name is required before a supplier can be drafted.")
+        : valid();
+    }
+
+    case "supplier.update": {
+      const supplierName = typeof input.supplierName === "string" ? input.supplierName.trim() : "";
+
+      return supplierName.length === 0
+        ? invalid("Which supplier should I edit?")
+        : valid();
+    }
+
     case "invoice.draft":
       return invalid("Invoice runtime draft needs product and price details.");
 
@@ -1802,6 +1895,32 @@ const intentRules: IntentRule[] = [
       "new client",
       "new mteja",
       "mteja mpya"
+    ],
+    weight: 1.08
+  },
+  {
+    intent: "add_supplier",
+    keywords: ["add", "ongeza", "new", "supplier", "msambazaji", "mpya"],
+    phrases: [
+      "add supplier",
+      "new supplier",
+      "ongeza msambazaji",
+      "ongeza supplier",
+      "new msambazaji",
+      "msambazaji mpya"
+    ],
+    weight: 1.08
+  },
+  {
+    intent: "update_supplier",
+    keywords: ["edit", "update", "modify", "change", "supplier", "msambazaji"],
+    phrases: [
+      "edit supplier",
+      "update supplier",
+      "modify supplier",
+      "change supplier",
+      "hariri msambazaji",
+      "badilisha msambazaji"
     ],
     weight: 1.08
   },
@@ -2641,6 +2760,22 @@ function getMissingSlotQuestion(intent: RuleIntent, slots: ParserSlots): string 
     return "What should the new quantity be?";
   }
 
+  if (intent === "add_supplier" && slots.supplierName === undefined) {
+    return "What is the supplier name?";
+  }
+
+  if (intent === "update_supplier" && slots.supplierName === undefined) {
+    return "Which supplier should I edit?";
+  }
+
+  if (
+    intent === "update_supplier" &&
+    slots.supplierName !== undefined &&
+    slots.phone === undefined
+  ) {
+    return "What should the new phone number be?";
+  }
+
   if (intent === "add_customer" && slots.customerName === undefined) {
     return "What is the customer name?";
   }
@@ -2670,7 +2805,19 @@ function extractSlots(input: string, intent: RuleIntent): ParserSlots {
   // A currency-tagged number ("ksh 150") must not also be read as a bare quantity - without this,
   // "add product sugar ksh 150" would set both quantity and price to 150.
   const inputWithoutAmount = amountMatch === null ? input : input.replace(amountMatch[0], " ");
-  const quantityMatch = inputWithoutAmount.match(/\b(\d+(?:\.\d+)?)\b/);
+
+  // A phone number (7+ digits, optionally +/spaces/dashes) is long enough not to collide with a
+  // typical quantity or price - matched and removed first so "add supplier John 0712345678" does
+  // not also read 0712345678 as a quantity.
+  const phoneMatch = inputWithoutAmount.match(/\b(\+?\d[\d\s-]{6,14}\d)\b/);
+
+  if (phoneMatch?.[1] !== undefined) {
+    slots.phone = phoneMatch[1].replace(/[\s-]/g, "");
+  }
+
+  const inputWithoutPhone =
+    phoneMatch === null ? inputWithoutAmount : inputWithoutAmount.replace(phoneMatch[0], " ");
+  const quantityMatch = inputWithoutPhone.match(/\b(\d+(?:\.\d+)?)\b/);
 
   if (quantityMatch?.[1] !== undefined) {
     slots.quantity = Number(quantityMatch[1]);
@@ -2693,6 +2840,14 @@ function extractSlots(input: string, intent: RuleIntent): ParserSlots {
 
     if (unit !== undefined) {
       slots.unit = unit;
+    }
+  }
+
+  if (intent === "add_supplier" || intent === "update_supplier") {
+    const supplierName = extractNamedValue(input, ["supplier", "msambazaji", "for", "ya"]);
+
+    if (supplierName !== undefined) {
+      slots.supplierName = supplierName;
     }
   }
 

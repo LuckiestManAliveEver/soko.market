@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createRuntimeToolProposal,
   parseMerchantCommand,
+  parseProductContextScriptCommand,
   shouldUseStructuredFallback
 } from "../packages/tool-core/src";
 import { cp4EvalCommands } from "./ai-eval/cp4-commands";
@@ -147,6 +148,38 @@ describe("CP4 rule parser", () => {
       input: { productName: "Sugar", sellingPrice: 200 }
     });
     expect(createRuntimeToolProposal(updated).input.quantity).toBeUndefined();
+  });
+
+  it("routes supplier commands to their own intents, and never through the product vocabulary (Phase 4b)", () => {
+    // The product vocabulary's bare "edit"/"badilisha" phrases match on the verb alone - without
+    // the supplier exclusion guard, this would resolve to PRODUCT_EDIT with "supplier john" read
+    // as a product name instead of falling through to the primary parser's update_supplier intent.
+    expect(parseProductContextScriptCommand({ message: "edit supplier John Doe 0798765432" })).toBeNull();
+    expect(parseProductContextScriptCommand({ message: "add supplier Jane" })).toBeNull();
+
+    expect(parseMerchantCommand("add supplier John Doe 0712345678")).toMatchObject({
+      intent: "add_supplier",
+      slots: { supplierName: "John Doe", phone: "0712345678" }
+    });
+    expect(createRuntimeToolProposal(parseMerchantCommand("add supplier John Doe 0712345678"))).toMatchObject({
+      toolName: "supplier.create",
+      input: { name: "John Doe", phone: "0712345678" }
+    });
+
+    expect(parseMerchantCommand("edit supplier John Doe 0798765432")).toMatchObject({
+      intent: "update_supplier",
+      slots: { supplierName: "John Doe", phone: "0798765432" }
+    });
+    // The phone number must not also be misread as a quantity - same class of double-counting bug
+    // fixed for currency-tagged product prices in Phase 4a.
+    expect(parseMerchantCommand("edit supplier John Doe 0798765432").slots.quantity).toBeUndefined();
+
+    expect(parseMerchantCommand("add supplier")).toMatchObject({
+      nextAction: { type: "clarify", question: "What is the supplier name?" }
+    });
+    expect(parseMerchantCommand("update supplier John")).toMatchObject({
+      nextAction: { type: "clarify", question: "What should the new phone number be?" }
+    });
   });
 
   it("uses structured fallback only after repeated clarification results", () => {

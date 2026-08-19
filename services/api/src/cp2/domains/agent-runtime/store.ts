@@ -293,6 +293,19 @@ export interface AgentRuntimeDomainDeps {
     };
     now?: Date;
   }) => CustomerSummary;
+  createSupplier: (input: {
+    sessionId: string | null;
+    businessId: string;
+    supplier: { name: string; phone: string | null; email: string | null; notes: string | null };
+    now?: Date;
+  }) => SupplierSummary;
+  updateSupplier: (input: {
+    sessionId: string | null;
+    businessId: string;
+    supplierId: string;
+    supplier: { name: string; phone: string | null; email: string | null; notes: string | null };
+    now?: Date;
+  }) => SupplierSummary;
   listPurchaseReceipts: (input: {
     sessionId: string | null;
     businessId: string;
@@ -3322,6 +3335,44 @@ export class AgentRuntimeDomain {
           now: input.now
         });
 
+      case "supplier.create":
+        return this.deps.createSupplier({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          supplier: {
+            name: String(input.action.input.name ?? ""),
+            phone: typeof input.action.input.phone === "string" ? input.action.input.phone : null,
+            email: null,
+            notes: null
+          },
+          now: input.now
+        });
+
+      case "supplier.update": {
+        const supplier = this.findRuntimeSupplierByName(
+          input.businessId,
+          String(input.action.input.supplierName ?? "")
+        );
+
+        if (supplier === null) {
+          throw new Cp2Error(404, "runtime_supplier_not_found", "The supplier was not found.");
+        }
+
+        return this.deps.updateSupplier({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          supplierId: supplier.id,
+          supplier: {
+            name: supplier.name,
+            phone:
+              typeof input.action.input.phone === "string" ? input.action.input.phone : supplier.phone,
+            email: supplier.email,
+            notes: supplier.notes
+          },
+          now: input.now
+        });
+      }
+
       case "invoice.draft":
       case "payment.record":
       case "receipt.scan":
@@ -3574,6 +3625,25 @@ export class AgentRuntimeDomain {
     return (
       products.find((product) => normalizeRuntimeLookup(product.name) === normalizedName) ??
       products.find((product) => normalizeRuntimeLookup(product.name).includes(normalizedName)) ??
+      null
+    );
+  }
+
+  private findRuntimeSupplierByName(
+    businessId: string,
+    supplierName: string
+  ): SupplierSummary | null {
+    const normalizedName = normalizeRuntimeLookup(supplierName);
+
+    if (normalizedName.length === 0) {
+      return null;
+    }
+
+    const suppliers = this.deps.suppliersForBusiness(businessId);
+
+    return (
+      suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name) === normalizedName) ??
+      suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name).includes(normalizedName)) ??
       null
     );
   }
