@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4h implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4j implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -752,6 +752,50 @@ proving the real HTTP route classifies "mark delivered for Mary" as
 fail without the frontend implementation). All three verified to fail
 with the Phase 4h implementation files stashed, pass with them restored.
 
+## Sync + Runtime audit (Phases 4i-4j — no card, no bug)
+
+Both domains audited honestly, per the same standing instruction as 4g:
+judge each domain on its own merits rather than force it into the
+chat-capability pattern. Both verdicts are "stays a permanent page, no
+generated card" — but for a stronger reason than network's (4g): neither
+domain has *any* natural single-sentence chat phrasing, not even a
+partial one.
+
+**Sync** (`useSyncState.ts`) is the offline mutation queue and IndexedDB
+catch-up/realtime machinery — `replaySyncQueue`/`replaySyncQueueItem`
+retry queued offline writes, `queueMutationAfterNetworkFailure` persists
+a mutation locally when a write fails offline. Its only two owner-facing
+actions are "replay the sync queue" and "replay one item" — both need a
+`syncItemId` a chat message would never carry, and both already have
+direct buttons on the permanent Sync page (`SokoApplication.tsx:1613`,
+`:1624`, wired directly to the domain hook, not through the runtime-tool
+system). No `RuntimeToolName`/`RuleIntent` was ever defined for sync, and
+grepping every caller of `replaySyncQueue`/`queueMutationAfterNetworkFailure`
+confirmed there is no fourth trigger mechanism hiding here the way
+`isNetworkDiscoveryRequest` was hiding in the network domain (4g) — sync
+really is only reachable from its own page today, which is correct given
+what it does.
+
+**Runtime** (`useRuntimeHistoryState.ts`) is session/turn browsing for
+the AI runtime itself — `loadRuntimeSessions`, `loadRuntimeTurns`,
+`createRuntimeHistorySession`, `restoreOrCreateRuntimeSession`. This is
+the plumbing chat *runs on*, not a peer domain chat could invoke: asking
+"show me my runtime sessions" through the chat runtime to browse the
+chat runtime's own session history is circular in a way none of the
+other nine domains audited so far are. No mutation exists to route
+through the runtime-tool system in the first place — every function here
+either reads (`loadRuntimeSessions`/`loadRuntimeTurns`) or manages the
+runtime's own lifecycle (`createManagedRuntimeSession`/`ensureRuntimeSession`),
+neither of which a merchant sentence would ever target.
+
+**No bug found in either domain** (unlike 4g, which had one) — both
+wiring paths from permanent-page button to REST endpoint were read in
+full and found correct.
+
+**Verdict**: no generated card, no new runtime tool, no code change, for
+either domain. Both permanent pages stay exactly as important as they
+are today.
+
 ## Target architecture
 
 ```text
@@ -866,7 +910,9 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4f | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming | **Implemented** (this change) — see "Imports chat-invokable capability" above |
 | 4g | Network: audited honestly rather than forced into the pattern - the domain's real chat capability (find suppliers through network) already existed via a separate mechanism, the rest is browser-API-gated (contact picker, OAuth) and cannot move to chat. No card; fixed one real bug (requestNetworkRoute always sent a hard-coded request, dropping the owner's real message) | **Implemented** (this change) — see "Network audit" above |
 | 4h | Logistics: judged genuinely chat-relevant (unlike 4g) - "mark delivered"/"picked up" are natural merchant sentences and the backend mutation already existed, just never wired into the runtime-tool system. Same "composer card, no backend mutation change" shape as 4d/4e | **Implemented** (this change) — see "Logistics chat-invokable capability" above |
-| 4i–4o | One phase per remaining `ShellView` (sync, runtime, compliance, beta, launch, reports, notifications) - each gets its own honest audit; several are likely to land the same way as 4g (audit + targeted fix, no new card) rather than 4a-4f/4h's full capability build | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4i | Sync: audited honestly - offline mutation queue/IndexedDB machinery with no natural chat phrasing (both actions need a `syncItemId` chat can't carry) and already only reachable from its own page. No fourth trigger mechanism found hiding here (unlike 4g's network). No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
+| 4j | Runtime: audited honestly - session/turn browsing for the AI runtime itself, the plumbing chat runs on rather than a peer domain chat could invoke. No mutation exists to route through the runtime-tool system. No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
+| 4k–4o | One phase per remaining `ShellView` (compliance, beta, launch, reports, notifications) - each gets its own honest audit; `docs/frontend/frontend.md`'s own "When a permanent page is still correct" section already flags compliance/beta/launch as likely permanent-page candidates | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement
