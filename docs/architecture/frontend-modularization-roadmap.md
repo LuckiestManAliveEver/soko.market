@@ -140,9 +140,9 @@ surface touched.
 
 ## What's next (not part of this roadmap)
 
-`OwnerApp` itself (~6,143 lines, still one component) is the natural
-next target if `SokoApplication.tsx` needs to shrink further - but
-splitting its state requires deciding how to carve up React state across
-custom hooks or context, a real architecture decision with UI-visible
-risk that deserves its own scoped plan and its own reference/critic
-loop, not a continuation of this file-move-only effort.
+`OwnerApp` itself (~6,143 lines, still one component) was the natural
+next target if `SokoApplication.tsx` needed to shrink further - and it
+has since been done: see `owner-app-state-decomposition-roadmap.md`,
+which decomposed `OwnerApp`'s state across 20 domain hooks plus one small
+`OwnerCoreContext`, taking `SokoApplication.tsx` from 6,521 to 2,220
+lines.
