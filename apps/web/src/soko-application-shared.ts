@@ -57,6 +57,10 @@ export const initialProductCaptureModule =
   initialOwnerModuleView === "products" ? import("./ProductCapturePanel") : null;
 export const initialAccountControlsModule =
   initialOwnerModuleView === "agent" ? import("./AccountBackendControls") : null;
+export const initialAgentModelPanelModule =
+  initialOwnerModuleView === "agent" ? import("./AgentModelPanel") : null;
+export const initialIdentitySecurityPanelModule =
+  initialOwnerModuleView === "agent" ? import("./IdentitySecurityPanel") : null;
 export const PhoneFirstAuthentication = lazy(() =>
   (initialPhoneLoginModule ?? import("./PhoneFirstAuthentication")).then((module) => ({
     default: module.PhoneFirstAuthentication
@@ -68,6 +72,16 @@ export const ProductCapturePanel = lazy(
 );
 export const AccountBackendControls = lazy(
   () => initialAccountControlsModule ?? import("./AccountBackendControls")
+);
+export const AgentModelPanel = lazy(() =>
+  (initialAgentModelPanelModule ?? import("./AgentModelPanel")).then((module) => ({
+    default: module.AgentModelPanel
+  }))
+);
+export const IdentitySecurityPanel = lazy(() =>
+  (initialIdentitySecurityPanelModule ?? import("./IdentitySecurityPanel")).then((module) => ({
+    default: module.IdentitySecurityPanel
+  }))
 );
 export const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));

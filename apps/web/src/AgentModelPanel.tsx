@@ -98,6 +98,7 @@ import {
 import { isAgentModel } from "./owner-app-bootstrap";
 import { normalizeSearchText } from "./agent-command-engine";
 import { getErrorMessage } from "./chat-message-plumbing";
+import { isDownloadableCatalogModel } from "./agent-model-panel-utils";
 
 export interface AgentModelPanelProps {
   accountId: string;
@@ -2145,10 +2146,6 @@ export function recordModelActivationDiagnostic(diagnostic: ModelActivationDiagn
   console.info("model_activation", diagnostic);
 }
 
-export function isDownloadableCatalogModel(model: AiModelSummary): boolean {
-  return model.source === "huggingface" || model.source === "github";
-}
-
 export function mergeAiModelCatalogs(
   primary: AiModelSummary[],
   additional: AiModelSummary[]
@@ -2178,35 +2175,4 @@ export function normalizeModelDownloadUrl(downloadUrl: string | null): string | 
   } catch {
     return downloadUrl.split("?")[0]?.toLowerCase() ?? null;
   }
-}
-
-export function installedModelRequest(model: LocalAiModel): Record<string, unknown> {
-  return {
-    id: model.id,
-    deviceId: model.deviceId,
-    modelId: model.modelId,
-    displayName: model.displayName,
-    provider: model.provider,
-    repositoryId: model.repositoryId,
-    filename: model.fileName,
-    format: model.format,
-    quantization: model.quantization,
-    architecture: model.architecture,
-    parameterCount: model.parameterCount,
-    contextLength: model.contextLength,
-    fileSizeBytes: model.fileSizeBytes,
-    checksum: model.checksum,
-    packageManifestVersion: model.packageManifestVersion ?? null,
-    packageSignature: model.packageSignature ?? null,
-    packageSigningKeyId: model.packageSigningKeyId ?? null,
-    license: model.license,
-    commercialUseAllowed: model.commercialUseAllowed,
-    storageKey: model.storageKey,
-    runtimeBackend: model.runtimeBackend,
-    installationStatus: model.installationStatus,
-    compatibilityStatus: model.compatibilityStatus,
-    installedAt: model.installedAt,
-    lastVerifiedAt: model.lastVerifiedAt,
-    validationError: model.validationError
-  };
 }

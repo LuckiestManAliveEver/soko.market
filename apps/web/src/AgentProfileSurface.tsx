@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 import type {
   AccountShopSummary,
@@ -13,16 +13,10 @@ import type {
 import { copyTextToClipboard } from "./misc-browser-utils";
 import { SalesPricingEscalationPanel, VoiceAndCarePanel } from "./AgentPolicyPanels";
 import { AgentIdentityPanel } from "./AgentIdentityPanel";
-import {
-  AgentModelPanel,
-  installedModelRequest,
-  isDownloadableCatalogModel
-} from "./AgentModelPanel";
 import { AgentReadinessPanel } from "./AgentReadinessPanel";
 import { AgentRetentionPanel } from "./AgentRetentionPanel";
 import { AgentRuntimeAccessPanel } from "./AgentRuntimeAccessPanel";
 import { DeleteAccountPanel } from "./DeleteAccountPanel";
-import { IdentitySecurityPanel } from "./IdentitySecurityPanel";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
 import { NotificationsSessionsPanel } from "./NotificationsSessionsPanel";
 import { ProtectedContextFilesPanel } from "./ProtectedContextFilesPanel";
@@ -42,6 +36,8 @@ import {
 } from "./agent-model-assignment";
 
 import {
+  AgentModelPanel,
+  IdentitySecurityPanel,
   type ActiveBusiness,
   type AgentSettings,
   type AiModelSummary,
@@ -58,6 +54,7 @@ import {
   sanitizeContextScripts
 } from "./owner-app-bootstrap";
 import { getErrorMessage } from "./chat-message-plumbing";
+import { installedModelRequest, isDownloadableCatalogModel } from "./agent-model-panel-utils";
 
 export interface AgentProfileSurfaceProps {
   accountId: string;
@@ -521,28 +518,30 @@ export function AgentProfileSurface({
           disableOwnerCorrection={disableOwnerCorrection}
         />
 
-        <AgentModelPanel
-          accountId={accountId}
-          business={business}
-          agent={agent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-          onAgentChange={onAgentChange}
-          ownerUser={ownerUser}
-          onEnsureRuntimeSession={onEnsureRuntimeSession}
-          profileMessage={profileMessage}
-          setProfileMessage={setProfileMessage}
-          aiModels={aiModels}
-          setAiModels={setAiModels}
-          localAiModels={localAiModels}
-          setLocalAiModels={setLocalAiModels}
-          activeAiModelId={activeAiModelId}
-          setActiveAiModelId={setActiveAiModelId}
-          agentModelAssignment={agentModelAssignment}
-          setAgentModelAssignment={setAgentModelAssignment}
-          deviceId={deviceId}
-          registerInstalledModel={registerInstalledModel}
-        />
+        <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
+          <AgentModelPanel
+            accountId={accountId}
+            business={business}
+            agent={agent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+            onAgentChange={onAgentChange}
+            ownerUser={ownerUser}
+            onEnsureRuntimeSession={onEnsureRuntimeSession}
+            profileMessage={profileMessage}
+            setProfileMessage={setProfileMessage}
+            aiModels={aiModels}
+            setAiModels={setAiModels}
+            localAiModels={localAiModels}
+            setLocalAiModels={setLocalAiModels}
+            activeAiModelId={activeAiModelId}
+            setActiveAiModelId={setActiveAiModelId}
+            agentModelAssignment={agentModelAssignment}
+            setAgentModelAssignment={setAgentModelAssignment}
+            deviceId={deviceId}
+            registerInstalledModel={registerInstalledModel}
+          />
+        </Suspense>
 
         <PublicStorefrontPanel
           business={business}
@@ -554,21 +553,23 @@ export function AgentProfileSurface({
           copyStorefrontValue={copyStorefrontValue}
         />
 
-        <IdentitySecurityPanel
-          accountId={accountId}
-          identityLevel={identityLevel}
-          business={business}
-          oauthProviders={oauthProviders}
-          ownerUser={ownerUser}
-          registeredEmail={registeredEmail}
-          onAccountMerged={onAccountMerged}
-          onOwnerUserChange={onOwnerUserChange}
-          onIdentityLevelChange={onIdentityLevelChange}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          profileMessage={profileMessage}
-          setProfileMessage={setProfileMessage}
-        />
+        <Suspense fallback={<div className="inline-loading-card">Opening account security…</div>}>
+          <IdentitySecurityPanel
+            accountId={accountId}
+            identityLevel={identityLevel}
+            business={business}
+            oauthProviders={oauthProviders}
+            ownerUser={ownerUser}
+            registeredEmail={registeredEmail}
+            onAccountMerged={onAccountMerged}
+            onOwnerUserChange={onOwnerUserChange}
+            onIdentityLevelChange={onIdentityLevelChange}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            profileMessage={profileMessage}
+            setProfileMessage={setProfileMessage}
+          />
+        </Suspense>
 
         <NotificationsSessionsPanel
           accountId={accountId}
