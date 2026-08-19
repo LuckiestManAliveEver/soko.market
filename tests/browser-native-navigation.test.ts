@@ -152,7 +152,7 @@ describe("browser-native navigation", () => {
 
     expect(application).not.toContain("window.history.pushState");
     expect(chatInboxState).toContain(
-      'navigateToOwnerRoute({ mode, view: "chat", conversationId })'
+      'navigateToOwnerRoute({ mode: restoredMode ?? mode, view: "chat", conversationId });'
     );
     expect(application).toContain("scheduleOwnerNavigationSessionWrite");
     expect(router).toContain("installBrowserLinkInterceptor");

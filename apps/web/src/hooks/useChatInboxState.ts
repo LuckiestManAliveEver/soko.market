@@ -48,6 +48,7 @@ interface UseChatInboxStateDeps {
   mode: SokoMode;
   setStatusMessage: (message: string) => void;
   setView: (view: ShellView) => void;
+  applySessionContextForConversation: (conversationId: string) => Promise<SokoMode | null>;
   requireMessagingSignIn: () => void;
   chatMessages: ChatMessage[];
   setChatMessages: (messages: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) => void;
@@ -72,6 +73,7 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     mode,
     setStatusMessage,
     setView,
+    applySessionContextForConversation,
     requireMessagingSignIn,
     chatMessages,
     setChatMessages,
@@ -166,8 +168,26 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     setActiveConversationId(conversationId);
     setReplyToMessageId(null);
     setView("chat");
-    navigateToOwnerRoute({ mode, view: "chat", conversationId });
+    const restoredMode = await applySessionContextForConversation(conversationId);
+    navigateToOwnerRoute({ mode: restoredMode ?? mode, view: "chat", conversationId });
     await loadConversationThread(conversationId);
+  }
+
+  // Creates a genuinely new personal agent session (not the ensurePersonalAccountConversation
+  // singleton used at login) and switches to it, so the account can hold several independently
+  // moded conversations with its own agent. See docs/frontend/frontend.md Phase 3.
+  async function createAgentSession(title?: string) {
+    if (session === null) {
+      requireMessagingSignIn();
+      return;
+    }
+    const created = await postJson<ConversationView>("/v1/conversations", {
+      kind: "personal",
+      activeShopId: null,
+      ...(title?.trim() ? { title: title.trim() } : {})
+    });
+    await loadMessagingInbox(created.conversation.id);
+    await selectConversation(created.conversation.id);
   }
 
   async function createDirectConversation(recipient: string, title: string) {
@@ -494,6 +514,7 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
     loadMessagingInbox,
     loadConversationThread,
     selectConversation,
+    createAgentSession,
     createDirectConversation,
     updateConversationPreference,
     updateMessageAction,

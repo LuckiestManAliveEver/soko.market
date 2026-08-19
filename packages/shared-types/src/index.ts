@@ -780,6 +780,12 @@ export interface ConversationInboxItem extends ConversationSummary {
   lastMessage: ConversationMessageSummary | null;
   unreadCount: number;
   participant: ConversationParticipantSummary;
+  /**
+   * True when another account participates in this conversation (a person-to-person direct
+   * message). False for a "personal" conversation that is the caller's own agent session - the
+   * distinction a session-list home screen uses to show agent sessions without DMs mixed in.
+   */
+  hasHumanRecipient: boolean;
 }
 
 export interface ConversationTypingSummary {

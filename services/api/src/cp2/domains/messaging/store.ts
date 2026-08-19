@@ -2169,7 +2169,8 @@ export class MessagingDomain {
               message.deletedAt == null &&
               Date.parse(message.createdAt) > lastRead
           ).length,
-          participant: this.participantView(participant)
+          participant: this.participantView(participant),
+          hasHumanRecipient: this.conversationHasHumanRecipient(conversation.id, session.account.id)
         } satisfies ConversationInboxItem;
       })
       .filter((conversation): conversation is ConversationInboxItem => conversation !== null)
@@ -2570,12 +2571,7 @@ export class MessagingDomain {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
-    const hasHumanRecipient = [...this.conversationParticipants.values()].some(
-      (participant) =>
-        participant.conversationId === conversation.id &&
-        participant.role === "account" &&
-        participant.accountId !== session.account.id
-    );
+    const hasHumanRecipient = this.conversationHasHumanRecipient(conversation.id, session.account.id);
 
     if (hasHumanRecipient) {
       throw new Cp2Error(
@@ -3603,6 +3599,12 @@ export class MessagingDomain {
           participant.accountId !== null
       )
       .map((participant) => participant.accountId as string);
+  }
+
+  private conversationHasHumanRecipient(conversationId: string, callerAccountId: string): boolean {
+    return this.humanConversationAccountIds(conversationId).some(
+      (accountId) => accountId !== callerAccountId
+    );
   }
 
   private validateConversationEncryption(

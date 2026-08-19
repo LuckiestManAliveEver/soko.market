@@ -441,6 +441,27 @@ export function useAuthState(deps: UseAuthStateDeps) {
     }
   }
 
+  // Restores mode/shop for one specific conversation's own session context (Phase 2 data model),
+  // instead of the account-wide default loadSokoSessionContext restores on login. Used when
+  // switching between an account's own agent sessions so Buy/Sell mode is per-session, not shared.
+  async function applySessionContextForConversation(conversationId: string): Promise<SokoMode | null> {
+    try {
+      const context = await apiFetch<SokoSessionContext>(
+        `/v1/session/context?conversationId=${encodeURIComponent(conversationId)}`
+      );
+      setSokoSessionContext(context);
+      const activeShop =
+        context.shops.find((shop) => shop.business.id === context.activeShopId) ?? context.shops[0];
+      const restoredMode =
+        context.mode === "seller" && activeShop === undefined ? "marketplace" : context.mode;
+      setMode(restoredMode);
+      localStorage.setItem(activeModeStorageKey, restoredMode);
+      return restoredMode;
+    } catch {
+      return null;
+    }
+  }
+
   async function patchSokoSessionContext(patch: {
     mode?: SokoMode;
     activeShopId?: string | null;
@@ -516,6 +537,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
     completeAccountRestoration,
     loadSokoSessionContext,
     patchSokoSessionContext,
+    applySessionContextForConversation,
     switchActiveBusiness
   };
 }

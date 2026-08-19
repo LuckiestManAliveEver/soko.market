@@ -127,6 +127,7 @@ export interface ChatSurfaceProps {
   onDraftChange: (draft: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onCreateConversation: (recipient: string, title: string) => void;
+  onCreateAgentSession: (title?: string) => void;
   onRequireSignIn: () => void;
   onBrowseAsGuest: () => void;
   onSignUp: () => void;
@@ -224,6 +225,7 @@ export function ChatSurface({
   onDraftChange,
   onSelectConversation,
   onCreateConversation,
+  onCreateAgentSession,
   onRequireSignIn,
   onBrowseAsGuest,
   onSignUp,
@@ -288,6 +290,8 @@ export function ChatSurface({
   const [isNewConversationOpen, setIsNewConversationOpen] = useState(false);
   const [newRecipient, setNewRecipient] = useState("");
   const [newConversationTitle, setNewConversationTitle] = useState("");
+  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
+  const [newSessionTitle, setNewSessionTitle] = useState("");
   const [activeMessageMenuId, setActiveMessageMenuId] = useState<string | null>(null);
   const [openDeliveryAttemptsMessageId, setOpenDeliveryAttemptsMessageId] = useState<string | null>(
     null
@@ -344,6 +348,7 @@ export function ChatSurface({
     | "storefrontPreview"
   >("cards");
   const showMessageThread = activeView === "chat" || activeView === "home";
+  const isSessionListView = activeView === "home";
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === activeConversationId
   );
@@ -351,16 +356,23 @@ export function ChatSurface({
     (endpoint) => endpoint.provider === "email"
   )?.customerId;
   const visibleConversations = showMessageThread
-    ? conversations.filter((conversation) => {
-        const query = inboxSearch.trim().toLowerCase();
-        if (!query) return true;
-        return (
-          (conversation.title ?? "Soko agent").toLowerCase().includes(query) ||
-          (conversation.lastMessage === null
-            ? false
-            : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
-        );
-      })
+    ? conversations
+        // Home is the account's own agent-session list (Phase 3), not the general messaging
+        // inbox - a DM or storefront/order conversation never appears there. Selecting "chat"
+        // keeps today's full inbox unchanged.
+        .filter((conversation) =>
+          isSessionListView ? conversation.kind === "personal" && !conversation.hasHumanRecipient : true
+        )
+        .filter((conversation) => {
+          const query = inboxSearch.trim().toLowerCase();
+          if (!query) return true;
+          return (
+            (conversation.title ?? "Soko agent").toLowerCase().includes(query) ||
+            (conversation.lastMessage === null
+              ? false
+              : conversationMessageText(conversation.lastMessage).toLowerCase().includes(query))
+          );
+        })
     : [];
   const visibleMessages = showMessageThread
     ? messages.filter((message) => !isRedundantAgentErrorMessage(message.body))
@@ -555,15 +567,26 @@ export function ChatSurface({
           aria-label="Conversations"
         >
           <div className="messenger-inbox-heading">
-            <h2>Messages</h2>
-            <button
-              type="button"
-              onClick={() =>
-                isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
-              }
-            >
-              New
-            </button>
+            <h2>{isSessionListView ? "Sessions" : "Messages"}</h2>
+            {isSessionListView ? (
+              <button
+                type="button"
+                onClick={() =>
+                  isAuthenticated ? setIsNewSessionOpen((open) => !open) : onRequireSignIn()
+                }
+              >
+                New session
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  isAuthenticated ? setIsNewConversationOpen((open) => !open) : onRequireSignIn()
+                }
+              >
+                New
+              </button>
+            )}
           </div>
           <div className="messenger-inbox-tools">
             <label>
@@ -583,7 +606,7 @@ export function ChatSurface({
               Notifications
             </button>
           </div>
-          {isNewConversationOpen ? (
+          {isNewConversationOpen && !isSessionListView ? (
             <form
               className="new-conversation-form"
               onSubmit={(event) => {
@@ -633,6 +656,29 @@ export function ChatSurface({
                 >
                   Share to apps
                 </button>
+              </div>
+            </form>
+          ) : null}
+          {isNewSessionOpen && isSessionListView ? (
+            <form
+              className="new-session-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onCreateAgentSession(newSessionTitle.trim() || undefined);
+                setNewSessionTitle("");
+                setIsNewSessionOpen(false);
+              }}
+            >
+              <label>
+                Name
+                <input
+                  value={newSessionTitle}
+                  onChange={(event) => setNewSessionTitle(event.target.value)}
+                  placeholder="e.g. Restock maize"
+                />
+              </label>
+              <div className="new-conversation-actions">
+                <button type="submit">Start session</button>
               </div>
             </form>
           ) : null}
@@ -686,7 +732,9 @@ export function ChatSurface({
                 </div>
               </article>
             ))}
-            {visibleConversations.length === 0 ? <p>No matching conversations.</p> : null}
+            {visibleConversations.length === 0 ? (
+              <p>{isSessionListView ? "No sessions yet. Start one to talk with your agent." : "No matching conversations."}</p>
+            ) : null}
           </div>
         </aside>
       ) : null}

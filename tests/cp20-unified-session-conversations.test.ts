@@ -302,6 +302,58 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     await app.close();
   });
 
+  it("lets an account hold several independent agent sessions, distinct from direct messages", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const ownerCookie = await createAccountSession(app, "254700000025");
+    const friendCookie = await createAccountSession(app, "254700000026");
+
+    const firstSession = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      { kind: "personal", activeShopId: null, title: "Restock maize" },
+      ownerCookie
+    );
+    const secondSession = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      { kind: "personal", activeShopId: null, title: "Chicken feed" },
+      ownerCookie
+    );
+    expect(secondSession.conversation.id).not.toBe(firstSession.conversation.id);
+
+    const directMessage = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      { kind: "personal", activeShopId: null, recipient: "+254700000026" },
+      ownerCookie
+    );
+
+    const inbox = await getJson<{
+      conversations: Array<{ id: string; title: string | null; hasHumanRecipient: boolean }>;
+    }>(app, "/v1/conversations", ownerCookie);
+
+    const sessionIds = new Set([firstSession.conversation.id, secondSession.conversation.id]);
+    const agentSessions = inbox.conversations.filter((conversation) => sessionIds.has(conversation.id));
+    expect(agentSessions).toHaveLength(2);
+    expect(agentSessions.every((conversation) => !conversation.hasHumanRecipient)).toBe(true);
+
+    const directMessageItem = inbox.conversations.find(
+      (conversation) => conversation.id === directMessage.conversation.id
+    );
+    expect(directMessageItem?.hasHumanRecipient).toBe(true);
+
+    const friendInbox = await getJson<{
+      conversations: Array<{ id: string; hasHumanRecipient: boolean }>;
+    }>(app, "/v1/conversations", friendCookie);
+    expect(
+      friendInbox.conversations.find((conversation) => conversation.id === directMessage.conversation.id)
+        ?.hasHumanRecipient
+    ).toBe(true);
+
+    await app.close();
+  });
+
   it("restores one account-wide working context on every device", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

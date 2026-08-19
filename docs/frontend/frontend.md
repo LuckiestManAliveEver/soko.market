@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-2 implemented
+Status: roadmap adopted, Phases 1-3 implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -250,6 +250,78 @@ presentation-layer change — reuse the existing Surface component and its
 hook unchanged, change how it is _reached_ (a conversation action instead
 of permanent top-level navigation), not a business-logic rewrite.
 
+## Multi-session UI (Phase 3 — implemented)
+
+The audit for this phase found the roadmap's own stated blocker
+("(1) allowing an account to have more than one personal agent
+conversation") was already false: `POST /v1/conversations`'s
+`createConversation` always calls `createAccountConversation`, which
+mints a fresh `randomUUID()` conversation unconditionally — it was never
+a find-or-create. The singleton behavior the earlier audit found belongs
+only to `ensurePersonalAccountConversation` (the login-time bootstrap
+path). So `{ kind: "personal", activeShopId: null }` with no `recipient`
+already created a genuinely new, independent agent session; nothing in
+the repo just called it more than once. Phase 3 turned out to be wiring
+existing primitives together on the frontend, not new backend capacity.
+
+**The one real gap**: `ConversationInboxItem` (used for both the home
+session list and the general chat inbox) could not distinguish "my own
+agent session" from "a direct message with another human" — both are
+`kind: "personal"` with `activeShopId: null`. Added `hasHumanRecipient:
+boolean` to the type, computed server-side in `listConversations`
+(`services/api/src/cp2/domains/messaging/store.ts`) from a small
+extracted helper, `conversationHasHumanRecipient`, that also replaced an
+inline duplicate of the same check already used by
+`attemptPublicAgentReply`'s `agent_processing_requires_agent_conversation`
+guard.
+
+**What changed:**
+
+- `apps/web/src/ChatSurface.tsx` — `home` now filters `conversations` to
+  `kind === "personal" && !hasHumanRecipient` (the account's own agent
+  sessions); `chat` is untouched and still shows the full inbox
+  (DMs/storefront/order included), so nothing about today's messaging
+  behavior regresses. `home`'s heading reads "Sessions" with a "New
+  session" action (an inline name form, mirroring the existing "New
+  conversation" form's shape) instead of the DM-creation flow.
+- `apps/web/src/hooks/useChatInboxState.ts` — `createAgentSession(title?)`
+  posts a fresh `{ kind: "personal", activeShopId: null }` conversation
+  and switches to it via `selectConversation`.
+- `apps/web/src/hooks/useAuthState.ts` — added
+  `applySessionContextForConversation(conversationId)`, the per-session
+  sibling of `loadSokoSessionContext`: fetches
+  `/v1/session/context?conversationId=` (Phase 2) and applies that
+  conversation's own `mode` instead of the account-wide default.
+  `selectConversation` now calls this on every switch, so **Buy/Sell mode
+  is genuinely per-session** — switching to a different agent session
+  restores that session's own mode instead of carrying over whatever mode
+  the previous session was in. The existing debounced sync effect in
+  `SokoApplication.tsx` (Phase 2) already sent the active
+  `conversationId` on every patch, so the write side needed no change —
+  only the read side (switching sessions) was missing this.
+- `useAuthState`'s hook call moved earlier in `SokoApplication.tsx` (right
+  after `useChatThreadState`, before `useChatInboxState`), since
+  `useChatInboxState` now needs `applySessionContextForConversation` at
+  call time. Verified none of `useAuthState`'s own inputs depend on
+  anything `useChatThreadState`/`useChatInboxState` produce before
+  moving it.
+
+**What Phase 3 deliberately left alone**: `activeShopId` does not travel
+with a session switch. An account can only ever hold one shop (creating a
+second returns `store_already_registered`), so there is no second
+business to switch *to* yet — this becomes relevant only once Phase 3's
+own non-goal (multiple shops per account) is ever revisited, which it
+is not here.
+
+Regression tests: `tests/session-list-home.test.ts` (frontend wiring,
+source-text) and `tests/cp20-unified-session-conversations.test.ts`
+("lets an account hold several independent agent sessions, distinct from
+direct messages" — creates two sessions plus one DM, asserts
+`hasHumanRecipient` correctly separates them for both participants).
+Verified to fail against the pre-Phase-3 code (stashed the
+implementation, kept the tests, confirmed real failures) before
+restoring the fix.
+
 ## Target architecture
 
 ```text
@@ -355,7 +427,7 @@ not require touching `ChatSurface.tsx`'s render body again.
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | Generated-surface protocol: typed content carried through, renderer registry, safe unknown-type fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | **Implemented** (this change)                                                                                                                   |
 | 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Per-conversation session context" above                                                                    |
-| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | Sequenced next                                                                                                                                   |
+| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | **Implemented** (this change) — see "Multi-session UI" above                                                                                     |
 | 4a–4o | One phase per remaining `ShellView` (products, suppliers, customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications): give each domain a chat-invokable capability/tool that renders its existing `*Surface` (or a new focused generated card) inline in a session, then remove its permanent top-level nav entry once the generated path is proven equivalent. Order: highest chat-relevance first (products, customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 

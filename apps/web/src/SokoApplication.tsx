@@ -608,6 +608,50 @@ export function OwnerApp() {
     registerReset: domainResetRegistry.registerReset
   });
   const {
+    authBootstrapState,
+    setAuthBootstrapState,
+    oauthProviders,
+    oauthProvidersLoaded,
+    isAuthOpen,
+    setIsAuthOpen,
+    authenticationView,
+    setAuthenticationView,
+    isAccountRestorationOpen,
+    setIsAccountRestorationOpen,
+    forgetRememberedOwnerAuth,
+    handleOAuthCallback,
+    loadOAuthProviders,
+    acceptAuthenticatedSession,
+    completePhoneFirstAuthentication,
+    refreshSession,
+    authenticateSocialProfile,
+    completeAccountRestoration,
+    loadSokoSessionContext,
+    patchSokoSessionContext,
+    applySessionContextForConversation,
+    switchActiveBusiness
+  } = useAuthState({
+    business,
+    setBusiness,
+    setSession,
+    sokoSessionContext,
+    setSokoSessionContext,
+    setAgentSettings,
+    setMode,
+    setView,
+    setStatusMessage,
+    setNetworkGraph,
+    navigateToView,
+    loadMarketplaceIntroState,
+    validateStoredBusiness,
+    accountDeletionIntent,
+    accountRestorationIntent,
+    initialAuthenticationTarget,
+    initialCountryCode,
+    initialOwnerAuth,
+    registerReset: domainResetRegistry.registerReset
+  });
+  const {
     isMessagingInboxOpen,
     setIsMessagingInboxOpen,
     conversationInbox,
@@ -629,7 +673,8 @@ export function OwnerApp() {
     recordSmsHandoff,
     recordPlatformHandoff,
     retryQueuedMessages,
-    submitAgentResponseFeedback
+    submitAgentResponseFeedback,
+    createAgentSession
   } = useChatInboxState({
     business,
     session,
@@ -637,6 +682,7 @@ export function OwnerApp() {
     mode,
     setStatusMessage,
     setView,
+    applySessionContextForConversation,
     requireMessagingSignIn,
     chatMessages,
     setChatMessages,
@@ -713,49 +759,6 @@ export function OwnerApp() {
   // loadConversationThread it depends on) and before useBusinessSetupState (whose deps object
   // references refreshSession by name at hook-call time) - same TDZ-avoidance reasoning as every
   // other domain hook ordering decision in this effort.
-  const {
-    authBootstrapState,
-    setAuthBootstrapState,
-    oauthProviders,
-    oauthProvidersLoaded,
-    isAuthOpen,
-    setIsAuthOpen,
-    authenticationView,
-    setAuthenticationView,
-    isAccountRestorationOpen,
-    setIsAccountRestorationOpen,
-    forgetRememberedOwnerAuth,
-    handleOAuthCallback,
-    loadOAuthProviders,
-    acceptAuthenticatedSession,
-    completePhoneFirstAuthentication,
-    refreshSession,
-    authenticateSocialProfile,
-    completeAccountRestoration,
-    loadSokoSessionContext,
-    patchSokoSessionContext,
-    switchActiveBusiness
-  } = useAuthState({
-    business,
-    setBusiness,
-    setSession,
-    sokoSessionContext,
-    setSokoSessionContext,
-    setAgentSettings,
-    setMode,
-    setView,
-    setStatusMessage,
-    setNetworkGraph,
-    navigateToView,
-    loadMarketplaceIntroState,
-    validateStoredBusiness,
-    accountDeletionIntent,
-    accountRestorationIntent,
-    initialAuthenticationTarget,
-    initialCountryCode,
-    initialOwnerAuth,
-    registerReset: domainResetRegistry.registerReset
-  });
   const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
   const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
   const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
@@ -2157,6 +2160,9 @@ export function OwnerApp() {
                   void runAction("conversation-create", () =>
                     createDirectConversation(recipient, title)
                   )
+                }
+                onCreateAgentSession={(title) =>
+                  void runAction("agent-session-create", () => createAgentSession(title))
                 }
                 onRequireSignIn={requireMessagingSignIn}
                 onBrowseAsGuest={browseAsGuest}
