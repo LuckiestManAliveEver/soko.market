@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4l implemented (all ShellViews audited), Phase 5 not started
+Status: roadmap adopted and fully implemented — Phases 1-3, 4a-4l (all ShellViews audited), and 5 (architectural enforcement) all shipped
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -891,6 +891,40 @@ HTTP route and return real report/notification data, not just a
 clarification), `tests/reports-notifications-navigation.test.ts`
 (frontend wiring — verified to fail without the frontend implementation).
 
+## Architectural enforcement (Phase 5 — implemented)
+
+The last item on the roadmap. With every `ShellView` now audited
+(Phases 4a-4l), this phase makes that discipline permanent instead of
+relying on the next person to remember to repeat it.
+
+**Import-boundary guard**: `scripts/check-shellview-boundary.mjs`
+(wired as `pnpm check:shellview-boundary`, and into the `ci` script)
+parses the live `ShellView` union in `apps/web/src/app-shell.ts` and
+fails the build if it contains a member not present in the script's own
+`approvedShellViews` map — an inline audit trail naming which phase
+approved each view and why (shell chrome, a chat-invokable capability
+shipped alongside its permanent page, or an audited-and-kept permanent
+page). Adding a new `ShellView` now requires deliberately editing this
+script and, per its own failure message, writing the audit as a new
+section in this document — the exact question this session asked by
+hand for every one of the fifteen domain views ("could this be a chat
+capability instead of a permanent page?") can no longer be silently
+skipped by a future change.
+
+**Registry-only regression coverage**: already existed going into this
+phase — `tests/generated-surface-registry.test.ts` (shipped alongside
+the original generated-surface protocol in Phases 1-3) asserts
+`ChatSurface.tsx` dispatches through `renderGeneratedSurface` keyed by
+`content.type` and never grew a per-card `if`/field check as new cards
+landed in Phases 4a, 4b, 4c, 4d, 4e, 4f, and 4h — confirmed still true
+and still passing after all twelve of those phases' generated-surface
+cards shipped, with no changes needed this phase.
+
+Regression tests: `tests/check-shellview-boundary.test.ts` (new — proves
+the script passes against the real repository today, fails and names the
+offending view when an undocumented `ShellView` is added to a fixture,
+and passes when a fixture only uses an already-approved subset).
+
 ## Target architecture
 
 ```text
@@ -1009,7 +1043,7 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4j | Runtime: audited honestly - session/turn browsing for the AI runtime itself, the plumbing chat runs on rather than a peer domain chat could invoke. No mutation exists to route through the runtime-tool system. No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
 | 4k | Compliance + Beta + Launch: audited together (one hook, `useReadinessState.ts`, mirrors the backend's own combined-phase decision) - confirmed the doc's own prediction that these are internal-operator platform-posture dashboards, not merchant-facing actions. No card, no bug | **Implemented** (this change) — see "Compliance + Beta + Launch audit" above |
 | 4l | Reports + Notifications: audited together - both already advertised as chat-reachable via the help-prefixed path, but the bare `show_products`/`show_invoices`-style phrasing didn't work. Built the missing `show_reports`/`show_notifications` navigate intents, wired to the existing `getBusinessReport`/`listNotifications` store methods, and fixed a second confirmation-allowlist bug found only by testing the real HTTP route | **Implemented** (this change) — see "Reports + Notifications chat navigation" above |
-| 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
+| 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | **Implemented** (this change) — see "Architectural enforcement" above                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement
 is proven working — never a big-bang cutover. A catalogue page may
