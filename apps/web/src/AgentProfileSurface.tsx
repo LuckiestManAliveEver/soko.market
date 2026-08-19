@@ -20,6 +20,7 @@ import type {
 
 import { copyTextToClipboard } from "./misc-browser-utils";
 import { SalesPricingEscalationPanel, VoiceAndCarePanel } from "./AgentPolicyPanels";
+import { AgentIdentityPanel } from "./AgentIdentityPanel";
 import { AgentReadinessPanel } from "./AgentReadinessPanel";
 import { AgentRetentionPanel } from "./AgentRetentionPanel";
 import { AgentRuntimeAccessPanel } from "./AgentRuntimeAccessPanel";
@@ -1603,49 +1604,14 @@ export function AgentProfileSurface({
       <YourShopsPanel shops={shops} business={business} onSwitchBusiness={onSwitchBusiness} />
 
       <section className="agent-settings-grid">
-        <div className="record-form">
-          <div className="section-heading">
-            <p className="eyebrow">Identity</p>
-            <h3>Agent profile</h3>
-          </div>
-          <label>
-            Agent name
-            <input
-              value={draftAgent.name}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ name: event.target.value })}
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              value={draftAgent.description}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ description: event.target.value })}
-              rows={3}
-            />
-          </label>
-          <label>
-            Current conversational model
-            <input
-              value={activeInstalledModel?.displayName ?? activeAiModel?.label ?? activeAiModelId}
-              disabled
-              aria-label="Current conversational model"
-            />
-            <small className="model-select-hint">
-              The selected model is synchronized with the backend. Local models become ready only
-              after backend validation and a real runtime test succeed.
-            </small>
-          </label>
-          <label>
-            Agent role
-            <input
-              value={draftAgent.role}
-              disabled={!isEditing}
-              onChange={(event) => updateAgent({ role: event.target.value })}
-            />
-          </label>
-        </div>
+        <AgentIdentityPanel
+          draftAgent={draftAgent}
+          isEditing={isEditing}
+          updateAgent={updateAgent}
+          activeAiModelId={activeAiModelId}
+          activeInstalledModel={activeInstalledModel}
+          activeAiModel={activeAiModel}
+        />
 
         <AgentReadinessPanel
           business={business}
