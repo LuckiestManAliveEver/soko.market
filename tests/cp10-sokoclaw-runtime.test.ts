@@ -571,6 +571,39 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("keeps incomplete logistics status updates as clarifications without writing changes (Phase 4h)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const turn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        message: "mark delivered for Mary"
+      },
+      sessionCookie
+    );
+
+    expect(turn.turn).toMatchObject({
+      status: "clarifying",
+      parserIntent: "update_logistics",
+      plan: {
+        toolName: "logistics.update_status",
+        requiresConfirmation: true,
+        confirmationToken: null,
+        // Pins the contract the Phase 4h frontend trigger depends on: the extracted customer name
+        // stays available on the plan even though the proposal itself is never executable from
+        // free text alone (a customer can have several open deliveries, and no status is stated) -
+        // see LogisticsManagementCard.tsx and docs/frontend/frontend.md Phase 4h.
+        input: { customerName: "Mary" }
+      }
+    });
+    expect(turn.turn.plan.executedAt).toBeNull();
+
+    await app.close();
+  });
+
   it("does not leak runtime context or read results across businesses", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

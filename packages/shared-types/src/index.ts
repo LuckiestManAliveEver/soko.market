@@ -463,7 +463,8 @@ export type ConversationMessageContent =
   | { type: "customer-management"; businessId: string; customerId?: string }
   | { type: "invoice-management"; businessId: string; customerName?: string }
   | { type: "payment-management"; businessId: string; customerName?: string }
-  | { type: "import-management"; businessId: string; importJobId?: string };
+  | { type: "import-management"; businessId: string; importJobId?: string }
+  | { type: "logistics-management"; businessId: string; customerName?: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;
@@ -3026,6 +3027,7 @@ export type RuntimeToolName =
   | "supplier.update"
   | "invoice.draft"
   | "payment.record"
+  | "logistics.update_status"
   | "receipt.scan"
   | "receipt.review"
   | "receipt.confirm"
@@ -3047,6 +3049,7 @@ export type RuntimeParserIntent =
   | "update_supplier"
   | "create_invoice"
   | "record_payment"
+  | "update_logistics"
   | "check_debt"
   | "show_products"
   | "show_invoices"

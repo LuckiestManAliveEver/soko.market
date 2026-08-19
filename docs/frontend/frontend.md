@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4g implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4h implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -691,6 +691,67 @@ Regression tests: `tests/network-route-request-text.test.ts` (both the
 fix and the call-site-safety check — verified to fail against the
 pre-fix code before restoring it).
 
+## Logistics chat-invokable capability (Phase 4h — implemented)
+
+Unlike network (4g), logistics was judged genuinely chat-relevant: "mark
+delivered", "picked up", "out for delivery" are natural merchant
+sentences, and the domain already had a real, fully-working backend
+mutation (`updateLogisticsStatus` in
+`services/api/src/cp2/domains/logistics/store.ts`) that had simply never
+been wired into the runtime-tool system.
+
+**What the audit found:**
+
+- `updateLogisticsStatus` was a complete, non-stub method — validates the
+  status transition, requires `logistics:write`, updates
+  `completedAt`/`cancelledAt`, records a business event. Nothing backend
+  needed building from scratch, only wiring.
+- No existing `RuntimeToolName`/`RuleIntent` covered logistics at all —
+  the fourth domain this session where "the backend mutation exists but
+  the runtime-tool layer never learned about it" (after products,
+  suppliers before their fixes, and — differently — imports before 4f).
+- Like invoices/payments (4d/4e), "mark delivered" can never be fully
+  specified from free text alone: a merchant can have several open
+  deliveries, and the message rarely states a status precisely enough to
+  trust automatically. Same "composer card, no full auto-execution" shape
+  as those two phases, not automatic execution.
+
+**What was built:**
+
+- `packages/tool-core/src/index.ts`: a new `update_logistics` rule
+  intent (EN/SW phrases — "mark delivered", "out for delivery", "picked
+  up", "imefika", "imetumwa"), a `logistics.update_status` runtime tool
+  registered as high-risk/confirmation-required, and a proposal that
+  extracts the customer name but stays deliberately invalid (needs which
+  delivery and the new status) — mirroring `payment.record`'s shape
+  exactly.
+- `services/api/src/cp2/domains/agent-runtime/store.ts` +
+  `services/api/src/cp2/store.ts`: wired `logistics.update_status`
+  execution to the existing `LogisticsDomain.updateLogisticsStatus`, no
+  new backend mutation logic.
+- `LogisticsManagementCard.tsx`: a new self-contained generated card,
+  same shape as `PaymentManagementCard` — fetches the business's open
+  deliveries, pre-selects one matching the extracted customer name if
+  given, lets the owner pick the delivery and the new status, then
+  `PATCH`es the same endpoint the permanent Logistics page already uses
+  (`useLogisticsState.ts:updateLogisticsStatus`).
+- Registered in `generated-surface-registry.tsx` and
+  `soko-application-shared.ts`; the `logistics-management` message-content
+  variant added to `ConversationMessageContent` and validated server-side
+  in `messaging/shared.ts`; the trigger in `useChatRuntimeState.ts` posts
+  the card as soon as a turn classifies as `logistics.update_status`, not
+  gated on execution (it never auto-executes from text alone, same as
+  invoices/payments).
+
+Regression tests: `tests/cp4-rule-parser.test.ts` (new parser-level
+assertion for `update_logistics`, verified against real parser output
+first), `tests/cp10-sokoclaw-runtime.test.ts` (new end-to-end test
+proving the real HTTP route classifies "mark delivered for Mary" as
+`logistics.update_status` and stays a non-executing clarification),
+`tests/logistics-management-card.test.ts` (frontend wiring — verified to
+fail without the frontend implementation). All three verified to fail
+with the Phase 4h implementation files stashed, pass with them restored.
+
 ## Target architecture
 
 ```text
@@ -804,7 +865,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4e | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text) | **Implemented** (this change) — see "Payments chat-invokable capability" above |
 | 4f | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming | **Implemented** (this change) — see "Imports chat-invokable capability" above |
 | 4g | Network: audited honestly rather than forced into the pattern - the domain's real chat capability (find suppliers through network) already existed via a separate mechanism, the rest is browser-API-gated (contact picker, OAuth) and cannot move to chat. No card; fixed one real bug (requestNetworkRoute always sent a hard-coded request, dropping the owner's real message) | **Implemented** (this change) — see "Network audit" above |
-| 4h–4o | One phase per remaining `ShellView` (sync, runtime, logistics, compliance, beta, launch, reports, notifications) - each gets its own honest audit; several are likely to land the same way as 4g (audit + targeted fix, no new card) rather than 4a-4f's full capability build | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4h | Logistics: judged genuinely chat-relevant (unlike 4g) - "mark delivered"/"picked up" are natural merchant sentences and the backend mutation already existed, just never wired into the runtime-tool system. Same "composer card, no backend mutation change" shape as 4d/4e | **Implemented** (this change) — see "Logistics chat-invokable capability" above |
+| 4i–4o | One phase per remaining `ShellView` (sync, runtime, compliance, beta, launch, reports, notifications) - each gets its own honest audit; several are likely to land the same way as 4g (audit + targeted fix, no new card) rather than 4a-4f/4h's full capability build | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

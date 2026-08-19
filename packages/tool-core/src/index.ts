@@ -30,6 +30,7 @@ export type RuleIntent =
   | "update_supplier"
   | "create_invoice"
   | "record_payment"
+  | "update_logistics"
   | "check_debt"
   | "show_products"
   | "show_invoices"
@@ -105,6 +106,7 @@ export type RuntimeToolName =
   | "supplier.update"
   | "invoice.draft"
   | "payment.record"
+  | "logistics.update_status"
   | "receipt.scan"
   | "receipt.review"
   | "receipt.confirm"
@@ -771,6 +773,22 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     },
     mcpExposable: false
   },
+  "logistics.update_status": {
+    name: "logistics.update_status",
+    description: "Update a delivery or pickup record's fulfillment status.",
+    risk: "high",
+    requiresConfirmation: true,
+    readOnly: false,
+    requiredPermission: "logistics:write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        logisticsId: { type: "string", required: true, description: "Delivery record to update." },
+        status: { type: "string", required: true, description: "New fulfillment status." }
+      }
+    },
+    mcpExposable: false
+  },
   "receipt.scan": {
     name: "receipt.scan",
     description: "Start OCR scanning of an uploaded purchase receipt.",
@@ -1106,6 +1124,16 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
         },
         reason: "Draft a payment recording action from the merchant command.",
         validation: invalid("Payment runtime draft needs an invoice id and method.")
+      };
+
+    case "update_logistics":
+      return {
+        toolName: "logistics.update_status",
+        input: {
+          customerName: result.slots.customerName ?? null
+        },
+        reason: "Draft a logistics status update from the merchant command.",
+        validation: invalid("Logistics runtime draft needs which delivery and the new status.")
       };
 
     case "check_debt":
@@ -1812,6 +1840,14 @@ export function validateRuntimeToolInput(
 
     case "payment.record":
       return invalid("Payment runtime draft needs an invoice id and method.");
+
+    case "logistics.update_status":
+      return typeof input.logisticsId === "string" &&
+        input.logisticsId.trim().length > 0 &&
+        typeof input.status === "string" &&
+        input.status.trim().length > 0
+        ? valid()
+        : invalid("Logistics runtime draft needs which delivery and the new status.");
   }
 }
 
@@ -2013,6 +2049,31 @@ const intentRules: IntentRule[] = [
       "mpesa"
     ],
     weight: 1
+  },
+  {
+    intent: "update_logistics",
+    keywords: [
+      "delivered",
+      "delivery",
+      "picked",
+      "pickup",
+      "dispatched",
+      "shipped",
+      "fulfil",
+      "fulfill"
+    ],
+    phrases: [
+      "mark delivered",
+      "mark as delivered",
+      "out for delivery",
+      "mark picked up",
+      "picked up",
+      "mark dispatched",
+      "delivery complete",
+      "imefika",
+      "imetumwa"
+    ],
+    weight: 1.1
   },
   {
     intent: "check_debt",
@@ -2930,7 +2991,8 @@ function extractSlots(input: string, intent: RuleIntent): ParserSlots {
     intent === "add_customer" ||
     intent === "update_customer" ||
     intent === "create_invoice" ||
-    intent === "check_debt"
+    intent === "check_debt" ||
+    intent === "update_logistics"
   ) {
     const customerName = extractNamedValue(input, ["customer", "client", "mteja", "for", "ya"]);
 

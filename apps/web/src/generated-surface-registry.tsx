@@ -7,6 +7,7 @@ import {
   FulfilmentSplitCard,
   ImportManagementCard,
   InvoiceManagementCard,
+  LogisticsManagementCard,
   PaymentManagementCard,
   ProductCaptureItemsCard,
   ProductManagementCard,
@@ -131,6 +132,17 @@ const generatedSurfaceRegistry: Partial<
         <ImportManagementCard
           businessId={content.businessId}
           {...(content.importJobId === undefined ? {} : { importJobId: content.importJobId })}
+        />
+      </Suspense>
+    );
+  },
+  "logistics-management": (content) => {
+    if (content.type !== "logistics-management") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening deliveries…</div>}>
+        <LogisticsManagementCard
+          businessId={content.businessId}
+          {...(content.customerName === undefined ? {} : { customerName: content.customerName })}
         />
       </Suspense>
     );

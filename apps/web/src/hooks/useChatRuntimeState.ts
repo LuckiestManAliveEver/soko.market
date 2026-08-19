@@ -1149,6 +1149,37 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Mirrors postPaymentManagementCard for the logistics domain - logistics.update_status's
+    // proposal has always been hard-coded invalid ("needs which delivery and the new status"),
+    // since a customer can have several open deliveries. See generated-surface-registry.tsx and
+    // docs/frontend/frontend.md Phase 4h.
+    async function postLogisticsManagementCard(businessId: string, customerName: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        customerName === undefined
+          ? { type: "logistics-management", businessId }
+          : { type: "logistics-management", businessId, customerName };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Logistics remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1418,6 +1449,14 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         if (result.turn.plan.executedAt !== null) {
           await loadDocumentImports(business.id);
         }
+      }
+
+      if (result.turn.plan.toolName === "logistics.update_status" && business !== null) {
+        const customerName = result.turn.plan.input.customerName;
+        await postLogisticsManagementCard(
+          business.id,
+          typeof customerName === "string" ? customerName : undefined
+        );
       }
 
       if (isNetworkDiscoveryRequest(agentRequest)) {

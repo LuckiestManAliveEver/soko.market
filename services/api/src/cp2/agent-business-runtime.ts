@@ -260,6 +260,7 @@ const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] |
   update_supplier: ["supplier"],
   create_invoice: ["catalogue", "inventory", "customer", "order"],
   record_payment: ["customer", "order"],
+  update_logistics: ["order", "customer"],
   check_debt: ["customer", "order"],
   show_products: ["catalogue", "inventory"],
   show_invoices: ["order", "customer"],

@@ -94,6 +94,15 @@ describe("CP4 rule parser", () => {
         amount: 500
       }
     });
+    expect(parseMerchantCommand("mark delivered for Mary")).toMatchObject({
+      intent: "update_logistics",
+      nextAction: {
+        type: "draft"
+      },
+      slots: {
+        customerName: "Mary"
+      }
+    });
   });
 
   it("asks for clarification for missing slots and low-confidence commands", () => {

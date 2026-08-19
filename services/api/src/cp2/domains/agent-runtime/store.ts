@@ -86,8 +86,10 @@ import type {
   ClientInferenceCompletion,
   CustomerSummary,
   DocumentImportJobSummary,
+  FulfillmentStatus,
   InstalledAgentModelSummary,
   InvoiceSummary,
+  LogisticsSummary,
   MembershipSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
@@ -313,6 +315,13 @@ export interface AgentRuntimeDomainDeps {
     supplier: { name: string; phone: string | null; email: string | null; notes: string | null };
     now?: Date;
   }) => SupplierSummary;
+  updateLogisticsStatus: (input: {
+    sessionId: string | null;
+    businessId: string;
+    logisticsId: string;
+    status: { status: FulfillmentStatus; note?: string | null };
+    now?: Date;
+  }) => LogisticsSummary;
   listPurchaseReceipts: (input: {
     sessionId: string | null;
     businessId: string;
@@ -3401,6 +3410,19 @@ export class AgentRuntimeDomain {
             email: supplier.email,
             notes: supplier.notes
           },
+          now: input.now
+        });
+      }
+
+      case "logistics.update_status": {
+        const logisticsId = String(input.action.input.logisticsId ?? "");
+        const status = String(input.action.input.status ?? "") as FulfillmentStatus;
+
+        return this.deps.updateLogisticsStatus({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          logisticsId,
+          status: { status },
           now: input.now
         });
       }
