@@ -1085,6 +1085,37 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Mirrors postInvoiceManagementCard for the payments domain - payment.record's proposal has
+    // always been hard-coded invalid ("needs an invoice id and method"), since a customer can have
+    // several open invoices. See generated-surface-registry.tsx and docs/frontend/frontend.md
+    // Phase 4e.
+    async function postPaymentManagementCard(businessId: string, customerName: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        customerName === undefined
+          ? { type: "payment-management", businessId }
+          : { type: "payment-management", businessId, customerName };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Payments remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1332,6 +1363,14 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       if (result.turn.plan.toolName === "invoice.draft" && business !== null) {
         const customerName = result.turn.plan.input.customerName;
         await postInvoiceManagementCard(
+          business.id,
+          typeof customerName === "string" ? customerName : undefined
+        );
+      }
+
+      if (result.turn.plan.toolName === "payment.record" && business !== null) {
+        const customerName = result.turn.plan.input.customerName;
+        await postPaymentManagementCard(
           business.id,
           typeof customerName === "string" ? customerName : undefined
         );

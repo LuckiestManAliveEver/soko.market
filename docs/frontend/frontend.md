@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4d implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4e implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -560,6 +560,38 @@ on; passes unchanged with no backend files stashed, confirming this
 phase's only new code is frontend), `tests/invoice-management-card.test.ts`
 (frontend wiring - verified to fail without the frontend implementation).
 
+## Payments chat-invokable capability (Phase 4e — implemented)
+
+Same shape as 4d, applied to payments — the second, not the first, time
+this "composer card instead of NLU extraction" pattern got used, which
+is why it took a fraction of the effort.
+
+**What the audit found:** `payment.record`'s proposal has always been
+hard-coded `invalid("Payment runtime draft needs an invoice id and
+method.")` — a customer can have several open invoices, and free text
+cannot reliably say which one a payment applies to. Same underlying
+reason as invoices, confirmed rather than assumed by reading the
+existing code and reusing the exact `record_payment`/`payment.record`
+proposal shape (`customerName`, `amount`) already extracted by the
+primary parser.
+
+**What changed:** A `PaymentManagementCard` opens as soon as a message
+classifies as `record_payment` (unconditional on tool execution, same as
+invoices), pre-filled with the extracted customer name matched against
+`GET /businesses/:id/payment-summaries` (invoices with a balance due) —
+picking the first unpaid invoice for that customer if one matches, so
+the common case (a customer with one open invoice) needs zero extra
+clicks. The owner confirms amount and method, then the card calls the
+same `POST /businesses/:id/payments` endpoint the permanent page uses.
+No backend parser or execution code changed — extended the *existing*
+`record_payment` test to also pin `plan.input` (customerName, amount) as
+the contract the new frontend code depends on, rather than adding a
+parallel test.
+
+Regression tests: `tests/cp10-sokoclaw-runtime.test.ts` (extended, not
+duplicated), `tests/payment-management-card.test.ts` (frontend wiring —
+verified to fail without the frontend implementation).
+
 ## Target architecture
 
 ```text
@@ -670,7 +702,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4b | Suppliers: same pattern as 4a (found zero existing supplier runtime tools, and a product-vocabulary false-positive that would have silently misrouted supplier edits as product edits) | **Implemented** (this change) — see "Suppliers chat-invokable capability" above |
 | 4c | Customers: same pattern as 4a/4b (customer.create already existed but dropped phone/email/notes; added customer.update; extended 4b's product-vocabulary exclusion guard rather than duplicating it) | **Implemented** (this change) — see "Customers chat-invokable capability" above |
 | 4d | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed | **Implemented** (this change) — see "Invoices chat-invokable capability" above |
-| 4e–4o | One phase per remaining `ShellView` (network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a-4d - each gets its own audit, since 4d showed the shape of the work can differ a lot per domain | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4e | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text) | **Implemented** (this change) — see "Payments chat-invokable capability" above |
+| 4f–4o | One phase per remaining `ShellView` (network, sync, runtime, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a-4e - each gets its own audit, since 4d/4e showed the shape of the work can differ a lot per domain | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

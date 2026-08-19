@@ -6,6 +6,7 @@ import {
   CustomerManagementCard,
   FulfilmentSplitCard,
   InvoiceManagementCard,
+  PaymentManagementCard,
   ProductCaptureItemsCard,
   ProductManagementCard,
   StatusBroadcastCard,
@@ -105,6 +106,17 @@ const generatedSurfaceRegistry: Partial<
     return (
       <Suspense fallback={<div className="inline-loading-card">Opening invoices…</div>}>
         <InvoiceManagementCard
+          businessId={content.businessId}
+          {...(content.customerName === undefined ? {} : { customerName: content.customerName })}
+        />
+      </Suspense>
+    );
+  },
+  "payment-management": (content) => {
+    if (content.type !== "payment-management") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening payments…</div>}>
+        <PaymentManagementCard
           businessId={content.businessId}
           {...(content.customerName === undefined ? {} : { customerName: content.customerName })}
         />

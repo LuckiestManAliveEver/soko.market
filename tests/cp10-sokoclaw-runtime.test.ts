@@ -557,7 +557,12 @@ describe("CP10 Sokoclaw runtime", () => {
       plan: {
         toolName: "payment.record",
         requiresConfirmation: true,
-        confirmationToken: null
+        confirmationToken: null,
+        // Pins the contract the Phase 4e frontend trigger depends on: the extracted customer name
+        // stays available on the plan even though the proposal itself is never executable from
+        // free text alone (a customer can have several open invoices) - see
+        // PaymentManagementCard.tsx and docs/frontend/frontend.md Phase 4e.
+        input: { customerName: "Mary", amount: 500 }
       }
     });
     expect(turn.turn.plan.executedAt).toBeNull();
