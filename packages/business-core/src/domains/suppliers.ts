@@ -5,9 +5,9 @@ import type {
   SupplierSummary
 } from "@soko/shared-types";
 
-import { normalizeContactRecordInput, validateContactRecordInput } from "./contact-records";
-import { parseCsvRecords } from "../shared/content-parsing";
-import { nullableText } from "../shared/text-normalization";
+import { normalizeContactRecordInput, validateContactRecordInput } from "./contact-records.js";
+import { parseCsvRecords } from "../shared/content-parsing.js";
+import { nullableText } from "../shared/text-normalization.js";
 
 export interface SupplierImportPreview {
   fieldMapping: Record<string, keyof SupplierImportDraft>;

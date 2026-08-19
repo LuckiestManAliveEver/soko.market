@@ -1,4 +1,4 @@
-import { normalizeOptionalText } from "./text-normalization";
+import { normalizeOptionalText } from "./text-normalization.js";
 
 export function parseCsvRecords(content: string): {
   headers: string[];

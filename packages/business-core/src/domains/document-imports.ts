@@ -2,7 +2,7 @@ import { createEvent, type BusinessEvent } from "@soko/event-core";
 import type { DocumentImportJobSummary } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
-import { normalizeOptionalText, normalizeRequiredText } from "../shared/text-normalization";
+import { normalizeOptionalText, normalizeRequiredText } from "../shared/text-normalization.js";
 
 export interface DocumentImportSourceInput {
   fileName: string;

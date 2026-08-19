@@ -5,7 +5,7 @@ import {
   normalizeOptionalText,
   normalizeRequiredText,
   nullableText
-} from "../shared/text-normalization";
+} from "../shared/text-normalization.js";
 
 export interface ContactRecordInput {
   name: string;

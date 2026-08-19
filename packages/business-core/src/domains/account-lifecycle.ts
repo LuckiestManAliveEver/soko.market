@@ -2,7 +2,7 @@ import { createEvent, type BusinessEvent } from "@soko/event-core";
 import type { AccountDeletionRequestSummary, DataExportBundleSummary } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
-import { normalizeOptionalText, nullableText } from "../shared/text-normalization";
+import { normalizeOptionalText, nullableText } from "../shared/text-normalization.js";
 
 export interface AccountDeletionInput {
   confirmation: string;

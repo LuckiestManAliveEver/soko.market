@@ -40,6 +40,11 @@ export default {
     // Packages are consumed as built libs by services/apps, so rebuild them before typechecking
     // anything downstream - mirrors the root `typecheck` script's own build-then-typecheck order.
     if (touchesPackages) {
+      // tsc's default "Bundler" resolution accepts extensionless relative imports and copies them
+      // through to compiled output unchanged; Node's real ESM resolver then throws
+      // ERR_MODULE_NOT_FOUND on them at runtime, a failure the build/typecheck steps below never
+      // see. Catch it here before it reaches a package's dist/.
+      commands.push("node scripts/check-esm-relative-imports.mjs");
       commands.push('pnpm -r --filter "./packages/**" --if-present build');
     }
     for (const workspace of workspaces) {

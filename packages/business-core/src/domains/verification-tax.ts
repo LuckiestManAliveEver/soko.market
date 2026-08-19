@@ -7,8 +7,8 @@ import type {
 } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
-import { roundMoney, isValidTaxRate } from "../shared/money";
-import { normalizeOptionalText, nullableText } from "../shared/text-normalization";
+import { roundMoney, isValidTaxRate } from "../shared/money.js";
+import { normalizeOptionalText, nullableText } from "../shared/text-normalization.js";
 
 export interface VerificationTierInput {
   tier: VerificationTier;

@@ -15,7 +15,7 @@ import type {
 } from "@soko/shared-types";
 import { invalid, type ValidationResult, valid } from "@soko/tool-core";
 
-import { parseFlexibleImportRecords, parseImportNumber } from "../shared/content-parsing";
+import { parseFlexibleImportRecords, parseImportNumber } from "../shared/content-parsing.js";
 import {
   isPositiveMoney,
   isPositiveQuantity,
@@ -23,12 +23,12 @@ import {
   isValidQuantity,
   isValidTaxRate,
   roundMoney
-} from "../shared/money";
+} from "../shared/money.js";
 import {
   normalizeOptionalText,
   normalizeRequiredText,
   nullableText
-} from "../shared/text-normalization";
+} from "../shared/text-normalization.js";
 
 export const paymentMethods: PaymentMethod[] = [
   "cash",
