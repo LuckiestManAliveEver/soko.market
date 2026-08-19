@@ -508,6 +508,35 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("classifies create_invoice and surfaces the extracted customer name for the composer card (Phase 4d)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const turn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "create invoice for Mary" },
+      sessionCookie
+    );
+    // Free text alone can never fully specify an invoice (product + quantity + price) - this
+    // asserts the proposal stays a non-executable draft signal that only carries the customer
+    // name, which is exactly what the frontend reads to open the invoice composer card instead of
+    // attempting to create anything from the message.
+    expect(turn.turn).toMatchObject({
+      status: "clarifying",
+      parserIntent: "create_invoice",
+      plan: {
+        toolName: "invoice.draft",
+        executedAt: null,
+        input: { customerName: "Mary" }
+      }
+    });
+    expect(store.snapshot().invoices).toHaveLength(0);
+
+    await app.close();
+  });
+
   it("keeps incomplete runtime mutations as clarifications without writing payments", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

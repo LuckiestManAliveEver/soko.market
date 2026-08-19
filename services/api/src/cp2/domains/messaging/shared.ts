@@ -536,5 +536,10 @@ export function validateConversationMessageContent(content: ConversationMessageC
       if (content.businessId.trim().length === 0) {
         throw new Cp2Error(400, "message_content_invalid", "businessId is required.");
       }
+      return;
+    case "invoice-management":
+      if (content.businessId.trim().length === 0) {
+        throw new Cp2Error(400, "message_content_invalid", "businessId is required.");
+      }
   }
 }

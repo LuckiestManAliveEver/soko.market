@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4c implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4d implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -512,6 +512,54 @@ Regression tests: `tests/cp4-rule-parser.test.ts`, `tests/cp10-sokoclaw-runtime.
 product vocabulary"), `tests/customer-management-card.test.ts`. Verified
 to fail against the pre-Phase-4c code before restoring the fix.
 
+## Invoices chat-invokable capability (Phase 4d — implemented)
+
+A genuinely different shape from 4a-4c, found during the audit rather
+than assumed going in.
+
+**What the audit found:**
+
+- `invoice.draft`'s tool proposal has always been hard-coded
+  `invalid("Invoice runtime draft needs product and price details.")` -
+  unconditionally, regardless of what the message says - and
+  `executeRuntimeAction`'s `invoice.draft` case has always been a stub
+  returning `null`. Both are original design decisions, not bugs: an
+  invoice needs a resolved product, a quantity, and a unit price, and the
+  primary parser's `create_invoice` slot extraction has only ever
+  captured `customerName` (no product-name extraction exists for
+  invoices at all). Getting all of that right from one free-text message
+  is a materially harder extraction problem than 4a-4c's single-field
+  create/update commands - "2 sugar at 150" requires resolving "sugar" to
+  a real product AND disambiguating which number is quantity versus
+  price, for a record that moves stock and money once confirmed.
+- The frontend itself only ever composes **one line item per invoice
+  draft** (`useInvoicesState.ts`'s `createInvoicePayload()` sends a
+  single-item array, even though the backend's `InvoiceInput.items`
+  accepts multiple) - so matching the permanent page's own scope, not
+  exceeding it, an interactive single-item composer is the right shape,
+  not a gap.
+
+**The scope decision this phase made**: rather than building a fragile
+multi-slot extractor to parse product+quantity+price from text (real NLU
+work, not "smallest correct"), the chat trigger reacts to the *existing*
+`create_invoice` classification - unconditionally, not gated on tool
+execution succeeding (`invoice.draft` never executes for real) - and
+opens an interactive `InvoiceManagementCard` pre-filled with whatever
+customer name the message named. The owner picks the product from a
+dropdown and enters quantity/price there, then the card calls the same
+`POST /businesses/:id/invoices` and `.../confirm` endpoints the permanent
+page already uses. **No backend parser or execution code changed in this
+phase** - `create_invoice`/`invoice.draft`'s existing shape was already
+exactly what the new frontend trigger needed; Phase 4d only added the
+frontend reaction to a proposal shape that already existed.
+
+Regression tests: `tests/cp10-sokoclaw-runtime.test.ts` ("classifies
+create_invoice and surfaces the extracted customer name for the composer
+card" - pins the existing backend contract the new frontend code depends
+on; passes unchanged with no backend files stashed, confirming this
+phase's only new code is frontend), `tests/invoice-management-card.test.ts`
+(frontend wiring - verified to fail without the frontend implementation).
+
 ## Target architecture
 
 ```text
@@ -621,7 +669,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4a | Products: give the domain a chat-invokable capability/tool that renders inline in a session (found to need fixing two runtime-tool execution stubs, adding two new parser intents to both the primary and context-script parsers, and a currency/quantity parsing bug - not a small phase). Permanent `products` nav entry kept until a generated-surface replacement can be proven live in a browser | **Implemented** (this change) — see "Products chat-invokable capability" above |
 | 4b | Suppliers: same pattern as 4a (found zero existing supplier runtime tools, and a product-vocabulary false-positive that would have silently misrouted supplier edits as product edits) | **Implemented** (this change) — see "Suppliers chat-invokable capability" above |
 | 4c | Customers: same pattern as 4a/4b (customer.create already existed but dropped phone/email/notes; added customer.update; extended 4b's product-vocabulary exclusion guard rather than duplicating it) | **Implemented** (this change) — see "Customers chat-invokable capability" above |
-| 4d–4o | One phase per remaining `ShellView` (invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a-4c. Order: highest chat-relevance first (invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline. Expect each to be comparably sized to 4a-4c, not a mechanical extraction |
+| 4d | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed | **Implemented** (this change) — see "Invoices chat-invokable capability" above |
+| 4e–4o | One phase per remaining `ShellView` (network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a-4d - each gets its own audit, since 4d showed the shape of the work can differ a lot per domain | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

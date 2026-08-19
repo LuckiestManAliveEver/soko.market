@@ -87,6 +87,7 @@ export const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsC
 export const ProductManagementCard = lazy(() => import("./ProductManagementCard"));
 export const SupplierManagementCard = lazy(() => import("./SupplierManagementCard"));
 export const CustomerManagementCard = lazy(() => import("./CustomerManagementCard"));
+export const InvoiceManagementCard = lazy(() => import("./InvoiceManagementCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
 export const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
 export const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));
@@ -1161,6 +1162,7 @@ export interface RuntimeTurnResult {
       toolName: string;
       confirmationToken: string | null;
       executedAt: string | null;
+      input: Record<string, unknown>;
     };
     toolResult: unknown;
   };

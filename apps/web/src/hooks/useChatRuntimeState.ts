@@ -1053,6 +1053,38 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Invoices need interactive product+quantity+price composition the free-text parser cannot
+    // reliably extract (create_invoice's own validation has always required "product and price
+    // details" it never receives from one message) - so unlike the other domains, this card opens
+    // as soon as the message classifies as create_invoice, not after a successful tool execution.
+    // See generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4d.
+    async function postInvoiceManagementCard(businessId: string, customerName: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        customerName === undefined
+          ? { type: "invoice-management", businessId }
+          : { type: "invoice-management", businessId, customerName };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Invoices remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1295,6 +1327,14 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       if (result.turn.plan.toolName === "invoices.list" && business !== null) {
         await loadInvoices(business.id);
         navigateToView("invoices");
+      }
+
+      if (result.turn.plan.toolName === "invoice.draft" && business !== null) {
+        const customerName = result.turn.plan.input.customerName;
+        await postInvoiceManagementCard(
+          business.id,
+          typeof customerName === "string" ? customerName : undefined
+        );
       }
 
       if (isNetworkDiscoveryRequest(agentRequest)) {
