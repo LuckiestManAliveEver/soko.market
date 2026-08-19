@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phase 1 implemented
+Status: roadmap adopted, Phases 1-2 implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -136,6 +136,96 @@ gets a dedicated audit of every `context.mode` read site before any code
 changes, per the same discipline used everywhere else in this codebase's
 modularization work — trace every call site, don't guess.
 
+## Per-conversation session context (Phase 2 — implemented)
+
+Full audit before any change, then the smallest data-model change that
+makes (2) above true without requiring (1) or (3) yet — Phase 2's own
+stated scope ("land it behind the existing conversation/session
+infrastructure without changing today's single-session behavior yet").
+
+**What the audit found:**
+
+- `getSokoSessionContext`/`updateSokoSessionContext`
+  (`services/api/src/cp2/store.ts`) gate three separate authorization
+  invariants on `mode`/`activeShopId`/`activeSurface`: the
+  `seller_context_required` check on `owner-controls` messages
+  (`domains/messaging/store.ts:2442`), `active_shop_required` (seller mode
+  needs an active shop), and `surface_mode_invalid` (`sellerOnlySurfaces =
+  new Set(["catalogue", "owner-controls", "receipt"])`, `store.ts:275`,
+  only reachable in seller mode). None of the three cared how the context
+  row was keyed — they only ever read fields off whatever
+  `StoredSokoSessionContext` they were handed.
+- `updateSokoSessionContext` already accepted a `conversationId` input
+  before this change, but only used it to validate membership and to
+  overwrite the single row's `conversationId` field — not to select which
+  row to operate on. There was exactly one row per account, full stop.
+- Context bootstrap was duplicated verbatim in two places: account/session
+  creation (`store.ts`, inside `createSession`) and the lazy
+  `ensureSokoSessionContext`. Both built the same default-shape object.
+  Collapsed into one `buildDefaultSessionContext` helper as part of this
+  change — a correctness-neutral cleanup the audit surfaced, not a
+  Phase 2 goal in itself.
+- The frontend (`apps/web/src/hooks/useAuthState.ts`) genuinely keeps
+  `mode`/`view`/`activeConversationId` synced with the backend context
+  today, bidirectionally: `loadSokoSessionContext` restores frontend state
+  from `/v1/session/context` on every login, and a debounced 250ms effect
+  in `SokoApplication.tsx` (~line 847) `PATCH`es the backend whenever
+  frontend mode/shop/surface/conversation drift from the last-known
+  server value — already sending its current `activeConversationId` on
+  every patch. This is why Phase 2 could ship as a pure backend change:
+  the frontend was already conversation-aware, it just had only one
+  conversation to be aware of.
+- Persistence is a JSON-blob mirror (`cp2_session_contexts` table, one row
+  per snapshot-array entry, upserted by `entity_id`), not a structured
+  SQL table — the Drizzle-schema `soko_session_contexts` table (with its
+  own migration history, including 052's deliberate collapse from
+  `session_id`-per-row to `account_id`-per-row) is a separate, write-never
+  table that only the GDPR purge query touches. No DDL migration was
+  needed: the composite key lives entirely in application code
+  (`sessionContextKey(accountId, conversationId)` and the
+  `recordEntityId` mapping in `postgres-store.ts`), and the periodic
+  full-snapshot writer (`saveCollectionRecords`) self-heals any row left
+  over from the pre-Phase-2 `entity_id = accountId` scheme on its next
+  write, since that row no longer matches any `desiredId`.
+
+**What changed:**
+
+- `sessionContexts` (`store.ts`) is now keyed by
+  `sessionContextKey(accountId, conversationId) = "${accountId}:${conversationId}"`,
+  not `accountId` alone. `ensureSokoSessionContext` takes an optional
+  `conversationId`; omitted, it resolves to the account's personal
+  conversation exactly as before (so every existing caller is unchanged).
+  Passed, it resolves and validates that conversation
+  (`requireAccountConversation`) and returns/creates *that conversation's
+  own* context row, defaulting fresh (`mode: "marketplace"`, `activeSurface:
+  "conversation"`) rather than inheriting the account's other contexts.
+- `GET /v1/session/context` accepts an optional `?conversationId=` query
+  param. `PATCH /v1/session/context`'s existing `conversationId` body
+  field now selects the target row instead of only repointing the single
+  row's `conversationId` field.
+- The three authorization checks are untouched — they already worked
+  against whichever context object they were handed.
+- Today's behavior is unchanged: `ensurePersonalAccountConversation` still
+  returns the same one conversation per account (Phase 3 hasn't shipped
+  multi-session creation yet), so every account still has exactly one
+  context row in practice. The change is structural readiness, not a
+  behavior flip.
+- Regression test:
+  `tests/cp20-unified-session-conversations.test.ts` — "gives each
+  conversation its own session context row instead of one shared
+  account-wide row" creates a second (storefront) conversation the same
+  account already participates in, sets a different mode/surface on it via
+  `?conversationId=`, and asserts the account's personal conversation's
+  context is untouched and `store.snapshot().sessionContexts` now holds
+  two independent rows. Verified to fail against the pre-Phase-2 code
+  (stashed the implementation, kept the test, confirmed a real
+  `AssertionError`) before restoring the fix.
+
+**What Phase 3 still needs**, now that the data model is ready: a way to
+create a *second* personal agent conversation for an account (today only
+`ensurePersonalAccountConversation`'s singleton exists), and the
+session-list UI itself.
+
 ### The 15 conventional top-level views
 
 `apps/web/src/app-shell.ts`'s `ShellView` union has 17 entries: `home`,
@@ -264,8 +354,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | Phase | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Status                                                                                                                                          |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | Generated-surface protocol: typed content carried through, renderer registry, safe unknown-type fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | **Implemented** (this change)                                                                                                                   |
-| 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | Sequenced next                                                                                                                                  |
-| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session once Phase 2's data model lands                                                                                                                                                                                                                                                                                                                                    | Sequenced after Phase 2                                                                                                                         |
+| 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Per-conversation session context" above                                                                    |
+| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | Sequenced next                                                                                                                                   |
 | 4a–4o | One phase per remaining `ShellView` (products, suppliers, customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications): give each domain a chat-invokable capability/tool that renders its existing `*Surface` (or a new focused generated card) inline in a session, then remove its permanent top-level nav entry once the generated path is proven equivalent. Order: highest chat-relevance first (products, customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 

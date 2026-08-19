@@ -161,6 +161,10 @@ interface SessionContextBody {
   expectedSessionVersion?: number;
 }
 
+interface SessionContextQuery {
+  conversationId?: string;
+}
+
 interface MarketplaceIntroBody {
   businessId?: string | null;
 }
@@ -1086,15 +1090,20 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     return session;
   });
 
-  app.get("/v1/session/context", async (request, reply) => {
-    try {
-      return store.getSokoSessionContext({
-        sessionId: readSessionCookie(request.headers.cookie)
-      });
-    } catch (error) {
-      return sendCp2Error(reply, error);
+  app.get(
+    "/v1/session/context",
+    async (request: FastifyRequest<{ Querystring: SessionContextQuery }>, reply) => {
+      try {
+        const conversationId = parseOptionalString(request.query.conversationId);
+        return store.getSokoSessionContext({
+          sessionId: readSessionCookie(request.headers.cookie),
+          ...(conversationId === undefined ? {} : { conversationId })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
     }
-  });
+  );
 
   app.patch(
     "/v1/session/context",

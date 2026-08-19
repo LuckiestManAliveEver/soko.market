@@ -971,6 +971,10 @@ export class Cp2Store {
   private readonly businesses = new Map<string, BusinessSummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
   private readonly phoneUpdateAttemptsByAccount = new Map<string, number[]>();
+  // Keyed by sessionContextKey(accountId, conversationId), not accountId alone - each conversation
+  // carries its own mode/activeShopId/activeSurface. Today every account has exactly one
+  // conversation (its personal one), so this stays a de facto singleton until Phase 3 introduces
+  // real multi-session UI. See docs/frontend/frontend.md Phase 2.
   private readonly sessionContexts = new Map<string, StoredSokoSessionContext>();
   // conversations/conversationParticipants/conversationMessages/platformIdentities/
   // conversationChannels/providerUpdateReceipts/channelIdentityLinkGrants/nativeSmsDevices/
@@ -2390,10 +2394,14 @@ export class Cp2Store {
     }
   }
 
-  getSokoSessionContext(input: { sessionId: string | null; now?: Date }): SokoSessionContext {
+  getSokoSessionContext(input: {
+    sessionId: string | null;
+    conversationId?: string;
+    now?: Date;
+  }): SokoSessionContext {
     const now = input.now ?? new Date();
     const session = this.requirePinVerifiedSession(input.sessionId, now);
-    const context = this.ensureSokoSessionContext(session, now);
+    const context = this.ensureSokoSessionContext(session, now, input.conversationId);
     return this.sokoSessionContextView(session, context, now);
   }
 
@@ -2409,7 +2417,11 @@ export class Cp2Store {
     const now = input.now ?? new Date();
     const session = this.requirePinVerifiedSession(input.sessionId, now);
     this.requireAccountNotPendingDeletion(session.account.id, now);
-    const current = this.ensureSokoSessionContext(session, now);
+    // input.conversationId selects which conversation's context row to read/mutate (defaults to
+    // the account's personal conversation, same as today). It does not repoint an existing row at
+    // a different conversation - each conversation keeps its own row, keyed by
+    // sessionContextKey(accountId, conversationId). See docs/frontend/frontend.md Phase 2.
+    const current = this.ensureSokoSessionContext(session, now, input.conversationId);
     const mode = input.mode ?? current.mode;
     const activeShopId =
       input.activeShopId === undefined ? current.activeShopId : input.activeShopId;
@@ -2442,8 +2454,8 @@ export class Cp2Store {
       );
     }
 
-    const conversationId = input.conversationId ?? current.conversationId;
-    this.messagingDomain.requireAccountConversation(conversationId, session.account.id);
+    // ensureSokoSessionContext already resolved and validated the target conversation.
+    const conversationId = current.conversationId;
     const next: StoredSokoSessionContext = {
       ...current,
       accountId: session.account.id,
@@ -2454,11 +2466,11 @@ export class Cp2Store {
       sessionVersion: current.sessionVersion + 1,
       updatedAt: now.toISOString()
     };
-    this.sessionContexts.set(session.account.id, next);
+    this.sessionContexts.set(this.sessionContextKey(session.account.id, conversationId), next);
     this.recordSyncChange({
       accountId: session.account.id,
       collection: "session_context",
-      entityId: session.account.id,
+      entityId: conversationId,
       operation: "upsert",
       shopId: next.activeShopId,
       entity: next,
@@ -5017,7 +5029,10 @@ export class Cp2Store {
       if (accountId !== undefined) {
         const accountContext = { ...context, accountId };
         delete accountContext.sessionId;
-        this.sessionContexts.set(accountId, accountContext);
+        this.sessionContexts.set(
+          this.sessionContextKey(accountId, accountContext.conversationId),
+          accountContext
+        );
       }
     }
 
@@ -6021,22 +6036,14 @@ export class Cp2Store {
       userId: user.id,
       now
     });
-    if (!this.sessionContexts.has(account.id)) {
-      const context: StoredSokoSessionContext = {
-        accountId: account.id,
-        conversationId: conversation.id,
-        activeShopId: null,
-        activeModelId: "sokoclaw-runtime",
-        mode: "marketplace",
-        activeSurface: "conversation",
-        sessionVersion: 1,
-        updatedAt: now.toISOString()
-      };
-      this.sessionContexts.set(account.id, context);
+    const sessionContextKey = this.sessionContextKey(account.id, conversation.id);
+    if (!this.sessionContexts.has(sessionContextKey)) {
+      const context = this.buildDefaultSessionContext(account.id, conversation.id, now);
+      this.sessionContexts.set(sessionContextKey, context);
       this.recordSyncChange({
         accountId: account.id,
         collection: "session_context",
-        entityId: account.id,
+        entityId: context.conversationId,
         operation: "upsert",
         shopId: null,
         entity: context,
@@ -6057,21 +6064,18 @@ export class Cp2Store {
     return sessionView(session);
   }
 
-  private ensureSokoSessionContext(session: AuthSessionView, now: Date): StoredSokoSessionContext {
-    const existing = this.sessionContexts.get(session.account.id);
+  private sessionContextKey(accountId: string, conversationId: string): string {
+    return `${accountId}:${conversationId}`;
+  }
 
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const conversation = this.messagingDomain.ensurePersonalAccountConversation({
-      accountId: session.account.id,
-      userId: session.user.id,
-      now
-    });
-    const context: StoredSokoSessionContext = {
-      accountId: session.account.id,
-      conversationId: conversation.id,
+  private buildDefaultSessionContext(
+    accountId: string,
+    conversationId: string,
+    now: Date
+  ): StoredSokoSessionContext {
+    return {
+      accountId,
+      conversationId,
       activeShopId: null,
       activeModelId: "sokoclaw-runtime",
       mode: "marketplace",
@@ -6079,11 +6083,38 @@ export class Cp2Store {
       sessionVersion: 1,
       updatedAt: now.toISOString()
     };
-    this.sessionContexts.set(session.account.id, context);
+  }
+
+  // conversationId selects which conversation's context row to fetch, defaulting to the account's
+  // personal conversation (today's only conversation). Each conversation gets its own row, keyed by
+  // sessionContextKey - not inherited from the account's other contexts. See
+  // docs/frontend/frontend.md Phase 2.
+  private ensureSokoSessionContext(
+    session: AuthSessionView,
+    now: Date,
+    conversationId?: string
+  ): StoredSokoSessionContext {
+    const conversation =
+      conversationId === undefined
+        ? this.messagingDomain.ensurePersonalAccountConversation({
+            accountId: session.account.id,
+            userId: session.user.id,
+            now
+          })
+        : this.messagingDomain.requireAccountConversation(conversationId, session.account.id);
+    const key = this.sessionContextKey(session.account.id, conversation.id);
+    const existing = this.sessionContexts.get(key);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const context = this.buildDefaultSessionContext(session.account.id, conversation.id, now);
+    this.sessionContexts.set(key, context);
     this.recordSyncChange({
       accountId: session.account.id,
       collection: "session_context",
-      entityId: session.account.id,
+      entityId: context.conversationId,
       operation: "upsert",
       shopId: null,
       entity: context,
@@ -6235,7 +6266,7 @@ export class Cp2Store {
       this.recordSyncChange({
         accountId: context.accountId,
         collection: "session_context",
-        entityId: context.accountId,
+        entityId: context.conversationId,
         operation: "upsert",
         shopId: context.activeShopId,
         entity: context,

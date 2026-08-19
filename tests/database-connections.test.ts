@@ -13,6 +13,7 @@ const knownLegacy014Checksums = [
   "bd441b79fc96f268acba7a251cb12d688a61b98b5d608809924ede780d84282a",
   "695019b487acf03ba6dfe87c64c5dd4204bbb52bfb9d551d8623cff2519560a6"
 ];
+const knownLegacy051Checksum = "5d42eb07544456684e82cec84ca085388f73909f8c1eab2353f1128a4f02d2a9";
 
 describe("database connection policy", () => {
   it("falls back from a blank direct URL to the pooled URL", () => {
@@ -91,17 +92,17 @@ describe("database connection policy", () => {
       ).toBe(false);
     });
 
-    it("rejects any applied checksum for migration 051 until a historical value is verified", () => {
-      // As of this test, no production checksum for 051 has been confirmed (see the comment
-      // above legacyMigrationChecksums in database-connection.mjs), so the allowlist must not
-      // contain an entry for it yet. If this test starts failing because someone added an
-      // unverified checksum, that is exactly the regression this test exists to catch.
-      expect(legacyMigrationChecksums.has(migration051)).toBe(false);
+    it("accepts the one production checksum verified and recorded for migration 051", () => {
+      // Verified against the production database and recorded on 2026-08-15 (see the comment
+      // above legacyMigrationChecksums in database-connection.mjs). Any other applied checksum
+      // for 051 must still be rejected - this is an allowlist of exactly one verified value, not
+      // a way to silence checksum drift in general.
+      expect(legacyMigrationChecksums.get(migration051)).toEqual(new Set([knownLegacy051Checksum]));
       expect(
-        isAcceptedMigrationChecksum(migration051, "some-checksum-from-production", "current-file-hash")
-      ).toBe(false);
+        isAcceptedMigrationChecksum(migration051, knownLegacy051Checksum, "current-file-hash")
+      ).toBe(true);
       expect(
-        isAcceptedMigrationChecksum(migration051, "another-unverified-checksum", "current-file-hash")
+        isAcceptedMigrationChecksum(migration051, "some-unverified-checksum", "current-file-hash")
       ).toBe(false);
     });
 

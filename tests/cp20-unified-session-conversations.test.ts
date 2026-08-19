@@ -217,6 +217,91 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     await app.close();
   });
 
+  it("gives each conversation its own session context row instead of one shared account-wide row", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const ownerCookie = await createAccountSession(app, "254700000024");
+    const shop = await createBusiness(app, ownerCookie, "Two Contexts Shop");
+
+    const personalContext = await getJson<SokoSessionContext>(
+      app,
+      "/v1/session/context",
+      ownerCookie
+    );
+    const sellerUpdate = await patchJson(
+      app,
+      "/v1/session/context",
+      {
+        mode: "seller",
+        activeShopId: shop.business.id,
+        activeSurface: "owner-controls",
+        expectedSessionVersion: personalContext.sessionVersion
+      },
+      ownerCookie
+    );
+    expect(sellerUpdate.statusCode).toBe(200);
+
+    const storefrontConversation = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      { kind: "storefront", activeShopId: shop.business.id },
+      ownerCookie
+    );
+
+    const storefrontContext = await getJson<SokoSessionContext>(
+      app,
+      `/v1/session/context?conversationId=${storefrontConversation.conversation.id}`,
+      ownerCookie
+    );
+    expect(storefrontContext).toMatchObject({
+      conversationId: storefrontConversation.conversation.id,
+      activeShopId: null,
+      mode: "marketplace",
+      activeSurface: "conversation",
+      sessionVersion: 1
+    });
+
+    const storefrontUpdate = await patchJson(
+      app,
+      "/v1/session/context",
+      {
+        conversationId: storefrontConversation.conversation.id,
+        mode: "seller",
+        activeShopId: shop.business.id,
+        activeSurface: "catalogue",
+        expectedSessionVersion: 1
+      },
+      ownerCookie
+    );
+    expect(storefrontUpdate.statusCode).toBe(200);
+    expect(storefrontUpdate.json<SokoSessionContext>()).toMatchObject({
+      conversationId: storefrontConversation.conversation.id,
+      activeSurface: "catalogue",
+      sessionVersion: 2
+    });
+
+    const personalContextAfter = await getJson<SokoSessionContext>(
+      app,
+      "/v1/session/context",
+      ownerCookie
+    );
+    expect(personalContextAfter).toMatchObject({
+      conversationId: personalContext.conversationId,
+      activeSurface: "owner-controls",
+      sessionVersion: 2
+    });
+
+    const accountContexts = store
+      .snapshot()
+      .sessionContexts.filter((context) => context.accountId === personalContext.accountId);
+    expect(accountContexts).toHaveLength(2);
+    expect(accountContexts.map((context) => context.conversationId).sort()).toEqual(
+      [personalContext.conversationId, storefrontConversation.conversation.id].sort()
+    );
+
+    await app.close();
+  });
+
   it("restores one account-wide working context on every device", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

@@ -3652,7 +3652,11 @@ function snapshotRecords(value: unknown): SnapshotRecord[] {
 
 function recordEntityId(key: SnapshotCollectionKey, record: SnapshotRecord): string {
   if (key === "sessionContexts") {
-    return firstText(record, ["accountId"]) ?? requiredText(record, "sessionId");
+    const accountId = firstText(record, ["accountId"]) ?? requiredText(record, "sessionId");
+    const conversationId = firstText(record, ["conversationId"]);
+    // Composite so each conversation's context persists as its own row instead of overwriting
+    // its account's other conversations' rows on upsert. See docs/frontend/frontend.md Phase 2.
+    return conversationId === null ? accountId : `${accountId}:${conversationId}`;
   }
 
   if (key === "accountPinHashes") {
