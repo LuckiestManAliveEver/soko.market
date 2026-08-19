@@ -2,7 +2,7 @@ import { useState, type ChangeEvent, type Dispatch, type SetStateAction } from "
 
 import type { NetworkInviteSummary } from "@soko/shared-types";
 
-import { copyTextToClipboard } from "../AgentProfileSurface";
+import { copyTextToClipboard } from "../misc-browser-utils";
 import type { ChatMessage } from "../app-shell";
 import { getErrorMessage } from "../chat-message-plumbing";
 import { deleteJson, getJson, postJson } from "../api-helpers";

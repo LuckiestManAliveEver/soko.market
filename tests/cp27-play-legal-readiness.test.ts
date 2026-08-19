@@ -39,16 +39,23 @@ interface PlayLegalReadiness {
 
 describe("CP27 Google Play legal readiness", () => {
   it("provides a public account-deletion resource and secure authenticated web path", async () => {
-    const [readiness, application, agentProfileSurface, router, routes, deletionPage, renderBlueprint] =
-      await Promise.all([
-        readJson<PlayLegalReadiness>("../config/play-legal-readiness.json"),
-        readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
-        readFile(new URL("../apps/web/src/AgentProfileSurface.tsx", import.meta.url), "utf8"),
-        readFile(new URL("../apps/web/src/AppRouter.tsx", import.meta.url), "utf8"),
-        readFile(new URL("../apps/web/src/routes.ts", import.meta.url), "utf8"),
-        readFile(new URL("../apps/web/src/legal/AccountDeletionPage.tsx", import.meta.url), "utf8"),
-        readFile(new URL("../render.yaml", import.meta.url), "utf8")
-      ]);
+    const [
+      readiness,
+      application,
+      deleteAccountPanel,
+      router,
+      routes,
+      deletionPage,
+      renderBlueprint
+    ] = await Promise.all([
+      readJson<PlayLegalReadiness>("../config/play-legal-readiness.json"),
+      readFile(new URL("../apps/web/src/SokoApplication.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/DeleteAccountPanel.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/AppRouter.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/routes.ts", import.meta.url), "utf8"),
+      readFile(new URL("../apps/web/src/legal/AccountDeletionPage.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../render.yaml", import.meta.url), "utf8")
+    ]);
 
     expect(readiness.checkpoint).toBe("CP27");
     expect(readiness.accountDeletion).toMatchObject({
@@ -64,7 +71,7 @@ describe("CP27 Google Play legal readiness", () => {
     expect(routes).toContain('accountDeletion: "/account-deletion"');
     expect(router).toContain("window.location.pathname === routes.accountDeletion");
     expect(application).toContain('get("intent") === "account-deletion"');
-    expect(agentProfileSurface).toContain("Delete account and associated data");
+    expect(deleteAccountPanel).toContain("Delete account and associated data");
     expect(deletionPage).toContain("Continue to secure deletion request");
     expect(deletionPage).toContain("You do not need to reinstall or open the Android app.");
     expect(renderBlueprint).toContain("source: /*\n        destination: /index.html");

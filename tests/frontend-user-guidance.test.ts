@@ -394,12 +394,12 @@ describe("frontend user guidance", () => {
     const readinessState = readFileSync("apps/web/src/hooks/useReadinessState.ts", "utf8");
     const phoneFirst = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
     const complianceSurface = readFileSync("apps/web/src/ComplianceSurface.tsx", "utf8");
-    const settingsSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const deleteAccountPanel = readFileSync("apps/web/src/DeleteAccountPanel.tsx", "utf8");
 
-    expect(settingsSurface).toContain("<h3>Delete account</h3>");
-    expect(settingsSurface).toContain("Delete this shop");
-    expect(settingsSurface).toContain("Delete entire account");
-    expect(settingsSurface).toContain("Delete account and associated data");
+    expect(deleteAccountPanel).toContain("<h3>Delete account</h3>");
+    expect(deleteAccountPanel).toContain("Delete this shop");
+    expect(deleteAccountPanel).toContain("Delete entire account");
+    expect(deleteAccountPanel).toContain("Delete account and associated data");
     expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
     expect(application).toContain('accountDeletionIntent ? "agent"');
     expect(application).toContain("await resetClientToStartup(");
@@ -422,23 +422,27 @@ describe("frontend user guidance", () => {
     );
     const chatInboxState = readFileSync("apps/web/src/hooks/useChatInboxState.ts", "utf8");
     const authState = readFileSync("apps/web/src/hooks/useAuthState.ts", "utf8");
-    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const notificationsSessionsPanel = readFileSync(
+      "apps/web/src/NotificationsSessionsPanel.tsx",
+      "utf8"
+    );
+    const mcpAccessTokensPanel = readFileSync("apps/web/src/McpAccessTokensPanel.tsx", "utf8");
     const networkRoutes = readFileSync("services/api/src/cp2/domains/network/routes.ts", "utf8");
     const salesRoutes = readFileSync("services/api/src/cp2/domains/sales/routes.ts", "utf8");
 
     expect(application).toContain('"/auth/logout-all"');
-    expect(agentProfileSurface).toContain("onClick={onLogoutAll}");
-    expect(agentProfileSurface).toContain("Signing out all devices…");
+    expect(notificationsSessionsPanel).toContain("onClick={onLogoutAll}");
+    expect(notificationsSessionsPanel).toContain("Signing out all devices…");
     expect(application).toContain(
       'navigateToOwnerRoute({ mode: "marketplace", view: "chat" }, { replace: true })'
     );
     expect(application).toContain("setBusiness(null)");
     expect(application).toContain("localStorage.removeItem(ownerAuthStorageKey)");
     expect(chatInboxState).toContain('deleteJson("/v1/push/subscriptions"');
-    expect(agentProfileSurface).toContain(
+    expect(mcpAccessTokensPanel).toContain(
       'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
     );
-    expect(agentProfileSurface).toContain("MCP access tokens");
+    expect(mcpAccessTokensPanel).toContain("MCP access tokens");
     expect(storefrontCareState).toContain("/storefront/customer-care");
     expect(storefrontCareState).toContain("/storefront/messages");
     expect(storefrontCareState).toContain("/storefront/orders");

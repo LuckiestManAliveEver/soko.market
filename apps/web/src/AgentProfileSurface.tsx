@@ -15,7 +15,6 @@ import type {
   AgentPersonality,
   AgentRuntimeReadiness,
   AgentRuntimeVersion,
-  DeviceSessionSummary,
   AgentModelActivationResult,
   AgentModelAssignmentSummary,
   AgentModelBindingRemovalResult,
@@ -30,14 +29,17 @@ import type {
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
   InstalledAgentModelSummary,
-  McpAccessScope,
-  McpAccessTokenCreated,
-  McpAccessTokenSummary,
   PasskeySummary
 } from "@soko/shared-types";
 
 import { normalizeOwnerPhoneInput } from "./phone-identity";
 import { PhoneNumberField } from "./PhoneNumberField";
+import { copyTextToClipboard } from "./misc-browser-utils";
+import { DeleteAccountPanel } from "./DeleteAccountPanel";
+import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
+import { NotificationsSessionsPanel } from "./NotificationsSessionsPanel";
+import { PublicStorefrontPanel } from "./PublicStorefrontPanel";
+import { YourShopsPanel } from "./YourShopsPanel";
 
 import {
   canRunCatalogModel,
@@ -83,7 +85,7 @@ import {
 } from "./browser-inference-sync";
 import { browserLocalInferenceDeploymentEnabled } from "./browser-model-registry";
 
-import type { BrowserInferenceCapability, BrowserModelProgress } from "./browser-inference-types";
+import type { BrowserModelProgress } from "./browser-inference-types";
 
 import {
   readClientInferencePreferences,
@@ -110,7 +112,6 @@ import {
 
 import {
   AccountBackendControls,
-  type AccountDeletionRequestSummary,
   type ActiveAiModelSummary,
   type ActiveBusiness,
   type AgentSettings,
@@ -125,10 +126,7 @@ import {
   type PasskeyListResponse,
   type PasskeyRegistrationOptionsResponse,
   type SessionResponse,
-  type ShopDeletionPreviewSummary,
-  type ShopDeletionRequestResult,
   type SocialSignupProvider,
-  type SupportedLanguage,
   backendModelProbeRequestTimeoutMs,
   clientInferenceFeatureFlags,
   defaultAgentContextScripts,
@@ -251,13 +249,6 @@ export function AgentProfileSurface({
     ConnectedMailboxProviderSummary[]
   >([]);
   const [connectedMailboxes, setConnectedMailboxes] = useState<ConnectedMailboxSummary[]>([]);
-  const [deviceSessions, setDeviceSessions] = useState<DeviceSessionSummary[]>([]);
-  const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
-  const [mcpTokenName, setMcpTokenName] = useState("My integration");
-  const [mcpReadEnabled, setMcpReadEnabled] = useState(true);
-  const [mcpActEnabled, setMcpActEnabled] = useState(false);
-  const [mcpPin, setMcpPin] = useState("");
-  const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
   const [profileMessage, setProfileMessage] = useState("");
   const [runtimeReadiness, setRuntimeReadiness] = useState<AgentRuntimeReadiness | null>(null);
   const [runtimeVersions, setRuntimeVersions] = useState<AgentRuntimeVersion[]>([]);
@@ -352,26 +343,6 @@ export function AgentProfileSurface({
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
-  const [deletionStep, setDeletionStep] = useState<
-    | "idle"
-    | "choose"
-    | "shop-confirm"
-    | "shop-verify"
-    | "shop-status"
-    | "account-confirm"
-    | "account-verify"
-  >("idle");
-  const [deletionPreview, setDeletionPreview] = useState<ShopDeletionPreviewSummary | null>(null);
-  const [deletionRequest, setDeletionRequest] = useState<AccountDeletionRequestSummary | null>(
-    null
-  );
-  const [deletionShopId, setDeletionShopId] = useState("");
-  const [deletionPin, setDeletionPin] = useState("");
-  const [deletionAcknowledged, setDeletionAcknowledged] = useState(false);
-  const [accountDeletionConfirmation, setAccountDeletionConfirmation] = useState("");
-  const [accountDeletionReason, setAccountDeletionReason] = useState("");
-  const [accountDeletionPin, setAccountDeletionPin] = useState("");
-  const [accountDeletionAcknowledged, setAccountDeletionAcknowledged] = useState(false);
 
   useEffect(() => {
     if (!isEditing) {
@@ -404,9 +375,6 @@ export function AgentProfileSurface({
     void loadConnectedMailboxes();
     void loadPasskeys();
     void loadMfaFactors();
-    void loadDeviceSessions();
-    void loadMcpTokens();
-    void loadShopDeletionPreview();
     void loadAgentProfile();
     void loadAgentRuntimeDetails();
     void loadAgentModelAssignment();
@@ -1719,27 +1687,6 @@ export function AgentProfileSurface({
     }
   }
 
-  async function loadDeviceSessions() {
-    try {
-      const response = await getJson<{ sessions: DeviceSessionSummary[] }>("/auth/sessions");
-      setDeviceSessions(response.sessions);
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function revokeDeviceSession(sessionId: string) {
-    const revoked = await deleteJson<DeviceSessionSummary>(
-      `/auth/sessions/${encodeURIComponent(sessionId)}`
-    );
-    if (revoked.current) {
-      onLogout();
-      return;
-    }
-    await loadDeviceSessions();
-    setProfileMessage("The selected device session was revoked.");
-  }
-
   async function updateOwnerPhone() {
     const selectedCountry = getCountryDialCode(ownerPhoneCountryCode);
 
@@ -1889,64 +1836,6 @@ export function AgentProfileSurface({
     }
   }
 
-  async function loadMcpTokens() {
-    try {
-      const response = await getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens");
-      setMcpTokens(response.tokens);
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function createMcpToken() {
-    const scopes: McpAccessScope[] = [
-      ...(mcpReadEnabled ? (["mcp:read"] as const) : []),
-      ...(mcpActEnabled ? (["mcp:act"] as const) : [])
-    ];
-    if (scopes.length === 0) {
-      setProfileMessage("Select at least one MCP permission.");
-      return;
-    }
-    try {
-      if (mcpActEnabled) {
-        await postJson<{ verified: boolean }>("/auth/pin/verify", { pin: mcpPin });
-      }
-      const created = await postJson<McpAccessTokenCreated>("/v1/mcp/tokens", {
-        name: mcpTokenName,
-        scopes,
-        shopId: business.id,
-        expiresInSeconds: 86_400
-      });
-      setNewMcpAccessToken(created.accessToken);
-      setMcpPin("");
-      await loadMcpTokens();
-      setProfileMessage("MCP token created. Copy it now; the secret is shown only once.");
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function revokeMcpToken(tokenId: string) {
-    try {
-      await deleteJson<McpAccessTokenSummary>(`/v1/mcp/tokens/${encodeURIComponent(tokenId)}`);
-      await loadMcpTokens();
-      setProfileMessage("MCP token revoked.");
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function loadShopDeletionPreview() {
-    try {
-      const preview = await getJson<ShopDeletionPreviewSummary>(
-        `/businesses/${business.id}/shop-deletion/preview`
-      );
-      setDeletionPreview(preview);
-    } catch {
-      setDeletionPreview(null);
-    }
-  }
-
   async function disconnectSocialAccount(identityId: string) {
     try {
       await deleteJson<{ disconnected: true; identityId: string }>(
@@ -2012,88 +1901,6 @@ export function AgentProfileSurface({
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
-  }
-
-  async function startShopDeletion() {
-    try {
-      const response = await postJson<ShopDeletionRequestResult>(
-        `/businesses/${business.id}/shop-deletion/request`,
-        {
-          shopId: deletionShopId
-        }
-      );
-
-      setDeletionRequest(response.request);
-      setDeletionPreview(response.preview);
-      setDeletionStep("shop-verify");
-      setProfileMessage("Confirm with your owner PIN. No OTP is required.");
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function finalizeShopDeletion() {
-    if (deletionRequest === null) {
-      return;
-    }
-
-    try {
-      const result = await postJson<AccountDeletionRequestSummary>(
-        `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/finalize`,
-        {
-          pin: deletionPin,
-          acknowledgement: deletionAcknowledged,
-          idempotencyKey: `web-${business.id}-${deletionRequest.id}`
-        }
-      );
-      setDeletionRequest(result);
-      setDeletionStep("shop-status");
-      setProfileMessage(
-        result.status === "QUARANTINED"
-          ? "Shop hidden and quarantined. You can restore it for 30 days."
-          : "Shop deletion is being processed."
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function restoreShop() {
-    if (deletionRequest === null) return;
-    try {
-      const result = await postJson<AccountDeletionRequestSummary>(
-        `/businesses/${business.id}/shop-deletion/${deletionRequest.id}/restore`,
-        {}
-      );
-      setDeletionRequest(result);
-      setProfileMessage("Shop restored to active service.");
-      await loadShopDeletionPreview();
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    }
-  }
-
-  async function finalizeAccountDeletion() {
-    const deleted = await onScheduleAccountDeletion({
-      pin: accountDeletionPin,
-      confirmation: accountDeletionConfirmation,
-      reason: accountDeletionReason
-    });
-
-    if (!deleted) {
-      setProfileMessage("The account deletion request could not be completed.");
-    }
-  }
-
-  function cancelDeletion() {
-    setDeletionStep("idle");
-    setDeletionShopId("");
-    setDeletionPin("");
-    setDeletionAcknowledged(false);
-    setAccountDeletionConfirmation("");
-    setAccountDeletionReason("");
-    setAccountDeletionPin("");
-    setAccountDeletionAcknowledged(false);
   }
 
   function updateAgent(patch: Partial<AgentSettings>) {
@@ -2393,32 +2200,7 @@ export function AgentProfileSurface({
         </div>
       </section>
 
-      {shops.length > 1 ? (
-        <section className="record-form" aria-label="Your shops">
-          <div className="section-heading">
-            <p className="eyebrow">Account</p>
-            <h3>Your shops</h3>
-          </div>
-          <div className="connected-social-list" role="list">
-            {shops.map((shop) => (
-              <article className="connected-social-card" role="listitem" key={shop.business.id}>
-                <div>
-                  <span>{shop.business.sokoId}</span>
-                  <strong>{shop.business.name}</strong>
-                  <p>{shop.membership.role}</p>
-                </div>
-                {shop.business.id === business.id ? (
-                  <span className="shell-note">Current shop</span>
-                ) : (
-                  <button type="button" onClick={() => onSwitchBusiness(shop)}>
-                    Switch to this shop
-                  </button>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <YourShopsPanel shops={shops} business={business} onSwitchBusiness={onSwitchBusiness} />
 
       <section className="agent-settings-grid">
         <div className="record-form">
@@ -3874,54 +3656,15 @@ export function AgentProfileSurface({
           )}
         </div>
 
-        <div className="record-form">
-          <div className="section-heading">
-            <p className="eyebrow">Soko Global Shop ID</p>
-            <h3>Public storefront</h3>
-          </div>
-          <div className="soko-id-card">
-            <span>Permanent shop identity</span>
-            <strong>{business.sokoId}</strong>
-            <p>Print this on packaging, receipts, QR codes, and storefront material.</p>
-            <div className="storefront-share-actions">
-              <button
-                type="button"
-                onClick={() => void copyStorefrontValue(business.sokoId, "Soko ID")}
-              >
-                Copy ID
-              </button>
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => void copyStorefrontValue(storefrontUrl, "Storefront URL")}
-              >
-                Copy URL
-              </button>
-            </div>
-          </div>
-          <label>
-            Storefront ID
-            <input value={business.sokoId} disabled />
-          </label>
-          <label>
-            Storefront URL
-            <input value={storefrontUrl} disabled />
-          </label>
-          <label>
-            Language
-            <select
-              value={draftAgent.language}
-              disabled={!isEditing}
-              onChange={(event) =>
-                updateAgent({ language: event.target.value as SupportedLanguage })
-              }
-            >
-              <option value="en">English</option>
-              <option value="sw">Swahili</option>
-            </select>
-          </label>
-          <p className="shell-note">{ownerLabel} owns this public storefront assistant.</p>
-        </div>
+        <PublicStorefrontPanel
+          business={business}
+          storefrontUrl={storefrontUrl}
+          ownerLabel={ownerLabel}
+          draftAgent={draftAgent}
+          isEditing={isEditing}
+          updateAgent={updateAgent}
+          copyStorefrontValue={copyStorefrontValue}
+        />
 
         <div className="record-form shop-profile-card">
           <div className="section-heading">
@@ -4569,503 +4312,35 @@ export function AgentProfileSurface({
           ) : null}
         </div>
 
-        <div className="record-form shop-profile-card">
-          <div className="section-heading">
-            <p className="eyebrow">Devices and sessions</p>
-            <h3>Notifications and account sessions</h3>
-          </div>
-          <p className="shell-note">
-            Control push delivery on this device, or revoke every signed-in session if a device is
-            lost.
-          </p>
-          <div className="connected-social-list" role="list" aria-label="Signed-in devices">
-            {deviceSessions.map((deviceSession) => (
-              <article className="connected-social-card" role="listitem" key={deviceSession.id}>
-                <div>
-                  <span>{deviceSession.current ? "This device" : "Signed-in device"}</span>
-                  <strong>{deviceSession.deviceName}</strong>
-                  <p>
-                    {deviceSession.platform} · {deviceSession.browserOrApp} · {deviceSession.status}
-                  </p>
-                </div>
-                <div className="connected-social-meta">
-                  <span>Last active: {formatDate(deviceSession.lastUsedAt)}</span>
-                  <span>Expires: {formatDate(deviceSession.expiresAt)}</span>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={deviceSession.status !== "active" || pendingProfileAction !== null}
-                  onClick={() =>
-                    void runProfileAction("device-session-revoke", () =>
-                      revokeDeviceSession(deviceSession.id)
-                    )
-                  }
-                >
-                  {deviceSession.current ? "Log out this device" : "Log out device"}
-                </button>
-              </article>
-            ))}
-          </div>
-          <div className="row-actions">
-            <button
-              type="button"
-              disabled={pendingProfileAction !== null}
-              onClick={() =>
-                void runProfileAction("push-enable", async () => onEnableNotifications())
-              }
-            >
-              Enable notifications
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              disabled={pendingProfileAction !== null}
-              onClick={() =>
-                void runProfileAction("push-disable", async () => onDisableNotifications())
-              }
-            >
-              Disable on this device
-            </button>
-            <button
-              className="destructive-button"
-              type="button"
-              disabled={pendingProfileAction !== null || isLoggingOut}
-              onClick={onLogoutAll}
-              aria-busy={isLoggingOut}
-            >
-              {isLoggingOut ? "Signing out all devices…" : "Sign out all devices"}
-            </button>
-          </div>
-        </div>
+        <NotificationsSessionsPanel
+          accountId={accountId}
+          businessId={business.id}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          setProfileMessage={setProfileMessage}
+          onEnableNotifications={onEnableNotifications}
+          onDisableNotifications={onDisableNotifications}
+          onLogout={onLogout}
+          onLogoutAll={onLogoutAll}
+          isLoggingOut={isLoggingOut}
+        />
 
-        <div className="record-form shop-profile-card">
-          <div className="section-heading">
-            <p className="eyebrow">Developer access</p>
-            <h3>MCP access tokens</h3>
-            <p>
-              Create short-lived tokens for trusted AI clients. Action access still preserves Soko
-              confirmation gates.
-            </p>
-          </div>
-          <label>
-            Token name
-            <input value={mcpTokenName} onChange={(event) => setMcpTokenName(event.target.value)} />
-          </label>
-          <div className="checkbox-list">
-            <label>
-              <input
-                type="checkbox"
-                checked={mcpReadEnabled}
-                onChange={(event) => setMcpReadEnabled(event.target.checked)}
-              />
-              Read shops and sync changes
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={mcpActEnabled}
-                onChange={(event) => setMcpActEnabled(event.target.checked)}
-              />
-              Propose actions through the runtime
-            </label>
-          </div>
-          {mcpActEnabled ? (
-            <label>
-              Owner PIN
-              <input
-                type="password"
-                inputMode="numeric"
-                autoComplete="current-password"
-                value={mcpPin}
-                onChange={(event) => setMcpPin(event.target.value)}
-                placeholder="Required for action access"
-              />
-            </label>
-          ) : null}
-          <button
-            type="button"
-            disabled={
-              pendingProfileAction !== null ||
-              mcpTokenName.trim().length < 3 ||
-              (mcpActEnabled && !/^\d{4}$/.test(mcpPin))
-            }
-            onClick={() => void runProfileAction("mcp-create", createMcpToken)}
-          >
-            Create 24-hour token
-          </button>
-          {newMcpAccessToken.length > 0 ? (
-            <div className="soko-id-card" role="status">
-              <span>Copy this secret now—it will not be shown again.</span>
-              <code>{newMcpAccessToken}</code>
-              <button
-                type="button"
-                onClick={() => void copyStorefrontValue(newMcpAccessToken, "MCP token")}
-              >
-                Copy token
-              </button>
-            </div>
-          ) : null}
-          <div className="connected-social-list" aria-label="MCP access tokens">
-            {mcpTokens.length === 0 ? <p className="shell-note">No MCP tokens yet.</p> : null}
-            {mcpTokens.map((token) => (
-              <article className="connected-social-card" key={token.id}>
-                <div>
-                  <span>{token.scopes.join(" · ")}</span>
-                  <strong>{token.name}</strong>
-                  <p>
-                    {token.revokedAt !== null
-                      ? "Revoked"
-                      : Date.parse(token.expiresAt) <= Date.now()
-                        ? "Expired"
-                        : `Expires ${formatDate(token.expiresAt)}`}
-                  </p>
-                </div>
-                <div className="connected-social-meta">
-                  <span>Created: {formatDate(token.createdAt)}</span>
-                  <span>
-                    Last used: {token.lastUsedAt === null ? "—" : formatDate(token.lastUsedAt)}
-                  </span>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={token.revokedAt !== null || pendingProfileAction !== null}
-                  onClick={() =>
-                    void runProfileAction("mcp-revoke", () => revokeMcpToken(token.id))
-                  }
-                >
-                  Revoke
-                </button>
-              </article>
-            ))}
-          </div>
-        </div>
+        <McpAccessTokensPanel
+          accountId={accountId}
+          businessId={business.id}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          setProfileMessage={setProfileMessage}
+          copyStorefrontValue={copyStorefrontValue}
+        />
 
-        <div className="record-form danger-zone-card">
-          <div className="section-heading">
-            <p className="eyebrow">Danger zone</p>
-            <h3>Delete account</h3>
-          </div>
-          <p className="security-warning">
-            Choose whether to delete only this shop or your entire Soko.market account.
-          </p>
-          {deletionStep === "idle" ? (
-            <button
-              className="destructive-button"
-              type="button"
-              onClick={() => setDeletionStep("choose")}
-            >
-              Delete account
-            </button>
-          ) : null}
-          {deletionStep === "choose" ? (
-            <div className="shop-deletion-card">
-              <div className="storefront-card-header">
-                <div>
-                  <span>Choose deletion scope</span>
-                  <strong>Shop or entire account</strong>
-                </div>
-                <button className="secondary" type="button" onClick={cancelDeletion}>
-                  Cancel
-                </button>
-              </div>
-              <div className="connected-social-list" aria-label="Deletion options">
-                <article className="connected-social-card">
-                  <div>
-                    <span>Current shop</span>
-                    <strong>Delete this shop only</strong>
-                    <p>
-                      Hides {business.name} immediately and schedules its business data for purge.
-                      Your Soko login and other shops remain active.
-                    </p>
-                  </div>
-                  <button type="button" onClick={() => setDeletionStep("shop-confirm")}>
-                    Delete this shop
-                  </button>
-                </article>
-                <article className="connected-social-card">
-                  <div>
-                    <span>Entire account</span>
-                    <strong>Delete your Soko.market account</strong>
-                    <p>
-                      Disables your login, revokes every session, and schedules all associated
-                      personal and shop data for deletion.
-                    </p>
-                  </div>
-                  <button
-                    className="destructive-button"
-                    type="button"
-                    onClick={() => setDeletionStep("account-confirm")}
-                  >
-                    Delete entire account
-                  </button>
-                </article>
-              </div>
-              <a href={routes.accountDeletion}>Read the account-deletion process</a>
-            </div>
-          ) : null}
-          {deletionStep === "shop-confirm" ? (
-            <div className="shop-deletion-card">
-              <div className="storefront-card-header">
-                <div>
-                  <span>Delete this shop</span>
-                  <strong>Step 1 of 2</strong>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => setDeletionStep("choose")}
-                >
-                  Back
-                </button>
-              </div>
-              <p>This will remove:</p>
-              <ul>
-                <li>Products and catalogue</li>
-                <li>Customers, suppliers and sales agents</li>
-                <li>Sales, invoices and payments</li>
-                <li>Messages, notifications and context scripts</li>
-                <li>Uploaded business files and connected services</li>
-              </ul>
-              {deletionPreview === null ? null : (
-                <div className="supplier-card-metrics">
-                  <span>Products: {deletionPreview.counts.products}</span>
-                  <span>Customers: {deletionPreview.counts.customers}</span>
-                  <span>Suppliers: {deletionPreview.counts.suppliers}</span>
-                  <span>Sales records: {deletionPreview.counts.salesRecords}</span>
-                  <span>Files: {deletionPreview.counts.uploadedFiles}</span>
-                </div>
-              )}
-              <label>
-                Type the shop ID to continue
-                <input
-                  value={deletionShopId}
-                  onChange={(event) => setDeletionShopId(event.target.value)}
-                  placeholder={business.sokoId}
-                />
-              </label>
-              <div className="row-actions">
-                <button className="secondary" type="button" onClick={cancelDeletion}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={deletionShopId !== business.sokoId || pendingProfileAction !== null}
-                  onClick={() => void runProfileAction("shop-deletion-start", startShopDeletion)}
-                  aria-busy={pendingProfileAction === "shop-deletion-start"}
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {deletionStep === "shop-verify" ? (
-            <div className="shop-deletion-card">
-              <div className="storefront-card-header">
-                <div>
-                  <span>Verify deletion</span>
-                  <strong>Step 2 of 2</strong>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => setDeletionStep("shop-confirm")}
-                >
-                  Back
-                </button>
-              </div>
-              <p>
-                Confirm this request with your owner PIN. OTP is reserved for lost-account recovery.
-              </p>
-              <label>
-                Login PIN
-                <input
-                  autoFocus
-                  value={deletionPin}
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={4}
-                  onChange={(event) => setDeletionPin(sanitizePin(event.target.value))}
-                />
-              </label>
-              <label className="checkbox-row">
-                <input
-                  checked={deletionAcknowledged}
-                  type="checkbox"
-                  onChange={(event) => setDeletionAcknowledged(event.target.checked)}
-                />
-                I understand the shop will be hidden now and permanently purged after 30 days.
-              </label>
-              <div className="row-actions">
-                <button className="secondary" type="button" onClick={cancelDeletion}>
-                  Cancel
-                </button>
-                <button
-                  className="destructive-button"
-                  type="button"
-                  disabled={
-                    !isValidPin(deletionPin) ||
-                    !deletionAcknowledged ||
-                    pendingProfileAction !== null
-                  }
-                  onClick={() =>
-                    void runProfileAction("shop-deletion-finalize", finalizeShopDeletion)
-                  }
-                  aria-busy={pendingProfileAction === "shop-deletion-finalize"}
-                >
-                  Quarantine shop
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {deletionStep === "shop-status" ? (
-            <div className="shop-deletion-card" role="status">
-              <strong>{deletionRequest?.status ?? "Processing"}</strong>
-              <p>
-                {deletionRequest?.status === "QUARANTINED"
-                  ? `This shop is hidden. Restore it before ${new Date(
-                      deletionRequest.anonymizeAfter
-                    ).toLocaleDateString()}.`
-                  : deletionRequest?.status === "RESTORED"
-                    ? "This shop has been restored."
-                    : "Your shop deletion is being processed. You can close this screen."}
-              </p>
-              {deletionRequest?.status === "QUARANTINED" ? (
-                <button
-                  type="button"
-                  onClick={() => void runProfileAction("shop-restore", restoreShop)}
-                  disabled={pendingProfileAction !== null}
-                  aria-busy={pendingProfileAction === "shop-restore"}
-                >
-                  {pendingProfileAction === "shop-restore" ? "Restoring…" : "Restore shop"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          {deletionStep === "account-confirm" ? (
-            <div className="shop-deletion-card">
-              <div className="storefront-card-header">
-                <div>
-                  <span>Delete entire account</span>
-                  <strong>Step 1 of 2</strong>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => setDeletionStep("choose")}
-                >
-                  Back
-                </button>
-              </div>
-              <p>
-                Access is disabled immediately. Recoverable data is held for up to 30 days and then
-                deleted or irreversibly anonymized, except records retained for legal, security,
-                fraud-prevention, or regulatory reasons.
-              </p>
-              <label>
-                Type DELETE to confirm
-                <input
-                  value={accountDeletionConfirmation}
-                  onChange={(event) => setAccountDeletionConfirmation(event.target.value)}
-                />
-              </label>
-              <label>
-                Deletion reason
-                <input
-                  value={accountDeletionReason}
-                  onChange={(event) => setAccountDeletionReason(event.target.value)}
-                />
-              </label>
-              <div className="row-actions">
-                <button className="secondary" type="button" onClick={cancelDeletion}>
-                  Cancel
-                </button>
-                <button
-                  className="destructive-button"
-                  type="button"
-                  disabled={accountDeletionConfirmation !== "DELETE"}
-                  onClick={() => setDeletionStep("account-verify")}
-                >
-                  Continue to verification
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {deletionStep === "account-verify" ? (
-            <div
-              className="account-deletion-verification"
-              role="group"
-              aria-label="Verify account deletion"
-            >
-              <div className="storefront-card-header">
-                <div>
-                  <span>Delete entire account</span>
-                  <strong>Step 2 of 2</strong>
-                </div>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => setDeletionStep("account-confirm")}
-                  disabled={pendingProfileAction !== null}
-                >
-                  Back
-                </button>
-              </div>
-              <p>
-                Enter your owner PIN. If accepted, every active session is revoked. You can restore
-                the account through the authenticated recovery screen for up to 30 days.
-              </p>
-              <label>
-                Owner PIN
-                <input
-                  autoFocus
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="current-password"
-                  maxLength={4}
-                  value={accountDeletionPin}
-                  onChange={(event) => setAccountDeletionPin(sanitizePin(event.target.value))}
-                />
-              </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={accountDeletionAcknowledged}
-                  onChange={(event) => setAccountDeletionAcknowledged(event.target.checked)}
-                />
-                I understand that all account access is disabled immediately and permanent purge is
-                scheduled after the recovery window.
-              </label>
-              <div className="row-actions">
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={cancelDeletion}
-                  disabled={pendingProfileAction !== null}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="destructive-button"
-                  type="button"
-                  data-testid="delete-account-confirm"
-                  disabled={
-                    !isValidPin(accountDeletionPin) ||
-                    !accountDeletionAcknowledged ||
-                    pendingProfileAction !== null
-                  }
-                  aria-busy={pendingProfileAction === "account-deletion"}
-                  onClick={() => void runProfileAction("account-deletion", finalizeAccountDeletion)}
-                >
-                  {pendingProfileAction === "account-deletion"
-                    ? "Deleting account…"
-                    : "Delete account and associated data"}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <DeleteAccountPanel
+          business={business}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          setProfileMessage={setProfileMessage}
+          onScheduleAccountDeletion={onScheduleAccountDeletion}
+        />
 
         <div className="record-form agent-context-window advanced-context-window">
           <div className="section-heading">
@@ -5277,23 +4552,6 @@ export function passkeyDeviceLabel(): string {
   return `${platform} passkey`;
 }
 
-export async function copyTextToClipboard(value: string): Promise<void> {
-  if (navigator.clipboard !== undefined) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = value;
-  textArea.setAttribute("readonly", "true");
-  textArea.style.position = "fixed";
-  textArea.style.opacity = "0";
-  document.body.appendChild(textArea);
-  textArea.select();
-  document.execCommand("copy");
-  document.body.removeChild(textArea);
-}
-
 export function splitMultilineInput(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -5336,23 +4594,6 @@ export function normalizeModelDownloadUrl(downloadUrl: string | null): string | 
   }
 }
 
-export function unavailableBrowserInferenceCapability(): BrowserInferenceCapability {
-  return {
-    supported: false,
-    backend: "none",
-    deviceTier: "low",
-    maxRecommendedContextTokens: 1_024,
-    reasons: ["Browser inference is not enabled for this shop."],
-    browser: { name: "Unknown", version: null, mobile: false },
-    crossOriginIsolated: false,
-    logicalProcessors: navigator.hardwareConcurrency || 1,
-    indexedDbAvailable: false,
-    persistentStorage: false,
-    installedPwa: false,
-    workerAvailable: false
-  };
-}
-
 export function installedModelRequest(model: LocalAiModel): Record<string, unknown> {
   return {
     id: model.id,
@@ -5382,12 +4623,4 @@ export function installedModelRequest(model: LocalAiModel): Record<string, unkno
     lastVerifiedAt: model.lastVerifiedAt,
     validationError: model.validationError
   };
-}
-
-export function sanitizePin(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 4);
-}
-
-export function isValidPin(value: string): boolean {
-  return /^\d{4}$/.test(value);
 }

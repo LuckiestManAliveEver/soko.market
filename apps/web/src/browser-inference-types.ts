@@ -323,3 +323,20 @@ export type BrowserAgentAction =
   | { type: "CHAT_REPLY"; message: string }
   | { type: "SEARCH_PRODUCTS"; query: string }
   | { type: "ESCALATE"; reason: string };
+
+export function unavailableBrowserInferenceCapability(): BrowserInferenceCapability {
+  return {
+    supported: false,
+    backend: "none",
+    deviceTier: "low",
+    maxRecommendedContextTokens: 1_024,
+    reasons: ["Browser inference is not enabled for this shop."],
+    browser: { name: "Unknown", version: null, mobile: false },
+    crossOriginIsolated: false,
+    logicalProcessors: navigator.hardwareConcurrency || 1,
+    indexedDbAvailable: false,
+    persistentStorage: false,
+    installedPwa: false,
+    workerAvailable: false
+  };
+}

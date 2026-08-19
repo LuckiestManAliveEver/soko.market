@@ -15,7 +15,7 @@ import type {
   RuntimeRecallEscalation
 } from "@soko/shared-types";
 
-import { unavailableBrowserInferenceCapability } from "../AgentProfileSurface";
+import { unavailableBrowserInferenceCapability } from "../browser-inference-types";
 import {
   createAgentHelpReply,
   createAgentRuntimeDecision,
