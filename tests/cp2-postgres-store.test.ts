@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_SYNC_COLLECTIONS,
   isAccountSyncCollection,
@@ -37,7 +37,10 @@ import {
   type VerificationTierSummary
 } from "../packages/shared-types/src/index";
 import { buildApi } from "../services/api/src/app";
-import { createPostgresCp2Store } from "../services/api/src/cp2/postgres-store";
+import {
+  createPostgresCp2Store,
+  upsertAccountSyncChangesBulk
+} from "../services/api/src/cp2/postgres-store";
 import { readSessionCookie, sessionCookieName } from "../services/api/src/cp2/store";
 import { createBackendModelAdapter } from "../services/api/src/inference/model-runtime";
 
@@ -2237,6 +2240,167 @@ describePostgres("CP2 Postgres store", () => {
     },
     20_000
   );
+
+  it("persists a large batch of account sync changes in one bulk upsert instead of one round trip per row", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    const pool = new Pool({ connectionString });
+    const client = await pool.connect();
+
+    // Exercises upsertAccountSyncChangesBulk directly against a real Postgres connection instead
+    // of through the full HTTP + business-logic + saveRelationalCoreRecords pipeline - that outer
+    // pipeline has its own, unrelated per-mutation cost (each mutating HTTP call also resaves the
+    // full relational store, not just the sync journal) that would swamp a timing assertion aimed
+    // specifically at this function. This mirrors the production incident directly: hundreds of
+    // account_sync_changes rows queued for one flush after a cold start - the previous
+    // upsertAccountSyncChangesOneByOne loop turned that into one sequential network round trip
+    // per row (48s+ observed in production for ~700 rows).
+    try {
+      const ownerPhone = `254730${Date.now().toString().slice(-6)}`;
+      await client.query(
+        "insert into accounts (id, primary_auth_channel, primary_auth_destination, created_at) values ($1, 'phone', $2, now())",
+        [randomUUID(), `+${ownerPhone}`]
+      );
+      const accountId = (
+        await client.query<{ id: string }>(
+          "select id from accounts where primary_auth_destination = $1",
+          [`+${ownerPhone}`]
+        )
+      ).rows[0]?.id;
+      if (accountId === undefined) throw new Error("Test account was not created.");
+
+      const rowCount = 750;
+      const changes = Array.from({ length: rowCount }, (_unused, index) => ({
+        accountId,
+        sequence: index + 1,
+        cursor: randomUUID(),
+        collection: "conversation_messages" as const,
+        entityId: randomUUID(),
+        operation: "upsert" as const,
+        shopId: null,
+        entity: { text: `Bulk sync message ${index}` },
+        changedAt: new Date().toISOString(),
+        tombstoneExpiresAt: null
+      }));
+
+      const startedAt = Date.now();
+      await client.query("begin");
+      await upsertAccountSyncChangesBulk(
+        client as unknown as Parameters<typeof upsertAccountSyncChangesBulk>[0],
+        changes
+      );
+      await client.query("commit");
+      const durationMs = Date.now() - startedAt;
+      // A loose regression guard, not a strict perf budget - the previous per-row loop would
+      // reliably take tens of seconds on 750 rows even on a fast local Postgres (each round trip
+      // alone dwarfs this budget once multiplied by 750); this just proves the fix isn't silently
+      // reverted back to one round trip per row.
+      expect(durationMs).toBeLessThan(5_000);
+
+      const persistedCount = await client.query<{ count: string }>(
+        "select count(*)::text as count from account_sync_changes where account_id = $1",
+        [accountId]
+      );
+      expect(persistedCount.rows[0]?.count).toBe(String(rowCount));
+
+      const lastRow = await client.query<{ entity: { text: string } }>(
+        "select entity from account_sync_changes where account_id = $1 and sequence = $2",
+        [accountId, rowCount]
+      );
+      expect(lastRow.rows[0]?.entity).toEqual({ text: `Bulk sync message ${rowCount - 1}` });
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }, 15_000);
+
+  it("attributes a bulk sync-change persistence failure to the exact account/collection via the row-by-row fallback", async () => {
+    expect(databaseUrl).toBeDefined();
+    const connectionString = databaseUrl ?? "";
+    process.env.DB_PERSISTENCE_RETRY_INITIAL_MS = "50";
+    process.env.DB_PERSISTENCE_RETRY_MAX_MS = "200";
+    const store = await createPostgresCp2Store({ databaseUrl: connectionString });
+    const app = buildApi({ cp2: { store } });
+    const pool = new Pool({ connectionString });
+
+    try {
+      const ownerPhone = `254731${Date.now().toString().slice(-6)}`;
+      const owner = await createOwnerBusiness(app, ownerPhone);
+      const conversation = await postJson<ConversationView>(
+        app,
+        "/v1/conversations",
+        { kind: "personal", activeShopId: null },
+        owner.sessionCookie
+      );
+      await store.flush();
+
+      // Force every future write to account_sync_changes to fail, mirroring the existing
+      // "force_persistence_failure" pattern used for cp2_products above - upsertAccountSyncChangesBulk
+      // (the new single-statement fast path) has no way to say which row in the batch caused a
+      // failure like this, so it must fall back to upsertAccountSyncChangesOneByOne to preserve
+      // AccountSyncPersistenceError's per-account/collection attribution.
+      await pool.query(
+        "alter table account_sync_changes add constraint force_sync_persistence_failure check (false) not valid"
+      );
+
+      // Account sync journal failures are deliberately non-critical (see the "keeps PIN
+      // authentication available when only account sync persistence fails" test above and the
+      // in-source rationale near lastSyncPersistenceError) - store.flush() only rejects for
+      // critical persistence failures, so the sync-journal failure surfaces through
+      // store.health().syncJournal and the structured console.error line
+      // logAccountSyncDegradation emits, not through flush() rejecting.
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      const clientMessageId = `fallback-attribution-${Date.now()}`;
+      await postJson(
+        app,
+        "/v1/messages",
+        {
+          conversationId: conversation.conversation.id,
+          clientMessageId,
+          content: { type: "text", text: "Should fail to persist its sync change" }
+        },
+        owner.sessionCookie
+      );
+
+      await waitUntil(async () => (await store.health()).syncJournal.status === "degraded");
+
+      // upsertAccountSyncChangesBulk (the new single-statement fast path) has no way to say which
+      // row in a batch caused a failure like this - proves it fell back to
+      // upsertAccountSyncChangesOneByOne, which still attributes the failure to the real
+      // account/collection that caused it rather than a generic, unattributed rejection. The
+      // fallback processes the whole snapshot in order and the force-false constraint applies to
+      // every row equally, so the first collection it happens to hit (not necessarily
+      // "conversation_messages" - could be an earlier row like "conversations") is what gets named.
+      expect(consoleErrorSpy.mock.calls.some(([line]) =>
+        typeof line === "string" &&
+        ACCOUNT_SYNC_COLLECTIONS.some((collection) =>
+          line.includes(`"attemptedCollection":"${collection}"`)
+        )
+      )).toBe(true);
+      consoleErrorSpy.mockRestore();
+
+      const persistedChange = await pool.query(
+        "select 1 from account_sync_changes where collection = 'conversation_messages' and entity_id = (select id::text from conversation_messages where client_message_id = $1)",
+        [clientMessageId]
+      );
+      expect(persistedChange.rows).toHaveLength(0);
+
+      await pool.query(
+        "alter table account_sync_changes drop constraint force_sync_persistence_failure"
+      );
+      await waitUntil(async () => (await store.health()).persistenceError === null);
+    } finally {
+      await pool
+        .query("alter table account_sync_changes drop constraint if exists force_sync_persistence_failure")
+        .catch(() => undefined);
+      await pool.end();
+      await app.close();
+      await store.close();
+      delete process.env.DB_PERSISTENCE_RETRY_INITIAL_MS;
+      delete process.env.DB_PERSISTENCE_RETRY_MAX_MS;
+    }
+  }, 20_000);
 });
 
 async function rowUpdatedAt(

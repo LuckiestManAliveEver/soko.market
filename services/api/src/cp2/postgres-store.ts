@@ -2818,7 +2818,72 @@ async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapsh
     ]
   );
 
-  for (const change of snapshot.syncChanges) {
+  if (snapshot.syncChanges.length === 0) return;
+
+  try {
+    // The common case (no constraint violation) is a single bulk upsert instead of one round
+    // trip per row - with a large backlog (e.g. after the API wakes from a cold start with
+    // hundreds of queued changes), the previous per-row loop's sequential network round trips
+    // were the dominant cost of "persist account sync journal", observed taking 40s+ in
+    // production. See docs note at upsertAccountSyncChangesOneByOne for why the fallback below
+    // still exists.
+    await upsertAccountSyncChangesBulk(client, snapshot.syncChanges);
+  } catch {
+    // The bulk statement can't identify which row violated a constraint - fall back to the
+    // slower row-by-row path only when something actually went wrong, so
+    // AccountSyncPersistenceError still names the exact offending account/collection.
+    await upsertAccountSyncChangesOneByOne(client, snapshot.syncChanges);
+  }
+}
+
+/** Exported only so tests/cp2-postgres-store.test.ts can benchmark and correctness-check the bulk
+ * upsert directly, without routing hundreds of rows through the full HTTP + business-logic +
+ * saveRelationalCoreRecords pipeline (which has its own, unrelated per-mutation cost that would
+ * otherwise swamp a timing assertion aimed specifically at this function). */
+export async function upsertAccountSyncChangesBulk(
+  client: PoolClient,
+  changes: Cp2Snapshot["syncChanges"]
+): Promise<void> {
+  await client.query(
+    `
+      insert into account_sync_changes (
+        account_id, sequence, cursor, collection, entity_id, operation,
+        shop_id, entity, changed_at, tombstone_expires_at
+      )
+      select
+        account_id, sequence, cursor, collection, entity_id, operation,
+        shop_id, entity, changed_at, tombstone_expires_at
+      from jsonb_to_recordset($1::jsonb) as desired(
+        account_id uuid, sequence bigint, cursor uuid, collection text, entity_id text,
+        operation text, shop_id uuid, entity jsonb, changed_at timestamptz,
+        tombstone_expires_at timestamptz
+      )
+      on conflict (account_id, sequence) do update set
+        cursor = excluded.cursor,
+        collection = excluded.collection,
+        entity_id = excluded.entity_id,
+        operation = excluded.operation,
+        shop_id = excluded.shop_id,
+        entity = excluded.entity,
+        changed_at = excluded.changed_at,
+        tombstone_expires_at = excluded.tombstone_expires_at
+    `,
+    [JSON.stringify(changes.map(accountSyncChangeToRecordsetRow))]
+  );
+}
+
+/**
+ * Row-by-row fallback for upsertAccountSyncChangesBulk, kept only so a real constraint violation
+ * (e.g. account_sync_changes_collection_check, exercised by tests/api-persistence-ack.test.ts) can
+ * still be attributed to the exact account/collection that caused it - jsonb_to_recordset's bulk
+ * insert fails as one statement with no per-row detail. Only reached when the bulk path throws,
+ * which should be rare in practice.
+ */
+async function upsertAccountSyncChangesOneByOne(
+  client: PoolClient,
+  changes: Cp2Snapshot["syncChanges"]
+): Promise<void> {
+  for (const change of changes) {
     try {
       await client.query(
         `
@@ -2859,6 +2924,23 @@ async function replaceAccountSyncChanges(client: PoolClient, snapshot: Cp2Snapsh
       );
     }
   }
+}
+
+function accountSyncChangeToRecordsetRow(
+  change: Cp2Snapshot["syncChanges"][number]
+): Record<string, unknown> {
+  return {
+    account_id: change.accountId,
+    sequence: change.sequence,
+    cursor: change.cursor,
+    collection: change.collection,
+    entity_id: change.entityId,
+    operation: change.operation,
+    shop_id: change.shopId,
+    entity: change.entity,
+    changed_at: change.changedAt,
+    tombstone_expires_at: change.tombstoneExpiresAt
+  };
 }
 
 async function deleteRemovedAccountRelationalGraph(
