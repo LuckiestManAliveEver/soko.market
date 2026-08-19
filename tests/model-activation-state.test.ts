@@ -21,6 +21,26 @@ describe("model activation request lifecycle", () => {
     expect(coordinator.isCurrent(second)).toBe(true);
   });
 
+  it("exposes the active model id so a superseded attempt can tell whether a fresh attempt re-claimed the same model", () => {
+    const coordinator = new ModelActivationCoordinator();
+    expect(coordinator.activeModelId()).toBeNull();
+
+    const first = coordinator.begin("model-a")!;
+    expect(coordinator.activeModelId()).toBe("model-a");
+
+    // Superseded by a different model: the stale attempt's cleanup should still run, since
+    // nothing else owns model-a's runtime handle.
+    coordinator.begin("model-b");
+    expect(coordinator.isCurrent(first)).toBe(false);
+    expect(coordinator.activeModelId()).toBe("model-b");
+
+    // Finish the model-b attempt, then re-select model-a: a fresh attempt now owns it, so a
+    // stale model-a cleanup must not run and tear down the fresh attempt's runtime.
+    const third = coordinator.begin("model-a")!;
+    expect(coordinator.isCurrent(third)).toBe(true);
+    expect(coordinator.activeModelId()).toBe("model-a");
+  });
+
   it("times out unbounded work and clears its timer", async () => {
     vi.useFakeTimers();
     const result = withActivationTimeout(() => new Promise<never>(() => undefined), 1_000);

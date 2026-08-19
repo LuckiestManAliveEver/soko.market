@@ -66,6 +66,10 @@ export class ModelActivationCoordinator {
     return this.active?.id === request.id;
   }
 
+  activeModelId(): string | null {
+    return this.active?.modelId ?? null;
+  }
+
   finish(request: Pick<ModelActivationRequest, "id">): void {
     if (this.active?.id === request.id) this.active = null;
   }

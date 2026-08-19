@@ -157,6 +157,40 @@ describe("frontend model activation contracts", () => {
     expect(agentModelPanel).toContain("Browser-local inference is unavailable in this deployment");
     expect(agentModelPanel).toContain("<summary>Advanced routing</summary>");
   });
+
+  it("locks removeModelFromAgent behind the shared busy flag so concurrent clicks can't race", () => {
+    const removal = sourceBetween(
+      agentModelPanel,
+      "async function removeModelFromAgent",
+      "async function updateAgentModelPolicy"
+    );
+
+    expect(removal).toContain("if (modelRuntimeBusyRef.current) return;");
+    expect(removal).toContain("modelRuntimeBusyRef.current = true;");
+    expect(removal).toContain("setModelRuntimeBusy(true);");
+    expect(removal).toContain("modelRuntimeBusyRef.current = false;");
+    expect(removal).toContain("setModelRuntimeBusy(false);");
+    expect(removal.indexOf("modelRuntimeBusyRef.current = true;")).toBeLessThan(
+      removal.indexOf("await deleteJson(")
+    );
+    expect(removal.indexOf("await deleteJson(")).toBeLessThan(
+      removal.indexOf("modelRuntimeBusyRef.current = false;")
+    );
+  });
+
+  it("skips a superseded activation's stale unload when a fresh attempt re-claimed the same model", () => {
+    const activation = sourceBetween(
+      agentModelPanel,
+      "async function useModelWithAgent",
+      "async function useBackendModelWithAgent"
+    );
+
+    expect(activation).toContain("modelActivationCoordinator.current.activeModelId() === model.id");
+    expect(activation).toContain("if (!supersededBySameModel) {");
+    expect(activation.indexOf("supersededBySameModel")).toBeLessThan(
+      activation.indexOf("void getModelRuntime().unload(model.id);")
+    );
+  });
 });
 
 function sourceBetween(source: string, startMarker: string, endMarker: string): string {

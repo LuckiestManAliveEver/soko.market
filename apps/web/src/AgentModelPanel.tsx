@@ -858,7 +858,15 @@ export function AgentModelPanel({
         failureCode: null
       });
     } catch (error) {
-      void getModelRuntime().unload(model.id);
+      // Only clean up this attempt's runtime handle when no newer activation has taken over the
+      // same model id - a superseded attempt's stale unload can otherwise race a fresh attempt's
+      // load and tear down the model it just successfully bound.
+      const supersededBySameModel =
+        !modelActivationCoordinator.current.isCurrent(activation) &&
+        modelActivationCoordinator.current.activeModelId() === model.id;
+      if (!supersededBySameModel) {
+        void getModelRuntime().unload(model.id);
+      }
       if (!modelActivationCoordinator.current.isCurrent(activation)) return;
       setModelActivationState("failed");
       setFailedActivationModelId(model.modelId);
@@ -1144,27 +1152,35 @@ export function AgentModelPanel({
   async function removeModelFromAgent() {
     const installationId = agentModelAssignment?.activeModelInstallationId;
     if (installationId === null || installationId === undefined) return;
+    if (modelRuntimeBusyRef.current) return;
     if (!navigator.onLine) {
       throw new Error("Connect to the internet to synchronize removal from this agent.");
     }
-    await deleteJson(
-      `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-    );
-    const fallback = assignmentFromServer(
-      await getJson<AgentModelAssignmentSummary>(
+    modelRuntimeBusyRef.current = true;
+    setModelRuntimeBusy(true);
+    try {
+      await deleteJson(
         `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
-      )
-    );
-    await getModelRuntime().unload(installationId);
-    saveDeviceAgentModelAssignment(fallback);
-    setAgentModelAssignment(fallback);
-    const fallbackModelId = fallback.modelId ?? "sokoclaw-local";
-    setActiveAiModelId(fallbackModelId);
-    updateAgent({ model: fallbackModelId });
-    onAgentChange({ ...agent, model: fallbackModelId });
-    setProfileMessage(
-      "The downloaded model was removed. Download and test another GGUF model to reconnect the agent; the cloud selection remains fallback-only."
-    );
+      );
+      const fallback = assignmentFromServer(
+        await getJson<AgentModelAssignmentSummary>(
+          `/businesses/${business.id}/agent-model?deviceId=${encodeURIComponent(deviceId)}`
+        )
+      );
+      await getModelRuntime().unload(installationId);
+      saveDeviceAgentModelAssignment(fallback);
+      setAgentModelAssignment(fallback);
+      const fallbackModelId = fallback.modelId ?? "sokoclaw-local";
+      setActiveAiModelId(fallbackModelId);
+      updateAgent({ model: fallbackModelId });
+      onAgentChange({ ...agent, model: fallbackModelId });
+      setProfileMessage(
+        "The downloaded model was removed. Download and test another GGUF model to reconnect the agent; the cloud selection remains fallback-only."
+      );
+    } finally {
+      modelRuntimeBusyRef.current = false;
+      setModelRuntimeBusy(false);
+    }
   }
 
   async function updateAgentModelPolicy(
