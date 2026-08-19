@@ -4,14 +4,14 @@ import { describe, expect, it } from "vitest";
 describe("browser inference frontend integration", () => {
   it("keeps the feature disabled by default and requires an explicit model action", async () => {
     const env = await readFile(".env.example", "utf8");
-    const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const agentModelPanel = await readFile("apps/web/src/AgentModelPanel.tsx", "utf8");
     const registry = await readFile("apps/web/src/browser-model-registry.ts", "utf8");
     expect(env).toContain("VITE_BROWSER_LOCAL_INFERENCE_ENABLED=false");
-    expect(agentProfileSurface).toContain("Use the browser model on this device");
-    expect(agentProfileSurface).toContain("Cancel download");
-    expect(agentProfileSurface).toContain("Downloading ${model.displayName} after your consent");
-    expect(agentProfileSurface).toContain("Browser model");
-    expect(agentProfileSurface).toContain("selectedBrowserModelId");
+    expect(agentModelPanel).toContain("Use the browser model on this device");
+    expect(agentModelPanel).toContain("Cancel download");
+    expect(agentModelPanel).toContain("Downloading ${model.displayName} after your consent");
+    expect(agentModelPanel).toContain("Browser model");
+    expect(agentModelPanel).toContain("selectedBrowserModelId");
     expect(registry).toContain('import.meta.env.VITE_BROWSER_LOCAL_INFERENCE_ENABLED === "true"');
     expect(registry).toContain("smollm2-135m-instruct-browser");
     expect(registry).toContain("qwen2.5-0.5b-instruct-browser");
@@ -21,14 +21,14 @@ describe("browser inference frontend integration", () => {
   it("streams into the existing chat, supports cancellation, and retains server routing", async () => {
     const chatState = await readFile("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
     const chatSurface = await readFile("apps/web/src/ChatSurface.tsx", "utf8");
-    const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const agentModelPanel = await readFile("apps/web/src/AgentModelPanel.tsx", "utf8");
     expect(chatState).toContain("generateBrowserAgentResponse");
     expect(chatState).toContain("setChatMessages((messages) =>");
     expect(chatSurface).toContain("Cancel on-device generation");
     expect(chatState).toContain("executeInferenceRoute");
     expect(chatState).toContain("decideClientInferenceRoute");
     expect(chatState).toContain("createRemoteInferenceProvider");
-    expect(agentProfileSurface).toContain("Client-first route permissions");
+    expect(agentModelPanel).toContain("Client-first route permissions");
     expect(chatState).toContain("requestRequiresServerTool(runtimeMessage)");
     expect(chatState).toContain("queueMessagingOutbox");
     expect(chatState).toContain("postJson<RuntimeTurnResult>");
@@ -56,11 +56,11 @@ describe("browser inference frontend integration", () => {
 
   it("synchronizes activation and health metadata without sending prompts or generated text", async () => {
     const chatState = await readFile("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
-    const agentProfileSurface = await readFile("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const agentModelPanel = await readFile("apps/web/src/AgentModelPanel.tsx", "utf8");
     const synchronization = await readFile("apps/web/src/browser-inference-sync.ts", "utf8");
-    expect(agentProfileSurface).toContain("synchronizeBrowserInferenceAssignment");
+    expect(agentModelPanel).toContain("synchronizeBrowserInferenceAssignment");
     expect(chatState).toContain("recordSyncedBrowserInferenceExecution");
-    expect(agentProfileSurface).toContain("Database workflow:");
+    expect(agentModelPanel).toContain("Database workflow:");
     expect(synchronization).toContain("/browser-inference/executions");
     expect(synchronization).toContain("runtimeContract");
     expect(synchronization).toContain("checkpointCompatibilityContract");

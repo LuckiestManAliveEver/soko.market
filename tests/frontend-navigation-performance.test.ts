@@ -37,14 +37,14 @@ describe("frontend navigation performance contracts", () => {
 
   it("keeps navigation, model discovery, and runtime initialization decoupled", () => {
     const navigationState = readFileSync("apps/web/src/hooks/useNavigationState.ts", "utf8");
-    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
+    const agentModelPanel = readFileSync("apps/web/src/AgentModelPanel.tsx", "utf8");
     const navigationBlock = sourceFunction(navigationState, "navigateToView");
-    const settingsEffectStart = agentProfileSurface.indexOf(
+    const settingsEffectStart = agentModelPanel.indexOf(
       "setInferencePreferences(readClientInferencePreferences(accountId, business.id));"
     );
-    const settingsMountEffect = agentProfileSurface.slice(
+    const settingsMountEffect = agentModelPanel.slice(
       settingsEffectStart,
-      agentProfileSurface.indexOf("}, [accountId, business.id]);", settingsEffectStart)
+      agentModelPanel.indexOf("}, [accountId, business.id]);", settingsEffectStart)
     );
 
     expect(navigationBlock).toContain("navigateToOwnerRoute");
@@ -55,7 +55,7 @@ describe("frontend navigation performance contracts", () => {
     expect(settingsMountEffect).not.toContain("loadAiModels(");
     expect(settingsMountEffect).not.toContain("inspectDeviceModelCapability(");
     expect(settingsMountEffect).not.toContain("loadBrowserInferenceState(");
-    expect(agentProfileSurface).toContain('setProfileMessage("Opening model settings…")');
+    expect(agentModelPanel).toContain('setProfileMessage("Opening model settings…")');
   });
 
   it("does not precache model files and enables route/API performance measurements", () => {
