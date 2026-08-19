@@ -1,4 +1,7 @@
-import type { ConversationMessageDeliveryStatus } from "@soko/shared-types";
+import type {
+  ConversationMessageContent,
+  ConversationMessageDeliveryStatus
+} from "@soko/shared-types";
 
 export type ShellView =
   | "home"
@@ -40,14 +43,14 @@ export interface ChatMessage {
   author: "merchant" | "sokoclaw" | "contact";
   authorLabel?: string;
   body: string;
-  businessCards?: {
-    shopId: string;
-  };
+  /**
+   * The server-typed conversation content, carried through unflattened so the generated-surface
+   * registry (generated-surface-registry.tsx) can dispatch on `content.type` instead of the
+   * caller checking one more optional field per new card type. See docs/frontend/frontend.md.
+   */
+  content?: ConversationMessageContent;
   attachments?: ChatAttachment[];
   confirmationToken?: string;
-  productCaptureJobId?: string;
-  statusBroadcastId?: string;
-  unifiedCheckoutId?: string;
   createdAt?: string;
   status?: ConversationMessageDeliveryStatus;
   editedAt?: string | null;

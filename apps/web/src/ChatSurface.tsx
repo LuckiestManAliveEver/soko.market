@@ -36,11 +36,9 @@ import {
   type BusinessReportSummary,
   type BuyCartItem,
   type ContactPickerContact,
-  FulfilmentSplitCard,
   type InvoiceSummary,
   type NetworkGraphSummary,
   type OAuthProviderSummary,
-  ProductCaptureItemsCard,
   type ProductFieldDraft,
   type ProductFormState,
   type ProductSummary,
@@ -48,10 +46,10 @@ import {
   type ShopPresenceStatus,
   SmsHandoffDialog,
   type SocialSignupProvider,
-  StatusBroadcastCard,
   type SyncQueueSummary,
   chatAttachmentAccept
 } from "./soko-application-shared";
+import { renderGeneratedSurface } from "./generated-surface-registry";
 
 import { getJson } from "./api-helpers";
 import {
@@ -754,8 +752,8 @@ export function ChatSurface({
                     message.body
                   )}
                 </p>
-                {message.businessCards !== undefined &&
-                message.businessCards.shopId === businessId ? (
+                {message.content?.type === "owner-controls" &&
+                message.content.shopId === businessId ? (
                   <ContextualBusinessCards
                     productCount={productCount}
                     customerCount={customerCount}
@@ -778,30 +776,10 @@ export function ChatSurface({
                     onNavigate={onNavigate}
                   />
                 ) : null}
-                {message.productCaptureJobId !== undefined && businessId !== null ? (
-                  <Suspense
-                    fallback={<div className="inline-loading-card">Opening photo review…</div>}
-                  >
-                    <ProductCaptureItemsCard
-                      businessId={businessId}
-                      captureJobId={message.productCaptureJobId}
-                      onPosted={onStatusBroadcastPosted}
-                    />
-                  </Suspense>
-                ) : null}
-                {message.statusBroadcastId !== undefined && businessId !== null ? (
-                  <Suspense fallback={<div className="inline-loading-card">Opening status…</div>}>
-                    <StatusBroadcastCard
-                      businessId={businessId}
-                      statusBroadcastId={message.statusBroadcastId}
-                    />
-                  </Suspense>
-                ) : null}
-                {message.unifiedCheckoutId !== undefined ? (
-                  <Suspense fallback={<div className="inline-loading-card">Opening order…</div>}>
-                    <FulfilmentSplitCard unifiedCheckoutId={message.unifiedCheckoutId} />
-                  </Suspense>
-                ) : null}
+                {renderGeneratedSurface(message.content, {
+                  businessId,
+                  onStatusBroadcastPosted
+                })}
                 {message.id === "welcome" && !isAuthenticated ? (
                   <div className="welcome-auth-actions" aria-label="Account access">
                     <button type="button" data-testid="welcome-signup-button" onClick={onSignUp}>

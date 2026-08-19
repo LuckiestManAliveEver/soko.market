@@ -1,0 +1,75 @@
+import { Suspense, type ReactNode } from "react";
+
+import type { ConversationMessageContent } from "@soko/shared-types";
+
+import {
+  FulfilmentSplitCard,
+  ProductCaptureItemsCard,
+  StatusBroadcastCard
+} from "./soko-application-shared";
+
+/**
+ * The generated-surface registry: one renderer per ConversationMessageContent variant, looked up
+ * by content.type instead of the caller checking one more optional field per new card type. See
+ * docs/frontend/frontend.md ("The generated-surface protocol"). Adding a new capability's
+ * generated card is: add the variant to ConversationMessageContent, add one entry here - it does
+ * not require touching ChatSurface.tsx's render body again.
+ *
+ * An unrecognized content.type (a future server addition this client hasn't shipped a renderer
+ * for yet) has no entry and renderGeneratedSurface returns null - the message still renders its
+ * body text, degrading safely instead of crashing the thread.
+ */
+export interface GeneratedSurfaceContext {
+  businessId: string | null;
+  onStatusBroadcastPosted: (statusBroadcastId: string) => void;
+}
+
+type GeneratedSurfaceRenderer = (
+  content: ConversationMessageContent,
+  context: GeneratedSurfaceContext
+) => ReactNode | null;
+
+const generatedSurfaceRegistry: Partial<
+  Record<ConversationMessageContent["type"], GeneratedSurfaceRenderer>
+> = {
+  "product-capture-progress": (content, context) => {
+    if (content.type !== "product-capture-progress" || context.businessId === null) return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening photo review…</div>}>
+        <ProductCaptureItemsCard
+          businessId={context.businessId}
+          captureJobId={content.captureJobId}
+          onPosted={context.onStatusBroadcastPosted}
+        />
+      </Suspense>
+    );
+  },
+  "status-broadcast": (content, context) => {
+    if (content.type !== "status-broadcast" || context.businessId === null) return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening status…</div>}>
+        <StatusBroadcastCard
+          businessId={context.businessId}
+          statusBroadcastId={content.statusBroadcastId}
+        />
+      </Suspense>
+    );
+  },
+  "unified-checkout": (content) => {
+    if (content.type !== "unified-checkout") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening order…</div>}>
+        <FulfilmentSplitCard unifiedCheckoutId={content.unifiedCheckoutId} />
+      </Suspense>
+    );
+  }
+};
+
+export function renderGeneratedSurface(
+  content: ConversationMessageContent | undefined,
+  context: GeneratedSurfaceContext
+): ReactNode | null {
+  if (content === undefined) return null;
+  const renderer = generatedSurfaceRegistry[content.type];
+  return renderer === undefined ? null : renderer(content, context);
+}

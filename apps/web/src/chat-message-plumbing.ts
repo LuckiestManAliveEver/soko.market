@@ -74,18 +74,9 @@ export function mapConversationMessage(
         : message.content.type === "encrypted"
           ? (decrypted?.text ?? "Encrypted message unavailable on this device")
           : conversationMessageText(message),
-    ...(message.content.type === "owner-controls"
-      ? { businessCards: { shopId: message.content.shopId } }
-      : {}),
-    ...(message.content.type === "product-capture-progress"
-      ? { productCaptureJobId: message.content.captureJobId }
-      : {}),
-    ...(message.content.type === "status-broadcast"
-      ? { statusBroadcastId: message.content.statusBroadcastId }
-      : {}),
-    ...(message.content.type === "unified-checkout"
-      ? { unifiedCheckoutId: message.content.unifiedCheckoutId }
-      : {}),
+    ...(message.deletedAt !== null && message.deletedAt !== undefined
+      ? {}
+      : { content: message.content }),
     ...((message.content.type === "text" && message.content.attachments?.length) ||
     (message.content.type === "encrypted" && decrypted?.attachments.length)
       ? {
