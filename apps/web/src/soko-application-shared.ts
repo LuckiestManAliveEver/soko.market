@@ -89,6 +89,7 @@ export const SupplierManagementCard = lazy(() => import("./SupplierManagementCar
 export const CustomerManagementCard = lazy(() => import("./CustomerManagementCard"));
 export const InvoiceManagementCard = lazy(() => import("./InvoiceManagementCard"));
 export const PaymentManagementCard = lazy(() => import("./PaymentManagementCard"));
+export const ImportManagementCard = lazy(() => import("./ImportManagementCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
 export const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
 export const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));

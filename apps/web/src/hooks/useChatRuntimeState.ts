@@ -1116,6 +1116,39 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
+    // Mirrors postPaymentManagementCard for the imports domain. Unlike products/suppliers/
+    // customers/invoices/payments, document_import.confirm already resolves and executes for real
+    // from chat today (createRuntimeDocumentImportProposal picks the latest previewed job) - this
+    // card only fills the review-and-select gap, so it posts regardless of whether the message
+    // already fully confirmed the import or is still awaiting confirmation. See
+    // generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4f.
+    async function postImportManagementCard(businessId: string, importJobId: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        importJobId === undefined
+          ? { type: "import-management", businessId }
+          : { type: "import-management", businessId, importJobId };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Imports remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1374,6 +1407,17 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           business.id,
           typeof customerName === "string" ? customerName : undefined
         );
+      }
+
+      if (result.turn.plan.toolName === "document_import.confirm" && business !== null) {
+        const importJobId = result.turn.plan.input.importJobId;
+        await postImportManagementCard(
+          business.id,
+          typeof importJobId === "string" ? importJobId : undefined
+        );
+        if (result.turn.plan.executedAt !== null) {
+          await loadDocumentImports(business.id);
+        }
       }
 
       if (isNetworkDiscoveryRequest(agentRequest)) {

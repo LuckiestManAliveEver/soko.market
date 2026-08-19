@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4e implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phases 4a-4f implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -592,6 +592,51 @@ Regression tests: `tests/cp10-sokoclaw-runtime.test.ts` (extended, not
 duplicated), `tests/payment-management-card.test.ts` (frontend wiring —
 verified to fail without the frontend implementation).
 
+## Imports chat-invokable capability (Phase 4f — implemented)
+
+A third distinct shape — this domain was already the *most* chat-capable
+of any so far, and the audit found the gap was narrower than expected.
+
+**What the audit found:**
+
+- "Imports" (the `imports` `ShellView`, "Purchase receipts" in the nav)
+  is bulk CSV/document import of product catalogues or supplier lists —
+  a different concept from the per-receipt photo OCR flow that actually
+  lives under Suppliers (`uploadSupplierReceipt`/`confirmSupplierReceipt`
+  in `useSuppliersState.ts`). Confirmed by reading both hooks rather than
+  assuming from the nav label.
+- Uploading a document is unavoidably a file action — `receipt.scan` and
+  `createDocumentImport` both need actual file bytes, which a chat text
+  message cannot carry. This is a genuine, permanent constraint, not a
+  gap this phase could close.
+- **`document_import.confirm` already resolves and executes for real
+  from chat today** — `createRuntimeDocumentImportProposal`
+  (`agent-runtime/store.ts`) is a third, separate proposal-generation
+  path from `parseMerchantCommand`/the product-vocabulary matcher
+  (worth knowing given the two false-positive collisions those found in
+  4a/4b), triggered by action+document-reference words. It resolves
+  "confirm the import" (or a message referencing a specific job ID) to
+  the account's latest previewed job automatically, validates it has
+  selected rows, and — once confirmed the same way any other
+  high-risk tool is — calls the real `confirmProductImport`/
+  `confirmSupplierImport`. This was already a complete, shipped feature,
+  confirmed by an existing passing end-to-end test
+  (`tests/document-agent-import.e2e.test.ts`), not discovered as new.
+
+**What changed:** the one real gap was reviewing and adjusting row
+selection *inline*, instead of requiring a trip to the permanent Imports
+page before confirming. A new `ImportManagementCard` opens as soon as a
+message classifies as `document_import.confirm`, showing the job's rows
+with per-row selection (mirroring `ProductCaptureItemsCard`'s review
+pattern), then calls the same confirm endpoint the permanent page uses.
+No backend parser or execution code changed — extended the existing
+end-to-end test to pin `plan.input.importJobId` as the contract the new
+frontend code depends on.
+
+Regression tests: `tests/document-agent-import.e2e.test.ts` (extended),
+`tests/import-management-card.test.ts` (frontend wiring — verified to
+fail without the frontend implementation).
+
 ## Target architecture
 
 ```text
@@ -703,7 +748,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4c | Customers: same pattern as 4a/4b (customer.create already existed but dropped phone/email/notes; added customer.update; extended 4b's product-vocabulary exclusion guard rather than duplicating it) | **Implemented** (this change) — see "Customers chat-invokable capability" above |
 | 4d | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed | **Implemented** (this change) — see "Invoices chat-invokable capability" above |
 | 4e | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text) | **Implemented** (this change) — see "Payments chat-invokable capability" above |
-| 4f–4o | One phase per remaining `ShellView` (network, sync, runtime, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a-4e - each gets its own audit, since 4d/4e showed the shape of the work can differ a lot per domain | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4f | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming | **Implemented** (this change) — see "Imports chat-invokable capability" above |
+| 4g–4o | One phase per remaining `ShellView` (network, sync, runtime, logistics, compliance, beta, launch, reports, notifications) - each gets its own audit; several are read-only diagnostic dashboards or are already flagged as likely permanent-page candidates per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

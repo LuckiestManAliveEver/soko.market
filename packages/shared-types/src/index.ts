@@ -462,7 +462,8 @@ export type ConversationMessageContent =
   | { type: "supplier-management"; businessId: string; supplierId?: string }
   | { type: "customer-management"; businessId: string; customerId?: string }
   | { type: "invoice-management"; businessId: string; customerName?: string }
-  | { type: "payment-management"; businessId: string; customerName?: string };
+  | { type: "payment-management"; businessId: string; customerName?: string }
+  | { type: "import-management"; businessId: string; importJobId?: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;

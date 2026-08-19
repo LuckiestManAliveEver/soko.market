@@ -5,6 +5,7 @@ import type { ConversationMessageContent } from "@soko/shared-types";
 import {
   CustomerManagementCard,
   FulfilmentSplitCard,
+  ImportManagementCard,
   InvoiceManagementCard,
   PaymentManagementCard,
   ProductCaptureItemsCard,
@@ -119,6 +120,17 @@ const generatedSurfaceRegistry: Partial<
         <PaymentManagementCard
           businessId={content.businessId}
           {...(content.customerName === undefined ? {} : { customerName: content.customerName })}
+        />
+      </Suspense>
+    );
+  },
+  "import-management": (content) => {
+    if (content.type !== "import-management") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening imports…</div>}>
+        <ImportManagementCard
+          businessId={content.businessId}
+          {...(content.importJobId === undefined ? {} : { importJobId: content.importJobId })}
         />
       </Suspense>
     );

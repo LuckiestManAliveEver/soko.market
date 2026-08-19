@@ -138,7 +138,12 @@ describe("binary document upload to agent-persisted records", () => {
       parserIntent: "confirm_document_import",
       plan: {
         toolName: "document_import.confirm",
-        executedAt: null
+        executedAt: null,
+        // Pins the contract the Phase 4f frontend trigger depends on: importJobId stays on the
+        // plan even before confirmation, so the review card can open immediately on this first
+        // turn rather than waiting for the (separate, explicit) confirm message. See
+        // ImportManagementCard.tsx and docs/frontend/frontend.md Phase 4f.
+        input: { importJobId: preview.id }
       },
       toolResult: null
     });
