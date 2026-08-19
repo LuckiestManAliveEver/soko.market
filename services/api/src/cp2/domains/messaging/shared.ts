@@ -521,5 +521,10 @@ export function validateConversationMessageContent(content: ConversationMessageC
           "Confirmation token and prompt are required."
         );
       }
+      return;
+    case "product-management":
+      if (content.businessId.trim().length === 0) {
+        throw new Cp2Error(400, "message_content_invalid", "businessId is required.");
+      }
   }
 }

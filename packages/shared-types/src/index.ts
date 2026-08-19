@@ -457,7 +457,8 @@ export type ConversationMessageContent =
   | { type: "confirmation"; confirmationToken: string; prompt: string }
   | { type: "product-capture-progress"; captureJobId: string }
   | { type: "status-broadcast"; statusBroadcastId: string }
-  | { type: "unified-checkout"; unifiedCheckoutId: string };
+  | { type: "unified-checkout"; unifiedCheckoutId: string }
+  | { type: "product-management"; businessId: string; productId?: string };
 
 export interface AccountShopSummary {
   business: BusinessSummary;
@@ -3030,6 +3031,8 @@ export type RuntimeToolName =
 
 export type RuntimeParserIntent =
   | "add_product"
+  | "update_product"
+  | "adjust_stock"
   | "add_customer"
   | "create_invoice"
   | "record_payment"

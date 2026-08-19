@@ -149,6 +149,27 @@ interface UseChatRuntimeStateDeps {
   registerReset: (domainKey: string, fn: () => void) => void;
 }
 
+const productMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>([
+  "product.create",
+  "product.update",
+  "product.stock_adjust"
+]);
+
+function productIdFromToolResult(toolResult: unknown): string | undefined {
+  if (toolResult === null || typeof toolResult !== "object") return undefined;
+  if ("id" in toolResult && typeof toolResult.id === "string") return toolResult.id;
+  if (
+    "product" in toolResult &&
+    typeof toolResult.product === "object" &&
+    toolResult.product !== null &&
+    "id" in toolResult.product &&
+    typeof toolResult.product.id === "string"
+  ) {
+    return toolResult.product.id;
+  }
+  return undefined;
+}
+
 export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
   const [clarificationCount, setClarificationCount] = useState(0);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
@@ -922,6 +943,36 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       setChatMessages((messages) => [...messages, next]);
     }
 
+    // Posts the products generated-surface card into the owner's own conversation after a
+    // successful product.* tool execution, mirroring appendAgentMessage's persisted-POST pattern -
+    // see generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4a.
+    async function postProductManagementCard(businessId: string, productId: string | undefined) {
+      if (session === null || activeConversationId === null) return;
+      const clientMessageId = createClientMessageId("agent");
+      const content: ConversationMessageContent =
+        productId === undefined
+          ? { type: "product-management", businessId }
+          : { type: "product-management", businessId, productId };
+      try {
+        const persisted = await postJson<ConversationMessageSummary>("/v1/messages", {
+          conversationId: activeConversationId,
+          clientMessageId,
+          author: "agent",
+          content,
+          clientTimestamp: new Date().toISOString()
+        });
+        if (activeConversation !== null) {
+          setChatMessages((messages) => [
+            ...messages,
+            mapConversationMessage(persisted, activeConversation.participants, session)
+          ]);
+        }
+      } catch {
+        // The confirmation reply already told the owner what happened; the inline card is a
+        // convenience, not the only way to see the change (Products remains reachable directly).
+      }
+    }
+
     if (inferenceRoute !== null && inferenceRequest !== null) {
       const streamingMessageId = createClientMessageId("inference-agent");
       let streamedText = "";
@@ -1126,6 +1177,15 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       if (result.turn.plan.toolName === "products.list" && business !== null) {
         await loadProducts(business.id);
         navigateToView("products");
+      }
+
+      if (
+        productMutationToolNames.has(result.turn.plan.toolName) &&
+        result.turn.plan.executedAt !== null &&
+        business !== null
+      ) {
+        await loadProducts(business.id);
+        await postProductManagementCard(business.id, productIdFromToolResult(result.turn.toolResult));
       }
 
       if (result.turn.plan.toolName === "invoices.list" && business !== null) {

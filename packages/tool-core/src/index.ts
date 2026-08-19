@@ -22,6 +22,8 @@ export function invalid(...errors: string[]): ValidationResult {
 
 export type RuleIntent =
   | "add_product"
+  | "update_product"
+  | "adjust_stock"
   | "add_customer"
   | "create_invoice"
   | "record_payment"
@@ -306,6 +308,7 @@ export interface ProductContextScriptMatch {
     fieldName?: string;
     quantity?: number;
     sku?: string;
+    sellingPrice?: number;
   };
   source: "context_script";
   requiresConfirmation: boolean;
@@ -575,7 +578,8 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
           required: true,
           description: "Stock-keeping unit, e.g. \"kg\" or \"unit\"."
         },
-        quantity: { type: "number", description: "Starting stock quantity." }
+        quantity: { type: "number", description: "Starting stock quantity." },
+        sellingPrice: { type: "number", description: "Selling price, if mentioned." }
       }
     },
     mcpExposable: false
@@ -590,7 +594,10 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
     inputSchema: {
       type: "object",
       properties: {
-        productName: { type: "string", required: true, description: "Product to update." }
+        productName: { type: "string", required: true, description: "Product to update." },
+        unit: { type: "string", description: "New stock-keeping unit, if changing." },
+        quantity: { type: "number", description: "New quantity, if changing." },
+        sellingPrice: { type: "number", description: "New selling price, if changing." }
       }
     },
     mcpExposable: false
@@ -920,13 +927,46 @@ export function createRuntimeToolProposal(result: ParseResult): RuntimeToolPropo
         input: {
           name: result.slots.productName ?? "",
           unit: result.slots.unit ?? "unit",
-          quantity: result.slots.quantity ?? 0
+          quantity: result.slots.quantity ?? 0,
+          sellingPrice: result.slots.amount ?? null
         },
         reason: "Draft a product creation action from the merchant command.",
         validation:
           result.slots.productName === undefined
             ? invalid("Product name is required before a product can be drafted.")
             : valid()
+      };
+
+    case "update_product":
+      return {
+        toolName: "product.update",
+        input: {
+          productName: result.slots.productName ?? "",
+          ...(result.slots.unit === undefined ? {} : { unit: result.slots.unit }),
+          ...(result.slots.quantity === undefined ? {} : { quantity: result.slots.quantity }),
+          ...(result.slots.amount === undefined ? {} : { sellingPrice: result.slots.amount })
+        },
+        reason: "Draft a product update action from the merchant command.",
+        validation:
+          result.slots.productName === undefined
+            ? invalid("Which product should I edit?")
+            : valid()
+      };
+
+    case "adjust_stock":
+      return {
+        toolName: "product.stock_adjust",
+        input: {
+          productName: result.slots.productName ?? "",
+          quantity: result.slots.quantity ?? 0
+        },
+        reason: "Draft a stock adjustment action from the merchant command.",
+        validation:
+          result.slots.productName === undefined
+            ? invalid("Which product stock should I adjust?")
+            : result.slots.quantity === undefined
+              ? invalid("What should the new quantity be?")
+              : valid()
       };
 
     case "add_customer":
@@ -1007,6 +1047,7 @@ export function createRuntimeToolProposalFromProductContextScript(
             match.entities.productName === undefined ? "" : titleCase(match.entities.productName),
           unit: "unit",
           quantity: match.entities.quantity ?? 0,
+          sellingPrice: match.entities.sellingPrice ?? null,
           cardinality: match.cardinality,
           source: match.source
         },
@@ -1018,11 +1059,17 @@ export function createRuntimeToolProposalFromProductContextScript(
       };
 
     case "PRODUCT_EDIT":
-    case "PRODUCT_UPDATE":
+    case "PRODUCT_UPDATE": {
+      const hasChange =
+        match.entities.quantity !== undefined || match.entities.sellingPrice !== undefined;
       return {
         toolName: "product.update",
         input: {
           productName: match.entities.productName ?? "",
+          ...(match.entities.quantity === undefined ? {} : { quantity: match.entities.quantity }),
+          ...(match.entities.sellingPrice === undefined
+            ? {}
+            : { sellingPrice: match.entities.sellingPrice }),
           cardinality: match.cardinality,
           source: match.source
         },
@@ -1030,8 +1077,11 @@ export function createRuntimeToolProposalFromProductContextScript(
         validation:
           match.entities.productName === undefined
             ? invalid("Which product should I edit?")
-            : invalid("Which product details should I change?")
+            : hasChange
+              ? valid()
+              : invalid("Which product details should I change?")
       };
+    }
 
     case "PRODUCT_DELETE":
       return {
@@ -1065,7 +1115,9 @@ export function createRuntimeToolProposalFromProductContextScript(
         validation:
           match.entities.productName === undefined
             ? invalid("Which product stock should I adjust?")
-            : invalid("What quantity change should I apply?")
+            : match.entities.quantity === undefined
+              ? invalid("What quantity change should I apply?")
+              : valid()
       };
 
     case "PRODUCT_FIELD_ADD":
@@ -1702,6 +1754,42 @@ const intentRules: IntentRule[] = [
     weight: 1.08
   },
   {
+    intent: "update_product",
+    keywords: ["edit", "update", "modify", "change", "correct", "revise", "rename", "product"],
+    phrases: [
+      "edit product",
+      "update product",
+      "modify product",
+      "change product",
+      "correct product",
+      "revise product",
+      "rename product",
+      "hariri bidhaa",
+      "badilisha bidhaa",
+      "rekebisha bidhaa"
+    ],
+    weight: 1.08
+  },
+  {
+    intent: "adjust_stock",
+    keywords: ["adjust", "stock", "quantity", "increase", "decrease", "reduce"],
+    phrases: [
+      "adjust stock",
+      "change quantity",
+      "update quantity",
+      "add quantity",
+      "reduce quantity",
+      "increase stock",
+      "decrease stock",
+      "stock adjustment",
+      "correct stock",
+      "rekebisha stock",
+      "ongeza idadi",
+      "punguza idadi"
+    ],
+    weight: 1.1
+  },
+  {
     intent: "add_customer",
     keywords: ["add", "ongeza", "new", "customer", "client", "mteja", "mpya"],
     phrases: [
@@ -1761,20 +1849,33 @@ const intentRules: IntentRule[] = [
 
 const commandWords = new Set([
   "add",
+  "adjust",
   "andika",
+  "badilisha",
+  "change",
+  "correct",
   "create",
+  "edit",
   "for",
+  "hariri",
   "invoice",
   "list",
   "make",
+  "modify",
   "new",
   "open",
   "ongeza",
+  "price",
+  "product",
+  "quantity",
   "record",
+  "rekebisha",
+  "revise",
   "show",
   "stock",
   "the",
   "to",
+  "update",
   "weka"
 ]);
 
@@ -2240,21 +2341,35 @@ function extractProductContextEntities(
   entity: ProductVocabularyEntry["entity"]
 ): ProductContextScriptMatch["entities"] {
   const entities: ProductContextScriptMatch["entities"] = {};
-  const quantityMatch = remainingText.match(/\b(\d+(?:\.\d+)?)\b/);
+  const priceMatch = remainingText.match(
+    /\b(?:kes|ksh|sh|k)\s?(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s?(?:kes|ksh|sh|bob)\b/i
+  );
+  const priceValue = priceMatch?.[1] ?? priceMatch?.[2];
+
+  if (priceValue !== undefined) {
+    entities.sellingPrice = Number(priceValue);
+  }
+
+  // A currency-tagged number ("ksh 150") must not also be read as a bare quantity, and its
+  // currency word must not leak into the product name - remove the whole matched span first.
+  const textWithoutPrice =
+    priceMatch === null ? remainingText : remainingText.replace(priceMatch[0], " ");
+  const quantityMatch = textWithoutPrice.match(/\b(\d+(?:\.\d+)?)\b/);
 
   if (quantityMatch?.[1] !== undefined) {
     entities.quantity = Number(quantityMatch[1]);
   }
 
-  const skuMatch = remainingText.match(/\bsku\s*([a-z0-9-]+)\b/i);
+  const skuMatch = textWithoutPrice.match(/\bsku\s*([a-z0-9-]+)\b/i);
 
   if (skuMatch?.[1] !== undefined) {
     entities.sku = skuMatch[1];
   }
 
-  const cleaned = remainingText
+  const cleaned = textWithoutPrice
     .replace(/\bsku\s*[a-z0-9-]+\b/gi, "")
     .replace(/\b\d+(?:\.\d+)?\b/g, "")
+    .replace(/\b(?:kes|ksh|sh|bob)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -2514,6 +2629,18 @@ function getMissingSlotQuestion(intent: RuleIntent, slots: ParserSlots): string 
     return "Which product should I draft?";
   }
 
+  if (intent === "update_product" && slots.productName === undefined) {
+    return "Which product should I edit?";
+  }
+
+  if (intent === "adjust_stock" && slots.productName === undefined) {
+    return "Which product stock should I adjust?";
+  }
+
+  if (intent === "adjust_stock" && slots.productName !== undefined && slots.quantity === undefined) {
+    return "What should the new quantity be?";
+  }
+
   if (intent === "add_customer" && slots.customerName === undefined) {
     return "What is the customer name?";
   }
@@ -2531,22 +2658,25 @@ function getMissingSlotQuestion(intent: RuleIntent, slots: ParserSlots): string 
 
 function extractSlots(input: string, intent: RuleIntent): ParserSlots {
   const slots: ParserSlots = {};
-  const quantityMatch = input.match(/\b(\d+(?:\.\d+)?)\b/);
   const amountMatch = input.match(
     /\b(?:kes|ksh|sh|k)\s?(\d+(?:\.\d+)?)\b|\b(\d+(?:\.\d+)?)\s?(?:kes|ksh|sh|bob)\b/
   );
-
-  if (quantityMatch?.[1] !== undefined) {
-    slots.quantity = Number(quantityMatch[1]);
-  }
-
   const amountValue = amountMatch?.[1] ?? amountMatch?.[2];
 
   if (amountValue !== undefined) {
     slots.amount = Number(amountValue);
   }
 
-  if (intent === "add_product") {
+  // A currency-tagged number ("ksh 150") must not also be read as a bare quantity - without this,
+  // "add product sugar ksh 150" would set both quantity and price to 150.
+  const inputWithoutAmount = amountMatch === null ? input : input.replace(amountMatch[0], " ");
+  const quantityMatch = inputWithoutAmount.match(/\b(\d+(?:\.\d+)?)\b/);
+
+  if (quantityMatch?.[1] !== undefined) {
+    slots.quantity = Number(quantityMatch[1]);
+  }
+
+  if (intent === "add_product" || intent === "update_product" || intent === "adjust_stock") {
     const productName = extractNamedValue(input, [
       "product",
       "bidhaa",

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseMerchantCommand, shouldUseStructuredFallback } from "../packages/tool-core/src";
+import {
+  createRuntimeToolProposal,
+  parseMerchantCommand,
+  shouldUseStructuredFallback
+} from "../packages/tool-core/src";
 import { cp4EvalCommands } from "./ai-eval/cp4-commands";
 
 describe("CP4 rule parser", () => {
@@ -105,6 +109,44 @@ describe("CP4 rule parser", () => {
         type: "clarify"
       }
     });
+  });
+
+  it("routes edit and stock-adjustment commands to their own intents, distinct from add_product (Phase 4a)", () => {
+    expect(parseMerchantCommand("edit product sugar")).toMatchObject({
+      intent: "update_product",
+      slots: { productName: "Sugar" }
+    });
+    expect(parseMerchantCommand("adjust stock sugar 40")).toMatchObject({
+      intent: "adjust_stock",
+      slots: { productName: "Sugar", quantity: 40 }
+    });
+    expect(parseMerchantCommand("adjust stock")).toMatchObject({
+      intent: "adjust_stock",
+      nextAction: { type: "clarify", question: "Which product stock should I adjust?" }
+    });
+    expect(parseMerchantCommand("adjust stock sugar")).toMatchObject({
+      intent: "adjust_stock",
+      nextAction: { type: "clarify", question: "What should the new quantity be?" }
+    });
+  });
+
+  it("captures a currency-tagged price without also mistaking it for a quantity (Phase 4a)", () => {
+    // Before this fix, "ksh 150" was read as BOTH quantity=150 and price=150 - a single number
+    // in the message must not be double-counted as two different fields.
+    const created = parseMerchantCommand("add product sugar ksh 150");
+    expect(created.slots).toMatchObject({ productName: "Sugar", amount: 150 });
+    expect(created.slots.quantity).toBeUndefined();
+    expect(createRuntimeToolProposal(created)).toMatchObject({
+      toolName: "product.create",
+      input: { name: "Sugar", quantity: 0, sellingPrice: 150 }
+    });
+
+    const updated = parseMerchantCommand("update product sugar ksh 200");
+    expect(createRuntimeToolProposal(updated)).toMatchObject({
+      toolName: "product.update",
+      input: { productName: "Sugar", sellingPrice: 200 }
+    });
+    expect(createRuntimeToolProposal(updated).input.quantity).toBeUndefined();
   });
 
   it("uses structured fallback only after repeated clarification results", () => {

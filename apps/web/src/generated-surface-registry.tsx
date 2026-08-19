@@ -5,6 +5,7 @@ import type { ConversationMessageContent } from "@soko/shared-types";
 import {
   FulfilmentSplitCard,
   ProductCaptureItemsCard,
+  ProductManagementCard,
   StatusBroadcastCard
 } from "./soko-application-shared";
 
@@ -60,6 +61,17 @@ const generatedSurfaceRegistry: Partial<
     return (
       <Suspense fallback={<div className="inline-loading-card">Opening order…</div>}>
         <FulfilmentSplitCard unifiedCheckoutId={content.unifiedCheckoutId} />
+      </Suspense>
+    );
+  },
+  "product-management": (content) => {
+    if (content.type !== "product-management") return null;
+    return (
+      <Suspense fallback={<div className="inline-loading-card">Opening products…</div>}>
+        <ProductManagementCard
+          businessId={content.businessId}
+          {...(content.productId === undefined ? {} : { productId: content.productId })}
+        />
       </Suspense>
     );
   }

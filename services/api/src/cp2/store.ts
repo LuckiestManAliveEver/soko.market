@@ -936,6 +936,8 @@ export class Cp2Store {
       listProducts: (input) => this.salesDomain.listProducts(input),
       listInvoices: (input) => this.salesDomain.listInvoices(input),
       createProduct: (input) => this.salesDomain.createProduct(input),
+      updateProduct: (input) => this.salesDomain.updateProduct(input),
+      adjustProductStock: (input) => this.salesDomain.adjustProductStock(input),
       deleteProduct: (input) => this.salesDomain.deleteProduct(input),
       createCustomer: (input) => this.salesDomain.createCustomer(input),
       listPurchaseReceipts: (input) => this.listPurchaseReceipts(input),

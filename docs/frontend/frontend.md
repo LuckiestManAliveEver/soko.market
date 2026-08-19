@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted, Phases 1-3 implemented
+Status: roadmap adopted, Phases 1-3 implemented, Phase 4a implemented
 Date: 2026-08-19
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -322,6 +322,98 @@ Verified to fail against the pre-Phase-3 code (stashed the
 implementation, kept the tests, confirmed real failures) before
 restoring the fix.
 
+## Products chat-invokable capability (Phase 4a — implemented)
+
+The first of the 15 per-`ShellView` migration phases. The initial audit
+(see "the audit found" in this section) discovered the real scope was far
+bigger than "add a card" — closer to a new feature than a refactor. The
+user was asked to confirm the calibration before building
+(AskUserQuestion, per the Confusion Protocol) and chose the full literal
+spec, one domain at a time.
+
+**What the audit found:**
+
+- Two of the four product runtime tools were execution stubs:
+  `product.update`/`product.stock_adjust` in `executeRuntimeAction`
+  (`services/api/src/cp2/domains/agent-runtime/store.ts`) returned `null`
+  unconditionally, regardless of what a valid proposal contained.
+- No intent for "edit a product" or "adjust stock" existed in the
+  *primary* free-text parser (`RuleIntent`, `packages/tool-core/src/index.ts`)
+  — only `add_product`/`show_products`/etc.
+- A second, separate vocabulary matcher already existed
+  (`ProductContextScriptMatch`/`createRuntimeToolProposalFromProductContextScript`,
+  bilingual EN/SW phrase lists) with `PRODUCT_EDIT`/`PRODUCT_STOCK_ADJUST`
+  cases already defined — but both were hard-coded to always return
+  `invalid(...)`, meaning even a fully-specified message could never
+  produce an executable proposal through it.
+- **Critical finding from the first draft of this phase**: the initial
+  implementation fixed the *primary* parser
+  (`parseMerchantCommand`/`createRuntimeToolProposal`) and shipped a
+  regression test using `parseMerchantCommand` directly - it passed. A
+  second, end-to-end test hitting the real
+  `POST /businesses/:id/runtime/turns` route failed: `createRuntimeTurn`
+  (`agent-runtime/store.ts` ~line 2756-2767) tries the **context-script
+  matcher first** and only falls back to `parseMerchantCommand` when it
+  doesn't match — and "add product X" always matches the context-script's
+  own `PRODUCT_ADD` phrase list. The primary-parser fix was real but
+  dead code for this exact case; the actual default path needed the same
+  fix applied to `extractProductContextEntities`/
+  `createRuntimeToolProposalFromProductContextScript` instead. Caught only
+  because the regression test exercised the real HTTP route instead of
+  the parser function directly — the harsh-critic discipline this session
+  runs on ("re-break the fix, verify against the real path") working
+  exactly as intended.
+- A currency-tagged number ("ksh 150") was being read as **both** a
+  quantity and a price by both parsers' shared bare-number regex — a
+  second bug the end-to-end test caught before it shipped. Fixed by
+  extracting the currency-tagged span first and excluding it from the
+  generic quantity match in both places.
+
+**What changed:**
+
+- Both parsers now support `update_product`/`adjust_stock` intents
+  (primary parser: new `intentRules` entries, `extractSlots` extraction,
+  `getMissingSlotQuestion` clarification; context-script matcher:
+  `PRODUCT_EDIT`/`PRODUCT_UPDATE`/`PRODUCT_STOCK_ADJUST` cases now
+  produce `valid()` proposals when their required fields are present,
+  instead of always asking a question).
+- `product.create` on both paths now carries an optional `sellingPrice`
+  when the message includes a currency-tagged number.
+- `executeRuntimeAction` implements `product.update`/`product.stock_adjust`
+  for real: resolves the named product, applies only the fields the
+  message specified (falling back to the existing value for anything
+  unmentioned), and calls the sales domain's existing
+  `updateProduct`/`adjustProductStock` methods (newly wired into the
+  agent-runtime domain's `deps`).
+- A new self-contained `ProductManagementCard` (mirrors
+  `ProductCaptureItemsCard`'s shape — fetches its own data from
+  `businessId` alone, not `useProductsState`/`ProductSurface`, which need
+  8 injected deps tied to sibling hooks in `SokoApplication.tsx`) is
+  posted into the owner's own conversation
+  (`useChatRuntimeState.ts`'s `applyRuntimeResult`, after any successful
+  `product.create`/`product.update`/`product.stock_adjust` runtime turn)
+  via a new `"product-management"` `ConversationMessageContent` variant,
+  registered in `generated-surface-registry.tsx` the same way as the
+  other three card types.
+
+**What Phase 4a deliberately left alone**: the permanent `products`
+`ShellView`/nav entry is **not removed**. The roadmap's own rule is
+"legacy pages are removed only after their generated-surface replacement
+is proven working — never a big-bang cutover," and this environment has
+no browser automation available to prove it live. The chat-invokable path
+is additive: an owner can now also manage products entirely through
+chat, but the Products page keeps working exactly as before for
+everyone who doesn't use it that way yet.
+
+Regression tests: `tests/cp4-rule-parser.test.ts` (new intents, and the
+currency/quantity double-counting fix), `tests/cp10-sokoclaw-runtime.test.ts`
+("creates, edits, and adjusts stock for a product through confirmed
+runtime turns" — a full propose→confirm cycle against the real HTTP
+route, the test that caught both bugs above), `tests/product-management-card.test.ts`
+(frontend wiring, source-text). Verified to fail against the
+pre-Phase-4a code (stashed the implementation, kept the tests, confirmed
+real failures) before restoring the fix.
+
 ## Target architecture
 
 ```text
@@ -428,7 +520,8 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 1     | Generated-surface protocol: typed content carried through, renderer registry, safe unknown-type fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | **Implemented** (this change)                                                                                                                   |
 | 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Per-conversation session context" above                                                                    |
 | 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | **Implemented** (this change) — see "Multi-session UI" above                                                                                     |
-| 4a–4o | One phase per remaining `ShellView` (products, suppliers, customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications): give each domain a chat-invokable capability/tool that renders its existing `*Surface` (or a new focused generated card) inline in a session, then remove its permanent top-level nav entry once the generated path is proven equivalent. Order: highest chat-relevance first (products, customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline |
+| 4a | Products: give the domain a chat-invokable capability/tool that renders inline in a session (found to need fixing two runtime-tool execution stubs, adding two new parser intents to both the primary and context-script parsers, and a currency/quantity parsing bug - not a small phase). Permanent `products` nav entry kept until a generated-surface replacement can be proven live in a browser | **Implemented** (this change) — see "Products chat-invokable capability" above |
+| 4b–4o | One phase per remaining `ShellView` (suppliers, customers, invoices, network, sync, runtime, payments, imports, logistics, compliance, beta, launch, reports, notifications), same pattern as 4a. Order: highest chat-relevance first (customers, invoices, payments), settings/compliance-style surfaces last per "When a permanent page is still correct" | Not started - each phase gets its own audit + roadmap entry when it begins, mirroring `domain-modularization-roadmap.md`'s per-phase discipline. Expect each to be comparably sized to 4a, not a mechanical extraction |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | Sequenced after the view migrations that would otherwise regress it                                                                             |
 
 Legacy pages are removed only after their generated-surface replacement

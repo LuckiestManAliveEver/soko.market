@@ -84,6 +84,7 @@ export const IdentitySecurityPanel = lazy(() =>
   }))
 );
 export const ProductCaptureItemsCard = lazy(() => import("./ProductCaptureItemsCard"));
+export const ProductManagementCard = lazy(() => import("./ProductManagementCard"));
 export const StatusBroadcastCard = lazy(() => import("./StatusBroadcastCard"));
 export const UnifiedCartSummary = lazy(() => import("./UnifiedCartSummary"));
 export const FulfilmentSplitCard = lazy(() => import("./FulfilmentSplitCard"));
@@ -1157,7 +1158,9 @@ export interface RuntimeTurnResult {
     plan: {
       toolName: string;
       confirmationToken: string | null;
+      executedAt: string | null;
     };
+    toolResult: unknown;
   };
 }
 

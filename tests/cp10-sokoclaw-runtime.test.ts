@@ -286,6 +286,90 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it("creates, edits, and adjusts stock for a product through confirmed runtime turns (Phase 4a)", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const createProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "add product sugar ksh 150" },
+      sessionCookie
+    );
+    expect(createProposed.turn.plan).toMatchObject({ toolName: "product.create" });
+    const createConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: createProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    // The tool proposal's price came from a currency-tagged number, not the bare-quantity slot -
+    // this is the exact case the parser's double-counting fix (Phase 4a) exists to prevent.
+    expect(createConfirmed.turn.toolResult).toMatchObject({
+      name: "Sugar",
+      quantity: 0,
+      sellingPrice: 150
+    });
+
+    const editProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { runtimeSessionId: createProposed.session.id, message: "update product sugar ksh 200" },
+      sessionCookie
+    );
+    expect(editProposed.turn.plan).toMatchObject({
+      toolName: "product.update",
+      requiresConfirmation: true
+    });
+    const editConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: editProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(editConfirmed.turn.toolResult).toMatchObject({
+      name: "Sugar",
+      sellingPrice: 200,
+      quantity: 0
+    });
+
+    const stockProposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { runtimeSessionId: createProposed.session.id, message: "adjust stock sugar 40" },
+      sessionCookie
+    );
+    expect(stockProposed.turn.plan).toMatchObject({ toolName: "product.stock_adjust" });
+    const stockConfirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: createProposed.session.id,
+        message: "confirm",
+        confirmationToken: stockProposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(stockConfirmed.turn.toolResult).toMatchObject({
+      product: { name: "Sugar", quantity: 40 }
+    });
+
+    const finalProducts = store.snapshot().products;
+    expect(finalProducts).toHaveLength(1);
+    expect(finalProducts[0]).toMatchObject({ name: "Sugar", quantity: 40, sellingPrice: 200 });
+
+    await app.close();
+  });
+
   it("keeps incomplete runtime mutations as clarifications without writing payments", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

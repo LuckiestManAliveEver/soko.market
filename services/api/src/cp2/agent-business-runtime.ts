@@ -252,6 +252,8 @@ export function assembleAgentInferenceMessage(input: {
  */
 const intentContextTypes: Record<RuntimeParserIntent, AgentContextSourceType[] | null> = {
   add_product: ["catalogue", "inventory"],
+  update_product: ["catalogue", "inventory"],
+  adjust_stock: ["catalogue", "inventory"],
   add_customer: ["customer"],
   create_invoice: ["catalogue", "inventory", "customer", "order"],
   record_payment: ["customer", "order"],

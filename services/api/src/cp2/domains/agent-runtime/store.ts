@@ -251,9 +251,31 @@ export interface AgentRuntimeDomainDeps {
       sku: string | null;
       unit: string;
       quantity: number;
+      sellingPrice?: number | null;
     };
     now?: Date;
   }) => ProductSummary;
+  updateProduct: (input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    product: {
+      name: string;
+      sku: string | null;
+      unit: string;
+      quantity: number;
+      buyingPrice: number | null;
+      sellingPrice: number | null;
+    };
+    now?: Date;
+  }) => ProductSummary;
+  adjustProductStock: (input: {
+    sessionId: string | null;
+    businessId: string;
+    productId: string;
+    adjustment: { quantityAfter: number; reason?: string | null };
+    now?: Date;
+  }) => unknown;
   deleteProduct: (input: {
     sessionId: string | null;
     businessId: string;
@@ -3170,14 +3192,88 @@ export class AgentRuntimeDomain {
             name: String(input.action.input.name ?? ""),
             sku: null,
             unit: String(input.action.input.unit ?? "unit"),
-            quantity: Number(input.action.input.quantity ?? 0)
+            quantity: Number(input.action.input.quantity ?? 0),
+            sellingPrice:
+              typeof input.action.input.sellingPrice === "number"
+                ? input.action.input.sellingPrice
+                : null
           },
           now: input.now
         });
 
-      case "product.update":
-      case "product.stock_adjust":
-        return null;
+      case "product.update": {
+        const product = this.findRuntimeProductByName(
+          input.businessId,
+          String(input.action.input.productName ?? "")
+        );
+
+        if (product === null) {
+          throw new Cp2Error(
+            404,
+            "runtime_product_not_found",
+            "The product selected by the context script was not found."
+          );
+        }
+
+        return this.deps.updateProduct({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          productId: product.id,
+          product: {
+            name:
+              typeof input.action.input.name === "string" && input.action.input.name.trim() !== ""
+                ? input.action.input.name
+                : product.name,
+            sku: product.sku,
+            unit:
+              typeof input.action.input.unit === "string" && input.action.input.unit.trim() !== ""
+                ? input.action.input.unit
+                : product.unit,
+            quantity:
+              typeof input.action.input.quantity === "number"
+                ? input.action.input.quantity
+                : product.quantity,
+            buyingPrice:
+              typeof input.action.input.buyingPrice === "number"
+                ? input.action.input.buyingPrice
+                : product.buyingPrice,
+            sellingPrice:
+              typeof input.action.input.sellingPrice === "number"
+                ? input.action.input.sellingPrice
+                : product.sellingPrice
+          },
+          now: input.now
+        });
+      }
+
+      case "product.stock_adjust": {
+        const product = this.findRuntimeProductByName(
+          input.businessId,
+          String(input.action.input.productName ?? "")
+        );
+
+        if (product === null) {
+          throw new Cp2Error(
+            404,
+            "runtime_product_not_found",
+            "The product selected by the context script was not found."
+          );
+        }
+
+        return this.deps.adjustProductStock({
+          sessionId: input.sessionId,
+          businessId: input.businessId,
+          productId: product.id,
+          adjustment: {
+            quantityAfter:
+              typeof input.action.input.quantity === "number"
+                ? input.action.input.quantity
+                : product.quantity,
+            reason: "Adjusted via agent chat"
+          },
+          now: input.now
+        });
+      }
 
       case "product.delete": {
         const product = this.findRuntimeProductByName(
