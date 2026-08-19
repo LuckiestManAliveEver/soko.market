@@ -111,6 +111,14 @@ When documents disagree, follow this order:
     - Contains only `Soko.markeyl`.
     - Do not treat as authoritative. Use `Soko doc 4 June  (1).pdf` instead.
 
+19. `COMMERCE_SETTLEMENT_DECISION.md`
+    - Settlement-model decision record for the status-broadcast sell flow
+      and unified-checkout buy flow (contacts and own catalogue as buy
+      sources).
+    - Records why unified checkout captures no payment today, and the
+      recommended split-payment/no-change direction for once a live
+      payment rail exists.
+
 ## Core Implementation Principles
 
 These principles should govern all implementation decisions:

@@ -3,6 +3,7 @@ import { Suspense, useState } from "react";
 import type { BuyFeedSummary, BuyResultSummary } from "@soko/shared-types";
 
 import { routes } from "./routes";
+import { StatusResultCard } from "./StatusResultCard";
 
 import {
   type BuyCartItem,
@@ -118,19 +119,12 @@ export function MarketplaceModeCard({
             </p>
           ) : (
             buyFeed.results.map((result) => (
-              <div className="buy-result-card" key={result.id}>
-                <span className={`buy-source-badge buy-source-${result.sourceKind}`}>
-                  {result.sourceKind === "contact" ? "From your contact" : "Shop"}:{" "}
-                  {result.sourceLabel}
-                </span>
-                <strong>{result.title}</strong>
-                <span>{result.price === null ? "Price on request" : `KSh ${result.price}`}</span>
-                {isAuthenticated ? (
-                  <button type="button" onClick={() => onAddToCart(result)}>
-                    Add to cart
-                  </button>
-                ) : null}
-              </div>
+              <StatusResultCard
+                key={result.id}
+                result={result}
+                isAuthenticated={isAuthenticated}
+                onAddToCart={onAddToCart}
+              />
             ))
           )}
           {buyFeed.marketplaceConnectorAvailable ? null : (
