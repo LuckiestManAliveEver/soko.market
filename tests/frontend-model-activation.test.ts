@@ -113,7 +113,7 @@ describe("frontend model activation contracts", () => {
     const profile = sourceBetween(
       agentProfileSurface,
       "function AgentProfileSurface",
-      "function editFirstContextPhrase"
+      "const bestFitModels ="
     );
     const models = sourceBetween(
       agentProfileSurface,

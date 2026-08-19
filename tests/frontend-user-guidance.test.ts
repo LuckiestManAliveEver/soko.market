@@ -92,9 +92,12 @@ describe("frontend user guidance", () => {
   });
 
   it("accepts only Markdown files in the protected context-file importer", () => {
-    const agentProfileSurface = readFileSync("apps/web/src/AgentProfileSurface.tsx", "utf8");
-    expect(agentProfileSurface).toContain('accept=".md,.markdown,text/markdown"');
-    expect(agentProfileSurface).toContain("Markdown context files");
+    const protectedContextFilesPanel = readFileSync(
+      "apps/web/src/ProtectedContextFilesPanel.tsx",
+      "utf8"
+    );
+    expect(protectedContextFilesPanel).toContain('accept=".md,.markdown,text/markdown"');
+    expect(protectedContextFilesPanel).toContain("Markdown context files");
   });
 
   it("marks document uploads and includes the required model context", () => {
