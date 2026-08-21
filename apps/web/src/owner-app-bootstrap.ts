@@ -7,6 +7,11 @@ import type {
   ProductFieldDefinition,
   ProductFieldInputType
 } from "@soko/shared-types";
+import {
+  defaultAgentDefinition,
+  defaultAgentDefinitionId,
+  isAgentDefinitionId
+} from "@soko/shared-types";
 import { type SokoMode } from "./app-shell";
 
 import {
@@ -104,8 +109,12 @@ export function readStoredAgent(): AgentSettings | null {
     ) {
       const fallbackPersonality = defaultWebAgentPersonality(parsed.language, parsed.personality);
       const fallbackInstructions = defaultWebAgentInstructions(parsed.instructions);
+      const storedAgentDefinitionId = (parsed as Partial<AgentSettings>).agentDefinitionId;
       return {
         ...parsed,
+        agentDefinitionId: isAgentDefinitionId(storedAgentDefinitionId)
+          ? storedAgentDefinitionId
+          : defaultAgentDefinitionId,
         personalityConfig: parsed.personalityConfig ?? fallbackPersonality,
         instructionPolicy: parsed.instructionPolicy ?? fallbackInstructions,
         skillBindings: Array.isArray(parsed.skillBindings)
@@ -225,15 +234,15 @@ export function createDefaultAgent(business: ActiveBusiness | null): AgentSettin
   const globalAgentId =
     business === null ? "local-soko-market" : createPublicStorefrontAgentId(business);
 
-  const generalInstruction =
-    "Help the owner run daily business work and help customers browse the storefront.";
-  const personality = "Warm, concise, accurate and commercially practical";
+  const generalInstruction = defaultAgentDefinition.instructions;
+  const personality = defaultAgentDefinition.personality;
   return {
+    agentDefinitionId: defaultAgentDefinitionId,
     id: `agent-${globalAgentId}`,
-    name: businessName,
-    description: "AI business attendant linked to a predownloaded small local model.",
+    name: defaultAgentDefinition.displayName,
+    description: defaultAgentDefinition.description,
     model: "qwen2.5-0.5b-android",
-    role: "Business assistant and storefront attendant",
+    role: defaultAgentDefinition.role,
     globalAgentId,
     storefrontUrl: createStorefrontUrl(globalAgentId),
     language: business?.language ?? "en",
@@ -241,9 +250,8 @@ export function createDefaultAgent(business: ActiveBusiness | null): AgentSettin
     personalityConfig: defaultWebAgentPersonality(business?.language ?? "en", personality),
     instructions: generalInstruction,
     instructionPolicy: defaultWebAgentInstructions(generalInstruction),
-    knowledge:
-      "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
-    tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    knowledge: defaultAgentDefinition.knowledge,
+    tools: [...defaultAgentDefinition.tools],
     skillBindings: defaultWebAgentSkills(),
     integrations: ["Soko.market storefront"],
     contextScripts: defaultAgentContextScripts,
@@ -264,6 +272,7 @@ export function agentSettingsFromBusinessProfile(
 ): AgentSettings {
   const globalAgentId = createPublicStorefrontAgentId(business);
   return {
+    agentDefinitionId: profile.agentDefinitionId ?? defaultAgentDefinitionId,
     id: `agent-${globalAgentId}`,
     name: profile.name,
     description: profile.description,

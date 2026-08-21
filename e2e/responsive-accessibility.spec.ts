@@ -47,11 +47,50 @@ test("secondary modules preserve the conversation URL and browser history", asyn
   await expect(page.getByRole("dialog", { name: "Marketplace" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  const settingsDialog = page.getByRole("dialog", { name: "Account and agent settings" });
+  await expect(settingsDialog).toBeVisible();
+  await expect(
+    settingsDialog.getByLabel("Open-source agent catalogue", { exact: true })
+  ).toBeVisible();
+  await expect(settingsDialog.getByText("Retail Agent", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await expect.poll(() => page.evaluate(() => history.length)).toBe(initialHistoryLength);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toHaveCount(0);
+});
+
+test("first run downloads the lowest-memory OSS agent and links it to chat", async ({ page }) => {
+  await page.setExtraHTTPHeaders({ "x-soko-test-agent-bootstrap": "true" });
+  await page.goto("/");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const bindings = JSON.parse(
+          localStorage.getItem("soko.oss-agent-bindings.v1") ?? "[]"
+        ) as Array<{ agentDefinitionId?: string }>;
+        return bindings[0]?.agentDefinitionId ?? null;
+      })
+    )
+    .toBe(mockOssAgent.id);
+
+  const installedAgentId = await page.evaluate(() => {
+    const manifests = JSON.parse(
+      localStorage.getItem("soko.oss-agent-installations.v1") ?? "[]"
+    ) as Array<{ agent?: { id?: string } }>;
+    return manifests[0]?.agent?.id ?? null;
+  });
+  expect(installedAgentId).toBe(mockOssAgent.id);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const activeAgent = JSON.parse(
+          localStorage.getItem("soko.chatFirst.agentSettings") ?? "null"
+        ) as { agentDefinitionId?: string } | null;
+        return activeAgent?.agentDefinitionId ?? null;
+      })
+    )
+    .toBe(mockOssAgent.id);
 });
 
 test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
@@ -575,9 +614,11 @@ async function expectInteractiveControlsInsideViewport(page: Page, root: Locator
 
 async function installApiMocks(page: Page): Promise<void> {
   let accountDeleted = false;
+  let agentProfile = { ...mockAgentProfile };
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
+    const agentBootstrap = route.request().headers()["x-soko-test-agent-bootstrap"] === "true";
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
@@ -616,6 +657,45 @@ async function installApiMocks(page: Page): Promise<void> {
       return json(mockRuntimeSession);
     }
     if (path === "/roles/check") return json({ allowed: true, role: "owner", permission: "*" });
+    if (agentBootstrap && path.endsWith("/agent-profile") && method === "GET") {
+      return json(agentProfile);
+    }
+    if (agentBootstrap && path.endsWith("/agent-profile") && method === "PUT") {
+      const update = route.request().postDataJSON() as Record<string, unknown>;
+      agentProfile = {
+        ...agentProfile,
+        ...update,
+        runtimeVersion: agentProfile.runtimeVersion + 1
+      };
+      return json(agentProfile);
+    }
+    if (agentBootstrap && path.endsWith("/agent-runtime/readiness")) {
+      return json({
+        tenantId: "responsive-certification-shop",
+        shopId: "responsive-certification-shop",
+        agentId: "responsive-certification-shop",
+        runtimeVersion: agentProfile.runtimeVersion,
+        ready: true,
+        issues: [],
+        checkedAt: "2026-07-15T12:00:00.000Z"
+      });
+    }
+    if (path === "/v1/oss-agents/github") {
+      return json({
+        agents: [],
+        status: "available",
+        connection: "public",
+        message: "GitHub connected."
+      });
+    }
+    if (path === "/v1/oss-agents/huggingface") {
+      return json({
+        agents: [mockOssAgent],
+        status: "available",
+        connection: "public",
+        message: "Hugging Face connected."
+      });
+    }
     if (path === "/v1/ai-models") return json({ models: modelCatalog });
     if (path === "/v1/models/installed" && method === "POST") return json({ registered: true });
     if (path.startsWith("/v1/models/") && path.endsWith("/validate") && method === "POST") {
@@ -811,6 +891,56 @@ const mockRuntimeSession = {
 const mockOwnerControlsConversationView = {
   ...mockConversationView,
   messages: [mockOwnerControlsMessage]
+};
+
+const mockOssAgent = {
+  id: "huggingface:example/retail-agent",
+  label: "Retail Agent",
+  description: "A licensed retail assistant Space.",
+  source: "huggingface",
+  sourceId: "example/retail-agent",
+  sourceUrl: "https://huggingface.co/spaces/example/retail-agent",
+  license: "apache-2.0",
+  licenseUrl: "https://huggingface.co/spaces/example/retail-agent/blob/main/LICENSE",
+  licenseVerified: true,
+  runtime: "gradio",
+  executionMode: "hosted-api",
+  minimumDeviceTier: "low",
+  minimumMemoryGb: 2,
+  requiresGpu: false,
+  popularity: 120,
+  capabilities: ["agent", "retail"],
+  updatedAt: "2026-07-15T00:00:00.000Z"
+};
+
+const mockAgentProfile = {
+  agentDefinitionId: "builtin:shopkeeper",
+  businessId: "responsive-certification-shop",
+  tenantId: "responsive-certification-shop",
+  shopId: "responsive-certification-shop",
+  agentId: "responsive-certification-shop",
+  runtimeVersion: 1,
+  createdAt: "2026-07-15T00:00:00.000Z",
+  name: "Shopkeeper",
+  description: "A safe shop assistant.",
+  modelId: "qwen2.5-0.5b-android",
+  role: "Business assistant",
+  language: "en",
+  personality: "Warm and concise",
+  personalityConfig: { responseLength: "brief", additionalGuidance: "Warm and concise" },
+  instructions: "Help the owner operate the shop.",
+  instructionPolicy: { generalOperatingRules: ["Help the owner operate the shop."] },
+  knowledge: "Use saved shop records.",
+  tools: ["Products"],
+  skillBindings: [],
+  integrations: ["Soko.market storefront"],
+  contextScripts: [],
+  memoryPolicy: {},
+  evaluationPolicy: {},
+  supportedLanguages: ["en"],
+  businessCategory: "general",
+  publicIntroduction: "Welcome to the shop.",
+  status: "active"
 };
 
 const modelCatalog = [

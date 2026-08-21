@@ -68,6 +68,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentContextSource,
+  AgentDefinitionId,
   AgentEvaluationPolicy,
   AgentInstructions,
   AgentMemoryPolicy,
@@ -102,6 +103,11 @@ import type {
   ShopAgentRuntime,
   SupportedLanguage
 } from "@soko/shared-types";
+import {
+  defaultAgentDefinition,
+  defaultAgentDefinitionId,
+  isAgentDefinitionId
+} from "@soko/shared-types";
 import { runtimeToolRegistry, type parseRuntimeModelOutput } from "@soko/tool-core";
 import { Cp2Error } from "../../cp2-error.js";
 import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
@@ -133,6 +139,7 @@ export interface RuntimeAgentProfile {
 }
 
 export interface BusinessAgentProfileInput {
+  agentDefinitionId?: AgentDefinitionId;
   name: string;
   description: string;
   modelId: string;
@@ -155,7 +162,11 @@ export interface BusinessAgentProfileInput {
   publicIntroduction?: string;
 }
 
-export interface BusinessAgentProfileSummary extends BusinessAgentProfileInput {
+export interface BusinessAgentProfileSummary extends Omit<
+  BusinessAgentProfileInput,
+  "agentDefinitionId"
+> {
+  agentDefinitionId: AgentDefinitionId;
   businessId: string;
   tenantId: string;
   shopId: string;
@@ -174,7 +185,11 @@ export interface BusinessAgentProfileSummary extends BusinessAgentProfileInput {
   updatedBy: string;
 }
 
-export type NormalizedBusinessAgentProfile = BusinessAgentProfileInput & {
+export type NormalizedBusinessAgentProfile = Omit<
+  BusinessAgentProfileInput,
+  "agentDefinitionId"
+> & {
+  agentDefinitionId: AgentDefinitionId;
   personalityConfig: AgentPersonality;
   instructionPolicy: AgentInstructions;
   skillBindings: AgentSkillBinding[];
@@ -430,8 +445,7 @@ export function createDefaultBusinessAgentProfile(input: {
   updatedAt: string;
   updatedBy: string;
 }): BusinessAgentProfileSummary {
-  const generalInstruction =
-    "Help the owner run daily business work and help customers browse the storefront.";
+  const generalInstruction = defaultAgentDefinition.instructions;
   const toolNames = Object.keys(runtimeToolRegistry) as RuntimeToolName[];
   return {
     businessId: input.business.id,
@@ -440,21 +454,21 @@ export function createDefaultBusinessAgentProfile(input: {
     agentId: input.business.id,
     runtimeVersion: 1,
     createdAt: input.updatedAt,
-    name: input.business.name.trim() || "Soko.market",
-    description: "AI business attendant linked to a predownloaded small local model.",
+    agentDefinitionId: defaultAgentDefinitionId,
+    name: defaultAgentDefinition.displayName,
+    description: defaultAgentDefinition.description,
     modelId: input.modelId,
-    role: "Business assistant and storefront attendant",
+    role: defaultAgentDefinition.role,
     language: input.business.language,
-    personality: "Warm, concise, accurate and commercially practical",
+    personality: defaultAgentDefinition.personality,
     personalityConfig: defaultAgentPersonality(
       input.business.language,
-      "Warm, concise, accurate and commercially practical"
+      defaultAgentDefinition.personality
     ),
     instructions: generalInstruction,
     instructionPolicy: defaultAgentInstructions(generalInstruction),
-    knowledge:
-      "Use saved products, invoices, payments, notifications and owner-provided knowledge.",
-    tools: ["Products", "Customers", "Invoices", "Payments", "Reports"],
+    knowledge: defaultAgentDefinition.knowledge,
+    tools: [...defaultAgentDefinition.tools],
     skillBindings: defaultAgentSkillBindings(toolNames),
     integrations: ["Soko.market storefront"],
     contextScripts: [...defaultBusinessAgentContextScripts],
@@ -487,6 +501,18 @@ export function normalizeBusinessAgentProfile(
     4000
   );
   return {
+    agentDefinitionId:
+      profile.agentDefinitionId === undefined
+        ? defaultAgentDefinitionId
+        : isAgentDefinitionId(profile.agentDefinitionId)
+          ? profile.agentDefinitionId
+          : (() => {
+              throw new Cp2Error(
+                400,
+                "agent_definition_invalid",
+                "Agent definition is not in the approved catalogue."
+              );
+            })(),
     name: normalizeRequiredBoundedText(profile.name, "agent name", 80),
     description: normalizeRequiredBoundedText(profile.description, "agent description", 500),
     modelId: normalizeRequiredBoundedText(profile.modelId, "model id", 160),
@@ -552,6 +578,7 @@ export function hydrateBusinessAgentProfile(
       supportedLanguages: SupportedLanguage[];
       businessCategory: string;
       publicIntroduction: string;
+      agentDefinitionId: AgentDefinitionId;
     }>;
   return {
     ...profile,
@@ -560,6 +587,9 @@ export function hydrateBusinessAgentProfile(
     agentId: legacy.agentId ?? profile.businessId,
     runtimeVersion: legacy.runtimeVersion ?? 1,
     createdAt: legacy.createdAt ?? profile.updatedAt,
+    agentDefinitionId: isAgentDefinitionId(legacy.agentDefinitionId)
+      ? legacy.agentDefinitionId
+      : defaultAgentDefinitionId,
     personalityConfig:
       legacy.personalityConfig ?? defaultAgentPersonality(profile.language, profile.personality),
     instructionPolicy: legacy.instructionPolicy ?? defaultAgentInstructions(profile.instructions),

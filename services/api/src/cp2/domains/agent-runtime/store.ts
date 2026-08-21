@@ -1479,6 +1479,7 @@ export class AgentRuntimeDomain {
       actorId: session.user.id,
       occurredAt: updated.updatedAt,
       payload: {
+        agentDefinitionId: updated.agentDefinitionId,
         language: updated.language,
         modelId: updated.modelId,
         status: updated.status

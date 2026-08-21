@@ -26,6 +26,8 @@ import { YourShopsPanel } from "./YourShopsPanel";
 import {
   listLocalAiModels,
   getOrCreateDeviceModelScopeId,
+  inspectDeviceModelCapability,
+  type DeviceModelCapability,
   type LocalAiModel
 } from "./ai-model-manager";
 import {
@@ -48,13 +50,11 @@ import {
 
 import { postJson, putJson, getJson } from "./api-helpers";
 import { createPublicStorefrontAgentId, createStorefrontUrl } from "./sokoid-and-storefront";
-import {
-  agentSettingsFromBusinessProfile,
-  ensureRequiredAgentContextScripts,
-  sanitizeContextScripts
-} from "./owner-app-bootstrap";
+import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { installedModelRequest, isDownloadableCatalogModel } from "./agent-model-panel-utils";
+import { buildAgentProfileUpdate } from "./agent-profile-payload";
+import { linkInstalledOssAgent, listInstalledOssAgentManifests } from "./oss-agent-installation";
 
 export interface AgentProfileSurfaceProps {
   accountId: string;
@@ -132,6 +132,7 @@ export function AgentProfileSurface({
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
   const [activeAiModelId, setActiveAiModelId] = useState(agent.model);
   const [localAiModels, setLocalAiModels] = useState<LocalAiModel[]>(() => listLocalAiModels());
+  const [deviceCapability, setDeviceCapability] = useState<DeviceModelCapability | null>(null);
   const [deviceId] = useState(() => getOrCreateDeviceModelScopeId());
   const [agentModelAssignment, setAgentModelAssignment] =
     useState<DeviceAgentModelAssignment | null>(() =>
@@ -148,6 +149,9 @@ export function AgentProfileSurface({
     void loadAgentProfile();
     void loadAgentRuntimeDetails();
     void loadAgentModelAssignment();
+    void inspectDeviceModelCapability()
+      .then(setDeviceCapability)
+      .catch(() => undefined);
   }, [accountId, business.id]);
 
   async function runProfileAction(key: string, action: () => Promise<void>) {
@@ -345,31 +349,20 @@ export function AgentProfileSurface({
     try {
       const saved = await putJson<BusinessAgentProfileSummary>(
         `/businesses/${business.id}/agent-profile`,
-        {
-          name: draftAgent.name,
-          description: draftAgent.description,
-          modelId: draftAgent.model,
-          role: draftAgent.role,
-          language: draftAgent.language,
-          personality: draftAgent.personality,
-          personalityConfig: draftAgent.personalityConfig,
-          instructions: draftAgent.instructions,
-          instructionPolicy: draftAgent.instructionPolicy,
-          knowledge: draftAgent.knowledge,
-          tools: draftAgent.tools,
-          skillBindings: draftAgent.skillBindings,
-          integrations: draftAgent.integrations,
-          contextScripts: ensureRequiredAgentContextScripts(
-            sanitizeContextScripts(draftAgent.contextScripts)
-          ),
-          memoryPolicy: draftAgent.memoryPolicy,
-          evaluationPolicy: draftAgent.evaluationPolicy,
-          supportedLanguages: draftAgent.supportedLanguages,
-          businessCategory: draftAgent.businessCategory,
-          publicIntroduction: draftAgent.publicIntroduction,
-          status: draftAgent.status
-        }
+        buildAgentProfileUpdate(draftAgent)
       );
+      if (
+        saved.agentDefinitionId !== "builtin:shopkeeper" &&
+        listInstalledOssAgentManifests().some(
+          (manifest) => manifest.agent.id === saved.agentDefinitionId
+        )
+      ) {
+        linkInstalledOssAgent({
+          businessId: business.id,
+          deviceId,
+          agentDefinitionId: saved.agentDefinitionId
+        });
+      }
       onAgentChange({
         ...agentSettingsFromBusinessProfile(saved, business),
         globalAgentId: publicAgentId,
@@ -465,6 +458,8 @@ export function AgentProfileSurface({
           activeAiModelId={activeAiModelId}
           activeInstalledModel={activeInstalledModel}
           activeAiModel={activeAiModel}
+          deviceCapability={deviceCapability}
+          backendAvailable={navigator.onLine && runtimeReadiness?.ready === true}
         />
 
         <AgentReadinessPanel
