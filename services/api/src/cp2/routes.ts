@@ -77,9 +77,17 @@ import {
   type GitHubModelCatalog
 } from "./github-model-catalog.js";
 import {
+  createGitHubAgentCatalogFromEnvironment,
+  type GitHubAgentCatalog
+} from "./github-agent-catalog.js";
+import {
   createHuggingFaceModelCatalogFromEnvironment,
   type HuggingFaceModelCatalog
 } from "./huggingface-model-catalog.js";
+import {
+  createHuggingFaceAgentCatalogFromEnvironment,
+  type HuggingFaceAgentCatalog
+} from "./huggingface-agent-catalog.js";
 import type { ReceiptOCRProcessor } from "./receipt-ocr-provider.js";
 import type { BinaryUploadPipeline } from "./binary-upload-pipeline.js";
 import type { OwnerNodeBroker } from "../inference/owner-node-broker.js";
@@ -88,7 +96,9 @@ import { readAuthRuntimeConfig } from "./auth-runtime-config.js";
 export interface Cp2RouteOptions {
   binaryUploadPipeline?: BinaryUploadPipeline;
   emailProvider?: EmailProvider;
+  githubAgentCatalog?: GitHubAgentCatalog;
   githubModelCatalog?: GitHubModelCatalog;
+  huggingFaceAgentCatalog?: HuggingFaceAgentCatalog;
   huggingFaceModelCatalog?: HuggingFaceModelCatalog;
   oauthAllowedRedirectOrigins?: string[];
   ownerNodeBroker?: OwnerNodeBroker;
@@ -228,8 +238,12 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   const binaryUploadPipeline = options.binaryUploadPipeline;
   const githubModelCatalog =
     options.githubModelCatalog ?? createGitHubModelCatalogFromEnvironment();
+  const githubAgentCatalog =
+    options.githubAgentCatalog ?? createGitHubAgentCatalogFromEnvironment();
   const huggingFaceModelCatalog =
     options.huggingFaceModelCatalog ?? createHuggingFaceModelCatalogFromEnvironment();
+  const huggingFaceAgentCatalog =
+    options.huggingFaceAgentCatalog ?? createHuggingFaceAgentCatalogFromEnvironment();
   const emailProvider = options.emailProvider ?? createEmailProviderFromEnvironment();
   const oauthAllowedRedirectOrigins = new Set(options.oauthAllowedRedirectOrigins ?? []);
   const realtimeAllowedOrigins = new Set(options.realtimeAllowedOrigins ?? []);
@@ -1391,7 +1405,14 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   );
 
-  registerAgentRuntimeRoutes(app, store, githubModelCatalog, huggingFaceModelCatalog);
+  registerAgentRuntimeRoutes(
+    app,
+    store,
+    githubModelCatalog,
+    huggingFaceModelCatalog,
+    githubAgentCatalog,
+    huggingFaceAgentCatalog
+  );
 
   registerMessagingRoutes(app, store, oauthAllowedRedirectOrigins, options.vapidPublicKey);
 

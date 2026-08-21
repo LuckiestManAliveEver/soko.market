@@ -74,6 +74,7 @@ import { useSyncState } from "./hooks/useSyncState";
 import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
+import { useOssAgentSelectionState } from "./hooks/useOssAgentSelectionState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { surfaceForShellView } from "./cross-device-session-context";
 import { clearPersistentApiRequestCache } from "./api-request-cache";
@@ -137,8 +138,6 @@ import {
 } from "./chat-message-plumbing";
 
 import { useInstallPrompt } from "./misc-browser-utils";
-
-import { PrimaryNavigation } from "./PrimaryNavigation";
 
 import { BusinessSetupPanel } from "./BusinessSetupPanel";
 
@@ -963,6 +962,16 @@ export function OwnerApp() {
     localStorage.setItem(activeAgentStorageKey, JSON.stringify(agentSettings));
   }, [agentSettings, business, session]);
 
+  useOssAgentSelectionState({
+    agentSettings,
+    setAgentSettings,
+    business,
+    session,
+    isOnline,
+    setupComplete,
+    setStatusMessage
+  });
+
   useEffect(() => {
     localStorage.setItem(activeModeStorageKey, mode);
   }, [mode]);
@@ -1778,19 +1787,7 @@ export function OwnerApp() {
               onCreateBusiness={() => void runAction("business-create", createBusiness)}
             />
           ) : (
-            <main
-              className={`chat-workspace-shell ${
-                business !== null && mode === "seller" ? "with-primary-navigation" : ""
-              }`}
-            >
-              {business !== null && mode === "seller" ? (
-                <PrimaryNavigation
-                  activeView={view}
-                  notificationCount={notificationInbox.summary.unread}
-                  onNavigate={navigateToView}
-                  onPrefetch={(nextView) => prefetchOwnerView(nextView, business.id)}
-                />
-              ) : null}
+            <main className="chat-workspace-shell">
               {deviceCloudFallbackModelId !== null ? (
                 <section
                   className="device-model-fallback-notice"

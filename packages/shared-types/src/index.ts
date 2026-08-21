@@ -3397,6 +3397,99 @@ export interface AgentPersonality {
   additionalGuidance: string;
 }
 
+export type AgentDefinitionId =
+  "builtin:shopkeeper" | `github:${string}/${string}` | `huggingface:${string}/${string}`;
+export type OssAgentSource = "github" | "huggingface";
+export type OssAgentRuntime =
+  "docker" | "gradio" | "javascript" | "python" | "typescript" | "unknown";
+export type OssAgentExecutionMode = "hosted-api" | "backend-adapter";
+
+export interface AgentDefinition {
+  id: AgentDefinitionId;
+  displayName: string;
+  role: string;
+  description: string;
+  operatingPattern: string;
+  workloadClass: "focused";
+  minimumDeviceTier: BrowserDeviceTier;
+  minimumMemoryGb: number;
+  recommendedContextTokens: number;
+  personality: string;
+  instructions: string;
+  knowledge: string;
+  tools: string[];
+  skillIds: RuntimeToolName[];
+}
+
+export interface OssAgentSummary {
+  id: AgentDefinitionId;
+  label: string;
+  description: string;
+  source: OssAgentSource;
+  sourceId: string;
+  sourceUrl: string;
+  license: string;
+  licenseUrl: string;
+  licenseVerified: boolean;
+  runtime: OssAgentRuntime;
+  executionMode: OssAgentExecutionMode;
+  minimumDeviceTier: BrowserDeviceTier;
+  minimumMemoryGb: number;
+  requiresGpu: boolean;
+  popularity: number;
+  capabilities: string[];
+  updatedAt: string | null;
+}
+
+export interface OssAgentSearchResult {
+  agents: OssAgentSummary[];
+  status: "available" | "unavailable";
+  connection: "authenticated" | "public";
+  message: string;
+}
+
+/**
+ * Safe offline fallback for legacy profiles and discovery outages. Owner-facing agent choices are
+ * discovered from GitHub and Hugging Face rather than this built-in definition.
+ */
+export const defaultAgentDefinitionId: AgentDefinitionId = "builtin:shopkeeper";
+export const defaultAgentDefinition: AgentDefinition = {
+  id: defaultAgentDefinitionId,
+  displayName: "Shopkeeper",
+  role: "General shopkeeper and storefront attendant",
+  description: "Safe offline fallback while the open-source agent catalogue is unavailable.",
+  operatingPattern: "Focused operator",
+  workloadClass: "focused",
+  minimumDeviceTier: "low",
+  minimumMemoryGb: 2,
+  recommendedContextTokens: 1_024,
+  personality: "Warm, concise, accurate and commercially practical",
+  instructions:
+    "Handle one clear shop task at a time, use saved business records, and ask before risky changes.",
+  knowledge: "Use saved products, customers, invoices, payments, receipts and shop policies.",
+  tools: [
+    "Products",
+    "Customers",
+    "Suppliers",
+    "Invoices",
+    "Payments",
+    "Receipts",
+    "Reports",
+    "Notifications",
+    "Logistics"
+  ],
+  skillIds: []
+};
+
+export function isAgentDefinitionId(value: unknown): value is AgentDefinitionId {
+  return (
+    value === defaultAgentDefinitionId ||
+    (typeof value === "string" &&
+      value.length <= 220 &&
+      /^(?:github|huggingface):[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(value))
+  );
+}
+
 export interface AgentInstructions {
   generalOperatingRules: string[];
   salesRules: string[];

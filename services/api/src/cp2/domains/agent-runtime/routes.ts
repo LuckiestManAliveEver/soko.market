@@ -46,7 +46,10 @@ import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, isSupportedLanguage, readSessionCookie } from "../../store.js";
 import type { GitHubModelCatalog } from "../../github-model-catalog.js";
 import type { HuggingFaceModelCatalog } from "../../huggingface-model-catalog.js";
+import type { GitHubAgentCatalog } from "../../github-agent-catalog.js";
+import type { HuggingFaceAgentCatalog } from "../../huggingface-agent-catalog.js";
 import type { BusinessAgentProfileInput } from "./shared.js";
+import { defaultAgentDefinitionId, isAgentDefinitionId } from "@soko/shared-types";
 import { parseRuntimeRecallEscalation, parseRuntimeTurnBody } from "./runtime-turn-request.js";
 export { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 import {
@@ -176,6 +179,7 @@ interface AiModelActivationBody {
 }
 
 interface AgentProfileBody {
+  agentDefinitionId?: string;
   name?: string;
   description?: string;
   modelId?: string;
@@ -262,7 +266,9 @@ export function registerAgentRuntimeRoutes(
   app: FastifyInstance,
   store: Cp2Store,
   githubModelCatalog: GitHubModelCatalog,
-  huggingFaceModelCatalog: HuggingFaceModelCatalog
+  huggingFaceModelCatalog: HuggingFaceModelCatalog,
+  githubAgentCatalog: GitHubAgentCatalog,
+  huggingFaceAgentCatalog: HuggingFaceAgentCatalog
 ): void {
   app.get(
     "/v1/ai-models",
@@ -291,6 +297,28 @@ export function registerAgentRuntimeRoutes(
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
       try {
         return await huggingFaceModelCatalog.searchModels(request.query.search);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/oss-agents/github",
+    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
+      try {
+        return await githubAgentCatalog.searchAgents(request.query.search);
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/oss-agents/huggingface",
+    async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
+      try {
+        return await huggingFaceAgentCatalog.searchAgents(request.query.search);
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1038,6 +1066,14 @@ export function registerAgentRuntimeRoutes(
 }
 
 function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInput {
+  const agentDefinitionId = body.agentDefinitionId ?? defaultAgentDefinitionId;
+  if (!isAgentDefinitionId(agentDefinitionId)) {
+    throw new Cp2Error(
+      400,
+      "agent_definition_invalid",
+      "Agent definition is not in the approved catalogue."
+    );
+  }
   const language = parseString(body.language, "language");
   if (!isSupportedLanguage(language)) {
     throw new Cp2Error(400, "language_invalid", "language is not supported.");
@@ -1077,6 +1113,7 @@ function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInpu
           return item;
         });
   return {
+    agentDefinitionId,
     name: parseString(body.name, "name"),
     description: parseString(body.description, "description"),
     modelId: parseString(body.modelId, "modelId"),

@@ -3,6 +3,7 @@ import { type PublicKeyCredentialCreationOptionsJSON } from "@simplewebauthn/bro
 import type { CountryCode } from "libphonenumber-js";
 
 import type {
+  AgentDefinitionId,
   AgentEvaluationPolicy,
   AgentInstructions,
   AgentMemoryPolicy,
@@ -152,6 +153,7 @@ export interface CatalogAiModelSearchResponse {
 }
 
 export interface BusinessAgentProfileSummary {
+  agentDefinitionId: AgentDefinitionId;
   businessId: string;
   tenantId: string;
   shopId: string;
@@ -282,6 +284,7 @@ export type ActiveBusiness = BusinessResponse["business"] & {
 export type AgentModel = string;
 
 export interface AgentSettings {
+  agentDefinitionId: AgentDefinitionId;
   id: string;
   name: string;
   description: string;

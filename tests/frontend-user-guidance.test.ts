@@ -142,18 +142,22 @@ describe("frontend user guidance", () => {
     expect(manager).toContain("Qwen2.5 0.5B offline default");
   });
 
-  it("keeps primary seller destinations visible and changes modes without animation delay", () => {
+  it("keeps primary seller destinations reachable through the Workspace hub and changes modes without animation delay", () => {
+    // The permanent PrimaryNavigation tab bar was removed so the sessions list is the only fixed
+    // shell nav (per the mockup's "nothing is a route" thesis) - the same destinations it used to
+    // expose (Stock/Sales/Docs/Settings) now live as cards in the Workspace hub instead.
     const application = readFileSync("apps/web/src/SokoApplication.tsx", "utf8");
-    const primaryNavigation = readFileSync("apps/web/src/PrimaryNavigation.tsx", "utf8");
+    const workspaceHub = readFileSync("apps/web/src/ContextualBusinessCards.tsx", "utf8");
     const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
-    expect(primaryNavigation).toContain('aria-label="Business navigation"');
-    expect(primaryNavigation).toContain('shortLabel: "Stock"');
-    expect(primaryNavigation).toContain('shortLabel: "Sales"');
-    expect(primaryNavigation).toContain('shortLabel: "Docs"');
+    expect(existsSync("apps/web/src/PrimaryNavigation.tsx")).toBe(false);
+    expect(workspaceHub).toContain('title: "Catalogue"');
+    expect(workspaceHub).toContain('title: "Make a Sale"');
+    expect(workspaceHub).toContain('title: "Knowledge"');
+    expect(workspaceHub).toContain('title: "Agent & Settings"');
     expect(application).not.toContain("runViewTransition");
     expect(application).toContain("markNavigationCommitted(measurement)");
-    expect(styles).toContain(".primary-navigation");
+    expect(styles).not.toContain(".primary-navigation");
     expect(styles).toContain("prefers-reduced-motion: reduce");
   });
 

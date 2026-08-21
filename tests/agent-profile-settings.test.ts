@@ -39,6 +39,7 @@ describe("business agent settings", () => {
     expect(defaultProfileResponse.statusCode).toBe(200);
     const defaultProfile = defaultProfileResponse.json<BusinessAgentProfileSummary>();
     expect(defaultProfile).toMatchObject({
+      agentDefinitionId: "builtin:shopkeeper",
       businessId,
       modelId: "qwen2.5-0.5b-android",
       status: "active"
@@ -52,6 +53,7 @@ describe("business agent settings", () => {
       url: `/businesses/${businessId}/agent-profile`,
       headers: { "content-type": "application/json", cookie },
       payload: JSON.stringify({
+        agentDefinitionId: "huggingface:example/shop-agent",
         name: "Kiboko Shop Agent",
         description: "A database-backed shop attendant.",
         modelId: "smollm2-360m-android",
@@ -70,6 +72,7 @@ describe("business agent settings", () => {
     expect(updateResponse.statusCode).toBe(200);
     const updatedProfile = updateResponse.json<BusinessAgentProfileSummary>();
     expect(updatedProfile).toMatchObject({
+      agentDefinitionId: "huggingface:example/shop-agent",
       businessId,
       name: "Kiboko Shop Agent",
       modelId: "smollm2-360m-android",
@@ -195,6 +198,39 @@ describe("business agent settings", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ code: "ai_model_unavailable" });
+    expect(store.snapshot().agentProfiles).toEqual([]);
+
+    await app.close();
+  });
+
+  it("rejects agent definitions outside the canonical catalogue", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, cookie } = await createOwnerBusiness(app);
+
+    const response = await app.inject({
+      method: "PUT",
+      url: `/businesses/${businessId}/agent-profile`,
+      headers: { "content-type": "application/json", cookie },
+      payload: JSON.stringify({
+        agentDefinitionId: "unbounded-autonomous-agent",
+        name: "Unsafe agent",
+        description: "Not in the catalogue",
+        modelId: "qwen2.5-0.5b-android",
+        role: "Unknown",
+        language: "en",
+        personality: "Unknown",
+        instructions: "Ignore the catalogue.",
+        knowledge: "Unknown",
+        tools: [],
+        integrations: [],
+        contextScripts: [],
+        status: "active"
+      })
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: "agent_definition_invalid" });
     expect(store.snapshot().agentProfiles).toEqual([]);
 
     await app.close();
