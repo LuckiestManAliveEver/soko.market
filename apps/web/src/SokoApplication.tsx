@@ -1,12 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Surface } from "@soko/ui";
-import type {
-  E2eeDeviceSummary,
-  AgentRuntimeReadiness,
-  OssAgentSearchResult,
-  SokoSessionContext
-} from "@soko/shared-types";
+import type { E2eeDeviceSummary, SokoSessionContext } from "@soko/shared-types";
 import {
   createInitialChatMessages,
   type ChatMessage,
@@ -17,16 +12,8 @@ import {
 import {
   browserGgufRuntimeSupported,
   listLocalAiModels,
-  getOrCreateDeviceModelScopeId,
-  inspectDeviceModelCapability
+  getOrCreateDeviceModelScopeId
 } from "./ai-model-manager";
-import { applyOssAgent, rankOssAgentsForDevice, selectLeastMemoryOssAgent } from "./agent-catalog";
-import { buildAgentProfileUpdate } from "./agent-profile-payload";
-import {
-  installOssAgentManifest,
-  linkInstalledOssAgent,
-  readDeviceOssAgentBinding
-} from "./oss-agent-installation";
 import {
   assignmentAfterReadiness,
   readDeviceAgentModelAssignment,
@@ -87,6 +74,7 @@ import { useSyncState } from "./hooks/useSyncState";
 import { usePaymentsState } from "./hooks/usePaymentsState";
 import { useSuppliersState } from "./hooks/useSuppliersState";
 import { useNotificationsState } from "./hooks/useNotificationsState";
+import { useOssAgentSelectionState } from "./hooks/useOssAgentSelectionState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { surfaceForShellView } from "./cross-device-session-context";
 import { clearPersistentApiRequestCache } from "./api-request-cache";
@@ -113,7 +101,6 @@ import {
   AccountRestorationPanel,
   type ActiveBusiness,
   type AgentSettings,
-  type BusinessAgentProfileSummary,
   type CountryDialCode,
   PhoneFirstAuthentication,
   PhoneSignup,
@@ -131,7 +118,7 @@ import {
   uiBackgroundRefreshIntervalMs
 } from "./soko-application-shared";
 
-import { getJson, postJson, putJson } from "./api-helpers";
+import { postJson } from "./api-helpers";
 
 import { createPublicStorefrontUrl } from "./sokoid-and-storefront";
 import { inferCountryCode } from "./country-dial-codes";
@@ -141,8 +128,7 @@ import {
   readStoredAgent,
   readStoredOwnerAuth,
   readSetupDraft,
-  createDefaultAgent,
-  agentSettingsFromBusinessProfile
+  createDefaultAgent
 } from "./owner-app-bootstrap";
 
 import {
@@ -238,7 +224,6 @@ export function OwnerApp() {
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
   const chatModelRuntimeRef = useRef<AgentModelRuntime | null>(null);
   const restoredModelInstallationRef = useRef<string | null>(null);
-  const automaticAgentSelectionRef = useRef(new Set<string>());
 
   const publicStorefrontUrl = business === null ? "" : createPublicStorefrontUrl(business);
   const userLabel = session?.user.displayName ?? "Guest";
@@ -977,101 +962,15 @@ export function OwnerApp() {
     localStorage.setItem(activeAgentStorageKey, JSON.stringify(agentSettings));
   }, [agentSettings, business, session]);
 
-  useEffect(() => {
-    if (!setupComplete || !isOnline || session === null || business === null) {
-      return;
-    }
-
-    const selectionKey = `${session.account.id}:${business.id}`;
-    if (automaticAgentSelectionRef.current.has(selectionKey)) return;
-    automaticAgentSelectionRef.current.add(selectionKey);
-    let cancelled = false;
-    let completed = false;
-
-    void (async () => {
-      const profile = await getJson<BusinessAgentProfileSummary>(
-        `/businesses/${business.id}/agent-profile`
-      );
-      if (profile.agentDefinitionId !== "builtin:shopkeeper") {
-        if (!cancelled) setAgentSettings(agentSettingsFromBusinessProfile(profile, business));
-        const deviceId = getOrCreateDeviceModelScopeId();
-        const binding = readDeviceOssAgentBinding(business.id, deviceId);
-        if (binding?.agentDefinitionId === profile.agentDefinitionId) {
-          completed = true;
-          return;
-        }
-        const separator = profile.agentDefinitionId.indexOf(":");
-        const source = profile.agentDefinitionId.slice(0, separator);
-        const sourceId = profile.agentDefinitionId.slice(separator + 1);
-        const catalogue = await getJson<OssAgentSearchResult>(
-          `/v1/oss-agents/${source}?search=${encodeURIComponent(sourceId)}`
-        );
-        const selected = catalogue.agents.find(
-          (candidate) => candidate.id === profile.agentDefinitionId && candidate.licenseVerified
-        );
-        if (selected !== undefined) {
-          installOssAgentManifest(selected);
-          linkInstalledOssAgent({
-            businessId: business.id,
-            deviceId,
-            agentDefinitionId: selected.id
-          });
-          completed = true;
-        }
-        return;
-      }
-
-      const [capability, readiness, github, huggingFace] = await Promise.all([
-        inspectDeviceModelCapability(),
-        getJson<AgentRuntimeReadiness>(`/businesses/${business.id}/agent-runtime/readiness`),
-        getJson<OssAgentSearchResult>("/v1/oss-agents/github"),
-        getJson<OssAgentSearchResult>("/v1/oss-agents/huggingface")
-      ]);
-      const agents = new Map(
-        [...huggingFace.agents, ...github.agents].map((candidate) => [candidate.id, candidate])
-      );
-      const selected = selectLeastMemoryOssAgent(
-        rankOssAgentsForDevice({
-          agents: [...agents.values()],
-          capability,
-          backendAvailable: readiness.ready
-        })
-      );
-      if (selected === null) return;
-
-      installOssAgentManifest(selected.agent);
-      const nextAgent = applyOssAgent(
-        agentSettingsFromBusinessProfile(profile, business),
-        selected.agent
-      );
-      const saved = await putJson<BusinessAgentProfileSummary>(
-        `/businesses/${business.id}/agent-profile`,
-        buildAgentProfileUpdate(nextAgent)
-      );
-      linkInstalledOssAgent({
-        businessId: business.id,
-        deviceId: getOrCreateDeviceModelScopeId(),
-        agentDefinitionId: saved.agentDefinitionId
-      });
-      completed = true;
-      if (!cancelled) {
-        setAgentSettings(agentSettingsFromBusinessProfile(saved, business));
-        setStatusMessage(
-          `${selected.agent.label} was downloaded as the lowest-memory compatible agent and linked to chat.`
-        );
-      }
-    })()
-      .catch(() => {
-        // Discovery, storage, or persistence failures leave the safe built-in fallback active.
-      })
-      .finally(() => {
-        if (!completed) automaticAgentSelectionRef.current.delete(selectionKey);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [agentSettings.agentDefinitionId, business?.id, isOnline, session?.account.id, setupComplete]);
+  useOssAgentSelectionState({
+    agentSettings,
+    setAgentSettings,
+    business,
+    session,
+    isOnline,
+    setupComplete,
+    setStatusMessage
+  });
 
   useEffect(() => {
     localStorage.setItem(activeModeStorageKey, mode);
