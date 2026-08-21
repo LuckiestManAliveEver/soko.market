@@ -1,20 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const scriptPath = join(process.cwd(), "scripts/check-shellview-boundary.mjs");
-
-function run(cwd: string): { status: number; stdout: string; stderr: string } {
-  try {
-    const stdout = execFileSync("node", [scriptPath], { cwd, encoding: "utf8" });
-    return { status: 0, stdout, stderr: "" };
-  } catch (error) {
-    const failure = error as { status: number; stdout: string; stderr: string };
-    return { status: failure.status, stdout: failure.stdout, stderr: failure.stderr };
-  }
-}
+import {
+  checkShellViewBoundary,
+  formatShellViewBoundaryViolations
+} from "../scripts/check-shellview-boundary.mjs";
 
 function writeFixtureAppShell(workspace: string, shellViewSource: string): void {
   const shellDir = join(workspace, "apps", "web", "src");
@@ -31,9 +23,9 @@ function writeFixtureAppShell(workspace: string, shellViewSource: string): void 
  */
 describe("check-shellview-boundary script", () => {
   it("passes against the real repository (every current ShellView is documented)", () => {
-    const result = run(process.cwd());
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("boundary check passed");
+    const result = checkShellViewBoundary(process.cwd());
+    expect(result.violations).toEqual([]);
+    expect(result.liveShellViews).toHaveLength(18);
   });
 
   it("fails and names the offending view when an undocumented ShellView is added", () => {
@@ -44,10 +36,11 @@ describe("check-shellview-boundary script", () => {
         'export type ShellView =\n  | "home"\n  | "products"\n  | "warehouse-transfers";\n'
       );
 
-      const result = run(workspace);
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('"warehouse-transfers"');
-      expect(result.stderr).toContain("docs/frontend/frontend.md");
+      const result = checkShellViewBoundary(workspace);
+      expect(result.violations).toEqual(["warehouse-transfers"]);
+      const message = formatShellViewBoundaryViolations(result.violations);
+      expect(message).toContain('"warehouse-transfers"');
+      expect(message).toContain("docs/frontend/frontend.md");
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -58,8 +51,7 @@ describe("check-shellview-boundary script", () => {
     try {
       writeFixtureAppShell(workspace, 'export type ShellView =\n  | "home"\n  | "products";\n');
 
-      const result = run(workspace);
-      expect(result.status).toBe(0);
+      expect(checkShellViewBoundary(workspace).violations).toEqual([]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

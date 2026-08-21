@@ -91,12 +91,12 @@ describe("frontend navigation performance contracts", () => {
     );
   });
 
-  it("warms likely follow-up screens without keeping message-heavy chat UI mounted", () => {
+  it("warms likely follow-up modules while keeping the conversation mounted", () => {
     const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
 
     expect(likelyNextOwnerViews("chat")).toEqual(["products", "invoices"]);
     expect(likelyNextOwnerViews("invoices")).toEqual(["payments", "logistics"]);
-    expect(chatSurface).toContain('const showMessageThread = activeView === "chat"');
+    expect(chatSurface).toContain("const showMessageThread = true;");
     expect(chatSurface).toContain("const visibleConversations = showMessageThread");
     expect(chatSurface).toContain("showMessageThread && isInboxOpen");
     expect(chatSurface).toContain('behavior: "auto"');

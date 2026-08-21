@@ -42,7 +42,7 @@ import type {
 import { Cp2Error, assertValid } from "../../cp2-error.js";
 import { roundMoney } from "../../money.js";
 import { normalizeDestination } from "../../phone-identity.js";
-import { sanitizeNetworkNode } from "../network/shared.js";
+import { sanitizeNetworkNode } from "../../network-node-view.js";
 import {
   averageReceiptBlockConfidence,
   buildReceiptFieldEvidence,
@@ -128,7 +128,12 @@ export class SupplierDomain {
     businessId: string;
     now?: Date;
   }): SupplierBusinessCardSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:read",
+      input.now
+    );
     return [...this.suppliers.values()]
       .filter((supplier) => supplier.businessId === input.businessId)
       .map((supplier) => this.supplierBusinessCard(supplier));
@@ -255,7 +260,12 @@ export class SupplierDomain {
     supplierId?: string;
     now?: Date;
   }): SalesAgentSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "supplier:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "supplier:read",
+      input.now
+    );
     return [...this.salesAgents.values()]
       .filter(
         (agent) =>
@@ -680,6 +690,28 @@ export class SupplierDomain {
     this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
     const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
 
+    if (["CONFIRMED", "PURCHASE_RECORDED", "COMPLETED", "confirmed"].includes(job.status)) {
+      const existing = [...this.purchaseReceipts.values()].find(
+        (receipt) => receipt.businessId === input.businessId && receipt.ocrJobId === input.ocrJobId
+      );
+      if (existing !== undefined) {
+        return { ...existing, lineItems: this.receiptLineItemsForReceipt(existing.id) };
+      }
+      throw new Cp2Error(
+        409,
+        "receipt_ocr_already_confirmed",
+        "This receipt scan was already confirmed."
+      );
+    }
+
+    if (job.status === "CANCELLED") {
+      throw new Cp2Error(
+        409,
+        "receipt_ocr_cancelled",
+        "A cancelled receipt scan cannot be confirmed."
+      );
+    }
+
     if (job.status === "failed" || job.status === "FAILED") {
       throw new Cp2Error(409, "receipt_ocr_failed", job.errorMessage ?? "Receipt OCR failed.");
     }
@@ -788,6 +820,140 @@ export class SupplierDomain {
     }
 
     return receipt;
+  }
+
+  correctReceiptOCRJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    ocrJobId: string;
+    extractedText: string;
+    now?: Date;
+  }): ReceiptOCRJobSummary {
+    const now = input.now ?? new Date();
+    const session = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "import:write",
+      now
+    );
+    const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
+
+    if (
+      ["CONFIRMED", "PURCHASE_RECORDED", "COMPLETED", "CANCELLED", "confirmed"].includes(job.status)
+    ) {
+      throw new Cp2Error(
+        409,
+        "receipt_ocr_already_confirmed",
+        "A completed receipt scan cannot be corrected."
+      );
+    }
+
+    const extractedText = input.extractedText.trim();
+    if (extractedText.length === 0) {
+      throw new Cp2Error(
+        400,
+        "receipt_ocr_correction_required",
+        "Corrected receipt text is required."
+      );
+    }
+
+    const parsed = parseReceiptText(extractedText);
+    const matchedSupplier = this.matchSupplier(input.businessId, parsed.supplierName, parsed.phone);
+    const matchedAgent =
+      matchedSupplier === null
+        ? null
+        : this.matchSalesAgent(
+            input.businessId,
+            matchedSupplier.id,
+            parsed.salesAgentName,
+            parsed.phone
+          );
+    const blocks = buildReceiptOCRBlocks(extractedText, 1);
+    const warnings = buildReceiptOCRWarnings(parsed, true);
+    const contactMatchingResult = this.createReceiptContactMatchingResult({
+      businessId: input.businessId,
+      ownerUserId: session.user.id,
+      ocrJobId: job.id,
+      parsed,
+      matchedSupplier,
+      matchedAgent
+    });
+    const corrected: ReceiptOCRJobSummary = {
+      ...job,
+      status:
+        matchedSupplier === null || parsed.items.length === 0 ? "REVIEW_REQUIRED" : "MATCHING",
+      blocks,
+      fullText: extractedText,
+      averageConfidence: averageReceiptBlockConfidence(blocks),
+      warnings,
+      fieldEvidence: buildReceiptFieldEvidence(parsed, extractedText),
+      structuredExtraction: buildReceiptStructuredExtraction(parsed),
+      contactMatchingResult,
+      supplierCandidates: contactMatchingResult.supplier.candidates,
+      salesAgentCandidates: contactMatchingResult.salesAgent.candidates,
+      supplierName: parsed.supplierName,
+      salesAgentName: parsed.salesAgentName,
+      phone: parsed.phone,
+      receiptDate: parsed.receiptDate,
+      total: parsed.total,
+      items: parsed.items,
+      matchedSupplierId: matchedSupplier?.id ?? null,
+      matchedSalesAgentId: matchedAgent?.id ?? null,
+      errorMessage: null,
+      failureCode: null,
+      processingStartedAt: now.toISOString(),
+      completedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    this.receiptOCRJobs.set(corrected.id, corrected);
+    return corrected;
+  }
+
+  cancelReceiptOCRJob(input: {
+    sessionId: string | null;
+    businessId: string;
+    ocrJobId: string;
+    now?: Date;
+  }): ReceiptOCRJobSummary {
+    const now = input.now ?? new Date();
+    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "import:write", now);
+    const job = this.requireReceiptOCRJob(input.businessId, input.ocrJobId);
+
+    if (job.status === "CANCELLED") {
+      return job;
+    }
+
+    if (["CONFIRMED", "PURCHASE_RECORDED", "COMPLETED", "confirmed"].includes(job.status)) {
+      throw new Cp2Error(
+        409,
+        "receipt_ocr_already_confirmed",
+        "A confirmed receipt scan cannot be cancelled."
+      );
+    }
+
+    const cancelled: ReceiptOCRJobSummary = {
+      ...job,
+      status: "CANCELLED",
+      imageRetained: false,
+      imageDeletedAt: job.imageRetained ? now.toISOString() : job.imageDeletedAt,
+      cleanupPending: false,
+      completedAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+    this.receiptOCRJobs.set(cancelled.id, cancelled);
+    return cancelled;
+  }
+
+  listReceiptOCRJobs(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): ReceiptOCRJobSummary[] {
+    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "import:read", input.now);
+    return [...this.receiptOCRJobs.values()]
+      .filter((job) => job.businessId === input.businessId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   listPurchaseReceipts(input: {

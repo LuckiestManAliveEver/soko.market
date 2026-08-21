@@ -122,10 +122,10 @@ describe("frontend user guidance", () => {
     expect(agentCommandEngine).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
-    const chatSurface = readFileSync("apps/web/src/ChatSurface.tsx", "utf8");
-    expect(chatSurface).toContain("OCR ready for scans and images");
+    const chatComposer = readFileSync("apps/web/src/ChatComposer.tsx", "utf8");
+    expect(chatComposer).toContain("OCR ready for scans and images");
     expect(chatMessagePlumbing).toContain("/documents/ocr");
-    expect(chatSurface).toContain("Extract all readable text");
+    expect(chatComposer).toContain("Extract all readable text");
   });
 
   it("separates installed Android models from the commercially permitted download catalog", () => {
@@ -174,7 +174,10 @@ describe("frontend user guidance", () => {
   it("connects the Android model library to Hugging Face, GitHub, and device-fit ranking", () => {
     const application = readFileSync("apps/web/src/AgentModelPanel.tsx", "utf8");
     const manager = readFileSync("apps/web/src/ai-model-manager.ts", "utf8");
-    const store = readFileSync("services/api/src/cp2/domains/agent-runtime/shared.ts", "utf8");
+    const modelCatalog = readFileSync(
+      "services/api/src/cp2/domains/agent-runtime/model-catalog.ts",
+      "utf8"
+    );
     const githubCatalog = readFileSync("services/api/src/cp2/github-model-catalog.ts", "utf8");
     const huggingFaceCatalog = readFileSync(
       "services/api/src/cp2/huggingface-model-catalog.ts",
@@ -188,9 +191,9 @@ describe("frontend user guidance", () => {
     expect(application).toContain("rankCatalogModelsForDevice");
     expect(manager).toContain("verified GitHub release asset");
     expect(manager).toContain("The downloaded file is not a valid GGUF model.");
-    expect(store).toContain("tinyllama-1.1b-chat-q3-k-m-android");
-    expect(store).toContain("tinyllama-1.1b-chat-q4-k-m-android");
-    expect(store).toContain('id: "llama-cpp-configured"');
+    expect(modelCatalog).toContain("tinyllama-1.1b-chat-q3-k-m-android");
+    expect(modelCatalog).toContain("tinyllama-1.1b-chat-q4-k-m-android");
+    expect(modelCatalog).toContain('id: "llama-cpp-configured"');
     expect(application).toContain('githubModelDiscovery.connection === "authenticated"');
     expect(application).toContain(
       'githubModelDiscovery.status === "available" ? "Available" : "Unavailable"'
@@ -383,9 +386,7 @@ describe("frontend user guidance", () => {
       'getJson<PublicStorefrontListResponse>("/public/storefronts?limit=24")'
     );
     expect(marketplaceModeCard).toContain("routes.publicAgent(storefront.agentId)");
-    expect(application).toContain(
-      "marketplaceShortcutOpen={isMarketplaceShortcutOpen || session === null}"
-    );
+    expect(application).toContain("marketplaceShortcutOpen={isMarketplaceShortcutOpen}");
     expect(phoneFirst).toContain("Continue to marketplace as guest");
     expect(apiRoutes).toContain('"/public/storefronts"');
   });

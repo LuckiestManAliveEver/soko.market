@@ -75,31 +75,16 @@ import type {
   AgentRuntimeReadiness,
   AgentRuntimeVersion,
   AiModelSummary,
-  AuthSessionView,
   BrowserCheckpointCompatibilityContract,
   BrowserDeviceTier,
   BrowserInferenceAssignmentSummary,
   BrowserRuntimeContract,
-  BusinessReportSummary,
-  BusinessSummary,
-  CatalogueQueryResult,
-  ChannelProvider,
   ClientInferenceCompletion,
-  CustomerSummary,
-  DocumentImportJobSummary,
-  FulfillmentStatus,
   InstalledAgentModelSummary,
-  InvoiceSummary,
-  LogisticsSummary,
-  MembershipSummary,
   ModelExecutionTarget,
   ModelRuntimeHealthSummary,
-  NotificationInbox,
   PreferredExecutionMode,
-  ProductSummary,
-  PurchaseReceiptSummary,
   RuntimeContextSummary,
-  RuntimeModelCompletionResult,
   RuntimeModelConversationMessage,
   RuntimeModelProvider,
   RuntimeModelTrace,
@@ -110,23 +95,17 @@ import type {
   RuntimeToolName,
   RuntimeTurnResult,
   RuntimeTurnSummary,
-  ShopAgentRuntime,
-  SupplierSummary,
-  TrustedMessageAttachmentReference
+  ShopAgentRuntime
 } from "@soko/shared-types";
 import {
   createRuntimeToolProposal,
   createRuntimeToolProposalFromProductContextScript,
-  createRuntimeToolProposalFromReceiptContextScript,
-  invalid,
   parseMerchantCommand,
   parseProductContextScriptCommand,
   parseReceiptContextScriptCommand,
-  parseRuntimeModelOutput,
   productContextScriptMatchToParseResult,
   receiptContextScriptMatchToParseResult,
   runtimeToolRegistry,
-  valid,
   type RuntimeToolProposal
 } from "@soko/tool-core";
 import { queryCatalogueProducts, roleCan, type BusinessPermission } from "@soko/business-core";
@@ -139,30 +118,44 @@ import {
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
   agentAudienceForBusinessRole,
-  assembleAgentInferenceMessage,
   enforceAgentPolicy,
   retrieveAgentContext
 } from "../../agent-business-runtime.js";
 import {
   decideRecallPersistence,
-  parseRecallCandidateFromModelOutput,
   parseRecallEntry,
   recallSearchText,
   serializeRecallEntry,
-  withRecallDistillationInstruction,
   type RecallCandidate,
-  type RecallEntry,
-  type RecallEscalationSignal
+  type RecallEntry
 } from "../../recall-distillation.js";
-import type { CustomerRuntimeCapabilityRecord } from "../messaging/shared.js";
-import type { Cp2Snapshot, SessionRecord } from "../../store.js";
+import type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
+import type { Cp2Snapshot } from "../../store.js";
+import type { AgentRuntimeDomainDeps } from "./domain-deps.js";
+export type { AgentRuntimeDomainDeps } from "./domain-deps.js";
+import {
+  buildShopAgentRuntime as buildShopAgentRuntimeModule,
+  contextSourcesForRuntime as contextSourcesForRuntimeModule
+} from "./runtime-context.js";
+import {
+  createClientInferenceModelRoute,
+  createRuntimeModelRoute,
+  requireReadyClientInferenceCompletion
+} from "./runtime-model-routing.js";
 
+import { executeRuntimeCapability } from "./capabilities.js";
+import {
+  createRuntimeDocumentImportProposal,
+  createRuntimeCommerceProposal,
+  createRuntimeMessagingProposal,
+  createRuntimeNetworkProposal,
+  createRuntimeReceiptProposal
+} from "./planning.js";
 import {
   agentModelAssignmentKey,
   aiModelRegistry,
   assertModelCanBeAssigned,
   browserInferenceAssignmentKey,
-  buildRuntimeModelPrompt,
   cloneAgentContextSource,
   cloneAgentInstructions,
   cloneAgentModelBinding,
@@ -184,11 +177,9 @@ import {
   ensureRequiredAgentContextScripts,
   healthSummary,
   hydrateBusinessAgentProfile,
-  isChannelProvider,
   isUnavailableRuntimeCode,
   maxRuntimeTurnsPerSession,
   modelHealthError,
-  modelTraceFromCompletion,
   normalizeBrowserCheckpointContract,
   normalizeBrowserInferenceTimestamp,
   normalizeBrowserRuntimeContract,
@@ -197,13 +188,10 @@ import {
   normalizeFallbackPolicy,
   normalizeInstalledAgentModel,
   normalizeModelCatalogSearch,
-  normalizeRuntimeLookup,
-  qualifiesForModelFallback,
   resolveDefaultDeviceModelId,
   runtimeAgentProfileFromStored,
   runtimeEvaluationSampled,
   runtimeStatusFromPlan,
-  stableUuid,
   validateAgentModelBindingConfiguration,
   validateBrowserInferenceAssignment,
   type BusinessAgentProfileInput,
@@ -211,176 +199,6 @@ import {
   type PendingRuntimeAction,
   type RuntimeAgentProfile
 } from "./shared.js";
-export interface AgentRuntimeDomainDeps {
-  requireAuthorizedSession: (
-    sessionId: string | null,
-    businessId: string,
-    permission: BusinessPermission,
-    now?: Date
-  ) => AuthSessionView;
-  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
-  recordAuditEvent: (input: {
-    type: string;
-    aggregateType: string;
-    aggregateId: string;
-    actorId: string;
-    occurredAt: string;
-    payload: Record<string, unknown>;
-  }) => void;
-  requireMembership: (businessId: string, userId: string) => MembershipSummary;
-  requireBusiness: (businessId: string) => BusinessSummary;
-  buildRuntimeContext: (businessId: string, userId: string) => RuntimeContextSummary;
-  imageForProduct: (product: ProductSummary) => string | null;
-  importsForBusiness: (businessId: string) => DocumentImportJobSummary[];
-  requireDocumentImport: (businessId: string, importJobId: string) => DocumentImportJobSummary;
-  suppliersForBusiness: (businessId: string) => SupplierSummary[];
-  purchaseReceipts: Map<string, PurchaseReceiptSummary>;
-  queryCatalogue: (input: {
-    sessionId: string | null;
-    businessId: string;
-    query: string;
-    now?: Date;
-  }) => CatalogueQueryResult;
-  listProducts: (input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }) => ProductSummary[];
-  listInvoices: (input: { sessionId: string | null; businessId: string; now?: Date }) => unknown;
-  getBusinessReport: (input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }) => BusinessReportSummary;
-  listNotifications: (input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }) => NotificationInbox;
-  createProduct: (input: {
-    sessionId: string | null;
-    businessId: string;
-    product: {
-      name: string;
-      sku: string | null;
-      unit: string;
-      quantity: number;
-      sellingPrice?: number | null;
-    };
-    now?: Date;
-  }) => ProductSummary;
-  updateProduct: (input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    product: {
-      name: string;
-      sku: string | null;
-      unit: string;
-      quantity: number;
-      buyingPrice: number | null;
-      sellingPrice: number | null;
-    };
-    now?: Date;
-  }) => ProductSummary;
-  adjustProductStock: (input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    adjustment: { quantityAfter: number; reason?: string | null };
-    now?: Date;
-  }) => unknown;
-  deleteProduct: (input: {
-    sessionId: string | null;
-    businessId: string;
-    productId: string;
-    now?: Date;
-  }) => unknown;
-  createCustomer: (input: {
-    sessionId: string | null;
-    businessId: string;
-    customer: {
-      name: string;
-      phone: string | null;
-      email: string | null;
-      notes: string | null;
-    };
-    now?: Date;
-  }) => CustomerSummary;
-  updateCustomer: (input: {
-    sessionId: string | null;
-    businessId: string;
-    customerId: string;
-    customer: { name: string; phone: string | null; email: string | null; notes: string | null };
-    now?: Date;
-  }) => CustomerSummary;
-  createSupplier: (input: {
-    sessionId: string | null;
-    businessId: string;
-    supplier: { name: string; phone: string | null; email: string | null; notes: string | null };
-    now?: Date;
-  }) => SupplierSummary;
-  updateSupplier: (input: {
-    sessionId: string | null;
-    businessId: string;
-    supplierId: string;
-    supplier: { name: string; phone: string | null; email: string | null; notes: string | null };
-    now?: Date;
-  }) => SupplierSummary;
-  updateLogisticsStatus: (input: {
-    sessionId: string | null;
-    businessId: string;
-    logisticsId: string;
-    status: { status: FulfillmentStatus; note?: string | null };
-    now?: Date;
-  }) => LogisticsSummary;
-  listPurchaseReceipts: (input: {
-    sessionId: string | null;
-    businessId: string;
-    now?: Date;
-  }) => PurchaseReceiptSummary[];
-  confirmProductImport: (input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    now?: Date;
-  }) => unknown;
-  confirmSupplierImport: (input: {
-    sessionId: string | null;
-    businessId: string;
-    importJobId: string;
-    now?: Date;
-  }) => unknown;
-  sendChannelMessage: (input: {
-    sessionId: string | null;
-    businessId: string;
-    customerId?: string;
-    customerName?: string;
-    conversationId?: string;
-    provider?: ChannelProvider;
-    mailboxId?: string;
-    subject?: string;
-    replyToMessageId?: string;
-    attachments?: TrustedMessageAttachmentReference[];
-    text: string;
-    idempotencyKey: string;
-    now?: Date;
-  }) => Promise<unknown>;
-  products: Map<string, ProductSummary>;
-  customers: Map<string, CustomerSummary>;
-  invoices: Map<string, InvoiceSummary>;
-  sessions: Map<string, SessionRecord>;
-  businesses: Map<string, BusinessSummary>;
-  modelRuntimeAdapterResolver?: (input: {
-    modelId: string;
-    executionTarget: ModelExecutionTarget;
-    agentId: string;
-    shopId: string;
-  }) => ModelRuntimeAdapter | undefined;
-  runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
-  runtimeModelProvider?: RuntimeModelProvider;
-}
-
 export class AgentRuntimeDomain {
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
   private readonly agentProfiles = new Map<string, BusinessAgentProfileSummary>();
@@ -2574,7 +2392,9 @@ export class AgentRuntimeDomain {
       businessId,
       userId: actorId,
       role: "view_only",
-      productCount: [...this.deps.products.values()].filter((product) => product.businessId === businessId).length,
+      productCount: [...this.deps.products.values()].filter(
+        (product) => product.businessId === businessId
+      ).length,
       customerCount: 0,
       supplierCount: 0,
       invoiceCount: 0,
@@ -2784,16 +2604,33 @@ export class AgentRuntimeDomain {
       });
     }
 
-    const documentImportProposal = this.createRuntimeDocumentImportProposal(
+    const documentImportProposal = createRuntimeDocumentImportProposal(
+      this.deps,
       input.businessId,
       input.message
     );
-    const messagingProposal = this.createRuntimeMessagingProposal(input.businessId, input.message);
+    const messagingProposal = createRuntimeMessagingProposal(
+      this.deps,
+      input.businessId,
+      input.message
+    );
+    const networkProposal = createRuntimeNetworkProposal(input.message);
+    const commerceProposal = createRuntimeCommerceProposal(input.message);
     const receiptContextScriptMatch = parseReceiptContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
       contextScripts: agentProfile?.contextScripts ?? []
     });
+    const receiptProposal =
+      receiptContextScriptMatch === null
+        ? null
+        : createRuntimeReceiptProposal(this.deps, {
+            sessionId: input.sessionId,
+            businessId: input.businessId,
+            message: input.message,
+            match: receiptContextScriptMatch,
+            now
+          });
     const contextScriptMatch = parseProductContextScriptCommand({
       message: input.message,
       tenantId: input.businessId,
@@ -2830,6 +2667,8 @@ export class AgentRuntimeDomain {
     const modelRoute =
       documentImportProposal === null &&
       messagingProposal === null &&
+      networkProposal === null &&
+      commerceProposal === null &&
       effectiveContextScriptMatch === null
         ? clientInferenceCompletion === null
           ? await this.createRuntimeModelRoute({
@@ -2881,11 +2720,15 @@ export class AgentRuntimeDomain {
           ? "document_import"
           : messagingProposal !== null
             ? "messaging"
-            : effectiveContextScriptMatch === null
-              ? modelRoute.proposal === null
-                ? "parser"
-                : "local_model"
-              : "context_script",
+            : networkProposal !== null
+              ? "network"
+              : commerceProposal !== null
+                ? "commerce"
+                : effectiveContextScriptMatch === null
+                  ? modelRoute.proposal === null
+                    ? "parser"
+                    : "local_model"
+                  : "context_script",
       scriptId: effectiveContextScriptMatch?.scriptId ?? null,
       matchedPhrase: effectiveContextScriptMatch?.matchedPhrase ?? null,
       canonicalIntent: effectiveContextScriptMatch?.intent ?? null,
@@ -2896,10 +2739,12 @@ export class AgentRuntimeDomain {
     const proposal =
       documentImportProposal ??
       messagingProposal ??
+      networkProposal ??
+      commerceProposal ??
       (effectiveContextScriptMatch === null
         ? (modelRoute.proposal ?? createRuntimeToolProposal(parserResult))
         : receiptContextScriptMatch !== null
-          ? createRuntimeToolProposalFromReceiptContextScript(receiptContextScriptMatch)
+          ? receiptProposal!
           : createRuntimeToolProposalFromProductContextScript(contextScriptMatch!));
     const definition = runtimeToolRegistry[proposal.toolName];
     const roleAllowed = roleCan(context.role, definition.requiredPermission as BusinessPermission);
@@ -2964,7 +2809,7 @@ export class AgentRuntimeDomain {
 
     const canExecute = plan.status === "safe_to_execute" && verification.ok;
     const toolResult = canExecute
-      ? await this.executeRuntimeAction({
+      ? await executeRuntimeCapability(this.deps, {
           sessionId: input.sessionId,
           businessId: input.businessId,
           action: plan,
@@ -3147,7 +2992,7 @@ export class AgentRuntimeDomain {
     });
 
     const toolResult = verification.ok
-      ? await this.executeRuntimeAction({
+      ? await executeRuntimeCapability(this.deps, {
           sessionId: this.requireSessionIdForUser(input.authUserId),
           businessId: input.businessId,
           action,
@@ -3194,556 +3039,6 @@ export class AgentRuntimeDomain {
       },
       now: input.now
     });
-  }
-
-  private async executeRuntimeAction(input: {
-    sessionId: string | null;
-    businessId: string;
-    action: RuntimePlannedAction;
-    now: Date;
-  }): Promise<unknown> {
-    switch (input.action.toolName) {
-      case "products.list":
-        return typeof input.action.input.query === "string" &&
-          input.action.input.query.trim() !== ""
-          ? this.deps.queryCatalogue({
-              sessionId: input.sessionId,
-              businessId: input.businessId,
-              query: input.action.input.query,
-              now: input.now
-            })
-          : this.deps.listProducts({
-              sessionId: input.sessionId,
-              businessId: input.businessId,
-              now: input.now
-            });
-
-      case "invoices.list":
-        return this.deps.listInvoices({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        });
-
-      case "reports.summary":
-        return this.deps.getBusinessReport({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        });
-
-      case "notifications.list":
-        return this.deps.listNotifications({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        });
-
-      case "product.create":
-        return this.deps.createProduct({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          product: {
-            name: String(input.action.input.name ?? ""),
-            sku: null,
-            unit: String(input.action.input.unit ?? "unit"),
-            quantity: Number(input.action.input.quantity ?? 0),
-            sellingPrice:
-              typeof input.action.input.sellingPrice === "number"
-                ? input.action.input.sellingPrice
-                : null
-          },
-          now: input.now
-        });
-
-      case "product.update": {
-        const product = this.findRuntimeProductByName(
-          input.businessId,
-          String(input.action.input.productName ?? "")
-        );
-
-        if (product === null) {
-          throw new Cp2Error(
-            404,
-            "runtime_product_not_found",
-            "The product selected by the context script was not found."
-          );
-        }
-
-        return this.deps.updateProduct({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          productId: product.id,
-          product: {
-            name:
-              typeof input.action.input.name === "string" && input.action.input.name.trim() !== ""
-                ? input.action.input.name
-                : product.name,
-            sku: product.sku,
-            unit:
-              typeof input.action.input.unit === "string" && input.action.input.unit.trim() !== ""
-                ? input.action.input.unit
-                : product.unit,
-            quantity:
-              typeof input.action.input.quantity === "number"
-                ? input.action.input.quantity
-                : product.quantity,
-            buyingPrice:
-              typeof input.action.input.buyingPrice === "number"
-                ? input.action.input.buyingPrice
-                : product.buyingPrice,
-            sellingPrice:
-              typeof input.action.input.sellingPrice === "number"
-                ? input.action.input.sellingPrice
-                : product.sellingPrice
-          },
-          now: input.now
-        });
-      }
-
-      case "product.stock_adjust": {
-        const product = this.findRuntimeProductByName(
-          input.businessId,
-          String(input.action.input.productName ?? "")
-        );
-
-        if (product === null) {
-          throw new Cp2Error(
-            404,
-            "runtime_product_not_found",
-            "The product selected by the context script was not found."
-          );
-        }
-
-        return this.deps.adjustProductStock({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          productId: product.id,
-          adjustment: {
-            quantityAfter:
-              typeof input.action.input.quantity === "number"
-                ? input.action.input.quantity
-                : product.quantity,
-            reason: "Adjusted via agent chat"
-          },
-          now: input.now
-        });
-      }
-
-      case "product.delete": {
-        const product = this.findRuntimeProductByName(
-          input.businessId,
-          String(input.action.input.productName ?? "")
-        );
-
-        if (product === null) {
-          throw new Cp2Error(
-            404,
-            "runtime_product_not_found",
-            "The product selected by the context script was not found."
-          );
-        }
-
-        return this.deps.deleteProduct({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          productId: product.id,
-          now: input.now
-        });
-      }
-
-      case "product.field.add":
-        return {
-          fieldName: String(input.action.input.fieldName ?? ""),
-          status: "planned"
-        };
-
-      case "product.field.remove":
-        return {
-          fieldName: String(input.action.input.fieldName ?? ""),
-          status: "planned"
-        };
-
-      case "customer.create":
-        return this.deps.createCustomer({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          customer: {
-            name: String(input.action.input.name ?? ""),
-            phone: typeof input.action.input.phone === "string" ? input.action.input.phone : null,
-            email: null,
-            notes: null
-          },
-          now: input.now
-        });
-
-      case "customer.update": {
-        const customer = this.findRuntimeCustomerByName(
-          input.businessId,
-          String(input.action.input.customerName ?? "")
-        );
-
-        if (customer === null) {
-          throw new Cp2Error(404, "runtime_customer_not_found", "The customer was not found.");
-        }
-
-        return this.deps.updateCustomer({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          customerId: customer.id,
-          customer: {
-            name: customer.name,
-            phone:
-              typeof input.action.input.phone === "string" ? input.action.input.phone : customer.phone,
-            email: customer.email,
-            notes: customer.notes
-          },
-          now: input.now
-        });
-      }
-
-      case "supplier.create":
-        return this.deps.createSupplier({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          supplier: {
-            name: String(input.action.input.name ?? ""),
-            phone: typeof input.action.input.phone === "string" ? input.action.input.phone : null,
-            email: null,
-            notes: null
-          },
-          now: input.now
-        });
-
-      case "supplier.update": {
-        const supplier = this.findRuntimeSupplierByName(
-          input.businessId,
-          String(input.action.input.supplierName ?? "")
-        );
-
-        if (supplier === null) {
-          throw new Cp2Error(404, "runtime_supplier_not_found", "The supplier was not found.");
-        }
-
-        return this.deps.updateSupplier({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          supplierId: supplier.id,
-          supplier: {
-            name: supplier.name,
-            phone:
-              typeof input.action.input.phone === "string" ? input.action.input.phone : supplier.phone,
-            email: supplier.email,
-            notes: supplier.notes
-          },
-          now: input.now
-        });
-      }
-
-      case "logistics.update_status": {
-        const logisticsId = String(input.action.input.logisticsId ?? "");
-        const status = String(input.action.input.status ?? "") as FulfillmentStatus;
-
-        return this.deps.updateLogisticsStatus({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          logisticsId,
-          status: { status },
-          now: input.now
-        });
-      }
-
-      case "invoice.draft":
-      case "payment.record":
-      case "receipt.scan":
-      case "receipt.confirm":
-      case "receipt.correct":
-      case "receipt.cancel":
-      case "unknown.clarify":
-        return null;
-
-      case "receipt.review":
-      case "receipt.list":
-        return this.deps.listPurchaseReceipts({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        });
-
-      case "receipt.lookup":
-        return this.deps.listPurchaseReceipts({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          now: input.now
-        }).filter((receipt) => {
-          const supplierName = String(input.action.input.supplierName ?? "").toLowerCase();
-          const itemName = String(input.action.input.itemName ?? "").toLowerCase();
-          const supplierMatches =
-            supplierName.length === 0 || receipt.supplierName.toLowerCase().includes(supplierName);
-          const itemMatches =
-            itemName.length === 0 ||
-            receipt.lineItems.some((item) => item.name.toLowerCase().includes(itemName));
-
-          return supplierMatches && itemMatches;
-        });
-
-      case "document_import.confirm": {
-        const importJobId = String(input.action.input.importJobId ?? "");
-        const job = this.deps.requireDocumentImport(input.businessId, importJobId);
-
-        return job.target === "product"
-          ? this.deps.confirmProductImport({
-              sessionId: input.sessionId,
-              businessId: input.businessId,
-              importJobId,
-              now: input.now
-            })
-          : this.deps.confirmSupplierImport({
-              sessionId: input.sessionId,
-              businessId: input.businessId,
-              importJobId,
-              now: input.now
-            });
-      }
-
-      case "messaging.send":
-        return await this.deps.sendChannelMessage({
-          sessionId: input.sessionId,
-          businessId: input.businessId,
-          ...(typeof input.action.input.customerId === "string"
-            ? { customerId: input.action.input.customerId }
-            : {}),
-          ...(typeof input.action.input.customerName === "string"
-            ? { customerName: input.action.input.customerName }
-            : {}),
-          ...(typeof input.action.input.conversationId === "string"
-            ? { conversationId: input.action.input.conversationId }
-            : {}),
-          ...(isChannelProvider(input.action.input.provider)
-            ? { provider: input.action.input.provider }
-            : {}),
-          ...(typeof input.action.input.mailboxId === "string"
-            ? { mailboxId: input.action.input.mailboxId }
-            : {}),
-          ...(typeof input.action.input.subject === "string"
-            ? { subject: input.action.input.subject }
-            : {}),
-          ...(typeof input.action.input.replyToMessageId === "string"
-            ? { replyToMessageId: input.action.input.replyToMessageId }
-            : {}),
-          ...(Array.isArray(input.action.input.attachments)
-            ? {
-                attachments: input.action.input.attachments.flatMap((attachment) => {
-                  if (attachment === null || typeof attachment !== "object") return [];
-                  const record = attachment as Record<string, unknown>;
-                  return record.resourceType === "invoice" && typeof record.resourceId === "string"
-                    ? [
-                        {
-                          resourceType: "invoice" as const,
-                          resourceId: record.resourceId
-                        }
-                      ]
-                    : [];
-                })
-              }
-            : {}),
-          text: String(input.action.input.text ?? ""),
-          idempotencyKey: `runtime-message:${input.action.id}`,
-          now: input.now
-        });
-    }
-  }
-
-  private createRuntimeMessagingProposal(
-    businessId: string,
-    message: string
-  ): RuntimeToolProposal | null {
-    const invoiceEmail =
-      /^(?:please\s+)?(?:email|send)\s+(.+?)\s+(?:the\s+|their\s+)?(?:latest\s+)?invoice(?:\s+by\s+email)?[.!]?$/iu.exec(
-        message.trim()
-      );
-    if (invoiceEmail?.[1] !== undefined) {
-      const requestedName = invoiceEmail[1].trim();
-      const customers = [...this.deps.customers.values()].filter(
-        (customer) =>
-          customer.businessId === businessId &&
-          customer.name.localeCompare(requestedName, undefined, { sensitivity: "accent" }) === 0
-      );
-      const customer = customers.length === 1 ? customers[0] : undefined;
-      const invoice =
-        customer === undefined
-          ? undefined
-          : [...this.deps.invoices.values()]
-              .filter(
-                (candidate) =>
-                  candidate.businessId === businessId &&
-                  candidate.customerId === customer.id &&
-                  candidate.status === "confirmed"
-              )
-              .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-      return {
-        toolName: "messaging.send",
-        input:
-          customer === undefined || invoice === undefined
-            ? {}
-            : {
-                customerId: customer.id,
-                provider: "email",
-                subject: `Invoice ${invoice.invoiceNumber}`,
-                text: "Please find your invoice attached.",
-                attachments: [{ resourceType: "invoice", resourceId: invoice.id }]
-              },
-        reason: `Prepared the latest confirmed invoice email for ${requestedName}.`,
-        validation:
-          customer === undefined
-            ? invalid("Choose one canonical customer before sending an invoice.")
-            : invoice === undefined
-              ? invalid("Confirm an invoice for this customer before sending it.")
-              : valid()
-      };
-    }
-    const email = /^(?:please\s+)?email\s+(.+?)\s+(?:that|saying|:)\s+(.+)$/iu.exec(message.trim());
-    const direct =
-      /^(?:please\s+)?(?:message|tell)\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|email|soko))?\s+(?:that|saying|:)\s+(.+)$/iu.exec(
-        message.trim()
-      );
-    const send =
-      /^(?:please\s+)?send\s+["“]?(.+?)["”]?\s+to\s+(.+?)(?:\s+on\s+(telegram|whatsapp|messenger|instagram|tiktok|x|native[_ ]?sms|sms|email|soko))?$/iu.exec(
-        message.trim()
-      );
-    const customerName = (email?.[1] ?? direct?.[1] ?? send?.[2])?.trim();
-    const text = (email?.[2] ?? direct?.[3] ?? send?.[1])?.trim();
-    const providerInput = (email === null ? (direct?.[2] ?? send?.[3]) : "email")
-      ?.toLowerCase()
-      .replace(" ", "_");
-    const provider = providerInput === "sms" ? "native_sms" : providerInput;
-    if (!customerName || !text) return null;
-    return {
-      toolName: "messaging.send",
-      input: {
-        customerName,
-        text,
-        ...(provider === "email" ? { subject: "Update from Soko" } : {}),
-        ...(isChannelProvider(provider) ? { provider } : {})
-      },
-      reason: `Prepared a message to ${customerName}${provider ? ` on ${provider}` : ""}.`,
-      validation:
-        text.length <= 4000 ? valid() : invalid("The message is longer than 4000 characters.")
-    };
-  }
-
-  private createRuntimeDocumentImportProposal(
-    businessId: string,
-    message: string
-  ): RuntimeToolProposal | null {
-    const normalized = normalizeRuntimeLookup(message);
-    const hasAction = /\b(add|apply|confirm|import|save|store)\b/u.test(normalized);
-    const referencesDocument =
-      /\b(catalogue|catalog|document|excel|extracted|import|pdf|spreadsheet|uploaded|word|workbook)\b/u.test(
-        normalized
-      );
-    const businessImports = this.deps.importsForBusiness(businessId);
-    const referencedJob = businessImports.find((job) => message.includes(job.id));
-
-    if (!hasAction || (!referencesDocument && referencedJob === undefined)) {
-      return null;
-    }
-
-    const latestPreview = businessImports
-      .filter((job) => job.status === "previewed")
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-    const job = referencedJob ?? latestPreview;
-
-    if (job === undefined) {
-      return {
-        toolName: "document_import.confirm",
-        input: {},
-        reason: "No previewed document import is available.",
-        validation: invalid("Upload and preview a document before asking me to add its records.")
-      };
-    }
-
-    if (job.status !== "previewed") {
-      return {
-        toolName: "document_import.confirm",
-        input: { importJobId: job.id, target: job.target },
-        reason: "The referenced document import is not awaiting confirmation.",
-        validation: invalid("Only a previewed document import can be added.")
-      };
-    }
-
-    const selectedRows = job.rows.filter((row) => row.selected && row.errors.length === 0);
-
-    return {
-      toolName: "document_import.confirm",
-      input: {
-        importJobId: job.id,
-        target: job.target,
-        selectedRowCount: selectedRows.length
-      },
-      reason: `Prepared ${selectedRows.length} extracted ${job.target} record${
-        selectedRows.length === 1 ? "" : "s"
-      } from ${job.source.fileName}.`,
-      validation:
-        selectedRows.length === 0
-          ? invalid("The document preview has no valid selected rows to add.")
-          : valid()
-    };
-  }
-
-  private findRuntimeProductByName(businessId: string, productName: string): ProductSummary | null {
-    const normalizedName = normalizeRuntimeLookup(productName);
-
-    if (normalizedName.length === 0) {
-      return null;
-    }
-
-    const products = [...this.deps.products.values()].filter(
-      (product) => product.businessId === businessId
-    );
-
-    return (
-      products.find((product) => normalizeRuntimeLookup(product.name) === normalizedName) ??
-      products.find((product) => normalizeRuntimeLookup(product.name).includes(normalizedName)) ??
-      null
-    );
-  }
-
-  private findRuntimeSupplierByName(
-    businessId: string,
-    supplierName: string
-  ): SupplierSummary | null {
-    const normalizedName = normalizeRuntimeLookup(supplierName);
-
-    if (normalizedName.length === 0) {
-      return null;
-    }
-
-    const suppliers = this.deps.suppliersForBusiness(businessId);
-
-    return (
-      suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name) === normalizedName) ??
-      suppliers.find((supplier) => normalizeRuntimeLookup(supplier.name).includes(normalizedName)) ??
-      null
-    );
-  }
-
-  private findRuntimeCustomerByName(businessId: string, customerName: string): CustomerSummary | null {
-    const normalizedName = normalizeRuntimeLookup(customerName);
-
-    if (normalizedName.length === 0) {
-      return null;
-    }
-
-    const customers = [...this.deps.customers.values()].filter(
-      (customer) => customer.businessId === businessId
-    );
-
-    return (
-      customers.find((customer) => normalizeRuntimeLookup(customer.name) === normalizedName) ??
-      customers.find((customer) => normalizeRuntimeLookup(customer.name).includes(normalizedName)) ??
-      null
-    );
   }
 
   runtimeTurnsForBusiness(businessId: string): RuntimeTurnSummary[] {
@@ -3884,217 +3179,31 @@ export class AgentRuntimeDomain {
     audience: AgentAudience,
     modelId = profile.modelId
   ): ShopAgentRuntime {
-    const business = this.deps.requireBusiness(profile.businessId);
-    const assignment = [...this.agentModelAssignments.values()]
-      .filter(
-        (candidate) =>
-          candidate.businessId === profile.businessId && candidate.readinessStatus === "READY"
-      )
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-    const activeBinding = this.activeAgentModelBinding(profile.agentId);
-    const model = aiModelRegistry.find((candidate) => candidate.id === modelId);
-    const sources = this.contextSourcesForRuntime(profile).filter((source) =>
-      source.accessRules.audiences.includes(audience)
+    const contextSources = this.contextSourcesForRuntime(profile);
+    return buildShopAgentRuntimeModule(
+      {
+        deps: this.deps,
+        agentModelAssignments: this.agentModelAssignments,
+        activeBinding: this.activeAgentModelBinding(profile.agentId),
+        contextSources
+      },
+      profile,
+      now,
+      audience,
+      modelId
     );
-    return {
-      agentId: profile.agentId,
-      shopId: profile.shopId,
-      tenantId: profile.tenantId,
-      identity: {
-        agentName: profile.name,
-        shopName: business.name,
-        shopIdentifier: business.sokoId,
-        role: profile.role,
-        supportedLanguages: [...profile.supportedLanguages],
-        shopDescription: profile.description,
-        businessCategory: profile.businessCategory,
-        publicIntroduction: profile.publicIntroduction
-      },
-      personality: cloneAgentPersonality(profile.personalityConfig),
-      instructions: cloneAgentInstructions(profile.instructionPolicy),
-      context: {
-        tenantId: profile.tenantId,
-        shopId: profile.shopId,
-        generatedAt: now.toISOString(),
-        sources: sources.map(cloneAgentContextSource)
-      },
-      skills: profile.skillBindings.map(cloneAgentSkillBinding),
-      memory: { ...profile.memoryPolicy },
-      evaluations: { ...profile.evaluationPolicy },
-      model: {
-        modelId: activeBinding?.modelId ?? modelId,
-        provider:
-          activeBinding?.executionTarget ??
-          assignment?.runtimeBackend ??
-          model?.provider ??
-          (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
-        executionMode:
-          activeBinding?.executionMode ?? assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy:
-          activeBinding?.fallbackPolicy ?? assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
-        deviceAssignmentId: assignment?.activeModelInstallationId ?? null
-      },
-      version: profile.runtimeVersion,
-      status: profile.status,
-      createdAt: profile.createdAt,
-      updatedAt: profile.updatedAt
-    };
   }
 
   contextSourcesForRuntime(profile: BusinessAgentProfileSummary): AgentContextSource[] {
-    const businessId = profile.businessId;
-    const recallRetentionBoundary =
-      Date.now() - profile.memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
-    const sources = [...this.agentContextSources.values()]
-      .filter(
-        (source) =>
-          source.shopId === businessId &&
-          source.deletedAt === null &&
-          (source.type !== "recall" ||
-            (profile.memoryPolicy.reusableWorkflowMemoryEnabled &&
-              Date.parse(source.updatedAt) >= recallRetentionBoundary))
-      )
-      .map(cloneAgentContextSource);
-    if (!sources.some((source) => source.type === "context_script")) {
-      sources.push(
-        ...profile.contextScripts.map((content, index) =>
-          contextSourceRecord({
-            id: stableUuid(`${businessId}:context-script:${index}`),
-            businessId,
-            type: "context_script",
-            title: `Context script ${index + 1}`,
-            content,
-            sensitivity: "internal",
-            customerVisible: false,
-            sourceRecordId: null,
-            now: new Date(profile.updatedAt)
-          })
-        )
-      );
-    }
-    sources.push(
-      contextSourceRecord({
-        id: stableUuid(`${businessId}:policy`),
-        businessId,
-        type: "policy",
-        title: "Structured business policy",
-        content: [
-          ...profile.instructionPolicy.generalOperatingRules,
-          ...profile.instructionPolicy.salesRules,
-          ...profile.instructionPolicy.pricingRules
-        ].join("\n"),
-        sensitivity: "internal",
-        customerVisible: false,
-        sourceRecordId: profile.agentId,
-        now: new Date(profile.updatedAt)
-      })
+    return contextSourcesForRuntimeModule(
+      {
+        deps: this.deps,
+        agentContextSources: this.agentContextSources,
+        ownerCorrections: this.ownerCorrectionsForBusiness(profile.businessId)
+      },
+      profile
     );
-    for (const product of [...this.deps.products.values()].filter((product) => product.businessId === businessId)) {
-      sources.push(
-        contextSourceRecord({
-          id: stableUuid(`${businessId}:catalogue:${product.id}`),
-          businessId,
-          type: "catalogue",
-          title: product.name,
-          content: `${product.name}; unit=${product.unit}; price=${product.sellingPrice ?? "not set"}`,
-          sensitivity: "public",
-          customerVisible: true,
-          sourceRecordId: product.id,
-          now: new Date(product.updatedAt)
-        }),
-        contextSourceRecord({
-          id: stableUuid(`${businessId}:inventory:${product.id}`),
-          businessId,
-          type: "inventory",
-          title: `${product.name} inventory`,
-          content: `${product.name}; quantity=${product.quantity}`,
-          sensitivity: "internal",
-          customerVisible: false,
-          sourceRecordId: product.id,
-          now: new Date(product.updatedAt)
-        })
-      );
-    }
-    const references: Array<{
-      type: AgentContextSource["type"];
-      title: string;
-      id: string;
-      updatedAt: string;
-      sensitivity: AgentContextSource["sensitivity"];
-    }> = [
-      ...[...this.deps.customers.values()].filter((customer) => customer.businessId === businessId).map((item) => ({
-        type: "customer" as const,
-        title: item.name,
-        id: item.id,
-        updatedAt: item.updatedAt,
-        sensitivity: "confidential" as const
-      })),
-      ...this.deps.suppliersForBusiness(businessId).map((item) => ({
-        type: "supplier" as const,
-        title: item.name,
-        id: item.id,
-        updatedAt: item.updatedAt,
-        sensitivity: "confidential" as const
-      })),
-      ...[...this.deps.purchaseReceipts.values()]
-        .filter((item) => item.businessId === businessId)
-        .map((item) => ({
-          type: "receipt" as const,
-          title: `Receipt ${item.id}`,
-          id: item.id,
-          updatedAt: item.createdAt,
-          sensitivity: "restricted" as const
-        })),
-      ...[...this.deps.invoices.values()].filter((invoice) => invoice.businessId === businessId).map((item) => ({
-        type: "order" as const,
-        title: item.invoiceNumber,
-        id: item.id,
-        updatedAt: item.updatedAt,
-        sensitivity: "confidential" as const
-      }))
-    ];
-    for (const reference of references) {
-      sources.push(
-        contextSourceRecord({
-          id: stableUuid(`${businessId}:${reference.type}:${reference.id}`),
-          businessId,
-          type: reference.type,
-          title: reference.title,
-          content: null,
-          sensitivity: reference.sensitivity,
-          customerVisible: false,
-          sourceRecordId: reference.id,
-          now: new Date(reference.updatedAt)
-        })
-      );
-    }
-    for (const correction of this.ownerCorrectionsForBusiness(businessId).filter(
-      (item) => item.status === "active"
-    )) {
-      sources.push(
-        contextSourceRecord({
-          id: correction.id,
-          businessId,
-          type: "owner_note",
-          title: `Owner correction: ${correction.category}`,
-          content: correction.correction,
-          sensitivity: "internal",
-          customerVisible: false,
-          sourceRecordId: correction.id,
-          now: new Date(correction.createdAt)
-        })
-      );
-    }
-    return sources
-      .filter(
-        (source, index, all) => all.findIndex((candidate) => candidate.id === source.id) === index
-      )
-      .sort(
-        (left, right) =>
-          left.type.localeCompare(right.type) || left.title.localeCompare(right.title)
-      );
   }
-
   private synchronizeProfileContextSources(profile: BusinessAgentProfileSummary, now: Date): void {
     for (const source of this.agentContextSources.values()) {
       if (source.shopId === profile.businessId && source.type === "context_script") {
@@ -4213,56 +3322,14 @@ export class AgentRuntimeDomain {
     accountId: string;
     userId: string;
   }): ClientInferenceCompletion {
-    const completion = input.completion;
-    if (completion.installationId !== undefined) {
-      const assignment = this.agentModelAssignments.get(
-        agentModelAssignmentKey(input.businessId, completion.deviceId)
-      );
-      if (
-        assignment === undefined ||
-        assignment.accountId !== input.accountId ||
-        assignment.userId !== input.userId ||
-        assignment.readinessStatus !== "READY" ||
-        assignment.lastSuccessfulInferenceAt === null ||
-        assignment.activeModelInstallationId !== completion.installationId ||
-        assignment.modelId !== completion.modelId ||
-        (assignment.runtimeBackend === "LLAMA_CPP_BROWSER"
-          ? completion.runtime !== "browser-wasm"
-          : assignment.runtimeBackend === "LLAMA_CPP_ANDROID"
-            ? completion.runtime !== "native-llama-cpp"
-            : true)
-      ) {
-        throw new Cp2Error(
-          409,
-          "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
-          "The client model completion does not match a ready device assignment."
-        );
-      }
-      return completion;
-    }
-
-    const assignment = this.browserInferenceAssignments.get(
-      browserInferenceAssignmentKey(input.businessId, completion.deviceId)
+    return requireReadyClientInferenceCompletion(
+      {
+        agentModelAssignments: this.agentModelAssignments,
+        browserInferenceAssignments: this.browserInferenceAssignments
+      },
+      input
     );
-    if (
-      assignment === undefined ||
-      assignment.accountId !== input.accountId ||
-      assignment.userId !== input.userId ||
-      assignment.enabled !== true ||
-      assignment.readinessStatus !== "READY" ||
-      assignment.lastSuccessfulInferenceAt === null ||
-      assignment.selectedModelId !== completion.modelId ||
-      assignment.runtimeContract?.runtime !== completion.runtime
-    ) {
-      throw new Cp2Error(
-        409,
-        "CLIENT_MODEL_ASSIGNMENT_NOT_READY",
-        "The browser model completion does not match a ready browser assignment."
-      );
-    }
-    return completion;
   }
-
   private createClientInferenceModelRoute(
     completion: ClientInferenceCompletion,
     appendTelemetry: (
@@ -4277,55 +3344,8 @@ export class AgentRuntimeDomain {
     trace: RuntimeModelTrace;
     recallCandidate: null;
   } {
-    appendTelemetry("model.inference_started", "completed", null, null, {
-      provider: completion.runtime,
-      modelId: completion.modelId,
-      requestId: completion.requestId,
-      executionTarget: completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
-    });
-    const parsed = parseRuntimeModelOutput(completion.outputText);
-    if (!parsed.ok || parsed.output === null) {
-      appendTelemetry("model.completed", "blocked", null, null, {
-        provider: completion.runtime,
-        adapterStatus: "malformed",
-        durationMs: completion.durationMs,
-        errorCode: "MODEL_RESPONSE_PARSE_FAILED"
-      });
-      throw new Cp2Error(
-        422,
-        "MODEL_RESPONSE_PARSE_FAILED",
-        "The local model returned an invalid structured response.",
-        true
-      );
-    }
-    appendTelemetry("model.completed", "completed", null, null, {
-      provider: completion.runtime,
-      adapterStatus: "available",
-      durationMs: completion.durationMs,
-      errorCode: null
-    });
-    return {
-      proposal: parsed.output.proposal,
-      recallCandidate: null,
-      trace: {
-        provider: completion.runtime === "native-llama-cpp" ? "llama.cpp" : "browser",
-        status: "available",
-        durationMs: completion.durationMs,
-        fallbackUsed: false,
-        outputKind: parsed.output.kind,
-        errorCode: null,
-        modelId: completion.modelId,
-        ...(completion.promptTokens === undefined ? {} : { promptTokens: completion.promptTokens }),
-        ...(completion.completionTokens === undefined
-          ? {}
-          : { completionTokens: completion.completionTokens }),
-        executionTarget:
-          completion.runtime === "native-llama-cpp" ? "installed-app" : "browser-local"
-      }
-    };
+    return createClientInferenceModelRoute(completion, appendTelemetry);
   }
-
-  /** Shared by createRuntimeModelRoute and the public storefront agent reply path. */
   resolveRuntimeModelProvider(
     shopRuntime: ShopAgentRuntime,
     modelId: string
@@ -4379,311 +3399,15 @@ export class AgentRuntimeDomain {
     trace: RuntimeModelTrace | null;
     recallCandidate: RecallCandidate | null;
   }> {
-    const { provider, binding } = this.resolveRuntimeModelProvider(
-      input.shopRuntime,
-      input.modelId
-    );
-
-    if (provider === undefined) {
-      if (binding !== null) {
-        throw new Cp2Error(
-          503,
-          "AGENT_MODEL_UNAVAILABLE",
-          "The active agent model runtime is unavailable.",
-          true,
-          {
-            bindingId: binding.id,
-            modelId: binding.modelId,
-            executionTarget: binding.executionTarget
-          }
-        );
-      }
-      return {
-        proposal: null,
-        recallCandidate: null,
-        trace: {
-          provider: null,
-          status: "disabled",
-          durationMs: null,
-          fallbackUsed: true,
-          outputKind: null,
-          errorCode: "model_provider_unconfigured"
-        }
-      };
-    }
-
-    const allowedTools = input.shopRuntime.skills
-      .filter(
-        (binding) =>
-          binding.enabled &&
-          !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
-      )
-      .map((binding) => binding.skillId);
-    const assembled = assembleAgentInferenceMessage({
-      runtime: input.shopRuntime,
-      intent: input.intent,
-      message: input.message,
-      context: input.retrievedContext,
-      allowedTools,
-      memory: input.memory
-    });
-    const clientCloudEscalation =
-      input.recallEscalation !== undefined &&
-      (binding?.executionTarget === "openai" || provider.name === "openai")
-        ? input.recallEscalation
-        : null;
-    const prompt = buildRuntimeModelPrompt(
-      clientCloudEscalation === null
-        ? assembled.message
-        : withRecallDistillationInstruction(assembled.message, {
-            intent: input.intent,
-            escalation: clientCloudEscalation
-          }),
-      input.context,
-      input.conversationHistory,
+    return createRuntimeModelRoute(
       {
-        runtimeVersion: input.shopRuntime.version,
-        compiledInstructions: assembled.compiled,
-        retrievedContext: input.retrievedContext,
-        allowedTools
-      }
+        resolveRuntimeModelProvider: (runtime, modelId) =>
+          this.resolveRuntimeModelProvider(runtime, modelId),
+        modelRuntimeAdapterResolver: this.deps.modelRuntimeAdapterResolver
+      },
+      input
     );
-    input.appendTelemetry("model.prompt_built", "completed", null, null, {
-      provider: provider.name,
-      bindingId: binding?.id ?? null,
-      executionTarget: binding?.executionTarget ?? null,
-      allowedToolCount: prompt.allowedTools.length,
-      modelProfile: input.modelId,
-      messageLength: input.message.trim().length,
-      productCount: input.context.productCount,
-      invoiceCount: input.context.invoiceCount,
-      runtimeVersion: input.shopRuntime.version,
-      retrievedContextCount: input.retrievedContext.length,
-      retrievedContextTypes: [...new Set(input.retrievedContext.map((item) => item.type))].join(
-        ","
-      ),
-      intent: input.intent
-    });
-
-    let completion: RuntimeModelCompletionResult;
-    let fallbackUsed = false;
-    let fallbackReason: string | null = null;
-    let resolvedModelId = binding?.modelId ?? input.modelId;
-    let resolvedExecutionTarget = binding?.executionTarget;
-    let recallEscalation: RecallEscalationSignal | null = clientCloudEscalation;
-
-    try {
-      input.appendTelemetry("model.inference_started", "completed", null, null, {
-        provider: provider.name,
-        bindingId: binding?.id ?? null,
-        modelId: input.modelId,
-        executionTarget: binding?.executionTarget ?? null
-      });
-      completion = await provider.complete(prompt);
-    } catch {
-      input.appendTelemetry("model.completed", "blocked", null, null, {
-        provider: provider.name,
-        adapterStatus: "error",
-        durationMs: 0,
-        errorCode: "provider_exception"
-      });
-      input.appendTelemetry("model.fallback", "completed", null, null, {
-        provider: provider.name,
-        adapterStatus: "error",
-        errorCode: "provider_exception"
-      });
-
-      return {
-        proposal: null,
-        recallCandidate: null,
-        trace: {
-          provider: provider.name,
-          status: "error",
-          durationMs: 0,
-          fallbackUsed: true,
-          outputKind: null,
-          errorCode: "provider_exception",
-          ...(binding === null
-            ? {}
-            : {
-                bindingId: binding.id,
-                modelId: binding.modelId,
-                executionTarget: binding.executionTarget
-              })
-        }
-      };
-    }
-
-    input.appendTelemetry(
-      "model.completed",
-      completion.status === "available" ? "completed" : "blocked",
-      null,
-      null,
-      {
-        provider: completion.provider,
-        adapterStatus: completion.status,
-        durationMs: completion.durationMs,
-        errorCode: completion.errorCode
-      }
-    );
-
-    if (
-      binding !== null &&
-      completion.status !== "available" &&
-      binding.permissions.allowOpenAIFallback &&
-      binding.fallbackModelId !== null &&
-      qualifiesForModelFallback(binding.fallbackPolicy, completion.errorCode)
-    ) {
-      const fallbackAdapter = this.deps.modelRuntimeAdapterResolver?.({
-        modelId: binding.fallbackModelId,
-        executionTarget: "openai",
-        agentId: binding.agentId,
-        shopId: binding.shopId
-      });
-      if (fallbackAdapter !== undefined) {
-        fallbackReason = completion.errorCode ?? "RUNTIME_UNAVAILABLE";
-        input.appendTelemetry("model.fallback", "completed", null, null, {
-          provider: fallbackAdapter.provider,
-          bindingId: binding.id,
-          fallbackReason,
-          modelId: binding.fallbackModelId,
-          executionTarget: "openai"
-        });
-        const fallbackProvider = runtimeProviderFromAdapter({
-          adapter: fallbackAdapter,
-          context: {
-            modelId: binding.fallbackModelId,
-            agentId: binding.agentId,
-            shopId: binding.shopId
-          }
-        });
-        const serverFallbackEscalation: RecallEscalationSignal = {
-          reason: fallbackReason,
-          localRuntime: "server-local",
-          localModelId: binding.modelId
-        };
-        const fallbackCompletion = await fallbackProvider.complete({
-          ...prompt,
-          message: withRecallDistillationInstruction(assembled.message, {
-            intent: input.intent,
-            escalation: serverFallbackEscalation
-          })
-        });
-        input.appendTelemetry(
-          "model.fallback_completed",
-          fallbackCompletion.status === "available" ? "completed" : "blocked",
-          null,
-          null,
-          {
-            provider: fallbackCompletion.provider,
-            bindingId: binding.id,
-            fallbackReason,
-            adapterStatus: fallbackCompletion.status,
-            errorCode: fallbackCompletion.errorCode
-          }
-        );
-        if (fallbackCompletion.status === "available") {
-          completion = fallbackCompletion;
-          fallbackUsed = true;
-          resolvedModelId = binding.fallbackModelId;
-          resolvedExecutionTarget = "openai";
-          recallEscalation = serverFallbackEscalation;
-        }
-      }
-    }
-
-    if (completion.status !== "available" || completion.outputText === null) {
-      input.appendTelemetry("model.fallback", "completed", null, null, {
-        provider: completion.provider,
-        adapterStatus: completion.status,
-        errorCode: completion.errorCode
-      });
-
-      return {
-        proposal: null,
-        recallCandidate: null,
-        trace: {
-          ...modelTraceFromCompletion(completion, true, null),
-          ...(binding === null
-            ? {}
-            : {
-                bindingId: binding.id,
-                modelId: resolvedModelId,
-                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-                fallbackReason
-              }),
-          fallbackUsed: binding === null ? true : fallbackUsed
-        }
-      };
-    }
-
-    const parsed = parseRuntimeModelOutput(completion.outputText);
-
-    if (!parsed.ok || parsed.output === null) {
-      input.appendTelemetry("model.fallback", "completed", null, null, {
-        provider: completion.provider,
-        adapterStatus: "malformed",
-        errorCode: "MODEL_RESPONSE_PARSE_FAILED"
-      });
-
-      return {
-        proposal: null,
-        recallCandidate: null,
-        trace: {
-          provider: completion.provider,
-          status: "malformed",
-          durationMs: completion.durationMs,
-          fallbackUsed: binding === null ? true : fallbackUsed,
-          outputKind: null,
-          errorCode: "MODEL_RESPONSE_PARSE_FAILED",
-          ...(binding === null
-            ? {}
-            : {
-                bindingId: binding.id,
-                modelId: resolvedModelId,
-                executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-                fallbackReason
-              })
-        }
-      };
-    }
-
-    const recallResult =
-      recallEscalation === null
-        ? null
-        : parseRecallCandidateFromModelOutput(completion.outputText, {
-            intent: input.intent,
-            fallbackReason: recallEscalation.reason
-          });
-    if (recallResult?.candidate !== null && recallResult?.candidate !== undefined) {
-      input.appendTelemetry("recall.candidate_generated", "completed", null, null, {
-        taskType: recallResult.candidate.taskType,
-        confidence: recallResult.candidate.confidence,
-        localRuntime: recallEscalation?.localRuntime ?? null
-      });
-    } else if (recallResult !== null && recallResult.reason !== "candidate_omitted") {
-      input.appendTelemetry("recall.candidate_rejected", "completed", null, null, {
-        reason: recallResult.reason,
-        localRuntime: recallEscalation?.localRuntime ?? null
-      });
-    }
-    return {
-      proposal: parsed.output.proposal,
-      recallCandidate: recallResult?.candidate ?? null,
-      trace: {
-        ...modelTraceFromCompletion(completion, fallbackUsed, parsed.output.kind),
-        ...(binding === null
-          ? {}
-          : {
-              bindingId: binding.id,
-              modelId: resolvedModelId,
-              executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-              fallbackReason
-            })
-      }
-    };
   }
-
   private requireRuntimeSession(
     businessId: string,
     runtimeSessionId: string
@@ -4804,5 +3528,4 @@ export class AgentRuntimeDomain {
       turn: input.turn
     };
   }
-
 }

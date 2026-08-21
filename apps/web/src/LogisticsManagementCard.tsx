@@ -5,19 +5,17 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { FulfillmentStatus, LogisticsSummary } from "./soko-application-shared";
 
 const openStatuses: FulfillmentStatus[] = ["pending", "ready", "out_for_delivery"];
-const nextStatuses: FulfillmentStatus[] = [
-  "ready",
-  "out_for_delivery",
-  "completed",
-  "cancelled"
-];
+const nextStatuses: FulfillmentStatus[] = ["ready", "out_for_delivery", "completed", "cancelled"];
 
 // Self-contained generated-surface card for the logistics domain (Phase 4h), same shape as
 // PaymentManagementCard: logistics.update_status can never be fully specified from free text
 // alone (which of possibly several open deliveries, and which status), so the chat trigger opens
 // this card pre-filled with the extracted customer name; the owner picks the record and new status
 // here. See docs/frontend/frontend.md Phase 4h.
-export default function LogisticsManagementCard(props: { businessId: string; customerName?: string }) {
+export default function LogisticsManagementCard(props: {
+  businessId: string;
+  customerName?: string;
+}) {
   const { isPending, runAction } = useAsyncActions();
   const [openDeliveries, setOpenDeliveries] = useState<LogisticsSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -72,7 +70,10 @@ export default function LogisticsManagementCard(props: { businessId: string; cus
   }
 
   return (
-    <section className="record-form logistics-management-card" aria-label="Update a delivery status">
+    <section
+      className="record-form logistics-management-card"
+      aria-label="Update a delivery status"
+    >
       <div className="section-heading">
         <p className="eyebrow">Logistics</p>
         <h3>Update a delivery from chat</h3>
@@ -86,7 +87,10 @@ export default function LogisticsManagementCard(props: { businessId: string; cus
             <>
               <label>
                 Delivery
-                <select value={logisticsId} onChange={(event) => setLogisticsId(event.target.value)}>
+                <select
+                  value={logisticsId}
+                  onChange={(event) => setLogisticsId(event.target.value)}
+                >
                   {openDeliveries.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.invoiceNumber} · {item.customerName ?? "No customer"} ·{" "}

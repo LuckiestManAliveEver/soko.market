@@ -23,7 +23,7 @@ describe("Network Sync Graph", () => {
   it("creates direct phone and social networks, extended agent-mediated nodes, and routes", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
-    const { sessionCookie } = await createOwnerBusiness(app, "254700000302");
+    const { business, sessionCookie } = await createOwnerBusiness(app, "254700000302");
 
     const phoneGraph = await postJson<NetworkGraphSummary>(
       app,
@@ -104,16 +104,28 @@ describe("Network Sync Graph", () => {
     expect(extended.nodes.map((node) => node.displayName)).toEqual(["Dairy Supplier", "Egg Shop"]);
     expect(JSON.stringify(extended)).not.toContain("+254700000304");
 
-    const target = extended.nodes.find((node) => node.displayName === "Dairy Supplier");
-    const route = await postJson<AgentRouteSummary>(
+    const runtime = await postJson<{
+      turn: {
+        status: string;
+        plan: { toolName: string; input: Record<string, unknown> };
+        toolResult: AgentRouteSummary;
+      };
+    }>(
       app,
-      "/network/routes",
+      `/businesses/${business.id}/runtime/turns`,
       {
-        requestText: "Find suppliers through my network",
-        targetNodeId: target?.id
+        message: "Find Dairy Supplier through my network"
       },
       sessionCookie
     );
+    expect(runtime.turn).toMatchObject({
+      status: "completed",
+      plan: {
+        toolName: "network.route",
+        input: { requestText: "Find Dairy Supplier through my network" }
+      }
+    });
+    const route = runtime.turn.toolResult;
     expect(route).toMatchObject({
       status: "pending_permission",
       path: ["You", "Jane Supplier", "Jane Supplier's Agent", "Dairy Supplier"]

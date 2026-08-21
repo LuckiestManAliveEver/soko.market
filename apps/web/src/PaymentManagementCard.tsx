@@ -18,7 +18,10 @@ const paymentMethods: PaymentMethod[] = [
 // invoice id and method"), since a customer can have several open invoices and free text cannot
 // reliably say which one. The chat trigger opens this card pre-filled with the extracted customer
 // name; the owner picks the specific invoice here. See docs/frontend/frontend.md Phase 4e.
-export default function PaymentManagementCard(props: { businessId: string; customerName?: string }) {
+export default function PaymentManagementCard(props: {
+  businessId: string;
+  customerName?: string;
+}) {
   const { isPending, runAction } = useAsyncActions();
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -59,13 +62,16 @@ export default function PaymentManagementCard(props: { businessId: string; custo
       setMessage("Choose an invoice.");
       return;
     }
-    const response = await postJson<RecordPaymentResponse>(`/businesses/${props.businessId}/payments`, {
-      invoiceId,
-      amount: Number(amount),
-      method,
-      reference: null,
-      note: null
-    });
+    const response = await postJson<RecordPaymentResponse>(
+      `/businesses/${props.businessId}/payments`,
+      {
+        invoiceId,
+        amount: Number(amount),
+        method,
+        reference: null,
+        note: null
+      }
+    );
     setRecorded(response);
     setMessage(`Payment recorded, balance due ${response.invoicePayment.balanceDue}`);
   }
@@ -104,11 +110,18 @@ export default function PaymentManagementCard(props: { businessId: string; custo
               </label>
               <label>
                 Amount
-                <input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} />
+                <input
+                  inputMode="decimal"
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                />
               </label>
               <label>
                 Method
-                <select value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)}>
+                <select
+                  value={method}
+                  onChange={(event) => setMethod(event.target.value as PaymentMethod)}
+                >
                   {paymentMethods.map((option) => (
                     <option key={option} value={option}>
                       {option}

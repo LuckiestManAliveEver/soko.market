@@ -1,10 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { ProductCaptureField, ProductCaptureItemSummary, ProductCaptureJobSummary } from "@soko/shared-types";
-import { normalizeOptionalBoundedText, normalizeRequiredBoundedText } from "../../text-normalization.js";
+import type {
+  ProductCaptureField,
+  ProductCaptureItemSummary,
+  ProductCaptureJobSummary
+} from "@soko/shared-types";
+import {
+  normalizeOptionalBoundedText,
+  normalizeRequiredBoundedText
+} from "../../text-normalization.js";
 
 export { normalizeOptionalBoundedText, normalizeRequiredBoundedText };
 
-export function captureField<T>(value: T | null, confidence: number | null): ProductCaptureField<T> {
+export function captureField<T>(
+  value: T | null,
+  confidence: number | null
+): ProductCaptureField<T> {
   return {
     value,
     source: value === null ? "not_detected" : "vision_extraction",

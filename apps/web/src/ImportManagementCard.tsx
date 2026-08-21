@@ -130,7 +130,9 @@ export default function ImportManagementCard(props: { businessId: string; import
         </div>
       ) : (
         <p className="shell-note">
-          {job.status === "confirmed" ? `Confirmed: ${job.confirmedCount} rows imported.` : "Import failed."}
+          {job.status === "confirmed"
+            ? `Confirmed: ${job.confirmedCount} rows imported.`
+            : "Import failed."}
         </p>
       )}
     </section>

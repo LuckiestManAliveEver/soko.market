@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 
 import type { ChatMessage, ShellView, SokoMode } from "../app-shell";
 import {
-  canNavigateBackWithinApp,
   navigateToBrowserUrl,
   navigateToOwnerRoute,
   readSokoHistoryState
@@ -14,7 +13,6 @@ import { authenticationRoute, pathForOwnerView } from "../routes";
 import { createScreenStateCache, restoreScreenScroll } from "../screen-state-cache";
 import type {
   ActiveBusiness,
-  AgentSettings,
   ProductSummary,
   SessionResponse,
   ShopPresenceStatus,
@@ -29,13 +27,13 @@ interface UseNavigationStateDeps {
   setMode: (mode: SokoMode) => void;
   view: ShellView;
   setView: (view: ShellView) => void;
-  agentSettings: AgentSettings;
   // Marketplace is called after Navigation (Marketplace's completeMarketplaceIntro needs
   // Navigation's setIsMarketplaceShortcutOpen), so Navigation can't take isMarketplaceIntroComplete
   // as a plain dep without a TDZ error - deferred behind a getter, same reasoning as the Auth/
   // BusinessSetup/Chat setter getters below.
   getIsMarketplaceIntroComplete: () => boolean;
   preservedScreenLimit: number;
+  initialMarketplaceShortcutOpen: boolean;
   initialRoutedProductId: string | null;
   populateProductForm: (product: ProductSummary) => void;
   setStatusMessage: (message: string) => void;
@@ -66,7 +64,9 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
   const screenStateCacheRef = useRef(createScreenStateCache(deps.preservedScreenLimit));
   const activeViewRef = useRef(deps.view);
   activeViewRef.current = deps.view;
-  const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(false);
+  const [isMarketplaceShortcutOpen, setIsMarketplaceShortcutOpen] = useState(
+    deps.initialMarketplaceShortcutOpen
+  );
   const [shopPresenceStatus, setShopPresenceStatus] = useState<ShopPresenceStatus>("online");
   const [routedProductId, setRoutedProductId] = useState<string | null>(
     deps.initialRoutedProductId
@@ -78,7 +78,6 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     mode,
     setMode,
     setView,
-    agentSettings,
     populateProductForm,
     setStatusMessage,
     setIsWorkspacePanelOpen,
@@ -87,7 +86,6 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
 
   function navigateToView(nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) {
     const nextMode = options?.mode ?? mode;
-    const nextRoute = { mode: nextMode, view: nextView };
     const nextPath = pathForOwnerView(nextView, nextMode);
     const measurement = startNavigationMeasurement(nextPath);
     screenStateCacheRef.current.write(activeViewRef.current, {
@@ -97,39 +95,42 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setMode(nextMode);
     setView(nextView);
     setRoutedProductId(null);
+    setIsMarketplaceShortcutOpen(false);
+    if (nextView !== "chat" && nextView !== "home") {
+      markNavigationCommitted(measurement);
+      return;
+    }
+    const nextRoute = { mode: nextMode, view: nextView };
     navigateToOwnerRoute(nextRoute, { replace: options?.replace });
     markNavigationCommitted(measurement);
     restoreScreenScroll(screenStateCacheRef.current, nextView);
   }
 
-  function openProduct(product: ProductSummary, options?: { replace?: boolean }) {
+  function openProduct(product: ProductSummary) {
     populateProductForm(product);
     setMode("seller");
     setView("products");
     setRoutedProductId(product.id);
-    navigateToOwnerRoute(
-      { mode: "seller", view: "products", productId: product.id },
-      { replace: options?.replace }
-    );
+    setIsMarketplaceShortcutOpen(false);
   }
 
-  function openAgentProfile(options?: { replace?: boolean }) {
+  function openAgentProfile() {
     if (business === null) return;
     setMode("seller");
     setView("agent");
-    navigateToOwnerRoute(
-      { mode: "seller", view: "agent", agentId: agentSettings.id },
-      { replace: options?.replace }
-    );
+    setIsMarketplaceShortcutOpen(false);
   }
 
   function returnToChat() {
     const currentState = readSokoHistoryState(window.history.state);
-    if (currentState?.view !== "chat" && canNavigateBackWithinApp()) {
-      window.history.back();
-      return;
+    const deepLinkedModule =
+      currentState !== null && currentState.view !== "chat" && currentState.view !== "home";
+    setView("chat");
+    setRoutedProductId(null);
+    setIsWorkspacePanelOpen(false);
+    if (deepLinkedModule) {
+      navigateToOwnerRoute({ mode, view: "chat" }, { replace: true });
     }
-    navigateToView("chat", { replace: currentState?.view !== "chat" });
   }
 
   function requireMessagingSignIn() {

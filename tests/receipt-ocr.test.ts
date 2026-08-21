@@ -257,6 +257,14 @@ describe("Receipt OCR", () => {
     });
     expect(receipt.lineItems).toHaveLength(1);
 
+    const repeatedConfirmation = await postJson<PurchaseReceiptResponse>(
+      app,
+      `/businesses/${businessId}/receipt-ocr/jobs/${job.id}/confirm`,
+      { supplierId: job.matchedSupplierId },
+      sessionCookie
+    );
+    expect(repeatedConfirmation.id).toBe(receipt.id);
+
     const savedReceipts = await getJson<PurchaseReceiptResponse[]>(
       app,
       `/businesses/${businessId}/purchase-receipts`,
@@ -266,6 +274,7 @@ describe("Receipt OCR", () => {
       id: receipt.id,
       imageStored: false
     });
+    expect(savedReceipts).toHaveLength(1);
     expect(store.snapshot().receiptOCRJobs[0]).toMatchObject({
       status: "COMPLETED",
       imageRetained: false,

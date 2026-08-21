@@ -295,11 +295,11 @@ describePostgres("CP2 Postgres store", () => {
     const store = await createPostgresCp2Store({ databaseUrl: connectionString });
     const app = buildApi({ cp2: { store }, mutationPersistenceFlush: () => store.flush() });
 
-    const otpResponse = await postJson<{ challengeId: string; destination: string; devOtp: string }>(
-      app,
-      "/auth/otp/request",
-      { channel: "email", destination: uniqueEmail }
-    );
+    const otpResponse = await postJson<{
+      challengeId: string;
+      destination: string;
+      devOtp: string;
+    }>(app, "/auth/otp/request", { channel: "email", destination: uniqueEmail });
 
     await store.flush();
     await app.close();
@@ -910,7 +910,9 @@ describePostgres("CP2 Postgres store", () => {
         sessionCookie
       );
       expect(restoredOrders).toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: order.id, invoiceId: order.invoiceId })])
+        expect.arrayContaining([
+          expect.objectContaining({ id: order.id, invoiceId: order.invoiceId })
+        ])
       );
 
       const restoredMovements = (
@@ -1427,739 +1429,760 @@ describePostgres("CP2 Postgres store", () => {
     }
   }, 20_000);
 
-  it(
-    "persists status broadcasts and unified checkout orders (buy_orders/status_orders) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const onePixelPng =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZCr8AAAAASUVORK5CYII=";
+  it("persists status broadcasts and unified checkout orders (buy_orders/status_orders) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const onePixelPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZCr8AAAAASUVORK5CYII=";
 
-      const sellerPhone = `254701${Date.now().toString().slice(-6)}`;
-      const buyerPhone = `254702${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
+    const sellerPhone = `254701${Date.now().toString().slice(-6)}`;
+    const buyerPhone = `254702${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
 
-      const seller = await createOwnerBusiness(app, sellerPhone);
-      const buyer = await createOwnerBusiness(app, buyerPhone);
+    const seller = await createOwnerBusiness(app, sellerPhone);
+    const buyer = await createOwnerBusiness(app, buyerPhone);
 
-      await postJson<ProductResponse>(
-        app,
-        `/businesses/${seller.business.id}/products`,
-        { name: "Postgres Mangoes", quantity: 10, unit: "kg", buyingPrice: 100, sellingPrice: 150 },
+    await postJson<ProductResponse>(
+      app,
+      `/businesses/${seller.business.id}/products`,
+      { name: "Postgres Mangoes", quantity: 10, unit: "kg", buyingPrice: 100, sellingPrice: 150 },
+      seller.sessionCookie
+    );
+
+    const sellerGraph = await postJson<NetworkGraphSummary>(
+      app,
+      "/network/sync/contacts",
+      { contacts: [{ name: "Buyer Contact", phone: `+${buyerPhone}` }] },
+      seller.sessionCookie
+    );
+    const buyerNode = sellerGraph.nodes.find((node) => node.displayName === "Buyer Contact")!;
+
+    const job = await postJson<ProductCaptureJobSummary>(
+      app,
+      `/businesses/${seller.business.id}/product-captures`,
+      { fileName: "shelf.jpg", contentType: "image/png", contentBase64: onePixelPng },
+      seller.sessionCookie
+    );
+    await postJson(
+      app,
+      `/businesses/${seller.business.id}/product-captures/${job.id}/items/${job.items[0]!.id}/confirm`,
+      { title: "Postgres Bananas", visiblePrice: 90 },
+      seller.sessionCookie
+    );
+    const status = await postJson<StatusBroadcastSummary>(
+      app,
+      `/businesses/${seller.business.id}/status-broadcasts`,
+      { sourceCaptureJobId: job.id, recipientNodeIds: [buyerNode.id] },
+      seller.sessionCookie
+    );
+
+    const feed = await getJson<BuyFeedSummary>(app, "/buy/search?query=", buyer.sessionCookie);
+    const catalogueResult = feed.results.find((r) => r.title === "Postgres Mangoes")!;
+    const contactResult = feed.results.find((r) => r.title === "Postgres Bananas")!;
+
+    const checkout = await postJson<UnifiedCheckoutSummary>(
+      app,
+      "/buy/checkout",
+      {
+        items: [
+          {
+            sourceKind: "catalogue",
+            sourceId: catalogueResult.sourceId,
+            sourceLabel: catalogueResult.sourceLabel,
+            title: catalogueResult.title,
+            quantity: 1,
+            agentId: catalogueResult.agentId,
+            productId: catalogueResult.productId
+          },
+          {
+            sourceKind: "contact",
+            sourceId: contactResult.sourceId,
+            sourceLabel: contactResult.sourceLabel,
+            title: contactResult.title,
+            quantity: 1,
+            statusBroadcastId: contactResult.statusBroadcastId,
+            productCaptureItemId: contactResult.productCaptureItemId
+          }
+        ]
+      },
+      buyer.sessionCookie
+    );
+    expect(checkout.handoffs).toHaveLength(2);
+    const contactHandoff = checkout.handoffs.find((handoff) => handoff.kind === "contact")!;
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredStatus = await getJson<StatusBroadcastSummary>(
+        restoredApp,
+        `/businesses/${seller.business.id}/status-broadcasts/${status.id}`,
         seller.sessionCookie
       );
-
-      const sellerGraph = await postJson<NetworkGraphSummary>(
-        app,
-        "/network/sync/contacts",
-        { contacts: [{ name: "Buyer Contact", phone: `+${buyerPhone}` }] },
-        seller.sessionCookie
-      );
-      const buyerNode = sellerGraph.nodes.find((node) => node.displayName === "Buyer Contact")!;
-
-      const job = await postJson<ProductCaptureJobSummary>(
-        app,
-        `/businesses/${seller.business.id}/product-captures`,
-        { fileName: "shelf.jpg", contentType: "image/png", contentBase64: onePixelPng },
-        seller.sessionCookie
-      );
-      await postJson(
-        app,
-        `/businesses/${seller.business.id}/product-captures/${job.id}/items/${job.items[0]!.id}/confirm`,
-        { title: "Postgres Bananas", visiblePrice: 90 },
-        seller.sessionCookie
-      );
-      const status = await postJson<StatusBroadcastSummary>(
-        app,
-        `/businesses/${seller.business.id}/status-broadcasts`,
-        { sourceCaptureJobId: job.id, recipientNodeIds: [buyerNode.id] },
-        seller.sessionCookie
+      expect(restoredStatus.resultingOrderIds).toEqual(
+        expect.arrayContaining([contactHandoff.orderId])
       );
 
-      const feed = await getJson<BuyFeedSummary>(app, "/buy/search?query=", buyer.sessionCookie);
-      const catalogueResult = feed.results.find((r) => r.title === "Postgres Mangoes")!;
-      const contactResult = feed.results.find((r) => r.title === "Postgres Bananas")!;
-
-      const checkout = await postJson<UnifiedCheckoutSummary>(
-        app,
-        "/buy/checkout",
-        {
-          items: [
-            {
-              sourceKind: "catalogue",
-              sourceId: catalogueResult.sourceId,
-              sourceLabel: catalogueResult.sourceLabel,
-              title: catalogueResult.title,
-              quantity: 1,
-              agentId: catalogueResult.agentId,
-              productId: catalogueResult.productId
-            },
-            {
-              sourceKind: "contact",
-              sourceId: contactResult.sourceId,
-              sourceLabel: contactResult.sourceLabel,
-              title: contactResult.title,
-              quantity: 1,
-              statusBroadcastId: contactResult.statusBroadcastId,
-              productCaptureItemId: contactResult.productCaptureItemId
-            }
-          ]
-        },
+      const restoredCheckout = await getJson<UnifiedCheckoutSummary>(
+        restoredApp,
+        `/buy/checkouts/${checkout.id}`,
         buyer.sessionCookie
       );
-      expect(checkout.handoffs).toHaveLength(2);
-      const contactHandoff = checkout.handoffs.find((handoff) => handoff.kind === "contact")!;
+      expect(restoredCheckout.handoffs).toEqual(checkout.handoffs);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      await store.flush();
-      await app.close();
+  it("persists compliance/beta/launch domain records across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254703${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
 
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredStatus = await getJson<StatusBroadcastSummary>(
-          restoredApp,
-          `/businesses/${seller.business.id}/status-broadcasts/${status.id}`,
-          seller.sessionCookie
-        );
-        expect(restoredStatus.resultingOrderIds).toEqual(
-          expect.arrayContaining([contactHandoff.orderId])
-        );
+    const owner = await createOwnerBusiness(app, ownerPhone);
+    const businessId = owner.business.id;
 
-        const restoredCheckout = await getJson<UnifiedCheckoutSummary>(
-          restoredApp,
-          `/buy/checkouts/${checkout.id}`,
-          buyer.sessionCookie
-        );
-        expect(restoredCheckout.handoffs).toEqual(checkout.handoffs);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
+    const verification = await patchJson<VerificationTierSummary>(
+      app,
+      `/businesses/${businessId}/compliance/verification`,
+      { tier: "owner_verified", evidenceType: "owner_attestation", note: "Postgres slice test" },
+      owner.sessionCookie
+    );
+    const taxConfig = await patchJson<CountryTaxConfigSummary>(
+      app,
+      `/businesses/${businessId}/compliance/tax-config`,
+      { countryCode: "KE", defaultTaxRate: 0.16, taxId: "P000111222A", pricesIncludeTax: true },
+      owner.sessionCookie
+    );
+    const deviceTrust = await patchJson<DeviceTrustSummary>(
+      app,
+      `/businesses/${businessId}/compliance/device-trust`,
+      { deviceId: "browser-session", level: "trusted", reason: "Postgres slice test" },
+      owner.sessionCookie
+    );
+    await patchJson(
+      app,
+      `/businesses/${businessId}/beta/access`,
+      { status: "active", pauseReason: null, invitedMerchantCount: 3 },
+      owner.sessionCookie
+    );
+    await patchJson(
+      app,
+      `/businesses/${businessId}/beta/feature-flags/closed_beta`,
+      { enabled: true, reason: "Postgres slice test" },
+      owner.sessionCookie
+    );
+    await postJson(
+      app,
+      `/businesses/${businessId}/beta/device-tests`,
+      {
+        deviceClass: "android_1gb",
+        workflow: "checkout",
+        status: "passed",
+        durationMs: 1200,
+        notes: "Postgres slice test"
+      },
+      owner.sessionCookie
+    );
+    const supportTicket = await postJson<BetaSupportTicketSummary>(
+      app,
+      `/businesses/${businessId}/beta/support-tickets`,
+      { severity: "high", title: "Postgres slice ticket", body: "Persistence check" },
+      owner.sessionCookie
+    );
+    await postJson(
+      app,
+      `/businesses/${businessId}/beta/telemetry`,
+      { kind: "session", message: null },
+      owner.sessionCookie
+    );
+    const launchSettings = await patchJson<LaunchSettingsSummary>(
+      app,
+      `/businesses/${businessId}/launch/settings`,
+      {
+        status: "open",
+        publicOnboardingEnabled: true,
+        rollbackArmed: true,
+        freezeActive: false,
+        allowedSignupCount: 5,
+        pauseReason: null
+      },
+      owner.sessionCookie
+    );
+    await patchJson(
+      app,
+      `/businesses/${businessId}/launch/checklist/environment_config`,
+      { status: "passed", evidence: "Postgres slice test" },
+      owner.sessionCookie
+    );
+    const incident = await postJson<LaunchIncidentSummary>(
+      app,
+      `/businesses/${businessId}/launch/incidents`,
+      {
+        severity: "medium",
+        category: "onboarding",
+        title: "Postgres slice incident",
+        body: "Persistence check"
+      },
+      owner.sessionCookie
+    );
 
-  it(
-    "persists compliance/beta/launch domain records across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254703${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
+    const betaReadinessBefore = await getJson<BetaReadinessReportSummary>(
+      app,
+      `/businesses/${businessId}/beta/readiness`,
+      owner.sessionCookie
+    );
+    const launchReadinessBefore = await getJson<LaunchReadinessReportSummary>(
+      app,
+      `/businesses/${businessId}/launch/readiness`,
+      owner.sessionCookie
+    );
 
-      const owner = await createOwnerBusiness(app, ownerPhone);
-      const businessId = owner.business.id;
+    await store.flush();
+    await app.close();
 
-      const verification = await patchJson<VerificationTierSummary>(
-        app,
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredVerification = await getJson<VerificationTierSummary>(
+        restoredApp,
         `/businesses/${businessId}/compliance/verification`,
-        { tier: "owner_verified", evidenceType: "owner_attestation", note: "Postgres slice test" },
         owner.sessionCookie
       );
-      const taxConfig = await patchJson<CountryTaxConfigSummary>(
-        app,
+      expect(restoredVerification).toEqual(verification);
+
+      const restoredTaxConfig = await getJson<CountryTaxConfigSummary>(
+        restoredApp,
         `/businesses/${businessId}/compliance/tax-config`,
-        { countryCode: "KE", defaultTaxRate: 0.16, taxId: "P000111222A", pricesIncludeTax: true },
         owner.sessionCookie
       );
-      const deviceTrust = await patchJson<DeviceTrustSummary>(
-        app,
+      expect(restoredTaxConfig).toEqual(taxConfig);
+
+      const restoredDeviceTrust = await getJson<DeviceTrustSummary>(
+        restoredApp,
         `/businesses/${businessId}/compliance/device-trust`,
-        { deviceId: "browser-session", level: "trusted", reason: "Postgres slice test" },
         owner.sessionCookie
       );
-      await patchJson(
-        app,
-        `/businesses/${businessId}/beta/access`,
-        { status: "active", pauseReason: null, invitedMerchantCount: 3 },
+      expect(restoredDeviceTrust).toEqual(deviceTrust);
+
+      const restoredFeatureFlags = await getJson<BetaFeatureFlagSummary[]>(
+        restoredApp,
+        `/businesses/${businessId}/beta/feature-flags`,
         owner.sessionCookie
       );
-      await patchJson(
-        app,
-        `/businesses/${businessId}/beta/feature-flags/closed_beta`,
-        { enabled: true, reason: "Postgres slice test" },
-        owner.sessionCookie
-      );
-      await postJson(
-        app,
-        `/businesses/${businessId}/beta/device-tests`,
-        {
-          deviceClass: "android_1gb",
-          workflow: "checkout",
-          status: "passed",
-          durationMs: 1200,
-          notes: "Postgres slice test"
-        },
-        owner.sessionCookie
-      );
-      const supportTicket = await postJson<BetaSupportTicketSummary>(
-        app,
+      const restoredClosedBeta = restoredFeatureFlags.find((flag) => flag.key === "closed_beta");
+      expect(restoredClosedBeta?.enabled).toBe(true);
+
+      const restoredSupportTickets = await getJson<BetaSupportTicketSummary[]>(
+        restoredApp,
         `/businesses/${businessId}/beta/support-tickets`,
-        { severity: "high", title: "Postgres slice ticket", body: "Persistence check" },
         owner.sessionCookie
       );
-      await postJson(
-        app,
-        `/businesses/${businessId}/beta/telemetry`,
-        { kind: "session", message: null },
-        owner.sessionCookie
-      );
-      const launchSettings = await patchJson<LaunchSettingsSummary>(
-        app,
-        `/businesses/${businessId}/launch/settings`,
-        {
-          status: "open",
-          publicOnboardingEnabled: true,
-          rollbackArmed: true,
-          freezeActive: false,
-          allowedSignupCount: 5,
-          pauseReason: null
-        },
-        owner.sessionCookie
-      );
-      await patchJson(
-        app,
-        `/businesses/${businessId}/launch/checklist/environment_config`,
-        { status: "passed", evidence: "Postgres slice test" },
-        owner.sessionCookie
-      );
-      const incident = await postJson<LaunchIncidentSummary>(
-        app,
-        `/businesses/${businessId}/launch/incidents`,
-        {
-          severity: "medium",
-          category: "onboarding",
-          title: "Postgres slice incident",
-          body: "Persistence check"
-        },
-        owner.sessionCookie
+      expect(restoredSupportTickets.find((ticket) => ticket.id === supportTicket.id)).toEqual(
+        supportTicket
       );
 
-      const betaReadinessBefore = await getJson<BetaReadinessReportSummary>(
-        app,
+      const restoredChecklist = await getJson<LaunchChecklistItemSummary[]>(
+        restoredApp,
+        `/businesses/${businessId}/launch/checklist`,
+        owner.sessionCookie
+      );
+      const restoredEnvironmentConfig = restoredChecklist.find(
+        (item) => item.key === "environment_config"
+      );
+      expect(restoredEnvironmentConfig?.status).toBe("passed");
+
+      const restoredIncidents = await getJson<LaunchIncidentSummary[]>(
+        restoredApp,
+        `/businesses/${businessId}/launch/incidents`,
+        owner.sessionCookie
+      );
+      expect(restoredIncidents.find((item) => item.id === incident.id)).toEqual(incident);
+
+      const restoredBetaReadiness = await getJson<BetaReadinessReportSummary>(
+        restoredApp,
         `/businesses/${businessId}/beta/readiness`,
         owner.sessionCookie
       );
-      const launchReadinessBefore = await getJson<LaunchReadinessReportSummary>(
-        app,
+      expect(restoredBetaReadiness.deviceTesting.passedDeviceClasses).toEqual(
+        betaReadinessBefore.deviceTesting.passedDeviceClasses
+      );
+      expect(restoredBetaReadiness.telemetry.sessionEventCount).toBe(
+        betaReadinessBefore.telemetry.sessionEventCount
+      );
+      expect(restoredBetaReadiness.support.openTicketCount).toBe(
+        betaReadinessBefore.support.openTicketCount
+      );
+
+      const restoredLaunchReadiness = await getJson<LaunchReadinessReportSummary>(
+        restoredApp,
         `/businesses/${businessId}/launch/readiness`,
         owner.sessionCookie
       );
-
-      await store.flush();
-      await app.close();
-
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredVerification = await getJson<VerificationTierSummary>(
-          restoredApp,
-          `/businesses/${businessId}/compliance/verification`,
-          owner.sessionCookie
-        );
-        expect(restoredVerification).toEqual(verification);
-
-        const restoredTaxConfig = await getJson<CountryTaxConfigSummary>(
-          restoredApp,
-          `/businesses/${businessId}/compliance/tax-config`,
-          owner.sessionCookie
-        );
-        expect(restoredTaxConfig).toEqual(taxConfig);
-
-        const restoredDeviceTrust = await getJson<DeviceTrustSummary>(
-          restoredApp,
-          `/businesses/${businessId}/compliance/device-trust`,
-          owner.sessionCookie
-        );
-        expect(restoredDeviceTrust).toEqual(deviceTrust);
-
-        const restoredFeatureFlags = await getJson<BetaFeatureFlagSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/beta/feature-flags`,
-          owner.sessionCookie
-        );
-        const restoredClosedBeta = restoredFeatureFlags.find((flag) => flag.key === "closed_beta");
-        expect(restoredClosedBeta?.enabled).toBe(true);
-
-        const restoredSupportTickets = await getJson<BetaSupportTicketSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/beta/support-tickets`,
-          owner.sessionCookie
-        );
-        expect(restoredSupportTickets.find((ticket) => ticket.id === supportTicket.id)).toEqual(
-          supportTicket
-        );
-
-        const restoredChecklist = await getJson<LaunchChecklistItemSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/launch/checklist`,
-          owner.sessionCookie
-        );
-        const restoredEnvironmentConfig = restoredChecklist.find(
-          (item) => item.key === "environment_config"
-        );
-        expect(restoredEnvironmentConfig?.status).toBe("passed");
-
-        const restoredIncidents = await getJson<LaunchIncidentSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/launch/incidents`,
-          owner.sessionCookie
-        );
-        expect(restoredIncidents.find((item) => item.id === incident.id)).toEqual(incident);
-
-        const restoredBetaReadiness = await getJson<BetaReadinessReportSummary>(
-          restoredApp,
-          `/businesses/${businessId}/beta/readiness`,
-          owner.sessionCookie
-        );
-        expect(restoredBetaReadiness.deviceTesting.passedDeviceClasses).toEqual(
-          betaReadinessBefore.deviceTesting.passedDeviceClasses
-        );
-        expect(restoredBetaReadiness.telemetry.sessionEventCount).toBe(
-          betaReadinessBefore.telemetry.sessionEventCount
-        );
-        expect(restoredBetaReadiness.support.openTicketCount).toBe(
-          betaReadinessBefore.support.openTicketCount
-        );
-
-        const restoredLaunchReadiness = await getJson<LaunchReadinessReportSummary>(
-          restoredApp,
-          `/businesses/${businessId}/launch/readiness`,
-          owner.sessionCookie
-        );
-        expect(restoredLaunchReadiness.checklist.passed).toBe(launchReadinessBefore.checklist.passed);
-        expect(restoredLaunchReadiness.support.openIncidentCount).toBe(
-          launchReadinessBefore.support.openIncidentCount
-        );
-        expect(restoredLaunchReadiness.settings).toEqual(launchSettings);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
-
-  it(
-    "persists logistics records (including the logisticsByInvoice index) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254704${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
-
-      const owner = await createOwnerBusiness(app, ownerPhone);
-      const businessId = owner.business.id;
-
-      const product = await postJson<ProductResponse>(
-        app,
-        `/businesses/${businessId}/products`,
-        { name: "Postgres Logistics Rice", quantity: 10, unit: "kg", buyingPrice: 80, sellingPrice: 120 },
-        owner.sessionCookie
+      expect(restoredLaunchReadiness.checklist.passed).toBe(launchReadinessBefore.checklist.passed);
+      expect(restoredLaunchReadiness.support.openIncidentCount).toBe(
+        launchReadinessBefore.support.openIncidentCount
       );
-      const draftInvoice = await postJson<{ id: string }>(
-        app,
-        `/businesses/${businessId}/invoices`,
-        { items: [{ productId: product.id, quantity: 2, unitPrice: 120 }] },
-        owner.sessionCookie
-      );
-      const confirmed = await postJson<{ invoice: InvoiceSummary }>(
-        app,
-        `/businesses/${businessId}/invoices/${draftInvoice.id}/confirm`,
-        {},
-        owner.sessionCookie
-      );
+      expect(restoredLaunchReadiness.settings).toEqual(launchSettings);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      const logistics = await postJson<LogisticsSummary>(
-        app,
+  it("persists logistics records (including the logisticsByInvoice index) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254704${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
+
+    const owner = await createOwnerBusiness(app, ownerPhone);
+    const businessId = owner.business.id;
+
+    const product = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      {
+        name: "Postgres Logistics Rice",
+        quantity: 10,
+        unit: "kg",
+        buyingPrice: 80,
+        sellingPrice: 120
+      },
+      owner.sessionCookie
+    );
+    const draftInvoice = await postJson<{ id: string }>(
+      app,
+      `/businesses/${businessId}/invoices`,
+      { items: [{ productId: product.id, quantity: 2, unitPrice: 120 }] },
+      owner.sessionCookie
+    );
+    const confirmed = await postJson<{ invoice: InvoiceSummary }>(
+      app,
+      `/businesses/${businessId}/invoices/${draftInvoice.id}/confirm`,
+      {},
+      owner.sessionCookie
+    );
+
+    const logistics = await postJson<LogisticsSummary>(
+      app,
+      `/businesses/${businessId}/logistics`,
+      {
+        invoiceId: confirmed.invoice.id,
+        method: "delivery",
+        destination: "Nairobi CBD",
+        note: null
+      },
+      owner.sessionCookie
+    );
+    const updated = await patchJson<LogisticsSummary>(
+      app,
+      `/businesses/${businessId}/logistics/${logistics.id}`,
+      { status: "ready", note: "Postgres slice test" },
+      owner.sessionCookie
+    );
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredList = await getJson<LogisticsSummary[]>(
+        restoredApp,
         `/businesses/${businessId}/logistics`,
-        { invoiceId: confirmed.invoice.id, method: "delivery", destination: "Nairobi CBD", note: null },
         owner.sessionCookie
       );
-      const updated = await patchJson<LogisticsSummary>(
-        app,
-        `/businesses/${businessId}/logistics/${logistics.id}`,
-        { status: "ready", note: "Postgres slice test" },
-        owner.sessionCookie
-      );
+      expect(restoredList.find((item) => item.id === logistics.id)).toEqual(updated);
 
-      await store.flush();
-      await app.close();
+      // logisticsByInvoice is a derived index (never itself a Cp2Snapshot field) rebuilt
+      // per-item during hydrateSnapshot from the restored logistics records - creating a second
+      // logistics record for the same invoice must still be rejected after a restart, proving
+      // the index round-tripped correctly, not just the underlying logistics Map.
+      const duplicateAttempt = await restoredApp.inject({
+        method: "POST",
+        url: `/businesses/${businessId}/logistics`,
+        headers: { ...jsonHeaders(), cookie: owner.sessionCookie },
+        payload: JSON.stringify({
+          invoiceId: confirmed.invoice.id,
+          method: "pickup",
+          destination: null,
+          note: null
+        })
+      });
+      expect(duplicateAttempt.statusCode).toBe(409);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredList = await getJson<LogisticsSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/logistics`,
-          owner.sessionCookie
-        );
-        expect(restoredList.find((item) => item.id === logistics.id)).toEqual(updated);
+  it("persists suppliers, sales agents, and purchase receipts (via receipt-OCR confirm) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254705${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
 
-        // logisticsByInvoice is a derived index (never itself a Cp2Snapshot field) rebuilt
-        // per-item during hydrateSnapshot from the restored logistics records - creating a second
-        // logistics record for the same invoice must still be rejected after a restart, proving
-        // the index round-tripped correctly, not just the underlying logistics Map.
-        const duplicateAttempt = await restoredApp.inject({
-          method: "POST",
-          url: `/businesses/${businessId}/logistics`,
-          headers: { ...jsonHeaders(), cookie: owner.sessionCookie },
-          payload: JSON.stringify({
-            invoiceId: confirmed.invoice.id,
-            method: "pickup",
-            destination: null,
-            note: null
-          })
-        });
-        expect(duplicateAttempt.statusCode).toBe(409);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
+    const owner = await createOwnerBusiness(app, ownerPhone);
+    const businessId = owner.business.id;
 
-  it(
-    "persists suppliers, sales agents, and purchase receipts (via receipt-OCR confirm) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254705${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
+    const supplier = await postJson<SupplierBusinessCardSummary>(
+      app,
+      `/businesses/${businessId}/suppliers`,
+      { name: "Postgres Wholesale Ltd", phone: "+254711222333", email: null, notes: null },
+      owner.sessionCookie
+    );
+    const salesAgent = await postJson<SalesAgentSummary>(
+      app,
+      `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
+      { name: "Postgres Agent", phone: "+254722333444", email: null, notes: null },
+      owner.sessionCookie
+    );
 
-      const owner = await createOwnerBusiness(app, ownerPhone);
-      const businessId = owner.business.id;
+    const ocrJob = await postJson<ReceiptOCRJobSummary>(
+      app,
+      `/businesses/${businessId}/receipt-ocr/jobs`,
+      {
+        fileName: "receipt.txt",
+        contentType: "text/plain",
+        contentBase64: null,
+        extractedText:
+          "Supplier: Postgres Wholesale Ltd\nPhone: +254711222333\nTotal: 500\nItem A, 2, 100, 200"
+      },
+      owner.sessionCookie
+    );
+    const receipt = await postJson<PurchaseReceiptSummary>(
+      app,
+      `/businesses/${businessId}/receipt-ocr/jobs/${ocrJob.id}/confirm`,
+      { supplierId: supplier.id, salesAgentId: salesAgent.id },
+      owner.sessionCookie
+    );
 
-      const supplier = await postJson<SupplierBusinessCardSummary>(
-        app,
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredSuppliers = await getJson<SupplierBusinessCardSummary[]>(
+        restoredApp,
         `/businesses/${businessId}/suppliers`,
-        { name: "Postgres Wholesale Ltd", phone: "+254711222333", email: null, notes: null },
         owner.sessionCookie
       );
-      const salesAgent = await postJson<SalesAgentSummary>(
-        app,
+      const restoredSupplier = restoredSuppliers.find((item) => item.id === supplier.id);
+      expect(restoredSupplier?.name).toBe(supplier.name);
+      // salesAgentCount/purchaseReceiptCount are derived by supplierBusinessCard from the
+      // restored salesAgents/purchaseReceipts maps, not stored verbatim - a non-zero count here
+      // proves those two maps round-tripped and stayed linked to this supplier after restart.
+      expect(restoredSupplier?.salesAgentCount).toBe(1);
+      expect(restoredSupplier?.purchaseReceiptCount).toBe(1);
+
+      const restoredSalesAgents = await getJson<SalesAgentSummary[]>(
+        restoredApp,
         `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
-        { name: "Postgres Agent", phone: "+254722333444", email: null, notes: null },
         owner.sessionCookie
       );
-
-      const ocrJob = await postJson<ReceiptOCRJobSummary>(
-        app,
-        `/businesses/${businessId}/receipt-ocr/jobs`,
-        {
-          fileName: "receipt.txt",
-          contentType: "text/plain",
-          contentBase64: null,
-          extractedText:
-            "Supplier: Postgres Wholesale Ltd\nPhone: +254711222333\nTotal: 500\nItem A, 2, 100, 200"
-        },
-        owner.sessionCookie
-      );
-      const receipt = await postJson<PurchaseReceiptSummary>(
-        app,
-        `/businesses/${businessId}/receipt-ocr/jobs/${ocrJob.id}/confirm`,
-        { supplierId: supplier.id, salesAgentId: salesAgent.id },
-        owner.sessionCookie
+      expect(restoredSalesAgents.find((item) => item.id === salesAgent.id)?.name).toBe(
+        salesAgent.name
       );
 
-      await store.flush();
-      await app.close();
-
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredSuppliers = await getJson<SupplierBusinessCardSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/suppliers`,
-          owner.sessionCookie
-        );
-        const restoredSupplier = restoredSuppliers.find((item) => item.id === supplier.id);
-        expect(restoredSupplier?.name).toBe(supplier.name);
-        // salesAgentCount/purchaseReceiptCount are derived by supplierBusinessCard from the
-        // restored salesAgents/purchaseReceipts maps, not stored verbatim - a non-zero count here
-        // proves those two maps round-tripped and stayed linked to this supplier after restart.
-        expect(restoredSupplier?.salesAgentCount).toBe(1);
-        expect(restoredSupplier?.purchaseReceiptCount).toBe(1);
-
-        const restoredSalesAgents = await getJson<SalesAgentSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/suppliers/${supplier.id}/sales-agents`,
-          owner.sessionCookie
-        );
-        expect(restoredSalesAgents.find((item) => item.id === salesAgent.id)?.name).toBe(
-          salesAgent.name
-        );
-
-        const restoredReceipts = await getJson<PurchaseReceiptSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/purchase-receipts`,
-          owner.sessionCookie
-        );
-        const restoredReceipt = restoredReceipts.find((item) => item.id === receipt.id);
-        expect(restoredReceipt?.supplierId).toBe(supplier.id);
-        expect(restoredReceipt?.salesAgentId).toBe(salesAgent.id);
-        expect(restoredReceipt?.lineItems).toEqual(receipt.lineItems);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
-
-  it(
-    "persists document import jobs and sources across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254706${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
-
-      const owner = await createOwnerBusiness(app, ownerPhone);
-      const businessId = owner.business.id;
-
-      const importJob = await postJson<DocumentImportJobSummary>(
-        app,
-        `/businesses/${businessId}/imports/supplier-csv`,
-        {
-          fileName: "postgres-suppliers.csv",
-          contentType: "text/csv",
-          sourceType: "database",
-          sourceLocator: "postgres slice test",
-          content: "name,phone,email,notes\nPostgres Import Supplier,+254733444555,,Imported"
-        },
+      const restoredReceipts = await getJson<PurchaseReceiptSummary[]>(
+        restoredApp,
+        `/businesses/${businessId}/purchase-receipts`,
         owner.sessionCookie
       );
-      expect(importJob.status).toBe("previewed");
+      const restoredReceipt = restoredReceipts.find((item) => item.id === receipt.id);
+      expect(restoredReceipt?.supplierId).toBe(supplier.id);
+      expect(restoredReceipt?.salesAgentId).toBe(salesAgent.id);
+      expect(restoredReceipt?.lineItems).toEqual(receipt.lineItems);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      const confirmed = await postJson<DocumentImportConfirmResult>(
-        app,
-        `/businesses/${businessId}/imports/${importJob.id}/confirm`,
-        {},
+  it("persists document import jobs and sources across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254706${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
+
+    const owner = await createOwnerBusiness(app, ownerPhone);
+    const businessId = owner.business.id;
+
+    const importJob = await postJson<DocumentImportJobSummary>(
+      app,
+      `/businesses/${businessId}/imports/supplier-csv`,
+      {
+        fileName: "postgres-suppliers.csv",
+        contentType: "text/csv",
+        sourceType: "database",
+        sourceLocator: "postgres slice test",
+        content: "name,phone,email,notes\nPostgres Import Supplier,+254733444555,,Imported"
+      },
+      owner.sessionCookie
+    );
+    expect(importJob.status).toBe("previewed");
+
+    const confirmed = await postJson<DocumentImportConfirmResult>(
+      app,
+      `/businesses/${businessId}/imports/${importJob.id}/confirm`,
+      {},
+      owner.sessionCookie
+    );
+    expect(confirmed.job.status).toBe("confirmed");
+    expect(confirmed.suppliers?.[0]?.name).toBe("Postgres Import Supplier");
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredJob = await getJson<DocumentImportJobSummary>(
+        restoredApp,
+        `/businesses/${businessId}/imports/${importJob.id}`,
         owner.sessionCookie
       );
-      expect(confirmed.job.status).toBe("confirmed");
-      expect(confirmed.suppliers?.[0]?.name).toBe("Postgres Import Supplier");
+      expect(restoredJob.status).toBe("confirmed");
+      expect(restoredJob.confirmedCount).toBe(1);
+      expect(restoredJob.source).toEqual(importJob.source);
 
-      await store.flush();
-      await app.close();
+      const restoredList = await getJson<DocumentImportJobSummary[]>(
+        restoredApp,
+        `/businesses/${businessId}/imports`,
+        owner.sessionCookie
+      );
+      expect(restoredList.find((job) => job.id === importJob.id)?.status).toBe("confirmed");
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredJob = await getJson<DocumentImportJobSummary>(
-          restoredApp,
-          `/businesses/${businessId}/imports/${importJob.id}`,
-          owner.sessionCookie
-        );
-        expect(restoredJob.status).toBe("confirmed");
-        expect(restoredJob.confirmedCount).toBe(1);
-        expect(restoredJob.source).toEqual(importJob.source);
+  it("persists notifications (including read status and the notificationByRuleKey index) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254707${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
 
-        const restoredList = await getJson<DocumentImportJobSummary[]>(
-          restoredApp,
-          `/businesses/${businessId}/imports`,
-          owner.sessionCookie
-        );
-        expect(restoredList.find((job) => job.id === importJob.id)?.status).toBe("confirmed");
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
+    const owner = await createOwnerBusiness(app, ownerPhone);
+    const businessId = owner.business.id;
 
-  it(
-    "persists notifications (including read status and the notificationByRuleKey index) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254707${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
+    const inbox = await getJson<NotificationInbox>(
+      app,
+      `/businesses/${businessId}/notifications`,
+      owner.sessionCookie
+    );
+    expect(inbox.notifications.map((notification) => notification.type).sort()).toEqual([
+      "beta_readiness",
+      "launch_readiness"
+    ]);
+    const target = inbox.notifications.find(
+      (notification) => notification.type === "beta_readiness"
+    );
+    expect(target).toBeDefined();
 
-      const owner = await createOwnerBusiness(app, ownerPhone);
-      const businessId = owner.business.id;
+    const updated = await patchJson<BusinessNotificationSummary>(
+      app,
+      `/businesses/${businessId}/notifications/${target?.id}`,
+      { status: "read" },
+      owner.sessionCookie
+    );
+    expect(updated.status).toBe("read");
+    expect(updated.readAt).not.toBeNull();
 
-      const inbox = await getJson<NotificationInbox>(
-        app,
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredInbox = await getJson<NotificationInbox>(
+        restoredApp,
         `/businesses/${businessId}/notifications`,
         owner.sessionCookie
       );
-      expect(inbox.notifications.map((notification) => notification.type).sort()).toEqual([
+      expect(restoredInbox.notifications.map((notification) => notification.type).sort()).toEqual([
         "beta_readiness",
         "launch_readiness"
       ]);
-      const target = inbox.notifications.find(
-        (notification) => notification.type === "beta_readiness"
-      );
-      expect(target).toBeDefined();
 
-      const updated = await patchJson<BusinessNotificationSummary>(
-        app,
-        `/businesses/${businessId}/notifications/${target?.id}`,
-        { status: "read" },
+      const restoredTarget = restoredInbox.notifications.find(
+        (notification) => notification.id === target?.id
+      );
+      expect(restoredTarget?.status).toBe("read");
+      expect(restoredTarget?.readAt).toBe(updated.readAt);
+
+      // Re-triggering ensureDeterministicNotifications (via this GET) must upsert onto the
+      // same two records rather than duplicate them - proves notificationByRuleKey survived
+      // the restart and still dedupes by rule key.
+      expect(restoredInbox.notifications).toHaveLength(2);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
+
+  it("persists the network contact graph (nodes/edges/sources/routes/permissions and the contactHashIdByValue index) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254708${Date.now().toString().slice(-6)}`;
+    const connectionPhone = `+254709${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
+
+    const owner = await createOwnerBusiness(app, ownerPhone);
+
+    const graph = await postJson<NetworkGraphSummary>(
+      app,
+      "/network/sync/contacts",
+      {
+        contacts: [
+          {
+            name: "Postgres Contact",
+            phone: connectionPhone,
+            connections: [{ name: "Extended Contact" }]
+          }
+        ]
+      },
+      owner.sessionCookie
+    );
+    const directNode = graph.nodes.find((node) => node.displayName === "Postgres Contact");
+    const extendedNode = graph.nodes.find((node) => node.displayName === "Extended Contact");
+    expect(directNode).toBeDefined();
+    expect(extendedNode).toBeDefined();
+    expect(directNode?.contactHashIds).toHaveLength(1);
+    const originalContactHashId = directNode?.contactHashIds[0];
+
+    const route = await postJson<AgentRouteSummary>(
+      app,
+      "/network/routes",
+      { requestText: "Extended Contact", targetNodeId: extendedNode?.id },
+      owner.sessionCookie
+    );
+    const approvedRoute = await postJson<AgentRouteSummary>(
+      app,
+      `/network/routes/${route.id}/approve`,
+      {},
+      owner.sessionCookie
+    );
+    expect(approvedRoute.status).toBe("approved");
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredGraph = await getJson<NetworkGraphSummary>(
+        restoredApp,
+        "/network",
         owner.sessionCookie
       );
-      expect(updated.status).toBe("read");
-      expect(updated.readAt).not.toBeNull();
+      expect(restoredGraph.nodes).toHaveLength(3);
+      expect(
+        restoredGraph.nodes
+          .map((node) => node.displayName)
+          .sort((left, right) => left.localeCompare(right))
+      ).toEqual(expect.arrayContaining(["Extended Contact", "Postgres Contact"]));
+      expect(
+        restoredGraph.nodes.find((node) => node.displayName === "Postgres Contact")?.contactHashIds
+      ).toEqual([originalContactHashId]);
 
-      await store.flush();
-      await app.close();
+      const restoredRoute = await getJson<AgentRouteSummary>(
+        restoredApp,
+        `/network/routes/${route.id}`,
+        owner.sessionCookie
+      );
+      expect(restoredRoute).toMatchObject({
+        id: route.id,
+        status: "approved",
+        permissionId: route.permissionId
+      });
 
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredInbox = await getJson<NotificationInbox>(
-          restoredApp,
-          `/businesses/${businessId}/notifications`,
-          owner.sessionCookie
-        );
-        expect(restoredInbox.notifications.map((notification) => notification.type).sort()).toEqual(
-          [
-            "beta_readiness",
-            "launch_readiness"
-          ]
-        );
-
-        const restoredTarget = restoredInbox.notifications.find(
-          (notification) => notification.id === target?.id
-        );
-        expect(restoredTarget?.status).toBe("read");
-        expect(restoredTarget?.readAt).toBe(updated.readAt);
-
-        // Re-triggering ensureDeterministicNotifications (via this GET) must upsert onto the
-        // same two records rather than duplicate them - proves notificationByRuleKey survived
-        // the restart and still dedupes by rule key.
-        expect(restoredInbox.notifications).toHaveLength(2);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
-
-  it(
-    "persists the network contact graph (nodes/edges/sources/routes/permissions and the contactHashIdByValue index) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254708${Date.now().toString().slice(-6)}`;
-      const connectionPhone = `+254709${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
-
-      const owner = await createOwnerBusiness(app, ownerPhone);
-
-      const graph = await postJson<NetworkGraphSummary>(
-        app,
+      // Re-syncing the same phone number after restart must reuse the original contactHash
+      // via the rebuilt contactHashIdByValue index, not mint a duplicate - proves the derived
+      // index survived the restart.
+      const resyncedGraph = await postJson<NetworkGraphSummary>(
+        restoredApp,
         "/network/sync/contacts",
-        {
-          contacts: [
-            {
-              name: "Postgres Contact",
-              phone: connectionPhone,
-              connections: [{ name: "Extended Contact" }]
-            }
-          ]
-        },
+        { contacts: [{ name: "Postgres Contact Again", phone: connectionPhone }] },
         owner.sessionCookie
       );
-      const directNode = graph.nodes.find((node) => node.displayName === "Postgres Contact");
-      const extendedNode = graph.nodes.find((node) => node.displayName === "Extended Contact");
-      expect(directNode).toBeDefined();
-      expect(extendedNode).toBeDefined();
-      expect(directNode?.contactHashIds).toHaveLength(1);
-      const originalContactHashId = directNode?.contactHashIds[0];
+      const resyncedNode = resyncedGraph.nodes.find(
+        (node) => node.displayName === "Postgres Contact Again"
+      );
+      expect(resyncedNode?.contactHashIds).toEqual([originalContactHashId]);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
-      const route = await postJson<AgentRouteSummary>(
-        app,
-        "/network/routes",
-        { requestText: "Extended Contact", targetNodeId: extendedNode?.id },
+  it("persists conversations/messages and push subscriptions (including the messageByClientId/messageByIdempotencyKey and pushSubscriptionIdByEndpoint indexes) across store restarts", async () => {
+    expect(databaseUrl).toBeDefined();
+    const ownerPhone = `254710${Date.now().toString().slice(-6)}`;
+    const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const app = buildApi({ cp2: { store } });
+
+    const owner = await createOwnerBusiness(app, ownerPhone);
+
+    const conversation = await postJson<ConversationView>(
+      app,
+      "/v1/conversations",
+      { kind: "personal", activeShopId: null },
+      owner.sessionCookie
+    );
+    const clientMessageId = `postgres-message-${Date.now()}`;
+    const message = await postJson<ConversationMessageSummary>(
+      app,
+      "/v1/messages",
+      {
+        conversationId: conversation.conversation.id,
+        clientMessageId,
+        content: { type: "text", text: "Persisted before restart" }
+      },
+      owner.sessionCookie
+    );
+
+    const pushEndpoint = `https://push.example.com/${randomUUID()}`;
+    const subscription = await postJson<PushSubscriptionSummary>(
+      app,
+      "/v1/push/subscriptions",
+      {
+        endpoint: pushEndpoint,
+        expirationTime: null,
+        keys: { auth: "a".repeat(24), p256dh: "b".repeat(88) }
+      },
+      owner.sessionCookie
+    );
+
+    await store.flush();
+    await app.close();
+
+    const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
+    const restoredApp = buildApi({ cp2: { store: restoredStore } });
+    try {
+      const restoredConversation = await getJson<ConversationView>(
+        restoredApp,
+        `/v1/conversations/${conversation.conversation.id}`,
         owner.sessionCookie
       );
-      const approvedRoute = await postJson<AgentRouteSummary>(
-        app,
-        `/network/routes/${route.id}/approve`,
-        {},
-        owner.sessionCookie
-      );
-      expect(approvedRoute.status).toBe("approved");
+      expect(restoredConversation.messages).toHaveLength(1);
+      expect(restoredConversation.messages[0]).toMatchObject({
+        id: message.id,
+        clientMessageId
+      });
 
-      await store.flush();
-      await app.close();
-
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredGraph = await getJson<NetworkGraphSummary>(
-          restoredApp,
-          "/network",
-          owner.sessionCookie
-        );
-        expect(restoredGraph.nodes).toHaveLength(3);
-        expect(
-          restoredGraph.nodes.map((node) => node.displayName).sort((left, right) =>
-            left.localeCompare(right)
-          )
-        ).toEqual(expect.arrayContaining(["Extended Contact", "Postgres Contact"]));
-        expect(
-          restoredGraph.nodes.find((node) => node.displayName === "Postgres Contact")
-            ?.contactHashIds
-        ).toEqual([originalContactHashId]);
-
-        const restoredRoute = await getJson<AgentRouteSummary>(
-          restoredApp,
-          `/network/routes/${route.id}`,
-          owner.sessionCookie
-        );
-        expect(restoredRoute).toMatchObject({
-          id: route.id,
-          status: "approved",
-          permissionId: route.permissionId
-        });
-
-        // Re-syncing the same phone number after restart must reuse the original contactHash
-        // via the rebuilt contactHashIdByValue index, not mint a duplicate - proves the derived
-        // index survived the restart.
-        const resyncedGraph = await postJson<NetworkGraphSummary>(
-          restoredApp,
-          "/network/sync/contacts",
-          { contacts: [{ name: "Postgres Contact Again", phone: connectionPhone }] },
-          owner.sessionCookie
-        );
-        const resyncedNode = resyncedGraph.nodes.find(
-          (node) => node.displayName === "Postgres Contact Again"
-        );
-        expect(resyncedNode?.contactHashIds).toEqual([originalContactHashId]);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
-
-  it(
-    "persists conversations/messages and push subscriptions (including the messageByClientId/messageByIdempotencyKey and pushSubscriptionIdByEndpoint indexes) across store restarts",
-    async () => {
-      expect(databaseUrl).toBeDefined();
-      const ownerPhone = `254710${Date.now().toString().slice(-6)}`;
-      const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const app = buildApi({ cp2: { store } });
-
-      const owner = await createOwnerBusiness(app, ownerPhone);
-
-      const conversation = await postJson<ConversationView>(
-        app,
-        "/v1/conversations",
-        { kind: "personal", activeShopId: null },
-        owner.sessionCookie
-      );
-      const clientMessageId = `postgres-message-${Date.now()}`;
-      const message = await postJson<ConversationMessageSummary>(
-        app,
+      // Re-posting the exact same clientMessageId/content after restart must return the
+      // original message rather than create a duplicate - proves messageByClientId and
+      // messageByIdempotencyKey both survived the restart's rebuild.
+      const repostedMessage = await postJson<ConversationMessageSummary>(
+        restoredApp,
         "/v1/messages",
         {
           conversationId: conversation.conversation.id,
@@ -2168,10 +2191,19 @@ describePostgres("CP2 Postgres store", () => {
         },
         owner.sessionCookie
       );
+      expect(repostedMessage.id).toBe(message.id);
+      const conversationAfterRepost = await getJson<ConversationView>(
+        restoredApp,
+        `/v1/conversations/${conversation.conversation.id}`,
+        owner.sessionCookie
+      );
+      expect(conversationAfterRepost.messages).toHaveLength(1);
 
-      const pushEndpoint = `https://push.example.com/${randomUUID()}`;
-      const subscription = await postJson<PushSubscriptionSummary>(
-        app,
+      // Re-registering the same push endpoint after restart must update the original
+      // subscription in place rather than create a duplicate - proves
+      // pushSubscriptionIdByEndpoint survived the restart's rebuild.
+      const resubscribed = await postJson<PushSubscriptionSummary>(
+        restoredApp,
         "/v1/push/subscriptions",
         {
           endpoint: pushEndpoint,
@@ -2180,66 +2212,12 @@ describePostgres("CP2 Postgres store", () => {
         },
         owner.sessionCookie
       );
-
-      await store.flush();
-      await app.close();
-
-      const restoredStore = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
-      const restoredApp = buildApi({ cp2: { store: restoredStore } });
-      try {
-        const restoredConversation = await getJson<ConversationView>(
-          restoredApp,
-          `/v1/conversations/${conversation.conversation.id}`,
-          owner.sessionCookie
-        );
-        expect(restoredConversation.messages).toHaveLength(1);
-        expect(restoredConversation.messages[0]).toMatchObject({
-          id: message.id,
-          clientMessageId
-        });
-
-        // Re-posting the exact same clientMessageId/content after restart must return the
-        // original message rather than create a duplicate - proves messageByClientId and
-        // messageByIdempotencyKey both survived the restart's rebuild.
-        const repostedMessage = await postJson<ConversationMessageSummary>(
-          restoredApp,
-          "/v1/messages",
-          {
-            conversationId: conversation.conversation.id,
-            clientMessageId,
-            content: { type: "text", text: "Persisted before restart" }
-          },
-          owner.sessionCookie
-        );
-        expect(repostedMessage.id).toBe(message.id);
-        const conversationAfterRepost = await getJson<ConversationView>(
-          restoredApp,
-          `/v1/conversations/${conversation.conversation.id}`,
-          owner.sessionCookie
-        );
-        expect(conversationAfterRepost.messages).toHaveLength(1);
-
-        // Re-registering the same push endpoint after restart must update the original
-        // subscription in place rather than create a duplicate - proves
-        // pushSubscriptionIdByEndpoint survived the restart's rebuild.
-        const resubscribed = await postJson<PushSubscriptionSummary>(
-          restoredApp,
-          "/v1/push/subscriptions",
-          {
-            endpoint: pushEndpoint,
-            expirationTime: null,
-            keys: { auth: "a".repeat(24), p256dh: "b".repeat(88) }
-          },
-          owner.sessionCookie
-        );
-        expect(resubscribed.id).toBe(subscription.id);
-      } finally {
-        await restoredApp.close();
-        await restoredStore.close();
-      }
-    },
-    20_000
-  );
+      expect(resubscribed.id).toBe(subscription.id);
+    } finally {
+      await restoredApp.close();
+      await restoredStore.close();
+    }
+  }, 20_000);
 
   it("persists a large batch of account sync changes in one bulk upsert instead of one round trip per row", async () => {
     expect(databaseUrl).toBeDefined();
@@ -2372,12 +2350,15 @@ describePostgres("CP2 Postgres store", () => {
       // fallback processes the whole snapshot in order and the force-false constraint applies to
       // every row equally, so the first collection it happens to hit (not necessarily
       // "conversation_messages" - could be an earlier row like "conversations") is what gets named.
-      expect(consoleErrorSpy.mock.calls.some(([line]) =>
-        typeof line === "string" &&
-        ACCOUNT_SYNC_COLLECTIONS.some((collection) =>
-          line.includes(`"attemptedCollection":"${collection}"`)
+      expect(
+        consoleErrorSpy.mock.calls.some(
+          ([line]) =>
+            typeof line === "string" &&
+            ACCOUNT_SYNC_COLLECTIONS.some((collection) =>
+              line.includes(`"attemptedCollection":"${collection}"`)
+            )
         )
-      )).toBe(true);
+      ).toBe(true);
       consoleErrorSpy.mockRestore();
 
       const persistedChange = await pool.query(
@@ -2392,7 +2373,9 @@ describePostgres("CP2 Postgres store", () => {
       await waitUntil(async () => (await store.health()).persistenceError === null);
     } finally {
       await pool
-        .query("alter table account_sync_changes drop constraint if exists force_sync_persistence_failure")
+        .query(
+          "alter table account_sync_changes drop constraint if exists force_sync_persistence_failure"
+        )
         .catch(() => undefined);
       await pool.end();
       await app.close();

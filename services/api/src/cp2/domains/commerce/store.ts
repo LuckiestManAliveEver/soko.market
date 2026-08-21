@@ -77,10 +77,7 @@ export interface CommerceDomainDeps {
     product: ProductInput;
     now?: Date;
   }) => ProductSummary;
-  listPublicStorefronts: (input?: {
-    search?: string;
-    limit?: number;
-  }) => PublicStorefrontSummary[];
+  listPublicStorefronts: (input?: { search?: string; limit?: number }) => PublicStorefrontSummary[];
   createConversationMessage: (input: {
     sessionId: string | null;
     conversationId: string;
@@ -501,7 +498,9 @@ export class CommerceDomain {
       temporaryMediaId: current.keepImageAsProductMedia ? current.temporaryMediaId : null,
       publishedProductId: publishedProduct.id,
       items: current.items.map((item, index) =>
-        index === 0 ? { ...item, status: "confirmed", confirmedProductId: publishedProduct.id } : item
+        index === 0
+          ? { ...item, status: "confirmed", confirmedProductId: publishedProduct.id }
+          : item
       ),
       updatedAt: now.toISOString(),
       confirmedAt: now.toISOString(),
@@ -556,7 +555,8 @@ export class CommerceDomain {
       input.description === undefined
         ? item.fields.description.value
         : normalizeOptionalBoundedText(input.description, 2000);
-    const visiblePrice = input.visiblePrice === undefined ? item.fields.visiblePrice.value : input.visiblePrice;
+    const visiblePrice =
+      input.visiblePrice === undefined ? item.fields.visiblePrice.value : input.visiblePrice;
     const reviewedItem: ProductCaptureItemSummary = {
       ...item,
       fields: {
@@ -1012,7 +1012,11 @@ export class CommerceDomain {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
     if (input.items.length === 0 || input.items.length > 100) {
-      throw new Cp2Error(400, "buy_checkout_items_invalid", "Checkout needs between 1 and 100 items.");
+      throw new Cp2Error(
+        400,
+        "buy_checkout_items_invalid",
+        "Checkout needs between 1 and 100 items."
+      );
     }
 
     const handoffs: UnifiedCheckoutHandoffSummary[] = [];
@@ -1042,23 +1046,44 @@ export class CommerceDomain {
       const business = this.deps.businesses.get(this.businessIdForAgentId(agentId) ?? "");
       if (business === undefined) {
         for (const item of items) {
-          failures.push({ sourceLabel: item.sourceLabel, title: item.title, reason: "Shop unavailable." });
+          failures.push({
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            reason: "Shop unavailable."
+          });
         }
         continue;
       }
       const resolved: Array<{ item: BuyCheckoutItemInput; product: ProductSummary }> = [];
       for (const item of items) {
-        const product = item.productId === null ? undefined : this.deps.products.get(item.productId);
+        const product =
+          item.productId === null ? undefined : this.deps.products.get(item.productId);
         if (product === undefined || product.businessId !== business.id || product.quantity <= 0) {
-          failures.push({ sourceLabel: item.sourceLabel, title: item.title, reason: "No longer available." });
+          failures.push({
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            reason: "No longer available."
+          });
           continue;
         }
-        if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > product.quantity) {
-          failures.push({ sourceLabel: item.sourceLabel, title: item.title, reason: "Not enough stock." });
+        if (
+          !Number.isInteger(item.quantity) ||
+          item.quantity < 1 ||
+          item.quantity > product.quantity
+        ) {
+          failures.push({
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            reason: "Not enough stock."
+          });
           continue;
         }
         if (product.sellingPrice === null) {
-          failures.push({ sourceLabel: item.sourceLabel, title: item.title, reason: "Price unavailable." });
+          failures.push({
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            reason: "Price unavailable."
+          });
           continue;
         }
         resolved.push({ item, product });
@@ -1137,7 +1162,11 @@ export class CommerceDomain {
           continue;
         }
         if (!Number.isInteger(item.quantity) || item.quantity < 1) {
-          failures.push({ sourceLabel: item.sourceLabel, title: item.title, reason: "Invalid quantity." });
+          failures.push({
+            sourceLabel: item.sourceLabel,
+            title: item.title,
+            reason: "Invalid quantity."
+          });
           continue;
         }
         resolved.push({
@@ -1260,7 +1289,9 @@ export class CommerceDomain {
     const contactNode = [...this.deps.networkNodes.values()].find(
       (node) => node.ownerUserId === viewerUserId && node.sokoUserId === status.postedBy
     );
-    return contactNode?.displayName ?? this.deps.businesses.get(status.businessId)?.name ?? "Contact";
+    return (
+      contactNode?.displayName ?? this.deps.businesses.get(status.businessId)?.name ?? "Contact"
+    );
   }
 
   private trySession(sessionId: string | null, now: Date): AuthSessionView | null {

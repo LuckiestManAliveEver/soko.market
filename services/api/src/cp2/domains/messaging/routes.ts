@@ -234,7 +234,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/v1/conversations",
     async (request: FastifyRequest<{ Body: CreateConversationBody }>, reply) => {
@@ -252,7 +251,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/v1/conversations/:conversationId",
     async (request: FastifyRequest<{ Params: ConversationParams }>, reply) => {
@@ -267,7 +265,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post("/v1/e2ee/devices", async (request: FastifyRequest<{ Body: E2eeDeviceBody }>, reply) => {
     try {
       return store.registerE2eeDevice({
@@ -281,7 +278,6 @@ export function registerMessagingRoutes(
     }
   });
 
-
   app.get("/v1/e2ee/devices", async (request, reply) => {
     try {
       return {
@@ -291,7 +287,6 @@ export function registerMessagingRoutes(
       return sendCp2Error(reply, error);
     }
   });
-
 
   app.delete(
     "/v1/e2ee/devices/:deviceId",
@@ -306,7 +301,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.get(
     "/v1/conversations/:conversationId/encryption-devices",
@@ -324,12 +318,10 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get("/v1/push/config", async () => ({
     enabled: Boolean(vapidPublicKey),
     publicKey: vapidPublicKey ?? null
   }));
-
 
   app.post(
     "/v1/push/subscriptions",
@@ -354,7 +346,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.delete(
     "/v1/push/subscriptions",
     async (request: FastifyRequest<{ Body: { endpoint?: string } }>, reply) => {
@@ -368,7 +359,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post("/v1/messages", async (request: FastifyRequest<{ Body: CreateMessageBody }>, reply) => {
     try {
@@ -525,7 +515,6 @@ export function registerMessagingRoutes(
     }
   });
 
-
   app.get(
     "/businesses/:businessId/mailboxes/providers",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -542,7 +531,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/businesses/:businessId/mailboxes",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -558,7 +546,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/businesses/:businessId/mailboxes/oauth/:provider/start",
@@ -594,7 +581,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/v1/mailboxes/oauth/:provider/callback",
     async (
@@ -628,7 +614,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.patch(
     "/businesses/:businessId/mailboxes/:mailboxId",
@@ -673,7 +658,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.delete(
     "/businesses/:businessId/mailboxes/:mailboxId",
     async (request: FastifyRequest<{ Params: ConnectedMailboxParams }>, reply) => {
@@ -698,7 +682,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/businesses/:businessId/mailboxes/:mailboxId/sync",
@@ -740,7 +723,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/businesses/:businessId/mailboxes/:mailboxId/conversations",
     async (
@@ -765,7 +747,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.put(
     "/v1/devices/native-sms",
@@ -805,7 +786,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get("/v1/devices/native-sms", async (request, reply) => {
     try {
       return {
@@ -818,7 +798,6 @@ export function registerMessagingRoutes(
     }
   });
 
-
   app.get("/v1/devices/native-sms/businesses", async (request, reply) => {
     try {
       return {
@@ -830,7 +809,6 @@ export function registerMessagingRoutes(
       return sendCp2Error(reply, error);
     }
   });
-
 
   app.delete(
     "/v1/devices/native-sms/:deviceId",
@@ -845,7 +823,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.get(
     "/v1/devices/native-sms/commands",
@@ -863,7 +840,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/v1/devices/native-sms/commands/:commandId/acknowledge",
     async (request: FastifyRequest<{ Params: NativeSmsCommandParams }>, reply) => {
@@ -877,7 +853,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/v1/devices/native-sms/commands/:commandId/result",
@@ -903,7 +878,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/v1/devices/native-sms/messages",
@@ -935,7 +909,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/businesses/:businessId/channels/readiness",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -951,7 +924,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.get(
     "/businesses/:businessId/channel-endpoints",
@@ -980,7 +952,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/businesses/:businessId/customers/:customerId/channel-link-grants",
@@ -1011,7 +982,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/businesses/:businessId/channel-messages",
@@ -1071,7 +1041,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/v1/webhooks/channels/:provider",
     async (request: FastifyRequest<{ Params: ChannelWebhookParams; Body: unknown }>, reply) => {
@@ -1095,7 +1064,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/v1/message-handoffs",
@@ -1131,7 +1099,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.patch(
     "/v1/conversations/:conversationId",
     async (
@@ -1160,7 +1127,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/v1/conversations/:conversationId/messages/:messageId/delivery-attempts",
     async (request: FastifyRequest<{ Params: MessageParams }>, reply) => {
@@ -1177,7 +1143,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.patch(
     "/v1/conversations/:conversationId/messages/:messageId",
@@ -1200,7 +1165,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/v1/conversations/:conversationId/typing",
     async (
@@ -1221,7 +1185,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.post(
     "/public/storefronts/:agentId/sessions",
     async (
@@ -1239,7 +1202,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
 
   app.post(
     "/public/storefronts/:agentId/messages",
@@ -1260,7 +1222,6 @@ export function registerMessagingRoutes(
     }
   );
 
-
   app.get(
     "/businesses/:businessId/storefront/messages",
     async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
@@ -1274,8 +1235,6 @@ export function registerMessagingRoutes(
       }
     }
   );
-
-
 }
 
 function isMessageChannel(value: string): value is MessageChannel {
@@ -1522,4 +1481,3 @@ function parseTrustedMessageAttachmentReferences(
     };
   });
 }
-

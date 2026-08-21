@@ -1,69 +1,26 @@
-import {
-  Fragment,
-  Suspense,
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type ReactNode
-} from "react";
+import { Fragment, Suspense, useEffect, useRef, useState } from "react";
 
 import type { CountryCode } from "libphonenumber-js";
 
-import type {
-  BuyFeedSummary,
-  BuyResultSummary,
-  ConversationInboxItem,
-  ChannelEndpointSummary,
-  ChannelProvider,
-  MessageHandoffStatus,
-  MessageDeliveryAttemptSummary,
-  ProductFieldDefinition
-} from "@soko/shared-types";
-import { type ChatAttachment, type ChatMessage, type ShellView, type SokoMode } from "./app-shell";
+import type { MessageDeliveryAttemptSummary } from "@soko/shared-types";
 
 import { detectCapabilitySettings } from "./capability-profile";
 import { recordReadiness } from "./performance";
 
-import type { SmsHandoffRequest } from "./messaging/SmsHandoffDialog";
-import { normalizeSmsRecipient } from "./messaging/sms-handoff";
-import { shareMessageExternally } from "./messaging/platform-handoff";
-
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { useOwnerCore } from "./hooks/OwnerCoreContext";
+import { useChatComposerState } from "./hooks/useChatComposerState";
+import { ChatComposer } from "./ChatComposer";
 
-import {
-  type BusinessReportSummary,
-  type BuyCartItem,
-  type ContactPickerContact,
-  type InvoiceSummary,
-  type NetworkGraphSummary,
-  type OAuthProviderSummary,
-  type ProductFieldDraft,
-  type ProductFormState,
-  type ProductSummary,
-  type PublicStorefrontSummary,
-  type ShopPresenceStatus,
-  SmsHandoffDialog,
-  type SocialSignupProvider,
-  type SyncQueueSummary,
-  chatAttachmentAccept
-} from "./soko-application-shared";
+import { SmsHandoffDialog } from "./soko-application-shared";
 import { renderGeneratedSurface } from "./generated-surface-registry";
 
 import { getJson } from "./api-helpers";
-import {
-  formatMessageTime,
-  formatFileSize,
-  formatChannelProvider,
-  formatAttachmentCategory
-} from "./formatters";
+import { formatMessageTime, formatFileSize, formatAttachmentCategory } from "./formatters";
 
 import { viewLabel } from "./agent-command-engine";
 import {
   conversationMessageText,
-  isExtractableChatAttachment,
-  startVoiceInput,
   isRedundantAgentErrorMessage,
   getErrorMessage
 } from "./chat-message-plumbing";
@@ -75,104 +32,9 @@ import { StorefrontPreviewCard } from "./StorefrontPreviewCard";
 import { ContextualBusinessCards } from "./ContextualBusinessCards";
 import { NetworkSyncNestedCard } from "./NetworkSyncNestedCard";
 import { CatalogueNestedCard } from "./CatalogueNestedCard";
-
-export interface ChatSurfaceProps {
-  activeConversationId: string | null;
-  chatDraft: string;
-  initialEmailSubject: string;
-  channelEndpoints: ChannelEndpointSummary[];
-  children: ReactNode;
-  conversations: ConversationInboxItem[];
-  customerCount: number;
-  invoiceCount: number;
-  invoices: InvoiceSummary[];
-  messages: ChatMessage[];
-  isInboxOpen: boolean;
-  isContactTyping: boolean;
-  isConfirming: boolean;
-  isSending: boolean;
-  isBrowserGenerating: boolean;
-  securityLabel: string;
-  replyToMessageId: string | null;
-  marketplaceIntroComplete: boolean;
-  marketplaceShortcutOpen: boolean;
-  networkGraph: NetworkGraphSummary | null;
-  notificationCount: number;
-  oauthProviders: OAuthProviderSummary[];
-  oauthProvidersLoaded: boolean;
-  pendingAttachments: ChatAttachment[];
-  productForm: ProductFormState;
-  productFields: ProductFieldDefinition[];
-  productCount: number;
-  products: ProductSummary[];
-  publicStorefronts: PublicStorefrontSummary[];
-  publicStorefrontsLoading: boolean;
-  report: BusinessReportSummary | null;
-  shopPresenceStatus: ShopPresenceStatus;
-  syncSummary: SyncQueueSummary;
-  workspaceOpen: boolean;
-  buyFeed: BuyFeedSummary | null;
-  isSearchingBuyFeed: boolean;
-  buyCart: BuyCartItem[];
-  isCheckingOut: boolean;
-  onAttachmentChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onSellerPhotoCapture: (file: File) => void;
-  onStatusBroadcastPosted: (statusBroadcastId: string) => void;
-  onSearchBuyFeed: (query: string) => void;
-  onAddToCart: (result: BuyResultSummary) => void;
-  onRemoveFromCart: (cartItemId: string) => void;
-  onCheckout: () => void;
-  onBackToChat: () => void;
-  onCloseWorkspace: () => void;
-  onDraftChange: (draft: string) => void;
-  onSelectConversation: (conversationId: string) => void;
-  onCreateConversation: (recipient: string, title: string) => void;
-  onCreateAgentSession: (title?: string) => void;
-  onRequireSignIn: () => void;
-  onBrowseAsGuest: () => void;
-  onSignUp: () => void;
-  onLogIn: () => void;
-  onRefreshPublicStorefronts: () => void;
-  onConversationPreference: (
-    conversationId: string,
-    preference: "archive" | "mute" | "pin"
-  ) => void;
-  onEnableNotifications: () => void;
-  onInboxOpenChange: (open: boolean) => void;
-  onReply: (messageId: string) => void;
-  onCancelReply: () => void;
-  onEditMessage: (messageId: string, text: string) => void;
-  onDeleteMessage: (messageId: string) => void;
-  onReactMessage: (messageId: string, reaction: string | null) => void;
-  onAgentFeedback: (messageId: string, correct: boolean) => void;
-  onForwardMessage: (messageId: string, conversationId: string) => void;
-  onRetryMessages: () => void;
-  onNavigate: (view: ShellView) => void;
-  onOpenWorkspace: () => void;
-  onModeChange: (mode: SokoMode) => void;
-  onOpenAgentProfile: () => void;
-  onCompleteMarketplaceIntro: () => void;
-  onProductEdit: (product: ProductSummary) => void;
-  onProductFieldsSave: (fields: ProductFieldDraft[]) => void;
-  onProductFormChange: (form: ProductFormState) => void;
-  onProductRemove: (productId: string) => void;
-  onProductReset: () => void;
-  onProductSave: () => Promise<boolean>;
-  onNetworkDisconnectSource: (sourceId: string) => void;
-  onNetworkPhoneContactsSync: (
-    selectedContacts: ContactPickerContact[]
-  ) => Promise<NetworkGraphSummary | null>;
-  onNetworkInviteContacts: (selectedContacts: ContactPickerContact[]) => Promise<number>;
-  onNetworkProviderOAuth: (provider: SocialSignupProvider) => Promise<void>;
-  onNetworkRefresh: () => void;
-  onRemoveAttachment: (attachmentId: string) => void;
-  onStatusChange: (status: ShopPresenceStatus) => void;
-  onConfirm: (confirmationToken: string) => void;
-  onSend: (draft: string, provider?: ChannelProvider, subject?: string, invoiceId?: string) => void;
-  onCancelGeneration: () => void;
-  onSmsHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
-  onPlatformHandoff: (status: MessageHandoffStatus, normalizedErrorCode: string | null) => void;
-}
+import { StackedModule } from "./StackedModule";
+import type { ChatSurfaceProps } from "./chat-surface-contracts";
+export type { ChatSurfaceProps } from "./chat-surface-contracts";
 
 export function ChatSurface({
   activeConversationId,
@@ -221,6 +83,7 @@ export function ChatSurface({
   onRemoveFromCart,
   onCheckout,
   onBackToChat,
+  onCloseMarketplace,
   onCloseWorkspace,
   onDraftChange,
   onSelectConversation,
@@ -267,7 +130,7 @@ export function ChatSurface({
   onPlatformHandoff
 }: ChatSurfaceProps) {
   // Identity/business/agent/nav state ChatSurface doesn't own itself but forwards to the domain
-  // surfaces it wraps (renderActiveWorkspace()'s switch result renders inside ChatSurface's
+  // surfaces it wraps (renderOwnerWorkspace()'s switch result renders inside ChatSurface's
   // children) - read directly from OwnerCoreContext instead of threading through OwnerApp's JSX
   // call site as props, since ChatSurface is the parent of those surfaces, not a peer of them.
   // Kept under the same local names the rest of this component already uses throughout.
@@ -281,8 +144,6 @@ export function ChatSurface({
   const sokoId = business?.sokoId ?? "Not set up yet";
   const smsDefaultCountry = (session?.user.phoneCountryCode as CountryCode | undefined) ?? "KE";
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const sellerPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const defaultMessageWindow = useRef(detectCapabilitySettings().messageWindowSize).current;
   const [messageWindowSize, setMessageWindowSize] = useState(defaultMessageWindow);
@@ -328,15 +189,6 @@ export function ChatSurface({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
-  const [smsHandoffRequest, setSmsHandoffRequest] = useState<SmsHandoffRequest | null>(null);
-  const [externalShareNotice, setExternalShareNotice] = useState<string | null>(null);
-  const [liveDraft, setLiveDraft] = useState(chatDraft);
-  const [emailSubject, setEmailSubject] = useState(initialEmailSubject);
-  const [emailInvoiceId, setEmailInvoiceId] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState<ChannelProvider | null>(null);
-  const draftSyncTimerRef = useRef<number | null>(null);
-  const workspaceDialogRef = useRef<HTMLElement | null>(null);
-  const workspaceReturnFocusRef = useRef<HTMLElement | null>(null);
   const [workspaceCardView, setWorkspaceCardView] = useState<
     | "cards"
     | "catalogue"
@@ -347,7 +199,8 @@ export function ChatSurface({
     | "networkSync"
     | "storefrontPreview"
   >("cards");
-  const showMessageThread = activeView === "chat" || activeView === "home";
+  const showMessageThread = true;
+  const activeModuleView = activeView === "chat" || activeView === "home" ? null : activeView;
   const isSessionListView = activeView === "home";
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === activeConversationId
@@ -355,13 +208,33 @@ export function ChatSurface({
   const selectedEmailCustomerId = channelEndpoints.find(
     (endpoint) => endpoint.provider === "email"
   )?.customerId;
+  const composer = useChatComposerState({
+    activeConversationId,
+    channelEndpoints,
+    chatDraft,
+    initialEmailSubject,
+    smsDefaultCountry,
+    onDraftChange,
+    onPlatformHandoff,
+    onSend
+  });
+  const {
+    commitDraft,
+    liveDraft,
+    openPlatformHandoff,
+    openSmsHandoff,
+    setSmsHandoffRequest,
+    smsHandoffRequest
+  } = composer;
   const visibleConversations = showMessageThread
     ? conversations
         // Home is the account's own agent-session list (Phase 3), not the general messaging
         // inbox - a DM or storefront/order conversation never appears there. Selecting "chat"
         // keeps today's full inbox unchanged.
         .filter((conversation) =>
-          isSessionListView ? conversation.kind === "personal" && !conversation.hasHumanRecipient : true
+          isSessionListView
+            ? conversation.kind === "personal" && !conversation.hasHumanRecipient
+            : true
         )
         .filter((conversation) => {
           const query = inboxSearch.trim().toLowerCase();
@@ -380,96 +253,6 @@ export function ChatSurface({
   const hiddenMessageCount = Math.max(0, visibleMessages.length - messageWindowSize);
   const windowedMessages = visibleMessages.slice(hiddenMessageCount);
 
-  function clearDraftSyncTimer() {
-    if (draftSyncTimerRef.current === null) return;
-    window.clearTimeout(draftSyncTimerRef.current);
-    draftSyncTimerRef.current = null;
-  }
-
-  function updateLiveDraft(nextDraft: string) {
-    setLiveDraft(nextDraft);
-    clearDraftSyncTimer();
-    draftSyncTimerRef.current = window.setTimeout(() => {
-      draftSyncTimerRef.current = null;
-      onDraftChange(nextDraft);
-    }, 120);
-  }
-
-  function commitDraft(nextDraft: string) {
-    clearDraftSyncTimer();
-    setLiveDraft(nextDraft);
-    onDraftChange(nextDraft);
-  }
-
-  function sendLiveDraft() {
-    clearDraftSyncTimer();
-    onSend(
-      liveDraft,
-      selectedProvider ?? undefined,
-      selectedProvider === "email" ? emailSubject : undefined,
-      selectedProvider === "email" && emailInvoiceId !== "" ? emailInvoiceId : undefined
-    );
-  }
-
-  function openSmsHandoff(recipient: string, label: string) {
-    let normalizedCandidate = "";
-    try {
-      normalizedCandidate = normalizeSmsRecipient(recipient, smsDefaultCountry);
-    } catch {
-      // The confirmation sheet collects or corrects a missing contact number.
-    }
-    setSmsHandoffRequest({
-      body: liveDraft,
-      label: label.trim() || "SMS recipient",
-      recipient: normalizedCandidate || recipient
-    });
-  }
-
-  async function openPlatformHandoff(label: string) {
-    const result = await shareMessageExternally({
-      text: liveDraft,
-      title: label.trim() ? `Message for ${label.trim()}` : "Message from Soko"
-    });
-    onPlatformHandoff(result.status, result.errorCode);
-    setExternalShareNotice(
-      result.status === "share_completed"
-        ? "Handed to your selected app. Delivery status stays with that app."
-        : result.status === "copied_to_clipboard"
-          ? "Message copied. Paste it into any messaging app or connected-device service."
-          : result.status === "share_unavailable"
-            ? "External sharing is not available on this device. Use SMS or copy the message manually."
-            : null
-    );
-  }
-
-  useEffect(() => {
-    setLiveDraft(chatDraft);
-  }, [chatDraft]);
-
-  useEffect(() => {
-    setEmailSubject(initialEmailSubject);
-    setEmailInvoiceId("");
-  }, [activeConversationId, initialEmailSubject]);
-
-  useEffect(() => {
-    const available = channelEndpoints.find(
-      (endpoint) =>
-        endpoint.status === "available" &&
-        endpoint.configured &&
-        endpoint.authorized &&
-        (endpoint.capabilities.includes("CAN_REPLY") ||
-          endpoint.capabilities.includes("CAN_INITIATE"))
-    );
-    setSelectedProvider(available?.provider ?? null);
-  }, [activeConversationId, channelEndpoints]);
-
-  useEffect(
-    () => () => {
-      clearDraftSyncTimer();
-    },
-    []
-  );
-
   useEffect(() => {
     if (!workspaceOpen) {
       setWorkspaceCardView("cards");
@@ -479,48 +262,6 @@ export function ChatSurface({
   useEffect(() => {
     setWorkspaceCardView("cards");
   }, [mode]);
-
-  useEffect(() => {
-    if (!workspaceOpen) return;
-    workspaceReturnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const dialog = workspaceDialogRef.current;
-    dialog?.focus();
-
-    function handleDialogKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseWorkspace();
-        return;
-      }
-      if (event.key !== "Tab" || dialog === null) return;
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    }
-
-    document.addEventListener("keydown", handleDialogKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleDialogKeyDown);
-      workspaceReturnFocusRef.current?.focus();
-    };
-  }, [workspaceOpen, onCloseWorkspace]);
 
   useEffect(() => {
     setMessageWindowSize(defaultMessageWindow);
@@ -733,7 +474,11 @@ export function ChatSurface({
               </article>
             ))}
             {visibleConversations.length === 0 ? (
-              <p>{isSessionListView ? "No sessions yet. Start one to talk with your agent." : "No matching conversations."}</p>
+              <p>
+                {isSessionListView
+                  ? "No sessions yet. Start one to talk with your agent."
+                  : "No matching conversations."}
+              </p>
             ) : null}
           </div>
         </aside>
@@ -760,7 +505,7 @@ export function ChatSurface({
               Load {Math.min(hiddenMessageCount, defaultMessageWindow)} older messages
             </button>
           ) : null}
-          {windowedMessages.map((message, index) => (
+          {windowedMessages.map((message) => (
             <Fragment key={message.id}>
               <article
                 className={`message ${message.author}`}
@@ -1082,430 +827,163 @@ export function ChatSurface({
                   </button>
                 ) : null}
               </article>
-              {index === 0 &&
-              activeView === "chat" &&
-              mode === "marketplace" &&
-              marketplaceShortcutOpen ? (
-                workspaceCardView === "storefrontPreview" ? (
-                  <StorefrontPreviewCard
-                    businessName={businessName}
-                    products={products}
-                    sokoId={sokoId}
-                    onBack={() => setWorkspaceCardView("cards")}
-                    onOpenProfile={onOpenAgentProfile}
-                    onAddToOrder={(product) =>
-                      commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
-                    }
-                    onSell={() => onModeChange("seller")}
-                    onMessage={() => commitDraft(`Hello ${businessName}, `)}
-                  />
-                ) : (
-                  <MarketplaceModeCard
-                    businessName={businessName}
-                    hasBusiness={hasBusiness}
-                    isAuthenticated={isAuthenticated}
-                    isIntro={!marketplaceIntroComplete}
-                    isLoadingStorefronts={publicStorefrontsLoading}
-                    productCount={productCount}
-                    publicStorefronts={publicStorefronts}
-                    sokoId={sokoId}
-                    buyFeed={buyFeed}
-                    isSearchingBuyFeed={isSearchingBuyFeed}
-                    buyCart={buyCart}
-                    isCheckingOut={isCheckingOut}
-                    onCompleteIntro={onCompleteMarketplaceIntro}
-                    onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
-                    onPrompt={commitDraft}
-                    onRefreshStorefronts={onRefreshPublicStorefronts}
-                    onSell={() => onModeChange("seller")}
-                    onSearchBuyFeed={onSearchBuyFeed}
-                    onAddToCart={onAddToCart}
-                    onRemoveFromCart={onRemoveFromCart}
-                    onCheckout={onCheckout}
-                  />
-                )
-              ) : null}
             </Fragment>
           ))}
-          {activeView !== "chat" && activeView !== "home" ? (
-            <section className="generated-card-detail" aria-label={viewLabel(activeView)}>
-              <div className="generated-card-header">
-                <button className="secondary" type="button" onClick={onBackToChat}>
-                  Close
-                </button>
-              </div>
-              {children}
-            </section>
-          ) : null}
         </div>
-        {workspaceOpen ? (
-          <div className="workspace-panel-backdrop" role="presentation">
-            <section
-              className="workspace-panel"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Workspace cards"
-              tabIndex={-1}
-              ref={workspaceDialogRef}
-            >
-              <div className="workspace-panel-heading">
-                <h2>{workspacePanelTitle(workspaceCardView)}</h2>
-                <button type="button" onClick={onCloseWorkspace} aria-label="Close workspace">
-                  ×
-                </button>
-              </div>
-              {workspaceCardView === "cards" ? (
-                <ContextualBusinessCards
-                  productCount={productCount}
-                  customerCount={customerCount}
-                  invoiceCount={invoiceCount}
-                  notificationCount={notificationCount}
-                  report={report}
-                  syncSummary={syncSummary}
-                  onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
-                  onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
-                  onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
-                  onNavigate={(nextView) => {
-                    onNavigate(nextView);
-                    onCloseWorkspace();
-                  }}
-                />
-              ) : workspaceCardView === "networkSync" ? (
-                <NetworkSyncNestedCard
-                  graph={networkGraph}
-                  oauthProviders={oauthProviders}
-                  oauthProvidersLoaded={oauthProvidersLoaded}
-                  onBack={() => setWorkspaceCardView("cards")}
-                  onDisconnectSource={onNetworkDisconnectSource}
-                  onOAuthProvider={onNetworkProviderOAuth}
-                  onPhoneContactsSync={onNetworkPhoneContactsSync}
-                  onInviteContacts={onNetworkInviteContacts}
-                  onRefresh={onNetworkRefresh}
-                />
-              ) : workspaceCardView === "storefrontPreview" ? (
-                <StorefrontPreviewCard
-                  businessName={businessName}
-                  products={products}
-                  sokoId={sokoId}
-                  onBack={() => setWorkspaceCardView("cards")}
-                  onOpenProfile={onOpenAgentProfile}
-                  onAddToOrder={(product) =>
-                    commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
-                  }
-                  onSell={() => onModeChange("marketplace")}
-                  onMessage={() => commitDraft(`Hello ${businessName}, `)}
-                />
-              ) : (
-                <CatalogueNestedCard
-                  form={productForm}
-                  fields={productFields}
-                  products={products}
-                  view={workspaceCardView}
-                  onBack={() =>
-                    setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
-                  }
-                  onChangeForm={onProductFormChange}
-                  onDeleteProduct={onProductRemove}
-                  onEditProduct={onProductEdit}
-                  onOpenAdd={() => {
-                    onProductReset();
-                    setWorkspaceCardView("addProduct");
-                  }}
-                  onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
-                  onOpenEdit={() => {
-                    if (products[0] !== undefined) {
-                      onProductEdit(products[0]);
-                    }
-                    setWorkspaceCardView("editProduct");
-                  }}
-                  onOpenFields={() => setWorkspaceCardView("manageFields")}
-                  onOpenProduct={(product) => {
-                    onProductEdit(product);
-                    setWorkspaceCardView("editProduct");
-                  }}
-                  onSaveFields={onProductFieldsSave}
-                  onSaveProduct={async () => {
-                    if (await onProductSave()) setWorkspaceCardView("catalogue");
-                  }}
-                />
-              )}
-            </section>
-          </div>
-        ) : null}
-        {!isAuthenticated ? (
-          <div className="composer composer-card-lock">
-            <span>Sign in to send and receive end-to-end encrypted messages.</span>
-            <button type="button" onClick={onRequireSignIn}>
-              Sign in to message
-            </button>
-          </div>
-        ) : (
-          <div className="composer">
-            {replyToMessageId ? (
-              <div className="composer-reply">
-                <span>Replying to a message</span>
-                <button type="button" onClick={onCancelReply}>
-                  Cancel
-                </button>
-              </div>
-            ) : null}
-            <button
-              className="icon-button composer-icon-button"
-              type="button"
-              aria-label="Voice input"
-              title="Voice input"
-              onClick={() => startVoiceInput(commitDraft)}
-            >
-              <span className="mic-icon" aria-hidden="true" />
-            </button>
-            <button
-              className="icon-button composer-icon-button"
-              type="button"
-              aria-label="Attach file"
-              title="Attach file"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <span className="attach-icon" aria-hidden="true" />
-            </button>
-            <input
-              ref={fileInputRef}
-              className="chat-file-input"
-              type="file"
-              multiple
-              accept={chatAttachmentAccept}
-              onChange={onAttachmentChange}
+        <StackedModule
+          moduleId="owner-management"
+          open={activeModuleView !== null}
+          title={activeModuleView === null ? "Soko" : viewLabel(activeModuleView)}
+          onClose={onBackToChat}
+        >
+          {children}
+        </StackedModule>
+        <StackedModule
+          moduleId="marketplace"
+          open={activeModuleView === null && mode === "marketplace" && marketplaceShortcutOpen}
+          title="Marketplace"
+          onClose={onCloseMarketplace}
+        >
+          {workspaceCardView === "storefrontPreview" ? (
+            <StorefrontPreviewCard
+              businessName={businessName}
+              products={products}
+              sokoId={sokoId}
+              onBack={() => setWorkspaceCardView("cards")}
+              onOpenProfile={onOpenAgentProfile}
+              onAddToOrder={(product) =>
+                commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+              }
+              onSell={() => onModeChange("seller")}
+              onMessage={() => commitDraft(`Hello ${businessName}, `)}
             />
-            {mode === "seller" ? (
-              <>
-                <button
-                  className="icon-button composer-icon-button"
-                  type="button"
-                  aria-label="Add product from photo"
-                  title="Add product from photo"
-                  data-testid="seller-photo-button"
-                  onClick={() => sellerPhotoInputRef.current?.click()}
-                >
-                  <span className="camera-icon" aria-hidden="true" />
-                </button>
-                <input
-                  ref={sellerPhotoInputRef}
-                  className="chat-file-input"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  capture="environment"
-                  data-testid="seller-photo-input"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file !== undefined) onSellerPhotoCapture(file);
-                    event.target.value = "";
-                  }}
-                />
-              </>
-            ) : null}
-            {pendingAttachments.length > 0 ? (
-              <div className="attachment-workbench">
-                <div className="attachment-tray" aria-label="Selected attachments">
-                  {pendingAttachments.map((attachment) => (
-                    <span className="attachment-chip" key={attachment.id}>
-                      <span>
-                        <strong>{attachment.name}</strong>
-                        <small>
-                          {formatAttachmentCategory(attachment.category)} ·{" "}
-                          {formatFileSize(attachment.size)}
-                        </small>
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={`Remove ${attachment.name}`}
-                        onClick={() => onRemoveAttachment(attachment.id)}
-                      >
-                        x
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                {pendingAttachments.some(isExtractableChatAttachment) ? (
-                  <div className="document-instructions" aria-label="Document instructions">
-                    <span>OCR ready for scans and images</span>
-                    <button type="button" onClick={() => commitDraft("Extract all readable text")}>
-                      Extract text
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => commitDraft("Summarize this document in simple bullet points")}
-                    >
-                      Summarize
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        commitDraft("Extract names, dates, totals, and line items into a table")
-                      }
-                    >
-                      Extract fields
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {channelEndpoints.length > 0 ? (
-              <label className="composer-channel-selector">
-                <span>Send via</span>
-                <select
-                  aria-label="Send message via"
-                  value={selectedProvider ?? ""}
-                  onChange={(event) =>
-                    setSelectedProvider(
-                      event.target.value === "" ? null : (event.target.value as ChannelProvider)
-                    )
-                  }
-                >
-                  <option value="" disabled>
-                    No available channel
-                  </option>
-                  {channelEndpoints.map((endpoint) => {
-                    const available =
-                      (endpoint.status === "available" ||
-                        (endpoint.status === "offline" &&
-                          endpoint.capabilities.includes("SUPPORTS_OFFLINE"))) &&
-                      endpoint.configured &&
-                      endpoint.authorized &&
-                      (endpoint.capabilities.includes("CAN_REPLY") ||
-                        endpoint.capabilities.includes("CAN_INITIATE"));
-                    return (
-                      <option
-                        key={endpoint.channelId}
-                        value={endpoint.provider}
-                        disabled={!available}
-                      >
-                        {formatChannelProvider(endpoint.provider)} ·{" "}
-                        {endpoint.provider === "native_sms" && endpoint.status === "offline"
-                          ? "queued — waiting for Android device"
-                          : available
-                            ? endpoint.provider === "native_sms"
-                              ? "via Android device"
-                              : "available"
-                            : endpoint.status}
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
-            ) : null}
-            {selectedProvider === "email" ? (
-              <>
-                <label className="composer-input">
-                  <span>Subject</span>
-                  <input
-                    aria-label="Email subject"
-                    required
-                    maxLength={200}
-                    value={emailSubject}
-                    onChange={(event) => setEmailSubject(event.target.value)}
-                    placeholder="Required for email"
-                  />
-                </label>
-                <label className="composer-input">
-                  <span>Trusted attachment</span>
-                  <select
-                    aria-label="Attach a confirmed invoice"
-                    value={emailInvoiceId}
-                    onChange={(event) => setEmailInvoiceId(event.target.value)}
-                  >
-                    <option value="">No attachment</option>
-                    {invoices
-                      .filter(
-                        (invoice) =>
-                          invoice.status === "confirmed" &&
-                          invoice.customerId === selectedEmailCustomerId
-                      )
-                      .map((invoice) => (
-                        <option value={invoice.id} key={invoice.id}>
-                          Invoice {invoice.invoiceNumber} · {invoice.customerName ?? "Customer"}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              </>
-            ) : null}
-            <label className="composer-input">
-              <span>Message</span>
-              <textarea
-                aria-label="Message"
-                rows={1}
-                value={liveDraft}
-                onChange={(event) => updateLiveDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !isSending) {
-                    event.preventDefault();
-                    sendLiveDraft();
-                  }
-                }}
-                placeholder={
-                  mode === "seller"
-                    ? "Ask your agent to manage the shop"
-                    : "What are you looking for?"
+          ) : (
+            <MarketplaceModeCard
+              businessName={businessName}
+              hasBusiness={hasBusiness}
+              isAuthenticated={isAuthenticated}
+              isIntro={!marketplaceIntroComplete}
+              isLoadingStorefronts={publicStorefrontsLoading}
+              productCount={productCount}
+              publicStorefronts={publicStorefronts}
+              sokoId={sokoId}
+              buyFeed={buyFeed}
+              isSearchingBuyFeed={isSearchingBuyFeed}
+              buyCart={buyCart}
+              isCheckingOut={isCheckingOut}
+              onCompleteIntro={onCompleteMarketplaceIntro}
+              onOpenStore={() => setWorkspaceCardView("storefrontPreview")}
+              onPrompt={commitDraft}
+              onRefreshStorefronts={onRefreshPublicStorefronts}
+              onSell={() => onModeChange("seller")}
+              onSearchBuyFeed={onSearchBuyFeed}
+              onAddToCart={onAddToCart}
+              onRemoveFromCart={onRemoveFromCart}
+              onCheckout={onCheckout}
+            />
+          )}
+        </StackedModule>
+        <StackedModule
+          moduleId="workspace"
+          open={workspaceOpen}
+          title={workspacePanelTitle(workspaceCardView)}
+          onClose={onCloseWorkspace}
+        >
+          {workspaceCardView === "cards" ? (
+            <ContextualBusinessCards
+              productCount={productCount}
+              customerCount={customerCount}
+              invoiceCount={invoiceCount}
+              notificationCount={notificationCount}
+              report={report}
+              syncSummary={syncSummary}
+              onOpenCatalogue={() => setWorkspaceCardView("catalogue")}
+              onOpenNetworkSync={() => setWorkspaceCardView("networkSync")}
+              onPreviewStorefront={() => setWorkspaceCardView("storefrontPreview")}
+              onNavigate={(nextView) => {
+                onNavigate(nextView);
+                onCloseWorkspace();
+              }}
+            />
+          ) : workspaceCardView === "networkSync" ? (
+            <NetworkSyncNestedCard
+              graph={networkGraph}
+              oauthProviders={oauthProviders}
+              oauthProvidersLoaded={oauthProvidersLoaded}
+              onBack={() => setWorkspaceCardView("cards")}
+              onDisconnectSource={onNetworkDisconnectSource}
+              onOAuthProvider={onNetworkProviderOAuth}
+              onPhoneContactsSync={onNetworkPhoneContactsSync}
+              onInviteContacts={onNetworkInviteContacts}
+              onRefresh={onNetworkRefresh}
+            />
+          ) : workspaceCardView === "storefrontPreview" ? (
+            <StorefrontPreviewCard
+              businessName={businessName}
+              products={products}
+              sokoId={sokoId}
+              onBack={() => setWorkspaceCardView("cards")}
+              onOpenProfile={onOpenAgentProfile}
+              onAddToOrder={(product) =>
+                commitDraft(`I'd like to request 1 ${product.unit} of ${product.name}.`)
+              }
+              onSell={() => onModeChange("marketplace")}
+              onMessage={() => commitDraft(`Hello ${businessName}, `)}
+            />
+          ) : (
+            <CatalogueNestedCard
+              form={productForm}
+              fields={productFields}
+              products={products}
+              view={workspaceCardView}
+              onBack={() =>
+                setWorkspaceCardView(workspaceCardView === "catalogue" ? "cards" : "catalogue")
+              }
+              onChangeForm={onProductFormChange}
+              onDeleteProduct={onProductRemove}
+              onEditProduct={onProductEdit}
+              onOpenAdd={() => {
+                onProductReset();
+                setWorkspaceCardView("addProduct");
+              }}
+              onOpenDelete={() => setWorkspaceCardView("deleteProduct")}
+              onOpenEdit={() => {
+                if (products[0] !== undefined) {
+                  onProductEdit(products[0]);
                 }
-              />
-            </label>
-            <div className="composer-send-actions">
-              {isBrowserGenerating ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={onCancelGeneration}
-                  aria-label="Cancel on-device generation"
-                >
-                  Cancel
-                </button>
-              ) : null}
-              <button
-                className="sms-send-button"
-                type="button"
-                disabled={liveDraft.trim().length === 0}
-                onClick={() =>
-                  openSmsHandoff(
-                    selectedConversation?.title ?? "",
-                    selectedConversation?.title ?? "SMS recipient"
-                  )
-                }
-              >
-                Send as SMS
-              </button>
-              <button
-                className="share-send-button"
-                type="button"
-                disabled={liveDraft.trim().length === 0}
-                title="Share outside Soko using an installed app or connected-device service"
-                onClick={() => void openPlatformHandoff(selectedConversation?.title ?? "")}
-              >
-                Share to apps
-              </button>
-              <button
-                className="send-button"
-                type="button"
-                onClick={sendLiveDraft}
-                disabled={
-                  isSending ||
-                  (selectedProvider === "email" && emailSubject.trim().length === 0) ||
-                  (liveDraft.trim().length === 0 && pendingAttachments.length === 0)
-                }
-                aria-busy={isSending}
-              >
-                <span className="send-icon" aria-hidden="true" />
-                <span className="visually-hidden">Send</span>
-              </button>
-            </div>
-            {externalShareNotice !== null ? (
-              <small className="external-share-notice" role="status">
-                {externalShareNotice}
-                {pendingAttachments.length > 0
-                  ? " Attachments remain in Soko and were not shared."
-                  : " External messages are not covered by Soko end-to-end encryption."}
-              </small>
-            ) : null}
-          </div>
-        )}
+                setWorkspaceCardView("editProduct");
+              }}
+              onOpenFields={() => setWorkspaceCardView("manageFields")}
+              onOpenProduct={(product) => {
+                onProductEdit(product);
+                setWorkspaceCardView("editProduct");
+              }}
+              onSaveFields={onProductFieldsSave}
+              onSaveProduct={async () => {
+                if (await onProductSave()) setWorkspaceCardView("catalogue");
+              }}
+            />
+          )}
+        </StackedModule>
+        <ChatComposer
+          channelEndpoints={channelEndpoints}
+          composer={composer}
+          invoices={invoices}
+          isAuthenticated={isAuthenticated}
+          isBrowserGenerating={isBrowserGenerating}
+          isSending={isSending}
+          mode={mode}
+          pendingAttachments={pendingAttachments}
+          replyToMessageId={replyToMessageId}
+          selectedConversationTitle={selectedConversation?.title ?? ""}
+          selectedEmailCustomerId={selectedEmailCustomerId}
+          onAttachmentChange={onAttachmentChange}
+          onCancelGeneration={onCancelGeneration}
+          onCancelReply={onCancelReply}
+          onRemoveAttachment={onRemoveAttachment}
+          onRequireSignIn={onRequireSignIn}
+          onSellerPhotoCapture={onSellerPhotoCapture}
+        />
         {smsHandoffRequest !== null ? (
           <Suspense fallback={null}>
             <SmsHandoffDialog

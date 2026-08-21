@@ -17,9 +17,7 @@ describe("generated-surface registry", () => {
   });
 
   it("degrades safely for an unrecognized content.type instead of crashing the thread", () => {
-    expect(registry).toContain(
-      "const renderer = generatedSurfaceRegistry[content.type];"
-    );
+    expect(registry).toContain("const renderer = generatedSurfaceRegistry[content.type];");
     expect(registry).toContain(
       "return renderer === undefined ? null : renderer(content, context);"
     );

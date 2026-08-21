@@ -23,7 +23,9 @@ function fakeEnv(overrides: { run?: AiRun; token?: string; cloudflareAiModel?: s
   return {
     AI: { run } as unknown as Env["AI"],
     INFERENCE_SERVICE_TOKEN: overrides.token ?? token,
-    ...(overrides.cloudflareAiModel === undefined ? {} : { CLOUDFLARE_AI_MODEL: overrides.cloudflareAiModel })
+    ...(overrides.cloudflareAiModel === undefined
+      ? {}
+      : { CLOUDFLARE_AI_MODEL: overrides.cloudflareAiModel })
   };
 }
 
@@ -37,7 +39,9 @@ describe("Cloudflare inference Worker: authentication", () => {
   it("rejects a missing token", async () => {
     const response = await call(fakeEnv(), "/health/ready");
     expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({ error: { code: "INFERENCE_AUTHENTICATION_FAILED" } });
+    expect(await response.json()).toMatchObject({
+      error: { code: "INFERENCE_AUTHENTICATION_FAILED" }
+    });
   });
 
   it("rejects a wrong token", async () => {
@@ -63,7 +67,11 @@ describe("Cloudflare inference Worker: health and models", () => {
     const run = vi.fn(async () => ({ response: "unused" }));
     const response = await call(fakeEnv({ run }), "/health/ready", { headers: auth });
     expect(response.status).toBe(200);
-    const body = await response.json<{ ok: boolean; engine: string; models: Array<Record<string, unknown>> }>();
+    const body = await response.json<{
+      ok: boolean;
+      engine: string;
+      models: Array<Record<string, unknown>>;
+    }>();
     expect(body).toMatchObject({ ok: true, engine: "cloudflare-workers-ai" });
     expect(body.models).toEqual(
       expect.arrayContaining([
@@ -204,20 +212,28 @@ describe("Cloudflare inference Worker: provider normalization", () => {
   });
 
   it("requires the exact probe marker", async () => {
-    const passing = await call(fakeEnv({ run: async () => ({ response: "SOKO_MODEL_OK" }) }), "/v1/models/cloudflare-backend-default/probe", {
-      method: "POST",
-      headers: auth
-    });
+    const passing = await call(
+      fakeEnv({ run: async () => ({ response: "SOKO_MODEL_OK" }) }),
+      "/v1/models/cloudflare-backend-default/probe",
+      {
+        method: "POST",
+        headers: auth
+      }
+    );
     expect(passing.status).toBe(200);
     expect(await passing.json()).toMatchObject({
       modelId: "cloudflare-backend-default",
       providerModelId: cloudflareModel.providerModelId
     });
 
-    const failing = await call(fakeEnv({ run: async () => ({ response: "not the marker" }) }), "/v1/models/cloudflare-backend-default/probe", {
-      method: "POST",
-      headers: auth
-    });
+    const failing = await call(
+      fakeEnv({ run: async () => ({ response: "not the marker" }) }),
+      "/v1/models/cloudflare-backend-default/probe",
+      {
+        method: "POST",
+        headers: auth
+      }
+    );
     expect(failing.status).toBe(422);
     expect(await failing.json()).toMatchObject({ error: { code: "MODEL_PROBE_FAILED" } });
   });
@@ -234,7 +250,9 @@ describe("Cloudflare inference Worker: provider normalization", () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ providerModelId: "@cf/meta/llama-3.1-8b-instruct" });
+    expect(await response.json()).toMatchObject({
+      providerModelId: "@cf/meta/llama-3.1-8b-instruct"
+    });
     expect(run).toHaveBeenCalledWith(
       "@cf/meta/llama-3.1-8b-instruct",
       expect.any(Object),
@@ -292,7 +310,10 @@ describe("Cloudflare inference Worker: contract parity with the Soko API client"
       engine: "cloudflare-workers-ai",
       usage: { promptTokens: 20, completionTokens: 6 }
     });
-    expect(JSON.parse(completion.text)).toEqual({ type: "response", message: "hello from the edge" });
+    expect(JSON.parse(completion.text)).toEqual({
+      type: "response",
+      message: "hello from the edge"
+    });
   });
 
   it("lets the ModelRuntimeAdapter used by services/api/src/index.ts complete a full turn", async () => {

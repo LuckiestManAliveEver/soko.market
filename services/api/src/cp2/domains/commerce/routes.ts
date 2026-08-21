@@ -383,7 +383,11 @@ export function registerCommerceRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           sourceCaptureJobId: parseString(request.body.sourceCaptureJobId, "sourceCaptureJobId"),
-          recipientNodeIds: parseStringArray(request.body.recipientNodeIds, "recipientNodeIds", 200),
+          recipientNodeIds: parseStringArray(
+            request.body.recipientNodeIds,
+            "recipientNodeIds",
+            200
+          ),
           sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
         });
       } catch (error) {
@@ -477,20 +481,17 @@ export function registerCommerceRoutes(
     }
   );
 
-  app.post(
-    "/buy/checkout",
-    async (request: FastifyRequest<{ Body: BuyCheckoutBody }>, reply) => {
-      try {
-        return store.createUnifiedCheckout({
-          sessionId: readSessionCookie(request.headers.cookie),
-          items: parseBuyCheckoutItems(request.body.items),
-          sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
+  app.post("/buy/checkout", async (request: FastifyRequest<{ Body: BuyCheckoutBody }>, reply) => {
+    try {
+      return store.createUnifiedCheckout({
+        sessionId: readSessionCookie(request.headers.cookie),
+        items: parseBuyCheckoutItems(request.body.items),
+        sellerConversationId: parseNullableString(request.body.sellerConversationId ?? null)
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
     }
-  );
+  });
 
   app.get(
     "/buy/checkouts/:unifiedCheckoutId",
@@ -516,7 +517,11 @@ function parseBuySourceKind(value: unknown): BuyResultSourceKind {
 
 function parseBuyCheckoutItems(value: unknown): BuyCheckoutItemInput[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 100) {
-    throw new Cp2Error(400, "buy_checkout_items_invalid", "Checkout needs between 1 and 100 items.");
+    throw new Cp2Error(
+      400,
+      "buy_checkout_items_invalid",
+      "Checkout needs between 1 and 100 items."
+    );
   }
   return value.map((raw, index) => {
     const item = parseRequestBody(raw);

@@ -41,15 +41,22 @@ export default function UnifiedCartSummary(props: {
       {[...groups.entries()].map(([key, group]) => (
         <div className="cart-source-group" key={key}>
           <span className={`buy-source-badge buy-source-${group[0]!.sourceKind}`}>
-            {group[0]!.sourceKind === "contact" ? "From your contact" : "Shop"}: {group[0]!.sourceLabel}
+            {group[0]!.sourceKind === "contact" ? "From your contact" : "Shop"}:{" "}
+            {group[0]!.sourceLabel}
           </span>
           {group.map((item) => (
             <div className="cart-item-row" key={item.cartItemId}>
               <span>
                 {item.title} × {item.quantity}
               </span>
-              <span>{item.price === null ? "Price on request" : `KSh ${item.price * item.quantity}`}</span>
-              <button type="button" className="secondary" onClick={() => props.onRemove(item.cartItemId)}>
+              <span>
+                {item.price === null ? "Price on request" : `KSh ${item.price * item.quantity}`}
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => props.onRemove(item.cartItemId)}
+              >
                 Remove
               </button>
             </div>

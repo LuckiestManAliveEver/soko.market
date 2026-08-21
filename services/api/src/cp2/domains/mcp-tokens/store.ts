@@ -9,11 +9,7 @@ import type {
   MembershipSummary
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
-import {
-  hashMcpAccessToken,
-  mcpAccessTokenSummary,
-  type McpAccessTokenRecord
-} from "./shared.js";
+import { hashMcpAccessToken, mcpAccessTokenSummary, type McpAccessTokenRecord } from "./shared.js";
 import type { Cp2Snapshot } from "../../store.js";
 
 export interface McpTokensDomainDeps {
@@ -90,9 +86,9 @@ export class McpTokensDomain {
     const shopId = input.shopId ?? null;
     if (
       shopId !== null &&
-      !this.deps.listAccountShops({ sessionId: session.session.id, now }).some(
-        ({ business }) => business.id === shopId
-      )
+      !this.deps
+        .listAccountShops({ sessionId: session.session.id, now })
+        .some(({ business }) => business.id === shopId)
     ) {
       throw new Cp2Error(403, "mcp_shop_forbidden", "The MCP token cannot access that shop.");
     }

@@ -54,7 +54,9 @@ export default function ProductManagementCard(props: { businessId: string; produ
       .then((loaded) => {
         if (cancelled) return;
         setProducts(loaded);
-        setDrafts(Object.fromEntries(loaded.map((product) => [product.id, draftFromProduct(product)])));
+        setDrafts(
+          Object.fromEntries(loaded.map((product) => [product.id, draftFromProduct(product)]))
+        );
       })
       .catch((error) => {
         if (!cancelled) setMessage(getUserFacingErrorMessage(error));
@@ -74,14 +76,17 @@ export default function ProductManagementCard(props: { businessId: string; produ
       setMessage("Enter a product name.");
       return;
     }
-    const updated = await patchJson<ProductSummary>(`/businesses/${props.businessId}/products/${product.id}`, {
-      name: draft.name.trim(),
-      sku: draft.sku.trim() || null,
-      unit: draft.unit.trim() || "unit",
-      quantity: Number(draft.quantity),
-      buyingPrice: draft.buyingPrice.trim().length === 0 ? null : Number(draft.buyingPrice),
-      sellingPrice: draft.sellingPrice.trim().length === 0 ? null : Number(draft.sellingPrice)
-    });
+    const updated = await patchJson<ProductSummary>(
+      `/businesses/${props.businessId}/products/${product.id}`,
+      {
+        name: draft.name.trim(),
+        sku: draft.sku.trim() || null,
+        unit: draft.unit.trim() || "unit",
+        quantity: Number(draft.quantity),
+        buyingPrice: draft.buyingPrice.trim().length === 0 ? null : Number(draft.buyingPrice),
+        sellingPrice: draft.sellingPrice.trim().length === 0 ? null : Number(draft.sellingPrice)
+      }
+    );
     setProducts((current) =>
       (current ?? []).map((item) => (item.id === updated.id ? updated : item))
     );
@@ -153,14 +158,18 @@ export default function ProductManagementCard(props: { businessId: string; produ
             Name
             <input
               value={addDraft.name}
-              onChange={(event) => setAddDraft((current) => ({ ...current, name: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, name: event.target.value }))
+              }
             />
           </label>
           <label>
             Unit
             <input
               value={addDraft.unit}
-              onChange={(event) => setAddDraft((current) => ({ ...current, unit: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, unit: event.target.value }))
+              }
             />
           </label>
           <label>
@@ -280,7 +289,10 @@ export default function ProductManagementCard(props: { businessId: string; produ
                     inputMode="decimal"
                     value={stockDrafts[product.id] ?? String(product.quantity)}
                     onChange={(event) =>
-                      setStockDrafts((current) => ({ ...current, [product.id]: event.target.value }))
+                      setStockDrafts((current) => ({
+                        ...current,
+                        [product.id]: event.target.value
+                      }))
                     }
                   />
                 </label>
@@ -300,7 +312,11 @@ export default function ProductManagementCard(props: { businessId: string; produ
                   >
                     Adjust stock
                   </button>
-                  <button className="secondary" type="button" onClick={() => setEditingId(product.id)}>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setEditingId(product.id)}
+                  >
                     Edit
                   </button>
                   <button

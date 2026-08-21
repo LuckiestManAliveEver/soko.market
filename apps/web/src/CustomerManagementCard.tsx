@@ -39,7 +39,9 @@ export default function CustomerManagementCard(props: { businessId: string; cust
       .then((loaded) => {
         if (cancelled) return;
         setCustomers(loaded);
-        setDrafts(Object.fromEntries(loaded.map((customer) => [customer.id, draftFromCustomer(customer)])));
+        setDrafts(
+          Object.fromEntries(loaded.map((customer) => [customer.id, draftFromCustomer(customer)]))
+        );
       })
       .catch((error) => {
         if (!cancelled) setMessage(getUserFacingErrorMessage(error));
@@ -68,7 +70,9 @@ export default function CustomerManagementCard(props: { businessId: string; cust
         notes: draft.notes.trim() || null
       }
     );
-    setCustomers((current) => (current ?? []).map((item) => (item.id === updated.id ? updated : item)));
+    setCustomers((current) =>
+      (current ?? []).map((item) => (item.id === updated.id ? updated : item))
+    );
     setEditingId(null);
     setMessage(`${updated.name} updated`);
   }
@@ -116,14 +120,18 @@ export default function CustomerManagementCard(props: { businessId: string; cust
             Name
             <input
               value={addDraft.name}
-              onChange={(event) => setAddDraft((current) => ({ ...current, name: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, name: event.target.value }))
+              }
             />
           </label>
           <label>
             Phone
             <input
               value={addDraft.phone}
-              onChange={(event) => setAddDraft((current) => ({ ...current, phone: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, phone: event.target.value }))
+              }
             />
           </label>
           <button
@@ -204,7 +212,11 @@ export default function CustomerManagementCard(props: { businessId: string; cust
                   {customer.phone ?? "No phone"}
                 </p>
                 <div className="row-actions">
-                  <button className="secondary" type="button" onClick={() => setEditingId(customer.id)}>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setEditingId(customer.id)}
+                  >
                     Edit
                   </button>
                 </div>

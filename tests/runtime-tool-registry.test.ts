@@ -8,6 +8,92 @@ import {
 const allToolNames = Object.keys(runtimeToolRegistry) as RuntimeToolName[];
 
 describe("runtime tool registry", () => {
+  it("preserves the canonical registry order while composing domain modules", () => {
+    expect(allToolNames).toEqual([
+      "products.list",
+      "invoices.list",
+      "reports.summary",
+      "notifications.list",
+      "compliance.review",
+      "network.route",
+      "commerce.search",
+      "commerce.checkout",
+      "product.create",
+      "product.update",
+      "product.delete",
+      "product.stock_adjust",
+      "product.field.add",
+      "product.field.remove",
+      "customer.create",
+      "customer.update",
+      "supplier.create",
+      "supplier.update",
+      "invoice.draft",
+      "payments.debtors",
+      "payment.record",
+      "logistics.update_status",
+      "receipt.scan",
+      "receipt.review",
+      "receipt.confirm",
+      "receipt.correct",
+      "receipt.cancel",
+      "receipt.lookup",
+      "receipt.list",
+      "document_import.confirm",
+      "messaging.send",
+      "unknown.clarify"
+    ]);
+  });
+
+  it("freezes risk, permission, confirmation, read-only, and MCP metadata", () => {
+    expect(
+      allToolNames.map((name) => {
+        const definition = runtimeToolRegistry[name];
+        return [
+          name,
+          definition.risk,
+          definition.requiredPermission,
+          definition.requiresConfirmation,
+          definition.readOnly,
+          definition.mcpExposable
+        ];
+      })
+    ).toEqual([
+      ["products.list", "low", "product:read", false, true, false],
+      ["invoices.list", "low", "invoice:read", false, true, false],
+      ["reports.summary", "low", "report:read", false, true, false],
+      ["notifications.list", "low", "notification:read", false, true, false],
+      ["compliance.review", "low", "compliance:read", false, true, false],
+      ["network.route", "medium", "business:read", false, false, false],
+      ["commerce.search", "low", "business:read", false, true, false],
+      ["commerce.checkout", "high", "business:read", true, false, false],
+      ["product.create", "high", "product:write", true, false, false],
+      ["product.update", "high", "product:write", true, false, false],
+      ["product.delete", "critical", "product:write", true, false, false],
+      ["product.stock_adjust", "high", "product:write", true, false, false],
+      ["product.field.add", "medium", "product:write", true, false, false],
+      ["product.field.remove", "high", "product:write", true, false, false],
+      ["customer.create", "high", "customer:write", true, false, false],
+      ["customer.update", "high", "customer:write", true, false, false],
+      ["supplier.create", "high", "supplier:write", true, false, false],
+      ["supplier.update", "high", "supplier:write", true, false, false],
+      ["invoice.draft", "high", "invoice:write", true, false, false],
+      ["payments.debtors", "low", "payment:read", false, true, false],
+      ["payment.record", "high", "payment:write", true, false, false],
+      ["logistics.update_status", "high", "logistics:write", true, false, false],
+      ["receipt.scan", "medium", "import:write", true, false, false],
+      ["receipt.review", "low", "import:read", false, true, false],
+      ["receipt.confirm", "high", "import:write", true, false, false],
+      ["receipt.correct", "high", "import:write", true, false, false],
+      ["receipt.cancel", "medium", "import:write", true, false, false],
+      ["receipt.lookup", "low", "import:read", false, true, false],
+      ["receipt.list", "low", "import:read", false, true, false],
+      ["document_import.confirm", "high", "import:write", true, false, false],
+      ["messaging.send", "high", "customer:write", true, false, false],
+      ["unknown.clarify", "low", "business:read", false, true, false]
+    ]);
+  });
+
   it("gives every tool a non-empty description usable for documentation and MCP exposure", () => {
     expect(allToolNames.length).toBeGreaterThan(0);
     for (const name of allToolNames) {
@@ -24,9 +110,10 @@ describe("runtime tool registry", () => {
       expect(typeof schema.properties).toBe("object");
       for (const [field, fieldSchema] of Object.entries(schema.properties)) {
         expect(["string", "number", "boolean", "array", "object"]).toContain(fieldSchema.type);
-        expect(fieldSchema.description.trim().length, `${name}.${field} description`).toBeGreaterThan(
-          0
-        );
+        expect(
+          fieldSchema.description.trim().length,
+          `${name}.${field} description`
+        ).toBeGreaterThan(0);
       }
     }
   });

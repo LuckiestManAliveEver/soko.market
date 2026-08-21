@@ -42,16 +42,8 @@ import type {
   OAuthSessionSummary,
   UserIdentitySummary
 } from "@soko/shared-types";
-
-export interface UserIdentityRecord extends UserIdentitySummary {
-  encryptedAccessToken: string | null;
-  encryptedRefreshToken: string | null;
-  encryptedIdToken: string | null;
-  tokenType: string | null;
-  tokenExpiresAt: string | null;
-  scope: string | null;
-  updatedAt: string;
-}
+import type { UserIdentityRecord } from "../../domain-contracts.js";
+export type { UserIdentityRecord } from "../../domain-contracts.js";
 
 export interface OAuthSessionRecord extends OAuthSessionSummary {
   accountId: string | null;

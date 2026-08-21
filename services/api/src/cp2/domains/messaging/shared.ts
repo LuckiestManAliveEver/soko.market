@@ -14,10 +14,13 @@ import type {
   RuntimeTurnResult
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
-import { normalizeRequiredBoundedText, normalizeStorefrontLookupId } from "../../text-normalization.js";
+import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import { normalizeInternationalOwnerPhoneNumber } from "../../phone-identity.js";
 import { EmailProviderClientError } from "../../../messaging/email-provider-client.js";
-import { createPublicAgentId } from "../network/shared.js";
+import { normalizeEmailIdentity } from "../../email-identity.js";
+export type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
+export { normalizeEmailIdentity } from "../../email-identity.js";
+export { requirePublicStorefrontBusiness } from "../../storefront-access.js";
 
 export interface AgentConversationMessageResult {
   message: ConversationMessageSummary;
@@ -35,17 +38,6 @@ export interface PublicStorefrontSessionResult {
   conversationId: string;
   capabilityToken: string;
   expiresAt: string;
-}
-
-export interface CustomerRuntimeCapabilityRecord {
-  id: string;
-  businessId: string;
-  conversationId: string;
-  platformIdentityId: string;
-  tokenHash: string;
-  expiresAt: string;
-  revokedAt: string | null;
-  createdAt: string;
 }
 
 export interface MessageNotificationDeliveryRunSummary {
@@ -136,46 +128,6 @@ export interface ChannelIdentityLinkGrantRecord {
 export const nativeSmsOnlineWindowMs = 2 * 60_000;
 export const nativeSmsCommandTtlMs = 24 * 60 * 60_000;
 export const mailboxOAuthSessionTtlMs = 10 * 60_000;
-
-export function requirePublicStorefrontBusiness(
-  businesses: Map<string, BusinessSummary>,
-  quarantinedBusinessIds: Set<string>,
-  agentId: string
-): BusinessSummary {
-  const storefrontId = normalizeStorefrontLookupId(agentId);
-  const business = [...businesses.values()].find((candidate) => {
-    const sokoId = normalizeStorefrontLookupId(candidate.sokoId);
-    const legacyAgentId = normalizeStorefrontLookupId(createPublicAgentId(candidate));
-    return sokoId === storefrontId || legacyAgentId === storefrontId;
-  });
-  if (business === undefined || quarantinedBusinessIds.has(business.id)) {
-    throw new Cp2Error(404, "storefront_not_found", "Storefront was not found.");
-  }
-  return business;
-}
-
-export function normalizeEmailIdentity(value: string): string {
-  const normalized = value.trim();
-  const at = normalized.lastIndexOf("@");
-  if (
-    at <= 0 ||
-    at === normalized.length - 1 ||
-    normalized.length > 254 ||
-    /\s/u.test(normalized)
-  ) {
-    throw new Cp2Error(400, "EMAIL_INVALID_RECIPIENT", "Email address is invalid.");
-  }
-  const local = normalized.slice(0, at);
-  const domain = normalized.slice(at + 1).toLowerCase();
-  if (
-    local.length > 64 ||
-    !/^[^@<>(),;:\\"[\]]+$/u.test(local) ||
-    !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/u.test(domain)
-  ) {
-    throw new Cp2Error(400, "EMAIL_INVALID_RECIPIENT", "Email address is invalid.");
-  }
-  return `${local}@${domain}`;
-}
 
 export function isEmailReauthorizationError(error: unknown): error is EmailProviderClientError {
   return (
@@ -373,7 +325,10 @@ export function normalizeMailboxHistoryDays(value: number | undefined): number |
   return value;
 }
 
-export function renderInvoiceAttachment(business: BusinessSummary, invoice: InvoiceSummary): string {
+export function renderInvoiceAttachment(
+  business: BusinessSummary,
+  invoice: InvoiceSummary
+): string {
   const lines = [
     business.name,
     `Invoice ${invoice.invoiceNumber}`,

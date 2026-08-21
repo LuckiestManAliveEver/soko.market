@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import type { BusinessSummary, NetworkNodeSummary, OAuthProvider } from "@soko/shared-types";
 import { normalizeDestination } from "../../phone-identity.js";
 import { Cp2Error } from "../../cp2-error.js";
+export { sanitizeNetworkNode } from "../../network-node-view.js";
+export { createPublicAgentId, providerDisplayName } from "../../public-identifiers.js";
 
 export interface NetworkImportConnectionInput {
   name: string;
@@ -73,7 +74,10 @@ export function normalizeSocialRelationship(
   return "followed";
 }
 
-export function createContactHash(hashType: "phone" | "email" | "social", rawValue: string): string {
+export function createContactHash(
+  hashType: "phone" | "email" | "social",
+  rawValue: string
+): string {
   const normalized =
     hashType === "phone"
       ? normalizeDestination("phone", rawValue)
@@ -91,46 +95,4 @@ export function createContactDisplayHint(rawValue: string): string | null {
   }
 
   return normalized.slice(-4).padStart(Math.min(normalized.length, 6), "*");
-}
-
-export function sanitizeNetworkNode(node: NetworkNodeSummary): NetworkNodeSummary {
-  if (node.degree !== 2) {
-    return node;
-  }
-
-  return {
-    ...node,
-    contactHashIds: []
-  };
-}
-
-export function createPublicAgentId(business: BusinessSummary): string {
-  const seed = `${business.id}-${business.name}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-
-  return seed.length === 0 ? "soko-agent" : seed;
-}
-
-export function providerDisplayName(provider: OAuthProvider): string {
-  switch (provider) {
-    case "facebook":
-      return "Facebook";
-    case "github":
-      return "GitHub";
-    case "google":
-      return "Google";
-    case "linkedin":
-      return "LinkedIn";
-    case "tiktok":
-      return "TikTok";
-    case "microsoft":
-      return "Microsoft";
-    case "apple":
-      return "Apple";
-    case "x":
-      return "X";
-  }
 }

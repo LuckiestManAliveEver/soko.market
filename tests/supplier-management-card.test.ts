@@ -25,7 +25,7 @@ describe("suppliers chat-invokable capability (Phase 4b)", () => {
 
   it("posts the suppliers card into the owner's own conversation after a successful supplier tool run", () => {
     expect(chatRuntime).toContain(
-      'const supplierMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(['
+      "const supplierMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(["
     );
     expect(chatRuntime).toContain('"supplier.create"');
     expect(chatRuntime).toContain('"supplier.update"');

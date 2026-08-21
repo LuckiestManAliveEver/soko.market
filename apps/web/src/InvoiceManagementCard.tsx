@@ -13,7 +13,10 @@ import type { ConfirmInvoiceResponse } from "./soko-application-shared";
 // pre-filled with the extracted customer name, and the owner composes the one line item here,
 // matching the permanent InvoiceSurface's own single-item-per-draft shape. See
 // docs/frontend/frontend.md Phase 4d.
-export default function InvoiceManagementCard(props: { businessId: string; customerName?: string }) {
+export default function InvoiceManagementCard(props: {
+  businessId: string;
+  customerName?: string;
+}) {
   const { isPending, runAction } = useAsyncActions();
   const [products, setProducts] = useState<ProductSummary[] | null>(null);
   const [message, setMessage] = useState("");

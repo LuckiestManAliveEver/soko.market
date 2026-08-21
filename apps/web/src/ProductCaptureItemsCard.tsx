@@ -18,7 +18,8 @@ function draftFromItem(item: ProductCaptureItemSummary): ItemDraft {
     title: item.fields.title.value ?? "",
     category: item.fields.category.value ?? "",
     description: item.fields.description.value ?? "",
-    visiblePrice: item.fields.visiblePrice.value === null ? "" : String(item.fields.visiblePrice.value)
+    visiblePrice:
+      item.fields.visiblePrice.value === null ? "" : String(item.fields.visiblePrice.value)
   };
 }
 
@@ -40,9 +41,7 @@ export default function ProductCaptureItemsCard(props: {
       .then((loaded) => {
         if (cancelled) return;
         setJob(loaded);
-        setDrafts(
-          Object.fromEntries(loaded.items.map((item) => [item.id, draftFromItem(item)]))
-        );
+        setDrafts(Object.fromEntries(loaded.items.map((item) => [item.id, draftFromItem(item)])));
       })
       .catch((error) => {
         if (!cancelled) setMessage(getUserFacingErrorMessage(error));
@@ -86,7 +85,11 @@ export default function ProductCaptureItemsCard(props: {
   if (job === null) {
     return (
       <section className="record-form product-capture-card" aria-label="Photo capture">
-        {message.length > 0 ? <p className="shell-note">{message}</p> : <p>Loading photo capture…</p>}
+        {message.length > 0 ? (
+          <p className="shell-note">{message}</p>
+        ) : (
+          <p>Loading photo capture…</p>
+        )}
       </section>
     );
   }
@@ -124,7 +127,9 @@ export default function ProductCaptureItemsCard(props: {
             ) : null}
             {resolved ? (
               <p className="shell-note">
-                {item.status === "confirmed" ? `Confirmed: ${draft.title}` : `Rejected: ${draft.title}`}
+                {item.status === "confirmed"
+                  ? `Confirmed: ${draft.title}`
+                  : `Rejected: ${draft.title}`}
               </p>
             ) : (
               <>

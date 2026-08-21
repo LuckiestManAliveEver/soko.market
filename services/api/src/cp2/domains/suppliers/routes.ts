@@ -10,7 +10,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import type { BinaryUploadPipeline } from "../../binary-upload-pipeline.js";
-import type { ReceiptOCRExtractionResult, ReceiptOCRProcessor } from "../../receipt-ocr-provider.js";
+import type {
+  ReceiptOCRExtractionResult,
+  ReceiptOCRProcessor
+} from "../../receipt-ocr-provider.js";
 import {
   parseBoolean,
   parseContactRecordBody,
@@ -66,6 +69,10 @@ interface ReceiptOCRConfirmBody {
   salesAgentId?: string | null;
   createSupplier?: boolean;
   createSalesAgent?: boolean;
+}
+
+interface ReceiptOCRCorrectionBody {
+  extractedText?: string;
 }
 
 export function registerSuppliersRoutes(
@@ -346,6 +353,20 @@ export function registerSuppliersRoutes(
     }
   );
 
+  app.get(
+    "/businesses/:businessId/receipt-ocr/jobs",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.listReceiptOCRJobs({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.post(
     "/businesses/:businessId/receipt-ocr/jobs/:ocrJobId/confirm",
     async (
@@ -362,6 +383,40 @@ export function registerSuppliersRoutes(
           salesAgentId: body.salesAgentId,
           createSupplier: body.createSupplier,
           createSalesAgent: body.createSalesAgent
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.patch(
+    "/businesses/:businessId/receipt-ocr/jobs/:ocrJobId",
+    async (
+      request: FastifyRequest<{ Params: ReceiptOCRParams; Body: ReceiptOCRCorrectionBody }>,
+      reply
+    ) => {
+      try {
+        return store.correctReceiptOCRJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ocrJobId: request.params.ocrJobId,
+          extractedText: parseString(request.body?.extractedText, "extractedText")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/businesses/:businessId/receipt-ocr/jobs/:ocrJobId/cancel",
+    async (request: FastifyRequest<{ Params: ReceiptOCRParams }>, reply) => {
+      try {
+        return store.cancelReceiptOCRJob({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          ocrJobId: request.params.ocrJobId
         });
       } catch (error) {
         return sendCp2Error(reply, error);

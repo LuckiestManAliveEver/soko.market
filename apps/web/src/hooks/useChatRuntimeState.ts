@@ -18,10 +18,8 @@ import type {
 import { unavailableBrowserInferenceCapability } from "../browser-inference-types";
 import {
   createAgentHelpReply,
-  createAgentRuntimeDecision,
   createAgentRuntimeProfile,
   extractAgentHelpCommand,
-  findInvoiceForPayment,
   resolveAgentHelpDestination,
   viewLabel
 } from "../agent-command-engine";
@@ -67,7 +65,6 @@ import {
   mergePersistedEncryptedMessage,
   runtimeManagerKey
 } from "../chat-message-plumbing";
-import { createSupplierChatReply, isNetworkDiscoveryRequest } from "../contacts-import";
 import { encryptDirectMessage } from "../e2ee";
 import {
   formatAgentDisplayName,
@@ -90,19 +87,9 @@ import {
   type ActiveBusiness,
   type AgentSettings,
   type AiModelSummary,
-  type CustomerDebtSummary,
-  type CustomerFormState,
-  type CustomerSummary,
-  type InvoiceFormState,
-  type InvoicePreview,
-  type InvoiceSummary,
-  type PaymentFormState,
   type ProcessedConversationMessageResponse,
-  type ProductFormState,
-  type ProductSummary,
   type RuntimeTurnResult,
-  type SessionResponse,
-  type SupplierBusinessCardSummary
+  type SessionResponse
 } from "../soko-application-shared";
 
 interface UseChatRuntimeStateDeps {
@@ -113,24 +100,12 @@ interface UseChatRuntimeStateDeps {
   setStatusMessage: (message: string) => void;
   navigateToView: (nextView: ShellView, options?: { replace?: boolean; mode?: SokoMode }) => void;
   requireMessagingSignIn: () => void;
-  products: ProductSummary[];
   loadProducts: (businessId: string) => Promise<void>;
-  setProductForm: Dispatch<SetStateAction<ProductFormState>>;
-  suppliers: SupplierBusinessCardSummary[];
   loadSuppliers: (businessId: string) => Promise<void>;
-  customers: CustomerSummary[];
   loadCustomers: (businessId: string) => Promise<void>;
-  setCustomerForm: Dispatch<SetStateAction<CustomerFormState>>;
-  customerDebts: CustomerDebtSummary[];
-  invoices: InvoiceSummary[];
   loadInvoices: (businessId: string) => Promise<void>;
-  setInvoiceForm: Dispatch<SetStateAction<InvoiceFormState>>;
-  setInvoicePreview: Dispatch<SetStateAction<InvoicePreview | null>>;
-  setPaymentForm: Dispatch<SetStateAction<PaymentFormState>>;
   loadReports: (businessId: string) => Promise<void>;
   loadNotifications: (businessId: string) => Promise<void>;
-  loadNetworkGraph: () => Promise<void>;
-  requestNetworkRoute: (targetNodeId?: string, requestText?: string) => Promise<void>;
   loadRuntimeSessions: (businessId: string) => Promise<void>;
   createManagedRuntimeSession: () => Promise<string>;
   ensureRuntimeSession: (setRuntimeSessionId: (sessionId: string) => void) => Promise<string>;
@@ -195,7 +170,6 @@ function customerIdFromToolResult(toolResult: unknown): string | undefined {
 }
 
 export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
-  const [clarificationCount, setClarificationCount] = useState(0);
   const [isBrowserGenerating, setIsBrowserGenerating] = useState(false);
 
   const {
@@ -206,24 +180,12 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     setStatusMessage,
     navigateToView,
     requireMessagingSignIn,
-    products,
     loadProducts,
-    setProductForm,
-    suppliers,
     loadSuppliers,
-    customers,
     loadCustomers,
-    setCustomerForm,
-    customerDebts,
-    invoices,
     loadInvoices,
-    setInvoiceForm,
-    setInvoicePreview,
-    setPaymentForm,
     loadReports,
     loadNotifications,
-    loadNetworkGraph,
-    requestNetworkRoute,
     loadRuntimeSessions,
     createManagedRuntimeSession,
     ensureRuntimeSession,
@@ -567,13 +529,10 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
                   role: item.author === "merchant" ? ("user" as const) : ("assistant" as const),
                   content: item.body
                 })),
-              catalogueRecords: products.map((product) => ({
-                id: product.id,
-                name: product.name,
-                price: product.sellingPrice,
-                quantity: product.quantity,
-                updatedAt: product.updatedAt
-              })),
+              // Business reads and mutations always go through the authorized server capability
+              // runtime. Browser inference is limited to conversational generation and therefore
+              // receives no independently cached domain snapshot here.
+              catalogueRecords: [],
               nativeReady: false,
               allowServerToolHandoff: requiresServerTool && navigator.onLine,
               onToken: (token) => browserTokenListener(token)
@@ -1057,11 +1016,8 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
-    // Invoices need interactive product+quantity+price composition the free-text parser cannot
-    // reliably extract (create_invoice's own validation has always required "product and price
-    // details" it never receives from one message) - so unlike the other domains, this card opens
-    // as soon as the message classifies as create_invoice, not after a successful tool execution.
-    // See generated-surface-registry.tsx and docs/frontend/frontend.md Phase 4d.
+    // Incomplete free text still opens the invoice composer; complete structured runtime input can
+    // execute invoice.draft directly through the canonical Sales domain operation.
     async function postInvoiceManagementCard(businessId: string, customerName: string | undefined) {
       if (session === null || activeConversationId === null) return;
       const clientMessageId = createClientMessageId("agent");
@@ -1089,10 +1045,8 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
-    // Mirrors postInvoiceManagementCard for the payments domain - payment.record's proposal has
-    // always been hard-coded invalid ("needs an invoice id and method"), since a customer can have
-    // several open invoices. See generated-surface-registry.tsx and docs/frontend/frontend.md
-    // Phase 4e.
+    // Incomplete free text still opens the payment composer because a customer can have several
+    // invoices; complete structured input executes payment.record through the canonical domain.
     async function postPaymentManagementCard(businessId: string, customerName: string | undefined) {
       if (session === null || activeConversationId === null) return;
       const clientMessageId = createClientMessageId("agent");
@@ -1157,7 +1111,10 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     // proposal has always been hard-coded invalid ("needs which delivery and the new status"),
     // since a customer can have several open deliveries. See generated-surface-registry.tsx and
     // docs/frontend/frontend.md Phase 4h.
-    async function postLogisticsManagementCard(businessId: string, customerName: string | undefined) {
+    async function postLogisticsManagementCard(
+      businessId: string,
+      customerName: string | undefined
+    ) {
       if (session === null || activeConversationId === null) return;
       const clientMessageId = createClientMessageId("agent");
       const content: ConversationMessageContent =
@@ -1376,7 +1333,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         );
       }
       setRuntimeSessionId(result.session.id);
-      setClarificationCount(result.turn.status === "clarifying" ? clarificationCount + 1 : 0);
       if (appendResponse) {
         const confirmationToken = result.turn.plan.confirmationToken;
         await appendAgentMessage(
@@ -1396,7 +1352,10 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         business !== null
       ) {
         await loadProducts(business.id);
-        await postProductManagementCard(business.id, productIdFromToolResult(result.turn.toolResult));
+        await postProductManagementCard(
+          business.id,
+          productIdFromToolResult(result.turn.toolResult)
+        );
       }
 
       if (
@@ -1473,9 +1432,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         );
       }
 
-      if (isNetworkDiscoveryRequest(agentRequest)) {
-        await loadNetworkGraph();
-        await requestNetworkRoute(undefined, agentRequest);
+      if (result.turn.plan.toolName === "network.route" && result.turn.plan.executedAt !== null) {
         navigateToView("network");
       }
 
@@ -1524,16 +1481,10 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
 
-    const supplierReply = createSupplierChatReply(agentRequest, suppliers);
-    if (supplierReply !== null) {
-      await appendAgentMessage(supplierReply.body);
-      navigateToView(supplierReply.view);
-      return;
-    }
-
     if (business === null) {
-      const parserReply = createLocalParserReply(agentRequest);
-      await appendAgentMessage(parserReply.body);
+      await appendAgentMessage(
+        "Choose or create a shop before asking the authorized business runtime to act."
+      );
       return;
     }
 
@@ -1556,12 +1507,9 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       );
       await applyRuntimeResult(result, true);
     } catch (error) {
-      const parserReply = createLocalParserReply(agentRequest);
-      await appendAgentMessage(parserReply.body);
-      if (isNetworkDiscoveryRequest(agentRequest)) {
-        await loadNetworkGraph();
-        navigateToView("network");
-      }
+      await appendAgentMessage(
+        "The authorized business runtime is unavailable, so I did not interpret or apply this request locally. Please retry when the connection recovers."
+      );
       setStatusMessage(getErrorMessage(error));
     }
   }
@@ -1621,121 +1569,11 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     }
   }
 
-  function createLocalParserReply(message: string): ChatMessage {
-    const supplierReply = createSupplierChatReply(message, suppliers);
-
-    if (supplierReply !== null) {
-      navigateToView(supplierReply.view);
-      return {
-        id: `sokoclaw-${Date.now()}`,
-        author: "sokoclaw",
-        body: supplierReply.body
-      };
-    }
-
-    const decision = createAgentRuntimeDecision({
-      agent: agentSettings,
-      clarificationCount,
-      customers,
-      customerDebts,
-      invoices,
-      message,
-      products
-    });
-    const reply: ChatMessage = {
-      id: `sokoclaw-${Date.now()}`,
-      author: "sokoclaw",
-      body: decision.response
-    };
-
-    if (decision.kind === "act" && decision.result.nextAction.type === "navigate") {
-      navigateToView(decision.result.nextAction.view);
-    }
-
-    if (
-      decision.kind === "act" &&
-      decision.result.intent === "add_product" &&
-      decision.result.nextAction.type === "draft"
-    ) {
-      setProductForm((form) => ({
-        ...form,
-        name: decision.result.slots.productName ?? form.name,
-        quantity:
-          decision.result.slots.quantity === undefined
-            ? form.quantity
-            : String(decision.result.slots.quantity),
-        unit: decision.result.slots.unit ?? form.unit
-      }));
-      navigateToView("products");
-    }
-
-    if (
-      decision.kind === "act" &&
-      decision.result.intent === "add_customer" &&
-      decision.result.nextAction.type === "draft"
-    ) {
-      setCustomerForm((form) => ({
-        ...form,
-        name: decision.result.slots.customerName ?? form.name
-      }));
-      navigateToView("customers");
-    }
-
-    if (
-      decision.kind === "act" &&
-      decision.result.intent === "create_invoice" &&
-      decision.result.nextAction.type === "draft"
-    ) {
-      setInvoiceForm((form) => ({
-        ...form,
-        customerId: decision.matchedCustomer?.id ?? form.customerId,
-        customerName:
-          decision.matchedCustomer === null
-            ? (decision.result.slots.customerName ?? form.customerName)
-            : "",
-        productId: decision.matchedProduct?.id ?? form.productId,
-        quantity:
-          decision.result.slots.quantity === undefined
-            ? form.quantity
-            : String(decision.result.slots.quantity)
-      }));
-      setInvoicePreview(null);
-      navigateToView("invoices");
-    }
-
-    if (
-      decision.kind === "act" &&
-      decision.result.intent === "record_payment" &&
-      decision.result.nextAction.type === "draft"
-    ) {
-      const invoice = findInvoiceForPayment(invoices, decision.matchedCustomer);
-      setPaymentForm((form) => ({
-        ...form,
-        invoiceId: invoice?.id ?? form.invoiceId,
-        amount:
-          decision.result.slots.amount === undefined
-            ? form.amount
-            : String(decision.result.slots.amount)
-      }));
-      navigateToView("payments");
-    }
-
-    if (decision.kind === "act" && decision.result.intent === "check_debt") {
-      navigateToView("payments");
-    }
-
-    setClarificationCount(decision.kind === "act" ? 0 : clarificationCount + 1);
-    return reply;
-  }
-
   deps.registerReset("chat-runtime", () => {
-    setClarificationCount(0);
     setIsBrowserGenerating(false);
   });
 
   return {
-    clarificationCount,
-    setClarificationCount,
     isBrowserGenerating,
     sendChatDraft,
     confirmRuntimeAction

@@ -136,7 +136,10 @@ import {
 } from "../../../messaging/email-provider-client.js";
 import { Cp2Error } from "../../cp2-error.js";
 import { decryptOAuthToken, encryptOAuthToken, hashOAuthSecret } from "../../oauth.js";
-import { normalizeDestination, normalizeInternationalOwnerPhoneNumber } from "../../phone-identity.js";
+import {
+  normalizeDestination,
+  normalizeInternationalOwnerPhoneNumber
+} from "../../phone-identity.js";
 import {
   destinationAccountKey,
   normalizeOptionalBoundedText,
@@ -667,7 +670,9 @@ export class MessagingDomain {
       200
     );
     const requestedCustomer =
-      input.customerId === null ? null : this.deps.requireCustomer(input.businessId, input.customerId);
+      input.customerId === null
+        ? null
+        : this.deps.requireCustomer(input.businessId, input.customerId);
     let identity = [...this.platformIdentities.values()].find(
       (candidate) =>
         candidate.provider === input.provider &&
@@ -688,7 +693,9 @@ export class MessagingDomain {
     }
     const customer =
       requestedCustomer ??
-      (identity?.customerId ? this.deps.requireCustomer(input.businessId, identity.customerId) : null) ??
+      (identity?.customerId
+        ? this.deps.requireCustomer(input.businessId, identity.customerId)
+        : null) ??
       this.deps.createGuestCustomer({
         businessId: input.businessId,
         displayName: input.displayName,
@@ -797,7 +804,12 @@ export class MessagingDomain {
     businessId: string;
     now?: Date;
   }): ChannelProviderReadiness[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      input.now
+    );
     return this.deps.channelGateway.providerReadiness({ businessId: input.businessId });
   }
 
@@ -2571,7 +2583,10 @@ export class MessagingDomain {
     const now = input.now ?? new Date();
     const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
     const conversation = this.requireAccountConversation(input.conversationId, session.account.id);
-    const hasHumanRecipient = this.conversationHasHumanRecipient(conversation.id, session.account.id);
+    const hasHumanRecipient = this.conversationHasHumanRecipient(
+      conversation.id,
+      session.account.id
+    );
 
     if (hasHumanRecipient) {
       throw new Cp2Error(
@@ -2977,7 +2992,11 @@ export class MessagingDomain {
     now?: Date;
   }): PublicStorefrontSessionResult {
     const now = input.now ?? new Date();
-    const business = requirePublicStorefrontBusiness(this.deps.businesses, this.deps.quarantinedBusinessIds, input.agentId);
+    const business = requirePublicStorefrontBusiness(
+      this.deps.businesses,
+      this.deps.quarantinedBusinessIds,
+      input.agentId
+    );
     const externalUserId = normalizeRequiredBoundedText(input.visitorId, "visitorId", 100);
     let identity = [...this.platformIdentities.values()].find(
       (candidate) =>
@@ -3116,7 +3135,11 @@ export class MessagingDomain {
     PublicStorefrontMessageSummary & { agentReply: PublicStorefrontMessageSummary | null }
   > {
     const now = input.now ?? new Date();
-    const business = requirePublicStorefrontBusiness(this.deps.businesses, this.deps.quarantinedBusinessIds, input.agentId);
+    const business = requirePublicStorefrontBusiness(
+      this.deps.businesses,
+      this.deps.quarantinedBusinessIds,
+      input.agentId
+    );
     const principal = this.requireCustomerCapability(input.capabilityToken, business.id, now);
     const identity = this.platformIdentities.get(principal.platformIdentityId);
     if (identity === undefined) {
@@ -3387,7 +3410,12 @@ export class MessagingDomain {
     businessId: string;
     now?: Date;
   }): PublicStorefrontMessageSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:read",
+      input.now
+    );
     const channels = [...this.conversationChannels.values()].filter(
       (channel) => channel.businessId === input.businessId
     );
@@ -3528,10 +3556,7 @@ export class MessagingDomain {
     );
   }
 
-  requireAccountConversation(
-    conversationId: string,
-    accountId: string
-  ): ConversationSummary {
+  requireAccountConversation(conversationId: string, accountId: string): ConversationSummary {
     const conversation = this.conversations.get(conversationId);
 
     if (
@@ -4837,7 +4862,8 @@ export class MessagingDomain {
       conversationId: string | undefined;
     }
   ): CustomerSummary {
-    if (input.customerId !== undefined) return this.deps.requireCustomer(businessId, input.customerId);
+    if (input.customerId !== undefined)
+      return this.deps.requireCustomer(businessId, input.customerId);
     if (input.conversationId !== undefined) {
       const conversation = this.conversations.get(input.conversationId);
       if (conversation?.activeShopId !== businessId) {
@@ -5027,5 +5053,4 @@ export class MessagingDomain {
               : 409;
     return new Cp2Error(status, error.code, error.message);
   }
-
 }

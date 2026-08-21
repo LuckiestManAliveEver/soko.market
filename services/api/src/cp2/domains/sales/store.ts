@@ -56,12 +56,13 @@ import {
 import type { BusinessEvent } from "@soko/event-core";
 import { assertValid, Cp2Error } from "../../cp2-error.js";
 import { roundMoney } from "../../money.js";
-import { normalizeOptionalBoundedText, normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
-  normalizeEmailIdentity,
-  requirePublicStorefrontBusiness,
-  type CustomerRuntimeCapabilityRecord
-} from "../messaging/shared.js";
+  normalizeOptionalBoundedText,
+  normalizeRequiredBoundedText
+} from "../../text-normalization.js";
+import { normalizeEmailIdentity } from "../../email-identity.js";
+import { requirePublicStorefrontBusiness } from "../../storefront-access.js";
+import type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
 import {
   defaultProductFieldDefinitions,
   normalizeProductFieldDefinitions,
@@ -231,7 +232,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): ProductSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:read",
+      input.now
+    );
     return [...this.products.values()].filter((product) => product.businessId === input.businessId);
   }
 
@@ -242,7 +248,12 @@ export class SalesDomain {
     limit?: number;
     now?: Date;
   }): CatalogueQueryResult {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:read",
+      input.now
+    );
     return queryCatalogueProducts({
       businessId: input.businessId,
       products: [...this.products.values()],
@@ -257,7 +268,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): ProductFieldSchemaSummary {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "product:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "product:read",
+      input.now
+    );
     return (
       this.productFieldSchemas.get(input.businessId) ?? {
         businessId: input.businessId,
@@ -489,7 +505,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): CustomerSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "customer:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "customer:read",
+      input.now
+    );
     return [...this.customers.values()].filter(
       (customer) => customer.businessId === input.businessId
     );
@@ -609,7 +630,12 @@ export class SalesDomain {
       updatedAt: now.toISOString()
     };
     this.customers.set(linked.id, linked);
-    this.deps.relinkPlatformIdentitiesForCustomer(input.businessId, linked.id, input.accountId, now);
+    this.deps.relinkPlatformIdentitiesForCustomer(
+      input.businessId,
+      linked.id,
+      input.accountId,
+      now
+    );
     this.deps.recordAuditEvent({
       type: "customer.account_linked",
       aggregateType: "customer",
@@ -627,7 +653,12 @@ export class SalesDomain {
     invoice: InvoiceInput;
     now?: Date;
   }): InvoicePreview {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:write", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "invoice:write",
+      input.now
+    );
     assertValid(validateInvoiceInput(input.invoice));
 
     return this.buildInvoicePreview(input.businessId, input.invoice);
@@ -638,7 +669,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): InvoiceSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "invoice:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "invoice:read",
+      input.now
+    );
     return [...this.invoices.values()].filter((invoice) => invoice.businessId === input.businessId);
   }
 
@@ -820,7 +856,12 @@ export class SalesDomain {
     invoiceId?: string;
     now?: Date;
   }): PaymentSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "payment:read",
+      input.now
+    );
 
     if (input.invoiceId !== undefined) {
       this.requireInvoice(input.businessId, input.invoiceId);
@@ -904,7 +945,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): InvoicePaymentSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "payment:read",
+      input.now
+    );
     return this.buildInvoicePaymentSummaries(input.businessId);
   }
 
@@ -913,7 +959,12 @@ export class SalesDomain {
     businessId: string;
     now?: Date;
   }): CustomerDebtSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "payment:read", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "payment:read",
+      input.now
+    );
     return this.buildCustomerDebtSummaries(input.businessId);
   }
 

@@ -86,7 +86,9 @@ describe("Render Blueprint", () => {
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
     expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL\n        sync: false");
     expect(blueprint).toContain("INFERENCE_SERVICE_TOKEN\n        sync: false");
-    expect(blueprint).toContain("BACKEND_INFERENCE_MODEL_ID\n        value: cloudflare-backend-default");
+    expect(blueprint).toContain(
+      "BACKEND_INFERENCE_MODEL_ID\n        value: cloudflare-backend-default"
+    );
     expect(blueprint).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
     const inference = blueprint.slice(
       blueprint.indexOf("name: soko-market-inference"),

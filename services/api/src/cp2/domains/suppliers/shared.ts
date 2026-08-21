@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { NetworkNodeSummary, ReceiptOCRJobSummary, SalesAgentSummary, SupplierSummary } from "@soko/shared-types";
+import type {
+  NetworkNodeSummary,
+  ReceiptOCRJobSummary,
+  SalesAgentSummary,
+  SupplierSummary
+} from "@soko/shared-types";
 import { roundMoney } from "../../money.js";
 import { normalizeDestination } from "../../phone-identity.js";
 

@@ -25,7 +25,7 @@ describe("customers chat-invokable capability (Phase 4c)", () => {
 
   it("posts the customers card into the owner's own conversation after a successful customer tool run", () => {
     expect(chatRuntime).toContain(
-      'const customerMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(['
+      "const customerMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(["
     );
     expect(chatRuntime).toContain('"customer.create"');
     expect(chatRuntime).toContain('"customer.update"');

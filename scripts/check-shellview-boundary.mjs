@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * Phase 5 of docs/frontend/frontend.md's migration roadmap: every ShellView that exists today was
@@ -26,42 +28,62 @@ const approvedShellViews = new Map([
   ["compliance", "Phase 4k - audited; internal-operator platform-posture dashboard, no card"],
   ["beta", "Phase 4k - audited; internal-operator platform-posture dashboard, no card"],
   ["launch", "Phase 4k - audited; internal-operator platform-posture dashboard, no card"],
-  ["reports", "Phase 4l - chat navigation shipped (show_reports); permanent page kept alongside it"],
+  [
+    "reports",
+    "Phase 4l - chat navigation shipped (show_reports); permanent page kept alongside it"
+  ],
   [
     "notifications",
     "Phase 4l - chat navigation shipped (show_notifications); permanent page kept alongside it"
   ]
 ]);
 
-const appShellSource = readFileSync("apps/web/src/app-shell.ts", "utf8");
-const unionStart = appShellSource.indexOf("export type ShellView =");
-if (unionStart === -1) {
-  console.error("check-shellview-boundary: could not find `export type ShellView =` in app-shell.ts");
-  process.exit(1);
-}
-const unionEnd = appShellSource.indexOf(";", unionStart);
-const unionSource = appShellSource.slice(unionStart, unionEnd);
-const liveShellViews = [...unionSource.matchAll(/"([a-z0-9-]+)"/g)].map((match) => match[1]);
-
-if (liveShellViews.length === 0) {
-  console.error("check-shellview-boundary: parsed zero ShellView members - regex likely stale");
-  process.exit(1);
-}
-
-const undocumented = liveShellViews.filter((view) => !approvedShellViews.has(view));
-
-if (undocumented.length > 0) {
-  console.error("ShellView boundary violation - undocumented permanent view(s) added:");
-  for (const view of undocumented) {
-    console.error(`- "${view}"`);
+export function checkShellViewBoundary(workspace = process.cwd()) {
+  const appShellSource = readFileSync(join(workspace, "apps/web/src/app-shell.ts"), "utf8");
+  const unionStart = appShellSource.indexOf("export type ShellView =");
+  if (unionStart === -1) {
+    return {
+      liveShellViews: [],
+      violations: [
+        "check-shellview-boundary: could not find `export type ShellView =` in app-shell.ts"
+      ]
+    };
   }
-  console.error(
+  const unionEnd = appShellSource.indexOf(";", unionStart);
+  const unionSource = appShellSource.slice(unionStart, unionEnd);
+  const liveShellViews = [...unionSource.matchAll(/"([a-z0-9-]+)"/g)].map((match) => match[1]);
+  if (liveShellViews.length === 0) {
+    return {
+      liveShellViews,
+      violations: ["check-shellview-boundary: parsed zero ShellView members - regex likely stale"]
+    };
+  }
+  return {
+    liveShellViews,
+    violations: liveShellViews.filter((view) => !approvedShellViews.has(view))
+  };
+}
+
+export function formatShellViewBoundaryViolations(violations) {
+  if (violations[0]?.startsWith("check-shellview-boundary:")) return violations.join("\n");
+  return [
+    "ShellView boundary violation - undocumented permanent view(s) added:",
+    ...violations.map((view) => `- "${view}"`),
     "\nEvery ShellView must be audited before it ships, per docs/frontend/frontend.md's Phase 4 " +
       "discipline: could this be a chat-invokable capability instead of (or alongside) a permanent " +
       "page? Write the audit as a new section in docs/frontend/frontend.md, then add the view name " +
       "and a one-line reason to the approvedShellViews map in scripts/check-shellview-boundary.mjs."
-  );
-  process.exit(1);
+  ].join("\n");
 }
 
-console.log(`ShellView boundary check passed (${liveShellViews.length} views, all audited).`);
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const result = checkShellViewBoundary();
+  if (result.violations.length > 0) {
+    console.error(formatShellViewBoundaryViolations(result.violations));
+    process.exitCode = 1;
+  } else {
+    console.log(
+      `ShellView boundary check passed (${result.liveShellViews.length} views, all audited).`
+    );
+  }
+}

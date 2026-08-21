@@ -335,6 +335,98 @@ describe("CP10 Sokoclaw runtime", () => {
     await app.close();
   });
 
+  it('runs "Add 20 crates of tomatoes at KSh 1,800" through the canonical confirmed capability', async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const proposed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "Add 20 crates of tomatoes at KSh 1,800" },
+      sessionCookie
+    );
+    expect(proposed.turn).toMatchObject({
+      status: "needs_confirmation",
+      parserIntent: "add_product",
+      plan: { toolName: "product.create", executedAt: null }
+    });
+    expect(store.snapshot().products).toEqual([]);
+
+    const confirmed = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        runtimeSessionId: proposed.session.id,
+        message: "confirm",
+        confirmationToken: proposed.turn.plan.confirmationToken
+      },
+      sessionCookie
+    );
+    expect(confirmed.turn.toolResult).toMatchObject({
+      name: "Tomatoes",
+      unit: "crates",
+      quantity: 20,
+      sellingPrice: 1800
+    });
+    expect(store.snapshot().products).toEqual([
+      expect.objectContaining({
+        name: "Tomatoes",
+        unit: "crates",
+        quantity: 20,
+        sellingPrice: 1800
+      })
+    ]);
+
+    await app.close();
+  });
+
+  it('answers "Who owes me money?" through the authorized customer-debt capability', async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const { businessId, sessionCookie } = await createOwnerBusiness(app);
+    const customer = await postJson<{ id: string }>(
+      app,
+      `/businesses/${businessId}/customers`,
+      { name: "Amina" },
+      sessionCookie
+    );
+    const product = await postJson<ProductResponse>(
+      app,
+      `/businesses/${businessId}/products`,
+      { name: "Rice", unit: "kg", quantity: 5 },
+      sessionCookie
+    );
+    const invoice = await postJson<{ id: string }>(
+      app,
+      `/businesses/${businessId}/invoices`,
+      { customerId: customer.id, items: [{ productId: product.id, quantity: 2, unitPrice: 100 }] },
+      sessionCookie
+    );
+    await postJson(
+      app,
+      `/businesses/${businessId}/invoices/${invoice.id}/confirm`,
+      {},
+      sessionCookie
+    );
+
+    const turn = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "Who owes me money?" },
+      sessionCookie
+    );
+    expect(turn.turn).toMatchObject({
+      status: "completed",
+      parserIntent: "check_debt",
+      plan: { toolName: "payments.debtors", requiresConfirmation: false },
+      verification: { ok: true, roleAllowed: true },
+      toolResult: [{ customerName: "Amina", invoiceCount: 1, totalInvoiced: 200, balanceDue: 200 }]
+    });
+
+    await app.close();
+  });
+
   it("creates, edits, and adjusts stock for a product through confirmed runtime turns (Phase 4a)", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });

@@ -209,7 +209,11 @@ describe("photo capture items and status broadcast", () => {
   });
 });
 
-async function createOwnerBusiness(app: ReturnType<typeof buildApi>, destination: string, pin = "1234") {
+async function createOwnerBusiness(
+  app: ReturnType<typeof buildApi>,
+  destination: string,
+  pin = "1234"
+) {
   const signup = await app.inject({
     method: "POST",
     url: "/auth/pin/signup",
@@ -243,7 +247,11 @@ async function postJson<T>(
   return response.json<T>();
 }
 
-async function getJson<T>(app: ReturnType<typeof buildApi>, url: string, cookie: string): Promise<T> {
+async function getJson<T>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  cookie: string
+): Promise<T> {
   const response = await app.inject({ method: "GET", url, headers: { cookie } });
   expect(response.statusCode, response.body).toBe(200);
   return response.json<T>();

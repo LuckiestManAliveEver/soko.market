@@ -334,7 +334,9 @@ describe("CP20 unified account, conversation, and session foundation", () => {
     }>(app, "/v1/conversations", ownerCookie);
 
     const sessionIds = new Set([firstSession.conversation.id, secondSession.conversation.id]);
-    const agentSessions = inbox.conversations.filter((conversation) => sessionIds.has(conversation.id));
+    const agentSessions = inbox.conversations.filter((conversation) =>
+      sessionIds.has(conversation.id)
+    );
     expect(agentSessions).toHaveLength(2);
     expect(agentSessions.every((conversation) => !conversation.hasHumanRecipient)).toBe(true);
 
@@ -347,8 +349,9 @@ describe("CP20 unified account, conversation, and session foundation", () => {
       conversations: Array<{ id: string; hasHumanRecipient: boolean }>;
     }>(app, "/v1/conversations", friendCookie);
     expect(
-      friendInbox.conversations.find((conversation) => conversation.id === directMessage.conversation.id)
-        ?.hasHumanRecipient
+      friendInbox.conversations.find(
+        (conversation) => conversation.id === directMessage.conversation.id
+      )?.hasHumanRecipient
     ).toBe(true);
 
     await app.close();

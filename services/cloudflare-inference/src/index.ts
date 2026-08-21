@@ -1,5 +1,10 @@
 import { isAuthorized } from "./auth.js";
-import { errorResponse, jsonResponse, InferenceServiceError, classifyProviderError } from "./errors.js";
+import {
+  errorResponse,
+  jsonResponse,
+  InferenceServiceError,
+  classifyProviderError
+} from "./errors.js";
 import {
   generateCompletion,
   listCloudflareModels,
@@ -21,7 +26,10 @@ export default {
       );
     }
 
-    const authorized = await isAuthorized(request.headers.get("authorization"), env.INFERENCE_SERVICE_TOKEN);
+    const authorized = await isAuthorized(
+      request.headers.get("authorization"),
+      env.INFERENCE_SERVICE_TOKEN
+    );
     if (!authorized) {
       return errorResponse(401, "INFERENCE_AUTHENTICATION_FAILED", "Authentication failed.", false);
     }

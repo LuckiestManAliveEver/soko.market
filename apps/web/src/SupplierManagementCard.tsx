@@ -41,7 +41,9 @@ export default function SupplierManagementCard(props: { businessId: string; supp
       .then((loaded) => {
         if (cancelled) return;
         setSuppliers(loaded);
-        setDrafts(Object.fromEntries(loaded.map((supplier) => [supplier.id, draftFromSupplier(supplier)])));
+        setDrafts(
+          Object.fromEntries(loaded.map((supplier) => [supplier.id, draftFromSupplier(supplier)]))
+        );
       })
       .catch((error) => {
         if (!cancelled) setMessage(getUserFacingErrorMessage(error));
@@ -132,14 +134,18 @@ export default function SupplierManagementCard(props: { businessId: string; supp
             Name
             <input
               value={addDraft.name}
-              onChange={(event) => setAddDraft((current) => ({ ...current, name: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, name: event.target.value }))
+              }
             />
           </label>
           <label>
             Phone
             <input
               value={addDraft.phone}
-              onChange={(event) => setAddDraft((current) => ({ ...current, phone: event.target.value }))}
+              onChange={(event) =>
+                setAddDraft((current) => ({ ...current, phone: event.target.value }))
+              }
             />
           </label>
           <button
@@ -220,7 +226,11 @@ export default function SupplierManagementCard(props: { businessId: string; supp
                   {supplier.phone ?? "No phone"}
                 </p>
                 <div className="row-actions">
-                  <button className="secondary" type="button" onClick={() => setEditingId(supplier.id)}>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setEditingId(supplier.id)}
+                  >
                     Edit
                   </button>
                   <button

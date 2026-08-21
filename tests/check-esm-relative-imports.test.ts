@@ -1,20 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const scriptPath = join(process.cwd(), "scripts/check-esm-relative-imports.mjs");
-
-function run(cwd: string): { status: number; stdout: string; stderr: string } {
-  try {
-    const stdout = execFileSync("node", [scriptPath], { cwd, encoding: "utf8" });
-    return { status: 0, stdout, stderr: "" };
-  } catch (error) {
-    const failure = error as { status: number; stdout: string; stderr: string };
-    return { status: failure.status, stdout: failure.stdout, stderr: failure.stderr };
-  }
-}
+import {
+  checkEsmRelativeImports,
+  formatEsmRelativeImportViolations
+} from "../scripts/check-esm-relative-imports.mjs";
 
 /**
  * Regression coverage for the ERR_MODULE_NOT_FOUND bug this script exists to catch:
@@ -24,9 +16,7 @@ function run(cwd: string): { status: number; stdout: string; stderr: string } {
  */
 describe("check-esm-relative-imports script", () => {
   it("passes against the real repository (no regressions today)", () => {
-    const result = run(process.cwd());
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("carries an explicit extension");
+    expect(checkEsmRelativeImports(process.cwd())).toEqual([]);
   });
 
   it('fails and names the offending file when a "type": "module" package has an extensionless relative import', () => {
@@ -44,9 +34,11 @@ describe("check-esm-relative-imports script", () => {
       );
       writeFileSync(join(packageDir, "src", "helper.ts"), "export function helper() {}\n");
 
-      const result = run(workspace);
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('imports "./helper" without an extension');
+      const violations = checkEsmRelativeImports(workspace);
+      expect(violations).toHaveLength(1);
+      expect(formatEsmRelativeImportViolations(violations)).toContain(
+        'imports "./helper" without an extension'
+      );
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -67,8 +59,7 @@ describe("check-esm-relative-imports script", () => {
       );
       writeFileSync(join(packageDir, "src", "helper.ts"), "export function helper() {}\n");
 
-      const result = run(workspace);
-      expect(result.status).toBe(0);
+      expect(checkEsmRelativeImports(workspace)).toEqual([]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -86,8 +77,7 @@ describe("check-esm-relative-imports script", () => {
       writeFileSync(join(packageDir, "src", "index.ts"), 'import { helper } from "./helper";\n');
       writeFileSync(join(packageDir, "src", "helper.ts"), "export function helper() {}\n");
 
-      const result = run(workspace);
-      expect(result.status).toBe(0);
+      expect(checkEsmRelativeImports(workspace)).toEqual([]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

@@ -175,69 +175,69 @@ services:
   # replace BACKEND_INFERENCE_BASE_URL / INFERENCE_SERVICE_TOKEN's `sync: false` with the
   # `fromService` form documented in docs/deployment/render-inference.md, and set
   # BACKEND_INFERENCE_MODEL_ID back to qwen2.5-0.5b-android.
-# - type: pserv
-#   name: soko-market-inference
-#     runtime: docker
-#     branch: main
-#     autoDeployTrigger: commit
-#     plan: standard
-#     region: oregon
-#     dockerfilePath: ./services/ai-runtime/Dockerfile
-#     dockerContext: .
-#     maxShutdownDelaySeconds: 60
-#     buildFilter:
-#       paths:
-#         - .dockerignore
-#         - package.json
-#         - pnpm-lock.yaml
-#         - pnpm-workspace.yaml
-#         - render.yaml
-#         - packages/shared-types/**
-#         - services/ai-runtime/**
-#     disk:
-#       name: soko-inference-models
-#       mountPath: /var/lib/soko-models
-#       sizeGB: 10
-#     envVars:
-#       - key: NODE_ENV
-#         value: production
-#       - key: PORT
-#         value: "4002"
-#       - key: INFERENCE_ENGINE
-#         value: ollama
-#       - key: OLLAMA_BASE_URL
-#         value: http://127.0.0.1:11434
-#       - key: OLLAMA_HOST
-#         value: 127.0.0.1:11434
-#       - key: OLLAMA_NO_CLOUD
-#         value: "true"
-#       - key: MODEL_STORAGE_PATH
-#         value: /var/lib/soko-models
-#       - key: OLLAMA_MODELS
-#         value: /var/lib/soko-models/ollama
-#       - key: MODEL_STORAGE_DURABLE
-#         value: "true"
-#       - key: MODEL_AUTO_INSTALL
-#         value: "true"
-#       - key: MODEL_MIN_FREE_BYTES
-#         value: "2147483648"
-#       - key: SOKO_PRIMARY_MODEL_ID
-#         value: qwen2.5-0.5b-android
-#       - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
-#         value: qwen2.5:0.5b
-#       - key: INFERENCE_REQUEST_TIMEOUT_MS
-#         value: "90000"
-#       - key: INFERENCE_MAX_INPUT_CHARACTERS
-#         value: "32000"
-#       - key: INFERENCE_MAX_OUTPUT_TOKENS
-#         value: "512"
-#       - key: INFERENCE_SERVICE_TOKEN
-#         generateValue: true
-#       - key: REDIS_URL
-#         fromService:
-#           name: soko-market-rate-limit-cache
-#           type: keyvalue
-#           property: connectionString
+  # - type: pserv
+  #   name: soko-market-inference
+  #     runtime: docker
+  #     branch: main
+  #     autoDeployTrigger: commit
+  #     plan: standard
+  #     region: oregon
+  #     dockerfilePath: ./services/ai-runtime/Dockerfile
+  #     dockerContext: .
+  #     maxShutdownDelaySeconds: 60
+  #     buildFilter:
+  #       paths:
+  #         - .dockerignore
+  #         - package.json
+  #         - pnpm-lock.yaml
+  #         - pnpm-workspace.yaml
+  #         - render.yaml
+  #         - packages/shared-types/**
+  #         - services/ai-runtime/**
+  #     disk:
+  #       name: soko-inference-models
+  #       mountPath: /var/lib/soko-models
+  #       sizeGB: 10
+  #     envVars:
+  #       - key: NODE_ENV
+  #         value: production
+  #       - key: PORT
+  #         value: "4002"
+  #       - key: INFERENCE_ENGINE
+  #         value: ollama
+  #       - key: OLLAMA_BASE_URL
+  #         value: http://127.0.0.1:11434
+  #       - key: OLLAMA_HOST
+  #         value: 127.0.0.1:11434
+  #       - key: OLLAMA_NO_CLOUD
+  #         value: "true"
+  #       - key: MODEL_STORAGE_PATH
+  #         value: /var/lib/soko-models
+  #       - key: OLLAMA_MODELS
+  #         value: /var/lib/soko-models/ollama
+  #       - key: MODEL_STORAGE_DURABLE
+  #         value: "true"
+  #       - key: MODEL_AUTO_INSTALL
+  #         value: "true"
+  #       - key: MODEL_MIN_FREE_BYTES
+  #         value: "2147483648"
+  #       - key: SOKO_PRIMARY_MODEL_ID
+  #         value: qwen2.5-0.5b-android
+  #       - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
+  #         value: qwen2.5:0.5b
+  #       - key: INFERENCE_REQUEST_TIMEOUT_MS
+  #         value: "90000"
+  #       - key: INFERENCE_MAX_INPUT_CHARACTERS
+  #         value: "32000"
+  #       - key: INFERENCE_MAX_OUTPUT_TOKENS
+  #         value: "512"
+  #       - key: INFERENCE_SERVICE_TOKEN
+  #         generateValue: true
+  #       - key: REDIS_URL
+  #         fromService:
+  #           name: soko-market-rate-limit-cache
+  #           type: keyvalue
+  #           property: connectionString
 
   - type: web
     name: soko-market-web

@@ -15,6 +15,7 @@ import type {
   ShopAgentRuntime,
   SupportedLanguage
 } from "@soko/shared-types";
+import { runtimeToolRegistry } from "@soko/tool-core";
 
 const promptInjectionPattern =
   /\b(?:ignore|disregard|override|replace|reveal|bypass)\b.{0,80}\b(?:system|developer|security|permission|instruction|prompt|policy|rule|secret|token)\b/i;
@@ -428,13 +429,5 @@ function numericValue(value: unknown): number | null {
 }
 
 function skillRequiresOwnerConfirmation(toolName: RuntimeToolName): boolean {
-  return ![
-    "products.list",
-    "invoices.list",
-    "reports.summary",
-    "notifications.list",
-    "receipt.lookup",
-    "receipt.list",
-    "unknown.clarify"
-  ].includes(toolName);
+  return runtimeToolRegistry[toolName].requiresConfirmation;
 }

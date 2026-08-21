@@ -504,7 +504,12 @@ export class ComplianceDomain {
     businessId: string;
     now?: Date;
   }): BetaSupportTicketSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "beta:support", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "beta:support",
+      input.now
+    );
     return this.betaSupportTicketsForBusiness(input.businessId);
   }
 
@@ -740,7 +745,12 @@ export class ComplianceDomain {
     businessId: string;
     now?: Date;
   }): LaunchIncidentSummary[] {
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "launch:support", input.now);
+    this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "launch:support",
+      input.now
+    );
     return this.launchIncidentsForBusiness(input.businessId);
   }
 

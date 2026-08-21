@@ -21,7 +21,7 @@ This was already true in the repository before this change. The audit behind thi
 one canonical tool registry (`runtimeToolRegistry`, `packages/tool-core/src/index.ts`), one
 execution pipeline (`Cp2Store.createRuntimeTurn` / `executeRuntimeAction`,
 `services/api/src/cp2/store.ts`), and one MCP surface that calls into that same pipeline rather
-than duplicating it. What was missing was metadata *on* that registry (a description and typed
+than duplicating it. What was missing was metadata _on_ that registry (a description and typed
 input schema per tool, and an explicit MCP-exposure flag) and a shared vocabulary for inference
 failures across the three inference surfaces. Both gaps are additive; nothing about how a tool
 call is authorized, confirmed, or executed changed.
@@ -59,12 +59,12 @@ second model invocation can substitute for the stored token.
 
 ## Convergence, verified per surface
 
-| Surface | Entry point | Converges via |
-| --- | --- | --- |
-| Native chat | `POST /businesses/:id/runtime/turns` | calls `createRuntimeTurn` directly |
-| MCP | `tools/call` → `soko.runtime_turn` / `soko.confirm_runtime_action` (`services/api/src/mcp/routes.ts`) | calls `store.createRuntimeTurn` with the same arguments a REST caller would use |
-| Browser-local | `generateBrowserAgentResponse` (`apps/web/src/browser-inference-session.ts`) | structurally cannot execute a tool — its result type has no tool-proposal field (see `chat-tool-execution-boundary.md`); any actionable request is routed server-side before inference runs |
-| Cloud fallback | `createCloudFallbackProvider` (`services/api/src/inference/cloud-fallback.ts`) | is a `RuntimeModelProvider`, one of several the *router* (`Cp2Store.createRuntimeModelRoute`) may call — it proposes text/tool JSON like any other provider; the proposal still passes through the same registry and policy gate above before anything executes |
+| Surface        | Entry point                                                                                           | Converges via                                                                                                                                                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native chat    | `POST /businesses/:id/runtime/turns`                                                                  | calls `createRuntimeTurn` directly                                                                                                                                                                                                                              |
+| MCP            | `tools/call` → `soko.runtime_turn` / `soko.confirm_runtime_action` (`services/api/src/mcp/routes.ts`) | calls `store.createRuntimeTurn` with the same arguments a REST caller would use                                                                                                                                                                                 |
+| Browser-local  | `generateBrowserAgentResponse` (`apps/web/src/browser-inference-session.ts`)                          | structurally cannot execute a tool — its result type has no tool-proposal field (see `chat-tool-execution-boundary.md`); any actionable request is routed server-side before inference runs                                                                     |
+| Cloud fallback | `createCloudFallbackProvider` (`services/api/src/inference/cloud-fallback.ts`)                        | is a `RuntimeModelProvider`, one of several the _router_ (`Cp2Store.createRuntimeModelRoute`) may call — it proposes text/tool JSON like any other provider; the proposal still passes through the same registry and policy gate above before anything executes |
 
 No surface has its own copy of tool definitions, its own authorization check, or its own
 confirmation mechanism.
@@ -81,8 +81,8 @@ the 20 existing entries:
   — a minimal, hand-rollable JSON-Schema-compatible shape (deliberately not a validation-library
   dependency), accurate to what each tool's proposal builder and `executeRuntimeAction` branch
   actually read from `input`.
-- `mcpExposable: boolean` — currently `false` on every entry. This is a statement of *current
-  fact*, not a policy default to route around: the existing MCP surface does not call any of these
+- `mcpExposable: boolean` — currently `false` on every entry. This is a statement of _current
+  fact_, not a policy default to route around: the existing MCP surface does not call any of these
   20 tool names directly today (see the table above), so nothing changed about what MCP can do.
   The field exists so that a future, deliberate decision to expose one specific tool as its own
   MCP-callable entry is a one-line, reviewable change with an obvious place to make it, instead of

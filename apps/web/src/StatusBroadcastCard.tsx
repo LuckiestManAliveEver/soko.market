@@ -5,7 +5,10 @@ import { getUserFacingErrorMessage } from "./user-facing-error";
 
 const pollIntervalMs = 15000;
 
-export default function StatusBroadcastCard(props: { businessId: string; statusBroadcastId: string }) {
+export default function StatusBroadcastCard(props: {
+  businessId: string;
+  statusBroadcastId: string;
+}) {
   const [status, setStatus] = useState<StatusBroadcastSummary | null>(null);
   const [message, setMessage] = useState("");
 

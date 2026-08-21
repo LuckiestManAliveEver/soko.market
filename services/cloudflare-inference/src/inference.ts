@@ -1,4 +1,8 @@
-import { resolveRuntimeModel, runtimeModels, type RuntimeModelDefinition } from "@soko/shared-types";
+import {
+  resolveRuntimeModel,
+  runtimeModels,
+  type RuntimeModelDefinition
+} from "@soko/shared-types";
 import { InferenceServiceError, classifyProviderError } from "./errors.js";
 import type {
   ChatCompletionRequestBody,
@@ -45,7 +49,12 @@ function providerModelIdFor(model: RuntimeModelDefinition, env: Env): string {
 async function runModel(
   env: Env,
   providerModelId: string,
-  input: { messages: Array<{ role: "user"; content: string }>; max_tokens: number; temperature: number; response_format?: { type: "json_object" } }
+  input: {
+    messages: Array<{ role: "user"; content: string }>;
+    max_tokens: number;
+    temperature: number;
+    response_format?: { type: "json_object" };
+  }
 ): Promise<{ response: string; usage: Record<string, unknown> | undefined }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PROVIDER_CALL_TIMEOUT_MS);
@@ -84,10 +93,7 @@ async function runModel(
   }
 }
 
-export async function probeModel(
-  env: Env,
-  modelId: string
-): Promise<ProbeResponseBody> {
+export async function probeModel(env: Env, modelId: string): Promise<ProbeResponseBody> {
   const model = resolveCloudflareModel(modelId);
   if (model === null || !model.enabled) {
     throw new InferenceServiceError(
@@ -123,7 +129,12 @@ export async function probeModel(
 
 export function parseCompletionRequest(body: unknown): ChatCompletionRequestBody {
   if (typeof body !== "object" || body === null) {
-    throw new InferenceServiceError(400, "MODEL_GENERATION_FAILED", "Request body must be a JSON object.", false);
+    throw new InferenceServiceError(
+      400,
+      "MODEL_GENERATION_FAILED",
+      "Request body must be a JSON object.",
+      false
+    );
   }
   const record = body as Record<string, unknown>;
   if (typeof record.modelId !== "string" || record.modelId.trim().length === 0) {
@@ -140,9 +151,13 @@ export function parseCompletionRequest(body: unknown): ChatCompletionRequestBody
       false
     );
   }
-  const maxTokens =
-    record.maxTokens === undefined ? 256 : record.maxTokens;
-  if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > MAX_OUTPUT_TOKENS) {
+  const maxTokens = record.maxTokens === undefined ? 256 : record.maxTokens;
+  if (
+    typeof maxTokens !== "number" ||
+    !Number.isInteger(maxTokens) ||
+    maxTokens < 1 ||
+    maxTokens > MAX_OUTPUT_TOKENS
+  ) {
     throw new InferenceServiceError(
       400,
       "MODEL_GENERATION_FAILED",
@@ -152,11 +167,21 @@ export function parseCompletionRequest(body: unknown): ChatCompletionRequestBody
   }
   const temperature = record.temperature === undefined ? 0.2 : record.temperature;
   if (typeof temperature !== "number" || temperature < 0 || temperature > 1) {
-    throw new InferenceServiceError(400, "MODEL_GENERATION_FAILED", "temperature must be between 0 and 1.", false);
+    throw new InferenceServiceError(
+      400,
+      "MODEL_GENERATION_FAILED",
+      "temperature must be between 0 and 1.",
+      false
+    );
   }
   const jsonOutput = record.jsonOutput === undefined ? false : record.jsonOutput;
   if (typeof jsonOutput !== "boolean") {
-    throw new InferenceServiceError(400, "MODEL_GENERATION_FAILED", "jsonOutput must be a boolean.", false);
+    throw new InferenceServiceError(
+      400,
+      "MODEL_GENERATION_FAILED",
+      "jsonOutput must be a boolean.",
+      false
+    );
   }
   return { modelId: record.modelId, prompt: record.prompt, maxTokens, temperature, jsonOutput };
 }

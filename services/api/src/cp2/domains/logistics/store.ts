@@ -65,7 +65,11 @@ export class LogisticsDomain {
     }
   }
 
-  listLogistics(input: { sessionId: string | null; businessId: string; now?: Date }): LogisticsSummary[] {
+  listLogistics(input: {
+    sessionId: string | null;
+    businessId: string;
+    now?: Date;
+  }): LogisticsSummary[] {
     this.deps.requireAuthorizedSession(
       input.sessionId,
       input.businessId,

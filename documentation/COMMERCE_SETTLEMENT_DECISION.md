@@ -68,8 +68,8 @@ intermediate. One does not exist yet:
   (`documentation/checkpoints/cp8/DECISION_LOG.md`), re-deferred to
   CP14/CP15. Neither checkpoint's decision log records taking it back up.
   The current codebase confirms this is still true today: `"Manual payment
-  records track invoice payments and customer debt. Live M-Pesa integration
-  is intentionally deferred."` (`apps/web/src/app-shell.ts:196`).
+records track invoice payments and customer debt. Live M-Pesa integration
+is intentionally deferred."` (`apps/web/src/app-shell.ts:196`).
 - Building split-payment logic (Option A) with no payment rail to split
   across would be fabricated. Building Soko-as-intermediary logic
   (Option B) with no settlement rail to eventually pay sources out from

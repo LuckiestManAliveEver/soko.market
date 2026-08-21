@@ -10,7 +10,12 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON
 } from "@simplewebauthn/server";
-import type { AccountSummary, AuthSessionView, PasskeySummary, UserSummary } from "@soko/shared-types";
+import type {
+  AccountSummary,
+  AuthSessionView,
+  PasskeySummary,
+  UserSummary
+} from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import {
   maxPendingPasskeyCeremonies,
@@ -121,7 +126,12 @@ export class PasskeyDomain {
     }
 
     this.deps.resetAccountPinHash(session.account.id, pin);
-    this.deps.revokeOtherSessionsForAccount(session.account.id, session.session.id, "pin_recovery", now);
+    this.deps.revokeOtherSessionsForAccount(
+      session.account.id,
+      session.session.id,
+      "pin_recovery",
+      now
+    );
 
     this.deps.markSessionPinVerified(session.session.id, now);
     this.deps.recordAuditEvent({
@@ -333,7 +343,9 @@ export class PasskeyDomain {
 
     let verification;
     try {
-      verification = await (this.deps.passkeyAuthenticationVerifier ?? verifyAuthenticationResponse)({
+      verification = await (
+        this.deps.passkeyAuthenticationVerifier ?? verifyAuthenticationResponse
+      )({
         response: input.response,
         expectedChallenge: ceremony.challenge,
         expectedOrigin: input.origin,

@@ -241,7 +241,10 @@ function parseJudgeVerdict(text: string): { verdict: "PASS" | "FAIL"; reason: st
     const reason = typeof parsed.reason === "string" ? parsed.reason : "No reason given by judge.";
     return { verdict, reason };
   } catch {
-    return { verdict: "FAIL", reason: `Judge output was not parseable JSON: ${text.slice(0, 200)}` };
+    return {
+      verdict: "FAIL",
+      reason: `Judge output was not parseable JSON: ${text.slice(0, 200)}`
+    };
   }
 }
 

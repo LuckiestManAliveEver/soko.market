@@ -215,21 +215,21 @@ export function createAgentActionReply(input: {
   }
 
   if (input.result.intent === "add_product") {
-    return `${agentLabel} prepared a product draft. Review it, then save it.`;
+    return `${agentLabel} opened Products. Business changes still require the authorized runtime; resend when you are online.`;
   }
 
   if (input.result.intent === "add_customer") {
-    return `${agentLabel} prepared a customer draft. Review it, then save it.`;
+    return `${agentLabel} opened Customers. Business changes still require the authorized runtime; resend when you are online.`;
   }
 
   if (input.result.intent === "create_invoice") {
     const productText = input.product === null ? "" : ` with ${input.product.name}`;
     const customerText = input.customer === null ? "" : ` for ${input.customer.name}`;
-    return `${agentLabel} opened an invoice draft${customerText}${productText}. Review it before saving or confirming.`;
+    return `${agentLabel} opened Invoices${customerText}${productText}. Creating one still requires the authorized runtime.`;
   }
 
   if (input.result.intent === "record_payment") {
-    return `${agentLabel} opened the payment form with the details it could match. Review it before recording payment.`;
+    return `${agentLabel} opened Payments. Recording a payment still requires the authorized runtime.`;
   }
 
   if (input.result.intent === "check_debt") {

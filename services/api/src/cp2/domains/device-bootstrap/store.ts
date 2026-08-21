@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { AccountSummary, AuthChannel, AuthSessionView, SessionSummary, UserSummary } from "@soko/shared-types";
+import type {
+  AccountSummary,
+  AuthChannel,
+  AuthSessionView,
+  SessionSummary,
+  UserSummary
+} from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { normalizeDestination } from "../../phone-identity.js";
 import {
@@ -424,7 +430,10 @@ export class DeviceBootstrapDomain {
     this.deps.markSessionPinVerified(session.id, now);
     const refreshToken = this.deps.consumeSessionRefreshToken(session.id);
     for (const bootstrap of this.deviceAccountBootstraps.values()) {
-      if (bootstrap.accountId === targetAccount.id && !this.deps.sessions.has(bootstrap.sessionId)) {
+      if (
+        bootstrap.accountId === targetAccount.id &&
+        !this.deps.sessions.has(bootstrap.sessionId)
+      ) {
         bootstrap.sessionId = session.id;
       }
     }

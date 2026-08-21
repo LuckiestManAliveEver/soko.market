@@ -177,14 +177,18 @@ describe("CP4 rule parser", () => {
     // The product vocabulary's bare "edit"/"badilisha" phrases match on the verb alone - without
     // the supplier exclusion guard, this would resolve to PRODUCT_EDIT with "supplier john" read
     // as a product name instead of falling through to the primary parser's update_supplier intent.
-    expect(parseProductContextScriptCommand({ message: "edit supplier John Doe 0798765432" })).toBeNull();
+    expect(
+      parseProductContextScriptCommand({ message: "edit supplier John Doe 0798765432" })
+    ).toBeNull();
     expect(parseProductContextScriptCommand({ message: "add supplier Jane" })).toBeNull();
 
     expect(parseMerchantCommand("add supplier John Doe 0712345678")).toMatchObject({
       intent: "add_supplier",
       slots: { supplierName: "John Doe", phone: "0712345678" }
     });
-    expect(createRuntimeToolProposal(parseMerchantCommand("add supplier John Doe 0712345678"))).toMatchObject({
+    expect(
+      createRuntimeToolProposal(parseMerchantCommand("add supplier John Doe 0712345678"))
+    ).toMatchObject({
       toolName: "supplier.create",
       input: { name: "John Doe", phone: "0712345678" }
     });
@@ -195,7 +199,9 @@ describe("CP4 rule parser", () => {
     });
     // The phone number must not also be misread as a quantity - same class of double-counting bug
     // fixed for currency-tagged product prices in Phase 4a.
-    expect(parseMerchantCommand("edit supplier John Doe 0798765432").slots.quantity).toBeUndefined();
+    expect(
+      parseMerchantCommand("edit supplier John Doe 0798765432").slots.quantity
+    ).toBeUndefined();
 
     expect(parseMerchantCommand("add supplier")).toMatchObject({
       nextAction: { type: "clarify", question: "What is the supplier name?" }
@@ -206,7 +212,9 @@ describe("CP4 rule parser", () => {
   });
 
   it("routes customer edit commands to their own intent, and never through the product vocabulary (Phase 4c)", () => {
-    expect(parseProductContextScriptCommand({ message: "edit customer Mary Wanjiru 0700111222" })).toBeNull();
+    expect(
+      parseProductContextScriptCommand({ message: "edit customer Mary Wanjiru 0700111222" })
+    ).toBeNull();
     expect(parseProductContextScriptCommand({ message: "add customer Jane" })).toBeNull();
 
     expect(parseMerchantCommand("add customer Mary Wanjiru 0722334455")).toMatchObject({
@@ -224,7 +232,9 @@ describe("CP4 rule parser", () => {
       intent: "update_customer",
       slots: { customerName: "Mary Wanjiru", phone: "0700111222" }
     });
-    expect(parseMerchantCommand("edit customer Mary Wanjiru 0700111222").slots.quantity).toBeUndefined();
+    expect(
+      parseMerchantCommand("edit customer Mary Wanjiru 0700111222").slots.quantity
+    ).toBeUndefined();
 
     // Product commands are unaffected by the customer/supplier exclusion guard.
     expect(parseProductContextScriptCommand({ message: "edit product sugar" })).toMatchObject({

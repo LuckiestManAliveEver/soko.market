@@ -25,7 +25,7 @@ describe("products chat-invokable capability (Phase 4a)", () => {
 
   it("posts the products card into the owner's own conversation after a successful product tool run", () => {
     expect(chatRuntime).toContain(
-      'const productMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(['
+      "const productMutationToolNames: ReadonlySet<string> = new Set<RuntimeToolName>(["
     );
     expect(chatRuntime).toContain('"product.create"');
     expect(chatRuntime).toContain('"product.update"');

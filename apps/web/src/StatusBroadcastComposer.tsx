@@ -105,7 +105,9 @@ export default function StatusBroadcastComposer(props: {
               }
             />
             {candidate.displayName}
-            {candidate.isSokoUser ? null : <small> (not on Soko yet — shared via your phone)</small>}
+            {candidate.isSokoUser ? null : (
+              <small> (not on Soko yet — shared via your phone)</small>
+            )}
           </label>
         ))
       )}

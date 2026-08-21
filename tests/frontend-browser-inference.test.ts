@@ -20,11 +20,11 @@ describe("browser inference frontend integration", () => {
 
   it("streams into the existing chat, supports cancellation, and retains server routing", async () => {
     const chatState = await readFile("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
-    const chatSurface = await readFile("apps/web/src/ChatSurface.tsx", "utf8");
+    const chatComposer = await readFile("apps/web/src/ChatComposer.tsx", "utf8");
     const agentModelPanel = await readFile("apps/web/src/AgentModelPanel.tsx", "utf8");
     expect(chatState).toContain("generateBrowserAgentResponse");
     expect(chatState).toContain("setChatMessages((messages) =>");
-    expect(chatSurface).toContain("Cancel on-device generation");
+    expect(chatComposer).toContain("Cancel on-device generation");
     expect(chatState).toContain("executeInferenceRoute");
     expect(chatState).toContain("decideClientInferenceRoute");
     expect(chatState).toContain("createRemoteInferenceProvider");

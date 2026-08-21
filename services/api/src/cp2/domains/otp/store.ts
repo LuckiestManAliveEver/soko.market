@@ -10,7 +10,7 @@ import {
   pinAttemptTrackerMaximumEntries,
   readBoundedSecurityInteger
 } from "../../text-normalization.js";
-import type { UserIdentityRecord } from "../oauth/shared.js";
+import type { UserIdentityRecord } from "../../domain-contracts.js";
 import {
   maxOtpAttempts,
   maxPendingOtpChallenges,

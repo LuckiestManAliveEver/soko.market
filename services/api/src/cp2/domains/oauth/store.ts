@@ -20,7 +20,7 @@ import {
 import { Cp2Error } from "../../cp2-error.js";
 import { otpTtlMs } from "../../text-normalization.js";
 import { normalizeDestination } from "../../phone-identity.js";
-import { providerDisplayName } from "../network/shared.js";
+import { providerDisplayName } from "../../public-identifiers.js";
 import type { AccountIdentityRecord, VerifyOtpResult } from "../../store.js";
 import {
   oauthEmailLocalPart,

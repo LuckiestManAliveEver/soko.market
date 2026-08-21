@@ -113,9 +113,7 @@ describe("database connection policy", () => {
       // so this test proves the machinery works without ever hardcoding an unverified checksum
       // into application code.
       const verifiedHistoricalChecksum = "verified-historical-checksum-for-051";
-      const simulatedLegacyMap = new Map([
-        [migration051, new Set([verifiedHistoricalChecksum])]
-      ]);
+      const simulatedLegacyMap = new Map([[migration051, new Set([verifiedHistoricalChecksum])]]);
 
       expect(
         isAcceptedMigrationChecksum(

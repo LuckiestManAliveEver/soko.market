@@ -190,9 +190,7 @@ import type {
   SyncPullPage,
   UserSummary
 } from "@soko/shared-types";
-import {
-  type ModelRuntimeAdapter
-} from "../inference/model-runtime.js";
+import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import {
   createChannelGatewayFromEnvironment,
   type ChannelGateway
@@ -201,10 +199,7 @@ import {
   createEmailMailboxProviderClient,
   type EmailMailboxProviderClient
 } from "../messaging/email-provider-client.js";
-import {
-  assembleAgentInferenceMessage,
-  retrieveAgentContext
-} from "./agent-business-runtime.js";
+import { assembleAgentInferenceMessage, retrieveAgentContext } from "./agent-business-runtime.js";
 import {
   createSyncQueueItem,
   markSyncProcessing,
@@ -239,10 +234,7 @@ import {
   type ProductInput,
   type StockAdjustmentInput
 } from "@soko/business-core";
-import {
-  parseRuntimeModelOutput,
-  parseMerchantCommand
-} from "@soko/tool-core";
+import { parseRuntimeModelOutput, parseMerchantCommand } from "@soko/tool-core";
 
 export const sessionCookieName = "soko_session";
 export const refreshCookieName = "soko_refresh";
@@ -326,10 +318,7 @@ export type {
 } from "./domains/agent-runtime/shared.js";
 export type { ProductMediaRecord } from "./domains/sales/shared.js";
 export type { McpAccessTokenRecord } from "./domains/mcp-tokens/shared.js";
-export type {
-  PasskeyCeremonyRecord,
-  PasskeyCredentialRecord
-} from "./domains/passkeys/shared.js";
+export type { PasskeyCeremonyRecord, PasskeyCredentialRecord } from "./domains/passkeys/shared.js";
 export type {
   ConnectedSocialAccountSummary,
   OAuthCallbackResult,
@@ -832,7 +821,8 @@ export class Cp2Store {
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
-      requireProduct: (businessId, productId) => this.salesDomain.requireProduct(businessId, productId),
+      requireProduct: (businessId, productId) =>
+        this.salesDomain.requireProduct(businessId, productId),
       createProduct: (input) => this.salesDomain.createProduct(input),
       updateProduct: (input) => this.salesDomain.updateProduct(input),
       listPublicStorefronts: (input) => this.listPublicStorefronts(input),
@@ -856,7 +846,8 @@ export class Cp2Store {
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
         this.requireAuthorizedSession(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
-      requireInvoice: (businessId, invoiceId) => this.salesDomain.requireInvoice(businessId, invoiceId)
+      requireInvoice: (businessId, invoiceId) =>
+        this.salesDomain.requireInvoice(businessId, invoiceId)
     });
     this.supplierDomain = new SupplierDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -891,7 +882,8 @@ export class Cp2Store {
       requireCustomer: (businessId, customerId) =>
         this.salesDomain.requireCustomer(businessId, customerId),
       createGuestCustomer: (input) => this.salesDomain.createGuestCustomer(input),
-      requireInvoice: (businessId, invoiceId) => this.salesDomain.requireInvoice(businessId, invoiceId),
+      requireInvoice: (businessId, invoiceId) =>
+        this.salesDomain.requireInvoice(businessId, invoiceId),
       ensureSokoSessionContext: (session, now) => this.ensureSokoSessionContext(session, now),
       createRuntimeTurn: (input) => this.agentRuntimeDomain.createRuntimeTurn(input),
       agentModelRecoveryGuidance: (businessId, error) =>
@@ -935,8 +927,15 @@ export class Cp2Store {
       queryCatalogue: (input) => this.salesDomain.queryCatalogue(input),
       listProducts: (input) => this.salesDomain.listProducts(input),
       listInvoices: (input) => this.salesDomain.listInvoices(input),
+      listCustomerDebts: (input) => this.salesDomain.listCustomerDebts(input),
       getBusinessReport: (input) => this.getBusinessReport(input),
       listNotifications: (input) => this.notificationsDomain.listNotifications(input),
+      getSecurityReview: (input) => this.getSecurityReview(input),
+      createAgentRoute: (input) => this.networkDomain.createAgentRoute(input),
+      searchBuyFeed: (input) => this.commerce.searchBuyFeed(input),
+      createUnifiedCheckout: (input) => this.commerce.createUnifiedCheckout(input),
+      getProductFieldSchema: (input) => this.salesDomain.getProductFieldSchema(input),
+      saveProductFieldSchema: (input) => this.salesDomain.saveProductFieldSchema(input),
       createProduct: (input) => this.salesDomain.createProduct(input),
       updateProduct: (input) => this.salesDomain.updateProduct(input),
       adjustProductStock: (input) => this.salesDomain.adjustProductStock(input),
@@ -946,7 +945,14 @@ export class Cp2Store {
       updateLogisticsStatus: (input) => this.logisticsDomain.updateLogisticsStatus(input),
       createSupplier: (input) => this.supplierDomain.createSupplier(input),
       updateSupplier: (input) => this.supplierDomain.updateSupplier(input),
+      createInvoice: (input) => this.salesDomain.createInvoice(input),
+      recordPayment: (input) => this.salesDomain.recordPayment(input),
       listPurchaseReceipts: (input) => this.listPurchaseReceipts(input),
+      listReceiptOCRJobs: (input) => this.supplierDomain.listReceiptOCRJobs(input),
+      createReceiptOCRJob: (input) => this.supplierDomain.createReceiptOCRJob(input),
+      confirmReceiptOCRJob: (input) => this.supplierDomain.confirmReceiptOCRJob(input),
+      correctReceiptOCRJob: (input) => this.supplierDomain.correctReceiptOCRJob(input),
+      cancelReceiptOCRJob: (input) => this.supplierDomain.cancelReceiptOCRJob(input),
       confirmProductImport: (input) => this.confirmProductImport(input),
       confirmSupplierImport: (input) => this.confirmSupplierImport(input),
       sendChannelMessage: (input) => this.sendChannelMessage(input),
@@ -3226,14 +3232,20 @@ export class Cp2Store {
     if (!this.agentRuntimeDomain.computeAgentRuntimeReadiness(businessId, now).ready) return null;
 
     const storedAgentProfile = this.agentRuntimeDomain.currentAgentProfile(businessId, now);
-    const { activeModelId } = this.agentRuntimeDomain.resolveActiveRuntimeModelId(businessId, storedAgentProfile);
+    const { activeModelId } = this.agentRuntimeDomain.resolveActiveRuntimeModelId(
+      businessId,
+      storedAgentProfile
+    );
     const shopRuntime = this.agentRuntimeDomain.buildShopAgentRuntime(
       storedAgentProfile,
       now,
       "customer",
       activeModelId
     );
-    const { provider } = this.agentRuntimeDomain.resolveRuntimeModelProvider(shopRuntime, activeModelId);
+    const { provider } = this.agentRuntimeDomain.resolveRuntimeModelProvider(
+      shopRuntime,
+      activeModelId
+    );
     if (provider === undefined) return null;
 
     const parserResult = parseMerchantCommand(body);
@@ -3557,6 +3569,24 @@ export class Cp2Store {
     ...args: Parameters<SupplierDomain["confirmReceiptOCRJob"]>
   ): ReturnType<SupplierDomain["confirmReceiptOCRJob"]> {
     return this.supplierDomain.confirmReceiptOCRJob(...args);
+  }
+
+  correctReceiptOCRJob(
+    ...args: Parameters<SupplierDomain["correctReceiptOCRJob"]>
+  ): ReturnType<SupplierDomain["correctReceiptOCRJob"]> {
+    return this.supplierDomain.correctReceiptOCRJob(...args);
+  }
+
+  cancelReceiptOCRJob(
+    ...args: Parameters<SupplierDomain["cancelReceiptOCRJob"]>
+  ): ReturnType<SupplierDomain["cancelReceiptOCRJob"]> {
+    return this.supplierDomain.cancelReceiptOCRJob(...args);
+  }
+
+  listReceiptOCRJobs(
+    ...args: Parameters<SupplierDomain["listReceiptOCRJobs"]>
+  ): ReturnType<SupplierDomain["listReceiptOCRJobs"]> {
+    return this.supplierDomain.listReceiptOCRJobs(...args);
   }
 
   listPurchaseReceipts(
@@ -4808,7 +4838,6 @@ export class Cp2Store {
     return this.networkDomain.deleteNetworkSource(...args);
   }
 
-
   snapshot(): Cp2Snapshot {
     return {
       accounts: [...this.accounts.values()],
@@ -5154,7 +5183,10 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.betaFeatureFlags) {
-      this.compliance.betaFeatureFlagsMap.set(betaFeatureFlagMapKey(item.businessId, item.key), item);
+      this.compliance.betaFeatureFlagsMap.set(
+        betaFeatureFlagMapKey(item.businessId, item.key),
+        item
+      );
     }
 
     for (const item of snapshot.betaDeviceTests) {
@@ -5174,7 +5206,10 @@ export class Cp2Store {
     }
 
     for (const item of snapshot.launchChecklist) {
-      this.compliance.launchChecklistMap.set(launchChecklistMapKey(item.businessId, item.key), item);
+      this.compliance.launchChecklistMap.set(
+        launchChecklistMapKey(item.businessId, item.key),
+        item
+      );
     }
 
     for (const item of snapshot.launchIncidents) {
@@ -6614,7 +6649,8 @@ export class Cp2Store {
       sokoId: business.sokoId,
       businessName: business.name,
       presence: { status: presence.status, updatedAt: presence.updatedAt },
-      products: this.salesDomain.productsForBusiness(business.id)
+      products: this.salesDomain
+        .productsForBusiness(business.id)
         .filter((product) => product.quantity > 0)
         .map((product) => ({
           id: product.id,
@@ -6661,7 +6697,6 @@ export class Cp2Store {
 
     return item;
   }
-
 
   private replaySyncMutation(input: {
     sessionId: string | null;
@@ -6759,7 +6794,9 @@ export class Cp2Store {
       (invoice) => invoice.businessId === businessId
     );
     const knowledge = this.buildBusinessKnowledge(businessId, new Date());
-    const logisticsReport = summarizeLogistics(this.logisticsDomain.logisticsForBusiness(businessId));
+    const logisticsReport = summarizeLogistics(
+      this.logisticsDomain.logisticsForBusiness(businessId)
+    );
     const compliance = this.buildComplianceReport(businessId, userId, new Date());
     const beta = this.buildBetaReadinessReport(businessId, new Date());
     const launch = this.buildLaunchReadinessReport(businessId, new Date());
@@ -6816,7 +6853,13 @@ export class Cp2Store {
         ? [...this.compliance.deviceTrustMap.values()].find(
             (item) => item.businessId === businessId && item.userId !== "system"
           )
-        : this.compliance.getOrCreateDeviceTrust(businessId, actorId, "browser-session", actorId, now);
+        : this.compliance.getOrCreateDeviceTrust(
+            businessId,
+            actorId,
+            "browser-session",
+            actorId,
+            now
+          );
     const highRiskAuditEventCount = this.auditEventsForBusiness(businessId).filter(
       (event) => event.risk === "high" || event.risk === "critical"
     ).length;
@@ -7415,7 +7458,11 @@ export class Cp2Store {
     now: Date
   ): void {
     for (const session of this.sessions.values()) {
-      if (session.accountId === accountId && session.id !== exceptSessionId && session.revokedAt === null) {
+      if (
+        session.accountId === accountId &&
+        session.id !== exceptSessionId &&
+        session.revokedAt === null
+      ) {
         session.revokedAt = now.toISOString();
         session.revocationReason = reason;
       }
@@ -7494,7 +7541,9 @@ export class Cp2Store {
       entity: null,
       now
     });
-    const invoiceIds = new Set(this.salesDomain.invoicesForBusiness(businessId).map((invoice) => invoice.id));
+    const invoiceIds = new Set(
+      this.salesDomain.invoicesForBusiness(businessId).map((invoice) => invoice.id)
+    );
     const supplierIds = new Set(
       this.supplierDomain.suppliersForBusiness(businessId).map((supplier) => supplier.id)
     );
@@ -7532,7 +7581,10 @@ export class Cp2Store {
       }
     }
 
-    for (const [key, assignment] of this.agentRuntimeDomain.browserInferenceAssignmentsMap.entries()) {
+    for (const [
+      key,
+      assignment
+    ] of this.agentRuntimeDomain.browserInferenceAssignmentsMap.entries()) {
       if (assignment.businessId === businessId) {
         this.agentRuntimeDomain.browserInferenceAssignmentsMap.delete(key);
       }
@@ -7662,10 +7714,12 @@ export class Cp2Store {
       if (invite.businessId === businessId) this.networkInvites.delete(id);
     }
     for (const [id, request] of this.salesDomain.publicCustomerCareRequestsMap.entries()) {
-      if (request.businessId === businessId) this.salesDomain.publicCustomerCareRequestsMap.delete(id);
+      if (request.businessId === businessId)
+        this.salesDomain.publicCustomerCareRequestsMap.delete(id);
     }
     for (const [id, message] of this.salesDomain.publicStorefrontMessagesMap.entries()) {
-      if (message.businessId === businessId) this.salesDomain.publicStorefrontMessagesMap.delete(id);
+      if (message.businessId === businessId)
+        this.salesDomain.publicStorefrontMessagesMap.delete(id);
     }
     for (const [id, order] of this.salesDomain.publicOrdersMap.entries()) {
       if (order.businessId === businessId) this.salesDomain.publicOrdersMap.delete(id);
@@ -7760,7 +7814,10 @@ export class Cp2Store {
         this.messagingDomain.nativeSmsDeviceCommandsMap,
         scope
       );
-      deletedRecordCount += deleteScopedMapRecords(this.messagingDomain.connectedMailboxesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.messagingDomain.connectedMailboxesMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(
         this.messagingDomain.connectedMailboxOAuthSessionsMap,
         scope
@@ -7778,19 +7835,52 @@ export class Cp2Store {
         scope
       );
       deletedRecordCount += deleteScopedMapRecords(this.messagingDomain.e2eeDevicesMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.messagingDomain.pushSubscriptionsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.messagingDomain.conversationTypingMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.messagingDomain.pushSubscriptionsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.messagingDomain.conversationTypingMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.marketplaceIntroStates, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.activeAiModelsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.activeAiModelsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentProfilesMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentRuntimeVersionsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentContextSourcesMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentEvaluationEventsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentOwnerCorrectionsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.installedAgentModelsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentModelAssignmentsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.browserInferenceAssignmentsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.agentModelBindingsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentRuntimeVersionsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentContextSourcesMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentEvaluationEventsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentOwnerCorrectionsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.installedAgentModelsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentModelAssignmentsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.browserInferenceAssignmentsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.agentModelBindingsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.mcpTokensDomain.mcpAccessTokensMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productFieldSchemasMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.productsMap, scope);
@@ -7817,8 +7907,14 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.accountDeletionRequests, scope);
       deletedRecordCount += deleteScopedMapRecords(this.shopPresences, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkInvites, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicCustomerCareRequestsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicStorefrontMessagesMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.salesDomain.publicCustomerCareRequestsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.salesDomain.publicStorefrontMessagesMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.publicOrdersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.verificationTiersMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.compliance.taxConfigsMap, scope);
@@ -7839,10 +7935,19 @@ export class Cp2Store {
         this.documentImportDomain.documentImportSourcesMap,
         scope
       );
-      deletedRecordCount += deleteScopedMapRecords(this.notificationsDomain.notificationsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.runtimeSessionsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.notificationsDomain.notificationsMap,
+        scope
+      );
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.runtimeSessionsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.runtimeTurnsMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(this.agentRuntimeDomain.pendingRuntimeActionsMap, scope);
+      deletedRecordCount += deleteScopedMapRecords(
+        this.agentRuntimeDomain.pendingRuntimeActionsMap,
+        scope
+      );
       deletedRecordCount += deleteScopedMapRecords(this.salesDomain.inventoryMovementsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.syncQueue, scope);
       deletedRecordCount += deleteScopedMapRecords(this.otpDomain.otpChallengesMap, scope);
@@ -7861,16 +7966,10 @@ export class Cp2Store {
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkNodesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkEdgesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkSourcesMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(
-        this.networkDomain.networkPermissionsMap,
-        scope
-      );
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkPermissionsMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.networkRoutesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.contactHashesMap, scope);
-      deletedRecordCount += deleteScopedMapRecords(
-        this.networkDomain.externalIdentitiesMap,
-        scope
-      );
+      deletedRecordCount += deleteScopedMapRecords(this.networkDomain.externalIdentitiesMap, scope);
       deletedRecordCount += deleteScopedMapRecords(this.networkDomain.sokoIdentityLinksMap, scope);
     }
 
@@ -7940,13 +8039,15 @@ export class Cp2Store {
     const directIdentifierFieldsRemoved =
       this.salesDomain.customersForBusiness(businessId).length * 3 +
       this.supplierDomain.suppliersForBusiness(businessId).length * 3 +
-      this.logisticsDomain.logisticsForBusiness(businessId).filter((item) => item.destination !== null).length;
+      this.logisticsDomain
+        .logisticsForBusiness(businessId)
+        .filter((item) => item.destination !== null).length;
 
     return {
       businessId,
-      retainedInvoiceCount: this.salesDomain.invoicesForBusiness(businessId).filter(
-        (invoice) => invoice.status === "confirmed"
-      ).length,
+      retainedInvoiceCount: this.salesDomain
+        .invoicesForBusiness(businessId)
+        .filter((invoice) => invoice.status === "confirmed").length,
       retainedPaymentCount: this.salesDomain.paymentsForBusiness(businessId).length,
       retainedLogisticsCount: this.logisticsDomain.logisticsForBusiness(businessId).length,
       retainedImportCount: this.documentImportDomain.importsForBusiness(businessId).length,
@@ -8087,7 +8188,6 @@ function extractSokoIdNamespace(sokoId: string): string {
   const match = sokoId.match(/^\+?(\d{1,3})-?[A-Za-z]\d{8}$/);
   return match?.[1] ?? "254";
 }
-
 
 function sessionAccessTtlMs(): number {
   return readSessionDuration("SESSION_ACCESS_TTL_SECONDS", 900, 60, 86_400) * 1_000;
@@ -8257,7 +8357,6 @@ function countExportRecords(data: DataExportBundle["data"]): Record<string, numb
 function marketplaceIntroStateKey(accountId: string, businessId: string | null): string {
   return `${accountId}:${businessId ?? "marketplace"}`;
 }
-
 
 function cookieAttributes(maxAgeSeconds: number): string {
   const sameSite = cookieSameSite();
@@ -8638,7 +8737,3 @@ function syncRecordDate(value: string): Date {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }
-
-
-
-

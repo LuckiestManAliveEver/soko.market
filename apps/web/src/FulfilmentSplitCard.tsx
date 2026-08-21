@@ -49,7 +49,9 @@ export default function FulfilmentSplitCard(props: { unifiedCheckoutId: string }
       </div>
       {checkout.handoffs.map((handoff) => (
         <div className="fulfilment-handoff-row" key={handoff.orderId}>
-          <span className={`buy-source-badge buy-source-${handoff.kind === "contact" ? "contact" : "catalogue"}`}>
+          <span
+            className={`buy-source-badge buy-source-${handoff.kind === "contact" ? "contact" : "catalogue"}`}
+          >
             {handoff.kind === "contact" ? "Pickup" : "Shop order"}: {handoff.sourceLabel}
           </span>
           <span>{handoff.status.replaceAll("_", " ")}</span>

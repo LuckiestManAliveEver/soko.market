@@ -151,7 +151,7 @@ infrastructure without changing today's single-session behavior yet").
   `seller_context_required` check on `owner-controls` messages
   (`domains/messaging/store.ts:2442`), `active_shop_required` (seller mode
   needs an active shop), and `surface_mode_invalid` (`sellerOnlySurfaces =
-  new Set(["catalogue", "owner-controls", "receipt"])`, `store.ts:275`,
+new Set(["catalogue", "owner-controls", "receipt"])`, `store.ts:275`,
   only reachable in seller mode). None of the three cared how the context
   row was keyed — they only ever read fields off whatever
   `StoredSokoSessionContext` they were handed.
@@ -196,9 +196,9 @@ infrastructure without changing today's single-session behavior yet").
   `conversationId`; omitted, it resolves to the account's personal
   conversation exactly as before (so every existing caller is unchanged).
   Passed, it resolves and validates that conversation
-  (`requireAccountConversation`) and returns/creates *that conversation's
-  own* context row, defaulting fresh (`mode: "marketplace"`, `activeSurface:
-  "conversation"`) rather than inheriting the account's other contexts.
+  (`requireAccountConversation`) and returns/creates _that conversation's
+  own_ context row, defaulting fresh (`mode: "marketplace"`, `activeSurface:
+"conversation"`) rather than inheriting the account's other contexts.
 - `GET /v1/session/context` accepts an optional `?conversationId=` query
   param. `PATCH /v1/session/context`'s existing `conversationId` body
   field now selects the target row instead of only repointing the single
@@ -222,7 +222,7 @@ infrastructure without changing today's single-session behavior yet").
   `AssertionError`) before restoring the fix.
 
 **What Phase 3 still needs**, now that the data model is ready: a way to
-create a *second* personal agent conversation for an account (today only
+create a _second_ personal agent conversation for an account (today only
 `ensurePersonalAccountConversation`'s singleton exists), and the
 session-list UI itself.
 
@@ -232,8 +232,9 @@ session-list UI itself.
 `chat`, and 15 business views (`products`, `suppliers`, `customers`,
 `invoices`, `network`, `sync`, `runtime`, `payments`, `imports`,
 `logistics`, `compliance`, `beta`, `launch`, `reports`, `notifications`).
-`SokoApplication.tsx`'s `renderActiveWorkspace()` is a single switch
-statement rendering one `*Surface` component per view.
+`OwnerWorkspace.tsx`'s `renderOwnerWorkspace()` is a single switch statement rendering one
+`*Surface` component per view. `SokoApplication.tsx` supplies grouped hook bindings and remains the
+shell composition root.
 
 The good news for migration risk: every one of these 15 views is already
 a clean, self-contained, prop-driven component
@@ -309,7 +310,7 @@ guard.
 **What Phase 3 deliberately left alone**: `activeShopId` does not travel
 with a session switch. An account can only ever hold one shop (creating a
 second returns `store_already_registered`), so there is no second
-business to switch *to* yet — this becomes relevant only once Phase 3's
+business to switch _to_ yet — this becomes relevant only once Phase 3's
 own non-goal (multiple shops per account) is ever revisited, which it
 is not here.
 
@@ -338,7 +339,7 @@ spec, one domain at a time.
   (`services/api/src/cp2/domains/agent-runtime/store.ts`) returned `null`
   unconditionally, regardless of what a valid proposal contained.
 - No intent for "edit a product" or "adjust stock" existed in the
-  *primary* free-text parser (`RuleIntent`, `packages/tool-core/src/index.ts`)
+  _primary_ free-text parser (`RuleIntent`, `packages/tool-core/src/index.ts`)
   — only `add_product`/`show_products`/etc.
 - A second, separate vocabulary matcher already existed
   (`ProductContextScriptMatch`/`createRuntimeToolProposalFromProductContextScript`,
@@ -347,7 +348,7 @@ spec, one domain at a time.
   `invalid(...)`, meaning even a fully-specified message could never
   produce an executable proposal through it.
 - **Critical finding from the first draft of this phase**: the initial
-  implementation fixed the *primary* parser
+  implementation fixed the _primary_ parser
   (`parseMerchantCommand`/`createRuntimeToolProposal`) and shipped a
   regression test using `parseMerchantCommand` directly - it passed. A
   second, end-to-end test hitting the real
@@ -430,14 +431,14 @@ mode Phase 4a hadn't surfaced yet.
   deliberately left alone").
 - Suppliers have no context-script vocabulary of their own (that matcher
   is product-only, `scriptId: "product-vocabulary"`), so the primary
-  parser (`parseMerchantCommand`) is the *only* path — no dual-parser
+  parser (`parseMerchantCommand`) is the _only_ path — no dual-parser
   sync risk like 4a's.
 - **The real catch, found by writing the end-to-end test before trusting
   the parser in isolation (same discipline that caught 4a's bugs)**: the
-  product vocabulary's built-in phrase list includes a *bare* `"edit"`
+  product vocabulary's built-in phrase list includes a _bare_ `"edit"`
   and `"badilisha"` entry for `PRODUCT_EDIT` — matching on the verb alone,
   with no requirement that a product noun also be present. `"edit
-  supplier John Doe 0798765432"` matched `PRODUCT_EDIT` before it ever
+supplier John Doe 0798765432"` matched `PRODUCT_EDIT` before it ever
   reached the primary parser, with `"supplier john doe"` misread as a
   product name. This is a pre-existing looseness in the product
   vocabulary (several other intents have similarly bare single-word
@@ -491,7 +492,7 @@ infrastructure directly rather than rediscovering it.
   extend — added `customer`/`customers`/`client`/`clients`/`mteja`/`wateja`
   to the same guard rather than writing a second, parallel mechanism.
   Verified empirically (not assumed) that `"edit customer Mary Wanjiru
-  0700111222"` collided with `PRODUCT_EDIT`'s bare `"edit"` phrase before
+0700111222"` collided with `PRODUCT_EDIT`'s bare `"edit"` phrase before
   the guard, exactly like the supplier case.
 - Reused 4b's phone-extraction fix in `extractSlots` as-is — no new work
   needed, since it was already unconditional (not gated to a specific
@@ -541,7 +542,7 @@ than assumed going in.
 
 **The scope decision this phase made**: rather than building a fragile
 multi-slot extractor to parse product+quantity+price from text (real NLU
-work, not "smallest correct"), the chat trigger reacts to the *existing*
+work, not "smallest correct"), the chat trigger reacts to the _existing_
 `create_invoice` classification - unconditionally, not gated on tool
 execution succeeding (`invoice.draft` never executes for real) - and
 opens an interactive `InvoiceManagementCard` pre-filled with whatever
@@ -559,6 +560,12 @@ card" - pins the existing backend contract the new frontend code depends
 on; passes unchanged with no backend files stashed, confirming this
 phase's only new code is frontend), `tests/invoice-management-card.test.ts`
 (frontend wiring - verified to fail without the frontend implementation).
+
+**Capability-first follow-up:** the deterministic one-line free-text parser still clarifies and
+opens this composer when product IDs and line details are absent. The registered
+`invoice.draft` capability is no longer a stub: validated structured input containing canonical
+`items` now executes `SalesDomain.createInvoice` after confirmation. This preserves the safe
+composer behavior while making the capability independently addressable by richer callers.
 
 ## Payments chat-invokable capability (Phase 4e — implemented)
 
@@ -583,10 +590,14 @@ picking the first unpaid invoice for that customer if one matches, so
 the common case (a customer with one open invoice) needs zero extra
 clicks. The owner confirms amount and method, then the card calls the
 same `POST /businesses/:id/payments` endpoint the permanent page uses.
-No backend parser or execution code changed — extended the *existing*
+No backend parser or execution code changed — extended the _existing_
 `record_payment` test to also pin `plan.input` (customerName, amount) as
 the contract the new frontend code depends on, rather than adding a
 parallel test.
+
+**Capability-first follow-up:** incomplete free text continues to open the composer. Validated
+structured input containing `invoiceId`, positive `amount`, and `method` now executes the
+registered `payment.record` capability through `SalesDomain.recordPayment` after confirmation.
 
 Regression tests: `tests/cp10-sokoclaw-runtime.test.ts` (extended, not
 duplicated), `tests/payment-management-card.test.ts` (frontend wiring —
@@ -594,7 +605,7 @@ verified to fail without the frontend implementation).
 
 ## Imports chat-invokable capability (Phase 4f — implemented)
 
-A third distinct shape — this domain was already the *most* chat-capable
+A third distinct shape — this domain was already the _most_ chat-capable
 of any so far, and the audit found the gap was narrower than expected.
 
 **What the audit found:**
@@ -624,7 +635,7 @@ of any so far, and the audit found the gap was narrower than expected.
   (`tests/document-agent-import.e2e.test.ts`), not discovered as new.
 
 **What changed:** the one real gap was reviewing and adjusting row
-selection *inline*, instead of requiring a trip to the permanent Imports
+selection _inline_, instead of requiring a trip to the permanent Imports
 page before confirming. A new `ImportManagementCard` opens as soon as a
 message classifies as `document_import.confirm`, showing the job's rows
 with per-row selection (mirroring `ProductCaptureItemsCard`'s review
@@ -637,59 +648,19 @@ Regression tests: `tests/document-agent-import.e2e.test.ts` (extended),
 `tests/import-management-card.test.ts` (frontend wiring — verified to
 fail without the frontend implementation).
 
-## Network audit (Phase 4g — no card; one bug fixed)
+## Network capability (Phase 4g — canonical runtime path)
 
-The first domain where the honest verdict is "mostly stays a permanent
-page" — the user explicitly asked for honest per-domain judgment rather
-than forcing every domain into the chat-capability pattern, and this is
-that judgment applied.
+The owner request "find Dairy Supplier through my network" now plans and executes
+`network.route` inside the canonical server runtime. Chat no longer imports the frontend-only
+phrase matcher or calls `requestNetworkRoute`; after a successful capability result it only opens
+the Network view. The capability preserves the complete request text and delegates to
+`NetworkDomain.createAgentRoute`, while the existing target-node button continues to call the
+same domain endpoint for the conventional UI workflow.
 
-**What the audit found:**
-
-- The domain's highest-value read action — "find suppliers through my
-  network" — was **already fully chat-invokable**, via a mechanism none
-  of the earlier phases used: `isNetworkDiscoveryRequest`
-  (`contacts-import.ts`), a frontend-only phrase match, separate from the
-  entire `RuntimeToolName`/`parseMerchantCommand` system this session has
-  worked in through Phase 4a-4f. A fourth distinct trigger mechanism in
-  this codebase, confirmed by reading it rather than assuming continuity
-  with the runtime-tool system.
-- The rest of the domain's actions — phone contact picker sync, social
-  OAuth network sync, CSV contact import/export — are gated behind
-  native browser APIs (`navigator.contacts.select`, OAuth redirects,
-  file pickers) that a chat text message cannot replace. This is a
-  permanent constraint, the same class of finding as imports' "can't
-  upload a file via text," not a gap to close.
-- Approving/rejecting a specific agent route needs a route ID a normal
-  chat message wouldn't reference, and routes are already visible where
-  they're proposed — building a separate chat trigger for "approve that
-  route" was judged lower-value than the domain's real gap below, so it
-  was not built this phase.
-
-**The one real bug found**: `requestNetworkRoute()` — the function the
-existing chat trigger calls — sent a **hard-coded** `requestText: "Find
-suppliers through my network"` regardless of what the owner actually
-typed, even though the server (`services/api/src/cp2/domains/network/store.ts:910`)
-matches `requestText` against network node names to find relevant
-suppliers. "Find a supplier for rice through my network" was silently
-losing "rice" and searching generically — the same class of bug as
-4a's product-price-drop and 4c's customer-phone-drop, just found in a
-domain this session judged mostly complete rather than one it built new
-capability for. Fixed by threading the real chat message through as
-`requestText`, keeping `targetNodeId` as the first parameter (an
-existing `SokoApplication.tsx` button already calls
-`requestNetworkRoute(targetNodeId)` positionally — reordering would have
-silently broken it, caught by checking every call site before changing
-the signature, not just the one this phase touched).
-
-**Verdict**: no generated card, no new runtime tool. The domain's
-permanent page stays exactly as important as it is today — most of what
-it does cannot move to chat, and the one thing that already had before
-this fix was quietly broken.
-
-Regression tests: `tests/network-route-request-text.test.ts` (both the
-fix and the call-site-safety check — verified to fail against the
-pre-fix code before restoring it).
+Phone contact selection, OAuth redirects, and file import/export remain explicit UI/device
+workflows because they require browser grants or files, not because Chat holds mutation authority.
+Regression coverage lives in `tests/network-route-request-text.test.ts` and the real runtime path
+in `tests/network-sync-graph.test.ts`.
 
 ## Logistics chat-invokable capability (Phase 4h — implemented)
 
@@ -758,7 +729,7 @@ Both domains audited honestly, per the same standing instruction as 4g:
 judge each domain on its own merits rather than force it into the
 chat-capability pattern. Both verdicts are "stays a permanent page, no
 generated card" — but for a stronger reason than network's (4g): neither
-domain has *any* natural single-sentence chat phrasing, not even a
+domain has _any_ natural single-sentence chat phrasing, not even a
 partial one.
 
 **Sync** (`useSyncState.ts`) is the offline mutation queue and IndexedDB
@@ -779,7 +750,7 @@ what it does.
 **Runtime** (`useRuntimeHistoryState.ts`) is session/turn browsing for
 the AI runtime itself — `loadRuntimeSessions`, `loadRuntimeTurns`,
 `createRuntimeHistorySession`, `restoreOrCreateRuntimeSession`. This is
-the plumbing chat *runs on*, not a peer domain chat could invoke: asking
+the plumbing chat _runs on_, not a peer domain chat could invoke: asking
 "show me my runtime sessions" through the chat runtime to browse the
 chat runtime's own session history is circular in a way none of the
 other nine domains audited so far are. No mutation exists to route
@@ -810,7 +781,7 @@ device trust, and account-deletion scheduling for **compliance**; access
 status, feature-flag rollout, device tests, support tickets, and
 telemetry for **beta**; launch status, rollout settings, checklist items,
 and incidents for **launch**. Every one of these is an operator
-configuring the *business's platform posture* (is this shop verified,
+configuring the _business's platform posture_ (is this shop verified,
 is beta access paused, is launch frozen) — not an action a merchant
 would ever phrase as a chat sentence the way "mark delivered" or "add
 customer Mary" are. None of it maps to a `RuntimeToolName` a merchant's
@@ -862,7 +833,7 @@ dashboards — but the audit found the gap in an unexpected place.
 - **A second real bug, one layer deeper than expected**: after wiring the
   new tools with `requiresConfirmation: false` on their own registry
   definitions, "show reports" still came back `needs_confirmation`. Root
-  cause was a *third* place read-only tools must be listed: `services/api/src/cp2/agent-business-runtime.ts`'s
+  cause was a _third_ place read-only tools must be listed: `services/api/src/cp2/agent-business-runtime.ts`'s
   `skillRequiresOwnerConfirmation()` is a hard-coded allowlist of tool
   names exempt from the default per-skill confirmation requirement —
   `products.list`/`invoices.list` were on it, the two new tools were not,
@@ -1026,24 +997,24 @@ not require touching `ChatSurface.tsx`'s render body again.
 
 ## Roadmap
 
-| Phase | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Status                                                                                                                                          |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | Generated-surface protocol: typed content carried through, renderer registry, safe unknown-type fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | **Implemented** (this change)                                                                                                                   |
-| 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Per-conversation session context" above                                                                    |
-| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                                                                                                                                                                                          | **Implemented** (this change) — see "Multi-session UI" above                                                                                     |
-| 4a | Products: give the domain a chat-invokable capability/tool that renders inline in a session (found to need fixing two runtime-tool execution stubs, adding two new parser intents to both the primary and context-script parsers, and a currency/quantity parsing bug - not a small phase). Permanent `products` nav entry kept until a generated-surface replacement can be proven live in a browser | **Implemented** (this change) — see "Products chat-invokable capability" above |
-| 4b | Suppliers: same pattern as 4a (found zero existing supplier runtime tools, and a product-vocabulary false-positive that would have silently misrouted supplier edits as product edits) | **Implemented** (this change) — see "Suppliers chat-invokable capability" above |
-| 4c | Customers: same pattern as 4a/4b (customer.create already existed but dropped phone/email/notes; added customer.update; extended 4b's product-vocabulary exclusion guard rather than duplicating it) | **Implemented** (this change) — see "Customers chat-invokable capability" above |
-| 4d | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed | **Implemented** (this change) — see "Invoices chat-invokable capability" above |
-| 4e | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text) | **Implemented** (this change) — see "Payments chat-invokable capability" above |
-| 4f | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming | **Implemented** (this change) — see "Imports chat-invokable capability" above |
-| 4g | Network: audited honestly rather than forced into the pattern - the domain's real chat capability (find suppliers through network) already existed via a separate mechanism, the rest is browser-API-gated (contact picker, OAuth) and cannot move to chat. No card; fixed one real bug (requestNetworkRoute always sent a hard-coded request, dropping the owner's real message) | **Implemented** (this change) — see "Network audit" above |
-| 4h | Logistics: judged genuinely chat-relevant (unlike 4g) - "mark delivered"/"picked up" are natural merchant sentences and the backend mutation already existed, just never wired into the runtime-tool system. Same "composer card, no backend mutation change" shape as 4d/4e | **Implemented** (this change) — see "Logistics chat-invokable capability" above |
-| 4i | Sync: audited honestly - offline mutation queue/IndexedDB machinery with no natural chat phrasing (both actions need a `syncItemId` chat can't carry) and already only reachable from its own page. No fourth trigger mechanism found hiding here (unlike 4g's network). No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
-| 4j | Runtime: audited honestly - session/turn browsing for the AI runtime itself, the plumbing chat runs on rather than a peer domain chat could invoke. No mutation exists to route through the runtime-tool system. No card, no bug | **Implemented** (this change) — see "Sync + Runtime audit" above |
-| 4k | Compliance + Beta + Launch: audited together (one hook, `useReadinessState.ts`, mirrors the backend's own combined-phase decision) - confirmed the doc's own prediction that these are internal-operator platform-posture dashboards, not merchant-facing actions. No card, no bug | **Implemented** (this change) — see "Compliance + Beta + Launch audit" above |
-| 4l | Reports + Notifications: audited together - both already advertised as chat-reachable via the help-prefixed path, but the bare `show_products`/`show_invoices`-style phrasing didn't work. Built the missing `show_reports`/`show_notifications` navigate intents, wired to the existing `getBusinessReport`/`listNotifications` store methods, and fixed a second confirmation-allowlist bug found only by testing the real HTTP route | **Implemented** (this change) — see "Reports + Notifications chat navigation" above |
-| 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                                                                                                                                                                                        | **Implemented** (this change) — see "Architectural enforcement" above                                                                             |
+| Phase | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status                                                                              |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 1     | Generated-surface protocol: typed content carried through, renderer registry, safe unknown-type fallback                                                                                                                                                                                                                                                                                                                                | **Implemented** (this change)                                                       |
+| 2     | Session-list-as-home foundation: audit every `SokoSessionContext`/`context.mode` read site; design the per-conversation mode + multi-session data model change; land it behind the existing conversation/session infrastructure without changing today's single-session behavior yet                                                                                                                                                    | **Implemented** (this change) — see "Per-conversation session context" above        |
+| 3     | Multi-session UI: session list becomes the home screen (`ConversationInboxItem` already has the shape - title/preview/time/unread); `New session` creates a real personal agent conversation; Buy/Sell toggle persists per-session using Phase 2's data model                                                                                                                                                                           | **Implemented** (this change) — see "Multi-session UI" above                        |
+| 4a    | Products: give the domain a chat-invokable capability/tool that renders inline in a session (found to need fixing two runtime-tool execution stubs, adding two new parser intents to both the primary and context-script parsers, and a currency/quantity parsing bug - not a small phase). Permanent `products` nav entry kept until a generated-surface replacement can be proven live in a browser                                   | **Implemented** (this change) — see "Products chat-invokable capability" above      |
+| 4b    | Suppliers: same pattern as 4a (found zero existing supplier runtime tools, and a product-vocabulary false-positive that would have silently misrouted supplier edits as product edits)                                                                                                                                                                                                                                                  | **Implemented** (this change) — see "Suppliers chat-invokable capability" above     |
+| 4c    | Customers: same pattern as 4a/4b (customer.create already existed but dropped phone/email/notes; added customer.update; extended 4b's product-vocabulary exclusion guard rather than duplicating it)                                                                                                                                                                                                                                    | **Implemented** (this change) — see "Customers chat-invokable capability" above     |
+| 4d    | Invoices: found a materially harder problem than 4a-4c (product+quantity+price can't be reliably extracted from free text for a record that moves stock and money) - scoped to an interactive single-item composer card triggered by the existing create_invoice classification, no backend changes needed                                                                                                                              | **Implemented** (this change) — see "Invoices chat-invokable capability" above      |
+| 4e    | Payments: same "composer card, no backend change" shape as 4d - `payment.record` has always been hard-coded invalid for the same reason (can't pick which of several open invoices from free text)                                                                                                                                                                                                                                      | **Implemented** (this change) — see "Payments chat-invokable capability" above      |
+| 4f    | Imports: found the domain was already mostly chat-capable - `document_import.confirm` already resolves and executes for real from chat via a third, separate proposal path (`createRuntimeDocumentImportProposal`); the one gap was inline row review before confirming                                                                                                                                                                 | **Implemented** (this change) — see "Imports chat-invokable capability" above       |
+| 4g    | Network: `network.route` now owns chat-driven network discovery through the canonical runtime; browser-grant workflows remain on the permanent page.                                                                                                                                                                                                                                                                                    | **Implemented** — see "Network capability" above                                    |
+| 4h    | Logistics: judged genuinely chat-relevant (unlike 4g) - "mark delivered"/"picked up" are natural merchant sentences and the backend mutation already existed, just never wired into the runtime-tool system. Same "composer card, no backend mutation change" shape as 4d/4e                                                                                                                                                            | **Implemented** (this change) — see "Logistics chat-invokable capability" above     |
+| 4i    | Sync: audited honestly - offline mutation queue/IndexedDB machinery with no natural chat phrasing (both actions need a `syncItemId` chat can't carry) and already only reachable from its own page. No fourth trigger mechanism found hiding here (unlike 4g's network). No card, no bug                                                                                                                                                | **Implemented** (this change) — see "Sync + Runtime audit" above                    |
+| 4j    | Runtime: audited honestly - session/turn browsing for the AI runtime itself, the plumbing chat runs on rather than a peer domain chat could invoke. No mutation exists to route through the runtime-tool system. No card, no bug                                                                                                                                                                                                        | **Implemented** (this change) — see "Sync + Runtime audit" above                    |
+| 4k    | Compliance + Beta + Launch: audited together (one hook, `useReadinessState.ts`, mirrors the backend's own combined-phase decision) - confirmed the doc's own prediction that these are internal-operator platform-posture dashboards, not merchant-facing actions. No card, no bug                                                                                                                                                      | **Implemented** (this change) — see "Compliance + Beta + Launch audit" above        |
+| 4l    | Reports + Notifications: audited together - both already advertised as chat-reachable via the help-prefixed path, but the bare `show_products`/`show_invoices`-style phrasing didn't work. Built the missing `show_reports`/`show_notifications` navigate intents, wired to the existing `getBusinessReport`/`listNotifications` store methods, and fixed a second confirmation-allowlist bug found only by testing the real HTTP route | **Implemented** (this change) — see "Reports + Notifications chat navigation" above |
+| 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                          | **Implemented** (this change) — see "Architectural enforcement" above               |
 
 Legacy pages are removed only after their generated-surface replacement
 is proven working — never a big-bang cutover. A catalogue page may
