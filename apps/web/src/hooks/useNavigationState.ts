@@ -96,7 +96,12 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setView(nextView);
     setRoutedProductId(null);
     setIsMarketplaceShortcutOpen(false);
-    navigateToOwnerRoute({ mode: nextMode, view: nextView }, { replace: options?.replace });
+    if (nextView !== "chat" && nextView !== "home") {
+      markNavigationCommitted(measurement);
+      return;
+    }
+    const nextRoute = { mode: nextMode, view: nextView };
+    navigateToOwnerRoute(nextRoute, { replace: options?.replace });
     markNavigationCommitted(measurement);
     restoreScreenScroll(screenStateCacheRef.current, nextView);
   }
@@ -107,7 +112,6 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setView("products");
     setRoutedProductId(product.id);
     setIsMarketplaceShortcutOpen(false);
-    navigateToOwnerRoute({ mode: "seller", view: "products", productId: product.id });
   }
 
   function openAgentProfile() {
@@ -115,7 +119,6 @@ export function useNavigationState(deps: UseNavigationStateDeps) {
     setMode("seller");
     setView("agent");
     setIsMarketplaceShortcutOpen(false);
-    navigateToOwnerRoute({ mode: "seller", view: "agent", agentId: business.id });
   }
 
   function returnToChat() {
