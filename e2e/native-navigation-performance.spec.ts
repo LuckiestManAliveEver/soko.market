@@ -49,10 +49,11 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   const shellId = await page.locator(".app-frame").getAttribute("data-shell-instance");
 
   await page.getByRole("button", { name: "Workspace", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Workspace" })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/agents\//);
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
   await page.getByRole("button", { name: "Open model library" }).click();
   await expect(page.getByLabel("Cloud fallback models", { exact: true })).toBeVisible({
     timeout: 30_000
@@ -65,7 +66,8 @@ test("backend model activation survives reload and can be removed", async ({ pag
   test.setTimeout(60_000);
   await page.goto("/sell");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/agents\//u);
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/u);
   await page.getByRole("button", { name: "Open model library" }).click();
   const backendModels = page.getByLabel("Soko backend models", { exact: true });
   await expect(backendModels).toBeVisible();

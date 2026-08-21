@@ -67,6 +67,9 @@ export default defineConfig(({ mode }) => {
       __GIT_COMMIT_SHA__: JSON.stringify(gitCommitSha)
     },
     envDir: workspaceRoot,
+    optimizeDeps: {
+      include: ["@huggingface/transformers"]
+    },
     plugins: [react()],
     server: {
       headers: {

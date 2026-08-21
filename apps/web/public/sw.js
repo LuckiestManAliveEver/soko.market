@@ -1,9 +1,9 @@
 /* global URL, Response, caches, self */
 
 const CACHE_PREFIX = "soko-market-app-";
-const CACHE_NAME = `${CACHE_PREFIX}v12`;
-const STATIC_CACHE = `${CACHE_PREFIX}static-v12`;
-const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v12`;
+const CACHE_NAME = `${CACHE_PREFIX}v13`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v13`;
+const PUBLIC_READ_CACHE = `${CACHE_PREFIX}public-read-v13`;
 const ACTIVE_CACHES = new Set([CACHE_NAME, STATIC_CACHE, PUBLIC_READ_CACHE]);
 const APP_SHELL = [
   "/",

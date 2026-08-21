@@ -21,6 +21,7 @@ import { formatAgentDisplayName } from "./formatters";
 import { ensureRequiredAgentContextScripts, sanitizeContextScripts } from "./owner-app-bootstrap";
 
 export function viewLabel(view: ShellView): string {
+  if (view === "agent") return "Account and agent settings";
   const action = quickActions.find((item) => item.id === view);
   return action?.label ?? "Business home";
 }

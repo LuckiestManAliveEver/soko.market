@@ -1,4 +1,5 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { shouldCloseStackedModuleFromSwipe } from "./stacked-module-behavior";
 
@@ -29,6 +30,11 @@ export function StackedModule({
 
   useEffect(() => {
     if (!open) return;
+    const appRoot = document.getElementById("root");
+    const rootWasInert = appRoot?.hasAttribute("inert") ?? false;
+    const previousAriaHidden = appRoot?.getAttribute("aria-hidden") ?? null;
+    appRoot?.setAttribute("inert", "");
+    appRoot?.setAttribute("aria-hidden", "true");
     returnFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const frameId = window.requestAnimationFrame(() => panelRef.current?.focus());
@@ -76,6 +82,9 @@ export function StackedModule({
     return () => {
       window.cancelAnimationFrame(frameId);
       document.removeEventListener("keydown", handleKeyDown);
+      if (!rootWasInert) appRoot?.removeAttribute("inert");
+      if (previousAriaHidden === null) appRoot?.removeAttribute("aria-hidden");
+      else appRoot?.setAttribute("aria-hidden", previousAriaHidden);
       returnFocusRef.current?.focus();
     };
   }, [open]);
@@ -84,6 +93,12 @@ export function StackedModule({
 
   function startSwipe(event: ReactPointerEvent<HTMLDivElement>) {
     if (!event.isPrimary) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("button, a[href], input, select, textarea") !== null
+    ) {
+      return;
+    }
     swipeStartYRef.current = event.clientY;
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -99,7 +114,7 @@ export function StackedModule({
     }
   }
 
-  return (
+  return createPortal(
     <div
       className="stacked-module-backdrop"
       data-module-id={moduleId}
@@ -131,6 +146,7 @@ export function StackedModule({
         </div>
         <div className="stacked-module-content">{children}</div>
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }

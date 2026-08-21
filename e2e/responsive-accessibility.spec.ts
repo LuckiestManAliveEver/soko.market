@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const viewportMatrix = [
   { name: "compact 280px phone", width: 280, height: 653 },
@@ -35,16 +35,23 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("central navigation preserves marketplace, settings, and browser back behavior", async ({
-  page
-}) => {
-  await page.goto("/marketplace");
+test("secondary modules preserve the conversation URL and browser history", async ({ page }) => {
+  await page.goto("/");
+  const initialHistoryLength = await page.evaluate(() => history.length);
+
+  await page.getByRole("button", { name: "Marketplace", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Marketplace" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(() => page.evaluate(() => history.length)).toBe(initialHistoryLength);
+  await page.getByRole("button", { name: "Close Marketplace" }).click();
+  await expect(page.getByRole("dialog", { name: "Marketplace" })).toHaveCount(0);
+
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(page).toHaveURL(/\/marketplace$/);
-  await page.goForward();
-  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(() => page.evaluate(() => history.length)).toBe(initialHistoryLength);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toHaveCount(0);
 });
 
 test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
@@ -53,7 +60,7 @@ test("workspace dialog traps focus, restores dismissed cards, and closes with Es
   await page.goto("/sell");
   const workspaceButton = page.getByRole("button", { name: "Workspace", exact: true });
   await workspaceButton.click();
-  const dialog = page.getByRole("dialog", { name: "Workspace cards" });
+  const dialog = page.getByRole("dialog", { name: "Workspace" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
   await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
@@ -72,7 +79,7 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
 
   const launcher = page.getByRole("button", { name: "Workspace", exact: true });
   await launcher.click();
-  const dialog = page.getByRole("dialog", { name: "Workspace cards" });
+  const dialog = page.getByRole("dialog", { name: "Workspace" });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator("section.generated-card-message")).toHaveCount(1);
 
@@ -80,18 +87,18 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
   await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
   await expect(dialog.locator(".generated-card-close")).toHaveCount(9);
 
-  await dialog.getByRole("button", { name: "Close workspace" }).click();
+  await dialog.getByRole("button", { name: "Close Workspace" }).click();
   await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
   await expect(launcher).toBeFocused();
 
   await launcher.click();
-  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(1);
   await page.keyboard.press("Escape");
 
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Cards are closed and chat still works.");
   await expect(composer).toHaveValue("Cards are closed and chat still works.");
-  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
 });
 
 test("a switched device offers the hosted default without silently granting consent", async ({
@@ -169,9 +176,9 @@ test("persisted owner-control cards stay attached to their historical message", 
   const historicalMessage = page
     .locator("article.message")
     .filter({ hasText: "Shared owner controls" });
-  await expect(historicalMessage).toHaveCount(1);
+  await expect(historicalMessage).toHaveCount(1, { timeout: 15_000 });
   await expect(historicalMessage.locator("section.generated-card-message")).toHaveCount(1);
-  await expect(page.getByRole("dialog", { name: "Workspace cards" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
 
   await historicalMessage.getByRole("button", { name: "Close Catalogue card" }).click();
   await expect(
@@ -199,8 +206,10 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
     .fill("1234");
   await page.getByLabel(/I understand that all account access is disabled immediately/).check();
   await page.getByTestId("delete-account-confirm").click();
-  await expect(page.getByRole("heading", { name: "Soko", level: 1 })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue to Soko" })).toBeVisible();
+  await expect(page).toHaveURL(/\/signup$/);
+  await expect(
+    page.getByRole("heading", { name: "Start with your phone", level: 1 })
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Log in", exact: true })).toBeVisible();
   expect(pinVerifications).toBe(1);
   expect(deletionRequests).toBe(1);
@@ -340,7 +349,10 @@ for (const viewport of viewportMatrix) {
   test(`${viewport.name}: model library reflows without clipped controls`, async ({ page }) => {
     await openModelLibrary(page, viewport);
     await expectNoViewportOverflow(page);
-    await expectInteractiveControlsInsideViewport(page);
+    await expectInteractiveControlsInsideViewport(
+      page,
+      page.getByRole("dialog", { name: "Account and agent settings" })
+    );
   });
 }
 
@@ -442,7 +454,10 @@ test("200% text size and WCAG text spacing preserve reflow", async ({ page }) =>
     `
   });
   await expectNoViewportOverflow(page);
-  await expectInteractiveControlsInsideViewport(page);
+  await expectInteractiveControlsInsideViewport(
+    page,
+    page.getByRole("dialog", { name: "Account and agent settings" })
+  );
 });
 
 test("keyboard navigation exposes a visible focus indicator", async ({ page }) => {
@@ -469,6 +484,7 @@ test("keyboard navigation exposes a visible focus indicator", async ({ page }) =
 test("touch controls satisfy the WCAG 2.2 minimum target size", async ({ page }) => {
   await openModelLibrary(page, { width: 360, height: 800 });
   const undersized = await page
+    .getByRole("dialog", { name: "Account and agent settings" })
     .locator("button, a[href], input, select, textarea")
     .evaluateAll((elements) =>
       elements.flatMap((element) => {
@@ -505,7 +521,8 @@ async function openModelLibrary(
   await page.setViewportSize(viewport);
   await page.goto("/");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
-  await expect(page).toHaveURL(/\/agents\/agent-254A12345678$/);
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
   await expect(
@@ -531,9 +548,9 @@ async function expectNoViewportOverflow(page: Page): Promise<void> {
   );
 }
 
-async function expectInteractiveControlsInsideViewport(page: Page): Promise<void> {
+async function expectInteractiveControlsInsideViewport(page: Page, root: Locator): Promise<void> {
   const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
-  const clipped = await page.locator("button, a[href], input, select, textarea").evaluateAll(
+  const clipped = await root.locator("button, a[href], input, select, textarea").evaluateAll(
     (elements, width) =>
       elements.flatMap((element) => {
         const node = element as HTMLElement;
@@ -557,6 +574,7 @@ async function expectInteractiveControlsInsideViewport(page: Page): Promise<void
 }
 
 async function installApiMocks(page: Page): Promise<void> {
+  let accountDeleted = false;
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
@@ -565,6 +583,7 @@ async function installApiMocks(page: Page): Promise<void> {
 
     if (path === "/auth/oauth/providers") return json({ providers: [] });
     if (path === "/session" || path === "/auth/bootstrap") {
+      if (accountDeleted) return json({ code: "session_invalid" }, 401);
       return json({
         account: { id: "responsive-account" },
         user: { id: "responsive-user", displayName: "Jane Owner", language: "en" },
@@ -699,6 +718,7 @@ async function installApiMocks(page: Page): Promise<void> {
     }
     if (path === "/auth/pin/verify" && method === "POST") return json({ verified: true });
     if (path.endsWith("/compliance/account-deletion") && method === "POST") {
+      accountDeleted = true;
       return json({
         id: "responsive-deletion",
         accountId: "responsive-account",

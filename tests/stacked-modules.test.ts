@@ -16,6 +16,9 @@ describe("stacked secondary modules", () => {
     expect(modulePrimitive).toContain("if (event.target === event.currentTarget) onClose();");
     expect(modulePrimitive).toContain('if (event.key === "Escape")');
     expect(modulePrimitive).toContain("onClick={onClose}");
+    expect(modulePrimitive).toContain(
+      'event.target.closest("button, a[href], input, select, textarea")'
+    );
     expect(modulePrimitive).toContain("shouldCloseStackedModuleFromSwipe(startY, event.clientY)");
     expect(shouldCloseStackedModuleFromSwipe(20, 91)).toBe(false);
     expect(shouldCloseStackedModuleFromSwipe(20, 92)).toBe(true);
@@ -30,6 +33,8 @@ describe("stacked secondary modules", () => {
       chatSurface.indexOf('moduleId="owner-management"')
     );
     expect(application).toMatch(/<ChatSurface[\s\S]*<AgentProfileSurface/u);
+    expect(modulePrimitive).toContain("createPortal(");
+    expect(modulePrimitive).toContain('appRoot?.setAttribute("inert", "")');
   });
 
   it("opens secondary surfaces without adding history or changing conversation scroll", () => {
