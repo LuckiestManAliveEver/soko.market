@@ -99,6 +99,48 @@ export function ContextualBusinessCards({
       body: "Pickup and delivery fulfillment",
       onClick: () => onNavigate("logistics"),
       value: "Track"
+    },
+    {
+      title: "Suppliers",
+      body: "Manage supplier contacts",
+      onClick: () => onNavigate("suppliers"),
+      value: "Manage"
+    },
+    {
+      title: "Sync",
+      body: "Review offline queue and conflicts",
+      onClick: () => onNavigate("sync"),
+      value: String(activeQueueCount)
+    },
+    {
+      title: "Runtime",
+      body: "Review agent sessions and turns",
+      onClick: () => onNavigate("runtime"),
+      value: "Sessions"
+    },
+    {
+      title: "Compliance",
+      body: "Manage export, verification, tax, and trust controls",
+      onClick: () => onNavigate("compliance"),
+      value: "Review"
+    },
+    {
+      title: "Beta",
+      body: "Review closed beta access, gates, support, and telemetry",
+      onClick: () => onNavigate("beta"),
+      value: "Review"
+    },
+    {
+      title: "Launch",
+      body: "Review public launch gates, checklist, incidents, and rollback",
+      onClick: () => onNavigate("launch"),
+      value: "Review"
+    },
+    {
+      title: "Agent & Settings",
+      body: "Agent and offline settings",
+      onClick: () => onNavigate("agent"),
+      value: "Settings"
     }
   ];
 
