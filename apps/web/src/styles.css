@@ -4329,9 +4329,12 @@ details.nested-form-section summary {
 }
 
 .agent-catalog-card > a {
+  align-items: center;
   color: #176a47;
+  display: inline-flex;
   font-size: 13px;
   font-weight: 700;
+  min-height: 24px;
 }
 
 .agent-catalog-card .agent-installed-label {
