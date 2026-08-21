@@ -37,20 +37,26 @@ describe("stacked secondary modules", () => {
     expect(modulePrimitive).toContain('appRoot?.setAttribute("inert", "")');
   });
 
-  it("opens secondary surfaces without adding history or changing conversation scroll", () => {
+  it("syncs every secondary surface to the URL/back-stack, not just chat and home", () => {
+    // Without the permanent tab bar, the URL and the browser back button are the only way a
+    // deep link (or a bookmark, or the browser back button itself) can express "this module is
+    // open" once a session has already navigated past the first paint - so navigateToView must
+    // push a real history entry for every view, not only chat/home.
     const navigateBlock = sourceFunction(navigationState, "navigateToView");
-    const secondaryBranch = navigateBlock.slice(
-      navigateBlock.indexOf('if (nextView !== "chat"'),
-      navigateBlock.indexOf("const nextRoute")
-    );
     const openProductBlock = sourceFunction(navigationState, "openProduct");
     const openAgentBlock = sourceFunction(navigationState, "openAgentProfile");
 
-    expect(secondaryBranch).toContain("return;");
-    expect(secondaryBranch).not.toContain("navigateToOwnerRoute");
-    expect(secondaryBranch).not.toContain("restoreScreenScroll");
-    expect(openProductBlock).not.toContain("navigateToOwnerRoute");
-    expect(openAgentBlock).not.toContain("navigateToOwnerRoute");
+    expect(navigateBlock).not.toContain('if (nextView !== "chat"');
+    expect(navigateBlock).toContain(
+      "navigateToOwnerRoute({ mode: nextMode, view: nextView }, { replace: options?.replace });"
+    );
+    expect(navigateBlock).toContain("restoreScreenScroll(screenStateCacheRef.current, nextView);");
+    expect(openProductBlock).toContain(
+      'navigateToOwnerRoute({ mode: "seller", view: "products", productId: product.id });'
+    );
+    expect(openAgentBlock).toContain(
+      'navigateToOwnerRoute({ mode: "seller", view: "agent", agentId: business.id });'
+    );
   });
 
   it("retains legacy links as module-preopened bootstrap payloads", () => {
