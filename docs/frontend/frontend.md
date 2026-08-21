@@ -1,7 +1,7 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted and fully implemented — Phases 1-3, 4a-4l (all ShellViews audited), and 5 (architectural enforcement) all shipped
-Date: 2026-08-19
+Status: roadmap adopted and fully implemented — Phases 1-3, 4a-4l (all ShellViews audited), 5 (architectural enforcement), and 6 (permanent tab bar removed) all shipped
+Date: 2026-08-21
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
 `soko-buy-unified-cart-mockup.html` (not committed to the repo; treat this
@@ -896,6 +896,62 @@ the script passes against the real repository today, fails and names the
 offending view when an undocumented `ShellView` is added to a fixture,
 and passes when a fixture only uses an already-approved subset).
 
+## Permanent tab bar removed (Phase 6 — implemented)
+
+Phases 1-5 audited every domain view and, where warranted, gave it a
+chat-invokable capability — but left `PrimaryNavigation.tsx`, a permanent
+6-item nav (Home/Stock/Sales/Docs/Reports/Settings, a desktop side rail
+that collapsed to a mobile bottom bar), rendered whenever
+`business !== null && mode === "seller"`. That directly contradicted this
+document's own opening decision — "Soko's permanent UI is reduced to
+`SokoShell → SessionList → ConversationSession → Composer →
+GeneratedSurface`" — even though every domain surface underneath it
+already rendered as a `StackedModule` overlay
+(`ChatSurface.tsx`'s `owner-management` module, fed
+`renderOwnerWorkspace(...)` as `children`) rather than a routed page. The
+tab bar, not the rendering mechanism, was the actual gap between the
+implementation and the mockups' "nothing is a route" thesis.
+
+Removing it required closing two gaps first, since without the tab bar's
+own visible active state the URL and the Workspace hub become the only
+way to reach or express "this module is open":
+
+- **Workspace hub coverage**: `ContextualBusinessCards.tsx` (the existing
+  Workspace quick-access panel, itself already a `StackedModule`) covered
+  10 of the 15 domain views. Added cards for the 7 it was missing
+  (suppliers, sync, runtime, compliance, beta, launch, agent) so every
+  destination the tab bar reached stays reachable.
+- **URL/deep-link sync**: `useNavigationState.ts`'s `navigateToView` only
+  called `navigateToOwnerRoute` (the real `pushState`/`replaceState`) for
+  `chat`/`home`; every domain view updated React state and returned
+  early, so deep links into a domain module only ever worked at cold
+  boot, never from in-app navigation or the browser back button. Now
+  unconditional for every view, and `openProduct`/`openAgentProfile` get
+  the same treatment for product-detail and agent-profile modules.
+
+With both gaps closed, `PrimaryNavigation.tsx` and its CSS were deleted
+outright. The commerce object model from the sell/buy mockups
+(`StatusBroadcastCard`, `StatusResultCard`, `UnifiedCartSummary`,
+`FulfilmentSplitCard`, contact-ranked BUY search, non-select-all contact
+picker, per-source fulfilment-handoff splitting) already matched the
+mockups going into this phase and needed no change.
+
+Regression tests: `tests/workspace-hub-coverage.test.ts` (new — fails if
+a future `ShellView` isn't wired into the Workspace hub, extracting the
+live `ShellView` union via the same `checkShellViewBoundary` helper
+Phase 5 introduced); `tests/stacked-modules.test.ts` (rewritten — the
+"opens secondary surfaces without adding history" test asserted the old,
+now-fixed behavior; it now pins the exact unconditional
+`navigateToOwnerRoute` call); `tests/frontend-user-guidance.test.ts`
+(rewritten — asserted against the now-deleted `PrimaryNavigation.tsx`;
+now asserts the same destinations are reachable via the Workspace hub).
+
+Note for `docs/architecture/frontend-modularization-roadmap.md`: its
+Phase 1 table still lists `PrimaryNavigation.tsx` as one of the 8
+components extracted in that effort — that record is accurate for its
+own point in time and is left untouched; this section is the record of
+its later removal.
+
 ## Target architecture
 
 ```text
@@ -1015,6 +1071,7 @@ not require touching `ChatSurface.tsx`'s render body again.
 | 4k    | Compliance + Beta + Launch: audited together (one hook, `useReadinessState.ts`, mirrors the backend's own combined-phase decision) - confirmed the doc's own prediction that these are internal-operator platform-posture dashboards, not merchant-facing actions. No card, no bug                                                                                                                                                      | **Implemented** (this change) — see "Compliance + Beta + Launch audit" above        |
 | 4l    | Reports + Notifications: audited together - both already advertised as chat-reachable via the help-prefixed path, but the bare `show_products`/`show_invoices`-style phrasing didn't work. Built the missing `show_reports`/`show_notifications` navigate intents, wired to the existing `getBusinessReport`/`listNotifications` store methods, and fixed a second confirmation-allowlist bug found only by testing the real HTTP route | **Implemented** (this change) — see "Reports + Notifications chat navigation" above |
 | 5     | Architectural enforcement: import-boundary guard preventing a new permanent `ShellView` from being added without an explicit documented exception; regression tests asserting the generated-surface registry, not a growing if-chain, is the only way `ChatSurface.tsx` picks a card component                                                                                                                                          | **Implemented** (this change) — see "Architectural enforcement" above               |
+| 6     | Permanent tab bar removed: filled the Workspace hub's 7 missing domain cards, made domain-module navigation URL/deep-link safe, then deleted `PrimaryNavigation.tsx` and its CSS - the sessions list is now the only fixed shell nav, matching this document's original decision statement                                                                                                                                              | **Implemented** (this change) — see "Permanent tab bar removed" above               |
 
 Legacy pages are removed only after their generated-surface replacement
 is proven working — never a big-bang cutover. A catalogue page may

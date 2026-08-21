@@ -11,7 +11,7 @@ import { checkShellViewBoundary } from "../scripts/check-shellview-boundary.mjs"
  * becomes silently unreachable in the UI.
  */
 describe("Workspace hub covers every navigable ShellView", () => {
-  it("has an onNavigate(\"<view>\") card for every non-chrome ShellView", () => {
+  it('has an onNavigate("<view>") card for every non-chrome ShellView', () => {
     const { liveShellViews } = checkShellViewBoundary(process.cwd());
     const source = readFileSync("apps/web/src/ContextualBusinessCards.tsx", "utf8");
     const navigatedViews = new Set(
