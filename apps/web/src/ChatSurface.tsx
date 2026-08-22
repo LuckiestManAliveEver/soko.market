@@ -711,24 +711,6 @@ export function ChatSurface({
                 ) : null}
                 {!message.deletedAt && !message.id.startsWith("welcome") ? (
                   <div className="message-actions">
-                    {message.author === "sokoclaw" ? (
-                      <>
-                        <button
-                          type="button"
-                          aria-label="Mark agent response correct"
-                          onClick={() => onAgentFeedback(message.id, true)}
-                        >
-                          Correct
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Flag agent response as incorrect"
-                          onClick={() => onAgentFeedback(message.id, false)}
-                        >
-                          Incorrect
-                        </button>
-                      </>
-                    ) : null}
                     <button type="button" onClick={() => onReply(message.id)}>
                       Reply
                     </button>
@@ -746,6 +728,30 @@ export function ChatSurface({
                     </button>
                     {activeMessageMenuId === message.id ? (
                       <div className="message-action-menu" role="menu">
+                        {message.author === "sokoclaw" ? (
+                          <>
+                            <button
+                              type="button"
+                              aria-label="Mark agent response correct"
+                              onClick={() => {
+                                setActiveMessageMenuId(null);
+                                onAgentFeedback(message.id, true);
+                              }}
+                            >
+                              Correct
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Flag agent response as incorrect"
+                              onClick={() => {
+                                setActiveMessageMenuId(null);
+                                onAgentFeedback(message.id, false);
+                              }}
+                            >
+                              Incorrect
+                            </button>
+                          </>
+                        ) : null}
                         {["👍", "❤️", "😂", "😮", "🙏"].map((emoji) => (
                           <button
                             key={emoji}
