@@ -35,17 +35,17 @@ export const cp10RuntimeEvalCommands: Cp10RuntimeEvalCommand[] = [
   {
     text: "add product sugar",
     expectedTool: "product.create",
-    expectedRequiresConfirmation: true
+    expectedRequiresConfirmation: false
   },
   {
     text: "ongeza bidhaa rice",
     expectedTool: "product.create",
-    expectedRequiresConfirmation: true
+    expectedRequiresConfirmation: false
   },
   {
     text: "add 10 packets of maize flour",
     expectedTool: "product.create",
-    expectedRequiresConfirmation: true
+    expectedRequiresConfirmation: false
   },
   {
     text: "add customer Mary",

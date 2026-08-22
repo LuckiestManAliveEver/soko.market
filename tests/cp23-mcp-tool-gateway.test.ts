@@ -72,7 +72,10 @@ describe("CP23 MCP tool gateway", () => {
       "soko.confirm_runtime_action"
     ]);
 
-    const proposedResponse = await mcpPost(
+    // product.create is auto-accepted (no confirmation gate), so it can't prove the confirmation
+    // gate works over MCP - create it first (completes in this same call), then use
+    // product.update (still confirmed) as the confirmation-gate proof below.
+    const createdResponse = await mcpPost(
       app,
       token.accessToken,
       toolCall(3, "soko.runtime_turn", {
@@ -81,17 +84,34 @@ describe("CP23 MCP tool gateway", () => {
       }),
       mcpSessionId
     );
+    const created = createdResponse.json().result.structuredContent;
+    expect(created.turn).toMatchObject({
+      status: "completed",
+      plan: { toolName: "product.create", requiresConfirmation: false }
+    });
+    expect(store.snapshot().products).toEqual([expect.objectContaining({ name: "Sugar" })]);
+
+    const proposedResponse = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(4, "soko.runtime_turn", {
+        shopId: shop.business.id,
+        runtimeSessionId: created.session.id,
+        message: "update product sugar ksh 200"
+      }),
+      mcpSessionId
+    );
     const proposed = proposedResponse.json().result.structuredContent;
     expect(proposed.turn).toMatchObject({
       status: "needs_confirmation",
-      plan: { toolName: "product.create", requiresConfirmation: true, executedAt: null }
+      plan: { toolName: "product.update", requiresConfirmation: true, executedAt: null }
     });
-    expect(store.snapshot().products).toEqual([]);
+    expect(store.snapshot().products[0]?.sellingPrice).not.toBe(200);
 
     const confirmedResponse = await mcpPost(
       app,
       token.accessToken,
-      toolCall(4, "soko.confirm_runtime_action", {
+      toolCall(5, "soko.confirm_runtime_action", {
         shopId: shop.business.id,
         runtimeSessionId: proposed.session.id,
         confirmationToken: proposed.turn.plan.confirmationToken
@@ -103,7 +123,9 @@ describe("CP23 MCP tool gateway", () => {
       status: "completed",
       verification: { confirmationSatisfied: true }
     });
-    expect(store.snapshot().products).toEqual([expect.objectContaining({ name: "Sugar" })]);
+    expect(store.snapshot().products).toEqual([
+      expect.objectContaining({ name: "Sugar", sellingPrice: 200 })
+    ]);
 
     const revoked = await app.inject({
       method: "DELETE",
@@ -114,7 +136,7 @@ describe("CP23 MCP tool gateway", () => {
     const afterRevocation = await mcpPost(
       app,
       token.accessToken,
-      { jsonrpc: "2.0", id: 5, method: "tools/list", params: {} },
+      { jsonrpc: "2.0", id: 6, method: "tools/list", params: {} },
       mcpSessionId
     );
     expect(afterRevocation.statusCode).toBe(401);

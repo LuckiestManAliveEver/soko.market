@@ -6,6 +6,7 @@ import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
 import { AppIcon } from "./AppIcon";
 import { ApiRequestError, apiFetch } from "./lib/api";
 import { authenticationPhoneCountries, PhoneNumberField } from "./PhoneNumberField";
+import { writePasskeyDeviceHint } from "./PhoneFirstAuthentication";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
 type SignupStage = "phone" | "profile" | "passkey";
@@ -143,6 +144,10 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
     await apiFetch("/auth/passkeys/register/verify", {
       method: "POST",
       body: { ceremonyId: challenge.ceremonyId, label: "Signup device", response }
+    });
+    writePasskeyDeviceHint({
+      identifier: createdSession.account.primaryAuthDestination,
+      label: createdSession.account.primaryAuthDestination
     });
     onAuthenticated(createdSession);
   }

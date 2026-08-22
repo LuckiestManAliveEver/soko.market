@@ -62,8 +62,8 @@ export function MarketplaceModeCard({
   return (
     <section className="generated-card-message mode-card" aria-label="Explore the marketplace">
       <div className="mode-card-heading">
-        <span className="mode-badge">Marketplace</span>
-        <h2>{isIntro ? "Welcome to Marketplace" : "What are you looking for?"}</h2>
+        <span className="mode-badge">Buy</span>
+        <h2>{isIntro ? "Buy on Soko" : "What are you looking for?"}</h2>
         <p>
           {isIntro
             ? "Find nearby shops, compare offers, and message sellers from this conversation."

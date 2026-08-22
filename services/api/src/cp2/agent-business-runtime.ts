@@ -59,10 +59,8 @@ export function defaultAgentInstructions(generalRule = ""): AgentInstructions {
     restrictedActions: [],
     substituteOutOfStockAllowed: false,
     ownerApprovalRequiredFor: [
-      "product.create",
       "product.update",
       "product.delete",
-      "product.stock_adjust",
       "product.field.add",
       "product.field.remove",
       "customer.create",

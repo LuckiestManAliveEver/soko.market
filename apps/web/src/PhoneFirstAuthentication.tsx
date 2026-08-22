@@ -8,7 +8,15 @@ import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
-type Stage = "entry" | "methods" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
+type Stage =
+  | "welcome-back-passkey"
+  | "entry"
+  | "methods"
+  | "pin"
+  | "password"
+  | "mfa"
+  | "recovery-reset"
+  | "reset-pin";
 type IdentifierType = "phone" | "email" | "store";
 
 interface LoginMethods {
@@ -23,6 +31,37 @@ export interface RememberedAccount {
   type: "phone" | "email";
   identifier: string;
   label: string;
+}
+
+// A device-local hint that this browser has previously created or used a passkey - deliberately
+// separate from ownerAuthStorageKey (soko-application-shared.ts), which is scoped to PIN-account
+// memory only (see the comment at its read site in SokoApplication.tsx). Lets the login screen
+// skip straight to "Unlock with passkey" instead of asking for an identifier again, without ever
+// claiming to know whether a credential still exists on this device - only WebAuthn itself can
+// answer that, when the ceremony actually runs.
+const passkeyDeviceHintStorageKey = "soko.chatFirst.passkeyDeviceHint";
+
+export interface PasskeyDeviceHint {
+  identifier: string;
+  label: string;
+}
+
+export function readPasskeyDeviceHint(): PasskeyDeviceHint | null {
+  const stored = localStorage.getItem(passkeyDeviceHintStorageKey);
+  if (stored === null) return null;
+  try {
+    const parsed = JSON.parse(stored) as Partial<PasskeyDeviceHint>;
+    if (typeof parsed.identifier === "string" && typeof parsed.label === "string") {
+      return { identifier: parsed.identifier, label: parsed.label };
+    }
+  } catch {
+    localStorage.removeItem(passkeyDeviceHintStorageKey);
+  }
+  return null;
+}
+
+export function writePasskeyDeviceHint(hint: PasskeyDeviceHint): void {
+  localStorage.setItem(passkeyDeviceHintStorageKey, JSON.stringify(hint));
 }
 
 interface Props {
@@ -49,7 +88,10 @@ export function PhoneFirstAuthentication({
   const [identifier, setIdentifier] = useState(
     startsWithRemembered ? (remembered?.identifier ?? "") : ""
   );
-  const [stage, setStage] = useState<Stage>("entry");
+  const hint = readPasskeyDeviceHint();
+  const [stage, setStage] = useState<Stage>(() =>
+    hint !== null && browserSupportsWebAuthn() ? "welcome-back-passkey" : "entry"
+  );
   const [loginMethods, setLoginMethods] = useState<LoginMethods | null>(null);
   const [transactionId, setTransactionId] = useState("");
   const [code, setCode] = useState("");
@@ -263,11 +305,10 @@ export function PhoneFirstAuthentication({
     onAuthenticated(session);
   }
 
-  async function usePasskey() {
-    if (!browserSupportsWebAuthn()) {
-      setMessage("Passkeys are unavailable in this browser.");
-      return;
-    }
+  // Shared by usePasskey() (methods stage, errors surfaced via run()) and the welcome-back fast
+  // path (errors handled separately - see unlockWithPasskeyFastPath). Refreshes the device hint
+  // on every successful login, not just on first creation, so it stays current.
+  async function performPasskeyLogin(): Promise<AuthSessionView> {
     const challenge = await apiFetch<{
       ceremonyId: string;
       options: Parameters<typeof startAuthentication>[0]["optionsJSON"];
@@ -277,11 +318,54 @@ export function PhoneFirstAuthentication({
       method: "POST",
       body: { ceremonyId: challenge.ceremonyId, response }
     });
-    onAuthenticated(session);
+    writePasskeyDeviceHint({
+      identifier: session.account.primaryAuthDestination,
+      label: session.account.primaryAuthDestination
+    });
+    return session;
+  }
+
+  async function usePasskey() {
+    if (!browserSupportsWebAuthn()) {
+      setMessage("Passkeys are unavailable in this browser.");
+      return;
+    }
+    onAuthenticated(await performPasskeyLogin());
+  }
+
+  // No identifier was ever entered on this fast path, so there is nothing to pre-fill from a
+  // failed attempt except the hint itself - falls through to ordinary identifier entry exactly as
+  // it works today, silently. WebAuthn deliberately cannot distinguish "no discoverable
+  // credential on this device" from "the user cancelled the picker" (NotAllowedError covers
+  // both), so every rejection is treated as the common, unremarkable case rather than an error to
+  // surface.
+  function fallThroughToEntry() {
+    if (hint !== null) {
+      setIdentifierType(hint.identifier.includes("@") ? "email" : "phone");
+      setIdentifier(hint.identifier);
+    }
+    setMessage("");
+    setStage("entry");
+  }
+
+  async function unlockWithPasskeyFastPath() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      onAuthenticated(await performPasskeyLogin());
+    } catch {
+      fallThroughToEntry();
+    } finally {
+      setBusy(false);
+    }
   }
 
   function goBack() {
     setMessage("");
+    if (stage === "welcome-back-passkey") {
+      onCancel();
+      return;
+    }
     if (stage === "entry") {
       onCancel();
       return;
@@ -301,19 +385,21 @@ export function PhoneFirstAuthentication({
   const stepNumber = stage === "entry" ? 1 : 2;
   const stepTotal = 2;
   const heading =
-    stage === "entry"
+    stage === "welcome-back-passkey"
       ? "Welcome back"
-      : stage === "methods"
-        ? "Choose how to log in"
-        : stage === "pin"
-          ? "Use your account PIN"
-          : stage === "password"
-            ? "Log in with password"
-            : stage === "mfa"
-              ? "Security check"
-              : stage === "reset-pin"
-                ? "Choose a new PIN"
-                : "Recover your account";
+      : stage === "entry"
+        ? "Welcome back"
+        : stage === "methods"
+          ? "Choose how to log in"
+          : stage === "pin"
+            ? "Use your account PIN"
+            : stage === "password"
+              ? "Log in with password"
+              : stage === "mfa"
+                ? "Security check"
+                : stage === "reset-pin"
+                  ? "Choose a new PIN"
+                  : "Recover your account";
 
   return (
     <main className="auth-onboarding" aria-busy={busy}>
@@ -330,21 +416,29 @@ export function PhoneFirstAuthentication({
         </header>
 
         <div className="auth-onboarding-content">
-          <div
-            className="auth-progress auth-progress-two"
-            aria-label={`Step ${stepNumber} of ${stepTotal}`}
-          >
-            {Array.from({ length: stepTotal }, (_, index) => (
-              <span className={index < stepNumber ? "complete" : ""} key={index} />
-            ))}
-          </div>
+          {stage === "welcome-back-passkey" ? null : (
+            <div
+              className="auth-progress auth-progress-two"
+              aria-label={`Step ${stepNumber} of ${stepTotal}`}
+            >
+              {Array.from({ length: stepTotal }, (_, index) => (
+                <span className={index < stepNumber ? "complete" : ""} key={index} />
+              ))}
+            </div>
+          )}
           <div className="auth-onboarding-heading">
-            <p className="eyebrow">LOG IN</p>
+            <p className="eyebrow">
+              {stage === "welcome-back-passkey" ? "WELCOME BACK" : "LOG IN"}
+            </p>
             <h1 id="auth-onboarding-title">{heading}</h1>
             <p>
-              {stage === "entry"
-                ? "Use your phone number, email, or Soko ID to get back to your conversations."
-                : message}
+              {stage === "welcome-back-passkey"
+                ? `This device already holds a passkey for ${
+                    hint?.identifier ?? "this account"
+                  }. Use it to continue — nothing to type.`
+                : stage === "entry"
+                  ? "Use your phone number, email, or Soko ID to get back to your conversations."
+                  : message}
             </p>
           </div>
 
@@ -367,6 +461,28 @@ export function PhoneFirstAuthentication({
                   {method === "phone" ? "Phone" : method === "email" ? "Email" : "Soko ID"}
                 </button>
               ))}
+            </div>
+          ) : null}
+
+          {stage === "welcome-back-passkey" ? (
+            <div className="auth-fields">
+              <button
+                className="auth-primary-button"
+                type="button"
+                disabled={busy}
+                aria-busy={busy}
+                onClick={() => void unlockWithPasskeyFastPath()}
+              >
+                {busy ? "Unlocking…" : "Unlock with passkey"}
+              </button>
+              <button
+                className="auth-text-button"
+                type="button"
+                disabled={busy}
+                onClick={fallThroughToEntry}
+              >
+                Use password instead
+              </button>
             </div>
           ) : null}
 
