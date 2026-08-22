@@ -308,7 +308,10 @@ export function ChatSurface({
           aria-label="Conversations"
         >
           <div className="messenger-inbox-heading">
-            <h2>{isSessionListView ? "Sessions" : "Messages"}</h2>
+            <div>
+              <span>{isSessionListView ? "Your workspace" : "Your network"}</span>
+              <h2>{isSessionListView ? "Sessions" : "Messages"}</h2>
+            </div>
             {isSessionListView ? (
               <button
                 type="button"
@@ -336,7 +339,7 @@ export function ChatSurface({
                 type="search"
                 value={inboxSearch}
                 onChange={(event) => setInboxSearch(event.target.value)}
-                placeholder="Search messages"
+                placeholder={isSessionListView ? "Search sessions" : "Search messages"}
               />
             </label>
             <button
@@ -437,13 +440,45 @@ export function ChatSurface({
                     onInboxOpenChange(false);
                   }}
                 >
-                  <span>
-                    <strong>{conversation.title ?? "Soko agent"}</strong>
+                  <span
+                    className={`conversation-avatar ${
+                      conversation.kind === "personal"
+                        ? conversation.activeShopId === null
+                          ? "buy"
+                          : "sell"
+                        : "chat"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {(conversation.title ?? "Soko").trim().slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="conversation-copy">
+                    <span className="conversation-title-line">
+                      <strong>{conversation.title ?? "Soko agent"}</strong>
+                      <time dateTime={conversation.updatedAt}>
+                        {formatMessageTime(conversation.updatedAt)}
+                      </time>
+                    </span>
                     <small>
                       {conversation.lastMessage === null
                         ? "No messages yet"
                         : conversationMessageText(conversation.lastMessage)}
                     </small>
+                  </span>
+                  <span
+                    className={`session-badge ${
+                      conversation.kind === "personal"
+                        ? conversation.activeShopId === null
+                          ? "buy"
+                          : "sell"
+                        : "chat"
+                    }`}
+                  >
+                    {conversation.kind === "personal"
+                      ? conversation.activeShopId === null
+                        ? "Buy"
+                        : "Sell"
+                      : "Chat"}
                   </span>
                   {conversation.unreadCount > 0 ? (
                     <b aria-label={`${conversation.unreadCount} unread`}>
@@ -486,9 +521,18 @@ export function ChatSurface({
       <section className="messenger-thread" aria-label={selectedConversation?.title ?? "Chat"}>
         {showMessageThread ? (
           <header className="messenger-thread-header">
+            <span
+              className={`thread-avatar ${mode === "seller" ? "sell" : "buy"}`}
+              aria-hidden="true"
+            >
+              {(selectedConversation?.title ?? agent.name).trim().slice(0, 1).toUpperCase()}
+            </span>
             <div>
               <strong>{selectedConversation?.title ?? agent.name}</strong>
-              <small>{isContactTyping ? "typing…" : securityLabel}</small>
+              <small>
+                {mode === "seller" ? "Sell session" : "Buy session"} ·{" "}
+                {isContactTyping ? "typing…" : securityLabel}
+              </small>
             </div>
             <button className="secondary" type="button" onClick={onRetryMessages}>
               Retry failed
@@ -832,6 +876,7 @@ export function ChatSurface({
         </div>
         <StackedModule
           moduleId="owner-management"
+          className={mode === "seller" ? "sell-module" : "buy-module"}
           open={activeModuleView !== null}
           title={activeModuleView === null ? "Soko" : viewLabel(activeModuleView)}
           onClose={onBackToChat}
@@ -840,6 +885,7 @@ export function ChatSurface({
         </StackedModule>
         <StackedModule
           moduleId="marketplace"
+          className="buy-module"
           open={activeModuleView === null && mode === "marketplace" && marketplaceShortcutOpen}
           title="Marketplace"
           onClose={onCloseMarketplace}
@@ -885,6 +931,7 @@ export function ChatSurface({
         </StackedModule>
         <StackedModule
           moduleId="workspace"
+          className={mode === "seller" ? "sell-module" : "buy-module"}
           open={workspaceOpen}
           title={workspacePanelTitle(workspaceCardView)}
           onClose={onCloseWorkspace}

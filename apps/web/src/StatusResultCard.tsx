@@ -15,14 +15,21 @@ export function StatusResultCard(props: {
   const { result } = props;
   return (
     <div className="buy-result-card">
-      <span className={`buy-source-badge buy-source-${result.sourceKind}`}>
-        {result.sourceKind === "contact" ? "From your contact" : "Shop"}: {result.sourceLabel}
+      <span className={`buy-result-thumb buy-result-thumb-${result.sourceKind}`} aria-hidden="true">
+        {result.sourceKind === "contact" ? "C" : "S"}
       </span>
-      <strong>{result.title}</strong>
-      <span>{result.price === null ? "Price on request" : `KSh ${result.price}`}</span>
+      <span className="buy-result-copy">
+        <span className={`buy-source-badge buy-source-${result.sourceKind}`}>
+          {result.sourceKind === "contact" ? "Contact" : "Marketplace"} · {result.sourceLabel}
+        </span>
+        <strong>{result.title}</strong>
+        <span className="buy-result-price">
+          {result.price === null ? "Price on request" : `KSh ${result.price}`}
+        </span>
+      </span>
       {props.isAuthenticated ? (
         <button type="button" onClick={() => props.onAddToCart(result)}>
-          Add to cart
+          + Add
         </button>
       ) : null}
     </div>

@@ -1571,8 +1571,24 @@ export function OwnerApp() {
           className={isAuthScreen ? "app-frame auth-frame" : "app-frame"}
           data-shell-instance={shellInstanceIdRef.current}
           data-capability-profile={capabilitySettingsRef.current.profile}
+          data-commerce-mode={mode === "seller" ? "sell" : "buy"}
+          data-shell-view={view}
         >
           <header className={isAuthScreen ? "top-bar auth-top-bar" : "top-bar"}>
+            {!isAuthScreen ? (
+              <button
+                className="shell-menu-button"
+                type="button"
+                aria-label="Open sessions and messages"
+                aria-expanded={isMessagingInboxOpen}
+                onClick={() => {
+                  if (view !== "chat" && view !== "home") returnToChat();
+                  setIsMessagingInboxOpen((open) => !open);
+                }}
+              >
+                <span aria-hidden="true" />
+              </button>
+            ) : null}
             {business === null ? (
               <div className="auth-brand-title">
                 <AppIcon className="auth-header-icon" />
@@ -1588,7 +1604,7 @@ export function OwnerApp() {
               >
                 <AppIcon className="logo-mark" />
                 <span>
-                  <strong>Soko.market</strong>
+                  <strong>SOKO</strong>
                   <span>{business.name}</span>
                   <small>{shouldShowAuth ? "Saved workspace loaded" : agentSettings.name}</small>
                   <small>{business.sokoId}</small>
@@ -1606,23 +1622,34 @@ export function OwnerApp() {
               </button>
             ) : null}
             {!isAuthScreen ? (
-              <div className="header-actions">
-                {installPrompt.canInstall ? (
-                  <button
-                    className="header-action-button workspace"
-                    type="button"
-                    data-testid="install-app-button"
-                    onClick={() => void installPrompt.installApp()}
-                  >
-                    Install app
-                  </button>
-                ) : null}
+              <button
+                className="icon-button shell-agent-button"
+                type="button"
+                onClick={() => {
+                  if (business === null) {
+                    openAuth();
+                  } else {
+                    openAgentProfile();
+                  }
+                }}
+                aria-label={business === null ? "Owner login" : "Account and agent settings"}
+                data-testid={business === null ? undefined : "agent-profile-link"}
+                onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
+                onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
+              >
+                <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
+              </button>
+            ) : null}
+          </header>
+
+          {!isAuthScreen ? (
+            <nav className="shell-mode-bar" aria-label="Commerce mode and messages">
+              <div className="commerce-mode-toggle" data-mode={mode === "seller" ? "sell" : "buy"}>
                 <button
-                  className={`header-action-button marketplace ${
-                    mode === "marketplace" ? "mode-active" : ""
-                  }`}
+                  className={`header-action-button marketplace ${mode === "marketplace" ? "mode-active" : ""}`}
                   type="button"
                   data-testid="marketplace-button"
+                  aria-label="Marketplace"
                   aria-expanded={mode === "marketplace" && isMarketplaceShortcutOpen}
                   onClick={() => {
                     if (mode === "marketplace") {
@@ -1635,7 +1662,7 @@ export function OwnerApp() {
                     switchMode("marketplace");
                   }}
                 >
-                  Marketplace
+                  Buy
                 </button>
                 <button
                   className="header-action-button messages"
@@ -1660,8 +1687,20 @@ export function OwnerApp() {
                   onClick={() => switchMode(mode === "seller" ? "marketplace" : "seller")}
                   aria-pressed={mode === "seller"}
                 >
-                  {mode === "seller" ? "Shop" : "Sell"}
+                  Sell
                 </button>
+              </div>
+              <div className="shell-secondary-actions">
+                {installPrompt.canInstall ? (
+                  <button
+                    className="header-action-button workspace"
+                    type="button"
+                    data-testid="install-app-button"
+                    onClick={() => void installPrompt.installApp()}
+                  >
+                    Install app
+                  </button>
+                ) : null}
                 {session === null ? (
                   <>
                     <button
@@ -1684,7 +1723,7 @@ export function OwnerApp() {
                 ) : null}
                 {business !== null && mode === "seller" ? (
                   <button
-                    className="header-action-button"
+                    className="header-action-button workspace"
                     type="button"
                     onClick={() => setIsWorkspacePanelOpen(true)}
                     aria-haspopup="dialog"
@@ -1692,26 +1731,9 @@ export function OwnerApp() {
                     Workspace
                   </button>
                 ) : null}
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => {
-                    if (business === null) {
-                      openAuth();
-                    } else {
-                      openAgentProfile();
-                    }
-                  }}
-                  aria-label={business === null ? "Owner login" : "Account and agent settings"}
-                  data-testid={business === null ? undefined : "agent-profile-link"}
-                  onPointerEnter={() => prefetchOwnerView("agent", business?.id ?? null)}
-                  onFocus={() => prefetchOwnerView("agent", business?.id ?? null)}
-                >
-                  <span aria-hidden="true">{userLabel.slice(0, 1).toUpperCase()}</span>
-                </button>
               </div>
-            ) : null}
-          </header>
+            </nav>
+          ) : null}
 
           {!isAuthScreen &&
           statusMessage.length > 0 &&

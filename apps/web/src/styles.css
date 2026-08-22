@@ -5764,3 +5764,1207 @@ details.nested-form-section summary {
     transition: none;
   }
 }
+
+/* Soko conversation shell --------------------------------------------------
+   Visual language shared by the shell, BUY flow, and SELL/status flow. */
+:root {
+  --soko-paper: #fbf4e9;
+  --soko-paper-dim: #f3eada;
+  --soko-ink: #1c1730;
+  --soko-ink-soft: #635c7a;
+  --soko-ink-faint: #9c93b0;
+  --soko-line: rgb(28 23 48 / 12%);
+  --soko-line-strong: rgb(28 23 48 / 22%);
+  --soko-accent: #e0117f;
+  --soko-accent-soft: #fbe1ef;
+  --soko-buy: #1f8f4e;
+  --soko-buy-soft: #e1f3e7;
+  --soko-buy-tint: #f1faf4;
+  --soko-sell: #b4780f;
+  --soko-sell-soft: #fbeac9;
+  --soko-sell-tint: #fcf6e7;
+  --soko-bezel: #100c1b;
+  --soko-display-font:
+    "Space Grotesk", "Avenir Next", Avenir, Inter, ui-sans-serif, system-ui, sans-serif;
+  --soko-mono-font: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+body {
+  background:
+    radial-gradient(circle at 12% 5%, rgb(224 17 127 / 7%), transparent 32rem),
+    radial-gradient(circle at 88% 100%, rgb(31 143 78 / 6%), transparent 34rem),
+    var(--soko-paper-dim);
+  color: var(--soko-ink);
+}
+
+.app-frame:not(.auth-frame) {
+  background: var(--soko-paper);
+  border-inline: 1px solid var(--soko-line);
+  box-shadow: 0 0 80px rgb(28 23 48 / 8%);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  max-width: 1180px;
+}
+
+.app-frame:not(.auth-frame)[data-commerce-mode="buy"] .chat-workspace-shell {
+  background: var(--soko-buy-tint);
+}
+
+.app-frame:not(.auth-frame)[data-commerce-mode="sell"] .chat-workspace-shell {
+  background: var(--soko-sell-tint);
+}
+
+.app-frame:not(.auth-frame) .top-bar {
+  background: color-mix(in srgb, var(--soko-paper) 94%, transparent);
+  border-bottom: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  min-height: 62px;
+  padding: calc(9px + env(safe-area-inset-top, 0px)) 16px 8px;
+}
+
+.shell-menu-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+  width: 40px;
+}
+
+.shell-menu-button span,
+.shell-menu-button span::before,
+.shell-menu-button span::after {
+  background: var(--soko-ink);
+  border-radius: 99px;
+  content: "";
+  display: block;
+  height: 1.5px;
+  position: relative;
+  width: 19px;
+}
+
+.shell-menu-button span::before,
+.shell-menu-button span::after {
+  left: 0;
+  position: absolute;
+}
+
+.shell-menu-button span::before {
+  top: -6px;
+}
+
+.shell-menu-button span::after {
+  top: 6px;
+}
+
+.app-frame:not(.auth-frame) .brand-lockup {
+  display: flex;
+  justify-content: center;
+  justify-self: center;
+  min-height: 40px;
+}
+
+.app-frame:not(.auth-frame) .brand-lockup .logo-mark,
+.app-frame:not(.auth-frame) .brand-lockup > span > span,
+.app-frame:not(.auth-frame) .brand-lockup small {
+  display: none;
+}
+
+.app-frame:not(.auth-frame) .brand-lockup strong {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.shell-agent-button.icon-button {
+  background: linear-gradient(145deg, #ff3d9f, #a70a62);
+  border: 2px solid rgb(255 255 255 / 75%);
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgb(224 17 127 / 25%);
+  color: #fff;
+  height: 40px;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0;
+  width: 40px;
+}
+
+.shell-mode-bar {
+  align-items: center;
+  background: color-mix(in srgb, var(--soko-paper) 96%, transparent);
+  border-bottom: 1px solid var(--soko-line);
+  display: flex;
+  gap: 10px;
+  min-height: 58px;
+  padding: 7px 16px 10px;
+  position: relative;
+  z-index: 9;
+}
+
+.commerce-mode-toggle {
+  background: var(--soko-paper-dim);
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  display: grid;
+  flex: 0 0 224px;
+  gap: 3px;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  position: relative;
+}
+
+.commerce-mode-toggle .header-action-button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+  min-height: 36px;
+  min-width: 0;
+  padding: 7px 18px;
+}
+
+.commerce-mode-toggle .marketplace {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.commerce-mode-toggle [data-testid="sell-button"] {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.commerce-mode-toggle .mode-active {
+  background: var(--soko-ink);
+  box-shadow: 0 3px 10px rgb(28 23 48 / 16%);
+  color: #fff;
+}
+
+.commerce-mode-toggle .messages {
+  background: var(--soko-paper);
+  border: 1px solid var(--soko-line-strong);
+  color: var(--soko-ink);
+  grid-column: auto;
+  left: calc(100% + 10px);
+  min-width: 86px;
+  position: absolute;
+  top: 3px;
+}
+
+.shell-secondary-actions {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  margin-left: 88px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shell-secondary-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.shell-secondary-actions .header-action-button,
+.shell-secondary-actions .header-auth-button {
+  background: transparent;
+  border: 1px solid var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  font-size: 11px;
+  min-height: 36px;
+  padding: 7px 11px;
+}
+
+.shell-secondary-actions .workspace {
+  background: var(--soko-ink);
+  border-color: var(--soko-ink);
+  color: #fff;
+}
+
+.app-frame:not(.auth-frame) .app-credits {
+  background: var(--soko-paper);
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 5px 14px calc(7px + env(safe-area-inset-bottom, 0px));
+  text-transform: uppercase;
+}
+
+.app-frame:not(.auth-frame) .build-identity {
+  display: none;
+}
+
+/* Session list and conversation */
+.app-frame:not(.auth-frame) .chat-surface {
+  color: var(--soko-ink);
+}
+
+.app-frame:not(.auth-frame) .messenger-inbox {
+  background: var(--soko-paper);
+  border-color: var(--soko-line);
+}
+
+.messenger-inbox-heading {
+  padding: 18px 16px 10px;
+}
+
+.messenger-inbox-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.messenger-inbox-heading > div > span {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.messenger-inbox-heading h2 {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.messenger-inbox-heading > button {
+  background: var(--soko-accent);
+  border-radius: 999px;
+  box-shadow: 0 5px 14px rgb(224 17 127 / 18%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  min-height: 36px;
+  padding: 7px 13px;
+}
+
+.messenger-inbox-tools {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0 12px 10px;
+}
+
+.messenger-inbox-tools input,
+.new-conversation-form input,
+.new-session-form input {
+  background: rgb(255 255 255 / 58%);
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  min-height: 39px;
+  padding: 8px 13px;
+}
+
+.messenger-inbox-tools > button {
+  background: transparent;
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  font-size: 0;
+  min-height: 39px;
+  min-width: 39px;
+  padding: 0;
+}
+
+.messenger-inbox-tools > button::before {
+  content: "●";
+  font-size: 12px;
+}
+
+.conversation-list {
+  padding: 3px 8px 18px;
+}
+
+.conversation-item {
+  border-bottom: 1px solid var(--soko-line);
+  gap: 0;
+  padding: 4px;
+}
+
+.conversation-item.active {
+  background: color-mix(in srgb, var(--soko-accent-soft) 62%, transparent);
+  border-radius: 13px;
+}
+
+.conversation-select {
+  color: var(--soko-ink);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  min-height: 62px;
+  padding: 8px;
+}
+
+.conversation-avatar,
+.thread-avatar,
+.buy-result-thumb,
+.cart-item-thumb,
+.status-contact-avatar {
+  align-items: center;
+  background: linear-gradient(135deg, var(--soko-ink-soft), #443e5c);
+  border-radius: 11px;
+  color: #fff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+  font-weight: 700;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.conversation-avatar.buy,
+.thread-avatar.buy,
+.buy-result-thumb-contact,
+.cart-item-thumb-contact {
+  background: linear-gradient(135deg, #2cad63, #166238);
+}
+
+.conversation-avatar.sell,
+.thread-avatar.sell,
+.buy-result-thumb-catalogue,
+.cart-item-thumb-catalogue {
+  background: linear-gradient(135deg, #cf911f, #8c5c09);
+}
+
+.conversation-avatar.chat,
+.status-contact-avatar {
+  background: linear-gradient(135deg, #f23596, #8a0f5c);
+}
+
+.conversation-copy {
+  align-self: center;
+  display: grid !important;
+  gap: 4px;
+  min-width: 0;
+}
+
+.conversation-title-line {
+  align-items: baseline;
+  display: flex !important;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.conversation-title-line strong {
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-title-line time {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.conversation-select small {
+  color: var(--soko-ink-soft);
+  font-size: 11px;
+  max-width: none;
+}
+
+.session-badge {
+  align-self: center;
+  border-radius: 999px;
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.session-badge.buy {
+  background: var(--soko-buy-soft);
+  color: var(--soko-buy);
+}
+
+.session-badge.sell {
+  background: var(--soko-sell-soft);
+  color: var(--soko-sell);
+}
+
+.session-badge.chat {
+  background: var(--soko-accent-soft);
+  color: var(--soko-accent);
+}
+
+.conversation-select b {
+  grid-column: 3;
+  background: var(--soko-accent);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+}
+
+.conversation-actions {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding-inline: 54px;
+  transition:
+    max-height 160ms ease,
+    opacity 160ms ease;
+}
+
+.conversation-item:hover .conversation-actions,
+.conversation-item:focus-within .conversation-actions {
+  max-height: 40px;
+  opacity: 1;
+}
+
+.new-session-form {
+  border-bottom: 1px solid var(--soko-line);
+  display: grid;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+
+.new-session-form label {
+  color: var(--soko-ink-soft);
+  display: grid;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 5px;
+}
+
+.messenger-thread {
+  background: transparent;
+}
+
+.messenger-thread-header {
+  background: color-mix(in srgb, var(--soko-paper) 90%, transparent);
+  border-color: var(--soko-line);
+  justify-content: flex-start;
+  min-height: 59px;
+  padding: 8px 16px;
+}
+
+.thread-avatar {
+  border-radius: 10px;
+  height: 36px;
+  width: 36px;
+}
+
+.messenger-thread-header > div {
+  flex: 1;
+  gap: 2px;
+}
+
+.messenger-thread-header strong {
+  font-family: var(--soko-display-font);
+  font-size: 13px;
+}
+
+.messenger-thread-header small,
+.message-meta,
+.message-context {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+}
+
+.messenger-thread-header > button {
+  background: transparent;
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  font-size: 9px;
+  min-height: 31px;
+  padding: 5px 9px;
+}
+
+.message-list {
+  gap: 13px;
+  padding: 18px clamp(14px, 4vw, 42px);
+}
+
+.message {
+  border-radius: 15px;
+  gap: 7px;
+  padding: 12px 14px;
+}
+
+.message.sokoclaw,
+.message.contact {
+  background: rgb(255 255 255 / 82%);
+  border: 1px solid var(--soko-line);
+  box-shadow: 0 7px 22px rgb(28 23 48 / 5%);
+}
+
+.message.merchant {
+  background: var(--soko-ink);
+  border: 1px solid var(--soko-ink);
+  color: #fff;
+}
+
+.message.merchant p,
+.message.merchant .message-meta,
+.message.merchant .message-actions button {
+  color: rgb(255 255 255 / 78%);
+}
+
+.message p {
+  color: var(--soko-ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.message-author {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 10px !important;
+}
+
+.message.merchant .message-author {
+  color: #fff;
+}
+
+.message-actions button,
+.conversation-actions button {
+  color: var(--soko-accent);
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+}
+
+/* Composer */
+.app-frame:not(.auth-frame) .composer {
+  background: color-mix(in srgb, var(--soko-paper) 95%, transparent);
+  border-color: var(--soko-line);
+  gap: 7px;
+  padding: 10px clamp(10px, 2vw, 18px) calc(10px + env(safe-area-inset-bottom, 0px));
+}
+
+.app-frame:not(.auth-frame) .composer .icon-button {
+  background: transparent;
+  border-color: var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  min-height: 40px;
+  min-width: 40px;
+}
+
+.composer-input span {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.composer-input textarea {
+  background: rgb(255 255 255 / 76%);
+  border-color: var(--soko-line-strong);
+  border-radius: 999px;
+  color: var(--soko-ink);
+  min-height: 43px;
+  padding: 10px 16px;
+}
+
+.composer .send-button {
+  background: var(--soko-accent);
+  border-radius: 999px;
+  box-shadow: 0 5px 14px rgb(224 17 127 / 22%);
+  min-height: 43px;
+  min-width: 43px;
+  padding: 8px 12px;
+}
+
+.composer .sms-send-button,
+.composer .share-send-button {
+  background: transparent;
+  border-color: var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  min-height: 20px;
+  padding: 3px 7px;
+}
+
+/* Stacked conversational modules */
+.stacked-module-backdrop {
+  background: rgb(16 12 27 / 54%);
+  backdrop-filter: blur(5px);
+}
+
+.stacked-module {
+  background: var(--soko-paper);
+  border: 1px solid rgb(255 255 255 / 50%);
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -22px 70px rgb(16 12 27 / 22%);
+  color: var(--soko-ink);
+}
+
+.stacked-module.buy-module {
+  background: var(--soko-buy-tint);
+}
+
+.stacked-module.sell-module {
+  background: var(--soko-sell-tint);
+}
+
+.stacked-module-heading {
+  background: color-mix(in srgb, var(--soko-paper) 91%, transparent);
+  border-color: var(--soko-line);
+  padding-inline: 18px;
+}
+
+.stacked-module-heading h2 {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 16px;
+}
+
+.stacked-module-heading button {
+  background: transparent;
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink);
+}
+
+.stacked-module-drag-handle {
+  background: var(--soko-line-strong);
+}
+
+.stacked-module-content {
+  padding: clamp(12px, 2.4vw, 24px);
+}
+
+.generated-card-message,
+.record-form,
+.record-list,
+.shop-discovery-card,
+.public-shop-card {
+  background: rgb(255 255 255 / 78%);
+  border-color: var(--soko-line);
+  border-radius: 14px;
+  box-shadow: 0 9px 28px rgb(28 23 48 / 5%);
+}
+
+.mode-card {
+  gap: 16px;
+  max-width: 760px;
+}
+
+.mode-card-heading h2,
+.section-heading h3 {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  letter-spacing: -0.025em;
+}
+
+.mode-card-heading p,
+.section-heading p,
+.shell-note {
+  color: var(--soko-ink-soft);
+}
+
+.mode-badge {
+  background: var(--soko-buy-soft);
+  border-radius: 999px;
+  color: #116535;
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  justify-self: start;
+  letter-spacing: 0.08em;
+  padding: 5px 8px;
+}
+
+.product-capture-card .eyebrow,
+.status-broadcast-card .eyebrow,
+.status-broadcast-composer .eyebrow {
+  background: var(--soko-sell-soft);
+  border-radius: 999px;
+  color: #744800;
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  justify-self: start;
+  letter-spacing: 0.08em;
+  padding: 5px 8px;
+}
+
+/* BUY: search, mixed-source results, and unified cart */
+.buy-search-form {
+  background: var(--soko-ink);
+  border-radius: 14px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px;
+}
+
+.buy-search-form input {
+  background: transparent;
+  border: 0;
+  color: #fff;
+  min-width: 0;
+  outline: 0;
+  padding: 9px 11px;
+}
+
+.buy-search-form input::placeholder {
+  color: rgb(255 255 255 / 55%);
+}
+
+.buy-search-form button,
+.buy-result-card > button,
+.unified-cart-summary > button {
+  background: var(--soko-buy);
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.buy-feed {
+  display: grid;
+  gap: 8px;
+}
+
+.buy-result-card {
+  align-items: center;
+  background: rgb(255 255 255 / 82%);
+  border: 1px solid var(--soko-line);
+  border-radius: 13px;
+  display: grid;
+  gap: 11px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  padding: 10px;
+}
+
+.buy-result-thumb {
+  height: 42px;
+  width: 42px;
+}
+
+.buy-result-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.buy-result-copy > strong {
+  font-family: var(--soko-display-font);
+  font-size: 12px;
+}
+
+.buy-source-badge {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.buy-source-contact {
+  color: var(--soko-accent);
+}
+
+.buy-source-catalogue {
+  color: var(--soko-buy);
+}
+
+.buy-result-price,
+.cart-item-price {
+  color: var(--soko-buy);
+  font-family: var(--soko-mono-font);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.unified-cart-summary {
+  background: rgb(255 255 255 / 86%);
+  gap: 8px;
+}
+
+.cart-source-group {
+  display: grid;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.cart-source-group > .buy-source-badge {
+  border-bottom: 1px dashed var(--soko-line-strong);
+  color: var(--soko-ink-faint);
+  padding: 0 2px 7px;
+}
+
+.cart-item-row {
+  align-items: center;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 38px minmax(0, 1fr) auto 28px;
+  padding: 8px 2px;
+}
+
+.cart-item-thumb {
+  border-radius: 10px;
+  height: 38px;
+  width: 38px;
+}
+
+.cart-item-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.cart-item-copy strong {
+  font-family: var(--soko-display-font);
+  font-size: 11px;
+}
+
+.cart-item-copy small {
+  color: var(--soko-ink-faint);
+  font-size: 9px;
+}
+
+.cart-item-row button.secondary {
+  background: transparent;
+  border: 1px solid var(--soko-line);
+  border-radius: 999px;
+  color: var(--soko-ink-soft);
+  min-height: 27px;
+  min-width: 27px;
+  padding: 0;
+}
+
+.cart-total-row {
+  border-top: 1px dashed var(--soko-line-strong);
+  color: var(--soko-ink);
+  display: flex;
+  font-family: var(--soko-display-font);
+  justify-content: space-between;
+  margin-top: 4px;
+  padding: 14px 2px 7px;
+}
+
+.cart-total-row strong:last-child {
+  color: var(--soko-buy);
+  font-family: var(--soko-mono-font);
+}
+
+.fulfilment-split-card {
+  background: rgb(255 255 255 / 86%);
+  border-color: color-mix(in srgb, var(--soko-buy) 22%, transparent);
+}
+
+.fulfilment-split-card .eyebrow {
+  background: var(--soko-buy-soft);
+  border-radius: 999px;
+  color: #116535;
+  font-family: var(--soko-mono-font);
+  font-size: 9px;
+  justify-self: start;
+  letter-spacing: 0.08em;
+  padding: 5px 8px;
+}
+
+.fulfilment-handoff-row {
+  align-items: center;
+  background: var(--soko-buy-tint);
+  border: 1px solid color-mix(in srgb, var(--soko-buy) 18%, transparent);
+  border-radius: 11px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 11px;
+}
+
+.fulfilment-handoff-row > span:last-child {
+  background: var(--soko-buy-soft);
+  border-radius: 999px;
+  color: #116535;
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 5px 7px;
+  text-transform: uppercase;
+}
+
+.fulfilment-failures {
+  background: #fff3ed;
+  border: 1px solid rgb(168 64 32 / 20%);
+  border-radius: 11px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+/* SELL: capture review, contacts, and posted status */
+.product-capture-card,
+.status-broadcast-composer,
+.status-broadcast-card {
+  background: rgb(255 255 255 / 82%);
+  border-color: color-mix(in srgb, var(--soko-sell) 24%, transparent);
+}
+
+.product-capture-card input,
+.product-capture-card select,
+.product-capture-card textarea,
+.status-broadcast-composer input {
+  border-color: var(--soko-line);
+  border-radius: 10px;
+}
+
+.product-capture-preview {
+  border-color: var(--soko-line);
+  border-radius: 13px;
+}
+
+.product-capture-item {
+  background: var(--soko-sell-tint);
+  border: 1px solid color-mix(in srgb, var(--soko-sell) 22%, transparent);
+  border-radius: 12px;
+  display: grid;
+  gap: 9px;
+  overflow: hidden;
+  padding: 11px;
+  position: relative;
+}
+
+.product-capture-item-pin {
+  border: 2px solid var(--soko-accent);
+  border-radius: 6px;
+  opacity: 0.25;
+  pointer-events: none;
+  position: absolute;
+}
+
+.sell-module .record-form button:not(.secondary),
+.product-capture-card button:not(.secondary),
+.status-broadcast-composer button:not(.secondary) {
+  background: var(--soko-ink);
+  border-radius: 10px;
+  color: #fff;
+}
+
+.status-broadcast-composer {
+  box-shadow: none;
+  margin-top: 4px;
+}
+
+.status-broadcast-composer .checkbox-row {
+  background: var(--soko-paper);
+  border: 1px solid var(--soko-line);
+  border-radius: 11px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto 34px minmax(0, 1fr);
+  padding: 8px 10px;
+}
+
+.status-broadcast-composer .checkbox-row input {
+  accent-color: var(--soko-sell);
+  height: 17px;
+  min-height: 17px;
+  width: 17px;
+}
+
+.status-contact-avatar {
+  border-radius: 9px;
+  height: 34px;
+  width: 34px;
+}
+
+.status-contact-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.status-contact-copy strong {
+  color: var(--soko-ink);
+  font-family: var(--soko-display-font);
+  font-size: 11px;
+}
+
+.status-contact-copy small {
+  color: var(--soko-ink-faint);
+  font-family: var(--soko-mono-font);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.status-broadcast-counters {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.status-broadcast-counters span {
+  background: var(--soko-sell-soft);
+  border-radius: 10px;
+  color: var(--soko-sell);
+  font-family: var(--soko-mono-font);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 10px 8px;
+  text-align: center;
+}
+
+@media (min-width: 760px) {
+  .chat-surface.inbox-open {
+    grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
+  }
+
+  .stacked-module {
+    border-radius: 22px;
+    margin-bottom: 18px;
+    max-height: calc(100dvh - 74px);
+    max-width: 860px;
+  }
+}
+
+@media (max-width: 759px) {
+  .app-frame:not(.auth-frame) {
+    border: 0;
+  }
+
+  .shell-mode-bar {
+    padding-inline: 10px;
+  }
+
+  .commerce-mode-toggle {
+    flex-basis: 190px;
+  }
+
+  .commerce-mode-toggle .header-action-button {
+    padding-inline: 12px;
+  }
+
+  .commerce-mode-toggle .messages {
+    left: calc(100% + 7px);
+    min-width: 78px;
+  }
+
+  .shell-secondary-actions {
+    margin-left: 78px;
+  }
+
+  .shell-secondary-actions .workspace,
+  .shell-secondary-actions [data-testid="install-app-button"] {
+    display: none;
+  }
+
+  .messenger-inbox {
+    background: var(--soko-paper);
+    box-shadow: 12px 0 44px rgb(28 23 48 / 22%);
+    max-width: min(92vw, 370px);
+  }
+
+  .message {
+    max-width: 91%;
+  }
+
+  .composer {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .composer-send-actions {
+    align-items: center;
+    display: flex;
+  }
+
+  .composer .sms-send-button,
+  .composer .share-send-button {
+    max-width: 54px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .buy-result-card {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+  }
+
+  .buy-result-card > button {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 430px) {
+  .app-frame:not(.auth-frame) .top-bar {
+    min-height: 56px;
+    padding-inline: 11px;
+  }
+
+  .shell-mode-bar {
+    min-height: 54px;
+  }
+
+  .commerce-mode-toggle {
+    flex-basis: 174px;
+  }
+
+  .commerce-mode-toggle .messages {
+    font-size: 9px;
+    min-width: 66px;
+  }
+
+  .shell-secondary-actions {
+    margin-left: 66px;
+  }
+
+  .shell-secondary-actions .header-auth-button {
+    font-size: 10px;
+    padding-inline: 9px;
+  }
+
+  .messenger-thread-header {
+    padding-inline: 10px;
+  }
+
+  .messenger-thread-header small {
+    max-width: 210px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .message-list {
+    padding-inline: 10px;
+  }
+
+  .app-frame:not(.auth-frame) .composer {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .app-frame:not(.auth-frame)[data-commerce-mode="sell"] .composer {
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  }
+
+  .composer-send-actions {
+    display: grid;
+  }
+
+  .composer .sms-send-button,
+  .composer .share-send-button {
+    max-width: 48px;
+  }
+
+  .cart-item-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto 26px;
+    gap: 7px;
+  }
+
+  .cart-item-thumb {
+    height: 34px;
+    width: 34px;
+  }
+}

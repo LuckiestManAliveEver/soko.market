@@ -104,10 +104,13 @@ export default function StatusBroadcastComposer(props: {
                 })
               }
             />
-            {candidate.displayName}
-            {candidate.isSokoUser ? null : (
-              <small> (not on Soko yet — shared via your phone)</small>
-            )}
+            <span className="status-contact-avatar" aria-hidden="true">
+              {candidate.displayName.trim().slice(0, 1).toUpperCase()}
+            </span>
+            <span className="status-contact-copy">
+              <strong>{candidate.displayName}</strong>
+              <small>{candidate.isSokoUser ? "On Soko" : "Shared via your phone"}</small>
+            </span>
           </label>
         ))
       )}
