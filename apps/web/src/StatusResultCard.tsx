@@ -11,6 +11,10 @@ export function StatusResultCard(props: {
   result: BuyResultSummary;
   isAuthenticated: boolean;
   onAddToCart: (result: BuyResultSummary) => void;
+  // Optional: a guest browsing without an account has no cart to add to, but every result should
+  // still lead somewhere - signup - rather than a dead end. Callers that already gate guest
+  // browsing some other way (or never render this card unauthenticated) can leave it unset.
+  onSignUp?: () => void;
 }) {
   const { result } = props;
   return (
@@ -30,6 +34,10 @@ export function StatusResultCard(props: {
       {props.isAuthenticated ? (
         <button type="button" onClick={() => props.onAddToCart(result)}>
           + Add
+        </button>
+      ) : props.onSignUp !== undefined ? (
+        <button type="button" onClick={props.onSignUp}>
+          Sign up to message this seller
         </button>
       ) : null}
     </div>
