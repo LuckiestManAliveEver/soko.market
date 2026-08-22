@@ -725,27 +725,57 @@ describe("CP11 local model adapter", () => {
   });
 
   it("keeps model-derived high-risk actions behind confirmation gates", async () => {
-    const provider = createTestModelProvider(async () =>
-      availableCompletion({
-        type: "tool",
-        toolName: "product.create",
-        input: {
-          name: "Model Sugar",
-          unit: "kg",
-          quantity: 3
-        },
-        reason: "Draft product from local model routing."
-      })
-    );
+    // product.create is auto-accepted (no confirmation gate) - the mock model routes to
+    // product.create on the first call (to seed a product, completing immediately) and
+    // product.update (still confirmed) on the second, which is this test's actual proof.
+    let callCount = 0;
+    const provider = createTestModelProvider(async () => {
+      callCount += 1;
+      return callCount === 1
+        ? availableCompletion({
+            type: "tool",
+            toolName: "product.create",
+            input: {
+              name: "Model Sugar",
+              unit: "kg",
+              quantity: 3
+            },
+            reason: "Draft product from local model routing."
+          })
+        : availableCompletion({
+            type: "tool",
+            toolName: "product.update",
+            input: {
+              productName: "Model Sugar",
+              quantity: 5
+            },
+            reason: "Update product from local model routing."
+          });
+    });
     const store = createCp2Store({ runtimeModelProvider: provider });
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
+
+    const created = await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      {
+        message: "please ask the local model to draft inventory sugar"
+      },
+      sessionCookie
+    );
+    expect(created.turn).toMatchObject({
+      status: "completed",
+      plan: { toolName: "product.create", requiresConfirmation: false }
+    });
+    expect(store.snapshot().products).toHaveLength(1);
 
     const proposed = await postJson<RuntimeTurnResponse>(
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "please ask the local model to draft inventory sugar"
+        runtimeSessionId: created.session.id,
+        message: "please ask the local model to update inventory sugar"
       },
       sessionCookie
     );
@@ -757,7 +787,7 @@ describe("CP11 local model adapter", () => {
         outputKind: "tool"
       },
       plan: {
-        toolName: "product.create",
+        toolName: "product.update",
         risk: "high",
         executedAt: null
       },
@@ -768,7 +798,7 @@ describe("CP11 local model adapter", () => {
       }
     });
     expect(proposed.turn.plan.confirmationToken).toBeTruthy();
-    expect(store.snapshot().products).toHaveLength(0);
+    expect(store.snapshot().products[0]?.quantity).toBe(3);
 
     const confirmed = await postJson<RuntimeTurnResponse>(
       app,
@@ -791,7 +821,7 @@ describe("CP11 local model adapter", () => {
     });
     expect(confirmed.turn.toolResult).toMatchObject({
       name: "Model Sugar",
-      quantity: 3
+      quantity: 5
     });
 
     await app.close();

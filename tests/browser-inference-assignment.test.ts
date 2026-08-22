@@ -168,20 +168,18 @@ describe("browser inference database assignment", () => {
       owner.cookie
     );
 
-    const proposed = await postJson<{
-      session: { id: string };
-      turn: {
-        status: string;
-        model: { provider: string; executionTarget: string; modelId: string };
-        plan: { toolName: string; confirmationToken: string | null; executedAt: string | null };
-      };
-    }>(
+    // product.create is auto-accepted (no confirmation gate), so it can't prove the confirmation
+    // pipeline here - create the product via the same browser-inference-completion mechanism this
+    // test exercises (this store has no server-side model adapter configured, so a plain message
+    // can't be parsed at all - every mutation here has to go through clientInferenceCompletion),
+    // then use product.update (still confirmed) as the actual confirmation-pipeline proof.
+    await postJson(
       app,
       `/businesses/${owner.businessId}/runtime/turns`,
       {
         message: "Handle this new stock item",
         clientInferenceCompletion: {
-          requestId: "browser-request-1",
+          requestId: "browser-request-0",
           runtime: "browser-webgpu",
           modelId: checkpointContract.sourceModelId,
           deviceId: "browser-device-1",
@@ -199,6 +197,37 @@ describe("browser inference database assignment", () => {
       owner.cookie
     );
 
+    const proposed = await postJson<{
+      session: { id: string };
+      turn: {
+        status: string;
+        model: { provider: string; executionTarget: string; modelId: string };
+        plan: { toolName: string; confirmationToken: string | null; executedAt: string | null };
+      };
+    }>(
+      app,
+      `/businesses/${owner.businessId}/runtime/turns`,
+      {
+        message: "Update this stock item",
+        clientInferenceCompletion: {
+          requestId: "browser-request-1",
+          runtime: "browser-webgpu",
+          modelId: checkpointContract.sourceModelId,
+          deviceId: "browser-device-1",
+          outputText: JSON.stringify({
+            type: "tool",
+            toolName: "product.update",
+            input: { productName: "Local model tea", quantity: 5 },
+            reason: "Update the product requested by the owner."
+          }),
+          durationMs: 820,
+          promptTokens: 41,
+          completionTokens: 22
+        }
+      },
+      owner.cookie
+    );
+
     expect(proposed.turn).toMatchObject({
       status: "needs_confirmation",
       model: {
@@ -206,7 +235,7 @@ describe("browser inference database assignment", () => {
         executionTarget: "browser-local",
         modelId: checkpointContract.sourceModelId
       },
-      plan: { toolName: "product.create", executedAt: null }
+      plan: { toolName: "product.update", executedAt: null }
     });
     expect(proposed.turn.plan.confirmationToken).toEqual(expect.any(String));
 
@@ -224,7 +253,7 @@ describe("browser inference database assignment", () => {
     );
     expect(confirmed.turn).toMatchObject({
       status: "completed",
-      plan: { toolName: "product.create" }
+      plan: { toolName: "product.update" }
     });
     expect(confirmed.turn.plan.executedAt).toEqual(expect.any(String));
 

@@ -5,7 +5,9 @@ export const productsRuntimeTools = {
     name: "product.create",
     description: "Create a new catalogue product with a name, unit, and starting quantity.",
     risk: "high",
-    requiresConfirmation: true,
+    // Auto-accepted: creating a product is trivially reversible (edit or delete it after), and
+    // carries no money movement - unlike product.update/product.delete, which stay confirmed.
+    requiresConfirmation: false,
     readOnly: false,
     requiredPermission: "product:write",
     inputSchema: {
@@ -60,7 +62,9 @@ export const productsRuntimeTools = {
     name: "product.stock_adjust",
     description: "Adjust a catalogue product's on-hand stock quantity.",
     risk: "high",
-    requiresConfirmation: true,
+    // Auto-accepted: a stock quantity is easily corrected with another adjustment if wrong, and
+    // carries no money movement.
+    requiresConfirmation: false,
     readOnly: false,
     requiredPermission: "product:write",
     inputSchema: {

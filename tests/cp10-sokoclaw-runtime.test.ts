@@ -275,20 +275,31 @@ describe("CP10 Sokoclaw runtime", () => {
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
 
+    // product.create is auto-accepted (no confirmation tap - see "auto-accepts product.create
+    // and product.stock_adjust" below), so this general "high-risk tools require confirmation"
+    // proof uses product.update instead, which still requires it. Create the product first -
+    // that step now completes in one call, with no confirmation step of its own.
+    await postJson<RuntimeTurnResponse>(
+      app,
+      `/businesses/${businessId}/runtime/turns`,
+      { message: "add product sugar" },
+      sessionCookie
+    );
+    expect(store.snapshot().products).toHaveLength(1);
+
     const proposed = await postJson<RuntimeTurnResponse>(
       app,
       `/businesses/${businessId}/runtime/turns`,
       {
-        message: "add product sugar"
+        message: "update product sugar ksh 200"
       },
       sessionCookie
     );
 
     expect(proposed.turn).toMatchObject({
       status: "needs_confirmation",
-      parserIntent: "add_product",
       plan: {
-        toolName: "product.create",
+        toolName: "product.update",
         risk: "high",
         requiresConfirmation: true,
         executedAt: null
@@ -300,7 +311,7 @@ describe("CP10 Sokoclaw runtime", () => {
       }
     });
     expect(proposed.turn.plan.confirmationToken).toBeTruthy();
-    expect(store.snapshot().products).toHaveLength(0);
+    expect(store.snapshot().products[0]?.sellingPrice).not.toBe(200);
 
     const confirmed = await postJson<RuntimeTurnResponse>(
       app,
@@ -316,7 +327,7 @@ describe("CP10 Sokoclaw runtime", () => {
     expect(confirmed.turn).toMatchObject({
       status: "completed",
       plan: {
-        toolName: "product.create",
+        toolName: "product.update",
         risk: "high",
         requiresConfirmation: true
       },
@@ -328,14 +339,14 @@ describe("CP10 Sokoclaw runtime", () => {
     expect(confirmed.turn.plan.executedAt).toBeTruthy();
     expect(confirmed.turn.toolResult).toMatchObject({
       name: "Sugar",
-      quantity: 0
+      sellingPrice: 200
     });
     expect(store.snapshot().products.map((product) => product.name)).toEqual(["Sugar"]);
 
     await app.close();
   });
 
-  it('runs "Add 20 crates of tomatoes at KSh 1,800" through the canonical confirmed capability', async () => {
+  it('runs "Add 20 crates of tomatoes at KSh 1,800" through the canonical auto-accepted capability', async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
@@ -346,24 +357,14 @@ describe("CP10 Sokoclaw runtime", () => {
       { message: "Add 20 crates of tomatoes at KSh 1,800" },
       sessionCookie
     );
+    // product.create is auto-accepted - completes in this same turn, no confirmation round trip.
     expect(proposed.turn).toMatchObject({
-      status: "needs_confirmation",
+      status: "completed",
       parserIntent: "add_product",
-      plan: { toolName: "product.create", executedAt: null }
+      plan: { toolName: "product.create", requiresConfirmation: false }
     });
-    expect(store.snapshot().products).toEqual([]);
-
-    const confirmed = await postJson<RuntimeTurnResponse>(
-      app,
-      `/businesses/${businessId}/runtime/turns`,
-      {
-        runtimeSessionId: proposed.session.id,
-        message: "confirm",
-        confirmationToken: proposed.turn.plan.confirmationToken
-      },
-      sessionCookie
-    );
-    expect(confirmed.turn.toolResult).toMatchObject({
+    expect(proposed.turn.plan.confirmationToken).toBeNull();
+    expect(proposed.turn.toolResult).toMatchObject({
       name: "Tomatoes",
       unit: "crates",
       quantity: 20,
@@ -432,26 +433,20 @@ describe("CP10 Sokoclaw runtime", () => {
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
 
+    // product.create is auto-accepted - completes in this same turn, no confirmation round trip.
     const createProposed = await postJson<RuntimeTurnResponse>(
       app,
       `/businesses/${businessId}/runtime/turns`,
       { message: "add product sugar ksh 150" },
       sessionCookie
     );
-    expect(createProposed.turn.plan).toMatchObject({ toolName: "product.create" });
-    const createConfirmed = await postJson<RuntimeTurnResponse>(
-      app,
-      `/businesses/${businessId}/runtime/turns`,
-      {
-        runtimeSessionId: createProposed.session.id,
-        message: "confirm",
-        confirmationToken: createProposed.turn.plan.confirmationToken
-      },
-      sessionCookie
-    );
+    expect(createProposed.turn.plan).toMatchObject({
+      toolName: "product.create",
+      requiresConfirmation: false
+    });
     // The tool proposal's price came from a currency-tagged number, not the bare-quantity slot -
     // this is the exact case the parser's double-counting fix (Phase 4a) exists to prevent.
-    expect(createConfirmed.turn.toolResult).toMatchObject({
+    expect(createProposed.turn.toolResult).toMatchObject({
       name: "Sugar",
       quantity: 0,
       sellingPrice: 150
@@ -483,24 +478,19 @@ describe("CP10 Sokoclaw runtime", () => {
       quantity: 0
     });
 
+    // product.stock_adjust is auto-accepted - completes in this same turn, no confirmation round
+    // trip.
     const stockProposed = await postJson<RuntimeTurnResponse>(
       app,
       `/businesses/${businessId}/runtime/turns`,
       { runtimeSessionId: createProposed.session.id, message: "adjust stock sugar 40" },
       sessionCookie
     );
-    expect(stockProposed.turn.plan).toMatchObject({ toolName: "product.stock_adjust" });
-    const stockConfirmed = await postJson<RuntimeTurnResponse>(
-      app,
-      `/businesses/${businessId}/runtime/turns`,
-      {
-        runtimeSessionId: createProposed.session.id,
-        message: "confirm",
-        confirmationToken: stockProposed.turn.plan.confirmationToken
-      },
-      sessionCookie
-    );
-    expect(stockConfirmed.turn.toolResult).toMatchObject({
+    expect(stockProposed.turn.plan).toMatchObject({
+      toolName: "product.stock_adjust",
+      requiresConfirmation: false
+    });
+    expect(stockProposed.turn.toolResult).toMatchObject({
       product: { name: "Sugar", quantity: 40 }
     });
 
