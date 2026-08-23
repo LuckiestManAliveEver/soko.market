@@ -140,7 +140,6 @@ describe("Shop profile lifecycle", () => {
     const owner = await verifyOtp(app, "phone", "254700000701");
     const ownerCookie = extractSessionCookie(owner.setCookie);
 
-    await postJson<SessionResponse>(app, "/auth/pin/setup", { pin: "1234" }, ownerCookie);
     const firstShop = await postJson<BusinessResponse>(
       app,
       "/businesses",

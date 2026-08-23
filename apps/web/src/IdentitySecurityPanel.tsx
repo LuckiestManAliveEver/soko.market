@@ -94,7 +94,16 @@ export function IdentitySecurityPanel({
   } | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
+  const [credentialStatus, setCredentialStatus] = useState<{
+    hasPin: boolean;
+    hasPassword: boolean;
+  } | null>(null);
+  const [accountPinCurrent, setAccountPinCurrent] = useState("");
+  const [accountPinNew, setAccountPinNew] = useState("");
+  const [accountPinConfirm, setAccountPinConfirm] = useState("");
+  const [accountPinMfaCode, setAccountPinMfaCode] = useState("");
   const [changePasswordCurrent, setChangePasswordCurrent] = useState("");
+  const [createPasswordCurrentPin, setCreatePasswordCurrentPin] = useState("");
   const [changePasswordNew, setChangePasswordNew] = useState("");
   const [changePasswordConfirm, setChangePasswordConfirm] = useState("");
   const [changePasswordMfaCode, setChangePasswordMfaCode] = useState("");
@@ -234,6 +243,16 @@ export function IdentitySecurityPanel({
         factors: Array<{ id: string; type: "totp"; createdAt: string }>;
       }>("/auth/mfa/factors");
       setMfaFactors(response.factors);
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function loadCredentialStatus() {
+    try {
+      setCredentialStatus(
+        await getJson<{ hasPin: boolean; hasPassword: boolean }>("/auth/credentials/status")
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -457,29 +476,67 @@ export function IdentitySecurityPanel({
     }
   }
 
-  async function changeAccountPassword() {
+  async function saveAccountPin() {
+    if (credentialStatus === null) return;
+    if (accountPinNew !== accountPinConfirm) {
+      setProfileMessage("New PIN and confirmation do not match.");
+      return;
+    }
+    try {
+      await postJson<SessionResponse>(
+        credentialStatus.hasPin ? "/auth/pin/change" : "/auth/pin/setup",
+        {
+          ...(credentialStatus.hasPin ? { currentPin: accountPinCurrent } : {}),
+          pin: accountPinNew,
+          pinConfirmation: accountPinConfirm,
+          ...(accountPinMfaCode.trim() ? { mfaCode: accountPinMfaCode.trim() } : {})
+        }
+      );
+      const changed = credentialStatus.hasPin;
+      setAccountPinCurrent("");
+      setAccountPinNew("");
+      setAccountPinConfirm("");
+      setAccountPinMfaCode("");
+      await loadCredentialStatus();
+      setProfileMessage(changed ? "Login PIN changed." : "Login PIN created.");
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function saveAccountPassword() {
+    if (credentialStatus === null) return;
     if (changePasswordNew !== changePasswordConfirm) {
       setProfileMessage("New password and confirmation do not match.");
       return;
     }
     try {
-      const result = await postJson<{ changed: true; revokedSessions: number }>(
-        "/auth/password/change",
-        {
-          currentPassword: changePasswordCurrent,
-          password: changePasswordNew,
-          passwordConfirmation: changePasswordConfirm,
-          ...(changePasswordMfaCode.trim() ? { mfaCode: changePasswordMfaCode.trim() } : {})
-        }
-      );
+      const result = await postJson<{
+        changed?: true;
+        created?: true;
+        revokedSessions?: number;
+      }>(credentialStatus.hasPassword ? "/auth/password/change" : "/auth/password/setup", {
+        ...(credentialStatus.hasPassword
+          ? { currentPassword: changePasswordCurrent }
+          : credentialStatus.hasPin
+            ? { currentPin: createPasswordCurrentPin }
+            : {}),
+        password: changePasswordNew,
+        passwordConfirmation: changePasswordConfirm,
+        ...(changePasswordMfaCode.trim() ? { mfaCode: changePasswordMfaCode.trim() } : {})
+      });
       setChangePasswordCurrent("");
+      setCreatePasswordCurrentPin("");
       setChangePasswordNew("");
       setChangePasswordConfirm("");
       setChangePasswordMfaCode("");
+      await loadCredentialStatus();
       setProfileMessage(
-        result.revokedSessions > 0
-          ? `Password changed. ${result.revokedSessions} other device session(s) were signed out.`
-          : "Password changed."
+        result.created
+          ? "Password created. You can now use it as a sign-in fallback."
+          : (result.revokedSessions ?? 0) > 0
+            ? `Password changed. ${result.revokedSessions} other device session(s) were signed out.`
+            : "Password changed."
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -526,6 +583,7 @@ export function IdentitySecurityPanel({
     void loadConnectedMailboxes();
     void loadPasskeys();
     void loadMfaFactors();
+    void loadCredentialStatus();
   }, [accountId, business.id]);
 
   return (
@@ -807,23 +865,120 @@ export function IdentitySecurityPanel({
           </button>
         ) : null}
       </div>
-      <div className="record-form" role="group" aria-label="Change password">
+      <div className="record-form" role="group" aria-label="Account login PIN">
         <div className="section-heading">
-          <p className="eyebrow">Password fallback</p>
-          <h4>Change password</h4>
+          <p className="eyebrow">Login PIN</p>
+          <h4>{credentialStatus?.hasPin ? "Change PIN" : "Create PIN"}</h4>
           <p>
-            Only applies if this account has a password set. PIN and passkey sign-in are unaffected.
+            Use a four-digit PIN for quick account and Soko Shop ID sign-in. Changing it requires
+            your current PIN.
           </p>
         </div>
+        {credentialStatus?.hasPin ? (
+          <label>
+            Current PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              autoComplete="current-password"
+              maxLength={4}
+              value={accountPinCurrent}
+              onChange={(event) => setAccountPinCurrent(event.target.value.replace(/\D/gu, ""))}
+            />
+          </label>
+        ) : null}
         <label>
-          Current password
+          New PIN
           <input
             type="password"
-            autoComplete="current-password"
-            value={changePasswordCurrent}
-            onChange={(event) => setChangePasswordCurrent(event.target.value)}
+            inputMode="numeric"
+            autoComplete="new-password"
+            maxLength={4}
+            value={accountPinNew}
+            onChange={(event) => setAccountPinNew(event.target.value.replace(/\D/gu, ""))}
           />
         </label>
+        <label>
+          Confirm new PIN
+          <input
+            type="password"
+            inputMode="numeric"
+            autoComplete="new-password"
+            maxLength={4}
+            value={accountPinConfirm}
+            onChange={(event) => setAccountPinConfirm(event.target.value.replace(/\D/gu, ""))}
+          />
+        </label>
+        {mfaFactors.length > 0 ? (
+          <label>
+            Authenticator code
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={accountPinMfaCode}
+              onChange={(event) => setAccountPinMfaCode(event.target.value.replace(/\D/gu, ""))}
+            />
+          </label>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void runProfileAction("pin-save", saveAccountPin)}
+          disabled={
+            credentialStatus === null ||
+            pendingProfileAction !== null ||
+            (credentialStatus.hasPin && accountPinCurrent.length !== 4) ||
+            accountPinNew.length !== 4 ||
+            accountPinNew !== accountPinConfirm ||
+            (mfaFactors.length > 0 && accountPinMfaCode.length !== 6)
+          }
+          aria-busy={pendingProfileAction === "pin-save"}
+        >
+          {pendingProfileAction === "pin-save"
+            ? "Saving…"
+            : credentialStatus?.hasPin
+              ? "Change PIN"
+              : "Create PIN"}
+        </button>
+      </div>
+      <div
+        className="record-form"
+        role="group"
+        aria-label={credentialStatus?.hasPassword ? "Change password" : "Create password"}
+      >
+        <div className="section-heading">
+          <p className="eyebrow">Password fallback</p>
+          <h4>{credentialStatus?.hasPassword ? "Change password" : "Create password"}</h4>
+          <p>
+            Add a recovery fallback or update the password already on this account. PIN and passkey
+            sign-in are unaffected.
+          </p>
+        </div>
+        {credentialStatus?.hasPassword ? (
+          <label>
+            Current password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={changePasswordCurrent}
+              onChange={(event) => setChangePasswordCurrent(event.target.value)}
+            />
+          </label>
+        ) : credentialStatus?.hasPin ? (
+          <label>
+            Current PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              autoComplete="current-password"
+              maxLength={4}
+              value={createPasswordCurrentPin}
+              onChange={(event) =>
+                setCreatePasswordCurrentPin(event.target.value.replace(/\D/gu, ""))
+              }
+            />
+          </label>
+        ) : null}
         <label>
           New password
           <input
@@ -846,28 +1001,39 @@ export function IdentitySecurityPanel({
             onChange={(event) => setChangePasswordConfirm(event.target.value)}
           />
         </label>
-        <label>
-          MFA code (if enabled)
-          <input
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={6}
-            value={changePasswordMfaCode}
-            onChange={(event) => setChangePasswordMfaCode(event.target.value.replace(/\D/gu, ""))}
-          />
-        </label>
+        {mfaFactors.length > 0 ? (
+          <label>
+            Authenticator code
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={changePasswordMfaCode}
+              onChange={(event) => setChangePasswordMfaCode(event.target.value.replace(/\D/gu, ""))}
+            />
+          </label>
+        ) : null}
         <button
           type="button"
+          onClick={() => void runProfileAction("password-save", saveAccountPassword)}
           disabled={
+            credentialStatus === null ||
             pendingProfileAction !== null ||
-            changePasswordCurrent.length === 0 ||
+            (credentialStatus.hasPassword && changePasswordCurrent.length === 0) ||
+            (!credentialStatus.hasPassword &&
+              credentialStatus.hasPin &&
+              createPasswordCurrentPin.length !== 4) ||
             changePasswordNew.length < 10 ||
-            changePasswordNew !== changePasswordConfirm
+            changePasswordNew !== changePasswordConfirm ||
+            (mfaFactors.length > 0 && changePasswordMfaCode.length !== 6)
           }
-          aria-busy={pendingProfileAction === "password-change"}
-          onClick={() => void runProfileAction("password-change", changeAccountPassword)}
+          aria-busy={pendingProfileAction === "password-save"}
         >
-          {pendingProfileAction === "password-change" ? "Saving…" : "Change password"}
+          {pendingProfileAction === "password-save"
+            ? "Saving…"
+            : credentialStatus?.hasPassword
+              ? "Change password"
+              : "Create password"}
         </button>
       </div>
       <div className="connected-social-list">

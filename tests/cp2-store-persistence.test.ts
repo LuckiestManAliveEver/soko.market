@@ -47,14 +47,6 @@ describe("CP2 store persistence", () => {
     const app = buildApi({ cp2: { store } });
     const { business, sessionCookie } = await createOwnerBusiness(app);
 
-    await postJson(
-      app,
-      "/auth/pin/setup",
-      {
-        pin: "1234"
-      },
-      sessionCookie
-    );
     const product = await postJson<ProductResponse>(
       app,
       `/businesses/${business.id}/products`,

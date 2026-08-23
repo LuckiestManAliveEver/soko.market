@@ -59,6 +59,16 @@ describe("frontend coverage for backend-owned lifecycles", () => {
     expect(identitySecurityPanel).toContain("onOwnerUserChange({ ...ownerUser, displayName })");
   });
 
+  it("lets an existing account create and change its PIN and password", () => {
+    expect(identitySecurityPanel).toContain('"/auth/credentials/status"');
+    expect(identitySecurityPanel).toContain('"/auth/pin/setup"');
+    expect(identitySecurityPanel).toContain('"/auth/pin/change"');
+    expect(identitySecurityPanel).toContain('"/auth/password/setup"');
+    expect(identitySecurityPanel).toContain('"/auth/password/change"');
+    expect(identitySecurityPanel).toContain('aria-label="Account login PIN"');
+    expect(identitySecurityPanel).toContain('credentialStatus?.hasPassword ? "Change password"');
+  });
+
   it("lists and revokes inactive end-to-end encryption keys", () => {
     expect(accountControls).toContain(
       'apiFetch<{ devices: E2eeDeviceSummary[] }>("/v1/e2ee/devices")'

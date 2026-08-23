@@ -120,7 +120,10 @@ interface OwnerNodePresenceQuery {
 }
 
 interface PinBody {
+  currentPin?: string;
+  mfaCode?: string;
   pin?: string;
+  pinConfirmation?: string;
 }
 
 interface PinLoginBody extends PinBody {
@@ -727,6 +730,43 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   );
 
   app.post(
+    "/auth/password/setup",
+    async (
+      request: FastifyRequest<{
+        Body: {
+          currentPin?: string;
+          password?: string;
+          passwordConfirmation?: string;
+          mfaCode?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        requireAuthFeature(
+          authRuntime.passwordFallbackEnabled,
+          "password_fallback_disabled",
+          "Password fallback is disabled."
+        );
+        enforceAuthIpRate(authAttemptsByIp, request, "password_setup", 10);
+        const password = parseString(request.body.password, "password");
+        if (password !== request.body.passwordConfirmation)
+          throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
+        return store.createPassword({
+          sessionId: readSessionCookie(request.headers.cookie),
+          password,
+          ...(request.body.currentPin === undefined
+            ? {}
+            : { currentPin: parseString(request.body.currentPin, "currentPin") }),
+          ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
     "/auth/password/change",
     async (
       request: FastifyRequest<{
@@ -773,10 +813,33 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
 
   app.post("/auth/pin/setup", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
     try {
+      enforceAuthIpRate(authAttemptsByIp, request, "pin_setup", 10);
       const pin = parseString(request.body.pin, "pin");
+      if (request.body.pinConfirmation !== undefined && pin !== request.body.pinConfirmation) {
+        throw new Cp2Error(400, "pin_confirmation_invalid", "PINs do not match.");
+      }
       return store.setAccountPin({
         sessionId: readSessionCookie(request.headers.cookie),
-        pin
+        pin,
+        ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode })
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post("/auth/pin/change", async (request: FastifyRequest<{ Body: PinBody }>, reply) => {
+    try {
+      enforceAuthIpRate(authAttemptsByIp, request, "pin_change", 10);
+      const pin = parseString(request.body.pin, "pin");
+      if (pin !== request.body.pinConfirmation) {
+        throw new Cp2Error(400, "pin_confirmation_invalid", "PINs do not match.");
+      }
+      return store.changeAccountPin({
+        sessionId: readSessionCookie(request.headers.cookie),
+        currentPin: parseString(request.body.currentPin, "currentPin"),
+        pin,
+        ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode })
       });
     } catch (error) {
       return sendCp2Error(reply, error);
@@ -870,6 +933,16 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   app.get("/auth/pin/status", async (request, reply) => {
     try {
       return store.getAccountPinStatus({
+        sessionId: readSessionCookie(request.headers.cookie)
+      });
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.get("/auth/credentials/status", async (request, reply) => {
+    try {
+      return store.getAccountCredentialStatus({
         sessionId: readSessionCookie(request.headers.cookie)
       });
     } catch (error) {

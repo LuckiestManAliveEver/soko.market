@@ -13,7 +13,12 @@ describe("CP23 MCP tool gateway", () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const cookie = await createSession(app, "254700000231");
-    await postJson(app, "/auth/pin/setup", { pin: "2749" }, cookie);
+    await postJson(
+      app,
+      "/auth/pin/change",
+      { currentPin: "1234", pin: "2749", pinConfirmation: "2749" },
+      cookie
+    );
     const shop = await postJson<{ business: { id: string } }>(
       app,
       "/businesses",
@@ -170,7 +175,12 @@ describe("CP23 MCP tool gateway", () => {
   it("enforces read-only scopes and shop binding", async () => {
     const app = buildApi();
     const cookie = await createSession(app, "254700000232");
-    await postJson(app, "/auth/pin/setup", { pin: "8031" }, cookie);
+    await postJson(
+      app,
+      "/auth/pin/change",
+      { currentPin: "1234", pin: "8031", pinConfirmation: "8031" },
+      cookie
+    );
     const first = await postJson<{ business: { id: string } }>(
       app,
       "/businesses",
@@ -289,7 +299,12 @@ describe("CP23 MCP tool gateway", () => {
   it("lets an account-wide token connect with a shopId it owns", async () => {
     const app = buildApi();
     const cookie = await createSession(app, "254700000234");
-    await postJson(app, "/auth/pin/setup", { pin: "5170" }, cookie);
+    await postJson(
+      app,
+      "/auth/pin/change",
+      { currentPin: "1234", pin: "5170", pinConfirmation: "5170" },
+      cookie
+    );
     const shop = await postJson<{ business: { id: string } }>(
       app,
       "/businesses",

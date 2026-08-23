@@ -1439,9 +1439,18 @@ export class Cp2Store {
     return { revoked };
   }
 
-  setAccountPin(input: { sessionId: string | null; pin: string; now?: Date }): AuthSessionView {
+  setAccountPin(input: {
+    sessionId: string | null;
+    pin: string;
+    mfaCode?: string;
+    now?: Date;
+  }): AuthSessionView {
     const now = input.now ?? new Date();
-    const session = this.requireAnySession(input.sessionId, now);
+    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    if (this.accountPinHashes.has(session.account.id)) {
+      throw new Cp2Error(409, "pin_already_set", "A login PIN is already set for this account.");
+    }
+    this.verifyMfaForCredentialChange(session.account.id, input.mfaCode, now);
     const pin = normalizePin(input.pin);
     this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
     this.markSessionPinVerified(session.session.id, now);
@@ -1449,6 +1458,32 @@ export class Cp2Store {
 
     this.recordAuditEvent({
       type: "auth.pin_set",
+      aggregateType: "account",
+      aggregateId: session.account.id,
+      actorId: session.user.id,
+      occurredAt: now.toISOString(),
+      payload: {}
+    });
+
+    return this.requireAnySession(input.sessionId, now);
+  }
+
+  changeAccountPin(input: {
+    sessionId: string | null;
+    currentPin: string;
+    pin: string;
+    mfaCode?: string;
+    now?: Date;
+  }): AuthSessionView {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    this.verifyAccountPinForSession(session, input.currentPin, now);
+    this.verifyMfaForCredentialChange(session.account.id, input.mfaCode, now);
+    const pin = normalizePin(input.pin);
+    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
+
+    this.recordAuditEvent({
+      type: "auth.pin_changed",
       aggregateType: "account",
       aggregateId: session.account.id,
       actorId: session.user.id,
@@ -1683,6 +1718,17 @@ export class Cp2Store {
 
     return {
       hasPin: this.accountPinHashes.has(session.account.id)
+    };
+  }
+
+  getAccountCredentialStatus(input: { sessionId: string | null; now?: Date }): {
+    hasPin: boolean;
+    hasPassword: boolean;
+  } {
+    const session = this.requireAnySession(input.sessionId, input.now ?? new Date());
+    return {
+      hasPin: this.accountPinHashes.has(session.account.id),
+      hasPassword: this.passwordCredentials.has(session.account.id)
     };
   }
 
@@ -5458,30 +5504,19 @@ export class Cp2Store {
     now?: Date;
   }): { changed: true; revokedSessions: number } {
     const now = input.now ?? new Date();
-    const session = this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    const session = this.requireAnySession(input.sessionId, now);
     const credential = this.passwordCredentials.get(session.account.id);
+    if (credential === undefined) {
+      throw new Cp2Error(409, "password_not_set", "A password has not been set for this account.");
+    }
     if (
-      credential === undefined ||
       verifyPasswordHash(session.account.id, input.currentPassword, credential.passwordHash) ===
-        "invalid"
+      "invalid"
     ) {
       throw new Cp2Error(401, "current_password_invalid", "The current password is incorrect.");
     }
-    const factors = this.activeMfaFactors(session.account.id);
-    if (factors.length > 0) {
-      if (input.mfaCode === undefined)
-        throw new Cp2Error(401, "mfa_required", "A second factor is required.");
-      const factor = factors[0]!;
-      const step = verifyTotp(
-        decryptOAuthToken(factor.secret),
-        input.mfaCode,
-        now,
-        factor.lastUsedStep
-      );
-      if (step === null)
-        throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
-      factor.lastUsedStep = step;
-    }
+    this.markSessionPinVerified(session.session.id, now);
+    this.verifyMfaForCredentialChange(session.account.id, input.mfaCode, now);
     validatePassword(input.password);
     this.passwordCredentials.set(
       session.account.id,
@@ -5505,6 +5540,42 @@ export class Cp2Store {
       revokedSessions: String(revokedSessions)
     });
     return { changed: true, revokedSessions };
+  }
+
+  createPassword(input: {
+    sessionId: string | null;
+    currentPin?: string;
+    password: string;
+    mfaCode?: string;
+    now?: Date;
+  }): { created: true } {
+    const now = input.now ?? new Date();
+    const session = this.requireAnySession(input.sessionId, now);
+    if (this.passwordCredentials.has(session.account.id)) {
+      throw new Cp2Error(
+        409,
+        "password_already_set",
+        "A password is already set for this account. Change it instead."
+      );
+    }
+
+    if (this.accountPinHashes.has(session.account.id)) {
+      if (input.currentPin === undefined) {
+        throw new Cp2Error(401, "pin_required", "Enter your current login PIN.");
+      }
+      this.verifyAccountPinForSession(session, input.currentPin, now);
+    } else {
+      this.requireRecentlyAuthenticatedSession(input.sessionId, now);
+    }
+
+    this.verifyMfaForCredentialChange(session.account.id, input.mfaCode, now);
+    validatePassword(input.password);
+    this.passwordCredentials.set(
+      session.account.id,
+      createPasswordCredential(session.account.id, input.password, now)
+    );
+    this.recordSecurityEvent("auth.password_created", session.account.id, "success", now, {});
+    return { created: true };
   }
 
   regenerateMfaRecoveryCodes(input: { sessionId: string | null; now?: Date }): {
@@ -6586,6 +6657,24 @@ export class Cp2Store {
 
     this.failedPinAttempts.delete(attemptKey);
     this.markSessionPinVerified(session.session.id, now);
+  }
+
+  private verifyMfaForCredentialChange(
+    accountId: string,
+    mfaCode: string | undefined,
+    now: Date
+  ): void {
+    const factors = this.activeMfaFactors(accountId);
+    if (factors.length === 0) return;
+    if (mfaCode === undefined) {
+      throw new Cp2Error(401, "mfa_required", "A second factor is required.");
+    }
+    const factor = factors[0]!;
+    const step = verifyTotp(decryptOAuthToken(factor.secret), mfaCode, now, factor.lastUsedStep);
+    if (step === null) {
+      throw new Cp2Error(401, "mfa_code_invalid", "The verification code is invalid.");
+    }
+    factor.lastUsedStep = step;
   }
 
   private verifyStoredPin(accountId: string, pin: string, storedHash: string): boolean {
