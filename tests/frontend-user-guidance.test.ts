@@ -158,7 +158,18 @@ describe("frontend user guidance", () => {
     expect(application).not.toContain("runViewTransition");
     expect(application).toContain("markNavigationCommitted(measurement)");
     expect(styles).not.toContain(".primary-navigation");
+    expect(styles).not.toContain(".bottom-nav");
+    expect(styles).not.toContain(".workspace-panel");
+    expect(styles).not.toContain(".marketplace-placeholder");
+    expect(styles).toContain(".soko-surface > h1");
     expect(styles).toContain("prefers-reduced-motion: reduce");
+  });
+
+  it("does not ship the retired browser action parser", () => {
+    const inferenceTypes = readFileSync("apps/web/src/browser-inference-types.ts", "utf8");
+
+    expect(existsSync("apps/web/src/browser-agent-actions.ts")).toBe(false);
+    expect(inferenceTypes).not.toContain("BrowserAgentAction");
   });
 
   it("suppresses the redundant persistent agent error prompt", () => {

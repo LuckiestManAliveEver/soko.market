@@ -319,11 +319,6 @@ export interface InferenceRoutingDecision {
   explanation: string;
 }
 
-export type BrowserAgentAction =
-  | { type: "CHAT_REPLY"; message: string }
-  | { type: "SEARCH_PRODUCTS"; query: string }
-  | { type: "ESCALATE"; reason: string };
-
 export function unavailableBrowserInferenceCapability(): BrowserInferenceCapability {
   return {
     supported: false,

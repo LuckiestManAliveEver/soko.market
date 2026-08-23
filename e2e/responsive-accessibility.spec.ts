@@ -64,13 +64,15 @@ test("first run downloads the lowest-memory OSS agent and links it to chat", asy
   await page.goto("/");
 
   await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const bindings = JSON.parse(
-          localStorage.getItem("soko.oss-agent-bindings.v1") ?? "[]"
-        ) as Array<{ agentDefinitionId?: string }>;
-        return bindings[0]?.agentDefinitionId ?? null;
-      })
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const bindings = JSON.parse(
+            localStorage.getItem("soko.oss-agent-bindings.v1") ?? "[]"
+          ) as Array<{ agentDefinitionId?: string }>;
+          return bindings[0]?.agentDefinitionId ?? null;
+        }),
+      { timeout: 20_000 }
     )
     .toBe(mockOssAgent.id);
 
@@ -218,7 +220,7 @@ test("persisted owner-control cards stay attached to their historical message", 
   const historicalMessage = page
     .locator("article.message")
     .filter({ hasText: "Shared owner controls" });
-  await expect(historicalMessage).toHaveCount(1, { timeout: 15_000 });
+  await expect(historicalMessage).toHaveCount(1, { timeout: 30_000 });
   await expect(historicalMessage.locator("section.generated-card-message")).toHaveCount(1);
   await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
 

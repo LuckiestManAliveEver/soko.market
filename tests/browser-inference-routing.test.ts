@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { parseBrowserAgentAction } from "../apps/web/src/browser-agent-actions";
 import { normalizeBrowserInferenceError } from "../apps/web/src/browser-model-engine";
 import {
   decideInferenceRoute,
@@ -86,7 +85,7 @@ describe("browser inference routing and validation", () => {
     expect(requestRequiresServerTool("What products do you have?")).toBe(false);
   });
 
-  it("validates worker contracts and untrusted structured actions", () => {
+  it("validates worker contracts", () => {
     expect(isBrowserModelWorkerRequest({ type: "GENERATE", requestId: "r1", request: {} })).toBe(
       true
     );
@@ -94,11 +93,6 @@ describe("browser inference routing and validation", () => {
     expect(isBrowserModelWorkerResponse({ type: "TOKEN", requestId: "r1", token: "Hi" })).toBe(
       true
     );
-    expect(parseBrowserAgentAction({ type: "CHAT_REPLY", message: " Hello " })).toEqual({
-      type: "CHAT_REPLY",
-      message: "Hello"
-    });
-    expect(parseBrowserAgentAction({ type: "DELETE_ACCOUNT", id: "victim" })).toBeNull();
   });
 
   it("normalizes safe errors without exposing arbitrary details", () => {
