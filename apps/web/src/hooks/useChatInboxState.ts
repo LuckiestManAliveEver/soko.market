@@ -17,6 +17,7 @@ import {
   type SokoMode
 } from "../app-shell";
 import { navigateToOwnerRoute } from "../browser-navigation";
+import { chatMessagesEqual } from "../chat-messages-equal";
 import {
   agentProcessingFailureMessage,
   base64UrlToBytes,
@@ -140,10 +141,12 @@ export function useChatInboxState(deps: UseChatInboxStateDeps) {
         }
       })
     );
-    setChatMessages(
+    const nextMessages =
       mapped.length > 0
         ? mapped
-        : createInitialChatMessages(conversationTitle(view, session.account.id))
+        : createInitialChatMessages(conversationTitle(view, session.account.id));
+    setChatMessages((current) =>
+      chatMessagesEqual(current, nextMessages) ? current : nextMessages
     );
     if (document.visibilityState === "visible") {
       await patchJson<ConversationView>(`/v1/conversations/${conversationId}`, { read: true });
