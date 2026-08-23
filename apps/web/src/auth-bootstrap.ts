@@ -15,6 +15,15 @@ export function isAuthBootstrapPending(state: AuthBootstrapState): boolean {
   );
 }
 
+/**
+ * Cached account data is useful for the offline shell, but it is not proof that the API will
+ * accept the browser's HTTP-only access/refresh cookies. Server-backed work must wait for the
+ * canonical bootstrap request to validate (or refresh) those credentials.
+ */
+export function hasServerAuthenticatedSession(state: AuthBootstrapState): boolean {
+  return state === "authenticated";
+}
+
 export function saveCachedAuthSession(session: AuthSessionView): CachedAuthSession {
   const cached = { ...session, cachedAt: new Date().toISOString() };
   localStorage.setItem(cachedSessionKey, JSON.stringify(cached));

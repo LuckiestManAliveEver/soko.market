@@ -93,6 +93,7 @@ import type { RememberedAccount } from "./PhoneFirstAuthentication";
 import {
   bootstrapProgressMessage,
   clearCachedAuthSession,
+  hasServerAuthenticatedSession,
   isAuthBootstrapPending,
   readCachedAuthSession
 } from "./auth-bootstrap";
@@ -607,6 +608,8 @@ export function OwnerApp() {
     acceptAuthenticatedSession,
     completePhoneFirstAuthentication,
     refreshSession,
+    ensureAuthenticatedSession,
+    rejectDefinitiveAuthenticationFailure,
     authenticateSocialProfile,
     completeAccountRestoration,
     loadSokoSessionContext,
@@ -697,6 +700,9 @@ export function OwnerApp() {
   const { isBrowserGenerating, sendChatDraft, confirmRuntimeAction } = useChatRuntimeState({
     business,
     session,
+    authBootstrapState,
+    ensureAuthenticatedSession,
+    rejectDefinitiveAuthenticationFailure,
     agentSettings,
     chatModelRuntimeRef,
     setStatusMessage,
@@ -1119,7 +1125,7 @@ export function OwnerApp() {
     const accountId = session.account.id;
     const businessId = business.id;
 
-    if (navigator.onLine) {
+    if (navigator.onLine && hasServerAuthenticatedSession(authBootstrapState)) {
       console.info(
         JSON.stringify({ event: "agent.runtime_restore_started", accountId, businessId })
       );
@@ -1145,9 +1151,11 @@ export function OwnerApp() {
               errorCode: getErrorMessage(error)
             })
           );
-          setStatusMessage(
-            "Your shop is open, but its agent session could not start. Retry from chat."
-          );
+          if (!rejectDefinitiveAuthenticationFailure(error)) {
+            setStatusMessage(
+              `Your shop is open, but its agent session could not start. ${getErrorMessage(error)}`
+            );
+          }
         });
 
       void restoreDeviceModelForLaunch(businessId)
@@ -1250,7 +1258,7 @@ export function OwnerApp() {
     return () => {
       cancelled = true;
     };
-  }, [business?.id, session?.account.id, setupComplete, isOnline]);
+  }, [business?.id, session?.account.id, setupComplete, isOnline, authBootstrapState]);
 
   useEffect(() => {
     if (!setupComplete || business === null) {

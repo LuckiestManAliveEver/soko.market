@@ -1124,6 +1124,7 @@ export interface RuntimeSessionSummary {
   id: string;
   businessId: string;
   userId: string;
+  idempotencyKey?: string;
   status: "active" | "closed";
   turnCount: number;
   createdAt: string;

@@ -24,6 +24,12 @@ Runtime entities carry both `tenantId` and `shopId`, using the existing business
 reads require business access; runtime configuration changes, correction promotion, and rollback
 require membership-management permission. Cross-shop access fails before context retrieval.
 
+Runtime-session creation uses the canonical HTTP-only browser session and validates
+`business:read` membership before persisting anything. It does not accept a client-selected agent
+ID; the runtime turn resolves the server-owned agent profile for the authorized business. Creation
+retries are idempotent within the authenticated user/business scope. See
+[`authentication/agent-session-contract.md`](./authentication/agent-session-contract.md).
+
 Context access rules distinguish owner, staff, and customer audiences. Confidential and restricted
 record bodies are not placed into customer prompts. Existing authorized tools remain responsible for
 fetching business records and applying field-level behavior.

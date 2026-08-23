@@ -41,9 +41,10 @@ describe("progressive onboarding UI", () => {
       authStateSource.indexOf("if (cached !== null) setSession(cached)")
     );
     const recoveryIndex = recoveryBranch.indexOf("recoverDeviceAccount()");
-    const onboardingIndex = recoveryBranch.indexOf("setAuthenticationView(nextAuthenticationView)");
+    const onboardingIndex = recoveryBranch.indexOf("requireReauthentication(");
     expect(recoveryIndex).toBeGreaterThanOrEqual(0);
     expect(onboardingIndex).toBeGreaterThanOrEqual(0);
     expect(recoveryIndex).toBeLessThan(onboardingIndex);
+    expect(authStateSource).toContain("setAuthenticationView(nextAuthenticationView)");
   });
 });

@@ -7,13 +7,17 @@ const navigationStateHook = readFileSync("apps/web/src/hooks/useNavigationState.
 const syncStateHook = readFileSync("apps/web/src/hooks/useSyncState.ts", "utf8");
 
 describe("persistent authenticated app shell", () => {
-  it("restores cached session and shop state before background authentication refresh", () => {
+  it("restores cached shell data but gates server-backed work on authentication validation", () => {
     expect(application).toContain("const initialCachedSession = readCachedAuthSession()");
     expect(application).toContain("useState<SessionResponse | null>(initialCachedSession)");
     expect(authStateHook).toContain(
       'initialCachedSession === null ? "initializing" : "offline-authenticated"'
     );
-    expect(authStateHook).toContain(
+    expect(authStateHook).toContain('setAuthBootstrapState("restoring-session")');
+    expect(application).toContain(
+      "navigator.onLine && hasServerAuthenticatedSession(authBootstrapState)"
+    );
+    expect(application).not.toContain(
       'current === "offline-authenticated" ? current : "restoring-session"'
     );
   });
