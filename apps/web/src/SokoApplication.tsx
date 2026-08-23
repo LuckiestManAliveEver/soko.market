@@ -699,6 +699,7 @@ export function OwnerApp() {
   });
   const { isBrowserGenerating, sendChatDraft, confirmRuntimeAction } = useChatRuntimeState({
     business,
+    mode,
     session,
     authBootstrapState,
     ensureAuthenticatedSession,

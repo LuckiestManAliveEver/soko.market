@@ -1,6 +1,6 @@
 # Soko conversation-first frontend: architecture and migration roadmap
 
-Status: roadmap adopted and fully implemented — Phases 1-3, 4a-4l (all ShellViews audited), 5 (architectural enforcement), and 6 (permanent tab bar removed) all shipped
+Status: roadmap adopted and fully implemented — Phases 1-3, 4a-4m (all ShellViews audited), 5 (architectural enforcement), and 6 (permanent tab bar removed) all shipped
 Date: 2026-08-21
 Design contract: three mockups reviewed as one product system —
 `soko-shell-mockup.html`, `soko-sell-status-mockup.html`,
@@ -228,9 +228,9 @@ session-list UI itself.
 
 ### The 15 conventional top-level views
 
-`apps/web/src/app-shell.ts`'s `ShellView` union has 17 entries: `home`,
-`chat`, and 15 business views (`products`, `suppliers`, `customers`,
-`invoices`, `network`, `sync`, `runtime`, `payments`, `imports`,
+`apps/web/src/app-shell.ts`'s `ShellView` union has 19 entries: `home`,
+`chat`, `agent`, and 16 business views (`products`, `suppliers`, `customers`,
+`pos`, `invoices`, `network`, `sync`, `runtime`, `payments`, `imports`,
 `logistics`, `compliance`, `beta`, `launch`, `reports`, `notifications`).
 `OwnerWorkspace.tsx`'s `renderOwnerWorkspace()` is a single switch statement rendering one
 `*Surface` component per view. `SokoApplication.tsx` supplies grouped hook bindings and remains the
@@ -862,10 +862,32 @@ HTTP route and return real report/notification data, not just a
 clarification), `tests/reports-notifications-navigation.test.ts`
 (frontend wiring — verified to fail without the frontend implementation).
 
+## POS terminal chat module (Phase 4m — implemented)
+
+The point-of-sale workflow is deliberately both a permanent seller module and a chat-invokable
+module. A checkout needs a visual, multi-line cart, live stock limits, customer selection, tax,
+and payment method confirmation; compressing those choices into a free-text mutation would make a
+stock-and-money action unnecessarily ambiguous. The seller can open the same screen from the
+Workspace “Make a Sale” card, the `/pos` route, ordinary help navigation, or the exact `#pos`
+command in their agent conversation.
+
+`#pos` is handled locally before inference routing, so opening the terminal neither consumes a
+model call nor accidentally becomes a server tool mutation. The hashtag picker lists it next to
+the registered API capabilities. The terminal itself does not introduce another sales store: it
+creates a multi-line invoice through `POST /businesses/:id/invoices`, confirms that invoice through
+`POST /businesses/:id/invoices/:invoiceId/confirm` (the canonical stock movement), and optionally
+records full payment through `POST /businesses/:id/payments`. If payment recording fails after
+confirmation, the UI preserves the confirmed invoice and directs the seller to Payments instead
+of allowing the cart to be submitted twice.
+
+Regression tests: `tests/chat-module-commands.test.ts` pins exact command matching and
+`tests/pos-sale.test.ts` pins the invoice → confirmation → payment sequence, unpaid sales, and the
+partial-success failure boundary.
+
 ## Architectural enforcement (Phase 5 — implemented)
 
 The last item on the roadmap. With every `ShellView` now audited
-(Phases 4a-4l), this phase makes that discipline permanent instead of
+(Phases 4a-4m), this phase makes that discipline permanent instead of
 relying on the next person to remember to repeat it.
 
 **Import-boundary guard**: `scripts/check-shellview-boundary.mjs`

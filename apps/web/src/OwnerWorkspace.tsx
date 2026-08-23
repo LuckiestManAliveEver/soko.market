@@ -8,6 +8,7 @@ import type { ShellView } from "./app-shell";
 import { ProductSurface } from "./ProductSurface";
 import { SupplierSurface } from "./SupplierSurface";
 import { CustomerSurface } from "./CustomerSurface";
+import { PosTerminal } from "./PosTerminal";
 import { InvoiceSurface } from "./InvoiceSurface";
 import { NetworkSurface } from "./NetworkSurface";
 import { SyncSurface } from "./SyncSurface";
@@ -503,6 +504,25 @@ export function renderOwnerWorkspace(input: OwnerWorkspaceBindings) {
               notes: customer.notes ?? ""
             })
           }
+        />
+      );
+    case "pos":
+      return (
+        <PosTerminal
+          businessId={businessId}
+          products={products}
+          customers={customers}
+          onOpenInvoices={() => navigateToView("invoices")}
+          onOpenPayments={() => navigateToView("payments")}
+          onSaleCompleted={async () => {
+            await Promise.all([
+              loadProducts(businessId),
+              loadInvoices(businessId),
+              loadPaymentData(businessId),
+              loadReports(businessId),
+              loadNotifications(businessId)
+            ]);
+          }}
         />
       );
     case "invoices":

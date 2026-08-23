@@ -54,7 +54,13 @@ export function ContextualBusinessCards({
     },
     {
       title: "Make a Sale",
-      body: "Create, preview and confirm invoices",
+      body: "Ring up products and collect payment",
+      onClick: () => onNavigate("pos"),
+      value: "POS"
+    },
+    {
+      title: "Invoices",
+      body: "Review, print and confirm invoice records",
       onClick: () => onNavigate("invoices"),
       value: String(invoiceCount)
     },

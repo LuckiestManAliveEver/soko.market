@@ -10,6 +10,7 @@ export type ShellView =
   | "products"
   | "suppliers"
   | "customers"
+  | "pos"
   | "invoices"
   | "network"
   | "sync"
@@ -96,6 +97,11 @@ export const quickActions: QuickAction[] = [
     summary: "Manage customer records"
   },
   {
+    id: "pos",
+    label: "POS terminal",
+    summary: "Ring up sales and collect payment"
+  },
+  {
     id: "invoices",
     label: "Invoices",
     summary: "Create invoice drafts and confirm sales"
@@ -172,6 +178,11 @@ export const emptyStates: EmptyState[] = [
     id: "customers",
     title: "No customers yet",
     body: "Create the first customer record to replace paper customer notes."
+  },
+  {
+    id: "pos",
+    title: "No sale in progress",
+    body: "Choose a product to start a point-of-sale transaction."
   },
   {
     id: "invoices",

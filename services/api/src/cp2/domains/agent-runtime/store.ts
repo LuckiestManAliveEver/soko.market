@@ -103,6 +103,7 @@ import {
   parseMerchantCommand,
   parseProductContextScriptCommand,
   parseReceiptContextScriptCommand,
+  parseRuntimeHashtagInvocation,
   productContextScriptMatchToParseResult,
   receiptContextScriptMatchToParseResult,
   runtimeToolRegistry,
@@ -2483,6 +2484,7 @@ export class AgentRuntimeDomain {
         readiness.issues.map((issue) => issue.message).join(" ")
       );
     }
+    const hashtagInvocation = parseRuntimeHashtagInvocation(input.message);
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
     const { activeBinding, activeModelId } = this.resolveActiveRuntimeModelId(
       input.businessId,
@@ -2501,7 +2503,8 @@ export class AgentRuntimeDomain {
       this.deps.modelRuntimeAdapterResolver !== undefined &&
       activeBinding === null &&
       clientInferenceCompletion === null &&
-      input.confirmationToken === undefined
+      input.confirmationToken === undefined &&
+      hashtagInvocation === null
     ) {
       throw new Cp2Error(
         409,
@@ -2688,6 +2691,7 @@ export class AgentRuntimeDomain {
           .map((correction) => correction.correction)
       : [];
     const modelRoute =
+      hashtagInvocation === null &&
       documentImportProposal === null &&
       messagingProposal === null &&
       networkProposal === null &&
@@ -2739,19 +2743,21 @@ export class AgentRuntimeDomain {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
       source:
-        documentImportProposal !== null
-          ? "document_import"
-          : messagingProposal !== null
-            ? "messaging"
-            : networkProposal !== null
-              ? "network"
-              : commerceProposal !== null
-                ? "commerce"
-                : effectiveContextScriptMatch === null
-                  ? modelRoute.proposal === null
-                    ? "parser"
-                    : "local_model"
-                  : "context_script",
+        hashtagInvocation !== null
+          ? "hashtag"
+          : documentImportProposal !== null
+            ? "document_import"
+            : messagingProposal !== null
+              ? "messaging"
+              : networkProposal !== null
+                ? "network"
+                : commerceProposal !== null
+                  ? "commerce"
+                  : effectiveContextScriptMatch === null
+                    ? modelRoute.proposal === null
+                      ? "parser"
+                      : "local_model"
+                    : "context_script",
       scriptId: effectiveContextScriptMatch?.scriptId ?? null,
       matchedPhrase: effectiveContextScriptMatch?.matchedPhrase ?? null,
       canonicalIntent: effectiveContextScriptMatch?.intent ?? null,
@@ -2760,6 +2766,7 @@ export class AgentRuntimeDomain {
       fallbackReason: effectiveContextScriptMatch === null ? "no_context_script_match" : null
     });
     const proposal =
+      hashtagInvocation?.proposal ??
       documentImportProposal ??
       messagingProposal ??
       networkProposal ??

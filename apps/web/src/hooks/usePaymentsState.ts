@@ -103,7 +103,7 @@ export function usePaymentsState(deps: UsePaymentsStateDeps) {
     setCustomerDebts([]);
     setPaymentForm(emptyPaymentForm);
   });
-  deps.registerRefresh("payments", ["payments"], loadPaymentData);
+  deps.registerRefresh("payments", ["pos", "payments"], loadPaymentData);
 
   return {
     payments,

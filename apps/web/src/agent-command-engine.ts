@@ -50,6 +50,7 @@ export function resolveAgentHelpDestination(command: string): ShellView | null {
     { aliases: /\bproducts?|catalogue|inventory\b/i, view: "products" },
     { aliases: /\bsuppliers?\b/i, view: "suppliers" },
     { aliases: /\bcustomers?\b/i, view: "customers" },
+    { aliases: /\b(?:pos|point[ -]of[ -]sale|checkout|ring up)\b/i, view: "pos" },
     { aliases: /\binvoices?|sales?\b/i, view: "invoices" },
     { aliases: /\bpayments?|debts?|balances?\b/i, view: "payments" },
     { aliases: /\bmy\s+network|network\b/i, view: "network" },
@@ -64,7 +65,7 @@ export function resolveAgentHelpDestination(command: string): ShellView | null {
 }
 
 export function createAgentHelpReply(): string {
-  return "Tell me where you want to go or give me a command. I can open Products, Suppliers, Customers, Invoices, Payments, My Network, Purchase receipts, Reports, or Alerts. Try “help me open products” or “help me add product Sugar.” I’ll navigate or prepare the command for your review.";
+  return "Tell me where you want to go or give me a command. I can open Products, POS terminal, Suppliers, Customers, Invoices, Payments, My Network, Purchase receipts, Reports, or Alerts. Try “#pos”, “help me open products”, or “help me add product Sugar.” I’ll navigate or prepare the command for your review.";
 }
 
 export type AgentRuntimeDecision =

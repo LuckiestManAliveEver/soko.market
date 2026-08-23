@@ -275,7 +275,7 @@ export function useProductsState(deps: UseProductsStateDeps) {
     setStockQuantityAfter("0");
     setStockReason("Manual stock count");
   });
-  deps.registerRefresh("products", ["products", "invoices", "imports"], loadProducts);
+  deps.registerRefresh("products", ["products", "pos", "invoices", "imports"], loadProducts);
   deps.registerRefresh("product-fields", ["products"], loadProductFields);
 
   return {

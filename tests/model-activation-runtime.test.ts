@@ -166,6 +166,44 @@ describe("agent model activation runtime", () => {
     expect(chat.statusCode).toBe(409);
     expect(chat.json()).toMatchObject({ code: "AGENT_MODEL_NOT_CONFIGURED" });
 
+    const hashtagRead = await restoredApp.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ message: "#products.list" })
+    });
+    expect(hashtagRead.statusCode).toBe(200);
+    expect(hashtagRead.json()).toMatchObject({
+      turn: {
+        status: "completed",
+        plan: { toolName: "products.list", confirmationToken: null },
+        telemetry: expect.arrayContaining([
+          expect.objectContaining({
+            state: "intent.routed",
+            metadata: expect.objectContaining({ source: "hashtag" })
+          })
+        ])
+      }
+    });
+
+    const hashtagMutation = await restoredApp.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({ message: "#product.delete Sugar" })
+    });
+    expect(hashtagMutation.statusCode).toBe(200);
+    expect(hashtagMutation.json()).toMatchObject({
+      turn: {
+        status: "needs_confirmation",
+        plan: {
+          toolName: "product.delete",
+          input: { productName: "Sugar" },
+          confirmationToken: expect.any(String)
+        }
+      }
+    });
+
     await app.close();
     await restoredApp.close();
   });

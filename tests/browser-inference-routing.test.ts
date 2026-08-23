@@ -82,6 +82,8 @@ describe("browser inference routing and validation", () => {
 
   it("routes write intents to server tools", () => {
     expect(requestRequiresServerTool("Please create an order for two bags")).toBe(true);
+    expect(requestRequiresServerTool("#reports.summary")).toBe(true);
+    expect(requestRequiresServerTool('  #product.create {"name":"Sugar","unit":"kg"}')).toBe(true);
     expect(requestRequiresServerTool("What products do you have?")).toBe(false);
   });
 

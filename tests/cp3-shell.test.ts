@@ -7,13 +7,14 @@ import {
 } from "../apps/web/src/app-shell";
 
 describe("owner shell contract", () => {
-  it("exposes chat, records, suppliers, invoices, sync, runtime, payments, imports, reports, logistics, compliance, beta, and launch views", () => {
+  it("exposes chat, POS, records, suppliers, invoices, sync, runtime, payments, imports, reports, logistics, compliance, beta, and launch views", () => {
     expect(quickActions.map((action) => action.id)).toEqual([
       "home",
       "chat",
       "products",
       "suppliers",
       "customers",
+      "pos",
       "invoices",
       "network",
       "sync",
@@ -32,6 +33,7 @@ describe("owner shell contract", () => {
       "products",
       "suppliers",
       "customers",
+      "pos",
       "invoices",
       "network",
       "sync",
@@ -48,6 +50,7 @@ describe("owner shell contract", () => {
     expect(getEmptyState("chat")).toBeUndefined();
     expect(getEmptyState("products")?.body).toContain("product record");
     expect(getEmptyState("suppliers")?.body).toContain("supplier contact");
+    expect(getEmptyState("pos")?.body).toContain("point-of-sale transaction");
     expect(getEmptyState("invoices")?.body).toContain("invoice draft");
     expect(getEmptyState("network")?.body).toContain("trusted commerce graph");
     expect(getEmptyState("sync")?.body).toContain("offline mutations");

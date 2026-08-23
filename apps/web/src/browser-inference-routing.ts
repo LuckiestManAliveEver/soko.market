@@ -59,8 +59,11 @@ export function decideInferenceRoute(input: {
 }
 
 export function requestRequiresServerTool(message: string): boolean {
-  return /\b(create|add|delete|remove|update|change|refund|pay|send|invite|sync|order|receipt)\b/i.test(
-    message
+  return (
+    /^\s*#/.test(message) ||
+    /\b(create|add|delete|remove|update|change|refund|pay|send|invite|sync|order|receipt)\b/i.test(
+      message
+    )
   );
 }
 

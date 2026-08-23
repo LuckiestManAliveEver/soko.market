@@ -18,6 +18,7 @@ const approvedShellViews = new Map([
   ["products", "Phase 4a - chat-invokable capability shipped; permanent page kept alongside it"],
   ["suppliers", "Phase 4b - chat-invokable capability shipped; permanent page kept alongside it"],
   ["customers", "Phase 4c - chat-invokable capability shipped; permanent page kept alongside it"],
+  ["pos", "Phase 4m - #pos chat command opens the canonical multi-line checkout terminal"],
   ["invoices", "Phase 4d - chat-invokable composer card shipped; permanent page kept alongside it"],
   ["network", "Phase 4g - audited; mostly browser-API-gated, no card, one bug fixed"],
   ["sync", "Phase 4i - audited; offline queue machinery, no natural chat phrasing, no card"],

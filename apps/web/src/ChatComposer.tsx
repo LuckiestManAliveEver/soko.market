@@ -1,10 +1,12 @@
 import type { ChangeEvent } from "react";
 
 import type { ChannelEndpointSummary, ChannelProvider } from "@soko/shared-types";
+import { runtimeHashtagCapabilities, runtimeHashtagQuery } from "@soko/tool-core";
 
 import type { ChatAttachment, SokoMode } from "./app-shell";
 import { type InvoiceSummary, chatAttachmentAccept } from "./soko-application-shared";
 import { formatAttachmentCategory, formatChannelProvider, formatFileSize } from "./formatters";
+import { chatModuleCommands } from "./chat-module-commands";
 import { isExtractableChatAttachment, startVoiceInput } from "./chat-message-plumbing";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
 
@@ -64,6 +66,15 @@ export function ChatComposer({
     setSelectedProvider,
     updateLiveDraft
   } = composer;
+  const hashtagQuery = mode === "seller" ? runtimeHashtagQuery(liveDraft) : null;
+  const sellerHashtagCapabilities = [...chatModuleCommands, ...runtimeHashtagCapabilities];
+  const matchingHashtagCapabilities =
+    hashtagQuery === null
+      ? []
+      : sellerHashtagCapabilities.filter(
+          (capability) =>
+            capability.toolName.includes(hashtagQuery) || capability.module.includes(hashtagQuery)
+        );
 
   return (
     <>
@@ -83,6 +94,55 @@ export function ChatComposer({
                 Cancel
               </button>
             </div>
+          ) : null}
+          {hashtagQuery !== null ? (
+            <section className="hashtag-capability-picker" aria-label="Shop capabilities">
+              <header>
+                <strong>Call a shop capability</strong>
+                <span>Use JSON after the command when it needs multiple inputs.</span>
+              </header>
+              <div className="hashtag-capability-list">
+                {matchingHashtagCapabilities.length === 0 ? (
+                  <p>No capability matches #{hashtagQuery}.</p>
+                ) : (
+                  matchingHashtagCapabilities.map((capability) => (
+                    <button
+                      key={capability.toolName}
+                      type="button"
+                      onClick={() =>
+                        updateLiveDraft(
+                          capability.inputFields.length === 0
+                            ? capability.hashtag
+                            : `${capability.hashtag} `
+                        )
+                      }
+                    >
+                      <span>
+                        <strong>{capability.hashtag}</strong>
+                        <small>{capability.description}</small>
+                      </span>
+                      <small>
+                        {capability.inputFields.length === 0
+                          ? "No input"
+                          : `Input: ${capability.inputFields.join(", ")}`}
+                        {capability.requiresConfirmation ? " · Confirms" : ""}
+                      </small>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+          ) : null}
+          {mode === "seller" ? (
+            <button
+              className="icon-button composer-icon-button hashtag-capability-button"
+              type="button"
+              aria-label="Choose shop capability"
+              title="Call a shop API or module"
+              onClick={() => updateLiveDraft("#")}
+            >
+              <span aria-hidden="true">#</span>
+            </button>
           ) : null}
           <button
             className="icon-button composer-icon-button"
@@ -278,7 +338,7 @@ export function ChatComposer({
               }}
               placeholder={
                 mode === "seller"
-                  ? "Ask your agent to manage the shop"
+                  ? "Ask your agent, or type # to call a capability"
                   : "What are you looking for?"
               }
             />

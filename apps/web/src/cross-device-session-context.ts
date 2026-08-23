@@ -5,7 +5,9 @@ export function surfaceForShellView(view: ShellView, mode: SokoMode): SokoChatSu
   if (mode === "marketplace") return "conversation";
   if (view === "chat") return "conversation";
   if (view === "products") return "catalogue";
-  if (view === "invoices" || view === "payments" || view === "logistics") return "order";
+  if (view === "pos" || view === "invoices" || view === "payments" || view === "logistics") {
+    return "order";
+  }
   if (view === "imports") return "receipt";
   return "owner-controls";
 }

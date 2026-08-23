@@ -1,6 +1,13 @@
 export * from "./contracts/runtime.js";
 export { runtimeToolRegistry } from "./registry/index.js";
 export { parseRuntimeModelOutput } from "./parsers/model-output.js";
+export {
+  parseRuntimeHashtagInvocation,
+  runtimeHashtagCapabilities,
+  runtimeHashtagQuery,
+  type RuntimeHashtagCapability,
+  type RuntimeHashtagInvocation
+} from "./parsers/hashtag-runtime.js";
 export { validateRuntimeToolInput } from "./validation/runtime.js";
 export {
   createRuntimeToolProposal,

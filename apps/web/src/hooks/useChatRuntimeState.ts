@@ -29,6 +29,7 @@ import {
   saveDeviceAgentModelAssignment
 } from "../agent-model-assignment";
 import { buildLocalAgentPrompt, type AgentModelRuntime } from "../agent-model-runtime";
+import { parseChatModuleCommand } from "../chat-module-commands";
 import {
   browserGgufRuntimeSupported,
   getOrCreateDeviceModelScopeId,
@@ -97,6 +98,7 @@ import {
 
 interface UseChatRuntimeStateDeps {
   business: ActiveBusiness | null;
+  mode: SokoMode;
   session: SessionResponse | null;
   authBootstrapState: AuthBootstrapState;
   ensureAuthenticatedSession: () => Promise<SessionResponse | null>;
@@ -180,6 +182,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
 
   const {
     business,
+    mode,
     session,
     authBootstrapState,
     ensureAuthenticatedSession,
@@ -265,6 +268,43 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     const hasAccountRecipient = isHumanDirectConversation(activeConversation, session);
     const hasExternalRecipient = isExternalChannelConversation(activeConversation);
     const hasHumanRecipient = hasAccountRecipient || hasExternalRecipient;
+    const localModuleCommand =
+      mode === "seller" && !hasHumanRecipient && attachments.length === 0
+        ? parseChatModuleCommand(message)
+        : null;
+    if (localModuleCommand !== null) {
+      if (business === null) {
+        setChatMessages((messages) => [
+          ...messages.map((item) =>
+            item.id === clientMessageId ? { ...item, status: "delivered" as const } : item
+          ),
+          {
+            id: createClientMessageId("agent"),
+            author: "sokoclaw",
+            body: "Choose or create a shop before opening the POS terminal.",
+            createdAt: new Date().toISOString(),
+            status: "delivered"
+          }
+        ]);
+        setStatusMessage("A shop is required for point of sale.");
+        return;
+      }
+      navigateToView(localModuleCommand.view, { mode: "seller" });
+      setChatMessages((messages) => [
+        ...messages.map((item) =>
+          item.id === clientMessageId ? { ...item, status: "delivered" as const } : item
+        ),
+        {
+          id: createClientMessageId("agent"),
+          author: "sokoclaw",
+          body: `${formatAgentDisplayName(agentSettings)} opened ${viewLabel(localModuleCommand.view)}. Add products to ring up the sale.`,
+          createdAt: new Date().toISOString(),
+          status: "delivered"
+        }
+      ]);
+      setStatusMessage("POS terminal opened");
+      return;
+    }
     if (hasExternalRecipient) {
       if (business === null || activeConversationId === null || attachments.length > 0) {
         setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
@@ -366,6 +406,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           }
         : readClientInferencePreferences(session.account.id, business.id);
     const requiresServerTool = requestRequiresServerTool(runtimeMessage);
+    const isHashtagRuntimeCall = /^\s*#/.test(runtimeMessage);
     const availableRuntimeTools = requiresServerTool
       ? (Object.keys(runtimeToolRegistry) as RuntimeToolName[])
       : [];
@@ -410,8 +451,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       linkedAgentDefinitionId: localAgentBinding?.agentDefinitionId ?? null,
       activeAgentDefinitionId: agentSettings.agentDefinitionId,
       installedGgufReady:
-        localInstallation !== null &&
-        readyLocalAssignment?.preferredExecutionMode !== "CLOUD_ONLY",
+        localInstallation !== null && readyLocalAssignment?.preferredExecutionMode !== "CLOUD_ONLY",
       cachedBrowserModelReady: downloadedBrowserModelReady
     });
     const inferenceModelId =
@@ -1522,7 +1562,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       return;
     }
 
-    if (downloadedAgentAndModelActive) {
+    if (downloadedAgentAndModelActive && !isHashtagRuntimeCall) {
       await appendAgentMessage(
         "The downloaded agent and model stay on this device, but no browser inference runtime could process this message. Check the local model and try again."
       );

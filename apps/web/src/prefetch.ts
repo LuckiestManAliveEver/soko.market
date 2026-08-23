@@ -36,7 +36,9 @@ export function scheduleIdleOwnerPrefetch(
 export function likelyNextOwnerViews(view: ShellView): ShellView[] {
   switch (view) {
     case "products":
-      return ["invoices", "imports"];
+      return ["pos", "invoices", "imports"];
+    case "pos":
+      return ["invoices", "payments"];
     case "invoices":
       return ["payments", "logistics"];
     case "imports":
@@ -44,7 +46,7 @@ export function likelyNextOwnerViews(view: ShellView): ShellView[] {
     case "suppliers":
       return ["products", "imports"];
     case "customers":
-      return ["invoices", "payments"];
+      return ["pos", "invoices", "payments"];
     case "network":
       return ["suppliers", "customers"];
     case "reports":
@@ -87,6 +89,8 @@ function lightweightDataForView(view: ShellView, businessId: string): string[] {
       return [`/businesses/${businessId}/suppliers`, `/businesses/${businessId}/purchase-receipts`];
     case "customers":
       return [`/businesses/${businessId}/customers`];
+    case "pos":
+      return [`/businesses/${businessId}/products`, `/businesses/${businessId}/customers`];
     case "invoices":
       return [
         `/businesses/${businessId}/invoices`,

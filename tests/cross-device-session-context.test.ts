@@ -7,6 +7,7 @@ import {
 describe("cross-device session context", () => {
   it("maps recoverable seller surfaces to stable views", () => {
     expect(surfaceForShellView("products", "seller")).toBe("catalogue");
+    expect(surfaceForShellView("pos", "seller")).toBe("order");
     expect(surfaceForShellView("payments", "seller")).toBe("order");
     expect(surfaceForShellView("imports", "seller")).toBe("receipt");
     expect(surfaceForShellView("reports", "seller")).toBe("owner-controls");

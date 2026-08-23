@@ -25,7 +25,7 @@ describe("check-shellview-boundary script", () => {
   it("passes against the real repository (every current ShellView is documented)", () => {
     const result = checkShellViewBoundary(process.cwd());
     expect(result.violations).toEqual([]);
-    expect(result.liveShellViews).toHaveLength(18);
+    expect(result.liveShellViews).toHaveLength(19);
   });
 
   it("fails and names the offending view when an undocumented ShellView is added", () => {

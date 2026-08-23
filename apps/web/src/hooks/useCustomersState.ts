@@ -86,7 +86,7 @@ export function useCustomersState(deps: UseCustomersStateDeps) {
     setCustomers([]);
     setCustomerForm(emptyCustomerForm);
   });
-  deps.registerRefresh("customers", ["customers"], loadCustomers);
+  deps.registerRefresh("customers", ["customers", "pos"], loadCustomers);
 
   return { customers, customerForm, setCustomerForm, loadCustomers, saveCustomer };
 }

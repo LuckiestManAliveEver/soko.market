@@ -153,7 +153,7 @@ export function useInvoicesState(deps: UseInvoicesStateDeps) {
     setInvoiceForm(emptyInvoiceForm);
     setInvoicePreview(null);
   });
-  deps.registerRefresh("invoices", ["invoices", "payments", "logistics"], loadInvoices);
+  deps.registerRefresh("invoices", ["pos", "invoices", "payments", "logistics"], loadInvoices);
 
   return {
     invoices,
