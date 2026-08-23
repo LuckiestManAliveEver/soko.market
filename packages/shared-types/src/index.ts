@@ -3321,6 +3321,8 @@ export interface RuntimeSessionSummary {
   id: string;
   businessId: string;
   userId: string;
+  /** Retry key for session creation. Scoped to the authenticated user and business. */
+  idempotencyKey?: string;
   status: "active" | "closed";
   turnCount: number;
   createdAt: string;

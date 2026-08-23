@@ -57,6 +57,7 @@ import {
   parseIntegerString,
   parseIsoTimestamp,
   parseNullableString,
+  parseOptionalString,
   parsePositiveInteger,
   parseRequestBody,
   parseString,
@@ -235,6 +236,10 @@ interface AgentCorrectionParams extends BusinessParams {
 
 interface RuntimeSessionParams extends BusinessParams {
   runtimeSessionId: string;
+}
+
+interface RuntimeSessionBody {
+  idempotencyKey?: unknown;
 }
 
 export interface RuntimeTurnBody {
@@ -1008,13 +1013,56 @@ export function registerAgentRuntimeRoutes(
 
   app.post(
     "/businesses/:businessId/runtime/sessions",
-    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: RuntimeSessionBody }>,
+      reply
+    ) => {
+      const sessionId = readSessionCookie(request.headers.cookie);
+      request.log.info(
+        {
+          event: "agent.runtime_session_create_started",
+          businessId: request.params.businessId,
+          requestCorrelationId: request.id,
+          accessCredentialPresent: sessionId !== null
+        },
+        "Runtime session creation started."
+      );
       try {
-        return store.createRuntimeSession({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId
+        const body = request.body === undefined ? {} : parseRequestBody(request.body);
+        const idempotencyKey = parseOptionalString(body.idempotencyKey);
+        const created = store.createRuntimeSession({
+          sessionId,
+          businessId: request.params.businessId,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey })
         });
+        request.log.info(
+          {
+            event: "agent.runtime_session_create_completed",
+            businessId: created.businessId,
+            userId: created.userId,
+            runtimeSessionId: created.id,
+            requestCorrelationId: request.id,
+            authenticationOutcome: "authenticated"
+          },
+          "Runtime session creation completed."
+        );
+        return created;
       } catch (error) {
+        request.log.warn(
+          {
+            event: "agent.runtime_session_create_rejected",
+            businessId: request.params.businessId,
+            requestCorrelationId: request.id,
+            authenticationOutcome:
+              error instanceof Cp2Error && error.statusCode === 401
+                ? "rejected"
+                : error instanceof Cp2Error && error.statusCode === 403
+                  ? "authenticated"
+                  : "not_confirmed",
+            code: error instanceof Cp2Error ? error.code : "runtime_session_create_failed"
+          },
+          "Runtime session creation rejected."
+        );
         return sendCp2Error(reply, error);
       }
     }

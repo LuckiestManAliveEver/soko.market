@@ -77,6 +77,13 @@ Open both Render services and confirm:
 - The backend service is `runtime: node`.
 - The frontend environment includes `VITE_API_BASE_URL=https://api.soko.market`.
 - The backend environment includes `WEB_ORIGINS=https://soko.market,https://www.soko.market`.
+- The backend environment includes `COOKIE_SECURE=true` and `COOKIE_SAME_SITE=lax` for the
+  same-site `soko.market` / `api.soko.market` topology.
+
+There is no Vercel configuration in this repository. If an external Vercel deployment is used,
+follow the cross-site cookie and exact-origin requirements in
+[`authentication/agent-session-contract.md`](./authentication/agent-session-contract.md); a
+Vercel URL is not implicitly covered by the Render production settings.
 
 If the dashboard differs from `render.yaml`, sync the Blueprint or update the service
 settings to match.

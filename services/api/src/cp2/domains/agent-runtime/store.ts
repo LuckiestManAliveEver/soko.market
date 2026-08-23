@@ -2183,6 +2183,7 @@ export class AgentRuntimeDomain {
   createRuntimeSession(input: {
     sessionId: string | null;
     businessId: string;
+    idempotencyKey?: string;
     now?: Date;
   }): RuntimeSessionSummary {
     const now = input.now ?? new Date();
@@ -2192,10 +2193,31 @@ export class AgentRuntimeDomain {
       "business:read",
       now
     );
+    const idempotencyKey = input.idempotencyKey?.trim();
+    if (
+      idempotencyKey !== undefined &&
+      (idempotencyKey.length < 8 || idempotencyKey.length > 120)
+    ) {
+      throw new Cp2Error(
+        400,
+        "runtime_session_idempotency_key_invalid",
+        "Runtime session idempotency key must be between 8 and 120 characters."
+      );
+    }
+    if (idempotencyKey !== undefined) {
+      const existing = [...this.runtimeSessions.values()].find(
+        (candidate) =>
+          candidate.businessId === input.businessId &&
+          candidate.userId === session.user.id &&
+          candidate.idempotencyKey === idempotencyKey
+      );
+      if (existing !== undefined) return existing;
+    }
     const runtimeSession: RuntimeSessionSummary = {
       id: randomUUID(),
       businessId: input.businessId,
       userId: session.user.id,
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       status: "active",
       turnCount: 0,
       createdAt: now.toISOString(),

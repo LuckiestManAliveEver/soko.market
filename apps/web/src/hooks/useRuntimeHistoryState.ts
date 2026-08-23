@@ -27,6 +27,10 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
   >(null);
   const [runtimeTurns, setRuntimeTurns] = useState<RuntimeTurnSummary[]>([]);
   const runtimeRestoreInFlightRef = useRef<Promise<string> | null>(null);
+  const runtimeCreationAttemptRef = useRef<{
+    managerKey: string;
+    idempotencyKey: string;
+  } | null>(null);
 
   async function loadRuntimeTurns(businessId: string, sessionId: string) {
     try {
@@ -62,10 +66,21 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
     if (deps.business === null || deps.session === null) {
       throw new Error("Sign in and select a shop before starting the AI runtime.");
     }
+    const managerKey = runtimeManagerKey(deps.session.account.id, deps.business.id);
+    if (runtimeCreationAttemptRef.current?.managerKey !== managerKey) {
+      runtimeCreationAttemptRef.current = {
+        managerKey,
+        idempotencyKey: createRuntimeSessionIdempotencyKey()
+      };
+    }
+    const attempt = runtimeCreationAttemptRef.current;
     const created = await postJson<RuntimeSessionSummary>(
       `/businesses/${deps.business.id}/runtime/sessions`,
-      {}
+      { idempotencyKey: attempt.idempotencyKey }
     );
+    if (runtimeCreationAttemptRef.current === attempt) {
+      runtimeCreationAttemptRef.current = null;
+    }
     setRuntimeSessions((sessions) =>
       sessions.some((item) => item.id === created.id) ? sessions : [...sessions, created]
     );
@@ -142,6 +157,7 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
   }
 
   deps.registerReset("runtime-history", () => {
+    runtimeCreationAttemptRef.current = null;
     setRuntimeSessions([]);
     setSelectedRuntimeHistorySessionId(null);
     setRuntimeTurns([]);
@@ -160,4 +176,12 @@ export function useRuntimeHistoryState(deps: UseRuntimeHistoryStateDeps) {
     ensureRuntimeSession,
     restoreOrCreateRuntimeSession
   };
+}
+
+function createRuntimeSessionIdempotencyKey(): string {
+  const suffix =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `runtime:${suffix}`;
 }

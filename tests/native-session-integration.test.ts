@@ -3,11 +3,13 @@ import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
 import {
   clearCachedAuthSession,
+  hasServerAuthenticatedSession,
   isAuthBootstrapPending,
   readCachedAuthSession,
   saveCachedAuthSession
 } from "../apps/web/src/auth-bootstrap";
 import { modelActivationMessage } from "../apps/web/src/model-activation-state";
+import { agentSessionAuthScenarios } from "./ai-eval/agent-session-auth-scenarios";
 
 describe("native-style account session lifecycle", () => {
   it("bootstraps a device session and rotates refresh credentials", async () => {
@@ -277,12 +279,23 @@ describe("frontend lifecycle state", () => {
     expect(isAuthBootstrapPending("initializing")).toBe(true);
     expect(isAuthBootstrapPending("restoring-session")).toBe(true);
     expect(isAuthBootstrapPending("authenticated")).toBe(false);
+    expect(hasServerAuthenticatedSession("offline-authenticated")).toBe(false);
+    expect(hasServerAuthenticatedSession("failed")).toBe(false);
+    expect(hasServerAuthenticatedSession("authenticated")).toBe(true);
     expect(modelActivationMessage("validating")).toBe("Checking model…");
     expect(modelActivationMessage("creating_runtime")).toBe("Starting runtime…");
     expect(modelActivationMessage("loading_model")).toBe("Loading model…");
     expect(modelActivationMessage("binding_agent")).toBe("Connecting model to agent…");
     expect(modelActivationMessage("offline_blocked")).toBe("Connect to activate");
     expect(modelActivationMessage("failed")).toBe("Retry device activation");
+  });
+
+  it("keeps every frozen agent-session lifecycle scenario behind canonical authentication", () => {
+    for (const scenario of agentSessionAuthScenarios) {
+      expect(hasServerAuthenticatedSession(scenario.bootstrapState), scenario.name).toBe(
+        scenario.serverSessionCreationAllowed
+      );
+    }
   });
 });
 

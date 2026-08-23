@@ -4,6 +4,7 @@ import type { RuntimeToolName } from "@soko/tool-core";
 import { renderRuntimeModelOutputInstructions, runtimeToolRegistry } from "@soko/tool-core";
 import type {
   AgentContextSource,
+  AuthBootstrapState,
   ChannelProvider,
   ClientInferenceCompletion,
   ConversationMessageContent,
@@ -95,6 +96,9 @@ import {
 interface UseChatRuntimeStateDeps {
   business: ActiveBusiness | null;
   session: SessionResponse | null;
+  authBootstrapState: AuthBootstrapState;
+  ensureAuthenticatedSession: () => Promise<SessionResponse | null>;
+  rejectDefinitiveAuthenticationFailure: (error: unknown) => boolean;
   agentSettings: AgentSettings;
   chatModelRuntimeRef: MutableRefObject<AgentModelRuntime | null>;
   setStatusMessage: (message: string) => void;
@@ -175,6 +179,9 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
   const {
     business,
     session,
+    authBootstrapState,
+    ensureAuthenticatedSession,
+    rejectDefinitiveAuthenticationFailure,
     agentSettings,
     chatModelRuntimeRef,
     setStatusMessage,
@@ -215,7 +222,12 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       requireMessagingSignIn();
       return;
     }
-    const activeSession = session;
+    let activeSession = session;
+    if (navigator.onLine && authBootstrapState !== "authenticated") {
+      const validatedSession = await ensureAuthenticatedSession();
+      if (validatedSession === null) return;
+      activeSession = validatedSession;
+    }
     // The public Soko ID identifies the storefront route. Runtime bindings, owner-node presence,
     // and inference requests use the server-authoritative business agent ID.
     const canonicalRuntimeAgentId = business?.id ?? null;
@@ -333,9 +345,9 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           setChatMessages((messages) => messages.filter((item) => item.id !== clientMessageId));
           setChatDraft(message);
           setPendingAttachments(attachments);
-          setStatusMessage(
-            `The agent session could not be created. ${getErrorMessage(error)} Your account remains signed in.`
-          );
+          if (!rejectDefinitiveAuthenticationFailure(error)) {
+            setStatusMessage(`The agent session could not be created. ${getErrorMessage(error)}`);
+          }
           return;
         }
       } else {

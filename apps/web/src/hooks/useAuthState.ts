@@ -98,7 +98,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
   const [isAccountRestorationOpen, setIsAccountRestorationOpen] = useState(
     deps.accountRestorationIntent
   );
-  const sessionRefreshInFlightRef = useRef(false);
+  const sessionRefreshInFlightRef = useRef<Promise<SessionResponse | null> | null>(null);
 
   const {
     business,
@@ -251,12 +251,47 @@ export function useAuthState(deps: UseAuthStateDeps) {
     );
   }
 
-  async function refreshSession() {
-    if (sessionRefreshInFlightRef.current) return;
-    sessionRefreshInFlightRef.current = true;
-    setAuthBootstrapState((current) =>
-      current === "offline-authenticated" ? current : "restoring-session"
-    );
+  function requireReauthentication(message = "Sign in to continue") {
+    const storedBusiness = readStoredBusiness();
+    const nextAuthenticationView =
+      initialAuthenticationTarget ?? (initialOwnerAuth === null ? "signup" : "login");
+
+    setSession(null);
+    clearCachedAuthSession();
+    setAuthBootstrapState("reauthentication-required");
+    if (storedBusiness === null) setBusiness(null);
+    if (!accountDeletionIntent && !accountRestorationIntent) {
+      setIsAuthOpen(true);
+      setAuthenticationView(nextAuthenticationView);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        authenticationRoute(nextAuthenticationView)
+      );
+      setStatusMessage(message);
+    }
+  }
+
+  function rejectDefinitiveAuthenticationFailure(error: unknown): boolean {
+    if (!isDefinitiveAuthenticationError(error)) return false;
+    requireReauthentication("Your session expired. Sign in to continue.");
+    return true;
+  }
+
+  function ensureAuthenticatedSession(): Promise<SessionResponse | null> {
+    if (sessionRefreshInFlightRef.current !== null) return sessionRefreshInFlightRef.current;
+
+    const refresh = performSessionRefresh().finally(() => {
+      sessionRefreshInFlightRef.current = null;
+    });
+    sessionRefreshInFlightRef.current = refresh;
+    return refresh;
+  }
+
+  async function performSessionRefresh(): Promise<SessionResponse | null> {
+    // "offline-authenticated" is an unverified local cache. Once online it must become pending
+    // so no server-backed feature can race the canonical bootstrap request.
+    setAuthBootstrapState("restoring-session");
     try {
       const nextSession = await apiFetch<AuthBootstrapResponse>("/auth/bootstrap");
       logAuthenticationLifecycle("authenticated_user_loaded", nextSession);
@@ -272,6 +307,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
       setStatusMessage("Session active");
       await loadMarketplaceIntroState();
       await validateStoredBusiness();
+      return nextSession;
     } catch (error) {
       const cached = readCachedAuthSession();
       const storedBusiness = readStoredBusiness();
@@ -281,7 +317,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
         setAuthBootstrapState("offline-authenticated");
         setIsAuthOpen(false);
         setStatusMessage("Offline workspace restored. Cloud data will refresh after reconnect.");
-        return;
+        return null;
       }
 
       if (isDefinitiveAuthenticationError(error)) {
@@ -296,7 +332,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
             setStatusMessage("Soko restored this device account.");
             await loadMarketplaceIntroState();
             await validateStoredBusiness();
-            return;
+            return recovered;
           }
         } catch (recoveryError) {
           if (isRetryableApiRequestError(recoveryError)) {
@@ -304,30 +340,15 @@ export function useAuthState(deps: UseAuthStateDeps) {
             setStatusMessage(
               "Soko could not restore this device. Check your connection and retry."
             );
-            return;
+            return null;
           }
         }
-        setSession(null);
-        clearCachedAuthSession();
-        setAuthBootstrapState("reauthentication-required");
-        if (storedBusiness === null) setBusiness(null);
-        if (!accountDeletionIntent && !accountRestorationIntent) {
-          const nextAuthenticationView =
-            initialAuthenticationTarget ?? (initialOwnerAuth === null ? "signup" : "login");
-          setIsAuthOpen(true);
-          setAuthenticationView(nextAuthenticationView);
-          window.history.replaceState(
-            window.history.state,
-            "",
-            authenticationRoute(nextAuthenticationView)
-          );
-          setStatusMessage(
-            nextAuthenticationView === "signup"
-              ? "Create your Soko account."
-              : "Sign in to continue"
-          );
-        }
-        return;
+        requireReauthentication(
+          initialAuthenticationTarget === "signup"
+            ? "Create your Soko account."
+            : "Sign in to continue"
+        );
+        return null;
       }
 
       if (cached !== null) setSession(cached);
@@ -338,9 +359,12 @@ export function useAuthState(deps: UseAuthStateDeps) {
         setAuthenticationView(initialAuthenticationTarget ?? "signup");
       }
       setStatusMessage("Soko could not restore this session. Check your connection and retry.");
-    } finally {
-      sessionRefreshInFlightRef.current = false;
+      return null;
     }
+  }
+
+  async function refreshSession(): Promise<void> {
+    await ensureAuthenticatedSession();
   }
 
   async function authenticateSocialProfile(provider: SocialSignupProvider) {
@@ -535,6 +559,8 @@ export function useAuthState(deps: UseAuthStateDeps) {
     completePhoneFirstAuthentication,
     completeOAuthSession,
     refreshSession,
+    ensureAuthenticatedSession,
+    rejectDefinitiveAuthenticationFailure,
     authenticateSocialProfile,
     completeAccountRestoration,
     loadSokoSessionContext,

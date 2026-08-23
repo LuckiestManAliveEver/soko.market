@@ -27,3 +27,6 @@ the service worker never caches `/auth/*` responses. Auth, session, and logout r
 
 See [passkeys.md](./passkeys.md), [mfa-and-recovery.md](./mfa-and-recovery.md), and
 [persistent-passwordless-access.md](./persistent-passwordless-access.md) for operating details.
+The browser-to-agent lifecycle, refresh race prevention, tenancy checks, and API-to-inference trust
+boundary are documented in
+[agent-session-contract.md](./authentication/agent-session-contract.md).
