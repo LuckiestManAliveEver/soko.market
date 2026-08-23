@@ -1,18 +1,21 @@
 # Deploying private inference on Render
 
-> **This is an optional backend-inference provider.** Soko defaults to browser-local and trusted
-> owner-device inference. This document describes the Render/Ollama service implemented by
-> `services/ai-runtime`; its `render.yaml` block is commented out because it requires a paid Render
-> plan. Uncomment it only when a server-hosted model is required.
+> **This is the primary backend-inference provider, local-first with a cloud fallback.** This
+> document describes the Render/Ollama service implemented by `services/ai-runtime`, which
+> `soko-market-api` talks to as `BACKEND_INFERENCE_BASE_URL`. It runs on a paid Render plan. The
+> API also carries an OpenAI cloud fallback (`INFERENCE_CLOUD_FALLBACK_ENABLED=true`) for when this
+> private service is unreachable, plus browser-local and trusted owner-device inference on top —
+> Soko's own local model is tried first, the cloud model is the fallback, never the other way
+> around.
 
 ## Services
 
 `render.yaml` defines:
 
 - `soko-market-api`, the public Node API;
-- `soko-market-inference`, a paid private Docker service in the same Oregon region (commented out
-  by default — see the note above);
-- a 10 GB persistent disk mounted at `/var/lib/soko-models`, used only when that service is enabled;
+- `soko-market-inference`, a paid private Docker service in the same Oregon region, the primary
+  backend-inference provider;
+- a 10 GB persistent disk mounted at `/var/lib/soko-models`, used by that service;
 - the existing frontend and operational cron services.
 
 The API uses the paid `starter` plan because Render's pre-deploy command is available only for paid
@@ -87,22 +90,34 @@ ordering.
 
 ## Required configuration
 
-When this service is enabled (uncommented in `render.yaml`), add its `fromService` linkage so the
-Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API. Do
-not add the token to a `VITE_` variable or frontend environment.
+Render Blueprints cannot pull one service's `generateValue: true` secret directly into a peer
+service — there is no documented `fromService` syntax for an arbitrary custom env var name, only
+for a handful of built-in properties like `hostport`/`connectionString`. `render.yaml` therefore
+generates `INFERENCE_SERVICE_TOKEN` on `soko-market-inference` (`generateValue: true`) and leaves
+it `sync: false` on `soko-market-api`. After the first deploy, copy the private service's generated
+token value into the API's `INFERENCE_SERVICE_TOKEN` dashboard env var by hand — both sides must
+carry the identical value. Do not add the token to a `VITE_` variable or frontend environment.
+
+`BACKEND_INFERENCE_BASE_URL` IS wired automatically via `fromService: { name: soko-market-inference,
+type: pserv, property: hostport }` — that one is a built-in property and needs no manual step.
 
 API:
 
 ```dotenv
 BACKEND_INFERENCE_ENABLED=true
-BACKEND_INFERENCE_BASE_URL=<Render hostport service reference>
+BACKEND_INFERENCE_BASE_URL=<Render hostport service reference, wired automatically>
 BACKEND_INFERENCE_CONNECT_TIMEOUT_MS=5000
 BACKEND_INFERENCE_TIMEOUT_MS=90000
-BACKEND_INFERENCE_REQUIRED=true
+BACKEND_INFERENCE_REQUIRED=false
 BACKEND_INFERENCE_MODEL_ID=qwen2.5-0.5b-android
-INFERENCE_SERVICE_TOKEN=<generated shared secret>
-INFERENCE_CLOUD_FALLBACK_ENABLED=false
+INFERENCE_SERVICE_TOKEN=<manually copied from soko-market-inference after first deploy>
+INFERENCE_CLOUD_FALLBACK_ENABLED=true
+OPENAI_API_KEY=<set manually in the dashboard for the cloud fallback leg to work>
 ```
+
+`BACKEND_INFERENCE_REQUIRED` is deliberately `false`, not `true`: a private-service hiccup should
+degrade to the OpenAI cloud fallback, not fail `/health/ready` and cause Render to recycle the
+whole API.
 
 Private inference:
 

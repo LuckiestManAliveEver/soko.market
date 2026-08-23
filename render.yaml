@@ -92,11 +92,30 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
-      # The default deployment is client-first and has no server inference provider. Browser-local
-      # models and trusted owner devices remain available. An optional paid private service can be
-      # enabled explicitly; see docs/deployment/render-inference.md.
+      # Local-first backend inference: soko-market-inference (Soko's own model gateway, below) is
+      # the primary provider, with an OpenAI cloud fallback for when it's unreachable. Browser-local
+      # models and trusted owner devices remain available on top of this. BACKEND_INFERENCE_REQUIRED
+      # stays false deliberately - a private-service hiccup should degrade to the cloud fallback,
+      # not fail /health/ready and cause Render to recycle the whole API. See
+      # docs/deployment/render-inference.md.
       - key: BACKEND_INFERENCE_ENABLED
-        value: "false"
+        value: "true"
+      - key: BACKEND_INFERENCE_BASE_URL
+        fromService:
+          name: soko-market-inference
+          type: pserv
+          property: hostport
+      - key: BACKEND_INFERENCE_CONNECT_TIMEOUT_MS
+        value: "5000"
+      - key: BACKEND_INFERENCE_TIMEOUT_MS
+        value: "90000"
+      - key: BACKEND_INFERENCE_MODEL_ID
+        value: qwen2.5-0.5b-android
+      # Render Blueprints don't support one service referencing a peer's generateValue secret
+      # directly - set the same token in the Render dashboard on both this service and
+      # soko-market-inference after the first deploy. See docs/deployment/render-inference.md.
+      - key: INFERENCE_SERVICE_TOKEN
+        sync: false
       - key: BACKEND_INFERENCE_REQUIRED
         value: "false"
       - key: INFERENCE_CLIENT_FIRST
@@ -104,7 +123,7 @@ services:
       - key: INFERENCE_OWNER_NODE_ENABLED
         value: "true"
       - key: INFERENCE_CLOUD_FALLBACK_ENABLED
-        value: "false"
+        value: "true"
       - key: INFERENCE_CLOUD_PROVIDER
         value: openai
       - key: INFERENCE_CLOUD_MODEL_ALLOWLIST
@@ -150,73 +169,76 @@ services:
     ipAllowList: []
     maxmemoryPolicy: allkeys-lru
 
-  # Optional Render/Ollama backend-inference private service. Commented out because it requires
-  # a paid Render plan (`plan: standard`) and this Blueprint would otherwise create it on every
-  # apply. To enable it, uncomment the block and add the API linkage documented in
-  # docs/deployment/render-inference.md.
-  # - type: pserv
-  #   name: soko-market-inference
-  #     runtime: docker
-  #     branch: main
-  #     autoDeployTrigger: commit
-  #     plan: standard
-  #     region: oregon
-  #     dockerfilePath: ./services/ai-runtime/Dockerfile
-  #     dockerContext: .
-  #     maxShutdownDelaySeconds: 60
-  #     buildFilter:
-  #       paths:
-  #         - .dockerignore
-  #         - package.json
-  #         - pnpm-lock.yaml
-  #         - pnpm-workspace.yaml
-  #         - render.yaml
-  #         - packages/shared-types/**
-  #         - services/ai-runtime/**
-  #     disk:
-  #       name: soko-inference-models
-  #       mountPath: /var/lib/soko-models
-  #       sizeGB: 10
-  #     envVars:
-  #       - key: NODE_ENV
-  #         value: production
-  #       - key: PORT
-  #         value: "4002"
-  #       - key: INFERENCE_ENGINE
-  #         value: ollama
-  #       - key: OLLAMA_BASE_URL
-  #         value: http://127.0.0.1:11434
-  #       - key: OLLAMA_HOST
-  #         value: 127.0.0.1:11434
-  #       - key: OLLAMA_NO_CLOUD
-  #         value: "true"
-  #       - key: MODEL_STORAGE_PATH
-  #         value: /var/lib/soko-models
-  #       - key: OLLAMA_MODELS
-  #         value: /var/lib/soko-models/ollama
-  #       - key: MODEL_STORAGE_DURABLE
-  #         value: "true"
-  #       - key: MODEL_AUTO_INSTALL
-  #         value: "true"
-  #       - key: MODEL_MIN_FREE_BYTES
-  #         value: "2147483648"
-  #       - key: SOKO_PRIMARY_MODEL_ID
-  #         value: qwen2.5-0.5b-android
-  #       - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
-  #         value: qwen2.5:0.5b
-  #       - key: INFERENCE_REQUEST_TIMEOUT_MS
-  #         value: "90000"
-  #       - key: INFERENCE_MAX_INPUT_CHARACTERS
-  #         value: "32000"
-  #       - key: INFERENCE_MAX_OUTPUT_TOKENS
-  #         value: "512"
-  #       - key: INFERENCE_SERVICE_TOKEN
-  #         generateValue: true
-  #       - key: REDIS_URL
-  #         fromService:
-  #           name: soko-market-rate-limit-cache
-  #           type: keyvalue
-  #           property: connectionString
+  # Render/Ollama backend-inference private service - Soko's own local model gateway
+  # (services/ai-runtime), the primary provider for BACKEND_INFERENCE_BASE_URL above. Requires a
+  # paid Render plan (`plan: standard`). See docs/deployment/render-inference.md for the manual
+  # INFERENCE_SERVICE_TOKEN linkage step required after the first deploy.
+  - type: pserv
+    name: soko-market-inference
+    runtime: docker
+    branch: main
+    autoDeployTrigger: commit
+    plan: standard
+    region: oregon
+    dockerfilePath: ./services/ai-runtime/Dockerfile
+    dockerContext: .
+    maxShutdownDelaySeconds: 60
+    buildFilter:
+      paths:
+        - .dockerignore
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - packages/shared-types/**
+        - services/ai-runtime/**
+    disk:
+      name: soko-inference-models
+      mountPath: /var/lib/soko-models
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4002"
+      - key: INFERENCE_ENGINE
+        value: ollama
+      - key: OLLAMA_BASE_URL
+        value: http://127.0.0.1:11434
+      - key: OLLAMA_HOST
+        value: 127.0.0.1:11434
+      - key: OLLAMA_NO_CLOUD
+        value: "true"
+      - key: MODEL_STORAGE_PATH
+        value: /var/lib/soko-models
+      - key: OLLAMA_MODELS
+        value: /var/lib/soko-models/ollama
+      - key: MODEL_STORAGE_DURABLE
+        value: "true"
+      - key: MODEL_AUTO_INSTALL
+        value: "true"
+      - key: MODEL_MIN_FREE_BYTES
+        value: "2147483648"
+      - key: SOKO_PRIMARY_MODEL_ID
+        value: qwen2.5-0.5b-android
+      - key: SOKO_PRIMARY_PROVIDER_MODEL_ID
+        value: qwen2.5:0.5b
+      - key: INFERENCE_REQUEST_TIMEOUT_MS
+        value: "90000"
+      - key: INFERENCE_MAX_INPUT_CHARACTERS
+        value: "32000"
+      - key: INFERENCE_MAX_OUTPUT_TOKENS
+        value: "512"
+      # Blueprints can't pull a peer service's generateValue secret directly - this generates the
+      # token here; copy the same value into soko-market-api's INFERENCE_SERVICE_TOKEN (dashboard,
+      # sync: false above) after the first deploy. See docs/deployment/render-inference.md.
+      - key: INFERENCE_SERVICE_TOKEN
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          name: soko-market-rate-limit-cache
+          type: keyvalue
+          property: connectionString
 
   - type: web
     name: soko-market-web
