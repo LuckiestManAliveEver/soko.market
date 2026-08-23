@@ -302,7 +302,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
         // for known and unknown accounts to avoid an account-enumeration oracle.
         readIdentifier(request.body);
         return {
-          preferred: "passkey",
+          preferred: "pin",
           passkeyAvailable: authRuntime.passkeysEnabled,
           passwordFallback: authRuntime.passwordFallbackEnabled,
           recoveryAvailable: true,
@@ -355,21 +355,21 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       reply
     ) => {
       try {
-        const password = parseOptionalString(request.body.password);
+        requireAuthFeature(
+          authRuntime.passwordFallbackEnabled,
+          "password_fallback_disabled",
+          "Password fallback is disabled."
+        );
+        // A real credential is required at signup - passkeys are an optional, later backup, not
+        // the only way back into a new account. See docs/authentication/phone-first-authentication.md.
+        const password = parseString(request.body.password, "password");
         const passwordConfirmation = parseOptionalString(request.body.passwordConfirmation);
         if (password !== passwordConfirmation)
           throw new Cp2Error(400, "password_confirmation_invalid", "Passwords do not match.");
-        if (password !== undefined) {
-          requireAuthFeature(
-            authRuntime.passwordFallbackEnabled,
-            "password_fallback_disabled",
-            "Password fallback is disabled."
-          );
-        }
         const result = store.completePhoneSignup({
           transactionId: parseString(request.body.transactionId, "transactionId"),
           displayName: parseString(request.body.displayName, "displayName"),
-          ...(password === undefined ? {} : { password }),
+          password,
           ...(request.body.email === undefined ? {} : { email: request.body.email }),
           termsAccepted: request.body.termsAccepted === true,
           privacyAccepted: request.body.privacyAccepted === true

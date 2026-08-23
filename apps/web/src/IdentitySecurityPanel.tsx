@@ -434,7 +434,9 @@ export function IdentitySecurityPanel({
         response: credential
       });
       await loadPasskeys();
-      setProfileMessage("Passkey added. You can now sign in with this device or synced passkey.");
+      setProfileMessage(
+        "Passkey added. You can use it to recover this account if you ever lose access to your PIN and password."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -592,8 +594,9 @@ export function IdentitySecurityPanel({
         <p className="eyebrow">Account</p>
         <h3>Passkeys and login accounts</h3>
         <p>
-          Passkeys use your device unlock and keep biometric data on the device. Email, social
-          login, and your private recovery contact remain available if your passkey is lost.
+          Your PIN and password remain the normal way to sign in. Add a passkey here as a backup
+          way back into your account if you ever lose access to both - it uses your device unlock
+          and keeps biometric data on the device.
         </p>
         <p className="shell-note">Identity strength: {identityLevel.replace("_", " ")}</p>
       </div>

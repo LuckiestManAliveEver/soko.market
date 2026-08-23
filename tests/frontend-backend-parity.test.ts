@@ -14,27 +14,27 @@ const phoneSignup = readFileSync("apps/web/src/PhoneSignup.tsx", "utf8");
 const phoneLogin = readFileSync("apps/web/src/PhoneFirstAuthentication.tsx", "utf8");
 
 describe("frontend coverage for backend-owned lifecycles", () => {
-  it("renders the staged backend signup transaction as a dedicated frontend flow", () => {
+  it("renders the staged backend signup transaction as a dedicated frontend flow, requiring a password", () => {
     expect(sharedModule).toContain('import("./PhoneSignup")');
     expect(application).toContain("<PhoneSignup");
     expect(phoneSignup).toContain('"/auth/signup/start"');
     expect(phoneSignup).toContain('"/auth/signup/complete"');
     expect(phoneSignup).toContain("Display name");
-    expect(phoneSignup).toContain("Add a recovery password");
+    expect(phoneSignup).toContain("password.length < 10");
     expect(phoneSignup).toContain("termsAccepted");
     expect(phoneSignup).toContain("privacyAccepted");
     expect(phoneSignup).toContain('"/auth/passkeys/register/options"');
     expect(phoneSignup).toContain('"/auth/passkeys/register/verify"');
-    expect(phoneSignup).toContain("addPassword && createdSession !== null");
+    expect(phoneSignup).toContain("createdSession !== null");
+    expect(phoneSignup).not.toContain("addPassword");
   });
 
-  it("uses backend method discovery and presents passkey-first return access", () => {
+  it("uses backend method discovery and presents PIN-primary return access, passkey fallback-only", () => {
     expect(phoneLogin).toContain('"/auth/login/methods"');
-    expect(phoneLogin).toContain("loginMethods?.passkeyAvailable");
-    expect(phoneLogin).toContain("Continue with a passkey");
     expect(phoneLogin).toContain("loginMethods?.passwordFallback");
     expect(phoneLogin).toContain("loginMethods?.recoveryAvailable");
     expect(phoneLogin).toContain("Use account PIN");
+    expect(phoneLogin).not.toContain("Continue with a passkey");
     expect(phoneLogin).not.toContain("legacy");
     expect(phoneLogin).not.toContain('"/auth/identify"');
   });

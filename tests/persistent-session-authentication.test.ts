@@ -4,21 +4,36 @@ import { buildApi } from "../services/api/src/app";
 import { readAuthRuntimeConfig } from "../services/api/src/cp2/auth-runtime-config";
 import { createCp2Store } from "../services/api/src/cp2/store";
 
-describe("persistent passwordless authentication", () => {
+describe("persistent session authentication", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
   });
 
-  it("creates an account without a password and keeps return-method discovery generic", async () => {
+  it("requires a real password at signup and keeps return-method discovery generic", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
     const identity = { type: "phone", identifier: "+254712349001" };
     const started = await post(app, "/auth/signup/start", identity);
     const challenge = started.json<{ transactionId: string }>();
+
+    // A passkey is an optional backup credential, never the only way into a new account - signup
+    // without a password is rejected outright.
+    const passwordless = await post(app, "/auth/signup/complete", {
+      transactionId: challenge.transactionId,
+      displayName: "No Password Owner",
+      termsAccepted: true,
+      privacyAccepted: true
+    });
+    expect(passwordless.statusCode).toBe(400);
+    expect(passwordless.json()).toMatchObject({ code: "password_required" });
+    expect(store.snapshot().accounts).toHaveLength(0);
+
     const completed = await post(app, "/auth/signup/complete", {
       transactionId: challenge.transactionId,
-      displayName: "Passwordless Owner",
+      displayName: "Password Owner",
+      password: "a reasonably long password",
+      passwordConfirmation: "a reasonably long password",
       termsAccepted: true,
       privacyAccepted: true
     });
@@ -28,7 +43,7 @@ describe("persistent passwordless authentication", () => {
     expect(issuedCookies).toContain("soko_refresh=");
     expect(issuedCookies).toContain("Path=/");
     expect(issuedCookies).not.toContain("Path=/auth");
-    expect(store.snapshot().passwordCredentials).toHaveLength(0);
+    expect(store.snapshot().passwordCredentials).toHaveLength(1);
     expect(store.snapshot().smsDeliveryAttempts).toHaveLength(0);
     expect(completed.json()).toMatchObject({
       session: {
@@ -44,7 +59,7 @@ describe("persistent passwordless authentication", () => {
     });
     expect(known.json()).toEqual(unknown.json());
     expect(known.json()).toEqual({
-      preferred: "passkey",
+      preferred: "pin",
       passkeyAvailable: true,
       passwordFallback: true,
       recoveryAvailable: true,
@@ -267,7 +282,6 @@ describe("persistent passwordless authentication", () => {
     expect(signup).toContain('"/auth/signup/complete"');
     expect(signup).toContain('"/auth/passkeys/register/options"');
     expect(signup).toContain('"/auth/passkeys/register/verify"');
-    expect(signup).toContain("Add a recovery password");
     expect(login).toContain('"/auth/login/methods"');
     expect(login).toContain('"/auth/pin/login"');
     expect(signup).not.toContain('"/auth/pin/continue"');
@@ -276,7 +290,6 @@ describe("persistent passwordless authentication", () => {
     expect(signup).not.toContain('"verify-phone"');
     expect(signup).toContain("Create a passkey");
     expect(signup).toContain("Do this later");
-    expect(signup).toContain("addPassword && createdSession !== null");
   });
 
   it("fails closed on unsafe production cookie and session configuration", () => {

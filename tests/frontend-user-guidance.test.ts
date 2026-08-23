@@ -261,7 +261,7 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('"/auth/recovery/start"');
     expect(phoneFirst).toContain('"/auth/recovery/verify"');
     expect(phoneFirst).toContain('"/auth/recovery/reset-password"');
-    expect(phoneFirst).toContain("Continue with a passkey");
+    expect(phoneFirst).not.toContain("Continue with a passkey");
     expect(phoneFirst).toContain("Save new PIN");
     expect(phoneFirst).toContain('"/auth/pin/recover/passkey"');
     expect(phoneFirst).toContain('purpose: "pin_recovery"');
@@ -336,7 +336,7 @@ describe("frontend user guidance", () => {
     expect(phoneFirst).toContain('"/auth/pin/login"');
     expect(phoneSignup).toContain("Finish your profile");
     expect(phoneSignup).toContain("Display name");
-    expect(phoneSignup).toContain("Add a recovery password");
+    expect(phoneSignup).toContain("password.length < 10");
     expect(phoneSignup).toContain("termsAccepted");
     expect(phoneSignup).toContain("privacyAccepted");
     expect(phoneFirst).not.toContain('"/auth/pin/continue"');

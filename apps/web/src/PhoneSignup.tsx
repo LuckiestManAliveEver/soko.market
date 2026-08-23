@@ -6,7 +6,6 @@ import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
 import { AppIcon } from "./AppIcon";
 import { ApiRequestError, apiFetch } from "./lib/api";
 import { authenticationPhoneCountries, PhoneNumberField } from "./PhoneNumberField";
-import { writePasskeyDeviceHint } from "./PhoneFirstAuthentication";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
 type SignupStage = "phone" | "profile" | "passkey";
@@ -32,7 +31,6 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
   const [transaction, setTransaction] = useState<SignupTransaction | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
-  const [addPassword, setAddPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -96,11 +94,11 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
       setMessage("Enter a valid email address or leave it blank.");
       return;
     }
-    if (addPassword && (password.length < 10 || password.length > 256)) {
+    if (password.length < 10 || password.length > 256) {
       setMessage("Use a password between 10 and 256 characters.");
       return;
     }
-    if (addPassword && password !== passwordConfirmation) {
+    if (password !== passwordConfirmation) {
       setMessage("Passwords do not match.");
       return;
     }
@@ -115,7 +113,8 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
         transactionId: transaction.transactionId,
         displayName: trimmedName,
         ...(trimmedEmail ? { email: trimmedEmail } : {}),
-        ...(addPassword ? { password, passwordConfirmation } : {}),
+        password,
+        passwordConfirmation,
         termsAccepted,
         privacyAccepted
       },
@@ -123,17 +122,13 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
     });
     setCreatedSession(session);
     setStage("passkey");
-    setMessage(
-      addPassword
-        ? "Your account is ready. Add a passkey for faster, safer return access."
-        : "Your account is ready. Add a passkey so you can securely return without a password."
-    );
+    setMessage("Your account is ready. You can also add a passkey as a backup way in.");
   }
 
   async function createPasskey() {
     if (createdSession === null) return;
     if (!browserSupportsWebAuthn()) {
-      setMessage("Passkeys are unavailable in this browser. Add a recovery password to continue.");
+      setMessage("Passkeys are unavailable in this browser. Your password still works.");
       return;
     }
     const challenge = await apiFetch<{
@@ -145,16 +140,12 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
       method: "POST",
       body: { ceremonyId: challenge.ceremonyId, label: "Signup device", response }
     });
-    writePasskeyDeviceHint({
-      identifier: createdSession.account.primaryAuthDestination,
-      label: createdSession.account.primaryAuthDestination
-    });
     onAuthenticated(createdSession);
   }
 
   function goBack() {
     if (stage === "passkey") {
-      if (createdSession !== null && addPassword) onAuthenticated(createdSession);
+      if (createdSession !== null) onAuthenticated(createdSession);
       return;
     }
     if (stage === "profile") {
@@ -173,7 +164,6 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
           <button
             className="auth-back-button"
             type="button"
-            disabled={stage === "passkey" && !addPassword}
             onClick={goBack}
             aria-label="Back"
           >
@@ -210,7 +200,7 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
                 ? "Your phone number becomes your Soko account identity. No SMS code is required."
                 : stage === "profile"
                   ? `Set up the account attached to ${normalizedPhone}.`
-                  : "Use your device unlock to create a passwordless sign-in method."}
+                  : "Optionally add a passkey as a backup way in if you ever lose access to your password."}
             </p>
           </div>
 
@@ -273,59 +263,30 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
                 />
               </label>
 
-              <label className="auth-option-row">
+              <label>
+                Password
                 <input
-                  type="checkbox"
-                  checked={addPassword}
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={10}
+                  maxLength={256}
+                  value={password}
                   disabled={busy}
-                  onChange={(event) => {
-                    setAddPassword(event.target.checked);
-                    if (!event.target.checked) {
-                      setPassword("");
-                      setPasswordConfirmation("");
-                    }
-                  }}
+                  onChange={(event) => setPassword(event.target.value)}
                 />
-                <span>
-                  <strong>Add a recovery password</strong>
-                  <small>Optional. You can also add a passkey after signup.</small>
-                </span>
               </label>
-              {addPassword ? (
-                <>
-                  <label>
-                    Password
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={10}
-                      maxLength={256}
-                      value={password}
-                      disabled={busy}
-                      onChange={(event) => setPassword(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Confirm password
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={10}
-                      maxLength={256}
-                      value={passwordConfirmation}
-                      disabled={busy}
-                      onChange={(event) => setPasswordConfirmation(event.target.value)}
-                    />
-                  </label>
-                </>
-              ) : null}
-
-              {!passkeyAvailable && !addPassword ? (
-                <p className="form-hint" role="status">
-                  This browser cannot create passkeys. Add a recovery password before creating the
-                  account.
-                </p>
-              ) : null}
+              <label>
+                Confirm password
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={10}
+                  maxLength={256}
+                  value={passwordConfirmation}
+                  disabled={busy}
+                  onChange={(event) => setPasswordConfirmation(event.target.value)}
+                />
+              </label>
 
               <fieldset className="auth-consent-group">
                 <legend>Account agreements</legend>
@@ -361,8 +322,8 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
                   displayName.trim().length < 2 ||
                   !termsAccepted ||
                   !privacyAccepted ||
-                  (!passkeyAvailable && !addPassword) ||
-                  (addPassword && (password.length < 10 || password !== passwordConfirmation))
+                  password.length < 10 ||
+                  password !== passwordConfirmation
                 }
                 aria-busy={busy}
                 onClick={() => void run(completeSignup)}
@@ -373,10 +334,10 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
           ) : (
             <div className="auth-fields auth-passkey-enrollment">
               <div className="auth-security-summary">
-                <strong>Passkeys are the preferred way to return to Soko.</strong>
+                <strong>Optional: add a passkey as a backup</strong>
                 <p>
-                  They use your device unlock. Your fingerprint, face, or screen-lock secret stays
-                  on your device.
+                  Your password already gets you back in. A passkey uses your device unlock and can
+                  serve as a backup way in if you ever lose access to your password.
                 </p>
               </div>
               <button
@@ -392,7 +353,7 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
                     ? "Create a passkey"
                     : "Passkeys unavailable"}
               </button>
-              {addPassword && createdSession !== null ? (
+              {createdSession !== null ? (
                 <button
                   className="auth-guest-button"
                   type="button"
@@ -401,12 +362,7 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
                 >
                   Do this later
                 </button>
-              ) : (
-                <p className="form-hint">
-                  This passwordless account needs a passkey for secure return access. If this
-                  browser cannot create one, go back and add a recovery password.
-                </p>
-              )}
+              ) : null}
             </div>
           )}
 

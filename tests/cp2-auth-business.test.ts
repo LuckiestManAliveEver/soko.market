@@ -514,6 +514,8 @@ describe("CP2 auth and business creation", () => {
         transactionId: start.transactionId,
         displayName: "Test User",
         email: "owner@example.com",
+        password: "a reasonably long password",
+        passwordConfirmation: "a reasonably long password",
         termsAccepted: true,
         privacyAccepted: true
       })
