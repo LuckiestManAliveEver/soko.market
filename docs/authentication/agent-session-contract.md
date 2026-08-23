@@ -101,7 +101,7 @@ Render API to the configured inference service:
 ```dotenv
 BACKEND_INFERENCE_ENABLED=true
 BACKEND_INFERENCE_BASE_URL=<configured inference service URL>
-BACKEND_INFERENCE_MODEL_ID=cloudflare-backend-default
+BACKEND_INFERENCE_MODEL_ID=qwen2.5-0.5b-android
 INFERENCE_SERVICE_TOKEN=<same secret configured on the inference service>
 ```
 

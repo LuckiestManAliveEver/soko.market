@@ -1,14 +1,9 @@
 # Deploying private inference on Render
 
-> **This is now an optional backend-inference provider.** The currently deployed provider is
-> Cloudflare Workers AI — see [Deploying inference on Cloudflare Workers](./cloudflare-workers-ai.md).
-> Both implement the same backend-inference HTTP protocol (`GET /health/ready`, `GET /v1/models`,
-> `POST /v1/models/:modelId/probe`, `POST /v1/chat/completions`), so `soko-market-api` only needs
-> `BACKEND_INFERENCE_BASE_URL` / `INFERENCE_SERVICE_TOKEN` / `BACKEND_INFERENCE_MODEL_ID` repointed
-> to switch between them. This document describes the Render/Ollama service `services/ai-runtime`
-> implements; its `render.yaml` block is commented out by default because it requires a paid Render
-> plan. Uncomment it (see the comment above the `soko-market-inference` block in `render.yaml`) to
-> use it instead of, or in addition to, Cloudflare.
+> **This is an optional backend-inference provider.** Soko defaults to browser-local and trusted
+> owner-device inference. This document describes the Render/Ollama service implemented by
+> `services/ai-runtime`; its `render.yaml` block is commented out because it requires a paid Render
+> plan. Uncomment it only when a server-hosted model is required.
 
 ## Services
 
@@ -92,10 +87,9 @@ ordering.
 
 ## Required configuration
 
-When this service is enabled (uncommented in `render.yaml`), restore its `fromService` linkage so
-the Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API,
-instead of the `sync: false` placeholders used for the Cloudflare-backed deployment. Do not add the
-token to a `VITE_` variable or frontend environment.
+When this service is enabled (uncommented in `render.yaml`), add its `fromService` linkage so the
+Blueprint generates and copies `INFERENCE_SERVICE_TOKEN` from the private service to the API. Do
+not add the token to a `VITE_` variable or frontend environment.
 
 API:
 

@@ -92,30 +92,13 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
-      # Backend inference currently targets the Cloudflare Worker in
-      # services/cloudflare-inference (see docs/deployment/cloudflare-workers-ai.md) rather than
-      # the paid private inference service defined further below (commented out; it requires a
-      # Render plan free-tier accounts cannot run). BASE_URL and the token are `sync: false`
-      # because Cloudflare deploys independently of this Blueprint; set them from the Render
-      # dashboard after `wrangler deploy` prints the Worker's URL and after `wrangler secret put
-      # INFERENCE_SERVICE_TOKEN`. REQUIRED is "false" so /health/ready stays healthy if the
-      # Worker is briefly unavailable — browser-local and cloud-fallback inference remain usable
-      # in that window. To switch backend-inference providers, see
-      # docs/deployment/render-inference.md.
+      # The default deployment is client-first and has no server inference provider. Browser-local
+      # models and trusted owner devices remain available. An optional paid private service can be
+      # enabled explicitly; see docs/deployment/render-inference.md.
       - key: BACKEND_INFERENCE_ENABLED
-        value: "true"
-      - key: BACKEND_INFERENCE_BASE_URL
-        sync: false
-      - key: BACKEND_INFERENCE_CONNECT_TIMEOUT_MS
-        value: "5000"
-      - key: BACKEND_INFERENCE_TIMEOUT_MS
-        value: "90000"
+        value: "false"
       - key: BACKEND_INFERENCE_REQUIRED
         value: "false"
-      - key: BACKEND_INFERENCE_MODEL_ID
-        value: cloudflare-backend-default
-      - key: INFERENCE_SERVICE_TOKEN
-        sync: false
       - key: INFERENCE_CLIENT_FIRST
         value: "true"
       - key: INFERENCE_OWNER_NODE_ENABLED
@@ -168,13 +151,9 @@ services:
     maxmemoryPolicy: allkeys-lru
 
   # Optional Render/Ollama backend-inference private service. Commented out because it requires
-  # a paid Render plan (`plan: standard`) and this Blueprint would otherwise try to create it on
-  # every apply. Cloudflare Workers AI (services/cloudflare-inference) is the currently deployed
-  # backend-inference implementation; see docs/deployment/cloudflare-workers-ai.md. To switch
-  # back to this service: uncomment the block below, then in soko-market-api's envVars above
-  # replace BACKEND_INFERENCE_BASE_URL / INFERENCE_SERVICE_TOKEN's `sync: false` with the
-  # `fromService` form documented in docs/deployment/render-inference.md, and set
-  # BACKEND_INFERENCE_MODEL_ID back to qwen2.5-0.5b-android.
+  # a paid Render plan (`plan: standard`) and this Blueprint would otherwise create it on every
+  # apply. To enable it, uncomment the block and add the API linkage documented in
+  # docs/deployment/render-inference.md.
   # - type: pserv
   #   name: soko-market-inference
   #     runtime: docker

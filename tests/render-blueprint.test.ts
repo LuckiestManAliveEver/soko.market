@@ -46,7 +46,7 @@ describe("Render Blueprint", () => {
     expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
   });
 
-  it("provisions authenticated private inference with durable storage and disabled cloud fallback", async () => {
+  it("defaults to client-first inference and keeps private Ollama opt-in", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8")
@@ -75,20 +75,15 @@ describe("Render Blueprint", () => {
     expect(blueprint).toContain("corepack pnpm build:production");
     expect(blueprint).toContain("services/ai-runtime/**");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
-    // The paid Render/Ollama private service is commented out (not deleted) because it requires
-    // a paid Render plan; Cloudflare Workers AI is the currently active backend-inference
-    // provider. See docs/deployment/cloudflare-workers-ai.md and docs/deployment/render-inference.md.
+    // The paid Render/Ollama private service remains an explicit opt-in. The default deployment
+    // uses browser-local and trusted owner-device inference without a server provider.
     expect(blueprint).not.toMatch(/\n {2}- type: pserv\n {4}name: soko-market-inference/u);
     expect(blueprint).toContain("# - type: pserv");
     expect(blueprint).toContain("#   name: soko-market-inference");
     expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
     expect(blueprint).toContain("mountPath: /var/lib/soko-models");
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
-    expect(blueprint).toContain("BACKEND_INFERENCE_BASE_URL\n        sync: false");
-    expect(blueprint).toContain("INFERENCE_SERVICE_TOKEN\n        sync: false");
-    expect(blueprint).toContain(
-      "BACKEND_INFERENCE_MODEL_ID\n        value: cloudflare-backend-default"
-    );
+    expect(blueprint).toContain('BACKEND_INFERENCE_ENABLED\n        value: "false"');
     expect(blueprint).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
     const inference = blueprint.slice(
       blueprint.indexOf("name: soko-market-inference"),

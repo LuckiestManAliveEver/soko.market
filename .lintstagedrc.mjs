@@ -9,7 +9,6 @@ const workspacesByPrefix = [
   ["services/api/", "@soko/api"],
   ["services/ai-runtime/", "@soko/ai-runtime"],
   ["services/sync/", "@soko/sync"],
-  ["services/cloudflare-inference/", "@soko/cloudflare-inference"],
   ["packages/shared-types/", "@soko/shared-types"],
   ["packages/sync-core/", "@soko/sync-core"],
   ["packages/tool-core/", "@soko/tool-core"],
