@@ -1,5 +1,9 @@
 # Render and Neon model runtime audit
 
+> Historical note: this audit originally justified a Render-private Ollama service. That service
+> has since been removed from `render.yaml`. The current production boundary is documented in
+> `docs/deployment/render-inference.md`; the statements below describe the earlier implementation.
+
 ## Outcome
 
 The repository had a sound agent-binding abstraction, but production backend inference stopped at
@@ -8,7 +12,7 @@ and defaulted to `127.0.0.1:11434`. On Render that address refers to the API con
 model engine runs. The existing `services/ai-runtime` package exposed only a basic health route and
 was not a deployable, authenticated inference gateway.
 
-The implementation now uses this boundary:
+That implementation used this boundary:
 
 ```text
 PWA -> public Soko API -> Render private soko-market-inference -> container-local Ollama
@@ -61,7 +65,7 @@ off by default.
   keys to normalized agent/shop/registry tables. Adding parallel normalized tables would create a
   second source of truth. Ownership and canonical model validation remain application-enforced.
 
-## Implemented corrections
+## Historical corrections
 
 - One canonical mapping in `@soko/shared-types` maps `qwen2.5-0.5b-android` to
   `qwen2.5:0.5b`; readiness, probes, generation, and metadata all validate it.
@@ -69,15 +73,15 @@ off by default.
   routes with bounded requests and structured errors.
 - The API uses the gateway contract, has separate connect/request timeouts, retries only readiness,
   propagates cancellation and correlation IDs, and never forwards browser cookies.
-- Render uses a `pserv`, a persistent disk, `hostport` private discovery, a generated shared token,
-  Neon secrets, and a pre-deploy migration.
+- The earlier Render design used a `pserv`, persistent disk, `hostport` private discovery, and a
+  generated shared token. Production no longer provisions those inference resources.
 - Activation is idempotent for an already-active equivalent binding.
 - The UI now treats an untested registry entry as “Not verified,” a successful probe as
   “Available,” and only the persisted active binding as “Active for …”.
 
 ## Verification boundary
 
-Mocked tests can validate the structural contract, but they cannot establish a deployed Render
-service, a live model completion, or a Neon transaction. Use
+Mocked tests can validate the structural contract, but they cannot establish a deployed model
+service, a live completion, or a Neon transaction. For a deliberately self-hosted runtime, use
 `docs/deployment/model-runtime-verification.md` after deploying. Do not interpret a unit-test pass
 as a live inference pass.

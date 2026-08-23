@@ -99,6 +99,7 @@ import { isAgentModel } from "./owner-app-bootstrap";
 import { normalizeSearchText } from "./agent-command-engine";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { isDownloadableCatalogModel } from "./agent-model-panel-utils";
+import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
 
 export interface AgentModelPanelProps {
   accountId: string;
@@ -111,6 +112,9 @@ export interface AgentModelPanelProps {
   onEnsureRuntimeSession: () => Promise<string>;
   profileMessage: string;
   setProfileMessage: (message: string) => void;
+  pendingProfileAction: string | null;
+  runProfileAction: (key: string, action: () => Promise<void>) => Promise<void>;
+  copyStorefrontValue: (value: string, label: string) => Promise<void>;
   aiModels: AiModelSummary[];
   setAiModels: (models: AiModelSummary[]) => void;
   localAiModels: LocalAiModel[];
@@ -134,6 +138,9 @@ export function AgentModelPanel({
   onEnsureRuntimeSession,
   profileMessage,
   setProfileMessage,
+  pendingProfileAction,
+  runProfileAction,
+  copyStorefrontValue,
   aiModels,
   setAiModels,
   localAiModels,
@@ -812,8 +819,8 @@ export function AgentModelPanel({
         businessId: business.id,
         deviceId,
         installation: verified,
-        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_FIRST",
-        fallbackPolicy: previous?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
+        preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_ONLY",
+        fallbackPolicy: previous?.fallbackPolicy ?? "NEVER",
         runtimeSessionId
       });
       let readyAssignment = assignmentAfterReadiness(pending, result);
@@ -1346,15 +1353,23 @@ export function AgentModelPanel({
             <small>Cloud fallback: {cloudFallbackModel?.label ?? "Not configured"}</small>
           </article>
         )}
+        <McpAccessTokensPanel
+          accountId={accountId}
+          businessId={business.id}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          setProfileMessage={setProfileMessage}
+          copyStorefrontValue={copyStorefrontValue}
+        />
         <details className="agent-model-advanced">
           <summary>Advanced routing</summary>
           <section className="browser-model-control" aria-label="Browser-local inference">
             <div>
               <strong>Browser-local inference</strong>
               <p>
-                Run supported short chats on this device. A compatible model downloads only after
-                you turn this on; requests that need server tools stay on the confirmation-gated
-                server route.
+                Run inference on this device. A compatible model downloads only after you turn this
+                on. Render may authorize a proposed business tool, but it does not generate the
+                proposal or chat response.
               </p>
             </div>
             {browserLocalInferenceDeploymentEnabled ? (

@@ -157,18 +157,12 @@ Frontend build-time:
 
 Server runtime:
 
-- `BACKEND_INFERENCE_ENABLED`
-- `BACKEND_INFERENCE_BASE_URL`
-- `BACKEND_INFERENCE_TIMEOUT_MS`
-- `BACKEND_INFERENCE_CONNECT_TIMEOUT_MS`
-- `BACKEND_INFERENCE_REQUIRED`
-- `BACKEND_INFERENCE_MODEL_ID`
-- `INFERENCE_SERVICE_TOKEN`
 - existing `INFERENCE_OWNER_NODE_*` and `INFERENCE_CLOUD_*` settings
 - `OPENAI_API_KEY` only when explicitly enabling allowlisted OpenAI fallback
 
-`BACKEND_INFERENCE_BASE_URL` is required when backend inference is enabled. Paid fallback is not
-enabled by these binding changes.
+The generic `BACKEND_INFERENCE_*` and `INFERENCE_SERVICE_TOKEN` settings remain available for a
+deliberately self-hosted runtime, but the production Render Blueprint does not set them or
+provision such a service. Paid fallback is not enabled by these binding changes.
 
 ## Local verification
 
@@ -184,10 +178,11 @@ enabled by these binding changes.
 
 ## Render verification
 
-Render configures backend inference through the private `soko-market-inference` service reference.
-Deploy migration 040 and the private service, run the real probe, then call the model test endpoint
-before activation. Keep OpenAI fallback disabled unless the API key, allowlist, selected fallback
-model, and owner permission are all intentionally configured.
+Render is the control plane and optional consent-gated OpenAI proxy. It does not host the
+downloaded model or configure `BACKEND_INFERENCE_BASE_URL`. Verify browser WebGPU/WASM inference
+on the target device, then confirm that structured tool proposals are authorized by the API
+without server-side regeneration. Keep OpenAI fallback unavailable unless the API key, allowlist,
+selected fallback model, and owner permission are all intentionally configured.
 
 ## Troubleshooting
 

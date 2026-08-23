@@ -43,6 +43,19 @@ for (const root of ["services/api/src", "services/api/dist"]) {
 }
 
 const blueprint = readFileSync("render.yaml", "utf8");
+for (const forbidden of [
+  "BACKEND_INFERENCE_ENABLED",
+  "BACKEND_INFERENCE_BASE_URL",
+  "soko-market-inference",
+  "services/ai-runtime/Dockerfile",
+  "OLLAMA_"
+]) {
+  if (blueprint.includes(forbidden)) {
+    violations.push(
+      `Render Blueprint provisions forbidden server-local inference marker ${forbidden}`
+    );
+  }
+}
 const apiStart = blueprint.indexOf("name: soko-market-api");
 const nextService = blueprint.indexOf("\n  - type:", apiStart);
 const apiService = blueprint.slice(apiStart, nextService === -1 ? undefined : nextService);

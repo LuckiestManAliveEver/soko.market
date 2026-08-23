@@ -7,9 +7,9 @@ business APIs, message routing, metadata, ephemeral owner-node coordination, and
 backend-only cloud proxy. It does not import llama.cpp/Ollama adapters, load GGUF/ONNX models,
 start a model worker, spawn a local model server, or download model weights.
 
-`pnpm check:render-inference-boundaries` enforces this against API source/build imports and the
-API section of `render.yaml`. The API declares `@soko/ai-runtime` so pnpm builds and validates its
-public package boundary, but the API does not import its local-model or Ollama adapters.
+`pnpm check:render-inference-boundaries` enforces this against API source/build imports and
+`render.yaml`. The production workspace build validates `@soko/ai-runtime` as an independent
+self-hosting artifact, but the API neither declares nor imports its local-model or Ollama adapters.
 
 ## Build and start
 
@@ -27,9 +27,9 @@ COREPACK_HOME=/tmp/corepack corepack pnpm db:migrate
 COREPACK_HOME=/tmp/corepack corepack pnpm --filter @soko/api start
 ```
 
-`services/ai-runtime` is an explicit API workspace dependency so dependency builds cannot omit its
-compiled package entry point. It remains a build-time contract for Render: the API does not start
-the runtime server, import local model adapters, or provision inference resources.
+`services/ai-runtime` remains an independently built workspace package for development and
+self-hosting. The API does not start its server, import local model adapters, or provision
+inference resources.
 
 ## Required API variables
 

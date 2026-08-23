@@ -1,7 +1,9 @@
-# Production model-runtime verification
+# Self-hosted backend model-runtime verification
 
-These checks require deployed Render services, a live Neon development/staging branch, and a real
-installed model. Mocked tests do not satisfy them.
+These checks apply only to a deliberately self-hosted `services/ai-runtime` deployment with a real
+installed model. The production Render Blueprint does not deploy this service or set
+`BACKEND_INFERENCE_*`; use the browser-inference checks in `render-inference.md` for Render.
+Mocked tests do not satisfy live self-hosted verification.
 
 ## Prerequisites
 
@@ -17,12 +19,11 @@ export SOKO_TEST_SHOP_ID=<shop-id>
 export SOKO_MODEL_ID=qwen2.5-0.5b-android
 ```
 
-The private hostname is reachable only from another Render service or a Render shell in the same
-private network. Do not make it public just to run `curl`.
+Keep the inference hostname private to the API network. Do not make it public just to run `curl`.
 
 ## Individual checks
 
-From a Render shell with private-network access:
+From a shell with private-network access:
 
 ```bash
 curl --fail --silent --show-error \
@@ -90,10 +91,10 @@ The equivalent opt-in Vitest flow also performs activation and reload verificati
 pnpm test:live-model-runtime
 ```
 
-## Final deployment sequence
+## Final self-hosted deployment sequence
 
 1. Apply Neon-compatible migrations.
-2. Deploy the private inference service and persistent disk.
+2. Deploy the self-hosted private inference service and durable model storage.
 3. Confirm authenticated inference readiness.
 4. Confirm the real model probe.
 5. Configure the API private hostname and shared token.

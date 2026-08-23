@@ -78,8 +78,10 @@ import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
 import { decideClientInferenceRoute, defaultInferencePriority } from "../inference/router";
+import { downloadedAgentModelMustStayLocal } from "../inference/local-runtime-boundary";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
 import { queueMessagingOutbox } from "../messaging/outbox";
+import { readDeviceOssAgentBinding } from "../oss-agent-installation";
 import { renderRelevantRecall, selectRelevantRecall } from "../recall-context";
 import {
   clientInferenceFeatureFlags,
@@ -320,10 +322,11 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
       return;
     }
+    const localDeviceId = getOrCreateDeviceModelScopeId();
+    const localAgentBinding =
+      business === null ? null : readDeviceOssAgentBinding(business.id, localDeviceId);
     const localAssignment =
-      business === null
-        ? null
-        : readDeviceAgentModelAssignment(business.id, getOrCreateDeviceModelScopeId());
+      business === null ? null : readDeviceAgentModelAssignment(business.id, localDeviceId);
     const readyLocalAssignment =
       localAssignment?.readinessStatus === "READY" &&
       localAssignment.lastSuccessfulInferenceAt !== null
@@ -379,7 +382,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           : Promise.resolve(null),
         browserPreference
           ? listCachedBrowserModelIds(session.account.id).catch(() => [])
-          : Promise.resolve([]),
+          : Promise.resolve<string[]>([]),
         inferencePreferences.cloudConsent && clientInferenceFeatureFlags.cloudFallback
           ? getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] }))
           : Promise.resolve({ models: [] }),
@@ -397,6 +400,20 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           model.source === "hosted" &&
           model.provider === "openai"
       ) ?? null;
+    const downloadedBrowserModelReady =
+      browserState?.settings?.enabled === true &&
+      browserState.settings.status === "ready" &&
+      browserState.settings.downloadedAt !== null &&
+      browserState.settings.selectedModelId !== null &&
+      cachedBrowserModelIds.includes(browserState.settings.selectedModelId);
+    const downloadedAgentAndModelActive = downloadedAgentModelMustStayLocal({
+      linkedAgentDefinitionId: localAgentBinding?.agentDefinitionId ?? null,
+      activeAgentDefinitionId: agentSettings.agentDefinitionId,
+      installedGgufReady:
+        localInstallation !== null &&
+        readyLocalAssignment?.preferredExecutionMode !== "CLOUD_ONLY",
+      cachedBrowserModelReady: downloadedBrowserModelReady
+    });
     const inferenceModelId =
       localInstallation?.modelId ??
       browserState?.settings?.selectedModelId ??
@@ -666,6 +683,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       inferenceRequest !== null &&
       business !== null &&
       ownerNodeReachable &&
+      !downloadedAgentAndModelActive &&
       !requiresServerTool
     ) {
       inferenceProviders.push(
@@ -679,7 +697,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       );
     }
 
-    if (inferenceRequest !== null && cloudModel !== null) {
+    if (inferenceRequest !== null && cloudModel !== null && !downloadedAgentAndModelActive) {
       inferenceProviders.push({
         id: `cloud-fallback:${cloudModel.id}`,
         runtime: "cloud-fallback",
@@ -717,8 +735,10 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       priority: defaultInferencePriority,
       maximumFallbacks: neverFallback ? 0 : clientInferenceFeatureFlags.maximumFallbacks,
       allowNativeBridge: clientInferenceFeatureFlags.nativeBridge,
-      allowOwnerNode: clientInferenceFeatureFlags.ownerNode && !localOnly,
-      allowCloudFallback: clientInferenceFeatureFlags.cloudFallback && !localOnly,
+      allowOwnerNode:
+        clientInferenceFeatureFlags.ownerNode && !localOnly && !downloadedAgentAndModelActive,
+      allowCloudFallback:
+        clientInferenceFeatureFlags.cloudFallback && !localOnly && !downloadedAgentAndModelActive,
       requireCachedBrowserModelWhenOffline: true,
       privacyMode: inferencePreferences.cloudConsent
         ? ("cloud-with-consent" as const)
@@ -738,11 +758,13 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }).catch(() => null);
     }
     const shouldResolveClientInference = inferenceRoute !== null;
+    const shouldRequestServerInference =
+      !shouldResolveClientInference && !downloadedAgentAndModelActive;
     let activeServerRuntimeSessionId = resolvedInferenceRuntimeSessionId;
     if (
       !hasHumanRecipient &&
       business !== null &&
-      !shouldResolveClientInference &&
+      shouldRequestServerInference &&
       navigator.onLine
     ) {
       try {
@@ -794,7 +816,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             content: messageContent,
             replyToMessageId,
             clientTimestamp: new Date().toISOString(),
-            ...(!hasHumanRecipient && business !== null && !shouldResolveClientInference
+            ...(!hasHumanRecipient && business !== null && shouldRequestServerInference
               ? {
                   agent: {
                     businessId: business.id,
@@ -817,7 +839,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     if (payload !== null) {
       try {
         const persisted =
-          !hasHumanRecipient && business !== null && !shouldResolveClientInference
+          !hasHumanRecipient && business !== null && shouldRequestServerInference
             ? await runtimeManager.runWithSession(
                 runtimeManagerKey(session.account.id, business.id),
                 createManagedRuntimeSession,
@@ -889,7 +911,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             item.id === clientMessageId ? { ...item, status: "failed" } : item
           )
         );
-        if (!shouldResolveClientInference) {
+        if (shouldRequestServerInference) {
           setStatusMessage("Message queued. It will retry when the connection returns.");
           return;
         }
@@ -1237,7 +1259,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             requestId: inferenceRequest.requestId,
             runtime: execution.runtime,
             modelId: inferenceRequest.modelId,
-            deviceId: getOrCreateDeviceModelScopeId(),
+            deviceId: localDeviceId,
             ...(localInstallation !== null && execution.providerId.includes(localInstallation.id)
               ? { installationId: localInstallation.id }
               : {}),
@@ -1286,7 +1308,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             updatedAt: new Date().toISOString()
           });
         }
-        if (localOnly || neverFallback) {
+        if (downloadedAgentAndModelActive || localOnly || neverFallback) {
           await appendAgentMessage(
             "No permitted local inference provider could process this message. Check the model and device runtime, then try again."
           );
@@ -1497,6 +1519,14 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       await appendAgentMessage(
         "Choose or create a shop before asking the authorized business runtime to act."
       );
+      return;
+    }
+
+    if (downloadedAgentAndModelActive) {
+      await appendAgentMessage(
+        "The downloaded agent and model stay on this device, but no browser inference runtime could process this message. Check the local model and try again."
+      );
+      setStatusMessage("Local browser inference unavailable · No server inference used");
       return;
     }
 

@@ -28,7 +28,7 @@ describe("Render Blueprint", () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const api = blueprint.slice(
       blueprint.indexOf("name: soko-market-api"),
-      blueprint.indexOf("name: soko-market-inference")
+      blueprint.indexOf("name: soko-market-rate-limit-cache")
     );
 
     for (const generatedSecret of [
@@ -46,7 +46,7 @@ describe("Render Blueprint", () => {
     expect(api).toContain('SOKO_EMAIL_FROM\n        value: "Soko <messages@soko.market>"');
   });
 
-  it("runs local-first backend inference (Ollama) with an OpenAI cloud fallback", async () => {
+  it("keeps downloaded inference off Render and allows only the cloud proxy", async () => {
     const blueprint = await readFile(new URL("../render.yaml", import.meta.url), "utf8");
     const rootManifest = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8")
@@ -77,41 +77,19 @@ describe("Render Blueprint", () => {
     expect(production).toContain("https://raw.githubusercontent.com");
     expect(blueprint).not.toContain("LOCAL_MODEL_");
     expect(blueprint).toContain("corepack pnpm build:production");
-    expect(blueprint).toContain("services/ai-runtime/**");
     expect(rootManifest.scripts["build:production"]).toContain("check:render-inference-boundaries");
 
-    // The paid Render/Ollama private service is now live and active - the primary backend
-    // provider, not a commented-out opt-in. It must be a real, uncommented service block.
-    expect(blueprint).toMatch(/\n {2}- type: pserv\n {4}name: soko-market-inference\n/u);
-    expect(blueprint).not.toContain("# - type: pserv");
-    expect(blueprint).not.toContain("#   name: soko-market-inference");
-    expect(blueprint).toContain("dockerfilePath: ./services/ai-runtime/Dockerfile");
-    expect(blueprint).toContain("mountPath: /var/lib/soko-models");
+    expect(blueprint).not.toContain("name: soko-market-inference");
+    expect(blueprint).not.toContain("services/ai-runtime/Dockerfile");
+    expect(blueprint).not.toContain("mountPath: /var/lib/soko-models");
+    expect(blueprint).not.toContain("BACKEND_INFERENCE_ENABLED");
+    expect(blueprint).not.toContain("BACKEND_INFERENCE_BASE_URL");
+    expect(blueprint).not.toContain("OLLAMA_");
     expect(blueprint).not.toContain("VITE_INFERENCE_SERVICE_TOKEN");
 
-    // The API service block itself must stay Ollama-unaware (services/api/src never imports the
-    // engine directly - see scripts/check-render-inference-boundaries.mjs); it only knows a
-    // generic HTTP endpoint and a shared bearer token.
+    // Render may proxy a configured cloud model, but must never execute downloaded model weights.
     expect(api.toLowerCase()).not.toContain("ollama");
-    expect(api).toContain('BACKEND_INFERENCE_ENABLED\n        value: "true"');
-    expect(api).toContain("BACKEND_INFERENCE_BASE_URL\n        fromService:");
-    expect(api).toContain(
-      "name: soko-market-inference\n          type: pserv\n          property: hostport"
-    );
-    expect(api).toContain("BACKEND_INFERENCE_MODEL_ID\n        value: qwen2.5-0.5b-android");
-    expect(api).toContain("INFERENCE_SERVICE_TOKEN\n        sync: false");
-    // Deliberately false, not the paid-Ollama-only default the docs describe elsewhere - a
-    // private-service hiccup should degrade to the cloud fallback, not fail /health/ready and
-    // cause Render to recycle the whole API.
     expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
-
-    const inference = blueprint.slice(
-      blueprint.indexOf("name: soko-market-inference"),
-      blueprint.indexOf("name: soko-market-web")
-    );
-    expect(inference).not.toContain("healthCheckPath:");
-    expect(inference).toContain("OLLAMA_NO_CLOUD");
-    expect(inference).toContain("INFERENCE_SERVICE_TOKEN\n        generateValue: true");
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
     expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
