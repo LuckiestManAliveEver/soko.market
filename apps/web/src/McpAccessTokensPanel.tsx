@@ -9,6 +9,90 @@ import type {
 import { deleteJson, getJson, postJson } from "./api-helpers";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { formatDate } from "./formatters";
+import { readApiBaseUrl } from "./lib/api";
+
+const modelLabOptions = [
+  { id: "openai", label: "OpenAI API" },
+  { id: "anthropic", label: "Anthropic API" },
+  { id: "google", label: "Gemini API" },
+  { id: "other", label: "Another MCP client" }
+] as const;
+
+type ModelLabId = (typeof modelLabOptions)[number]["id"];
+
+function modelLabSetup(
+  modelLabId: ModelLabId,
+  shopConnectionUrl: string,
+  accessToken: string
+): { configuration: string; instructions: string } {
+  if (modelLabId === "openai") {
+    return {
+      instructions:
+        "Add this object as an MCP tool in an OpenAI Responses API request. The authorization value is the Soko connection secret, not your OpenAI API key.",
+      configuration: JSON.stringify(
+        {
+          type: "mcp",
+          server_label: "soko_shop",
+          server_url: shopConnectionUrl,
+          authorization: accessToken,
+          require_approval: "always"
+        },
+        null,
+        2
+      )
+    };
+  }
+  if (modelLabId === "anthropic") {
+    return {
+      instructions:
+        "Merge these fields into an Anthropic Messages API request. The authorization_token is the Soko connection secret, not your Anthropic API key.",
+      configuration: JSON.stringify(
+        {
+          mcp_servers: [
+            {
+              type: "url",
+              name: "soko_shop",
+              url: shopConnectionUrl,
+              authorization_token: accessToken
+            }
+          ],
+          tools: [{ type: "mcp_toolset", mcp_server_name: "soko_shop" }],
+          betas: ["mcp-client-2025-11-20"]
+        },
+        null,
+        2
+      )
+    };
+  }
+  if (modelLabId === "google") {
+    return {
+      instructions:
+        "Add this object to tools in a Gemini Interactions API request. Keep your Gemini API key separate from the Soko Authorization header.",
+      configuration: JSON.stringify(
+        {
+          type: "mcp_server",
+          name: "soko_shop",
+          url: shopConnectionUrl,
+          headers: { Authorization: `Bearer ${accessToken}` }
+        },
+        null,
+        2
+      )
+    };
+  }
+  return {
+    instructions:
+      "Add a remote Streamable HTTP MCP server with this URL and send the Soko secret in its Authorization header.",
+    configuration: JSON.stringify(
+      {
+        url: shopConnectionUrl,
+        headers: { Authorization: `Bearer ${accessToken}` }
+      },
+      null,
+      2
+    )
+  };
+}
 
 export interface McpAccessTokensPanelProps {
   accountId: string;
@@ -28,11 +112,22 @@ export function McpAccessTokensPanel({
   copyStorefrontValue
 }: McpAccessTokensPanelProps) {
   const [mcpTokens, setMcpTokens] = useState<McpAccessTokenSummary[]>([]);
-  const [mcpTokenName, setMcpTokenName] = useState("My integration");
+  const [modelLabId, setModelLabId] = useState<ModelLabId>("openai");
+  const [mcpTokenName, setMcpTokenName] = useState("OpenAI API shop connection");
   const [mcpReadEnabled, setMcpReadEnabled] = useState(true);
   const [mcpActEnabled, setMcpActEnabled] = useState(false);
   const [mcpPin, setMcpPin] = useState("");
   const [newMcpAccessToken, setNewMcpAccessToken] = useState("");
+  const [newMcpAccessScopes, setNewMcpAccessScopes] = useState<McpAccessScope[]>([]);
+  const shopConnectionUrl = `${readApiBaseUrl()}/mcp?shopId=${encodeURIComponent(businessId)}`;
+
+  function selectModelLab(nextModelLabId: ModelLabId) {
+    setModelLabId(nextModelLabId);
+    const selected = modelLabOptions.find((option) => option.id === nextModelLabId);
+    setMcpTokenName(`${selected?.label ?? "Cloud AI"} shop connection`);
+    setNewMcpAccessToken("");
+    setNewMcpAccessScopes([]);
+  }
 
   async function loadMcpTokens() {
     try {
@@ -60,12 +155,15 @@ export function McpAccessTokensPanel({
         name: mcpTokenName,
         scopes,
         shopId: businessId,
-        expiresInSeconds: 86_400
+        expiresInSeconds: 2_592_000
       });
       setNewMcpAccessToken(created.accessToken);
+      setNewMcpAccessScopes(created.token.scopes);
       setMcpPin("");
       await loadMcpTokens();
-      setProfileMessage("MCP token created. Copy it now; the secret is shown only once.");
+      setProfileMessage(
+        "Cloud AI shop connection created. Copy its API configuration into your model-lab project."
+      );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -85,18 +183,46 @@ export function McpAccessTokensPanel({
     void loadMcpTokens();
   }, [accountId, businessId]);
 
+  const selectedModelLab =
+    modelLabOptions.find((option) => option.id === modelLabId) ?? modelLabOptions[0];
+  const selectedModelLabSetup = modelLabSetup(modelLabId, shopConnectionUrl, newMcpAccessToken);
+  const connectionBundle = [
+    `Soko shop: ${businessId}`,
+    `Provider: ${selectedModelLab.label}`,
+    `Permissions: ${[
+      ...(newMcpAccessScopes.includes("mcp:read") ? ["read shop data"] : []),
+      ...(newMcpAccessScopes.includes("mcp:act") ? ["propose confirmed actions"] : [])
+    ].join(", ")}`,
+    "",
+    selectedModelLabSetup.configuration
+  ].join("\n");
+
   return (
-    <div className="record-form shop-profile-card">
+    <div className="record-form cloud-model-connection">
       <div className="section-heading">
-        <p className="eyebrow">Developer access</p>
-        <h3>MCP access tokens</h3>
+        <p className="eyebrow">Cloud model account</p>
+        <h4>Connect your shop to a major AI lab</h4>
         <p>
-          Create short-lived tokens for trusted AI clients. Action access still preserves Soko
-          confirmation gates.
+          Create a shop-bound remote MCP connection for the model-lab developer account you already
+          use. Soko generates the provider-ready API configuration and never asks for that account's
+          password or API key.
         </p>
       </div>
+      <div className="model-lab-grid" aria-label="Supported cloud AI accounts">
+        {modelLabOptions.map((option) => (
+          <button
+            className={modelLabId === option.id ? "selected" : "secondary"}
+            type="button"
+            aria-pressed={modelLabId === option.id}
+            key={option.id}
+            onClick={() => selectModelLab(option.id)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
       <label>
-        Token name
+        Connection name
         <input value={mcpTokenName} onChange={(event) => setMcpTokenName(event.target.value)} />
       </label>
       <div className="checkbox-list">
@@ -106,7 +232,7 @@ export function McpAccessTokensPanel({
             checked={mcpReadEnabled}
             onChange={(event) => setMcpReadEnabled(event.target.checked)}
           />
-          Read shops and sync changes
+          Let the model read this shop's catalogue and sync changes
         </label>
         <label>
           <input
@@ -114,7 +240,7 @@ export function McpAccessTokensPanel({
             checked={mcpActEnabled}
             onChange={(event) => setMcpActEnabled(event.target.checked)}
           />
-          Propose actions through the runtime
+          Let the model propose shop actions through Soko's confirmation gates
         </label>
       </div>
       {mcpActEnabled ? (
@@ -139,22 +265,48 @@ export function McpAccessTokensPanel({
         }
         onClick={() => void runProfileAction("mcp-create", createMcpToken)}
       >
-        Create 24-hour token
+        Create 30-day shop connection
       </button>
       {newMcpAccessToken.length > 0 ? (
-        <div className="soko-id-card" role="status">
-          <span>Copy this secret now—it will not be shown again.</span>
+        <div className="model-lab-connection-card" role="status">
+          <strong>{selectedModelLab.label} connection details</strong>
+          <p>{selectedModelLabSetup.instructions} The secret is shown only once.</p>
+          <span>Shop API link</span>
+          <code>{shopConnectionUrl}</code>
+          <div className="ai-model-card-actions">
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => void copyStorefrontValue(shopConnectionUrl, "Shop API link")}
+            >
+              Copy shop link
+            </button>
+          </div>
+          <span>One-time connection secret</span>
           <code>{newMcpAccessToken}</code>
-          <button
-            type="button"
-            onClick={() => void copyStorefrontValue(newMcpAccessToken, "MCP token")}
-          >
-            Copy token
-          </button>
+          <span>{selectedModelLab.label} API configuration</span>
+          <pre>
+            <code>{selectedModelLabSetup.configuration}</code>
+          </pre>
+          <div className="ai-model-card-actions">
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => void copyStorefrontValue(newMcpAccessToken, "Connection secret")}
+            >
+              Copy secret
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyStorefrontValue(connectionBundle, "API configuration")}
+            >
+              Copy API configuration
+            </button>
+          </div>
         </div>
       ) : null}
-      <div className="connected-social-list" aria-label="MCP access tokens">
-        {mcpTokens.length === 0 ? <p className="shell-note">No MCP tokens yet.</p> : null}
+      <div className="connected-social-list" aria-label="Cloud AI shop connections">
+        {mcpTokens.length === 0 ? <p className="shell-note">No cloud AI connections yet.</p> : null}
         {mcpTokens.map((token) => (
           <article className="connected-social-card" key={token.id}>
             <div>
@@ -165,7 +317,7 @@ export function McpAccessTokensPanel({
                   ? "Revoked"
                   : Date.parse(token.expiresAt) <= Date.now()
                     ? "Expired"
-                    : `Expires ${formatDate(token.expiresAt)}`}
+                    : `Connected · expires ${formatDate(token.expiresAt)}`}
               </p>
             </div>
             <div className="connected-social-meta">

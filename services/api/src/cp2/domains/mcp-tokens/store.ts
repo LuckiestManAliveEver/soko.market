@@ -93,11 +93,15 @@ export class McpTokensDomain {
       throw new Cp2Error(403, "mcp_shop_forbidden", "The MCP token cannot access that shop.");
     }
     const expiresInSeconds = input.expiresInSeconds ?? 3_600;
-    if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 86_400) {
+    if (
+      !Number.isInteger(expiresInSeconds) ||
+      expiresInSeconds < 60 ||
+      expiresInSeconds > 2_592_000
+    ) {
       throw new Cp2Error(
         400,
         "mcp_token_ttl_invalid",
-        "MCP token lifetime must be between 60 and 86400 seconds."
+        "MCP token lifetime must be between 60 seconds and 30 days."
       );
     }
     const expiresAt = new Date(

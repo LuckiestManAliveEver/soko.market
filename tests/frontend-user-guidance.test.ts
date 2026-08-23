@@ -459,7 +459,14 @@ describe("frontend user guidance", () => {
     expect(mcpAccessTokensPanel).toContain(
       'getJson<{ tokens: McpAccessTokenSummary[] }>("/v1/mcp/tokens")'
     );
-    expect(mcpAccessTokensPanel).toContain("MCP access tokens");
+    expect(mcpAccessTokensPanel).toContain("Connect your shop to a major AI lab");
+    expect(mcpAccessTokensPanel).toContain("OpenAI API");
+    expect(mcpAccessTokensPanel).toContain("Anthropic API");
+    expect(mcpAccessTokensPanel).toContain("Gemini API");
+    expect(mcpAccessTokensPanel).toContain("/mcp?shopId=");
+    expect(mcpAccessTokensPanel).toContain("server_url");
+    expect(mcpAccessTokensPanel).toContain("authorization_token");
+    expect(mcpAccessTokensPanel).toContain("Copy API configuration");
     expect(storefrontCareState).toContain("/storefront/customer-care");
     expect(storefrontCareState).toContain("/storefront/messages");
     expect(storefrontCareState).toContain("/storefront/orders");

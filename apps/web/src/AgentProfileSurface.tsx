@@ -17,7 +17,6 @@ import { AgentReadinessPanel } from "./AgentReadinessPanel";
 import { AgentRetentionPanel } from "./AgentRetentionPanel";
 import { AgentRuntimeAccessPanel } from "./AgentRuntimeAccessPanel";
 import { DeleteAccountPanel } from "./DeleteAccountPanel";
-import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
 import { NotificationsSessionsPanel } from "./NotificationsSessionsPanel";
 import { ProtectedContextFilesPanel } from "./ProtectedContextFilesPanel";
 import { PublicStorefrontPanel } from "./PublicStorefrontPanel";
@@ -525,6 +524,9 @@ export function AgentProfileSurface({
             onEnsureRuntimeSession={onEnsureRuntimeSession}
             profileMessage={profileMessage}
             setProfileMessage={setProfileMessage}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            copyStorefrontValue={copyStorefrontValue}
             aiModels={aiModels}
             setAiModels={setAiModels}
             localAiModels={localAiModels}
@@ -577,15 +579,6 @@ export function AgentProfileSurface({
           onLogout={onLogout}
           onLogoutAll={onLogoutAll}
           isLoggingOut={isLoggingOut}
-        />
-
-        <McpAccessTokensPanel
-          accountId={accountId}
-          businessId={business.id}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          setProfileMessage={setProfileMessage}
-          copyStorefrontValue={copyStorefrontValue}
         />
 
         <DeleteAccountPanel

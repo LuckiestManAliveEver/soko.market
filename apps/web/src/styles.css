@@ -4589,6 +4589,71 @@ details.nested-form-section summary {
   min-height: 24px;
 }
 
+.cloud-model-connection {
+  background: #f8fbff;
+  border: 1px solid #cbdbea;
+  border-radius: 12px;
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.model-lab-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+}
+
+.model-lab-grid button {
+  min-height: 44px;
+}
+
+.model-lab-grid button.selected {
+  background: #117a4f;
+  border-color: #0b603d;
+  box-shadow: 0 0 0 3px rgb(17 122 79 / 16%);
+}
+
+.model-lab-connection-card {
+  background: #ffffff;
+  border: 1px solid #9db9cf;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.model-lab-connection-card p {
+  color: #40566a;
+  margin: 0 0 4px;
+}
+
+.model-lab-connection-card span {
+  color: #516258;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-lab-connection-card code {
+  background: #eef4f8;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.model-lab-connection-card pre {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.model-lab-connection-card pre code {
+  display: block;
+  white-space: pre;
+}
+
 .model-use-button {
   background: #b42318;
   border: 1px solid #8f1d14;
