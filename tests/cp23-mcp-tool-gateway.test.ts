@@ -27,7 +27,7 @@ describe("CP23 MCP tool gateway", () => {
         name: "Phase 4 integration",
         scopes: ["mcp:read", "mcp:act"],
         shopId: shop.business.id,
-        expiresInSeconds: 3600
+        expiresInSeconds: 2_592_000
       },
       cookie,
       { origin: "http://localhost:5173" }
@@ -36,6 +36,30 @@ describe("CP23 MCP tool gateway", () => {
     expect(token.accessToken).toMatch(/^soko_mcp_[a-f0-9]{64}$/);
     expect(JSON.stringify(store.snapshot())).not.toContain(token.accessToken);
     expect(store.snapshot().mcpAccessTokens[0]?.tokenHash).toHaveLength(64);
+
+    const shopLinkInitialized = await app.inject({
+      method: "POST",
+      url: `/mcp?shopId=${encodeURIComponent(shop.business.id)}`,
+      headers: {
+        authorization: `Bearer ${token.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(shopLinkInitialized.statusCode).toBe(200);
+
+    const mismatchedShopLink = await app.inject({
+      method: "POST",
+      url: "/mcp?shopId=another-shop",
+      headers: {
+        authorization: `Bearer ${token.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(mismatchedShopLink.statusCode).toBe(403);
 
     const unauthorized = await app.inject({
       method: "POST",
@@ -259,6 +283,39 @@ describe("CP23 MCP tool gateway", () => {
       isError: true,
       structuredContent: { code: "mcp_shop_forbidden" }
     });
+    await app.close();
+  });
+
+  it("lets an account-wide token connect with a shopId it owns", async () => {
+    const app = buildApi();
+    const cookie = await createSession(app, "254700000234");
+    await postJson(app, "/auth/pin/setup", { pin: "5170" }, cookie);
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "Account-Wide Shop", language: "en" },
+      cookie
+    );
+    const accountWideToken = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Account-wide token", scopes: ["mcp:read"] },
+      cookie,
+      { origin: "http://localhost:5173" }
+    );
+    expect(accountWideToken.token.shopId).toBeNull();
+
+    const shopLinked = await app.inject({
+      method: "POST",
+      url: `/mcp?shopId=${encodeURIComponent(shop.business.id)}`,
+      headers: {
+        authorization: `Bearer ${accountWideToken.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(shopLinked.statusCode).toBe(200);
     await app.close();
   });
 });

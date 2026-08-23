@@ -80,6 +80,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
     try {
       requireTrustedOrigin(request, allowedOrigins);
       const principal = authenticateBearer(request, options.store);
+      requireShopLinkBinding(request, principal);
       const sessionId = stringHeader(request.headers["mcp-session-id"]);
       requireMcpSession(sessions, sessionId, principal);
       sessions.delete(sessionId);
@@ -95,6 +96,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
     try {
       requireTrustedOrigin(request, allowedOrigins);
       const principal = authenticateBearer(request, options.store);
+      requireShopLinkBinding(request, principal);
       enforceRateLimit(rateWindows, principal.tokenId);
       if (rpc === null || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
         return reply.send(jsonRpcError(id, -32600, "Invalid Request"));
@@ -336,6 +338,20 @@ function requireTrustedOrigin(request: FastifyRequest, allowedOrigins: Set<strin
 function requireScope(principal: McpPrincipal, scope: McpAccessScope): void {
   if (!principal.scopes.includes(scope)) {
     throw new Cp2Error(403, "mcp_scope_forbidden", "MCP token lacks the required scope.");
+  }
+}
+
+function requireShopLinkBinding(request: FastifyRequest, principal: McpPrincipal): void {
+  if (typeof request.query !== "object" || request.query === null) return;
+  const shopId = (request.query as Record<string, unknown>).shopId;
+  if (shopId === undefined) return;
+  // A null principal.shopId is an account-wide token, intentionally unbound to any single shop -
+  // see requiredShop() below, which grants it the same access for the actual tool calls.
+  if (
+    typeof shopId !== "string" ||
+    (principal.shopId !== null && principal.shopId !== shopId)
+  ) {
+    throw new Cp2Error(403, "mcp_shop_forbidden", "MCP token is bound to another shop.");
   }
 }
 
