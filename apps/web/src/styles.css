@@ -5719,10 +5719,7 @@ body {
 
 .app-frame:not(.auth-frame) {
   background: var(--soko-paper);
-  border-inline: 1px solid var(--soko-line);
-  box-shadow: 0 0 80px rgb(28 23 48 / 8%);
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  max-width: 1180px;
 }
 
 .app-frame:not(.auth-frame)[data-commerce-mode="buy"] .chat-workspace-shell {
@@ -7012,10 +7009,6 @@ body {
 }
 
 @media (max-width: 759px) {
-  .app-frame:not(.auth-frame) {
-    border: 0;
-  }
-
   .shell-mode-bar {
     padding-inline: 10px;
   }
