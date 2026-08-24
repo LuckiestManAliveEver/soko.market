@@ -102,6 +102,8 @@ export function IdentitySecurityPanel({
   const [accountPinNew, setAccountPinNew] = useState("");
   const [accountPinConfirm, setAccountPinConfirm] = useState("");
   const [accountPinMfaCode, setAccountPinMfaCode] = useState("");
+  const [accountPinVisible, setAccountPinVisible] = useState(false);
+  const [accountPinMessage, setAccountPinMessage] = useState("");
   const [changePasswordCurrent, setChangePasswordCurrent] = useState("");
   const [createPasswordCurrentPin, setCreatePasswordCurrentPin] = useState("");
   const [changePasswordNew, setChangePasswordNew] = useState("");
@@ -480,8 +482,21 @@ export function IdentitySecurityPanel({
 
   async function saveAccountPin() {
     if (credentialStatus === null) return;
+    setAccountPinMessage("");
+    if (credentialStatus.hasPin && accountPinCurrent.length !== 4) {
+      setAccountPinMessage("Enter your current four-digit PIN.");
+      return;
+    }
+    if (accountPinNew.length !== 4) {
+      setAccountPinMessage("Choose a four-digit PIN.");
+      return;
+    }
     if (accountPinNew !== accountPinConfirm) {
-      setProfileMessage("New PIN and confirmation do not match.");
+      setAccountPinMessage("The new PINs do not match.");
+      return;
+    }
+    if (mfaFactors.length > 0 && accountPinMfaCode.length !== 6) {
+      setAccountPinMessage("Enter the six-digit code from your authenticator app.");
       return;
     }
     try {
@@ -500,10 +515,133 @@ export function IdentitySecurityPanel({
       setAccountPinConfirm("");
       setAccountPinMfaCode("");
       await loadCredentialStatus();
-      setProfileMessage(changed ? "Login PIN changed." : "Login PIN created.");
+      const message = changed
+        ? "Your new PIN is ready. Use it the next time you sign in."
+        : "Your PIN is ready. You can now use it to sign in.";
+      setAccountPinMessage(message);
+      setProfileMessage(message);
     } catch (error) {
-      setProfileMessage(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      setAccountPinMessage(message);
+      setProfileMessage(message);
     }
+  }
+
+  function accountPinForm() {
+    const hasPin = credentialStatus?.hasPin === true;
+    const pinInputType = accountPinVisible ? "text" : "password";
+    return (
+      <form
+        className="record-form account-pin-form"
+        aria-label="Account login PIN"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runProfileAction("pin-save", saveAccountPin);
+        }}
+      >
+        <div className="section-heading">
+          <p className="eyebrow">Login PIN</p>
+          <h4>{hasPin ? "Set a new PIN" : "Create your PIN"}</h4>
+          <p>
+            {hasPin
+              ? "Enter your current PIN, then choose a new four-digit PIN."
+              : "Choose a four-digit PIN and enter it again to confirm."}
+          </p>
+        </div>
+        {credentialStatus === null ? (
+          <p className="shell-note" role="status">
+            Checking your PIN settings…
+          </p>
+        ) : (
+          <>
+            {hasPin ? (
+              <label>
+                Current PIN
+                <input
+                  type={pinInputType}
+                  inputMode="numeric"
+                  pattern="[0-9]{4}"
+                  autoComplete="current-password"
+                  minLength={4}
+                  maxLength={4}
+                  value={accountPinCurrent}
+                  onChange={(event) => setAccountPinCurrent(event.target.value.replace(/\D/gu, ""))}
+                />
+              </label>
+            ) : null}
+            <label>
+              {hasPin ? "New PIN" : "PIN"}
+              <input
+                type={pinInputType}
+                inputMode="numeric"
+                pattern="[0-9]{4}"
+                autoComplete="new-password"
+                minLength={4}
+                maxLength={4}
+                value={accountPinNew}
+                onChange={(event) => setAccountPinNew(event.target.value.replace(/\D/gu, ""))}
+              />
+            </label>
+            <label>
+              Confirm {hasPin ? "new PIN" : "PIN"}
+              <input
+                type={pinInputType}
+                inputMode="numeric"
+                pattern="[0-9]{4}"
+                autoComplete="new-password"
+                minLength={4}
+                maxLength={4}
+                value={accountPinConfirm}
+                onChange={(event) => setAccountPinConfirm(event.target.value.replace(/\D/gu, ""))}
+              />
+            </label>
+            <label className="account-pin-visibility">
+              <input
+                type="checkbox"
+                checked={accountPinVisible}
+                onChange={(event) => setAccountPinVisible(event.target.checked)}
+              />
+              Show PIN while typing
+            </label>
+            {mfaFactors.length > 0 ? (
+              <label>
+                Authenticator code
+                <input
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  minLength={6}
+                  maxLength={6}
+                  value={accountPinMfaCode}
+                  onChange={(event) => setAccountPinMfaCode(event.target.value.replace(/\D/gu, ""))}
+                />
+              </label>
+            ) : null}
+            <button
+              type="submit"
+              disabled={
+                pendingProfileAction !== null ||
+                (hasPin && accountPinCurrent.length !== 4) ||
+                accountPinNew.length !== 4 ||
+                accountPinNew !== accountPinConfirm ||
+                (mfaFactors.length > 0 && accountPinMfaCode.length !== 6)
+              }
+              aria-busy={pendingProfileAction === "pin-save"}
+            >
+              {pendingProfileAction === "pin-save"
+                ? "Saving…"
+                : hasPin
+                  ? "Save new PIN"
+                  : "Create PIN"}
+            </button>
+          </>
+        )}
+        {accountPinMessage ? (
+          <p className="shell-note" role="status" aria-live="polite">
+            <AuthenticationActionMessage message={accountPinMessage} />
+          </p>
+        ) : null}
+      </form>
+    );
   }
 
   async function saveAccountPassword() {
@@ -594,9 +732,9 @@ export function IdentitySecurityPanel({
         <p className="eyebrow">Account</p>
         <h3>Passkeys and login accounts</h3>
         <p>
-          Your PIN and password remain the normal way to sign in. Add a passkey here as a backup
-          way back into your account if you ever lose access to both - it uses your device unlock
-          and keeps biometric data on the device.
+          Your PIN and password remain the normal way to sign in. Add a passkey here as a backup way
+          back into your account if you ever lose access to both - it uses your device unlock and
+          keeps biometric data on the device.
         </p>
         <p className="shell-note">Identity strength: {identityLevel.replace("_", " ")}</p>
       </div>
@@ -609,6 +747,7 @@ export function IdentitySecurityPanel({
           }
         />
       </Suspense>
+      {accountPinForm()}
       <div className="record-form">
         <div className="section-heading">
           <p className="eyebrow">Private identity contact</p>
@@ -867,82 +1006,6 @@ export function IdentitySecurityPanel({
             Regenerate recovery codes
           </button>
         ) : null}
-      </div>
-      <div className="record-form" role="group" aria-label="Account login PIN">
-        <div className="section-heading">
-          <p className="eyebrow">Login PIN</p>
-          <h4>{credentialStatus?.hasPin ? "Change PIN" : "Create PIN"}</h4>
-          <p>
-            Use a four-digit PIN for quick account and Soko Shop ID sign-in. Changing it requires
-            your current PIN.
-          </p>
-        </div>
-        {credentialStatus?.hasPin ? (
-          <label>
-            Current PIN
-            <input
-              type="password"
-              inputMode="numeric"
-              autoComplete="current-password"
-              maxLength={4}
-              value={accountPinCurrent}
-              onChange={(event) => setAccountPinCurrent(event.target.value.replace(/\D/gu, ""))}
-            />
-          </label>
-        ) : null}
-        <label>
-          New PIN
-          <input
-            type="password"
-            inputMode="numeric"
-            autoComplete="new-password"
-            maxLength={4}
-            value={accountPinNew}
-            onChange={(event) => setAccountPinNew(event.target.value.replace(/\D/gu, ""))}
-          />
-        </label>
-        <label>
-          Confirm new PIN
-          <input
-            type="password"
-            inputMode="numeric"
-            autoComplete="new-password"
-            maxLength={4}
-            value={accountPinConfirm}
-            onChange={(event) => setAccountPinConfirm(event.target.value.replace(/\D/gu, ""))}
-          />
-        </label>
-        {mfaFactors.length > 0 ? (
-          <label>
-            Authenticator code
-            <input
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={accountPinMfaCode}
-              onChange={(event) => setAccountPinMfaCode(event.target.value.replace(/\D/gu, ""))}
-            />
-          </label>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => void runProfileAction("pin-save", saveAccountPin)}
-          disabled={
-            credentialStatus === null ||
-            pendingProfileAction !== null ||
-            (credentialStatus.hasPin && accountPinCurrent.length !== 4) ||
-            accountPinNew.length !== 4 ||
-            accountPinNew !== accountPinConfirm ||
-            (mfaFactors.length > 0 && accountPinMfaCode.length !== 6)
-          }
-          aria-busy={pendingProfileAction === "pin-save"}
-        >
-          {pendingProfileAction === "pin-save"
-            ? "Saving…"
-            : credentialStatus?.hasPin
-              ? "Change PIN"
-              : "Create PIN"}
-        </button>
       </div>
       <div
         className="record-form"

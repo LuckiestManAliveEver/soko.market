@@ -1465,6 +1465,25 @@ button:disabled {
   margin: 0;
 }
 
+.account-pin-form {
+  border-color: rgb(17 122 79 / 28%);
+}
+
+.record-form .account-pin-visibility {
+  align-items: center;
+  display: grid;
+  font-weight: 600;
+  gap: 9px;
+  grid-template-columns: auto 1fr;
+  justify-self: start;
+}
+
+.record-form .account-pin-visibility input[type="checkbox"] {
+  min-height: 18px;
+  padding: 0;
+  width: 18px;
+}
+
 .form-row {
   display: grid;
   gap: 10px;
