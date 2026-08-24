@@ -144,15 +144,28 @@ export function buildApi(options: BuildApiOptions = {}) {
         request.log.warn(
           {
             event: "auth.persistence_flush_deadline_exceeded",
-            requestCorrelationId: request.id
+            requestCorrelationId: request.id,
+            authenticationBlocked: reply.getHeader("set-cookie") !== undefined
           },
-          "Persistence flush exceeded the response deadline; responding without waiting further."
+          "Persistence flush exceeded the response deadline."
         );
+        if (reply.getHeader("set-cookie") !== undefined) {
+          reply.removeHeader("set-cookie");
+          throw new AuthenticationPersistenceUnavailable();
+        }
         return payload;
       }
 
       const syncFailure = readAccountSyncFailure(error);
-      if (syncFailure === null || reply.getHeader("set-cookie") === undefined) {
+      const hasAuthenticationCookies = reply.getHeader("set-cookie") !== undefined;
+      if (syncFailure === null) {
+        if (hasAuthenticationCookies) {
+          reply.removeHeader("set-cookie");
+          throw new AuthenticationPersistenceUnavailable();
+        }
+        throw error;
+      }
+      if (!hasAuthenticationCookies) {
         throw error;
       }
 
@@ -200,6 +213,13 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AuthenticationPersistenceUnavailable) {
+      reply.removeHeader("set-cookie");
+      return reply.code(503).send({
+        code: error.code,
+        message: error.message
+      });
+    }
     const syncFailure = readAccountSyncFailure(error);
     if (syncFailure === null) {
       return reply.send(error);
@@ -336,6 +356,15 @@ function readOAuthAllowedRedirectOrigins(fallback: string[]): string[] {
 
 class PersistenceFlushDeadlineExceeded extends Error {}
 
+class AuthenticationPersistenceUnavailable extends Error {
+  readonly code = "AUTH_PERSISTENCE_UNAVAILABLE";
+
+  constructor() {
+    super("Authentication could not be saved safely. Please try again.");
+    this.name = "AuthenticationPersistenceUnavailable";
+  }
+}
+
 function positiveIntegerFromEnv(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -387,7 +416,11 @@ function readAccountSyncFailure(error: unknown): {
     typeof error !== "object" ||
     error === null ||
     !("code" in error) ||
-    error.code !== "ACCOUNT_SYNC_INITIALIZATION_FAILED"
+    error.code !== "ACCOUNT_SYNC_INITIALIZATION_FAILED" ||
+    !("persistenceStage" in error) ||
+    error.persistenceStage !== "account_sync_journal" ||
+    !("criticalAuthPersistenceCommitted" in error) ||
+    error.criticalAuthPersistenceCommitted !== true
   ) {
     return null;
   }

@@ -32,6 +32,24 @@ describe("frontend user guidance", () => {
     expect(await getResponseErrorMessage(new Response(null, { status: 401 }))).toBe(
       "Your session is missing or has expired. Sign in and try again."
     );
+    expect(
+      getUserFacingErrorMessage({
+        code: "pin_not_set",
+        message: "Login PIN has not been set."
+      })
+    ).toBe("This account doesn't have a PIN yet. Create one now.");
+    expect(
+      getUserFacingErrorMessage({
+        code: "passkey_pin_recovery_required",
+        message: "internal recovery state"
+      })
+    ).toBe("Verify your passkey again before changing your PIN.");
+    expect(
+      getUserFacingErrorMessage({
+        code: "ACCOUNT_SYNC_INITIALIZATION_FAILED",
+        message: "database detail"
+      })
+    ).toBe("We couldn't finish signing you in because account data could not be saved. Try again.");
   });
 
   it("sanitizes login initialization errors and guarantees the pending action is released", () => {

@@ -177,10 +177,12 @@ export function registerPasskeysRoutes(
     "/auth/pin/recover/passkey",
     async (request: FastifyRequest<{ Body: { pin?: string } }>, reply) => {
       try {
-        return store.recoverPhoneAccountPinWithPasskey({
+        const result = store.recoverPhoneAccountPinWithPasskey({
           sessionId: readSessionCookie(request.headers.cookie),
           pin: parseString(request.body.pin, "pin")
         });
+        setAuthSessionCookies(reply, request, store, result.session.id);
+        return result;
       } catch (error) {
         return sendCp2Error(reply, error);
       }

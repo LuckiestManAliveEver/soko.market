@@ -1474,7 +1474,12 @@ export class Cp2Store {
     }
     this.verifyMfaForCredentialChange(session.account.id, input.mfaCode, now);
     const pin = normalizePin(input.pin);
-    this.accountPinHashes.set(session.account.id, hashPin(session.account.id, pin));
+    const pinHash = hashPin(session.account.id, pin);
+    this.accountPinHashes.set(session.account.id, pinHash);
+    // A first PIN created after a purpose-bound passkey ceremony completes that recovery action.
+    // Clear the grant only after every setup precondition and credential write has succeeded. This
+    // is a no-op for ordinary recently authenticated password/PIN sessions.
+    this.passkeyDomain.consumePinRecoveryGrant(session.session.id);
     this.markSessionPinVerified(session.session.id, now);
     this.promoteAccountIdentityLevel(session.account.id, "strong");
 

@@ -3,13 +3,21 @@ import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/br
 import type { AuthSessionView } from "@soko/shared-types";
 import { normalizePhoneInput, phoneNormalizationErrorMessage } from "@soko/shared-types";
 import { getCountryCallingCode, type CountryCode } from "libphonenumber-js";
-import { apiFetch } from "./lib/api";
+import { ApiRequestError, apiFetch } from "./lib/api";
 import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import { isSokoId, normalizeSokoId } from "./sokoid-and-storefront";
 
-type Stage = "entry" | "methods" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
+type Stage =
+  | "entry"
+  | "methods"
+  | "pin"
+  | "password"
+  | "mfa"
+  | "recovery-reset"
+  | "create-pin"
+  | "recover-pin";
 type IdentifierType = "phone" | "email" | "store";
 
 interface LoginMethods {
@@ -206,10 +214,22 @@ export function PhoneFirstAuthentication({
         method: "POST",
         body: { ceremonyId: challenge.ceremonyId, response }
       });
+      // The passkey response established a fresh, server-authoritative recovery session. Ask the
+      // server which credential mutation is valid instead of guessing from client state. Do not
+      // auto-refresh this status request: rotating the just-created session between proof and
+      // mutation would change the session id to which the one-time recovery grant is bound.
+      const credentials = await apiFetch<{ hasPin: boolean; hasPassword: boolean }>(
+        "/auth/credentials/status",
+        { skipAuthRefresh: true }
+      );
       setPassword("");
       setPasswordConfirmation("");
-      setStage("reset-pin");
-      setMessage("Identity verified. Choose a new PIN.");
+      setStage(passkeyPinRecoveryStage(credentials.hasPin));
+      setMessage(
+        credentials.hasPin
+          ? "Identity verified. Choose a new PIN."
+          : "Identity verified. Create a 4-digit PIN."
+      );
       return;
     }
     const result = await apiFetch<{
@@ -252,11 +272,28 @@ export function PhoneFirstAuthentication({
       setMessage("Enter and confirm a new 4-digit PIN.");
       return;
     }
-    const session = await apiFetch<AuthSessionView>("/auth/pin/recover/passkey", {
-      method: "POST",
-      body: { pin: password }
-    });
-    onAuthenticated(session);
+    if (stage !== "create-pin" && stage !== "recover-pin") {
+      throw new Error("PIN recovery is not active.");
+    }
+    const endpoint = passkeyPinMutationEndpoint(stage);
+    try {
+      const session = await apiFetch<AuthSessionView>(endpoint, {
+        method: "POST",
+        body: { pin: password, pinConfirmation: passwordConfirmation }
+      });
+      setPassword("");
+      setPasswordConfirmation("");
+      onAuthenticated(session);
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.code === "passkey_pin_recovery_required") {
+        setPassword("");
+        setPasswordConfirmation("");
+        setStage("methods");
+        setMessage("Verify your passkey again before changing your PIN.");
+        return;
+      }
+      throw error;
+    }
   }
 
   function goBack() {
@@ -290,9 +327,11 @@ export function PhoneFirstAuthentication({
             ? "Log in with password"
             : stage === "mfa"
               ? "Security check"
-              : stage === "reset-pin"
-                ? "Choose a new PIN"
-                : "Recover your account";
+              : stage === "create-pin"
+                ? "Create a PIN"
+                : stage === "recover-pin"
+                  ? "Choose a new PIN"
+                  : "Recover your account";
 
   return (
     <main className="auth-onboarding" aria-busy={busy}>
@@ -540,7 +579,7 @@ export function PhoneFirstAuthentication({
               </button>
             </div>
           ) : null}
-          {stage === "reset-pin" ? (
+          {stage === "create-pin" || stage === "recover-pin" ? (
             <div className="auth-fields">
               <label>
                 New 4-digit PIN
@@ -573,7 +612,7 @@ export function PhoneFirstAuthentication({
                 aria-busy={busy}
                 onClick={() => void run(finishPinRecovery)}
               >
-                {busy ? "Working…" : "Save new PIN"}
+                {busy ? "Working…" : stage === "create-pin" ? "Create PIN" : "Save new PIN"}
               </button>
             </div>
           ) : null}
@@ -626,6 +665,16 @@ export function PhoneFirstAuthentication({
       </section>
     </main>
   );
+}
+
+export function passkeyPinRecoveryStage(hasPin: boolean): "create-pin" | "recover-pin" {
+  return hasPin ? "recover-pin" : "create-pin";
+}
+
+export function passkeyPinMutationEndpoint(
+  stage: "create-pin" | "recover-pin"
+): "/auth/pin/setup" | "/auth/pin/recover/passkey" {
+  return stage === "create-pin" ? "/auth/pin/setup" : "/auth/pin/recover/passkey";
 }
 
 function PasswordFields(props: {

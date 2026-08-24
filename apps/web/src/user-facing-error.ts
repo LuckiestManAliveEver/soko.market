@@ -7,6 +7,11 @@ export function getUserFacingErrorMessage(
   error: unknown,
   fallback = unexplainedErrorMessage
 ): string {
+  const code = readErrorCode(error);
+  const codeMessage = code === null ? null : authenticationErrorMessages[code];
+  if (codeMessage !== undefined && codeMessage !== null) {
+    return codeMessage;
+  }
   const message = readErrorMessage(error);
 
   if (message === null) {
@@ -23,6 +28,23 @@ export function getUserFacingErrorMessage(
 
   return message;
 }
+
+const authenticationErrorMessages: Record<string, string> = {
+  pin_not_set: "This account doesn't have a PIN yet. Create one now.",
+  passkey_pin_recovery_required: "Verify your passkey again before changing your PIN.",
+  passkey_unknown: "That passkey is not linked to a Soko account.",
+  passkey_authentication_invalid: "Soko could not verify that passkey. Try again.",
+  auth_refresh_required: "Sign in to start a new session on this device.",
+  auth_refresh_revoked: "This session is no longer active. Sign in again.",
+  auth_refresh_expired: "This session has expired. Sign in again.",
+  auth_refresh_reuse_detected:
+    "This session was closed because its refresh credential was reused. Sign in again.",
+  ACCOUNT_SYNC_INITIALIZATION_FAILED:
+    "We couldn't finish signing you in because account data could not be saved. Try again.",
+  pin_invalid: "The PIN you entered is incorrect.",
+  pin_locked: "PIN attempts are temporarily locked. Wait a moment and try again.",
+  pin_rate_limited: "PIN attempts are temporarily locked. Wait a moment and try again."
+};
 
 export type AuthenticationPromptTarget = "login" | "signup";
 
@@ -118,6 +140,12 @@ function readErrorMessage(error: unknown): string | null {
   }
 
   return null;
+}
+
+function readErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("code" in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() !== "" ? code : null;
 }
 
 async function readResponsePayload(response: Response): Promise<unknown> {

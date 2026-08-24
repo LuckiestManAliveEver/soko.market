@@ -84,6 +84,10 @@ export class PasskeyDomain {
     this.passkeyPinRecoveryGrants.clear();
   }
 
+  consumePinRecoveryGrant(sessionId: string): void {
+    this.passkeyPinRecoveryGrants.delete(sessionId);
+  }
+
   restore(snapshot: Cp2Snapshot): void {
     for (const passkey of snapshot.passkeys ?? []) {
       this.passkeys.set(passkey.id, passkey);
@@ -103,7 +107,6 @@ export class PasskeyDomain {
     const session = this.deps.requireAnySession(input.sessionId, now);
     this.prunePasskeyPinRecoveryGrants(now);
     const grantExpiresAt = this.passkeyPinRecoveryGrants.get(session.session.id);
-    this.passkeyPinRecoveryGrants.delete(session.session.id);
 
     if (grantExpiresAt === undefined || Date.parse(grantExpiresAt) <= now.getTime()) {
       throw new Cp2Error(
@@ -125,7 +128,12 @@ export class PasskeyDomain {
       throw new Cp2Error(409, "pin_not_set", "Login PIN has not been set.");
     }
 
+    // Eligibility failures above must leave the short-lived proof available so the caller can
+    // take the correct setup/recovery path. The mutation is synchronous, so consuming immediately
+    // after it succeeds is atomic with respect to another request and never burns a grant on a
+    // credential-write exception.
     this.deps.resetAccountPinHash(session.account.id, pin);
+    this.passkeyPinRecoveryGrants.delete(session.session.id);
     this.deps.revokeOtherSessionsForAccount(
       session.account.id,
       session.session.id,

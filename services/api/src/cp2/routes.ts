@@ -818,11 +818,13 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
       if (request.body.pinConfirmation !== undefined && pin !== request.body.pinConfirmation) {
         throw new Cp2Error(400, "pin_confirmation_invalid", "PINs do not match.");
       }
-      return store.setAccountPin({
+      const result = store.setAccountPin({
         sessionId: readSessionCookie(request.headers.cookie),
         pin,
         ...(request.body.mfaCode === undefined ? {} : { mfaCode: request.body.mfaCode })
       });
+      setAuthSessionCookies(reply, request, store, result.session.id);
+      return result;
     } catch (error) {
       return sendCp2Error(reply, error);
     }

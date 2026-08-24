@@ -129,7 +129,34 @@ describe("API persistence acknowledgement barrier", () => {
     await app.close();
   });
 
-  it("does not hold a login response open forever behind a stalled persistence queue", async () => {
+  it("fails PIN authentication closed when critical session persistence fails", async () => {
+    const store = createCp2Store();
+    const phone = "+254700200003";
+    store.signupWithPhonePin({ destination: phone, pin: "1234" });
+    const app = buildApi({
+      cp2: { store },
+      mutationPersistenceFlush: vi.fn().mockRejectedValue(new Error("session table unavailable"))
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      code: "AUTH_PERSISTENCE_UNAVAILABLE",
+      message: "Authentication could not be saved safely. Please try again."
+    });
+    expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_session");
+    expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_refresh");
+    expect(response.body).not.toContain("session table unavailable");
+    await app.close();
+  });
+
+  it("fails login closed instead of issuing credentials behind a stalled persistence queue", async () => {
     process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS = "50";
     try {
       const store = createCp2Store();
@@ -149,10 +176,13 @@ describe("API persistence acknowledgement barrier", () => {
         payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.cookies.map((cookie) => cookie.name)).toEqual(
-        expect.arrayContaining(["soko_session", "soko_refresh"])
-      );
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({
+        code: "AUTH_PERSISTENCE_UNAVAILABLE",
+        message: "Authentication could not be saved safely. Please try again."
+      });
+      expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_session");
+      expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_refresh");
       await app.close();
     } finally {
       delete process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS;

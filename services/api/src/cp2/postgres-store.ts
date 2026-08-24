@@ -324,6 +324,8 @@ export interface PostgresCp2StoreOptions extends Cp2StoreOptions {
 
 export class AccountSyncPersistenceError extends Error {
   readonly code = "ACCOUNT_SYNC_INITIALIZATION_FAILED";
+  readonly persistenceStage = "account_sync_journal";
+  readonly criticalAuthPersistenceCommitted = true;
 
   constructor(
     readonly accountId: string,

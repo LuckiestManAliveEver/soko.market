@@ -33,6 +33,17 @@ describe("unified phone + PIN continue flow", () => {
       isNewAccount: false,
       account: { primaryAuthDestination: "+254712345691" }
     });
+    expect(response.cookies.map((cookie) => cookie.name)).toEqual(
+      expect.arrayContaining(["soko_session", "soko_refresh"])
+    );
+    const refreshed = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie: response.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+      }
+    });
+    expect(refreshed.statusCode).toBe(200);
     await app.close();
   });
 
