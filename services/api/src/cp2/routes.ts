@@ -910,7 +910,7 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
-  // Lets a store owner sign in with their store's Soko Global Shop ID instead of their own
+  // Lets a store owner sign in with their Soko Storefront ID instead of their own
   // phone/email - resolves the ID to the owning account and runs the same PIN check as any
   // other PIN login. Login only: a Soko ID cannot be used to create a new account.
   app.post(

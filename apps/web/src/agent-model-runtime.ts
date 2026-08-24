@@ -99,6 +99,9 @@ export interface NativeAgentModelRuntimeBridge {
     backend?: AgentModelRuntimeBackend | null;
     errorCode?: AgentModelRuntimeErrorCode | null;
   }>;
+  readWorkspaceFile?(input: { businessId: string; path: string }): Promise<{
+    contentBase64: string;
+  }>;
 }
 
 interface SafeRuntimeModelDescriptor {

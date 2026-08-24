@@ -55,7 +55,6 @@ import { Cp2Error } from "../../cp2-error.js";
 import {
   createContactDisplayHint,
   createContactHash,
-  createPublicAgentId,
   normalizeNetworkConnectionInput,
   normalizeSocialRelationship,
   providerDisplayName,
@@ -845,7 +844,7 @@ export class NetworkDomain {
         nodeId: "",
         linkedUserId,
         linkedBusinessId: linkedBusiness?.id ?? null,
-        linkedAgentId: linkedBusiness === undefined ? null : createPublicAgentId(linkedBusiness),
+        linkedAgentId: linkedBusiness?.sokoId ?? null,
         confidence: 0.95,
         createdAt: input.now.toISOString()
       };

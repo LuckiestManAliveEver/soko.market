@@ -48,7 +48,7 @@ import {
 } from "./soko-application-shared";
 
 import { postJson, putJson, getJson } from "./api-helpers";
-import { createPublicStorefrontAgentId, createStorefrontUrl } from "./sokoid-and-storefront";
+import { createStorefrontUrl, normalizeSokoId } from "./sokoid-and-storefront";
 import { agentSettingsFromBusinessProfile } from "./owner-app-bootstrap";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { installedModelRequest, isDownloadableCatalogModel } from "./agent-model-panel-utils";
@@ -343,7 +343,7 @@ export function AgentProfileSurface({
       );
       return;
     }
-    const publicAgentId = createPublicStorefrontAgentId(business);
+    const publicAgentId = normalizeSokoId(business.sokoId);
     setIsSaving(true);
     try {
       const saved = await putJson<BusinessAgentProfileSummary>(

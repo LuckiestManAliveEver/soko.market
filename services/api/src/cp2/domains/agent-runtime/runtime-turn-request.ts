@@ -1,4 +1,8 @@
-import type { ClientInferenceCompletion, RuntimeRecallEscalation } from "@soko/shared-types";
+import type {
+  ClientInferenceCompletion,
+  ClientWorkspaceFileTransfer,
+  RuntimeRecallEscalation
+} from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
 import { parseNumber, parseRequestBody, parseString } from "../../route-helpers.js";
@@ -6,6 +10,7 @@ import type { RuntimeTurnBody } from "./routes.js";
 
 export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): {
   runtimeSessionId?: string;
+  conversationId?: string;
   message: string;
   confirmationToken?: string;
   recallEscalation?: RuntimeRecallEscalation;
@@ -16,6 +21,10 @@ export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): 
     record.runtimeSessionId === undefined || record.runtimeSessionId === null
       ? undefined
       : parseString(record.runtimeSessionId, "runtimeSessionId");
+  const conversationId =
+    record.conversationId === undefined || record.conversationId === null
+      ? undefined
+      : parseString(record.conversationId, "conversationId");
   const confirmationToken =
     record.confirmationToken === undefined || record.confirmationToken === null
       ? undefined
@@ -34,6 +43,7 @@ export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): 
   return {
     ...parsed,
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
+    ...(conversationId === undefined ? {} : { conversationId }),
     ...(confirmationToken === undefined ? {} : { confirmationToken }),
     ...(recallEscalation === undefined ? {} : { recallEscalation }),
     ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion })
@@ -82,6 +92,7 @@ function parseClientInferenceCompletion(value: unknown): ClientInferenceCompleti
     record.completionTokens,
     "clientInferenceCompletion.completionTokens"
   );
+  const workspaceFiles = parseClientWorkspaceFiles(record.workspaceFiles);
   return {
     requestId: parseString(record.requestId, "clientInferenceCompletion.requestId"),
     runtime,
@@ -90,9 +101,41 @@ function parseClientInferenceCompletion(value: unknown): ClientInferenceCompleti
     ...(installationId === undefined ? {} : { installationId }),
     outputText,
     durationMs,
+    ...(workspaceFiles.length === 0 ? {} : { workspaceFiles }),
     ...(promptTokens === undefined ? {} : { promptTokens }),
     ...(completionTokens === undefined ? {} : { completionTokens })
   };
+}
+
+function parseClientWorkspaceFiles(value: unknown): ClientWorkspaceFileTransfer[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new Cp2Error(
+      400,
+      "client_workspace_files_invalid",
+      "Client workspace files must contain at most ten files."
+    );
+  }
+  return value.map((candidate) => {
+    const record = parseRequestBody(candidate);
+    const path = parseString(record.path, "clientInferenceCompletion.workspaceFiles.path");
+    const contentBase64 = parseString(
+      record.contentBase64,
+      "clientInferenceCompletion.workspaceFiles.contentBase64"
+    );
+    const checksum = parseString(
+      record.checksum,
+      "clientInferenceCompletion.workspaceFiles.checksum"
+    ).toLowerCase();
+    if (path.length > 1_000 || !/^[a-f0-9]{64}$/u.test(checksum)) {
+      throw new Cp2Error(
+        400,
+        "client_workspace_file_invalid",
+        "A client workspace file transfer is invalid."
+      );
+    }
+    return { path, contentBase64, checksum };
+  });
 }
 
 function parseOptionalClientTokenCount(value: unknown, field: string): number | undefined {

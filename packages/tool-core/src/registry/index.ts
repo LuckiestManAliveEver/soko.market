@@ -12,6 +12,7 @@ import { logisticsRuntimeTools } from "../domains/logistics.js";
 import { receiptsRuntimeTools } from "../domains/receipts.js";
 import { importsRuntimeTools } from "../domains/imports.js";
 import { messagingRuntimeTools } from "../domains/messaging.js";
+import { workspaceRuntimeTools } from "../domains/workspace.js";
 import { sharedRuntimeTools } from "../domains/shared.js";
 
 /**
@@ -32,5 +33,6 @@ export const runtimeToolRegistry: Record<RuntimeToolName, RuntimeToolDefinition>
   ...receiptsRuntimeTools,
   ...importsRuntimeTools,
   ...messagingRuntimeTools,
+  ...workspaceRuntimeTools,
   ...sharedRuntimeTools
 };

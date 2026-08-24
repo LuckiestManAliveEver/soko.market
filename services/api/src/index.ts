@@ -126,6 +126,8 @@ const cp2StoreOptions = {
     emailProvider.sendEncryptedMessageNotification.bind(emailProvider),
   ...(networkInviteSender === undefined ? {} : { networkInviteSender }),
   messageWebBaseUrl,
+  workspaceDeliveryMaxFileBytes: config.workspaceDeliveryMaxFileBytes,
+  ...(config.workspaceRoot === "" ? {} : { workspaceRoot: config.workspaceRoot }),
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
@@ -137,6 +139,10 @@ const cp2Store = shouldUsePostgresStore
   : createCp2Store(cp2StoreOptions);
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
+  bodyLimit: Math.max(
+    15_000_000,
+    Math.ceil((config.workspaceDeliveryMaxFileBytes * 4) / 3) + 1_000_000
+  ),
   inferenceRequired: config.backendInferenceRequired,
   rateLimitRedisClient,
   cp2: {

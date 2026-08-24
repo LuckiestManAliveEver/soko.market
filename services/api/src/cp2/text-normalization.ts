@@ -45,10 +45,11 @@ export function normalizeOptionalBoundedText(
 }
 
 export function normalizeStorefrontLookupId(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  return /^\+?\d{1,3}-?[a-z]\d{8}$/u.test(normalized)
-    ? normalized.replace(/^\+/, "").replace(/-/gu, "")
-    : normalized;
+  return value.trim().toLowerCase();
+}
+
+export function isSokoStorefrontId(value: string): boolean {
+  return /^soko\.[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/iu.test(value.trim());
 }
 
 export function createSokoHandle(value: string): string {

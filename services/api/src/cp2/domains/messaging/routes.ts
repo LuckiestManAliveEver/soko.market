@@ -37,6 +37,7 @@ import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, readSessionCookie } from "../../store.js";
 import { parseRuntimeTurnBody, type RuntimeTurnBody } from "../agent-runtime/routes.js";
 import { defaultOAuthRedirectUri } from "../oauth/routes.js";
+import { contentDispositionHeader } from "../../workspace-file-delivery.js";
 import {
   parseBoolean,
   parseIntegerString,
@@ -63,6 +64,10 @@ interface CreateConversationBody {
 
 interface ConversationParams {
   conversationId: string;
+}
+
+interface ConversationAttachmentParams extends ConversationParams {
+  attachmentId: string;
 }
 
 interface CreateMessageBody {
@@ -260,6 +265,97 @@ export function registerMessagingRoutes(
           conversationId: parseString(request.params.conversationId, "conversationId")
         });
       } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/:conversationId/attachments/:attachmentId/preview",
+    async (request: FastifyRequest<{ Params: ConversationAttachmentParams }>, reply) => {
+      try {
+        const attachment = await store.getConversationAttachment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId"),
+          attachmentId: parseString(request.params.attachmentId, "attachmentId")
+        });
+        if (!attachment.record.previewable) {
+          throw new Cp2Error(
+            415,
+            "ATTACHMENT_PREVIEW_UNAVAILABLE",
+            "This attachment is available for download only."
+          );
+        }
+        request.log.info(
+          {
+            event: "workspace_file_preview",
+            conversationId: attachment.record.conversationId,
+            attachmentId: attachment.record.id
+          },
+          "Workspace attachment preview authorized."
+        );
+        return reply
+          .header("content-type", attachment.record.mimeType)
+          .header("content-length", String(attachment.record.size))
+          .header(
+            "content-disposition",
+            contentDispositionHeader("inline", attachment.record.filename)
+          )
+          .header("cache-control", "private, no-store")
+          .header("etag", `"${attachment.record.checksum}"`)
+          .send(attachment.bytes);
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "workspace_file_preview_failed",
+            conversationId: request.params.conversationId,
+            attachmentId: request.params.attachmentId,
+            errorCode: error instanceof Cp2Error ? error.code : "ATTACHMENT_PREVIEW_FAILED"
+          },
+          "Workspace attachment preview failed."
+        );
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/conversations/:conversationId/attachments/:attachmentId/download",
+    async (request: FastifyRequest<{ Params: ConversationAttachmentParams }>, reply) => {
+      try {
+        const attachment = await store.getConversationAttachment({
+          sessionId: readSessionCookie(request.headers.cookie),
+          conversationId: parseString(request.params.conversationId, "conversationId"),
+          attachmentId: parseString(request.params.attachmentId, "attachmentId")
+        });
+        request.log.info(
+          {
+            event: "workspace_file_download",
+            conversationId: attachment.record.conversationId,
+            attachmentId: attachment.record.id
+          },
+          "Workspace attachment download authorized."
+        );
+        return reply
+          .header("content-type", attachment.record.mimeType)
+          .header("content-length", String(attachment.record.size))
+          .header(
+            "content-disposition",
+            contentDispositionHeader("attachment", attachment.record.filename)
+          )
+          .header("cache-control", "private, no-store")
+          .header("etag", `"${attachment.record.checksum}"`)
+          .send(attachment.bytes);
+      } catch (error) {
+        request.log.warn(
+          {
+            event: "workspace_file_download_failed",
+            conversationId: request.params.conversationId,
+            attachmentId: request.params.attachmentId,
+            errorCode: error instanceof Cp2Error ? error.code : "ATTACHMENT_DOWNLOAD_FAILED"
+          },
+          "Workspace attachment download failed."
+        );
         return sendCp2Error(reply, error);
       }
     }
@@ -1368,7 +1464,7 @@ function parseConversationMessageContent(value: unknown): ConversationMessageCon
                   "Attachment category is not supported."
                 );
               }
-              return {
+              const parsed = {
                 id: parseString(attachment.id, `content.attachments[${index}].id`),
                 name: parseString(attachment.name, `content.attachments[${index}].name`),
                 mimeType: parseString(
@@ -1379,7 +1475,38 @@ function parseConversationMessageContent(value: unknown): ConversationMessageCon
                   attachment.size,
                   `content.attachments[${index}].size`
                 ),
-                category: category as "document" | "image" | "video" | "audio" | "other",
+                category: category as "document" | "image" | "video" | "audio" | "other"
+              };
+              if (attachment.source === "managed") {
+                const kind = parseString(attachment.kind, `content.attachments[${index}].kind`);
+                if (!["image", "pdf", "text", "document", "archive", "file"].includes(kind)) {
+                  throw new Cp2Error(
+                    400,
+                    "message_content_invalid",
+                    "Managed attachment kind is not supported."
+                  );
+                }
+                const caption = parseOptionalString(attachment.caption);
+                return {
+                  ...parsed,
+                  source: "managed" as const,
+                  kind: kind as "image" | "pdf" | "text" | "document" | "archive" | "file",
+                  previewable: parseBoolean(
+                    attachment.previewable,
+                    `content.attachments[${index}].previewable`
+                  ),
+                  ...(caption === undefined ? {} : { caption })
+                };
+              }
+              if (attachment.source !== undefined) {
+                throw new Cp2Error(
+                  400,
+                  "message_content_invalid",
+                  "Attachment source is not supported."
+                );
+              }
+              return {
+                ...parsed,
                 url: parseString(attachment.url, `content.attachments[${index}].url`)
               };
             })

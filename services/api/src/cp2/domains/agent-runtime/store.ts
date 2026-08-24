@@ -2448,6 +2448,7 @@ export class AgentRuntimeDomain {
   async createRuntimeTurn(input: {
     sessionId: string | null;
     businessId: string;
+    conversationId?: string;
     runtimeSessionId?: string;
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
@@ -2842,6 +2843,10 @@ export class AgentRuntimeDomain {
       ? await executeRuntimeCapability(this.deps, {
           sessionId: input.sessionId,
           businessId: input.businessId,
+          ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+          ...(clientInferenceCompletion?.workspaceFiles === undefined
+            ? {}
+            : { workspaceFiles: clientInferenceCompletion.workspaceFiles }),
           action: plan,
           now
         })

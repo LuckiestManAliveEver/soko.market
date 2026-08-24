@@ -37,7 +37,7 @@ interface PublicStorefrontResponse {
   }>;
 }
 
-describe("CP18 Global Shop ID", () => {
+describe("CP18 Soko Storefront ID", () => {
   it("creates readable unique shop IDs and resolves storefronts by Soko ID", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
@@ -109,22 +109,8 @@ describe("CP18 Global Shop ID", () => {
     expect(storefront.json().products[0]).not.toHaveProperty("sku");
     expect(storefront.json().products[0]).not.toHaveProperty("buyingPrice");
     expect(store.snapshot().auditEvents.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["business.global_shop_id_created"])
+      expect.arrayContaining(["business.storefront_id_created"])
     );
-
-    const legacySnapshot = store.snapshot();
-    const legacyBusiness = legacySnapshot.businesses.find(
-      (business) => business.id === first.business.id
-    );
-    expect(legacyBusiness).toBeDefined();
-    legacyBusiness!.sokoId = "254A00000018";
-    store.hydrateSnapshot(legacySnapshot);
-    const legacyStorefront = await app.inject({
-      method: "GET",
-      url: "/public/storefronts/254A00000018"
-    });
-    expect(legacyStorefront.statusCode).toBe(200);
-    expect(legacyStorefront.json<PublicStorefrontResponse>().sokoId).toBe("254A00000018");
 
     await app.close();
   });

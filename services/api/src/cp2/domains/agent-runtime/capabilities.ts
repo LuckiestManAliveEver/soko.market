@@ -1,4 +1,5 @@
 import type {
+  ClientWorkspaceFileTransfer,
   CustomerSummary,
   FulfillmentStatus,
   PaymentMethod,
@@ -32,6 +33,8 @@ export async function executeRuntimeCapability(
   input: {
     sessionId: string | null;
     businessId: string;
+    conversationId?: string;
+    workspaceFiles?: ClientWorkspaceFileTransfer[];
     action: RuntimePlannedAction;
     now: Date;
   }
@@ -428,6 +431,33 @@ export async function executeRuntimeCapability(
         idempotencyKey: `runtime-message:${input.action.id}`,
         now: input.now
       });
+
+    case "workspace.deliver": {
+      if (input.conversationId === undefined) {
+        throw new Cp2Error(
+          409,
+          "CONVERSATION_UNAVAILABLE",
+          "Workspace files can only be delivered from an active conversation."
+        );
+      }
+      const additionalPaths = Array.isArray(input.action.input.additionalPaths)
+        ? input.action.input.additionalPaths.filter(
+            (path): path is string => typeof path === "string" && path.trim().length > 0
+          )
+        : [];
+      return await deps.deliverWorkspaceFile({
+        sessionId: input.sessionId,
+        businessId: input.businessId,
+        conversationId: input.conversationId,
+        requestedPaths: [String(input.action.input.path ?? ""), ...additionalPaths],
+        ...(input.workspaceFiles === undefined ? {} : { transferredFiles: input.workspaceFiles }),
+        ...(typeof input.action.input.caption === "string"
+          ? { caption: input.action.input.caption }
+          : {}),
+        toolCallId: input.action.id,
+        now: input.now
+      });
+    }
   }
 }
 

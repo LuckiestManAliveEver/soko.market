@@ -161,7 +161,7 @@ describe("CP2 auth and business creation", () => {
         "auth.pin_signup",
         "account.created",
         "business.created",
-        "business.global_shop_id_created",
+        "business.storefront_id_created",
         "membership.created"
       ])
     );
@@ -831,11 +831,6 @@ describe("CP2 auth and business creation", () => {
       sessionCookie
     );
 
-    const agentId = createExpectedAgentId(business.business.id, businessName);
-    const legacyPublicResponse = await app.inject({
-      method: "GET",
-      url: `/public/storefronts/${agentId}`
-    });
     const publicResponse = await app.inject({
       method: "GET",
       url: `/public/storefronts/${encodeURIComponent(business.business.sokoId)}`
@@ -846,7 +841,6 @@ describe("CP2 auth and business creation", () => {
     });
 
     expect(publicResponse.statusCode).toBe(200);
-    expect(legacyPublicResponse.statusCode).toBe(200);
     expect(privateProducts.statusCode).toBe(401);
     expect(publicResponse.json<PublicStorefrontResponse>()).toEqual({
       agentId: business.business.sokoId,
@@ -864,9 +858,6 @@ describe("CP2 auth and business creation", () => {
         }
       ]
     });
-    expect(legacyPublicResponse.json<PublicStorefrontResponse>().sokoId).toBe(
-      business.business.sokoId
-    );
     expect(publicResponse.json().products[0]).not.toHaveProperty("businessId");
     expect(publicResponse.json().products[0]).not.toHaveProperty("sku");
     expect(publicResponse.json().products[0]).not.toHaveProperty("quantity");
@@ -878,16 +869,6 @@ describe("CP2 auth and business creation", () => {
     await app.close();
   });
 });
-
-function createExpectedAgentId(businessId: string, businessName: string): string {
-  const seed = `${businessId}-${businessName}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-
-  return seed.length === 0 ? "soko-agent" : seed;
-}
 
 async function postJson<TResponse>(
   app: ReturnType<typeof buildApi>,

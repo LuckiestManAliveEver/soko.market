@@ -1,4 +1,5 @@
 import type {
+  ConversationAttachmentKind,
   ConversationMessageContent,
   ConversationMessageDeliveryStatus
 } from "@soko/shared-types";
@@ -67,7 +68,12 @@ export interface ChatAttachment {
   type: string;
   size: number;
   category: "document" | "image" | "video" | "audio" | "other";
+  kind?: ConversationAttachmentKind;
+  previewable?: boolean;
+  caption?: string;
   dataUrl?: string;
+  previewUrl?: string;
+  downloadUrl?: string;
 }
 
 export const quickActions: QuickAction[] = [

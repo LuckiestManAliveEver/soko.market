@@ -31,8 +31,7 @@ function shouldWarmOwnerRoute(pathname: string): boolean {
     readOwnerRoute(pathname) !== null ||
     readAuthenticationRoutePath(pathname) !== null ||
     pathname === routes.oauthCallback ||
-    /^\/(?:agent|shop|shops|soko)\//u.test(pathname) ||
-    /^\/(?:\+?\d{1,3}-?[A-Za-z]\d{8})\/?$/u.test(pathname)
+    /^\/(?:agent|shop|shops|soko)\//u.test(pathname)
   );
 }
 
@@ -139,8 +138,7 @@ export function readStorefrontRoute(): StorefrontRoute | null {
   const pathname = window.location.pathname;
   const match =
     pathname.match(/^\/agent\/([^/]+)(?:\/products\/([^/]+))?\/?$/) ??
-    pathname.match(/^\/(?:shop|shops|soko)\/([^/]+)\/?$/) ??
-    pathname.match(/^(\/(?:\+?\d{1,3}-?[A-Za-z]\d{8}))\/?$/);
+    pathname.match(/^\/(?:shop|shops|soko)\/([^/]+)\/?$/);
 
   if (match === null) return null;
 

@@ -11,12 +11,13 @@ import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { useOwnerCore } from "./hooks/OwnerCoreContext";
 import { useChatComposerState } from "./hooks/useChatComposerState";
 import { ChatComposer } from "./ChatComposer";
+import { ConversationAttachmentCard } from "./ConversationAttachmentCard";
 
 import { SmsHandoffDialog } from "./soko-application-shared";
 import { renderGeneratedSurface } from "./generated-surface-registry";
 
 import { getJson } from "./api-helpers";
-import { formatMessageTime, formatFileSize, formatAttachmentCategory } from "./formatters";
+import { formatMessageTime } from "./formatters";
 
 import { viewLabel } from "./agent-command-engine";
 import {
@@ -638,28 +639,7 @@ export function ChatSurface({
                 {message.attachments !== undefined && message.attachments.length > 0 ? (
                   <div className="message-attachments" aria-label="Message attachments">
                     {message.attachments.map((attachment) => (
-                      <a
-                        className="message-attachment"
-                        href={attachment.dataUrl}
-                        download={attachment.name}
-                        key={attachment.id}
-                      >
-                        {attachment.category === "image" && attachment.dataUrl ? (
-                          <img
-                            src={attachment.dataUrl}
-                            alt={attachment.name}
-                            width={160}
-                            height={120}
-                            loading="lazy"
-                            decoding="async"
-                          />
-                        ) : null}
-                        <span>{attachment.name}</span>
-                        <small>
-                          {formatAttachmentCategory(attachment.category)} ·{" "}
-                          {formatFileSize(attachment.size)}
-                        </small>
-                      </a>
+                      <ConversationAttachmentCard attachment={attachment} key={attachment.id} />
                     ))}
                   </div>
                 ) : null}

@@ -65,6 +65,7 @@
  *   `sendEmailTransport`, all of which live here now.
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type {
   AccountSummary,
   AuthChannel,
@@ -75,6 +76,7 @@ import type {
   ChannelMessageSendResult,
   ChannelProvider,
   ChannelProviderReadiness,
+  ClientWorkspaceFileTransfer,
   ConnectedMailboxOAuthStartSummary,
   ConnectedMailboxProvider,
   ConnectedMailboxProviderSummary,
@@ -117,7 +119,8 @@ import type {
   SyncChange,
   SyncCollection,
   TrustedMessageAttachmentReference,
-  UserSummary
+  UserSummary,
+  WorkspaceDeliverResult
 } from "@soko/shared-types";
 import type { BusinessPermission } from "@soko/business-core";
 import {
@@ -135,6 +138,12 @@ import {
   type NormalizedProviderEmail
 } from "../../../messaging/email-provider-client.js";
 import { Cp2Error } from "../../cp2-error.js";
+import {
+  managedAttachmentFromRecord,
+  resolveTransferredWorkspaceFile,
+  resolveWorkspaceFile,
+  type ConversationAttachmentRecord
+} from "../../workspace-file-delivery.js";
 import { decryptOAuthToken, encryptOAuthToken, hashOAuthSecret } from "../../oauth.js";
 import {
   normalizeDestination,
@@ -146,6 +155,7 @@ import {
   normalizeRequiredBoundedText
 } from "../../text-normalization.js";
 import type { Cp2Snapshot, RuntimeAgentProfile, SessionRecord } from "../../store.js";
+import type { ConversationAttachmentBlobStore } from "../../conversation-attachment-blob-store.js";
 import {
   connectedMailboxView,
   hashCustomerCapability,
@@ -225,6 +235,7 @@ export interface MessagingDomainDeps {
   createRuntimeTurn: (input: {
     sessionId: string | null;
     businessId: string;
+    conversationId?: string;
     runtimeSessionId?: string;
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
@@ -267,12 +278,16 @@ export interface MessagingDomainDeps {
   customers: Map<string, CustomerSummary>;
   quarantinedBusinessIds: Set<string>;
   accountByDestination: Map<string, string>;
+  workspaceRoot?: string;
+  workspaceDeliveryMaxFileBytes?: number;
+  conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
 }
 
 export class MessagingDomain {
   private readonly conversations = new Map<string, ConversationSummary>();
   private readonly conversationParticipants = new Map<string, ConversationParticipantSummary>();
   private readonly conversationMessages = new Map<string, ConversationMessageSummary>();
+  private readonly conversationAttachments = new Map<string, ConversationAttachmentRecord>();
   private readonly platformIdentities = new Map<string, PlatformIdentitySummary>();
   private readonly conversationChannels = new Map<string, ConversationChannelSummary>();
   private readonly providerUpdateReceipts = new Map<string, ProviderUpdateReceiptSummary>();
@@ -322,6 +337,22 @@ export class MessagingDomain {
 
   get conversationMessagesMap(): Map<string, ConversationMessageSummary> {
     return this.conversationMessages;
+  }
+
+  get conversationAttachmentsMap(): Map<string, ConversationAttachmentRecord> {
+    return this.conversationAttachments;
+  }
+
+  deleteConversationAttachmentsForBusiness(businessId: string): number {
+    return this.deleteConversationAttachmentsWhere(
+      (attachment) => attachment.businessId === businessId
+    );
+  }
+
+  deleteConversationAttachmentsForAccount(accountId: string): number {
+    return this.deleteConversationAttachmentsWhere(
+      (attachment) => attachment.accountId === accountId
+    );
   }
 
   get platformIdentitiesMap(): Map<string, PlatformIdentitySummary> {
@@ -396,6 +427,7 @@ export class MessagingDomain {
     this.conversations.clear();
     this.conversationParticipants.clear();
     this.conversationMessages.clear();
+    this.conversationAttachments.clear();
     this.platformIdentities.clear();
     this.conversationChannels.clear();
     this.providerUpdateReceipts.clear();
@@ -442,6 +474,10 @@ export class MessagingDomain {
 
     for (const participant of snapshot.conversationParticipants ?? []) {
       this.conversationParticipants.set(participant.id, participant);
+    }
+
+    for (const attachment of snapshot.conversationAttachments ?? []) {
+      this.conversationAttachments.set(attachment.id, attachment);
     }
 
     for (const message of snapshot.conversationMessages ?? []) {
@@ -2204,6 +2240,214 @@ export class MessagingDomain {
     );
   }
 
+  async deliverWorkspaceFile(input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId: string;
+    requestedPaths: string[];
+    transferredFiles?: ClientWorkspaceFileTransfer[];
+    caption?: string;
+    toolCallId: string;
+    now?: Date;
+  }): Promise<WorkspaceDeliverResult> {
+    const now = input.now ?? new Date();
+    const auth = this.deps.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "business:read",
+      now
+    );
+    this.requireAccountConversation(input.conversationId, auth.account.id);
+    this.deps.recordAuditEvent({
+      type: "workspace.file_delivery_requested",
+      aggregateType: "conversation",
+      aggregateId: input.conversationId,
+      actorId: auth.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        toolCallId: input.toolCallId,
+        fileCount: input.requestedPaths.length
+      }
+    });
+    if (input.requestedPaths.length < 1 || input.requestedPaths.length > 10) {
+      this.recordWorkspaceDeliveryFailure(input, auth.user.id, "DELIVERY_FILE_COUNT_INVALID", now);
+      throw new Cp2Error(
+        400,
+        "DELIVERY_FILE_COUNT_INVALID",
+        "Choose between one and ten workspace files to deliver."
+      );
+    }
+    const requestedPaths = input.requestedPaths;
+    const transferredFiles = input.transferredFiles ?? [];
+    if (
+      transferredFiles.length > requestedPaths.length ||
+      new Set(transferredFiles.map((file) => file.path)).size !== transferredFiles.length ||
+      transferredFiles.some((file) => !requestedPaths.includes(file.path))
+    ) {
+      this.recordWorkspaceDeliveryFailure(input, auth.user.id, "LOCAL_FILE_TRANSFER_MISMATCH", now);
+      throw new Cp2Error(
+        400,
+        "LOCAL_FILE_TRANSFER_MISMATCH",
+        "The transferred files do not match the requested workspace files."
+      );
+    }
+    const expectedToolCallIds = requestedPaths.map((_, index) =>
+      requestedPaths.length === 1 ? input.toolCallId : `${input.toolCallId}:${index}`
+    );
+    const existing = [...this.conversationAttachments.values()].filter(
+      (attachment) =>
+        attachment.conversationId === input.conversationId &&
+        expectedToolCallIds.includes(attachment.toolCallId)
+    );
+    if (existing.length === requestedPaths.length && existing.length > 0) {
+      const attachments = expectedToolCallIds.map((toolCallId) => {
+        const record = existing.find((attachment) => attachment.toolCallId === toolCallId);
+        if (record === undefined) {
+          throw new Cp2Error(409, "ATTACHMENT_RETRY_CONFLICT", "File delivery retry conflicted.");
+        }
+        return managedAttachmentFromRecord(record);
+      });
+      this.deps.recordAuditEvent({
+        type: "workspace.file_delivery_deduplicated",
+        aggregateType: "conversation",
+        aggregateId: input.conversationId,
+        actorId: auth.user.id,
+        occurredAt: now.toISOString(),
+        payload: { businessId: input.businessId, toolCallId: input.toolCallId }
+      });
+      return { ok: true, delivered: true, attachment: attachments[0]!, attachments };
+    }
+    const configuredRoot = this.deps.workspaceRoot?.trim();
+    if (!configuredRoot && transferredFiles.length !== requestedPaths.length) {
+      this.recordWorkspaceDeliveryFailure(input, auth.user.id, "WORKSPACE_UNAVAILABLE", now);
+      throw new Cp2Error(409, "WORKSPACE_UNAVAILABLE", "The active workspace is unavailable.");
+    }
+    let files;
+    try {
+      const maxFileBytes = this.deps.workspaceDeliveryMaxFileBytes ?? 10_000_000;
+      files = await Promise.all(
+        requestedPaths.map((requestedPath) => {
+          const transfer = transferredFiles.find((candidate) => candidate.path === requestedPath);
+          return transfer === undefined
+            ? resolveWorkspaceFile({
+                workspaceRoot: resolve(configuredRoot!, input.businessId),
+                requestedPath,
+                maxFileBytes
+              })
+            : Promise.resolve(
+                resolveTransferredWorkspaceFile({ requestedPath, transfer, maxFileBytes })
+              );
+        })
+      );
+    } catch (error) {
+      this.recordWorkspaceDeliveryFailure(
+        input,
+        auth.user.id,
+        error instanceof Cp2Error ? error.code : "FILE_UNREADABLE",
+        now
+      );
+      throw error;
+    }
+    this.deps.recordAuditEvent({
+      type: "workspace.files_validated",
+      aggregateType: "conversation",
+      aggregateId: input.conversationId,
+      actorId: auth.user.id,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        toolCallId: input.toolCallId,
+        fileCount: files.length,
+        totalBytes: files.reduce((total, file) => total + file.size, 0),
+        mimeTypes: files.map((file) => file.mimeType)
+      }
+    });
+    const caption = sanitizeWorkspaceAttachmentCaption(input.caption);
+    const attachmentIds = files.map(() => randomUUID());
+    const records = files.map<ConversationAttachmentRecord>((file, index) => ({
+      id: attachmentIds[index]!,
+      accountId: auth.account.id,
+      userId: auth.user.id,
+      businessId: input.businessId,
+      conversationId: input.conversationId,
+      messageId: null,
+      toolCallId: expectedToolCallIds[index]!,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      size: file.size,
+      kind: file.kind,
+      previewable: file.previewable,
+      caption,
+      checksum: file.checksum,
+      storageKey: `conversation-attachments/${attachmentIds[index]!}`,
+      createdAt: now.toISOString()
+    }));
+    const storedKeys: string[] = [];
+    try {
+      for (const [index, record] of records.entries()) {
+        await this.deps.conversationAttachmentBlobStore.put({
+          storageKey: record.storageKey,
+          bytes: files[index]!.bytes,
+          checksum: record.checksum,
+          mimeType: record.mimeType
+        });
+        storedKeys.push(record.storageKey);
+      }
+    } catch {
+      await Promise.all(
+        storedKeys.map((storageKey) =>
+          this.deps.conversationAttachmentBlobStore.delete(storageKey).catch(() => undefined)
+        )
+      );
+      this.recordWorkspaceDeliveryFailure(input, auth.user.id, "STORAGE_FAILED", now);
+      throw new Cp2Error(503, "STORAGE_FAILED", "The workspace file could not be stored.");
+    }
+    for (const record of records) {
+      this.conversationAttachments.set(record.id, record);
+      this.deps.recordAuditEvent({
+        type: "workspace.file_delivered",
+        aggregateType: "conversation_attachment",
+        aggregateId: record.id,
+        actorId: auth.user.id,
+        occurredAt: now.toISOString(),
+        payload: {
+          businessId: input.businessId,
+          conversationId: input.conversationId,
+          toolCallId: record.toolCallId,
+          mimeType: record.mimeType,
+          size: record.size
+        }
+      });
+    }
+    const attachments = records.map(managedAttachmentFromRecord);
+    return { ok: true, delivered: true, attachment: attachments[0]!, attachments };
+  }
+
+  async getConversationAttachment(input: {
+    sessionId: string | null;
+    conversationId: string;
+    attachmentId: string;
+    now?: Date;
+  }): Promise<{ record: ConversationAttachmentRecord; bytes: Buffer }> {
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    this.requireAccountConversation(input.conversationId, session.account.id);
+    const record = this.conversationAttachments.get(input.attachmentId);
+    if (
+      record === undefined ||
+      record.accountId !== session.account.id ||
+      record.conversationId !== input.conversationId ||
+      record.messageId === null
+    ) {
+      throw new Cp2Error(404, "ATTACHMENT_NOT_FOUND", "The conversation attachment was not found.");
+    }
+    const bytes = await this.deps.conversationAttachmentBlobStore.get(record.storageKey);
+    if (bytes === null) {
+      throw new Cp2Error(404, "ATTACHMENT_NOT_FOUND", "The conversation attachment was not found.");
+    }
+    return { record, bytes };
+  }
+
   registerE2eeDevice(input: {
     sessionId: string | null;
     deviceId: string;
@@ -2440,6 +2684,7 @@ export class MessagingDomain {
 
     validateConversationMessageContent(input.content);
     this.validateConversationEncryption(conversation.id, input.content);
+    this.validateManagedConversationAttachments(input.content, conversation, session.account.id);
     for (const referencedId of [input.replyToMessageId, input.forwardedFromMessageId]) {
       if (
         referencedId &&
@@ -2510,6 +2755,7 @@ export class MessagingDomain {
       createdAt: now.toISOString()
     };
     this.conversationMessages.set(message.id, message);
+    this.associateManagedConversationAttachments(message);
     this.messageByClientId.set(clientLookupKey, message.id);
     this.messageByIdempotencyKey.set(idempotencyLookupKey, message.id);
     const attempt: MessageDeliveryAttemptSummary = {
@@ -2638,6 +2884,7 @@ export class MessagingDomain {
       runtime = await this.deps.createRuntimeTurn({
         sessionId: input.sessionId,
         businessId: input.businessId,
+        conversationId: conversation.id,
         ...(input.runtimeSessionId === undefined
           ? {}
           : { runtimeSessionId: input.runtimeSessionId }),
@@ -2676,24 +2923,35 @@ export class MessagingDomain {
       };
     }
     const confirmationToken = runtime.turn.plan.confirmationToken;
-    const agentMessage = this.createConversationMessage({
-      sessionId: input.sessionId,
-      conversationId: conversation.id,
-      clientMessageId: `agent-reply-${message.id}`,
-      idempotencyKey: `soko-agent-reply:${message.id}`,
-      author: "agent",
-      content:
-        confirmationToken === null
-          ? { type: "text", text: runtime.turn.response }
-          : {
-              type: "confirmation",
-              confirmationToken,
-              prompt: runtime.turn.response
-            },
-      replyToMessageId: message.id,
-      clientTimestamp: now.toISOString(),
-      now
-    });
+    const deliveredAttachments = workspaceAttachmentsFromToolResult(runtime.turn.toolResult);
+    let agentMessage: ConversationMessageSummary;
+    try {
+      agentMessage = this.createConversationMessage({
+        sessionId: input.sessionId,
+        conversationId: conversation.id,
+        clientMessageId: `agent-reply-${message.id}`,
+        idempotencyKey: `soko-agent-reply:${message.id}`,
+        author: "agent",
+        content:
+          confirmationToken === null
+            ? {
+                type: "text",
+                text: runtime.turn.response,
+                ...(deliveredAttachments.length === 0 ? {} : { attachments: deliveredAttachments })
+              }
+            : {
+                type: "confirmation",
+                confirmationToken,
+                prompt: runtime.turn.response
+              },
+        replyToMessageId: message.id,
+        clientTimestamp: now.toISOString(),
+        now
+      });
+    } catch (error) {
+      await this.discardUnassociatedWorkspaceAttachments(deliveredAttachments);
+      throw error;
+    }
     const deliveredMessage = this.markAgentProcessedMessageDelivered(message, now);
 
     return {
@@ -3554,6 +3812,118 @@ export class MessagingDomain {
         activeShopId: null
       })
     );
+  }
+
+  private validateManagedConversationAttachments(
+    content: ConversationMessageContent,
+    conversation: ConversationSummary,
+    accountId: string
+  ): void {
+    if (content.type !== "text") return;
+    for (const attachment of content.attachments ?? []) {
+      if (attachment.source !== "managed") continue;
+      const record = this.conversationAttachments.get(attachment.id);
+      const expected = record === undefined ? null : managedAttachmentFromRecord(record);
+      if (
+        record === undefined ||
+        expected === null ||
+        record.accountId !== accountId ||
+        record.conversationId !== conversation.id ||
+        record.messageId !== null ||
+        attachment.name !== record.filename ||
+        attachment.mimeType !== record.mimeType ||
+        attachment.size !== record.size ||
+        attachment.category !== expected.category ||
+        attachment.kind !== record.kind ||
+        attachment.previewable !== record.previewable ||
+        attachment.caption !== expected.caption
+      ) {
+        throw new Cp2Error(
+          400,
+          "ATTACHMENT_INVALID",
+          "The managed conversation attachment is invalid."
+        );
+      }
+    }
+  }
+
+  private associateManagedConversationAttachments(message: ConversationMessageSummary): void {
+    if (message.content.type !== "text") return;
+    for (const attachment of message.content.attachments ?? []) {
+      if (attachment.source !== "managed") continue;
+      const record = this.conversationAttachments.get(attachment.id);
+      if (record !== undefined) {
+        this.conversationAttachments.set(record.id, { ...record, messageId: message.id });
+        this.deps.recordAuditEvent({
+          type: "workspace.file_associated",
+          aggregateType: "conversation_attachment",
+          aggregateId: record.id,
+          actorId: record.userId,
+          occurredAt: message.createdAt,
+          payload: {
+            businessId: record.businessId,
+            conversationId: record.conversationId,
+            messageId: message.id,
+            toolCallId: record.toolCallId
+          }
+        });
+      }
+    }
+  }
+
+  private async discardUnassociatedWorkspaceAttachments(
+    attachments: WorkspaceDeliverResult["attachments"]
+  ): Promise<void> {
+    for (const attachment of attachments) {
+      const record = this.conversationAttachments.get(attachment.id);
+      if (record?.messageId === null) {
+        this.conversationAttachments.delete(record.id);
+        await this.deps.conversationAttachmentBlobStore
+          .delete(record.storageKey)
+          .catch(() => undefined);
+      }
+    }
+  }
+
+  private deleteConversationAttachmentsWhere(
+    predicate: (attachment: ConversationAttachmentRecord) => boolean
+  ): number {
+    let deleted = 0;
+    for (const [id, attachment] of this.conversationAttachments.entries()) {
+      if (!predicate(attachment)) continue;
+      this.conversationAttachments.delete(id);
+      void this.deps.conversationAttachmentBlobStore
+        .delete(attachment.storageKey)
+        .catch(() => undefined);
+      deleted += 1;
+    }
+    return deleted;
+  }
+
+  private recordWorkspaceDeliveryFailure(
+    input: {
+      businessId: string;
+      conversationId: string;
+      toolCallId: string;
+      requestedPaths: string[];
+    },
+    actorId: string,
+    errorCode: string,
+    now: Date
+  ): void {
+    this.deps.recordAuditEvent({
+      type: "workspace.file_delivery_failed",
+      aggregateType: "conversation",
+      aggregateId: input.conversationId,
+      actorId,
+      occurredAt: now.toISOString(),
+      payload: {
+        businessId: input.businessId,
+        toolCallId: input.toolCallId,
+        fileCount: input.requestedPaths.length,
+        errorCode
+      }
+    });
   }
 
   requireAccountConversation(conversationId: string, accountId: string): ConversationSummary {
@@ -5053,4 +5423,32 @@ export class MessagingDomain {
               : 409;
     return new Cp2Error(status, error.code, error.message);
   }
+}
+
+function workspaceAttachmentsFromToolResult(value: unknown): WorkspaceDeliverResult["attachments"] {
+  if (value === null || typeof value !== "object") return [];
+  const result = value as Partial<WorkspaceDeliverResult>;
+  if (result.ok !== true || result.delivered !== true || result.attachment?.source !== "managed") {
+    return [];
+  }
+  if (
+    Array.isArray(result.attachments) &&
+    result.attachments.length > 0 &&
+    result.attachments.every((attachment) => attachment.source === "managed")
+  ) {
+    return result.attachments;
+  }
+  return [result.attachment];
+}
+
+function sanitizeWorkspaceAttachmentCaption(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const caption = [...value.trim()]
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127 ? " " : character;
+    })
+    .join("")
+    .slice(0, 240);
+  return caption || null;
 }

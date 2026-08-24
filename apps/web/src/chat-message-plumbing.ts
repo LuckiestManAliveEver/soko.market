@@ -89,7 +89,35 @@ export function mapConversationMessage(
             type: attachment.mimeType,
             size: attachment.size,
             category: attachment.category,
-            dataUrl: attachment.url
+            ...(attachment.kind === undefined ? {} : { kind: attachment.kind }),
+            ...(attachment.previewable === undefined
+              ? {}
+              : { previewable: attachment.previewable }),
+            ...(attachment.caption === undefined ? {} : { caption: attachment.caption }),
+            ...(attachment.source === "managed"
+              ? {
+                  ...(attachment.previewable
+                    ? {
+                        previewUrl: managedAttachmentUrl(
+                          message.conversationId,
+                          attachment.id,
+                          "preview"
+                        )
+                      }
+                    : {}),
+                  downloadUrl: managedAttachmentUrl(
+                    message.conversationId,
+                    attachment.id,
+                    "download"
+                  )
+                }
+              : attachment.url === undefined
+                ? {}
+                : {
+                    dataUrl: attachment.url,
+                    previewUrl: attachment.url,
+                    downloadUrl: attachment.url
+                  })
           }))
         }
       : {}),
@@ -156,6 +184,14 @@ export function chatAttachmentsToConversationAttachments(
     category: attachment.category,
     url: attachment.dataUrl ?? ""
   }));
+}
+
+function managedAttachmentUrl(
+  conversationId: string,
+  attachmentId: string,
+  action: "preview" | "download"
+): string {
+  return `/v1/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}/${action}`;
 }
 
 export async function getConversationEncryptionDevices(

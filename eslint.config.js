@@ -12,7 +12,9 @@ export default [
       "documentation/**",
       "MORE/**",
       "node_modules/**",
-      "pnpm-lock.yaml"
+      "playwright-report/**",
+      "pnpm-lock.yaml",
+      "test-results/**"
     ]
   },
   js.configs.recommended,

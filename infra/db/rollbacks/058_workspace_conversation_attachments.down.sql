@@ -1,0 +1,4 @@
+drop index if exists cp2_conversation_attachments_account_idx;
+drop index if exists cp2_conversation_attachments_message_idx;
+drop index if exists cp2_conversation_attachments_conversation_idx;
+drop table if exists cp2_conversation_attachments;

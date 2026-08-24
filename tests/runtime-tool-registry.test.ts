@@ -41,6 +41,7 @@ describe("runtime tool registry", () => {
       "receipt.list",
       "document_import.confirm",
       "messaging.send",
+      "workspace.deliver",
       "unknown.clarify"
     ]);
   });
@@ -90,6 +91,7 @@ describe("runtime tool registry", () => {
       ["receipt.list", "low", "import:read", false, true, false],
       ["document_import.confirm", "high", "import:write", true, false, false],
       ["messaging.send", "high", "customer:write", true, false, false],
+      ["workspace.deliver", "medium", "business:read", false, false, false],
       ["unknown.clarify", "low", "business:read", false, true, false]
     ]);
   });

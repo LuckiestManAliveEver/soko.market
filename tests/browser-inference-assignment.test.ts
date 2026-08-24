@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { BrowserInferenceAssignmentSummary } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
@@ -284,6 +285,88 @@ describe("browser inference database assignment", () => {
     expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
     await app.close();
   });
+
+  it("delivers a browser workspace file through the authenticated runtime and conversation", async () => {
+    const store = createCp2Store({ modelRuntimeAdapterResolver: () => undefined });
+    const app = buildApi({ cp2: { store } });
+    const owner = await createOwnerBusiness(app, "+254700001436");
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/browser-inference`,
+      assignmentPayload("2026-07-29T12:00:00.000Z"),
+      owner.cookie
+    );
+    const conversations = await getJson<{ conversations: Array<{ id: string }> }>(
+      app,
+      "/v1/conversations",
+      owner.cookie
+    );
+    const conversationId = conversations.conversations[0]!.id;
+    const bytes = Buffer.from("89504e470d0a1a0a00000000", "hex");
+    const completion = await postJson<{
+      turn: {
+        response: string;
+        toolResult: { attachments: Array<Record<string, unknown>> };
+      };
+    }>(
+      app,
+      `/businesses/${owner.businessId}/runtime/turns`,
+      {
+        conversationId,
+        message: "Deliver the locally generated catalogue.",
+        clientInferenceCompletion: {
+          requestId: "browser-workspace-request-1",
+          runtime: "browser-webgpu",
+          modelId: checkpointContract.sourceModelId,
+          deviceId: "browser-device-1",
+          outputText: JSON.stringify({
+            type: "tool",
+            toolName: "workspace.deliver",
+            input: { path: "generated/catalogue.png" },
+            reason: "Deliver the generated catalogue."
+          }),
+          durationMs: 50,
+          workspaceFiles: [
+            {
+              path: "generated/catalogue.png",
+              contentBase64: bytes.toString("base64"),
+              checksum: createHash("sha256").update(bytes).digest("hex")
+            }
+          ]
+        }
+      },
+      owner.cookie
+    );
+    const attachments = completion.turn.toolResult.attachments;
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      name: "catalogue.png",
+      mimeType: "image/png",
+      source: "managed"
+    });
+    expect(store.snapshot().conversationAttachments?.[0]).not.toHaveProperty("contentBase64");
+
+    const message = await postJson<{ content: { attachments?: Array<{ id: string }> } }>(
+      app,
+      "/v1/messages",
+      {
+        conversationId,
+        clientMessageId: "browser-workspace-reply-1",
+        author: "agent",
+        content: { type: "text", text: completion.turn.response, attachments }
+      },
+      owner.cookie
+    );
+    expect(message.content.attachments).toHaveLength(1);
+    const preview = await app.inject({
+      method: "GET",
+      url: `/v1/conversations/${conversationId}/attachments/${message.content.attachments![0]!.id}/preview`,
+      headers: { cookie: owner.cookie }
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.rawPayload).toEqual(bytes);
+    await app.close();
+  });
 });
 
 function assignmentPayload(lastSuccessfulInferenceAt: string): Record<string, unknown> {
@@ -337,6 +420,16 @@ async function putJson<T>(
     headers: { "content-type": "application/json", cookie },
     payload: JSON.stringify(payload)
   });
+  expect(response.statusCode, response.body).toBe(200);
+  return response.json<T>();
+}
+
+async function getJson<T>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  cookie: string
+): Promise<T> {
+  const response = await app.inject({ method: "GET", url, headers: { cookie } });
   expect(response.statusCode).toBe(200);
   return response.json<T>();
 }
@@ -353,6 +446,6 @@ async function postJson<T>(
     headers: { "content-type": "application/json", cookie },
     payload: JSON.stringify(payload)
   });
-  expect(response.statusCode).toBe(200);
+  expect(response.statusCode, response.body).toBe(200);
   return response.json<T>();
 }

@@ -13,6 +13,8 @@ import {
   type Cp2StoreOptions,
   type PasskeyCeremonyRecord
 } from "./store.js";
+import type { ConversationAttachmentBlobStore } from "./conversation-attachment-blob-store.js";
+import type { ConversationAttachmentRecord } from "./workspace-file-delivery.js";
 
 type SnapshotCollectionKey = keyof Cp2Snapshot;
 type SnapshotRecord = Record<string, unknown>;
@@ -33,6 +35,7 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
+  { key: "conversationAttachments", tableName: "cp2_conversation_attachments" },
   { key: "platformIdentities", tableName: "platform_identities" },
   { key: "conversationChannels", tableName: "conversation_channels" },
   { key: "providerUpdateReceipts", tableName: "provider_update_receipts" },
@@ -383,6 +386,7 @@ export interface PostgresStoreHealth {
 }
 
 const requiredMigrationFilename = "051_single_identity_single_store.sql";
+const requiredAttachmentBlobMigrationFilename = "059_conversation_attachment_blob_storage.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;
@@ -432,7 +436,9 @@ export async function createPostgresCp2Store(
         : { messageWebBaseUrl: options.messageWebBaseUrl }),
       ...(options.accountDeletionProcessors === undefined
         ? {}
-        : { accountDeletionProcessors: options.accountDeletionProcessors })
+        : { accountDeletionProcessors: options.accountDeletionProcessors }),
+      conversationAttachmentBlobStore:
+        options.conversationAttachmentBlobStore ?? createPostgresAttachmentBlobStore(pool)
     });
     savedSnapshot = await loadNormalizedSnapshot(pool);
   } catch (error) {
@@ -1133,6 +1139,16 @@ async function assertDatabaseMigrated(pool: Pool): Promise<void> {
   if (result.rows[0]?.applied !== true) {
     throw new Error(
       `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredMigrationFilename}.`
+    );
+  }
+
+  const attachmentBlobMigration = await pool.query<{ applied: boolean }>(
+    "select exists(select 1 from soko_schema_migrations where filename = $1) as applied",
+    [requiredAttachmentBlobMigrationFilename]
+  );
+  if (attachmentBlobMigration.rows[0]?.applied !== true) {
+    throw new Error(
+      `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredAttachmentBlobMigrationFilename}.`
     );
   }
 
@@ -2059,6 +2075,8 @@ async function saveNormalizedSnapshot(
         await saveCollectionRecords(client, collection, records);
       }
 
+      await reconcileConversationAttachmentBlobs(client, snapshot.conversationAttachments ?? []);
+
       await saveRelationalCoreRecords(client, snapshot);
       await client.query("commit");
       logSlowQuery("persist CP2 relational store", startedAt);
@@ -2085,6 +2103,54 @@ async function saveNormalizedSnapshot(
       });
     client.release();
   }
+}
+
+function createPostgresAttachmentBlobStore(pool: Pool): ConversationAttachmentBlobStore {
+  return {
+    async put(blob) {
+      await pool.query(
+        `
+          insert into cp2_conversation_attachment_blobs
+            (storage_key, content, checksum, mime_type, updated_at)
+          values ($1, $2, $3, $4, now())
+          on conflict (storage_key) do update set
+            content = excluded.content,
+            checksum = excluded.checksum,
+            mime_type = excluded.mime_type,
+            updated_at = now()
+        `,
+        [blob.storageKey, blob.bytes, blob.checksum, blob.mimeType]
+      );
+    },
+    async get(storageKey) {
+      const result = await pool.query<{ content: Buffer }>(
+        "select content from cp2_conversation_attachment_blobs where storage_key = $1",
+        [storageKey]
+      );
+      const content = result.rows[0]?.content;
+      return content === undefined ? null : Buffer.from(content);
+    },
+    async delete(storageKey) {
+      await pool.query("delete from cp2_conversation_attachment_blobs where storage_key = $1", [
+        storageKey
+      ]);
+    }
+  };
+}
+
+async function reconcileConversationAttachmentBlobs(
+  client: PoolClient,
+  attachments: ConversationAttachmentRecord[]
+): Promise<void> {
+  const storageKeys = attachments.map((attachment) => attachment.storageKey);
+  if (storageKeys.length === 0) {
+    await client.query("delete from cp2_conversation_attachment_blobs");
+    return;
+  }
+  await client.query(
+    "delete from cp2_conversation_attachment_blobs where not (storage_key = any($1::text[]))",
+    [storageKeys]
+  );
 }
 
 function passkeyCeremonyMutation(
@@ -3611,6 +3677,7 @@ function emptySnapshot(): Cp2Snapshot {
     conversations: [],
     conversationParticipants: [],
     conversationMessages: [],
+    conversationAttachments: [],
     platformIdentities: [],
     conversationChannels: [],
     providerUpdateReceipts: [],

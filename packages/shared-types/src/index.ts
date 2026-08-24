@@ -28,6 +28,8 @@ export interface EnvironmentConfig {
   inferenceCloudMonthlyTokenBudget: number;
   inferenceMaxFallbacks: number;
   inferenceJobTimeoutMs: number;
+  workspaceDeliveryMaxFileBytes: number;
+  workspaceRoot: string;
   redisUrl: string;
 }
 
@@ -75,6 +77,14 @@ export interface ClientInferenceCompletion {
   durationMs: number;
   promptTokens?: number;
   completionTokens?: number;
+  workspaceFiles?: ClientWorkspaceFileTransfer[];
+}
+
+/** Bytes supplied by an authenticated local runtime for a server-validated workspace.deliver. */
+export interface ClientWorkspaceFileTransfer {
+  path: string;
+  contentBase64: string;
+  checksum: string;
 }
 
 export interface InferenceChunk {
@@ -397,14 +407,38 @@ export type ConversationMessageDeliveryStatus =
 
 export type MessageDeliveryAttemptResult = "succeeded" | "transient_failure" | "permanent_failure";
 
+export type ConversationAttachmentKind = "image" | "pdf" | "text" | "document" | "archive" | "file";
+
 export interface ConversationAttachment {
   id: string;
   name: string;
   mimeType: string;
   size: number;
   category: "document" | "image" | "video" | "audio" | "other";
-  /** A data URL for small offline-first attachments or an HTTPS object-storage URL. */
-  url: string;
+  /** Present only for durable, server-authorized conversation attachments. */
+  source?: "managed";
+  kind?: ConversationAttachmentKind;
+  previewable?: boolean;
+  caption?: string;
+  /** Historical client attachments use a data URL or HTTPS URL. Managed attachments omit it. */
+  url?: string;
+}
+
+export interface WorkspaceDeliverResult {
+  ok: true;
+  delivered: true;
+  attachment: ConversationAttachment & {
+    source: "managed";
+    kind: ConversationAttachmentKind;
+    previewable: boolean;
+  };
+  attachments: Array<
+    ConversationAttachment & {
+      source: "managed";
+      kind: ConversationAttachmentKind;
+      previewable: boolean;
+    }
+  >;
 }
 
 export interface ConversationReaction {
@@ -3034,6 +3068,7 @@ export type RuntimeToolName =
   | "receipt.list"
   | "document_import.confirm"
   | "messaging.send"
+  | "workspace.deliver"
   | "unknown.clarify";
 
 export type RuntimeParserIntent =
@@ -3456,7 +3491,7 @@ export const defaultAgentDefinition: AgentDefinition = {
   recommendedContextTokens: 1_024,
   personality: "Warm, concise, accurate and commercially practical",
   instructions:
-    "Handle one clear shop task at a time, use saved business records, and ask before risky changes.",
+    "Handle one clear shop task at a time, use saved business records, and ask before risky changes. When a workspace file should be given to the user, call workspace.deliver and refer to the delivered attachment without exposing its filesystem path.",
   knowledge: "Use saved products, customers, invoices, payments, receipts and shop policies.",
   tools: [
     "Products",
@@ -3467,7 +3502,8 @@ export const defaultAgentDefinition: AgentDefinition = {
     "Receipts",
     "Reports",
     "Notifications",
-    "Logistics"
+    "Logistics",
+    "Workspace delivery"
   ],
   skillIds: []
 };

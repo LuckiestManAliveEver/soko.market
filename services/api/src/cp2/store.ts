@@ -15,6 +15,7 @@ import {
   destinationAccountKey,
   hashMatches,
   hashOtp,
+  isSokoStorefrontId,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
   createSokoHandle,
@@ -236,6 +237,11 @@ import {
   type StockAdjustmentInput
 } from "@soko/business-core";
 import { parseRuntimeModelOutput, parseMerchantCommand } from "@soko/tool-core";
+import type { ConversationAttachmentRecord } from "./workspace-file-delivery.js";
+import {
+  createMemoryConversationAttachmentBlobStore,
+  type ConversationAttachmentBlobStore
+} from "./conversation-attachment-blob-store.js";
 
 export const sessionCookieName = "soko_session";
 export const refreshCookieName = "soko_refresh";
@@ -471,6 +477,7 @@ export interface Cp2Snapshot {
   conversations: ConversationSummary[];
   conversationParticipants: ConversationParticipantSummary[];
   conversationMessages: ConversationMessageSummary[];
+  conversationAttachments?: ConversationAttachmentRecord[];
   platformIdentities?: PlatformIdentitySummary[];
   conversationChannels?: ConversationChannelSummary[];
   providerUpdateReceipts?: ProviderUpdateReceiptSummary[];
@@ -585,6 +592,9 @@ export interface Cp2StoreOptions {
   accountDeletionProcessors?: AccountDeletionProcessor[];
   channelGateway?: ChannelGateway;
   emailMailboxProviderClient?: EmailMailboxProviderClient;
+  workspaceRoot?: string;
+  workspaceDeliveryMaxFileBytes?: number;
+  conversationAttachmentBlobStore?: ConversationAttachmentBlobStore;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -675,11 +685,14 @@ export type MessageEmailNotificationSender = (
 export class Cp2Store {
   private readonly channelGateway: ChannelGateway;
   private readonly emailMailboxProviderClient: EmailMailboxProviderClient;
+  private readonly conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
     this.emailMailboxProviderClient =
       options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
+    this.conversationAttachmentBlobStore =
+      options.conversationAttachmentBlobStore ?? createMemoryConversationAttachmentBlobStore();
     this.oauthDomain = new OAuthDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -909,7 +922,14 @@ export class Cp2Store {
       sessions: this.sessions,
       customers: this.salesDomain.customersMap,
       quarantinedBusinessIds: this.quarantinedBusinessIds,
-      accountByDestination: this.accountByDestination
+      accountByDestination: this.accountByDestination,
+      conversationAttachmentBlobStore: this.conversationAttachmentBlobStore,
+      ...(this.options.workspaceRoot === undefined
+        ? {}
+        : { workspaceRoot: this.options.workspaceRoot }),
+      ...(this.options.workspaceDeliveryMaxFileBytes === undefined
+        ? {}
+        : { workspaceDeliveryMaxFileBytes: this.options.workspaceDeliveryMaxFileBytes })
     });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -957,6 +977,7 @@ export class Cp2Store {
       confirmProductImport: (input) => this.confirmProductImport(input),
       confirmSupplierImport: (input) => this.confirmSupplierImport(input),
       sendChannelMessage: (input) => this.sendChannelMessage(input),
+      deliverWorkspaceFile: (input) => this.messagingDomain.deliverWorkspaceFile(input),
       products: this.salesDomain.productsMap,
       customers: this.salesDomain.customersMap,
       invoices: this.salesDomain.invoicesMap,
@@ -1655,9 +1676,11 @@ export class Cp2Store {
     const attemptKey = `login:store:${normalizedSokoId}`;
     this.requirePinAttemptAllowed(attemptKey, now);
 
-    const business = [...this.businesses.values()].find(
-      (candidate) => normalizeStorefrontLookupId(candidate.sokoId) === normalizedSokoId
-    );
+    const business = isSokoStorefrontId(input.sokoId)
+      ? [...this.businesses.values()].find(
+          (candidate) => normalizeStorefrontLookupId(candidate.sokoId) === normalizedSokoId
+        )
+      : undefined;
     const membership =
       business === undefined
         ? undefined
@@ -2259,14 +2282,14 @@ export class Cp2Store {
     });
 
     this.recordAuditEvent({
-      type: "business.global_shop_id_created",
+      type: "business.storefront_id_created",
       aggregateType: "business",
       aggregateId: business.id,
       actorId: session.user.id,
       occurredAt: now.toISOString(),
       payload: {
         sokoId: business.sokoId,
-        namespace: extractSokoIdNamespace(business.sokoId)
+        namespace: "soko"
       }
     });
 
@@ -2896,6 +2919,11 @@ export class Cp2Store {
     ...args: Parameters<MessagingDomain["getConversation"]>
   ): ReturnType<MessagingDomain["getConversation"]> {
     return this.messagingDomain.getConversation(...args);
+  }
+  getConversationAttachment(
+    ...args: Parameters<MessagingDomain["getConversationAttachment"]>
+  ): ReturnType<MessagingDomain["getConversationAttachment"]> {
+    return this.messagingDomain.getConversationAttachment(...args);
   }
   registerE2eeDevice(
     ...args: Parameters<MessagingDomain["registerE2eeDevice"]>
@@ -4899,6 +4927,7 @@ export class Cp2Store {
       conversations: [...this.messagingDomain.conversationsMap.values()],
       conversationParticipants: [...this.messagingDomain.conversationParticipantsMap.values()],
       conversationMessages: [...this.messagingDomain.conversationMessagesMap.values()],
+      conversationAttachments: [...this.messagingDomain.conversationAttachmentsMap.values()],
       platformIdentities: [...this.messagingDomain.platformIdentitiesMap.values()],
       conversationChannels: [...this.messagingDomain.conversationChannelsMap.values()],
       providerUpdateReceipts: [...this.messagingDomain.providerUpdateReceiptsMap.values()],
@@ -7787,6 +7816,8 @@ export class Cp2Store {
       }
     }
 
+    this.messagingDomain.deleteConversationAttachmentsForBusiness(businessId);
+
     for (const [id, action] of this.agentRuntimeDomain.pendingRuntimeActionsMap.entries()) {
       if (action.businessId === businessId) {
         this.agentRuntimeDomain.pendingRuntimeActionsMap.delete(id);
@@ -7858,6 +7889,10 @@ export class Cp2Store {
     ]);
     let deletedRecordCount = 0;
     let previousScopeSize = -1;
+
+    deletedRecordCount += this.messagingDomain.deleteConversationAttachmentsForAccount(
+      request.accountId
+    );
 
     while (previousScopeSize !== scope.size) {
       previousScopeSize = scope.size;
@@ -8205,7 +8240,7 @@ export class Cp2Store {
     throw new Cp2Error(
       500,
       "soko_id_collision",
-      "A unique Soko Global Shop ID could not be generated."
+      "A unique Soko Storefront ID could not be generated."
     );
   }
 
@@ -8279,12 +8314,6 @@ function valueReferencesDeletionScope(
     return value.some((item) => valueReferencesDeletionScope(item, scope, seen));
   }
   return Object.values(value).some((item) => valueReferencesDeletionScope(item, scope, seen));
-}
-
-function extractSokoIdNamespace(sokoId: string): string {
-  if (sokoId.toLowerCase().startsWith("soko.")) return "soko";
-  const match = sokoId.match(/^\+?(\d{1,3})-?[A-Za-z]\d{8}$/);
-  return match?.[1] ?? "254";
 }
 
 function sessionAccessTtlMs(): number {

@@ -35,13 +35,7 @@ import {
   setupDraftStorageKey
 } from "./soko-application-shared";
 
-import {
-  isSokoId,
-  normalizeSokoId,
-  createFallbackSokoId,
-  createPublicStorefrontAgentId,
-  createStorefrontUrl
-} from "./sokoid-and-storefront";
+import { isSokoId, normalizeSokoId, createStorefrontUrl } from "./sokoid-and-storefront";
 import { inferCountryCode, isCountryDialCode, isSocialSignupProvider } from "./country-dial-codes";
 
 export function readStoredBusiness(): ActiveBusiness | null {
@@ -60,21 +54,20 @@ export function readStoredBusiness(): ActiveBusiness | null {
       typeof parsed.id === "string" &&
       typeof parsed.name === "string" &&
       (parsed.language === "en" || parsed.language === "sw") &&
-      typeof parsed.role === "string"
+      typeof parsed.role === "string" &&
+      isSokoId(parsed.sokoId)
     ) {
       return {
         ...parsed,
-        sokoId:
-          typeof parsed.sokoId === "string" && isSokoId(parsed.sokoId)
-            ? normalizeSokoId(parsed.sokoId)
-            : createFallbackSokoId(parsed.id, parsed.name)
+        sokoId: normalizeSokoId(parsed.sokoId)
       };
     }
   } catch {
-    localStorage.removeItem(activeBusinessStorageKey);
-    localStorage.removeItem(legacyActiveBusinessStorageKey);
+    // Invalid persisted data is removed below as well.
   }
 
+  localStorage.removeItem(activeBusinessStorageKey);
+  localStorage.removeItem(legacyActiveBusinessStorageKey);
   return null;
 }
 
@@ -231,8 +224,7 @@ export function readSetupDraft(): SetupDraft | null {
 
 export function createDefaultAgent(business: ActiveBusiness | null): AgentSettings {
   const businessName = business?.name.trim() || "Soko.market";
-  const globalAgentId =
-    business === null ? "local-soko-market" : createPublicStorefrontAgentId(business);
+  const globalAgentId = business === null ? "local-soko-market" : normalizeSokoId(business.sokoId);
 
   const generalInstruction = defaultAgentDefinition.instructions;
   const personality = defaultAgentDefinition.personality;
@@ -270,7 +262,7 @@ export function agentSettingsFromBusinessProfile(
   profile: BusinessAgentProfileSummary,
   business: ActiveBusiness
 ): AgentSettings {
-  const globalAgentId = createPublicStorefrontAgentId(business);
+  const globalAgentId = normalizeSokoId(business.sokoId);
   return {
     agentDefinitionId: profile.agentDefinitionId ?? defaultAgentDefinitionId,
     id: `agent-${globalAgentId}`,

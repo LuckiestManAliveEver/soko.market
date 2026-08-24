@@ -3,6 +3,7 @@ import type {
   AuthSessionView,
   BuyCheckoutItemInput,
   BuyFeedSummary,
+  ClientWorkspaceFileTransfer,
   BusinessReportSummary,
   BusinessSummary,
   CatalogueQueryResult,
@@ -25,7 +26,8 @@ import type {
   SecurityReviewSummary,
   SupplierSummary,
   TrustedMessageAttachmentReference,
-  UnifiedCheckoutSummary
+  UnifiedCheckoutSummary,
+  WorkspaceDeliverResult
 } from "@soko/shared-types";
 import type { BusinessPermission, InvoiceInput, PaymentInput } from "@soko/business-core";
 
@@ -269,6 +271,16 @@ export interface AgentRuntimeDomainDeps {
     idempotencyKey: string;
     now?: Date;
   }) => Promise<unknown>;
+  deliverWorkspaceFile: (input: {
+    sessionId: string | null;
+    businessId: string;
+    conversationId: string;
+    requestedPaths: string[];
+    transferredFiles?: ClientWorkspaceFileTransfer[];
+    caption?: string;
+    toolCallId: string;
+    now?: Date;
+  }) => Promise<WorkspaceDeliverResult>;
   products: Map<string, ProductSummary>;
   customers: Map<string, CustomerSummary>;
   invoices: Map<string, InvoiceSummary>;

@@ -65,6 +65,8 @@ INSERT INTO purge_table_plan (table_name, classification, delete_order, reason) 
   ('cp2_conversations', 'DELETE', 11, 'Normalized conversation records'),
   ('cp2_conversation_participants', 'DELETE', 11, 'Normalized participant records'),
   ('cp2_conversation_messages', 'DELETE', 11, 'Normalized message records'),
+  ('cp2_conversation_attachment_blobs', 'DELETE', 11, 'Private conversation attachment bytes'),
+  ('cp2_conversation_attachments', 'DELETE', 11, 'Private managed conversation attachments'),
   ('cp2_message_delivery_attempts', 'DELETE', 11, 'Normalized message delivery records'),
   ('cp2_message_notification_deliveries', 'DELETE', 11, 'Normalized notification delivery records'),
   ('cp2_e2ee_devices', 'DELETE', 11, 'Account E2EE devices'),

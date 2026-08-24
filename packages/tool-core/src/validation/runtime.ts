@@ -89,6 +89,20 @@ export function validateRuntimeToolInput(
         ? valid()
         : invalid("Which document import should I add?");
 
+    case "workspace.deliver": {
+      const pathIsValid = typeof input.path === "string" && input.path.trim().length > 0;
+      const additionalPathsAreValid =
+        input.additionalPaths === undefined ||
+        (Array.isArray(input.additionalPaths) &&
+          input.additionalPaths.length <= 9 &&
+          input.additionalPaths.every(
+            (path) => typeof path === "string" && path.trim().length > 0
+          ));
+      return pathIsValid && additionalPathsAreValid
+        ? valid()
+        : invalid("Choose between one and ten workspace files to deliver.");
+    }
+
     case "messaging.send": {
       const text = typeof input.text === "string" ? input.text.trim() : "";
       const customerId = typeof input.customerId === "string" ? input.customerId.trim() : "";

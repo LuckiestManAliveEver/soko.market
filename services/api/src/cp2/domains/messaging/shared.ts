@@ -399,8 +399,9 @@ export function validateConversationMessageContent(content: ConversationMessageC
         );
       }
       if (
-        (content.attachments ?? []).reduce((total, attachment) => total + attachment.size, 0) >
-        10_000_000
+        (content.attachments ?? [])
+          .filter((attachment) => attachment.source !== "managed")
+          .reduce((total, attachment) => total + attachment.size, 0) > 10_000_000
       ) {
         throw new Cp2Error(
           413,
@@ -409,11 +410,15 @@ export function validateConversationMessageContent(content: ConversationMessageC
         );
       }
       for (const attachment of content.attachments ?? []) {
+        const managed = attachment.source === "managed";
         if (
           !attachment.id.trim() ||
           !attachment.name.trim() ||
           attachment.size < 0 ||
-          (!attachment.url.startsWith("data:") && !attachment.url.startsWith("https://"))
+          (managed
+            ? attachment.kind === undefined || attachment.previewable === undefined
+            : attachment.url === undefined ||
+              (!attachment.url.startsWith("data:") && !attachment.url.startsWith("https://")))
         ) {
           throw new Cp2Error(
             400,

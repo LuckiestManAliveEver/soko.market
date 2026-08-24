@@ -125,6 +125,7 @@ export type RuntimeToolName =
   | "receipt.list"
   | "document_import.confirm"
   | "messaging.send"
+  | "workspace.deliver"
   | "unknown.clarify";
 
 /**

@@ -50,6 +50,7 @@ import type { GitHubAgentCatalog } from "../../github-agent-catalog.js";
 import type { HuggingFaceAgentCatalog } from "../../huggingface-agent-catalog.js";
 import type { BusinessAgentProfileInput } from "./shared.js";
 import { defaultAgentDefinitionId, isAgentDefinitionId } from "@soko/shared-types";
+import { runtimeToolRegistry } from "@soko/tool-core";
 import { parseRuntimeRecallEscalation, parseRuntimeTurnBody } from "./runtime-turn-request.js";
 export { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 import {
@@ -254,6 +255,7 @@ export interface RuntimeTurnBody {
     tools?: string[];
   };
   runtimeSessionId?: string;
+  conversationId?: string;
   message?: string;
   confirmationToken?: string;
   recallEscalation?: RuntimeRecallEscalation;
@@ -1142,7 +1144,11 @@ function parseAgentProfileBody(body: AgentProfileBody): BusinessAgentProfileInpu
   const skillBindings =
     body.skillBindings === undefined
       ? undefined
-      : parseStructuredArray<AgentSkillBinding>(body.skillBindings, "skillBindings", 32);
+      : parseStructuredArray<AgentSkillBinding>(
+          body.skillBindings,
+          "skillBindings",
+          Object.keys(runtimeToolRegistry).length
+        );
   const memoryPolicy =
     body.memoryPolicy === undefined
       ? undefined

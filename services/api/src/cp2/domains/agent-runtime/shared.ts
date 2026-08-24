@@ -345,11 +345,36 @@ export function createRuntimeResponse(input: {
     return `Found ${input.toolResult.total} verified catalogue ${input.toolResult.total === 1 ? "product" : "products"} for "${input.toolResult.query}".`;
   }
 
+  if (input.plan.toolName === "workspace.deliver" && isWorkspaceDeliverResult(input.toolResult)) {
+    return input.toolResult.attachments.length > 1
+      ? `Here are ${input.toolResult.attachments.length} files.`
+      : input.toolResult.attachment.caption?.trim()
+        ? input.toolResult.attachment.caption
+        : `Here is ${input.toolResult.attachment.name}.`;
+  }
+
   if (input.toolResult !== null) {
     return `${input.proposalReason} Done.`;
   }
 
   return input.proposalReason;
+}
+
+function isWorkspaceDeliverResult(value: unknown): value is {
+  ok: true;
+  attachment: { name: string; caption?: string };
+  attachments: Array<{ name: string; caption?: string }>;
+} {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.ok !== true || record.attachment === null || typeof record.attachment !== "object") {
+    return false;
+  }
+  return (
+    typeof (record.attachment as Record<string, unknown>).name === "string" &&
+    Array.isArray(record.attachments) &&
+    record.attachments.length > 0
+  );
 }
 
 export function isCatalogueQueryResult(value: unknown): value is CatalogueQueryResult {

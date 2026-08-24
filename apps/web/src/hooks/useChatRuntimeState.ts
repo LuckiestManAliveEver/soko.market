@@ -7,6 +7,7 @@ import type {
   AuthBootstrapState,
   ChannelProvider,
   ClientInferenceCompletion,
+  ConversationAttachment,
   ConversationMessageContent,
   ConversationMessageSummary,
   ConversationView,
@@ -80,6 +81,7 @@ import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
 import { decideClientInferenceRoute, defaultInferencePriority } from "../inference/router";
 import { downloadedAgentModelMustStayLocal } from "../inference/local-runtime-boundary";
+import { collectClientWorkspaceFileTransfers } from "../local-workspace-files";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
 import { queueMessagingOutbox } from "../messaging/outbox";
 import { readDeviceOssAgentBinding } from "../oss-agent-installation";
@@ -967,7 +969,11 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       return;
     }
 
-    async function appendAgentMessage(body: string, confirmationToken?: string) {
+    async function appendAgentMessage(
+      body: string,
+      confirmationToken?: string,
+      deliveredAttachments: ConversationAttachment[] = []
+    ) {
       if (isRedundantAgentErrorMessage(body)) {
         return;
       }
@@ -988,7 +994,13 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             author: "agent",
             content:
               confirmationToken === undefined
-                ? { type: "text", text: body }
+                ? {
+                    type: "text",
+                    text: body,
+                    ...(deliveredAttachments.length === 0
+                      ? {}
+                      : { attachments: deliveredAttachments })
+                  }
                 : { type: "confirmation", confirmationToken, prompt: body },
             clientTimestamp: new Date().toISOString()
           });
@@ -1295,6 +1307,17 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           ) {
             throw new Error("This inference runtime cannot submit an authorized tool proposal.");
           }
+          if (business === null) {
+            throw new Error("Select a shop before delivering a local workspace file.");
+          }
+          const workspaceFiles = await collectClientWorkspaceFileTransfers({
+            outputText: execution.text,
+            runtime: execution.runtime,
+            businessId: business.id,
+            ...(window.SokoAgentModelRuntime === undefined
+              ? {}
+              : { nativeBridge: window.SokoAgentModelRuntime })
+          });
           const clientInferenceCompletion: ClientInferenceCompletion = {
             requestId: inferenceRequest.requestId,
             runtime: execution.runtime,
@@ -1307,7 +1330,8 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             durationMs: Math.min(
               120_000,
               Math.max(0, Math.round(performance.now() - clientInferenceStartedAt))
-            )
+            ),
+            ...(workspaceFiles.length === 0 ? {} : { workspaceFiles })
           };
           const authorized = await runRoutedRuntimeTurn(
             inferenceRequest.modelId,
@@ -1388,6 +1412,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         (managedRuntimeSessionId) =>
           postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
             runtimeSessionId: managedRuntimeSessionId,
+            ...(activeConversationId === null ? {} : { conversationId: activeConversationId }),
             message: routedMessage,
             ...(recallSignal === undefined ? {} : { recallEscalation: recallSignal }),
             ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion }),
@@ -1409,9 +1434,18 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       setRuntimeSessionId(result.session.id);
       if (appendResponse) {
         const confirmationToken = result.turn.plan.confirmationToken;
+        const deliveredAttachments =
+          result.turn.plan.toolName === "workspace.deliver" &&
+          result.turn.toolResult !== null &&
+          typeof result.turn.toolResult === "object" &&
+          "attachments" in result.turn.toolResult &&
+          Array.isArray(result.turn.toolResult.attachments)
+            ? (result.turn.toolResult.attachments as ConversationAttachment[])
+            : [];
         await appendAgentMessage(
           result.turn.response,
-          confirmationToken === null ? undefined : confirmationToken
+          confirmationToken === null ? undefined : confirmationToken,
+          deliveredAttachments
         );
       }
 

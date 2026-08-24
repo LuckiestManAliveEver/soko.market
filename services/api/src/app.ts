@@ -16,6 +16,7 @@ const rateLimitWindowMs = 60_000;
 
 export interface BuildApiOptions {
   allowedCorsOrigins?: string[];
+  bodyLimit?: number;
   cp2?: Cp2RouteOptions;
   agentRuntimeDiagnostic?: (runInference: boolean) => Promise<RuntimeModelDiagnostic>;
   databaseHealth?: () => Promise<Record<string, unknown>>;
@@ -31,7 +32,7 @@ export interface BuildApiOptions {
 export function buildApi(options: BuildApiOptions = {}) {
   const app = Fastify({
     logger: true,
-    bodyLimit: 15_000_000
+    bodyLimit: options.bodyLimit ?? 15_000_000
   });
   const allowedCorsOrigins = new Set(options.allowedCorsOrigins ?? defaultAllowedCorsOrigins);
   const oauthAllowedRedirectOrigins = readOAuthAllowedRedirectOrigins([...allowedCorsOrigins]);

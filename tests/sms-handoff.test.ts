@@ -23,7 +23,7 @@ describe("external SMS composer handoff", () => {
     expect(normalizeSmsRecipient("+14155552671", "KE")).toBe("+14155552671");
   });
 
-  it.each(["", "123", "soko: 254A12345678", "254A12345678"])(
+  it.each(["", "123", "soko: soko.janes-shop", "soko.janes-shop"])(
     "rejects invalid or Soko-only recipient %s",
     (input) => {
       expect(() => normalizeSmsRecipient(input, "KE")).toThrow();

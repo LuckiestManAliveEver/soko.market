@@ -2150,6 +2150,80 @@ button:disabled {
   font-weight: 700;
 }
 
+.conversation-attachment-card {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid #cfdad2;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  max-width: min(100%, 320px);
+  min-width: min(220px, 100%);
+  overflow: hidden;
+  padding: 10px;
+}
+
+.conversation-attachment-image {
+  background: #edf4ee;
+  border-radius: 7px;
+  display: block;
+  height: auto;
+  max-height: 280px;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.conversation-attachment-file-icon {
+  align-items: center;
+  background: #edf4ee;
+  border-radius: 7px;
+  color: #31533e;
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  height: 54px;
+  justify-content: center;
+  letter-spacing: 0.08em;
+}
+
+.conversation-attachment-details {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.conversation-attachment-details strong,
+.conversation-attachment-details span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-attachment-details small,
+.conversation-attachment-card > small {
+  color: #516258;
+}
+
+.conversation-attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.conversation-attachment-actions a {
+  align-items: center;
+  border: 1px solid #b9c9bd;
+  border-radius: 7px;
+  color: #204b30;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 6px 10px;
+  text-decoration: none;
+}
+
 .message-list {
   display: grid;
   gap: 10px;

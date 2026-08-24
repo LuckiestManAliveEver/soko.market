@@ -22,7 +22,7 @@ export function PublicStorefrontPanel({
   return (
     <div className="record-form">
       <div className="section-heading">
-        <p className="eyebrow">Soko Global Shop ID</p>
+        <p className="eyebrow">Soko Storefront ID</p>
         <h3>Public storefront</h3>
       </div>
       <div className="soko-id-card">

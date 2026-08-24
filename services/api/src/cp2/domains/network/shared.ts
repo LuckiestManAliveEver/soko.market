@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { normalizeDestination } from "../../phone-identity.js";
 import { Cp2Error } from "../../cp2-error.js";
 export { sanitizeNetworkNode } from "../../network-node-view.js";
-export { createPublicAgentId, providerDisplayName } from "../../public-identifiers.js";
+export { providerDisplayName } from "../../public-identifiers.js";
 
 export interface NetworkImportConnectionInput {
   name: string;

@@ -201,7 +201,7 @@ describe("store ID + PIN login", () => {
   it("rejects an unknown store ID and a wrong PIN with the same generic error", async () => {
     const app = buildApi({ cp2: { store: createCp2Store() } });
     const unknown = await post(app, "/auth/pin/store-login", {
-      sokoId: "254A99999999",
+      sokoId: "soko.unknown-store",
       pin: "9012"
     });
     expect(unknown.statusCode).toBe(401);
