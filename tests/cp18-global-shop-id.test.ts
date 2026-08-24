@@ -38,16 +38,17 @@ interface PublicStorefrontResponse {
 }
 
 describe("CP18 Global Shop ID", () => {
-  it("creates stable globally formatted shop IDs and resolves storefronts by Soko ID", async () => {
+  it("creates readable unique shop IDs and resolves storefronts by Soko ID", async () => {
     const store = createCp2Store();
     const app = buildApi({ cp2: { store } });
 
-    const first = await createOwnerBusiness(app, "254700000018", "BigFish soko");
-    const second = await createOwnerBusiness(app, "255700000018", "Dar Fish soko");
+    const first = await createOwnerBusiness(app, "254700000018", "BigFish soko", "Amina Seller");
+    const second = await createOwnerBusiness(app, "255700000018", "Dar Fish soko", "Amina Seller");
+    const third = await createOwnerBusiness(app, "256700000018", "Dar Fish soko");
 
-    expect(first.business.sokoId).toMatch(/^254A\d{8}$/);
-    expect(second.business.sokoId).toMatch(/^255A\d{8}$/);
-    expect(first.business.sokoId).not.toBe(second.business.sokoId);
+    expect(first.business.sokoId).toBe("soko.amina-seller");
+    expect(second.business.sokoId).toBe("soko.dar-fish-soko");
+    expect(third.business.sokoId).toBe("soko.dar-fish-soko-2");
 
     const stockedProduct = await postJson<ProductResponse>(
       app,
@@ -80,7 +81,7 @@ describe("CP18 Global Shop ID", () => {
     });
     const rawStorefront = await app.inject({
       method: "GET",
-      url: `/public/storefronts/${first.business.sokoId}`
+      url: `/public/storefronts/${first.business.sokoId.toUpperCase()}`
     });
 
     expect(storefront.statusCode).toBe(200);
@@ -111,6 +112,20 @@ describe("CP18 Global Shop ID", () => {
       expect.arrayContaining(["business.global_shop_id_created"])
     );
 
+    const legacySnapshot = store.snapshot();
+    const legacyBusiness = legacySnapshot.businesses.find(
+      (business) => business.id === first.business.id
+    );
+    expect(legacyBusiness).toBeDefined();
+    legacyBusiness!.sokoId = "254A00000018";
+    store.hydrateSnapshot(legacySnapshot);
+    const legacyStorefront = await app.inject({
+      method: "GET",
+      url: "/public/storefronts/254A00000018"
+    });
+    expect(legacyStorefront.statusCode).toBe(200);
+    expect(legacyStorefront.json<PublicStorefrontResponse>().sokoId).toBe("254A00000018");
+
     await app.close();
   });
 });
@@ -118,7 +133,8 @@ describe("CP18 Global Shop ID", () => {
 async function createOwnerBusiness(
   app: ReturnType<typeof buildApi>,
   destination: string,
-  businessName: string
+  businessName: string,
+  displayName?: string
 ): Promise<CreateBusinessResponse & { sessionCookie: string }> {
   const verifyResponse = await app.inject({
     method: "POST",
@@ -131,6 +147,9 @@ async function createOwnerBusiness(
     })
   });
   const sessionCookie = extractSessionCookie(verifyResponse.headers["set-cookie"]);
+  if (displayName !== undefined) {
+    await postJson(app, "/account/display-name", { displayName }, sessionCookie, "PUT");
+  }
   const business = await postJson<CreateBusinessResponse>(
     app,
     "/businesses",
@@ -151,10 +170,11 @@ async function postJson<TResponse>(
   app: ReturnType<typeof buildApi>,
   url: string,
   payload: unknown,
-  cookie?: string
+  cookie?: string,
+  method: "POST" | "PUT" = "POST"
 ): Promise<TResponse> {
   const response = await app.inject({
-    method: "POST",
+    method,
     url,
     headers: {
       ...jsonHeaders(),

@@ -7,15 +7,9 @@ import { apiFetch } from "./lib/api";
 import { AppIcon } from "./AppIcon";
 import { PhoneNumberField, authenticationPhoneCountries } from "./PhoneNumberField";
 import { getUserFacingErrorMessage } from "./user-facing-error";
+import { isSokoId, normalizeSokoId } from "./sokoid-and-storefront";
 
-type Stage =
-  | "entry"
-  | "methods"
-  | "pin"
-  | "password"
-  | "mfa"
-  | "recovery-reset"
-  | "reset-pin";
+type Stage = "entry" | "methods" | "pin" | "password" | "mfa" | "recovery-reset" | "reset-pin";
 type IdentifierType = "phone" | "email" | "store";
 
 interface LoginMethods {
@@ -89,11 +83,10 @@ export function PhoneFirstAuthentication({
       return { type: identifierType, identifier: trimmed };
     }
     if (identifierType === "store") {
-      const normalized = identifier.trim().replace(/^\+/u, "").replace(/-/gu, "");
-      if (!/^\d{1,3}[A-Za-z]\d{8}$/u.test(normalized)) {
-        throw new Error("Enter a valid Soko ID, e.g. 254A00000001.");
+      if (!isSokoId(identifier)) {
+        throw new Error("Enter a valid Soko ID, e.g. soko.janes-shop.");
       }
-      return { type: identifierType, identifier: normalized };
+      return { type: identifierType, identifier: normalizeSokoId(identifier) };
     }
     const normalized = normalizePhoneInput({
       rawInput: identifier,
@@ -290,16 +283,16 @@ export function PhoneFirstAuthentication({
     stage === "entry"
       ? "Welcome back"
       : stage === "methods"
-          ? "Choose how to log in"
-          : stage === "pin"
-            ? "Use your account PIN"
-            : stage === "password"
-              ? "Log in with password"
-              : stage === "mfa"
-                ? "Security check"
-                : stage === "reset-pin"
-                  ? "Choose a new PIN"
-                  : "Recover your account";
+        ? "Choose how to log in"
+        : stage === "pin"
+          ? "Use your account PIN"
+          : stage === "password"
+            ? "Log in with password"
+            : stage === "mfa"
+              ? "Security check"
+              : stage === "reset-pin"
+                ? "Choose a new PIN"
+                : "Recover your account";
 
   return (
     <main className="auth-onboarding" aria-busy={busy}>
@@ -396,7 +389,7 @@ export function PhoneFirstAuthentication({
                     type="text"
                     autoComplete="off"
                     autoCapitalize="characters"
-                    placeholder="254A00000001"
+                    placeholder="soko.janes-shop"
                     value={identifier}
                     onChange={(event) => setIdentifier(event.target.value)}
                   />

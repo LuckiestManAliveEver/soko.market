@@ -7,6 +7,7 @@ import {
 } from "./browser-navigation";
 import { recordComponentRender, recordRouteRender } from "./performance";
 import { readAuthenticationRoutePath, readOwnerRoute, routes } from "./routes";
+import { isSokoId, normalizeSokoId } from "./sokoid-and-storefront";
 
 const initialPathname = window.location.pathname;
 const initialSokoApplicationModule = shouldWarmOwnerRoute(initialPathname)
@@ -172,13 +173,4 @@ export function readStorefrontRoute(): StorefrontRoute | null {
   }
 
   return { agentId, productId };
-}
-
-function isSokoId(value: unknown): value is string {
-  return typeof value === "string" && /^\+?\d{1,3}-?[A-Za-z]\d{8}$/.test(value.trim());
-}
-
-function normalizeSokoId(value: string): string {
-  const compact = value.trim().replace(/-/g, "");
-  return compact.startsWith("+") ? compact.slice(1) : compact;
 }

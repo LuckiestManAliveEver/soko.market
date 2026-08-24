@@ -3,22 +3,44 @@ import { routes } from "./routes";
 import { type ActiveBusiness } from "./soko-application-shared";
 
 export function isSokoId(value: unknown): value is string {
-  return typeof value === "string" && /^\+?\d{1,3}-?[A-Za-z]\d{8}$/.test(value);
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return (
+    /^soko\.[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/iu.test(trimmed) ||
+    /^\+?\d{1,3}-?[A-Za-z]\d{8}$/u.test(trimmed)
+  );
 }
 
 export function normalizeSokoId(value: string): string {
-  return value.trim().replace(/^\+/, "").replace("-", "");
+  const trimmed = value.trim();
+  if (/^soko\./iu.test(trimmed)) return trimmed.toLowerCase();
+  return trimmed.replace(/^\+/u, "").replace(/-/gu, "").toUpperCase();
 }
 
 export function createFallbackSokoId(businessId: string, businessName: string): string {
-  const seed = `${businessId}:${businessName}`;
+  const handle = createSokoHandle(businessName);
+  if (handle.length > 0) return `soko.${handle}`;
+
+  const seed = businessId;
   let hash = 0;
 
   for (const character of seed) {
     hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   }
 
-  return `254A${(hash % 100_000_000).toString().padStart(8, "0")}`;
+  return `soko.store-${hash.toString(36)}`;
+}
+
+function createSokoHandle(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Mark}+/gu, "")
+    .toLowerCase()
+    .replace(/[’']/gu, "")
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 48)
+    .replace(/-+$/gu, "");
 }
 
 export function createPublicStorefrontAgentId(business: ActiveBusiness): string {

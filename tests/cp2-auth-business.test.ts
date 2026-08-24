@@ -114,7 +114,7 @@ describe("CP2 auth and business creation", () => {
     );
 
     expect(business.business.language).toBe("sw");
-    expect(business.business.sokoId).toMatch(/^254A\d{8}$/);
+    expect(business.business.sokoId).toBe("soko.janes-shop");
     expect(business.membership.role).toBe("owner");
 
     const ownerRole = await postJson<RoleCheckResponse>(

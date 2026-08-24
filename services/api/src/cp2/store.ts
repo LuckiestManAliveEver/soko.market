@@ -17,6 +17,7 @@ import {
   hashOtp,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
+  createSokoHandle,
   normalizeStorefrontLookupId,
   pinAttemptTrackerMaximumEntries
 } from "./text-normalization.js";
@@ -2210,8 +2211,8 @@ export class Cp2Store {
 
     const businessId = randomUUID();
     const sokoId = this.createGlobalShopId({
-      businessId,
       businessName: name,
+      ownerDisplayName: currentUser.displayName,
       destination: session.account.primaryAuthDestination
     });
     const business: BusinessSummary = {
@@ -8172,21 +8173,33 @@ export class Cp2Store {
   }
 
   private createGlobalShopId(input: {
-    businessId: string;
     businessName: string;
+    ownerDisplayName: string;
     destination: string;
   }): string {
-    const namespace = inferCountryNamespace(input.destination);
-    const seed = `${input.businessId}:${input.businessName}:${namespace}`;
+    const generatedDisplayNames = new Set([
+      defaultDisplayName(input.destination).toLowerCase(),
+      "owner",
+      "soko user"
+    ]);
+    const ownerDisplayName = input.ownerDisplayName.trim().toLowerCase();
+    const candidateHandles = [
+      ...(generatedDisplayNames.has(ownerDisplayName)
+        ? []
+        : [createSokoHandle(input.ownerDisplayName)]),
+      createSokoHandle(input.businessName)
+    ].filter((handle, index, handles) => handle.length > 0 && handles.indexOf(handle) === index);
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const digest = createHash("sha256").update(`${seed}:${attempt}`).digest("hex").slice(0, 12);
-      const numericId = (Number.parseInt(digest, 16) % 100_000_000).toString().padStart(8, "0");
-      const candidate = `${namespace}A${numericId}`;
+    for (const handle of candidateHandles) {
+      const candidate = `soko.${handle}`;
+      if (!this.hasGlobalShopId(candidate)) return candidate;
+    }
 
-      if (!this.hasGlobalShopId(candidate)) {
-        return candidate;
-      }
+    const fallbackHandle = candidateHandles.at(-1) ?? "store";
+    for (let suffix = 2; suffix <= 10_000; suffix += 1) {
+      const suffixText = `-${suffix}`;
+      const candidate = `soko.${fallbackHandle.slice(0, 48 - suffixText.length)}${suffixText}`;
+      if (!this.hasGlobalShopId(candidate)) return candidate;
     }
 
     throw new Cp2Error(
@@ -8268,12 +8281,8 @@ function valueReferencesDeletionScope(
   return Object.values(value).some((item) => valueReferencesDeletionScope(item, scope, seen));
 }
 
-function inferCountryNamespace(destination: string): string {
-  const match = destination.match(/^\+?(\d{1,3})/);
-  return match?.[1] ?? "254";
-}
-
 function extractSokoIdNamespace(sokoId: string): string {
+  if (sokoId.toLowerCase().startsWith("soko.")) return "soko";
   const match = sokoId.match(/^\+?(\d{1,3})-?[A-Za-z]\d{8}$/);
   return match?.[1] ?? "254";
 }

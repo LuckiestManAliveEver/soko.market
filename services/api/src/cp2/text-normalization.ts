@@ -45,7 +45,22 @@ export function normalizeOptionalBoundedText(
 }
 
 export function normalizeStorefrontLookupId(value: string): string {
-  return value.trim().toLowerCase().replace(/^\+/, "").replace("-", "");
+  const normalized = value.trim().toLowerCase();
+  return /^\+?\d{1,3}-?[a-z]\d{8}$/u.test(normalized)
+    ? normalized.replace(/^\+/, "").replace(/-/gu, "")
+    : normalized;
+}
+
+export function createSokoHandle(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Mark}+/gu, "")
+    .toLowerCase()
+    .replace(/[’']/gu, "")
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 48)
+    .replace(/-+$/gu, "");
 }
 
 export function destinationAccountKey(
