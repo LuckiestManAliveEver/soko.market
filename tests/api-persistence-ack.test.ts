@@ -156,14 +156,18 @@ describe("API persistence acknowledgement barrier", () => {
     await app.close();
   });
 
-  it("fails login closed instead of issuing credentials behind a stalled persistence queue", async () => {
+  it("does not hold a login response open forever behind a stalled persistence queue", async () => {
     process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS = "50";
     try {
       const store = createCp2Store();
       const phone = "+254700200002";
       store.signupWithPhonePin({ destination: phone, pin: "1234" });
       // A flush that never settles models a stuck/backlogged persistence queue (see
-      // postgres-store.ts scheduleSaveRetry) - the response must not wait on it forever.
+      // postgres-store.ts scheduleSaveRetry), not a failed one - the write is still running in
+      // the background and may well complete a moment later. A deadline timeout is not itself a
+      // persistence failure, so the response must not wait on it forever AND must not be treated
+      // as though the write is known to have failed: the session this response's cookie points to
+      // is already valid in memory on this single API instance (docs/single-instance-store-ceiling.md).
       const app = buildApi({
         cp2: { store },
         mutationPersistenceFlush: () => new Promise<void>(() => {})
@@ -176,13 +180,19 @@ describe("API persistence acknowledgement barrier", () => {
         payload: JSON.stringify({ method: "phone", contact: phone, pin: "1234" })
       });
 
-      expect(response.statusCode).toBe(503);
-      expect(response.json()).toEqual({
-        code: "AUTH_PERSISTENCE_UNAVAILABLE",
-        message: "Authentication could not be saved safely. Please try again."
+      expect(response.statusCode).toBe(200);
+      expect(response.cookies.map((cookie) => cookie.name)).toEqual(
+        expect.arrayContaining(["soko_session", "soko_refresh"])
+      );
+
+      const authenticated = await app.inject({
+        method: "GET",
+        url: "/session",
+        headers: {
+          cookie: response.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+        }
       });
-      expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_session");
-      expect(response.cookies.map((cookie) => cookie.name)).not.toContain("soko_refresh");
+      expect(authenticated.statusCode).toBe(200);
       await app.close();
     } finally {
       delete process.env.PERSISTENCE_FLUSH_RESPONSE_DEADLINE_MS;

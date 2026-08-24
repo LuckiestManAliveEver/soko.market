@@ -139,20 +139,24 @@ export function buildApi(options: BuildApiOptions = {}) {
         // The write is still queued and will complete/retry in the background (see
         // Cp2Store.flush()) - holding this response open until then would leave the caller's
         // "Working..." state spinning for as long as the queue is backed up, with no bound. A
-        // request that already succeeded in memory should not wait forever on a best-effort
-        // durability sync.
+        // request that already succeeded in memory - including a freshly issued session cookie -
+        // should not wait forever on a best-effort durability sync, and a deadline timeout is not
+        // itself a persistence failure: the flush has not failed, it is merely still running (see
+        // withPersistenceFlushDeadline below). Treating "not confirmed yet" the same as "failed"
+        // here would turn ordinary Postgres latency (a Neon cold start, a slow query sharing the
+        // pool) into a hard login failure even though the in-memory session this response's
+        // cookie points to is already valid and immediately usable on this single API instance -
+        // exactly the tradeoff docs/single-instance-store-ceiling.md already made deliberately
+        // ("a failed save no longer reverts anything... discarding it was strictly worse than
+        // keeping it"). A genuinely failed flush (the branch below, not this one) still fails
+        // authentication closed.
         request.log.warn(
           {
             event: "auth.persistence_flush_deadline_exceeded",
-            requestCorrelationId: request.id,
-            authenticationBlocked: reply.getHeader("set-cookie") !== undefined
+            requestCorrelationId: request.id
           },
-          "Persistence flush exceeded the response deadline."
+          "Persistence flush exceeded the response deadline; responding without waiting further."
         );
-        if (reply.getHeader("set-cookie") !== undefined) {
-          reply.removeHeader("set-cookie");
-          throw new AuthenticationPersistenceUnavailable();
-        }
         return payload;
       }
 
