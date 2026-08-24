@@ -33,6 +33,7 @@ export interface MarketplaceModeCardProps {
   onAddToCart: (result: BuyResultSummary) => void;
   onRemoveFromCart: (cartItemId: string) => void;
   onCheckout: () => void;
+  onSignUp: () => void;
 }
 
 export function MarketplaceModeCard({
@@ -56,7 +57,8 @@ export function MarketplaceModeCard({
   onSearchBuyFeed,
   onAddToCart,
   onRemoveFromCart,
-  onCheckout
+  onCheckout,
+  onSignUp
 }: MarketplaceModeCardProps) {
   const [buyQueryDraft, setBuyQueryDraft] = useState("");
   return (
@@ -79,6 +81,9 @@ export function MarketplaceModeCard({
         <div className="guest-browsing-note">
           <strong>Browsing as a guest</strong>
           <span>Open shops and explore their public catalogues without creating an account.</span>
+          <button type="button" className="secondary" onClick={onSignUp}>
+            Sign up to message sellers and check out
+          </button>
         </div>
       ) : (
         <div className="marketplace-prompts" aria-label="Marketplace suggestions">
@@ -124,6 +129,7 @@ export function MarketplaceModeCard({
                 result={result}
                 isAuthenticated={isAuthenticated}
                 onAddToCart={onAddToCart}
+                onSignUp={onSignUp}
               />
             ))
           )}

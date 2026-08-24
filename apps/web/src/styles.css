@@ -2374,6 +2374,11 @@ button:disabled {
   font-size: 13px;
 }
 
+.guest-browsing-note button {
+  justify-self: start;
+  margin-top: 6px;
+}
+
 .marketplace-directory-heading {
   align-items: center;
   display: flex;
@@ -3930,109 +3935,6 @@ details.nested-form-section summary {
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 10px;
-}
-
-.guest-marketplace-shell {
-  background: #eef2f0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  height: 100dvh;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.guest-marketplace-header {
-  align-items: center;
-  background: #ffffff;
-  border-bottom: 1px solid #eef2ef;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
-  min-height: 68px;
-  padding: 10px 18px;
-}
-
-.guest-marketplace-header div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  text-align: center;
-}
-
-.guest-marketplace-header strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.guest-marketplace-header span {
-  color: #516258;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.guest-chat-banner {
-  align-items: center;
-  background: #fff8df;
-  border-bottom: 1px solid #e4cf88;
-  color: #6b4c00;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: space-between;
-  padding: 10px 16px;
-}
-
-.guest-chat-banner button {
-  background: transparent;
-  border: 1px solid #6b4c00;
-  border-radius: 999px;
-  color: #6b4c00;
-  flex-shrink: 0;
-  font-weight: 800;
-  padding: 6px 12px;
-}
-
-.guest-message-list {
-  align-content: start;
-  display: grid;
-  gap: 10px;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 12px;
-}
-
-.guest-composer {
-  align-items: center;
-  background: #ffffff;
-  border-top: 1px solid #dde4dc;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  min-width: 0;
-  padding: 10px;
-}
-
-.guest-composer input {
-  appearance: none;
-  background: #ffffff;
-  border: 1px solid #b8c5bc;
-  border-radius: 8px;
-  color: #17211b;
-  font-size: 16px;
-  min-height: 42px;
-  min-width: 0;
-  padding: 9px 12px;
-  width: 100%;
-}
-
-.guest-composer button {
-  background: #117a4f;
-  border-radius: 8px;
-  color: #ffffff;
-  font-weight: 900;
-  min-height: 40px;
-  padding: 8px 12px;
 }
 
 .soko-id-card {

@@ -141,7 +141,6 @@ import {
 import { useInstallPrompt } from "./misc-browser-utils";
 
 import { BusinessSetupPanel } from "./BusinessSetupPanel";
-import { GuestMarketplaceChat } from "./GuestMarketplaceChat";
 
 import { AgentProfileSurface } from "./AgentProfileSurface";
 import { ChatSurface } from "./ChatSurface";
@@ -742,13 +741,7 @@ export function OwnerApp() {
   const authBootstrapPending = isAuthBootstrapPending(authBootstrapState);
   const shouldShowAuth = !authBootstrapPending && isAuthOpen && session === null;
   const setupComplete = business !== null && !shouldShowAuth && !authBootstrapPending;
-  // browseAsGuest()'s resulting state - unauthenticated and not currently in the auth dialog -
-  // gets its own small dedicated conversation surface (GuestMarketplaceChat) instead of the full
-  // owner ChatSurface shell, matching how the auth screens already replace the outer shell.
-  const isGuestBrowsing =
-    !authBootstrapPending && !shouldShowAuth && session === null && mode === "marketplace";
-  const isAuthScreen =
-    authBootstrapPending || shouldShowAuth || isAccountRestorationOpen || isGuestBrowsing;
+  const isAuthScreen = authBootstrapPending || shouldShowAuth || isAccountRestorationOpen;
   const {
     businessName,
     setBusinessName,
@@ -1782,8 +1775,6 @@ export function OwnerApp() {
               onForgetRemembered={forgetRememberedOwnerAuth}
               onCancel={browseAsGuest}
             />
-          ) : isGuestBrowsing ? (
-            <GuestMarketplaceChat onSignUp={() => openAuth("signup")} />
           ) : isAccountRestorationOpen && session !== null ? (
             <Suspense fallback={<NativeLaunchScreen message="Opening account restoration…" />}>
               <AccountRestorationPanel

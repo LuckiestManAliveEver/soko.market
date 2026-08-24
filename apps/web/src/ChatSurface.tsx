@@ -932,6 +932,7 @@ export function ChatSurface({
               onAddToCart={onAddToCart}
               onRemoveFromCart={onRemoveFromCart}
               onCheckout={onCheckout}
+              onSignUp={onSignUp}
             />
           )}
         </StackedModule>
