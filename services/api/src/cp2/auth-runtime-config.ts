@@ -31,7 +31,12 @@ function validateProductionConfiguration(config: AuthRuntimeConfig): void {
   if (!config.sessionRotationEnabled || !config.sessionReuseDetectionEnabled) {
     throw new Error("Production requires refresh-token rotation and reuse detection.");
   }
-  for (const name of ["OTP_HMAC_SECRET", "AUTH_AUDIT_HMAC_SECRET", "AUTH_TOKEN_ENCRYPTION_KEY"]) {
+  for (const name of [
+    "OTP_HMAC_SECRET",
+    "AUTH_AUDIT_HMAC_SECRET",
+    "AUTH_TOKEN_ENCRYPTION_KEY",
+    "PIN_HASH_SECRET"
+  ]) {
     requireSecret(name);
   }
   if (config.passwordFallbackEnabled) requireSecret("PASSWORD_HASH_SECRET");

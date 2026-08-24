@@ -301,7 +301,8 @@ describe("persistent session authentication", () => {
       "OTP_HMAC_SECRET",
       "AUTH_AUDIT_HMAC_SECRET",
       "AUTH_TOKEN_ENCRYPTION_KEY",
-      "PASSWORD_HASH_SECRET"
+      "PASSWORD_HASH_SECRET",
+      "PIN_HASH_SECRET"
     ]) {
       vi.stubEnv(name, `${name}-secure-production-value-1234567890`);
     }
@@ -314,6 +315,41 @@ describe("persistent session authentication", () => {
     expect(() => readAuthRuntimeConfig(["https://soko.market"])).toThrow(
       "Production requires refresh-token rotation"
     );
+  });
+
+  it("fails closed at startup instead of per-request when PIN_HASH_SECRET is missing in production", () => {
+    // PIN is a primary credential (not an optional fallback like password), so this must be in
+    // the unconditional startup list next to OTP_HMAC_SECRET/AUTH_AUDIT_HMAC_SECRET/
+    // AUTH_TOKEN_ENCRYPTION_KEY - a production deploy missing it should fail the deploy itself
+    // (a loud, obvious failure) rather than deploy "successfully" and then return
+    // "PIN authentication is temporarily unavailable" to every user on their first PIN action
+    // (services/api/src/cp2/store.ts's pinHashSecret(), only reachable per-request).
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("COOKIE_SECURE", "true");
+    vi.stubEnv("SESSION_ROTATION_ENABLED", "true");
+    vi.stubEnv("SESSION_REUSE_DETECTION_ENABLED", "true");
+    vi.stubEnv("WEBAUTHN_RP_ID", "soko.market");
+    vi.stubEnv("WEBAUTHN_EXPECTED_ORIGINS", "https://soko.market");
+    for (const name of [
+      "OTP_HMAC_SECRET",
+      "AUTH_AUDIT_HMAC_SECRET",
+      "AUTH_TOKEN_ENCRYPTION_KEY",
+      "PASSWORD_HASH_SECRET"
+    ]) {
+      vi.stubEnv(name, `${name}-secure-production-value-1234567890`);
+    }
+    vi.stubEnv("PIN_HASH_SECRET", "");
+    expect(() => readAuthRuntimeConfig(["https://soko.market"])).toThrow(
+      "PIN_HASH_SECRET must contain at least 32 characters in production"
+    );
+
+    vi.stubEnv("PIN_HASH_SECRET", "too-short");
+    expect(() => readAuthRuntimeConfig(["https://soko.market"])).toThrow(
+      "PIN_HASH_SECRET must contain at least 32 characters in production"
+    );
+
+    vi.stubEnv("PIN_HASH_SECRET", "PIN_HASH_SECRET-secure-production-value-1234567890");
+    expect(() => readAuthRuntimeConfig(["https://soko.market"])).not.toThrow();
   });
 });
 
