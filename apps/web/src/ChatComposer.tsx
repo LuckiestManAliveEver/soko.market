@@ -133,70 +133,72 @@ export function ChatComposer({
               </div>
             </section>
           ) : null}
-          {mode === "seller" ? (
-            <button
-              className="icon-button composer-icon-button hashtag-capability-button"
-              type="button"
-              aria-label="Choose shop capability"
-              title="Call a shop API or module"
-              onClick={() => updateLiveDraft("#")}
-            >
-              <span aria-hidden="true">#</span>
-            </button>
-          ) : null}
-          <button
-            className="icon-button composer-icon-button"
-            type="button"
-            aria-label="Voice input"
-            title="Voice input"
-            onClick={() => startVoiceInput(commitDraft)}
-          >
-            <span className="mic-icon" aria-hidden="true" />
-          </button>
-          <button
-            className="icon-button composer-icon-button"
-            type="button"
-            aria-label="Attach file"
-            title="Attach file"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <span className="attach-icon" aria-hidden="true" />
-          </button>
-          <input
-            ref={fileInputRef}
-            className="chat-file-input"
-            type="file"
-            multiple
-            accept={chatAttachmentAccept}
-            onChange={onAttachmentChange}
-          />
-          {mode === "seller" ? (
-            <>
+          <div className="composer-icon-group">
+            {mode === "seller" ? (
               <button
-                className="icon-button composer-icon-button"
+                className="icon-button composer-icon-button hashtag-capability-button"
                 type="button"
-                aria-label="Add product from photo"
-                title="Add product from photo"
-                data-testid="seller-photo-button"
-                onClick={() => sellerPhotoInputRef.current?.click()}
+                aria-label="Choose shop capability"
+                title="Call a shop API or module"
+                onClick={() => updateLiveDraft("#")}
               >
-                <span className="camera-icon" aria-hidden="true" />
+                <span aria-hidden="true">#</span>
               </button>
-              <input
-                ref={sellerPhotoInputRef}
-                className="chat-file-input"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                capture="environment"
-                data-testid="seller-photo-input"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file !== undefined) onSellerPhotoCapture(file);
-                  event.target.value = "";
-                }}
-              />
-            </>
-          ) : null}
+            ) : null}
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Voice input"
+              title="Voice input"
+              onClick={() => startVoiceInput(commitDraft)}
+            >
+              <span className="mic-icon" aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button composer-icon-button"
+              type="button"
+              aria-label="Attach file"
+              title="Attach file"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <span className="attach-icon" aria-hidden="true" />
+            </button>
+            <input
+              ref={fileInputRef}
+              className="chat-file-input"
+              type="file"
+              multiple
+              accept={chatAttachmentAccept}
+              onChange={onAttachmentChange}
+            />
+            {mode === "seller" ? (
+              <>
+                <button
+                  className="icon-button composer-icon-button"
+                  type="button"
+                  aria-label="Add product from photo"
+                  title="Add product from photo"
+                  data-testid="seller-photo-button"
+                  onClick={() => sellerPhotoInputRef.current?.click()}
+                >
+                  <span className="camera-icon" aria-hidden="true" />
+                </button>
+                <input
+                  ref={sellerPhotoInputRef}
+                  className="chat-file-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  capture="environment"
+                  data-testid="seller-photo-input"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file !== undefined) onSellerPhotoCapture(file);
+                    event.target.value = "";
+                  }}
+                />
+              </>
+            ) : null}
+          </div>
           {pendingAttachments.length > 0 ? (
             <div className="attachment-workbench">
               <div className="attachment-tray" aria-label="Selected attachments">
