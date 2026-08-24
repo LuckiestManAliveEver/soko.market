@@ -368,6 +368,7 @@ button:disabled {
 
 .mic-icon,
 .attach-icon,
+.camera-icon,
 .send-icon {
   display: inline-block;
   position: relative;
@@ -434,6 +435,39 @@ button:disabled {
   border-top: 8px solid transparent;
   height: 0;
   width: 0;
+}
+
+/* The seller-mode "add product from photo" button (ChatComposer.tsx) has rendered this class
+   with no matching CSS since it was added - the button itself worked, it just showed an empty
+   circle. Drawn in the same hand-built, border/pseudo-element style as the mic/attach/send icons
+   above: a rounded body, a small viewfinder bump on top, and a lens in the middle. */
+.camera-icon {
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  height: 13px;
+  width: 19px;
+}
+
+.camera-icon::before {
+  background: currentColor;
+  border-radius: 1px 1px 0 0;
+  content: "";
+  height: 3px;
+  left: 4px;
+  position: absolute;
+  top: -4px;
+  width: 8px;
+}
+
+.camera-icon::after {
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 5px;
+  left: 4.5px;
+  position: absolute;
+  top: 1.5px;
+  width: 5px;
 }
 
 .header-signout-button {
@@ -1335,7 +1369,6 @@ button:disabled {
 
 .panel input,
 .panel select,
-.composer textarea,
 .record-form input,
 .record-form select,
 .record-form textarea {
@@ -1348,7 +1381,6 @@ button:disabled {
   width: 100%;
 }
 
-.composer textarea,
 .record-form textarea {
   line-height: 1.45;
   min-height: 92px;
@@ -3316,6 +3348,24 @@ details.nested-form-section summary {
   bottom: 0;
 }
 
+/*
+ * The composer's grid-template-columns above has one auto column per icon button, so it must
+ * match however many icon buttons ChatComposer.tsx actually renders before the message field:
+ * mic + attach (buy mode) fit the 2 auto columns above, but seller mode also renders a hashtag
+ * "#" capability button and a camera button - 4 icon buttons, not 2. Without this override, those
+ * extra buttons overflowed the template and auto-placed into a second implicit row that reuses
+ * the SAME column tracks as row one (CSS Grid sizes a column from every row's content in it), so
+ * the minmax(0, 1fr) track - meant for the message field - ended up sized by whichever icon
+ * button landed in it, stretching that button into a pill and squeezing the message field into
+ * whatever track the "#" button happened to size. This selector's specificity ((0,2,0), an
+ * attribute selector plus a class) already beats every plain ".composer" grid-template-columns
+ * rule at every breakpoint in this file regardless of source order, so one rule fixes seller mode
+ * everywhere (laptop, tablet, phone) instead of needing a matching override in each media query.
+ */
+[data-commerce-mode="sell"] .composer {
+  grid-template-columns: auto auto auto auto minmax(0, 1fr) auto;
+}
+
 .composer-card-lock {
   background: #eef7f1;
   border: 1px solid #b9d9c6;
@@ -3516,11 +3566,29 @@ details.nested-form-section summary {
   border-radius: 8px;
   color: #17211b;
   font-size: 16px;
-  min-height: 42px;
+  /* height, not min-height: rows={1} in ChatComposer.tsx means this is meant to stay a compact
+     one-line pill by default. A min-height alone has no ceiling, so on a narrow column (mobile,
+     or any column too tight for the placeholder text) wrapped content grew the box to two lines
+     even before the user typed anything. */
+  height: 42px;
   min-width: 0;
+  overflow: hidden;
   resize: vertical;
   padding: 9px 12px;
   width: 100%;
+}
+
+/* The fixed height above correctly contains wrapped real typed content (it grows on purpose via
+   the resize handle / scrolls if not manually resized), but Chromium paints an unfocused
+   textarea's wrapped *placeholder* text outside its own border box regardless of height/overflow
+   - confirmed by measuring the element's own box at a clean single-line height while a second
+   line of placeholder text still visibly painted below it. white-space here is scoped to
+   ::placeholder only, so real multi-line typed messages above still wrap and grow the box
+   normally; only the empty-state hint text is forced to a single truncated line. */
+.composer-input textarea::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .send-button {
@@ -5816,7 +5884,14 @@ body {
   align-items: center;
   display: flex;
   gap: 7px;
-  margin-left: 88px;
+  /* .commerce-mode-toggle .messages sits outside normal flow (position: absolute, to visually
+     float beside the Buy/Sell toggle without joining its 2-column grid), so this margin has to
+     manually clear it instead of flexbox doing that automatically. Its own min-width (86px)
+     understates its real rendered width (measured ~103px: 18px+18px padding plus "Messages" at
+     13px), so the previous 88px margin left this row of buttons starting ~14px under the
+     Messages button's real right edge. 112px clears the measured width with a safety margin for
+     minor font-rendering differences across environments. */
+  margin-left: 112px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
@@ -6226,7 +6301,8 @@ body {
   border-color: var(--soko-line-strong);
   border-radius: 999px;
   color: var(--soko-ink);
-  min-height: 43px;
+  height: 43px;
+  overflow: hidden;
   padding: 10px 16px;
 }
 
@@ -7045,14 +7121,6 @@ body {
 
   .message-list {
     padding-inline: 10px;
-  }
-
-  .app-frame:not(.auth-frame) .composer {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
-  }
-
-  .app-frame:not(.auth-frame)[data-commerce-mode="sell"] .composer {
-    grid-template-columns: auto auto auto auto minmax(0, 1fr) auto;
   }
 
   .composer-send-actions {
