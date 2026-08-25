@@ -244,16 +244,6 @@ interface RuntimeSessionBody {
 }
 
 export interface RuntimeTurnBody {
-  agentProfile?: {
-    behavior?: string;
-    contextScripts?: string[];
-    integrations?: string[];
-    knowledge?: string;
-    model?: string;
-    role?: string;
-    instructions?: string;
-    tools?: string[];
-  };
   runtimeSessionId?: string;
   conversationId?: string;
   message?: string;

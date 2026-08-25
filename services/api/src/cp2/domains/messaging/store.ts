@@ -154,7 +154,7 @@ import {
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText
 } from "../../text-normalization.js";
-import type { Cp2Snapshot, RuntimeAgentProfile, SessionRecord } from "../../store.js";
+import type { Cp2Snapshot, SessionRecord } from "../../store.js";
 import type { ConversationAttachmentBlobStore } from "../../conversation-attachment-blob-store.js";
 import {
   connectedMailboxView,
@@ -239,7 +239,6 @@ export interface MessagingDomainDeps {
     runtimeSessionId?: string;
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
-    agentProfile?: RuntimeAgentProfile;
     now?: Date;
   }) => Promise<RuntimeTurnResult>;
   agentModelRecoveryGuidance: (businessId: string, error: Cp2Error) => string;
@@ -2823,7 +2822,6 @@ export class MessagingDomain {
     businessId: string;
     message: string;
     runtimeSessionId?: string;
-    agentProfile?: RuntimeAgentProfile;
     now?: Date;
   }): Promise<AgentConversationMessageResult> {
     const now = input.now ?? new Date();
@@ -2890,7 +2888,6 @@ export class MessagingDomain {
           : { runtimeSessionId: input.runtimeSessionId }),
         message: input.message,
         conversationHistory,
-        ...(input.agentProfile === undefined ? {} : { agentProfile: input.agentProfile }),
         now
       });
     } catch (error) {

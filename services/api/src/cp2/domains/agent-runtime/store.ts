@@ -197,8 +197,7 @@ import {
   validateBrowserInferenceAssignment,
   type BusinessAgentProfileInput,
   type BusinessAgentProfileSummary,
-  type PendingRuntimeAction,
-  type RuntimeAgentProfile
+  type PendingRuntimeAction
 } from "./shared.js";
 export class AgentRuntimeDomain {
   private readonly activeAiModels = new Map<string, ActiveAiModelSummary>();
@@ -2452,7 +2451,6 @@ export class AgentRuntimeDomain {
     runtimeSessionId?: string;
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
-    agentProfile?: RuntimeAgentProfile;
     confirmationToken?: string;
     recallEscalation?: RuntimeRecallEscalation;
     clientInferenceCompletion?: ClientInferenceCompletion;

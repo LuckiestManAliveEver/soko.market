@@ -311,17 +311,6 @@ export interface AgentSettings {
   status: "active" | "draft";
 }
 
-export interface AgentRuntimeProfile {
-  behavior: string;
-  contextScripts: string[];
-  integrations: string[];
-  knowledge: string;
-  model: AgentModel;
-  role: string;
-  instructions: string;
-  tools: string[];
-}
-
 export interface SetupDraft {
   countryCode: CountryDialCode;
   businessName: string;

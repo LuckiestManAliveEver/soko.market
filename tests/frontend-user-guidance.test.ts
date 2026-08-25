@@ -136,8 +136,14 @@ describe("frontend user guidance", () => {
     );
     const chatMessagePlumbing = readFileSync("apps/web/src/chat-message-plumbing.ts", "utf8");
     expect(chatMessagePlumbing).toContain('attachment.category === "document"');
-    const agentCommandEngine = readFileSync("apps/web/src/agent-command-engine.ts", "utf8");
-    expect(agentCommandEngine).toContain(
+    // The required-guardrail append matters at the point a profile is actually saved and used to
+    // build a prompt, not on every chat message - apps/web/src/agent-profile-payload.ts is the
+    // save-payload builder AgentProfileSurface/useOssAgentSelectionState actually call, and
+    // server-side runtimeAgentProfileFromStored (services/api/src/cp2/domains/agent-runtime/shared.ts)
+    // re-applies the same guardrail from the saved profile on every real turn regardless of what a
+    // client sends.
+    const agentProfilePayload = readFileSync("apps/web/src/agent-profile-payload.ts", "utf8");
+    expect(agentProfilePayload).toContain(
       "ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts))"
     );
     const chatComposer = readFileSync("apps/web/src/ChatComposer.tsx", "utf8");

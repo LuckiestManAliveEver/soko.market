@@ -8,7 +8,6 @@ import {
 import { quickActions, type ShellView } from "./app-shell";
 
 import {
-  type AgentRuntimeProfile,
   type AgentSettings,
   type CustomerDebtSummary,
   type CustomerSummary,
@@ -17,8 +16,6 @@ import {
 } from "./soko-application-shared";
 
 import { formatAgentDisplayName } from "./formatters";
-
-import { ensureRequiredAgentContextScripts, sanitizeContextScripts } from "./owner-app-bootstrap";
 
 export function viewLabel(view: ShellView): string {
   if (view === "agent") return "Account and agent settings";
@@ -80,19 +77,6 @@ export type AgentRuntimeDecision =
       kind: "options" | "resubmit";
       response: string;
     };
-
-export function createAgentRuntimeProfile(agent: AgentSettings): AgentRuntimeProfile {
-  return {
-    behavior: agent.personality,
-    contextScripts: ensureRequiredAgentContextScripts(sanitizeContextScripts(agent.contextScripts)),
-    integrations: agent.integrations,
-    knowledge: agent.knowledge,
-    model: agent.model,
-    role: agent.role,
-    instructions: agent.instructions,
-    tools: agent.tools
-  };
-}
 
 export function createAgentRuntimeDecision(input: {
   agent: AgentSettings;

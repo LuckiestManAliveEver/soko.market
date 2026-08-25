@@ -20,7 +20,6 @@ import type {
 import { unavailableBrowserInferenceCapability } from "../browser-inference-types";
 import {
   createAgentHelpReply,
-  createAgentRuntimeProfile,
   extractAgentHelpCommand,
   resolveAgentHelpDestination,
   viewLabel
@@ -751,7 +750,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           return true;
         },
         async *generate(request) {
-          const result = await runRoutedRuntimeTurn(cloudModel.id, recallEscalation);
+          const result = await runRoutedRuntimeTurn(recallEscalation);
           if (
             result.turn.model?.provider !== "openai" ||
             result.turn.model.status !== "available"
@@ -821,10 +820,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
       }
     }
     let localFallbackStatus: string | null = null;
-    const consentSafeAgentSettings =
-      inferencePreferences.cloudConsent && cloudModel !== null
-        ? { ...agentSettings, model: cloudModel.id }
-        : { ...agentSettings, model: "sokoclaw-local" };
     let messageContent: ConversationMessageContent = {
       type: "text",
       text: message,
@@ -866,8 +861,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
                     ...(activeServerRuntimeSessionId === null
                       ? {}
                       : { runtimeSessionId: activeServerRuntimeSessionId }),
-                    message: runtimeMessage,
-                    agentProfile: createAgentRuntimeProfile(consentSafeAgentSettings)
+                    message: runtimeMessage
                   }
                 }
               : {})
@@ -1334,11 +1328,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             ),
             ...(workspaceFiles.length === 0 ? {} : { workspaceFiles })
           };
-          const authorized = await runRoutedRuntimeTurn(
-            inferenceRequest.modelId,
-            undefined,
-            clientInferenceCompletion
-          );
+          const authorized = await runRoutedRuntimeTurn(undefined, clientInferenceCompletion);
           await applyRuntimeResult(authorized, true);
           return;
         }
@@ -1394,7 +1384,6 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
     }
 
     async function runRoutedRuntimeTurn(
-      modelId: string,
       recallSignal?: RuntimeRecallEscalation,
       clientInferenceCompletion?: ClientInferenceCompletion
     ): Promise<RuntimeTurnResult> {
@@ -1416,11 +1405,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             ...(activeConversationId === null ? {} : { conversationId: activeConversationId }),
             message: routedMessage,
             ...(recallSignal === undefined ? {} : { recallEscalation: recallSignal }),
-            ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion }),
-            agentProfile: createAgentRuntimeProfile({
-              ...agentSettings,
-              model: modelId
-            })
+            ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion })
           })
       );
     }
@@ -1618,8 +1603,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         (managedRuntimeSessionId) =>
           postJson<RuntimeTurnResult>(`/businesses/${business.id}/runtime/turns`, {
             runtimeSessionId: managedRuntimeSessionId,
-            message: runtimeMessage,
-            agentProfile: createAgentRuntimeProfile(consentSafeAgentSettings)
+            message: runtimeMessage
           })
       );
       await applyRuntimeResult(result, true);
