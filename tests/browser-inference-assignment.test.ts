@@ -286,6 +286,203 @@ describe("browser inference database assignment", () => {
     await app.close();
   });
 
+  // The two tests above only prove the "no assignment for this device at all" branch of
+  // requireReadyClientInferenceCompletion. The function's real job is comparing a completion
+  // against an *existing* ready assignment field by field - these two prove the modelId and
+  // runtime comparisons themselves reject a mismatch rather than trusting whatever a compromised
+  // or buggy client reports, once a real ready assignment for that exact device does exist.
+  it("rejects a browser completion whose modelId does not match the device's ready assignment", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const owner = await createOwnerBusiness(app, "+254700001437");
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/browser-inference`,
+      assignmentPayload("2026-07-29T12:00:00.000Z"),
+      owner.cookie
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie: owner.cookie },
+      payload: JSON.stringify({
+        message: "Handle this item",
+        clientInferenceCompletion: {
+          requestId: "modelid-mismatch-request",
+          runtime: "browser-webgpu",
+          modelId: "qwen2.5-0.5b-instruct-webllm", // assignment is for checkpointContract.sourceModelId
+          deviceId: "browser-device-1",
+          outputText: '{"type":"tool","toolName":"products.list","input":{}}',
+          durationMs: 1
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
+    await app.close();
+  });
+
+  it("rejects a browser completion whose runtime does not match the device's ready assignment", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const owner = await createOwnerBusiness(app, "+254700001438");
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/browser-inference`,
+      assignmentPayload("2026-07-29T12:00:00.000Z"), // runtimeContract.runtime is "browser-webgpu"
+      owner.cookie
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie: owner.cookie },
+      payload: JSON.stringify({
+        message: "Handle this item",
+        clientInferenceCompletion: {
+          requestId: "runtime-mismatch-request",
+          runtime: "browser-wasm",
+          modelId: checkpointContract.sourceModelId,
+          deviceId: "browser-device-1",
+          outputText: '{"type":"tool","toolName":"products.list","input":{}}',
+          durationMs: 1
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
+    await app.close();
+  });
+
+  // requireReadyClientInferenceCompletion has a second, entirely separate branch for a
+  // clientInferenceCompletion carrying installationId (the installed native-app path, distinct
+  // from the plain browser-tab path exercised above). It had no test coverage at all before this.
+  it("accepts an installed-app completion only through a matching ready installation+assignment", async () => {
+    const app = buildApi({
+      cp2: { store: createCp2Store({ modelRuntimeAdapterResolver: () => undefined }) }
+    });
+    const owner = await createOwnerBusiness(app, "+254700001439");
+    await registerInstalledModel(app, owner.cookie, {
+      id: "installed-model-1",
+      deviceId: "native-device-1",
+      modelId: "custom:installed-model-1",
+      runtimeBackend: "LLAMA_CPP_ANDROID"
+    });
+    await assignInstalledModel(app, owner.cookie, owner.businessId, {
+      deviceId: "native-device-1",
+      installationId: "installed-model-1",
+      lastSuccessfulInferenceAt: "2026-07-29T12:00:00.000Z"
+    });
+
+    const proposed = await postJson<{
+      turn: { status: string; plan: { toolName: string; confirmationToken: string | null } };
+    }>(
+      app,
+      `/businesses/${owner.businessId}/runtime/turns`,
+      {
+        message: "Update this stock item",
+        clientInferenceCompletion: {
+          requestId: "native-request-1",
+          runtime: "native-llama-cpp",
+          modelId: "custom:installed-model-1",
+          deviceId: "native-device-1",
+          installationId: "installed-model-1",
+          outputText: JSON.stringify({
+            type: "tool",
+            toolName: "product.update",
+            input: { productName: "Some product", quantity: 5 },
+            reason: "Update the product requested by the owner."
+          }),
+          durationMs: 700
+        }
+      },
+      owner.cookie
+    );
+    expect(proposed.turn).toMatchObject({
+      status: "needs_confirmation",
+      plan: { toolName: "product.update" }
+    });
+    expect(proposed.turn.plan.confirmationToken).toEqual(expect.any(String));
+    await app.close();
+  });
+
+  it("rejects an installed-app completion whose modelId does not match the ready installation", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const owner = await createOwnerBusiness(app, "+254700001440");
+    await registerInstalledModel(app, owner.cookie, {
+      id: "installed-model-2",
+      deviceId: "native-device-2",
+      modelId: "custom:installed-model-2",
+      runtimeBackend: "LLAMA_CPP_ANDROID"
+    });
+    await assignInstalledModel(app, owner.cookie, owner.businessId, {
+      deviceId: "native-device-2",
+      installationId: "installed-model-2",
+      lastSuccessfulInferenceAt: "2026-07-29T12:00:00.000Z"
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie: owner.cookie },
+      payload: JSON.stringify({
+        message: "Handle this item",
+        clientInferenceCompletion: {
+          requestId: "native-modelid-mismatch",
+          runtime: "native-llama-cpp",
+          modelId: "custom:a-different-model", // installation is registered as custom:installed-model-2
+          deviceId: "native-device-2",
+          installationId: "installed-model-2",
+          outputText: '{"type":"tool","toolName":"products.list","input":{}}',
+          durationMs: 1
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
+    await app.close();
+  });
+
+  it("rejects an installed-app completion whose runtime does not match the installation's backend", async () => {
+    const app = buildApi({ cp2: { store: createCp2Store() } });
+    const owner = await createOwnerBusiness(app, "+254700001441");
+    await registerInstalledModel(app, owner.cookie, {
+      id: "installed-model-3",
+      deviceId: "native-device-3",
+      modelId: "custom:installed-model-3",
+      runtimeBackend: "LLAMA_CPP_ANDROID" // requires runtime "native-llama-cpp", not browser-wasm
+    });
+    await assignInstalledModel(app, owner.cookie, owner.businessId, {
+      deviceId: "native-device-3",
+      installationId: "installed-model-3",
+      lastSuccessfulInferenceAt: "2026-07-29T12:00:00.000Z"
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/businesses/${owner.businessId}/runtime/turns`,
+      headers: { "content-type": "application/json", cookie: owner.cookie },
+      payload: JSON.stringify({
+        message: "Handle this item",
+        clientInferenceCompletion: {
+          requestId: "native-runtime-mismatch",
+          runtime: "browser-wasm",
+          modelId: "custom:installed-model-3",
+          deviceId: "native-device-3",
+          installationId: "installed-model-3",
+          outputText: '{"type":"tool","toolName":"products.list","input":{}}',
+          durationMs: 1
+        }
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "CLIENT_MODEL_ASSIGNMENT_NOT_READY" });
+    await app.close();
+  });
+
   it("delivers a browser workspace file through the authenticated runtime and conversation", async () => {
     const store = createCp2Store({ modelRuntimeAdapterResolver: () => undefined });
     const app = buildApi({ cp2: { store } });
@@ -383,6 +580,62 @@ function assignmentPayload(lastSuccessfulInferenceAt: string): Record<string, un
     lastSuccessfulInferenceAt,
     lastErrorCode: null
   };
+}
+
+async function registerInstalledModel(
+  app: ReturnType<typeof buildApi>,
+  cookie: string,
+  overrides: { id: string; deviceId: string; modelId: string; runtimeBackend: string }
+): Promise<void> {
+  await postJson(
+    app,
+    "/v1/models/installed",
+    {
+      id: overrides.id,
+      deviceId: overrides.deviceId,
+      modelId: overrides.modelId,
+      displayName: "Shop Model",
+      provider: "custom",
+      filename: `${overrides.id}.gguf`,
+      format: "GGUF",
+      quantization: "Q4_K_M",
+      architecture: "llama",
+      parameterCount: 500_000_000,
+      contextLength: 2_048,
+      fileSizeBytes: 400_000_000,
+      license: "Apache-2.0",
+      commercialUseAllowed: true,
+      storageKey: `${overrides.id}.gguf`,
+      runtimeBackend: overrides.runtimeBackend,
+      installationStatus: "INSTALLED",
+      compatibilityStatus: "COMPATIBLE",
+      installedAt: "2026-07-29T00:00:00.000Z",
+      lastVerifiedAt: "2026-07-29T00:00:00.000Z"
+    },
+    cookie
+  );
+}
+
+async function assignInstalledModel(
+  app: ReturnType<typeof buildApi>,
+  cookie: string,
+  businessId: string,
+  overrides: { deviceId: string; installationId: string; lastSuccessfulInferenceAt: string }
+): Promise<void> {
+  await putJson(
+    app,
+    `/businesses/${businessId}/agent-model`,
+    {
+      deviceId: overrides.deviceId,
+      installationId: overrides.installationId,
+      preferredExecutionMode: "LOCAL_ONLY",
+      fallbackPolicy: "NEVER",
+      readinessStatus: "READY",
+      lastSuccessfulInferenceAt: overrides.lastSuccessfulInferenceAt,
+      lastErrorCode: null
+    },
+    cookie
+  );
 }
 
 async function createOwnerBusiness(

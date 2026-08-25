@@ -119,16 +119,17 @@ layer. There is no path to "chat is running on a model that was never confirmed 
   (`decideInferenceRoute`, `requestRequiresServerTool`).
 - Structural text-only browser output (the plain, non-tool-shaped path only):
   `BrowserGenerationResult` in `apps/web/src/browser-inference-types.ts`.
-- The tool-shaped path goes through the same policy/confirmation gate:
-  `tests/browser-inference-assignment.test.ts` — "accepts a ready browser model proposal only
-  through the canonical policy and confirmation pipeline" (asserts a `product.update`
-  client-completion proposal returns `needs_confirmation` and only executes after a separate
-  confirmation call); "rejects client model output that does not match a ready device assignment".
-  Coverage gap: every rejection test hits the "no assignment exists at all" branch of
-  `requireReadyClientInferenceCompletion` (`runtime-model-routing.ts`); no test yet forges a
-  completion with a mismatched `modelId`/`runtime`/`accountId` against an *existing* ready
-  assignment for the same device, and the `installationId` (installed-app) identity-check branch
-  has no test at all. Worth closing before this path sees more traffic.
+- The tool-shaped path goes through the same policy/confirmation gate, and
+  `requireReadyClientInferenceCompletion` (`runtime-model-routing.ts`) rejects a mismatch against
+  an *existing* ready assignment, not just a missing one: `tests/browser-inference-assignment.test.ts`
+  — "accepts a ready browser model proposal only through the canonical policy and confirmation
+  pipeline"; "rejects client model output that does not match a ready device assignment"; "rejects
+  a browser completion whose modelId/runtime does not match the device's ready assignment"; "accepts
+  an installed-app completion only through a matching ready installation+assignment"; "rejects an
+  installed-app completion whose modelId/runtime does not match the ready installation" — the last
+  four close what was previously a coverage gap (every earlier rejection test hit only the "no
+  assignment exists at all" branch, and the `installationId`/installed-app identity-check branch had
+  no coverage at all).
 
 ## What this document is _not_ reporting as a gap
 
