@@ -37,8 +37,8 @@ import {
   saveDeviceAgentModelAssignment,
   type DeviceAgentModelAssignment
 } from "./agent-model-assignment";
-import { testAgentModelRuntime, type AgentModelRuntime } from "./agent-model-runtime";
-import { createAdaptiveAgentModelRuntime } from "./browser-gguf-runtime";
+import { testAgentModelRuntime } from "./agent-model-runtime";
+import { getSharedAgentModelRuntime } from "./browser-gguf-runtime";
 import {
   cancelBrowserModelLoad,
   disableBrowserInference,
@@ -70,8 +70,9 @@ import { ApiRequestError, apiFetch } from "./lib/api";
 import {
   ModelActivationCoordinator,
   ModelActivationError,
-  modelActivationMessage,
+  recordModelActivationStage,
   withActivationTimeout,
+  type ModelActivationStage,
   type ModelActivationState
 } from "./model-activation-state";
 
@@ -100,6 +101,7 @@ import { normalizeSearchText } from "./agent-command-engine";
 import { getErrorMessage } from "./chat-message-plumbing";
 import { isDownloadableCatalogModel } from "./agent-model-panel-utils";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
+import { modelLifecycleActionLabel, resolveModelLifecycleState } from "./model-lifecycle";
 
 export interface AgentModelPanelProps {
   accountId: string;
@@ -180,7 +182,6 @@ export function AgentModelPanel({
   const modelRuntimeBusyRef = useRef(false);
   const modelActivationCoordinator = useRef(new ModelActivationCoordinator());
   const activatingInstallationIdRef = useRef<string | null>(null);
-  const modelRuntime = useRef<AgentModelRuntime | null>(null);
   const [browserInferenceState, setBrowserInferenceState] = useState<BrowserInferenceState | null>(
     null
   );
@@ -384,10 +385,7 @@ export function AgentModelPanel({
     }
   }
 
-  function getModelRuntime(): AgentModelRuntime {
-    modelRuntime.current ??= createAdaptiveAgentModelRuntime();
-    return modelRuntime.current;
-  }
+  const getModelRuntime = getSharedAgentModelRuntime;
 
   async function loadAiModels(search?: string) {
     const offlineDefaults: AiModelSummary[] = defaultOfflineAiModels;
@@ -687,6 +685,38 @@ export function AgentModelPanel({
     let phaseStartedAt = performance.now();
     let runtimeSessionId: string | null = null;
     let apiReachable = false;
+    let activeDiagnosticStage: ModelActivationStage | null = null;
+    let diagnosticStageStartedAt = new Date().toISOString();
+    const diagnosticStage = (stage: ModelActivationStage) => {
+      const now = new Date().toISOString();
+      if (activeDiagnosticStage !== null) {
+        recordModelActivationStage({
+          modelId: model.modelId,
+          stage: activeDiagnosticStage,
+          startedAt: diagnosticStageStartedAt,
+          completedAt: now
+        });
+      }
+      activeDiagnosticStage = stage;
+      diagnosticStageStartedAt = now;
+      recordModelActivationStage({
+        modelId: model.modelId,
+        stage,
+        startedAt: now
+      });
+    };
+    const completeDiagnosticStage = (errorCode?: string, errorMessage?: string) => {
+      if (activeDiagnosticStage === null) return;
+      recordModelActivationStage({
+        modelId: model.modelId,
+        stage: activeDiagnosticStage,
+        startedAt: diagnosticStageStartedAt,
+        completedAt: new Date().toISOString(),
+        ...(errorCode === undefined ? {} : { errorCode }),
+        ...(errorMessage === undefined ? {} : { errorMessage })
+      });
+      activeDiagnosticStage = null;
+    };
     const transition = (next: ModelActivationState, message: string) => {
       if (activation.signal.aborted || !modelActivationCoordinator.current.isCurrent(activation))
         return;
@@ -709,6 +739,7 @@ export function AgentModelPanel({
     setModelActivationState("validating");
     setModelChooserOpen(false);
     try {
+      diagnosticStage("VERIFY_ARTIFACT");
       transition("validating", "Checking model…");
       const verified = await validateLocalAiModel(model, deviceCapability);
       assertCurrent();
@@ -743,6 +774,7 @@ export function AgentModelPanel({
       apiReachable = await activationApiReachable(activation.signal);
       assertCurrent();
       if (apiReachable) {
+        diagnosticStage("REGISTER_RUNTIME");
         await withActivationTimeout(
           (signal) => registerInstalledModel(verified, signal),
           45_000,
@@ -795,14 +827,20 @@ export function AgentModelPanel({
       assertCurrent();
 
       transition("loading_model", `Loading ${verified.displayName}…`);
-      const result = await testAgentModelRuntime(getModelRuntime(), verified, {
-        signal: activation.signal,
-        onEvent: (event) => {
-          if (event.type === "MODEL_LOAD_PROGRESS" && event.progress !== null) {
-            transition("loading_model", `Loading ${verified.displayName}… ${event.progress}%`);
-          }
-        }
-      });
+      const result = await withActivationTimeout(
+        (signal) =>
+          testAgentModelRuntime(getModelRuntime(), verified, {
+            signal,
+            onEvent: (event) => {
+              if (event.type === "MODEL_LOAD_PROGRESS" && event.progress !== null) {
+                transition("loading_model", `Loading ${verified.displayName}… ${event.progress}%`);
+              }
+            },
+            onStage: diagnosticStage
+          }),
+        120_000,
+        activation.signal
+      );
       assertCurrent();
       if (!result.success) {
         throw new ModelActivationError(
@@ -815,13 +853,15 @@ export function AgentModelPanel({
         );
       }
       transition("binding_agent", "Connecting model to agent…");
+      diagnosticStage("PERSIST_BINDING");
       const pending = createPendingDeviceAssignment({
         businessId: business.id,
         deviceId,
         installation: verified,
         preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_ONLY",
         fallbackPolicy: previous?.fallbackPolicy ?? "NEVER",
-        runtimeSessionId
+        runtimeSessionId,
+        syncStatus: apiReachable ? "SYNCED" : "PENDING"
       });
       let readyAssignment = assignmentAfterReadiness(pending, result);
       if (apiReachable) {
@@ -846,6 +886,8 @@ export function AgentModelPanel({
       updateAgent({ model: verified.modelId });
       onAgentChange({ ...agent, model: verified.modelId });
       setModelActivationState("active");
+      diagnosticStage("READY");
+      completeDiagnosticStage();
       setFailedActivationModelId(null);
       setProfileMessage(`${verified.displayName} is now connected to ${business.name}.`);
       recordModelActivationDiagnostic({
@@ -878,6 +920,10 @@ export function AgentModelPanel({
       setModelActivationState("failed");
       setFailedActivationModelId(model.modelId);
       const message = getErrorMessage(error);
+      completeDiagnosticStage(
+        error instanceof ModelActivationError ? error.code : "MODEL_RUNTIME_FAILED",
+        message
+      );
       if (previous === null) {
         clearDeviceAgentModelAssignment(business.id, deviceId);
         setAgentModelAssignment(null);
@@ -1616,6 +1662,13 @@ export function AgentModelPanel({
                 agentModelAssignment?.activeModelInstallationId === model.id &&
                 agentModelAssignment.readinessStatus === "READY";
               const modelActivating = activatingModelId === model.modelId;
+              const lifecycleState = resolveModelLifecycleState({
+                installation: model,
+                assignment: agentModelAssignment,
+                activationState: modelActivationState,
+                activationMatches: modelActivating || failedActivationModelId === model.modelId,
+                downloading: false
+              });
               return (
                 <article className="agent-model-choice" key={model.id}>
                   <div>
@@ -1651,13 +1704,7 @@ export function AgentModelPanel({
                     }
                     onClick={() => void useModelWithAgent(model)}
                   >
-                    {modelInUse
-                      ? "Active on this device"
-                      : modelActivating
-                        ? modelActivationMessage(modelActivationState)
-                        : failedActivationModelId === model.modelId
-                          ? "Not active · Retry device activation"
-                          : "Not active · Activate on this device"}
+                    {modelLifecycleActionLabel(lifecycleState)}
                   </button>
                 </article>
               );
@@ -1987,6 +2034,14 @@ export function AgentModelPanel({
                     agentModelAssignment?.activeModelInstallationId === localModel.id &&
                     agentModelAssignment.readinessStatus === "READY";
                   const localModelActivating = activatingModelId === localModel?.modelId;
+                  const lifecycleState = resolveModelLifecycleState({
+                    installation: localModel ?? null,
+                    assignment: agentModelAssignment,
+                    activationState: modelActivationState,
+                    activationMatches:
+                      localModelActivating || failedActivationModelId === localModel?.modelId,
+                    downloading: transfer !== undefined
+                  });
                   const compatible =
                     deviceCapability === null ||
                     canRunCatalogModel(
@@ -2041,13 +2096,7 @@ export function AgentModelPanel({
                               disabled={modelRuntimeBusy || localModelInUse}
                               onClick={() => void useModelWithAgent(localModel)}
                             >
-                              {localModelInUse
-                                ? "Active on this device"
-                                : localModelActivating
-                                  ? "Activating…"
-                                  : failedActivationModelId === localModel.modelId
-                                    ? "Not active · Retry device activation"
-                                    : "Not active · Activate on this device"}
+                              {modelLifecycleActionLabel(lifecycleState)}
                             </button>
                             <button
                               className="secondary"
@@ -2115,6 +2164,13 @@ export function AgentModelPanel({
                     agentModelAssignment?.activeModelInstallationId === model.id &&
                     agentModelAssignment.readinessStatus === "READY";
                   const modelActivating = activatingModelId === model.modelId;
+                  const lifecycleState = resolveModelLifecycleState({
+                    installation: model,
+                    assignment: agentModelAssignment,
+                    activationState: modelActivationState,
+                    activationMatches: modelActivating || failedActivationModelId === model.modelId,
+                    downloading: false
+                  });
                   return (
                     <div className="custom-model-row" key={model.id}>
                       <span>
@@ -2132,13 +2188,7 @@ export function AgentModelPanel({
                         disabled={modelRuntimeBusy || modelInUse}
                         onClick={() => void useModelWithAgent(model)}
                       >
-                        {modelInUse
-                          ? "Active on this device"
-                          : modelActivating
-                            ? "Activating…"
-                            : failedActivationModelId === model.modelId
-                              ? "Not active · Retry device activation"
-                              : "Not active · Activate on this device"}
+                        {modelLifecycleActionLabel(lifecycleState)}
                       </button>
                       <button
                         className="secondary"

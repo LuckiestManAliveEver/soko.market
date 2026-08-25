@@ -15,6 +15,8 @@ import {
 } from "./agent-model-runtime";
 
 const maximumBrowserGgufBytes = 2 * 1024 ** 3;
+const modelLoadTimeoutMs = 90_000;
+const generationTimeoutMs = 120_000;
 interface WllamaModule {
   LoggerWithoutDebug: typeof LoggerWithoutDebug;
   Wllama: typeof Wllama;
@@ -85,16 +87,20 @@ export function createBrowserGgufModelRuntime(): AgentModelRuntime {
           { allowOffline: true, suppressNativeLog: true, logger: LoggerWithoutDebug }
         );
         try {
-          await engine.loadModel([file], {
-            n_ctx: Math.min(2_048, model.contextLength ?? 2_048),
-            n_batch: 128,
-            n_threads:
-              globalThis.crossOriginIsolated === true
-                ? Math.max(1, Math.min(4, globalThis.navigator.hardwareConcurrency || 1))
-                : 1,
-            n_gpu_layers: 0,
-            warmup: true
-          });
+          await withRuntimeDeadline(
+            engine.loadModel([file], {
+              n_ctx: Math.min(2_048, model.contextLength ?? 2_048),
+              n_batch: 128,
+              n_threads:
+                globalThis.crossOriginIsolated === true
+                  ? Math.max(1, Math.min(4, globalThis.navigator.hardwareConcurrency || 1))
+                  : 1,
+              n_gpu_layers: 0,
+              warmup: true
+            }),
+            modelLoadTimeoutMs,
+            options?.signal
+          );
           if (signalAborted(options?.signal)) {
             await engine.exit();
             throw abortError();
@@ -109,7 +115,9 @@ export function createBrowserGgufModelRuntime(): AgentModelRuntime {
           });
           options?.onEvent?.({ type: "MODEL_READY", installationId: model.id });
         } catch (error) {
-          await engine.exit().catch(() => undefined);
+          // Wllama owns the actual inference Worker. Terminating it here prevents a timed-out
+          // load from completing late and publishing a stale runtime handle.
+          void engine.exit().catch(() => undefined);
           const normalized = browserRuntimeError(error);
           options?.onEvent?.({
             type: "MODEL_LOAD_FAILED",
@@ -135,24 +143,41 @@ export function createBrowserGgufModelRuntime(): AgentModelRuntime {
       const run = async (): Promise<GenerationResult> => {
         const startedAt = Date.now();
         try {
-          const result = await engine.createCompletion({
-            prompt: request.prompt,
-            max_tokens: Math.min(256, Math.max(1, request.maxTokens)),
-            temperature: Math.min(1, Math.max(0, request.temperature)),
-            ...(request.signal === undefined ? {} : { abortSignal: request.signal })
-          });
-          const text = result.choices[0]?.text.trim() ?? "";
-          if (text.length === 0) {
+          let text = "";
+          let inputTokenCount: number | null = null;
+          let outputTokenCount: number | null = null;
+          await withRuntimeDeadline(
+            engine.createCompletion({
+              prompt: request.prompt,
+              max_tokens: Math.min(256, Math.max(1, request.maxTokens)),
+              temperature: Math.min(1, Math.max(0, request.temperature)),
+              stream: true,
+              onData(chunk) {
+                const token = chunk.choices[0]?.text ?? "";
+                if (token.length > 0) {
+                  text += token;
+                  request.onToken?.(token);
+                }
+                inputTokenCount = chunk.usage?.prompt_tokens ?? inputTokenCount;
+                outputTokenCount = chunk.usage?.completion_tokens ?? outputTokenCount;
+              },
+              ...(request.signal === undefined ? {} : { abortSignal: request.signal })
+            }),
+            generationTimeoutMs,
+            request.signal
+          );
+          const completedText = text.trim();
+          if (completedText.length === 0) {
             throw new AgentModelRuntimeError(
               "MODEL_LOAD_FAILED",
               "The GGUF model returned no output."
             );
           }
           return {
-            text,
+            text: completedText,
             durationMs: Date.now() - startedAt,
-            inputTokenCount: result.usage.prompt_tokens,
-            outputTokenCount: result.usage.completion_tokens
+            inputTokenCount,
+            outputTokenCount
           };
         } catch (error) {
           throw browserRuntimeError(error);
@@ -221,6 +246,18 @@ export function createAdaptiveAgentModelRuntime(
   };
 }
 
+let sharedAgentModelRuntime: AgentModelRuntime | null = null;
+
+/** One device runtime registry shared by activation, reload restoration, and chat dispatch. */
+export function getSharedAgentModelRuntime(): AgentModelRuntime {
+  sharedAgentModelRuntime ??= createAdaptiveAgentModelRuntime();
+  return sharedAgentModelRuntime;
+}
+
+export async function resetSharedAgentModelRuntimeForTests(): Promise<void> {
+  sharedAgentModelRuntime = null;
+}
+
 function incompatible(model: LocalAiModel, errorCode: AgentModelRuntimeErrorCode) {
   return {
     compatible: false,
@@ -257,4 +294,32 @@ function browserRuntimeError(error: unknown): AgentModelRuntimeError {
 function loadWllamaModule(): Promise<WllamaModule> {
   wllamaModule ??= import("@wllama/wllama/esm/index.js");
   return wllamaModule;
+}
+
+export async function withRuntimeDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<T> {
+  if (signal?.aborted) throw abortError();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new AgentModelRuntimeError("INFERENCE_TIMEOUT", "Local inference timed out.")),
+      timeoutMs
+    );
+    if (signal !== undefined) {
+      abortListener = () => reject(abortError());
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (signal !== undefined && abortListener !== undefined) {
+      signal.removeEventListener("abort", abortListener);
+    }
+  }
 }

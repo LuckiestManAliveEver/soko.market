@@ -24,9 +24,7 @@ import { executeCommerceCapability } from "./commerce-capabilities.js";
 
 /**
  * Canonical post-policy capability dispatcher.
- *
- * Callers do not invoke this directly: createRuntimeTurn owns authorization, policy,
- * validation, confirmation, and telemetry, then delegates to the authoritative domain operation.
+ * createRuntimeTurn owns policy, validation, confirmation, and telemetry before delegating here.
  */
 export async function executeRuntimeCapability(
   deps: AgentRuntimeDomainDeps,

@@ -38,7 +38,7 @@ import {
 } from "../ai-model-manager";
 import { getJson, postJson } from "../api-helpers";
 import { type ChatAttachment, type ChatMessage, type ShellView, type SokoMode } from "../app-shell";
-import { createAdaptiveAgentModelRuntime } from "../browser-gguf-runtime";
+import { getSharedAgentModelRuntime } from "../browser-gguf-runtime";
 import { recordBrowserInferenceDiagnostic } from "../browser-inference-diagnostics";
 import {
   requestNeedsComplexReasoning,
@@ -671,7 +671,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         async *generate(request) {
           const runtime =
             chatModelRuntimeRef.current ??
-            (chatModelRuntimeRef.current = createAdaptiveAgentModelRuntime());
+            (chatModelRuntimeRef.current = getSharedAgentModelRuntime());
           await runtime.load(localInstallation);
           const generation = await runtime.generate({
             installationId: localInstallation.id,
@@ -692,6 +692,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
             }),
             maxTokens: request.maxTokens ?? 192,
             temperature: request.temperature ?? 0.2,
+            onToken: (token) => browserTokenListener(token),
             ...(request.signal === undefined ? {} : { signal: request.signal })
           });
           const usedAt = new Date().toISOString();

@@ -54,6 +54,7 @@ export interface GenerationRequest {
   maxTokens: number;
   temperature: number;
   signal?: AbortSignal;
+  onToken?: (token: string) => void;
 }
 
 export interface GenerationResult {
@@ -319,12 +320,17 @@ export function createAgentModelRuntime(
 export async function testAgentModelRuntime(
   runtime: AgentModelRuntime,
   model: LocalAiModel,
-  options: { signal?: AbortSignal; onEvent?: (event: AgentModelRuntimeEvent) => void } = {}
+  options: {
+    signal?: AbortSignal;
+    onEvent?: (event: AgentModelRuntimeEvent) => void;
+    onStage?: (stage: "LOAD_ENGINE" | "LOAD_MODEL" | "ALLOCATE_CONTEXT" | "HEALTH_CHECK") => void;
+  } = {}
 ): Promise<AgentModelReadinessResult> {
   const checkedAt = new Date().toISOString();
   const loadStartedAt = Date.now();
 
   try {
+    options.onStage?.("LOAD_ENGINE");
     const inspection = await runtime.inspect(model);
     if (!inspection.compatible) {
       throw new AgentModelRuntimeError(
@@ -332,8 +338,11 @@ export async function testAgentModelRuntime(
         "The installed model is not compatible with this runtime."
       );
     }
+    options.onStage?.("LOAD_MODEL");
+    options.onStage?.("ALLOCATE_CONTEXT");
     await runtime.load(model, options);
     const loadDurationMs = Date.now() - loadStartedAt;
+    options.onStage?.("HEALTH_CHECK");
     const generation = await runtime.generate({
       installationId: model.id,
       prompt: readinessPrompt,

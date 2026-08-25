@@ -123,11 +123,13 @@ describe("agent model runtime", () => {
   it("emits explicit load lifecycle events and waits for runtime readiness", async () => {
     const native = bridge();
     const events: string[] = [];
+    const stages: string[] = [];
     const result = await testAgentModelRuntime(
       createAgentModelRuntime(native),
       installedModel("event-model"),
-      { onEvent: (event) => events.push(event.type) }
+      { onEvent: (event) => events.push(event.type), onStage: (stage) => stages.push(stage) }
     );
+    expect(stages).toEqual(["LOAD_ENGINE", "LOAD_MODEL", "ALLOCATE_CONTEXT", "HEALTH_CHECK"]);
 
     expect(result.success).toBe(true);
     expect(events).toEqual(

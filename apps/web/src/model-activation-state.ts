@@ -30,6 +30,29 @@ export type ModelActivationFailureCode =
   | "MODEL_RUNTIME_FAILED"
   | "RUNTIME_SESSION_INVALID";
 
+export type ModelActivationStage =
+  | "VERIFY_ARTIFACT"
+  | "LOAD_ENGINE"
+  | "LOAD_MODEL"
+  | "ALLOCATE_CONTEXT"
+  | "HEALTH_CHECK"
+  | "REGISTER_RUNTIME"
+  | "PERSIST_BINDING"
+  | "READY";
+
+export interface ModelActivationStageDiagnostic {
+  modelId: string;
+  stage: ModelActivationStage;
+  startedAt: string;
+  completedAt?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export function recordModelActivationStage(diagnostic: ModelActivationStageDiagnostic): void {
+  console.info("model.activation_stage", diagnostic);
+}
+
 export interface ModelActivationRequest {
   id: string;
   modelId: string;

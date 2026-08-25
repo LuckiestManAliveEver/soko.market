@@ -27,7 +27,7 @@ describe("frontend model activation contracts", () => {
     expect(backendValidation).toContain("/v1/models/${encodeURIComponent(model.id)}/validate");
     expect(activation).toContain("registerInstalledModel(verified, signal)");
     expect(activation).toContain("validateInstalledModelOnBackend(verified, signal)");
-    expect(activation).toContain("await testAgentModelRuntime(getModelRuntime(), verified, {");
+    expect(activation).toContain("testAgentModelRuntime(getModelRuntime(), verified, {");
     expect(binding).toContain("/businesses/${business.id}/agent-model");
     expect(activation).toContain("inferencePreferences.nativePermission");
     expect(activation).toContain("saveClientInferencePreferences");
@@ -39,11 +39,11 @@ describe("frontend model activation contracts", () => {
     expect(activation).toContain("activationApiReachable");
 
     expect(activation.indexOf("validateInstalledModelOnBackend(verified, signal)")).toBeLessThan(
-      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified")
+      activation.indexOf("testAgentModelRuntime(getModelRuntime(), verified")
     );
-    expect(
-      activation.indexOf("await testAgentModelRuntime(getModelRuntime(), verified")
-    ).toBeLessThan(activation.indexOf("synchronizeAgentModelAssignment(readyAssignment, signal)"));
+    expect(activation.indexOf("testAgentModelRuntime(getModelRuntime(), verified")).toBeLessThan(
+      activation.indexOf("synchronizeAgentModelAssignment(readyAssignment, signal)")
+    );
   });
 
   it("sets a cloud fallback without detaching the downloaded model", () => {
@@ -81,7 +81,7 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("executeInferenceRoute");
     expect(chat).toContain('("native-llama-cpp" as const)');
     expect(chat).toContain('("browser-wasm" as const)');
-    expect(chat).toContain("createAdaptiveAgentModelRuntime");
+    expect(chat).toContain("getSharedAgentModelRuntime");
     expect(chat).toContain("clientInferenceCompletion");
     expect(chat).toContain("availableRuntimeTools");
     expect(chat).toContain("generateBrowserAgentResponse");
@@ -102,8 +102,8 @@ describe("frontend model activation contracts", () => {
     );
     expect(agentModelPanel).toContain("className={`model-use-button ${");
     expect(agentModelPanel).toContain("aria-pressed={modelInUse}");
-    expect(agentModelPanel).toContain('"Not active · Activate on this device"');
-    expect(agentModelPanel).toContain('"Active on this device"');
+    expect(agentModelPanel).toContain("resolveModelLifecycleState");
+    expect(agentModelPanel).toContain("modelLifecycleActionLabel(lifecycleState)");
     expect(agentModelPanel).toContain("It is separate from the persisted backend");
     expect(styles).toContain(".model-use-button.in-use");
     expect(styles).toContain(".model-use-button {");

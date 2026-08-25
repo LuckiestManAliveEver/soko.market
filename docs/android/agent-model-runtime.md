@@ -7,10 +7,16 @@ Android filesystem path is never sent to the API or telemetry.
 
 ## Runtime boundary
 
-The web application calls `window.SokoAgentModelRuntime`, an Android-injected llama.cpp bridge with
-`inspect`, `load`, `generate`, `unload`, and `health` operations. Descriptors contain an opaque OPFS
-storage key, not a native path. The PWA does not claim readiness when that bridge is absent:
-installation can still complete, but attach/test reports `RUNTIME_UNAVAILABLE`.
+The adaptive runtime uses an Android-injected `window.SokoAgentModelRuntime` bridge when available,
+otherwise it uses the existing Wllama llama.cpp/WASM engine for compatible OPFS GGUF files. Wllama
+owns a dedicated inference Worker; model loading and token generation do not execute the heavy
+llama.cpp loop on the React/UI thread. Descriptors contain an opaque OPFS storage key, not a native
+path.
+
+Activation, launch restoration, and chat share one in-memory runtime registry. A successful health
+check therefore registers the same loaded handle that chat resolves; chat does not create a second
+engine and load the artifact again. Switching models unloads the previous handle only after the
+replacement passes readiness and its assignment is saved.
 
 The bridge should:
 
@@ -30,19 +36,25 @@ test result is configuration metadata and is not written into the customer conve
 
 ## Activation lifecycle and source of truth
 
-Activation is a request-scoped finite state machine: `idle` → `validating` →
-`creating_runtime` → `loading_model` → `binding_agent` → `active`, with terminal
-`failed` and `offline_blocked` states. A request owns one `AbortController`; API operations are
-bounded to 45 seconds and bridge loading emits `MODEL_LOAD_STARTED`, heartbeat/progress,
-`MODEL_READY`, or `MODEL_LOAD_FAILED`. Cancelling, navigating away, a timeout, or a newer request
-aborts the old request and prevents its stale completion from changing UI state.
+The UI projects durable artifact and binding records plus transient runtime work into one vocabulary:
+`available`, `downloading`, `verifying`, `installed`, `loading_runtime`, `activating`, `active`,
+`activation_failed`, `incompatible`, and `removing`. Only installation and binding/readiness records
+survive reload. A downloaded artifact alone always projects to `installed`, never `active`.
 
-The server assignment is the online source of truth. The device assignment is its scoped offline
-mirror, keyed by business and device. The mirror is written only after the model file validates,
-the runtime positively acknowledges readiness, and the hidden readiness inference succeeds. While
-offline, a fully installed GGUF model can use the trusted native bridge and a `local:` runtime
-session ID; that ready mirror is synchronized on reconnect. Server-only models stop in
-`offline_blocked` and are never inserted into the business mutation queue.
+Activation is a request-scoped finite state machine: `idle` → `validating` →
+`creating_runtime` → `loading_model` → `binding_agent` → `active`, with terminal `failed` and
+`offline_blocked` states. A request owns one `AbortController`; API operations are bounded to 45
+seconds and the complete local load/readiness operation is bounded to 120 seconds. The Wllama
+adapter also bounds model load to 90 seconds and generation to 120 seconds. Timeout or cancellation
+terminates the worker-backed engine so late work cannot publish a stale ready handle. The runtime
+emits `MODEL_LOAD_STARTED`, progress, `MODEL_READY`, or `MODEL_LOAD_FAILED`.
+
+The server assignment is the configured account/agent source of truth. The browser mirror is scoped
+by business and device and is the source of truth for whether this device has the artifact and a
+runnable local handle. The mirror is written only after the model file validates, the runtime
+positively acknowledges readiness, and the hidden readiness inference succeeds. A different device
+can see the configured model but reports `PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE` until it downloads
+and verifies its own artifact.
 
 Online activation probes the authenticated API instead of trusting `navigator.onLine`, creates or
 restores a non-empty managed runtime session, and then persists the ready binding. A page reload
@@ -86,13 +98,43 @@ activation responses.
     the native model supplies the visible reply. Then try a hosted fallback and confirm the exact
     “Connect to the internet to activate this model.” message appears with no queued mutation.
 
-## Platform limitation
+## End-to-end path
 
-This repository does not contain an Android application/native llama.cpp implementation or a
-browser GGUF engine. A normal browser PWA can install and validate a GGUF file in OPFS, but cannot
-execute that GGUF until a supported `SokoAgentModelRuntime` bridge is provided.
+```text
+Marketplace / model library
+        |
+        v
+OPFS artifact + verified installation metadata
+        |
+        v
+Shared runtime registry
+   +----+----------------+
+   |                     |
+Wllama Worker     Installed-app bridge
+   |                     |
+   +----------+----------+
+              v
+     readiness inference
+              |
+              v
+device agent/model assignment
+              |
+              v
+provider-neutral chat dispatcher
+              |
+              v
+local generation -> authorized Soko tool boundary -> streamed response
+```
 
-Browser-local inference is a separate backend inside the same Soko agent router. It uses a
-Transformers.js ONNX model through WebGPU or WASM and does not execute the installed GGUF. It is
-disabled by default, requires explicit user consent, and preserves the native bridge as a fallback.
-CI mocks only the heavy engine boundary; it does not fake a successful runtime in production.
+The separate Transformers.js/WebLLM browser catalog remains another adapter inside the same
+provider-neutral router. Neither local adapter silently changes to cloud. Repository-backed agents
+are metadata/instructions unless a real isolated backend adapter is composed; general Soko agent
+readiness does not advertise repository source as executable.
+
+## Composer actions
+
+The conversation composer shows the active agent, one `+` control, the message field, and Send.
+The existing accessible `StackedModule` primitive contains Camera (seller mode), photos/files,
+voice, command (seller mode), SMS, and platform sharing. It behaves as a safe-area-aware bottom
+sheet on narrow screens and a constrained dialog on wide screens, traps focus, closes on Escape or
+down-swipe, and restores focus to the `+` control.

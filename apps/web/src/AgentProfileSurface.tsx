@@ -458,7 +458,9 @@ export function AgentProfileSurface({
           activeInstalledModel={activeInstalledModel}
           activeAiModel={activeAiModel}
           deviceCapability={deviceCapability}
-          backendAvailable={navigator.onLine && runtimeReadiness?.ready === true}
+          // Agent-runtime readiness describes Soko's bounded prompt/tool runtime. It does not
+          // prove that arbitrary repository source has a configured isolated backend adapter.
+          backendAvailable={false}
         />
 
         <AgentReadinessPanel

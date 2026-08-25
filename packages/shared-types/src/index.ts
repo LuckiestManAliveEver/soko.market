@@ -896,6 +896,22 @@ export interface ActiveAiModelSummary {
 export type ModelInstallationStatus =
   "DOWNLOADING" | "INSTALLED" | "CORRUPT" | "REMOVED" | "FAILED";
 
+/**
+ * Device-facing projection of artifact, runtime, and binding state. Durable installation and
+ * binding records remain separate; this is the single vocabulary shown by model-management UI.
+ */
+export type ModelLifecycleState =
+  | "available"
+  | "downloading"
+  | "verifying"
+  | "installed"
+  | "loading_runtime"
+  | "activating"
+  | "active"
+  | "activation_failed"
+  | "incompatible"
+  | "removing";
+
 export type ModelCompatibilityStatus =
   | "UNKNOWN"
   | "COMPATIBLE"

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { AgentRuntimeReadiness, OssAgentSearchResult } from "@soko/shared-types";
+import type { OssAgentSearchResult } from "@soko/shared-types";
 
 import { getJson, putJson } from "../api-helpers";
 import { applyOssAgent, rankOssAgentsForDevice, selectLeastMemoryOssAgent } from "../agent-catalog";
@@ -92,9 +92,8 @@ export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): 
         return;
       }
 
-      const [capability, readiness, github, huggingFace] = await Promise.all([
+      const [capability, github, huggingFace] = await Promise.all([
         inspectDeviceModelCapability(),
-        getJson<AgentRuntimeReadiness>(`/businesses/${business.id}/agent-runtime/readiness`),
         getJson<OssAgentSearchResult>("/v1/oss-agents/github"),
         getJson<OssAgentSearchResult>("/v1/oss-agents/huggingface")
       ]);
@@ -105,7 +104,9 @@ export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): 
         rankOssAgentsForDevice({
           agents: [...agents.values()],
           capability,
-          backendAvailable: readiness.ready
+          // No repository execution adapter is composed in this web/API deployment. General
+          // agent readiness must not make a backend-worker repository look runnable.
+          backendAvailable: false
         })
       );
       if (selected === null) return;

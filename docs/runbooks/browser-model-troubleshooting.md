@@ -27,6 +27,13 @@ native or Cloud route.
 9. In staging, run `pnpm benchmark:browser-inference -- --profile=pixel-5
 --backends=webgpu,wasm`. The staging query override is intentionally unavailable in production.
 
+For an OPFS GGUF installation, inspect the structured `model_activation` record and identify the
+last completed phase. `MODEL_FILE_MISSING`/`MODEL_CORRUPT` is an artifact failure;
+`INFERENCE_TIMEOUT`, `INSUFFICIENT_MEMORY`, or `MODEL_LOAD_FAILED` is a worker/runtime failure;
+`MODEL_READINESS_MISMATCH` means the engine loaded but the deterministic health inference failed.
+After 120 seconds at most, the UI must show **Retry activation**. If it does not, treat that as a
+regression in the activation coordinator rather than retrying downloads blindly.
+
 ## Clear model data
 
 **Delete browser model** unloads the worker and clears engine model cache plus Soko model metadata.

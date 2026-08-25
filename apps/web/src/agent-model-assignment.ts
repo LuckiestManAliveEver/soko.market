@@ -21,6 +21,7 @@ export interface DeviceAgentModelAssignment {
   runtimeSessionId: string | null;
   lastSuccessfulInferenceAt: string | null;
   lastErrorCode: string | null;
+  syncStatus?: "SYNCED" | "PENDING";
   updatedAt: string;
 }
 
@@ -53,6 +54,7 @@ export function createPendingDeviceAssignment(input: {
   preferredExecutionMode: PreferredExecutionMode;
   fallbackPolicy: AgentModelFallbackPolicy;
   runtimeSessionId?: string | null;
+  syncStatus?: "SYNCED" | "PENDING";
 }): DeviceAgentModelAssignment {
   return {
     agentId: input.businessId,
@@ -68,6 +70,7 @@ export function createPendingDeviceAssignment(input: {
     runtimeSessionId: input.runtimeSessionId ?? null,
     lastSuccessfulInferenceAt: null,
     lastErrorCode: null,
+    syncStatus: input.syncStatus ?? "SYNCED",
     updatedAt: new Date().toISOString()
   };
 }
@@ -108,6 +111,7 @@ export function assignmentFromServer(
     lastErrorCode: legacyCloudPrimary
       ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
       : assignment.lastErrorCode,
+    syncStatus: "SYNCED",
     updatedAt: assignment.updatedAt
   };
 }
@@ -156,6 +160,9 @@ function isDeviceAgentModelAssignment(value: unknown): value is DeviceAgentModel
     (assignment.runtimeSessionId === undefined ||
       assignment.runtimeSessionId === null ||
       typeof assignment.runtimeSessionId === "string") &&
+    (assignment.syncStatus === undefined ||
+      assignment.syncStatus === "SYNCED" ||
+      assignment.syncStatus === "PENDING") &&
     typeof assignment.updatedAt === "string"
   );
 }

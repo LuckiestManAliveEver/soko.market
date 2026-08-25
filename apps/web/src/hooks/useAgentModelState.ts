@@ -9,7 +9,8 @@ import {
   type DeviceAgentModelAssignment
 } from "../agent-model-assignment";
 import { getOrCreateDeviceModelScopeId, listLocalAiModels } from "../ai-model-manager";
-import { getJson } from "../api-helpers";
+import { installedModelRequest } from "../agent-model-panel-utils";
+import { getJson, postJson, putJson } from "../api-helpers";
 import {
   readClientInferencePreferences,
   saveClientInferencePreferences
@@ -38,6 +39,43 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
     businessId: string
   ): Promise<DeviceAgentModelAssignment> {
     const deviceId = getOrCreateDeviceModelScopeId();
+    const localAssignment = readDeviceAgentModelAssignment(businessId, deviceId);
+    const pendingInstallation =
+      localAssignment?.syncStatus === "PENDING" &&
+      localAssignment.readinessStatus === "READY" &&
+      localAssignment.activeModelInstallationId !== null
+        ? (listLocalAiModels().find(
+            (model) => model.id === localAssignment.activeModelInstallationId
+          ) ?? null)
+        : null;
+    if (localAssignment !== null && pendingInstallation !== null) {
+      try {
+        await postJson("/v1/models/installed", installedModelRequest(pendingInstallation));
+        await postJson(`/v1/models/${encodeURIComponent(pendingInstallation.id)}/validate`, {
+          deviceId,
+          installationStatus: pendingInstallation.installationStatus,
+          compatibilityStatus: pendingInstallation.compatibilityStatus,
+          validationError: pendingInstallation.validationError
+        });
+        const synchronized = assignmentFromServer(
+          await putJson<AgentModelAssignmentSummary>(`/businesses/${businessId}/agent-model`, {
+            deviceId,
+            installationId: localAssignment.activeModelInstallationId,
+            preferredExecutionMode: localAssignment.preferredExecutionMode,
+            fallbackPolicy: localAssignment.fallbackPolicy,
+            readinessStatus: localAssignment.readinessStatus,
+            lastSuccessfulInferenceAt: localAssignment.lastSuccessfulInferenceAt,
+            lastErrorCode: localAssignment.lastErrorCode
+          })
+        );
+        saveDeviceAgentModelAssignment(synchronized);
+        return synchronized;
+      } catch {
+        // Keep the already health-checked local assignment usable. The next online/foreground
+        // restore retries the idempotent registration and assignment operations.
+        return localAssignment;
+      }
+    }
     const serverAssignment = assignmentFromServer(
       await getJson<AgentModelAssignmentSummary>(
         `/businesses/${businessId}/agent-model?deviceId=${encodeURIComponent(deviceId)}`

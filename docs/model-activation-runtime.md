@@ -140,8 +140,12 @@ failures never qualify.
 - Browser-local inference is build-time gated. When disabled, the UI renders no interactive
   checkbox and no model is downloaded.
 - Browser downloads remain explicit and lazy.
-- The installed-app web contract remains `window.SokoAgentModelRuntime`. A native Android bridge is
-  not implemented in this repository, so server activation reports `BRIDGE_UNAVAILABLE`.
+- Downloaded GGUF artifacts run through Wllama's worker-backed llama.cpp/WASM runtime in compatible
+  Chromium browsers. The installed-app contract remains `window.SokoAgentModelRuntime` and is used
+  when a trusted native bridge is present.
+- Device activation, restoration, and chat share one runtime registry and are bounded by finite
+  load/generation deadlines. A timeout terminates the Wllama worker and projects to
+  `activation_failed`; it cannot leave the model card in `activating` indefinitely.
 - Owner-node inference remains restricted to authenticated, current-heartbeat devices registered
   for the same tenant, agent, and model.
 

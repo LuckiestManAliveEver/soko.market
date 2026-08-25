@@ -3341,12 +3341,6 @@ details.nested-form-section summary {
   background: #ffffff;
   border-top: 1px solid #dde4dc;
   gap: 8px;
-  /* Exactly 3 columns - the icon toolbar, the message field, and send actions - regardless of
-     how many icon buttons ChatComposer.tsx renders for the current mode (2 in buy mode, 4 in
-     seller mode), because all of them are grouped into one .composer-icon-group element below
-     instead of being individual grid items. minmax(0, 1fr) then gives the message field every
-     pixel left over after the icon group and send actions claim their own natural width - the
-     largest single share of the row by construction, not by a size race against any one icon. */
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 10px;
@@ -3354,13 +3348,70 @@ details.nested-form-section summary {
   bottom: 0;
 }
 
-.composer-icon-group {
+.composer-agent-indicator {
+  color: #516258;
+  font-size: 10px;
+  font-weight: 800;
+  grid-column: 1 / -1;
+  line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-more-button .attach-icon {
+  transform: rotate(0deg);
+}
+
+.stacked-module.composer-actions-module {
+  max-width: 520px;
+}
+
+.composer-actions-module .stacked-module-content {
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+}
+
+.composer-action-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.composer-action-grid > button {
   align-items: center;
-  display: flex;
-  /* Tighter than the 8px gap around it: the icon toolbar is meant to crowd together so the
-     message field (the largest element in the row) keeps as much width as possible, not to
-     match the row's outer spacing. */
-  gap: 2px;
+  background: #f7faf8;
+  border: 1px solid #d4e2d8;
+  border-radius: 12px;
+  color: #17211b;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  justify-items: start;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.composer-action-grid > button:focus-visible,
+.composer-action-grid > button:hover {
+  background: #eaf5ee;
+  border-color: #86b89c;
+}
+
+.composer-command-icon,
+.composer-sms-icon,
+.composer-share-icon {
+  align-items: center;
+  display: inline-flex;
+  font-size: 18px;
+  font-weight: 900;
+  justify-content: center;
+  min-width: 24px;
+}
+
+.composer-sms-icon {
+  font-size: 9px;
 }
 
 .composer-card-lock {
@@ -3606,25 +3657,6 @@ details.nested-form-section summary {
   display: grid;
   gap: 4px;
   justify-items: stretch;
-}
-
-.sms-send-button,
-.share-send-button {
-  background: #eef7f1;
-  border: 1px solid #b9d9c6;
-  border-radius: 8px;
-  color: #1f4d38;
-  font-size: 11px;
-  font-weight: 900;
-  min-height: 30px;
-  padding: 4px 8px;
-  white-space: nowrap;
-}
-
-.share-send-button {
-  background: #eef3fa;
-  border-color: #bfd0e5;
-  color: #25486f;
 }
 
 .external-share-notice {
@@ -5126,7 +5158,7 @@ details.nested-form-section summary {
 
   .composer {
     align-items: center;
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .composer-input span {
@@ -6309,18 +6341,6 @@ body {
   padding: 8px 12px;
 }
 
-.composer .sms-send-button,
-.composer .share-send-button {
-  background: transparent;
-  border-color: var(--soko-line);
-  border-radius: 999px;
-  color: var(--soko-ink-soft);
-  font-family: var(--soko-mono-font);
-  font-size: 8px;
-  min-height: 20px;
-  padding: 3px 7px;
-}
-
 /* Stacked conversational modules */
 .stacked-module-backdrop {
   background: rgb(16 12 27 / 54%);
@@ -7046,19 +7066,12 @@ body {
   }
 
   .composer {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .composer-send-actions {
     align-items: center;
     display: flex;
-  }
-
-  .composer .sms-send-button,
-  .composer .share-send-button {
-    max-width: 54px;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .buy-result-card {
@@ -7117,9 +7130,8 @@ body {
     display: grid;
   }
 
-  .composer .sms-send-button,
-  .composer .share-send-button {
-    max-width: 48px;
+  .composer-action-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .cart-item-row {

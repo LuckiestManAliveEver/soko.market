@@ -1000,6 +1000,7 @@ export function ChatSurface({
           )}
         </StackedModule>
         <ChatComposer
+          activeAgentName={agent.name}
           channelEndpoints={channelEndpoints}
           composer={composer}
           invoices={invoices}

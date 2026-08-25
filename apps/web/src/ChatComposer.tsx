@@ -1,4 +1,4 @@
-import type { ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 
 import type { ChannelEndpointSummary, ChannelProvider } from "@soko/shared-types";
 import { runtimeHashtagCapabilities, runtimeHashtagQuery } from "@soko/tool-core";
@@ -9,6 +9,8 @@ import { formatAttachmentCategory, formatChannelProvider, formatFileSize } from 
 import { chatModuleCommands } from "./chat-module-commands";
 import { isExtractableChatAttachment, startVoiceInput } from "./chat-message-plumbing";
 import type { ChatComposerState } from "./hooks/useChatComposerState";
+import { ChatComposerActions } from "./ChatComposerActions";
+import { ChatHashtagCapabilityPicker } from "./ChatHashtagCapabilityPicker";
 
 interface ChatComposerProps {
   channelEndpoints: ChannelEndpointSummary[];
@@ -18,6 +20,7 @@ interface ChatComposerProps {
   isBrowserGenerating: boolean;
   isSending: boolean;
   mode: SokoMode;
+  activeAgentName: string;
   pendingAttachments: ChatAttachment[];
   replyToMessageId: string | null;
   selectedConversationTitle: string;
@@ -38,6 +41,7 @@ export function ChatComposer({
   isBrowserGenerating,
   isSending,
   mode,
+  activeAgentName,
   pendingAttachments,
   replyToMessageId,
   selectedConversationTitle,
@@ -66,6 +70,8 @@ export function ChatComposer({
     setSelectedProvider,
     updateLiveDraft
   } = composer;
+  const [messageActionsOpen, setMessageActionsOpen] = useState(false);
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const hashtagQuery = mode === "seller" ? runtimeHashtagQuery(liveDraft) : null;
   const sellerHashtagCapabilities = [...chatModuleCommands, ...runtimeHashtagCapabilities];
   const matchingHashtagCapabilities =
@@ -75,6 +81,16 @@ export function ChatComposer({
           (capability) =>
             capability.toolName.includes(hashtagQuery) || capability.module.includes(hashtagQuery)
         );
+
+  function openMessageActions() {
+    messageInputRef.current?.blur();
+    setMessageActionsOpen(true);
+  }
+
+  function runMessageAction(action: () => void) {
+    setMessageActionsOpen(false);
+    window.setTimeout(action, 0);
+  }
 
   return (
     <>
@@ -96,109 +112,46 @@ export function ChatComposer({
             </div>
           ) : null}
           {hashtagQuery !== null ? (
-            <section className="hashtag-capability-picker" aria-label="Shop capabilities">
-              <header>
-                <strong>Call a shop capability</strong>
-                <span>Use JSON after the command when it needs multiple inputs.</span>
-              </header>
-              <div className="hashtag-capability-list">
-                {matchingHashtagCapabilities.length === 0 ? (
-                  <p>No capability matches #{hashtagQuery}.</p>
-                ) : (
-                  matchingHashtagCapabilities.map((capability) => (
-                    <button
-                      key={capability.toolName}
-                      type="button"
-                      onClick={() =>
-                        updateLiveDraft(
-                          capability.inputFields.length === 0
-                            ? capability.hashtag
-                            : `${capability.hashtag} `
-                        )
-                      }
-                    >
-                      <span>
-                        <strong>{capability.hashtag}</strong>
-                        <small>{capability.description}</small>
-                      </span>
-                      <small>
-                        {capability.inputFields.length === 0
-                          ? "No input"
-                          : `Input: ${capability.inputFields.join(", ")}`}
-                        {capability.requiresConfirmation ? " · Confirms" : ""}
-                      </small>
-                    </button>
-                  ))
-                )}
-              </div>
-            </section>
+            <ChatHashtagCapabilityPicker
+              capabilities={matchingHashtagCapabilities}
+              query={hashtagQuery}
+              onSelect={updateLiveDraft}
+            />
           ) : null}
-          <div className="composer-icon-group">
-            {mode === "seller" ? (
-              <button
-                className="icon-button composer-icon-button hashtag-capability-button"
-                type="button"
-                aria-label="Choose shop capability"
-                title="Call a shop API or module"
-                onClick={() => updateLiveDraft("#")}
-              >
-                <span aria-hidden="true">#</span>
-              </button>
-            ) : null}
-            <button
-              className="icon-button composer-icon-button"
-              type="button"
-              aria-label="Voice input"
-              title="Voice input"
-              onClick={() => startVoiceInput(commitDraft)}
-            >
-              <span className="mic-icon" aria-hidden="true" />
-            </button>
-            <button
-              className="icon-button composer-icon-button"
-              type="button"
-              aria-label="Attach file"
-              title="Attach file"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <span className="attach-icon" aria-hidden="true" />
-            </button>
+          <small className="composer-agent-indicator">{activeAgentName} will answer</small>
+          <button
+            className="icon-button composer-icon-button composer-more-button"
+            type="button"
+            aria-label="Open message actions"
+            aria-haspopup="dialog"
+            aria-expanded={messageActionsOpen}
+            onClick={openMessageActions}
+          >
+            <span className="attach-icon" aria-hidden="true" />
+          </button>
+          <input
+            ref={fileInputRef}
+            className="chat-file-input"
+            type="file"
+            multiple
+            accept={chatAttachmentAccept}
+            onChange={onAttachmentChange}
+          />
+          {mode === "seller" ? (
             <input
-              ref={fileInputRef}
+              ref={sellerPhotoInputRef}
               className="chat-file-input"
               type="file"
-              multiple
-              accept={chatAttachmentAccept}
-              onChange={onAttachmentChange}
+              accept="image/jpeg,image/png,image/webp"
+              capture="environment"
+              data-testid="seller-photo-input"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file !== undefined) onSellerPhotoCapture(file);
+                event.target.value = "";
+              }}
             />
-            {mode === "seller" ? (
-              <>
-                <button
-                  className="icon-button composer-icon-button"
-                  type="button"
-                  aria-label="Add product from photo"
-                  title="Add product from photo"
-                  data-testid="seller-photo-button"
-                  onClick={() => sellerPhotoInputRef.current?.click()}
-                >
-                  <span className="camera-icon" aria-hidden="true" />
-                </button>
-                <input
-                  ref={sellerPhotoInputRef}
-                  className="chat-file-input"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  capture="environment"
-                  data-testid="seller-photo-input"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file !== undefined) onSellerPhotoCapture(file);
-                    event.target.value = "";
-                  }}
-                />
-              </>
-            ) : null}
-          </div>
+          ) : null}
           {pendingAttachments.length > 0 ? (
             <div className="attachment-workbench">
               <div className="attachment-tray" aria-label="Selected attachments">
@@ -328,6 +281,7 @@ export function ChatComposer({
           <label className="composer-input">
             <span>Message</span>
             <textarea
+              ref={messageInputRef}
               aria-label="Message"
               rows={1}
               value={liveDraft}
@@ -357,28 +311,6 @@ export function ChatComposer({
               </button>
             ) : null}
             <button
-              className="sms-send-button"
-              type="button"
-              disabled={liveDraft.trim().length === 0}
-              onClick={() =>
-                openSmsHandoff(
-                  selectedConversationTitle,
-                  selectedConversationTitle || "SMS recipient"
-                )
-              }
-            >
-              Send as SMS
-            </button>
-            <button
-              className="share-send-button"
-              type="button"
-              disabled={liveDraft.trim().length === 0}
-              title="Share outside Soko using an installed app or connected-device service"
-              onClick={() => void openPlatformHandoff(selectedConversationTitle)}
-            >
-              Share to apps
-            </button>
-            <button
               className="send-button"
               type="button"
               onClick={sendLiveDraft}
@@ -401,6 +333,27 @@ export function ChatComposer({
                 : " External messages are not covered by Soko end-to-end encryption."}
             </small>
           ) : null}
+          <ChatComposerActions
+            draftHasText={liveDraft.trim().length > 0}
+            mode={mode}
+            open={messageActionsOpen}
+            onClose={() => setMessageActionsOpen(false)}
+            onAttachFiles={() => runMessageAction(() => fileInputRef.current?.click())}
+            onOpenCommand={() => runMessageAction(() => updateLiveDraft("#"))}
+            onRecordVoice={() => runMessageAction(() => startVoiceInput(commitDraft))}
+            onSendSms={() =>
+              runMessageAction(() =>
+                openSmsHandoff(
+                  selectedConversationTitle,
+                  selectedConversationTitle || "SMS recipient"
+                )
+              )
+            }
+            onShareApps={() =>
+              runMessageAction(() => void openPlatformHandoff(selectedConversationTitle))
+            }
+            onTakePhoto={() => runMessageAction(() => sellerPhotoInputRef.current?.click())}
+          />
         </div>
       )}
     </>

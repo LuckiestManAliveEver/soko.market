@@ -27,7 +27,7 @@ test.beforeEach(async ({ page }) => {
         name: "Jane's International Neighborhood Market and Supplies",
         language: "en",
         role: "owner",
-        sokoId: "254A12345678"
+        sokoId: "soko.janes-market"
       })
     );
     localStorage.setItem("soko.chatFirst.mode", "seller");
@@ -126,10 +126,10 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
 
   await dialog.getByRole("button", { name: "Close Catalogue card" }).click();
   await expect(dialog.getByRole("button", { name: "Catalogue", exact: true })).toHaveCount(0);
-  // 17 workspace cards total (10 original + 7 added when PrimaryNavigation was removed and its
+  // 18 workspace cards total (10 original + 8 added when PrimaryNavigation was removed and its
   // destinations moved into this hub - see docs/frontend/frontend.md's Phase 6), minus the one
   // just closed above.
-  await expect(dialog.locator(".generated-card-close")).toHaveCount(16);
+  await expect(dialog.locator(".generated-card-close")).toHaveCount(17);
 
   await dialog.getByRole("button", { name: "Close Workspace" }).click();
   await expect(page.getByLabel("Workspace cards")).toHaveCount(0);
@@ -195,7 +195,10 @@ test("SMS handoff confirms cost, normalizes the recipient, and preserves the dra
     }
   });
 
-  await page.getByRole("button", { name: "Send as SMS", exact: true }).click();
+  await page.getByRole("button", { name: "Open message actions", exact: true }).click();
+  const actions = page.getByRole("dialog", { name: "More message actions" });
+  await expect(actions).toBeVisible();
+  await actions.getByRole("button", { name: "Send as SMS", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Send as SMS" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Your mobile carrier may charge for this SMS.")).toBeVisible();
@@ -210,6 +213,33 @@ test("SMS handoff confirms cost, normalizes the recipient, and preserves the dra
   await expect(dialog).toBeHidden();
   await expect(composer).toHaveValue(draft);
   expect(sokoMessagePosts).toBe(0);
+});
+
+test("mobile composer keeps one More control and exposes secondary actions in a sheet", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/sell");
+
+  const composer = page.getByRole("textbox", { name: "Message" });
+  const more = page.getByRole("button", { name: "Open message actions", exact: true });
+  await expect(composer).toBeVisible({ timeout: 15_000 });
+  await expect(more).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Record voice", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Take photo", exact: true })).toHaveCount(0);
+  await expect(page.getByText(/will answer$/)).toBeVisible();
+
+  await more.click();
+  const actions = page.getByRole("dialog", { name: "More message actions" });
+  await expect(actions).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Take photo", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Photos or files", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Record voice", exact: true })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "Open command", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(actions).toHaveCount(0);
+  await expect(more).toBeFocused();
 });
 
 test("persisted owner-control cards stay attached to their historical message", async ({
@@ -273,9 +303,9 @@ test("shop deletion Continue and Quarantine buttons call the backend", async ({ 
   await page.goto("/settings");
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
   await page.getByRole("button", { name: "Delete this shop", exact: true }).click();
-  await page.getByLabel("Type the shop ID to continue").fill("254A12345678");
+  await page.getByLabel("Type the shop ID to continue").fill("soko.janes-market");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByLabel("Login PIN").fill("1234");
+  await page.getByRole("textbox", { name: "Login PIN", exact: true }).fill("1234");
   await page.getByLabel(/I understand the shop will be hidden now and permanently purged/).check();
   await page.getByRole("button", { name: "Quarantine shop" }).click();
 
@@ -409,12 +439,8 @@ test("downloaded models show green when active and red when inactive", async ({ 
 
   await openModelLibrary(page, { width: 390, height: 844 });
 
-  const activeButton = page
-    .getByRole("button", { name: "Active on this device", exact: true })
-    .first();
-  const inactiveButton = page
-    .getByRole("button", { name: "Not active · Activate on this device", exact: true })
-    .first();
+  const activeButton = page.locator(".model-use-button.in-use").first();
+  const inactiveButton = page.locator(".model-use-button.not-in-use").first();
 
   await expect(activeButton).toBeVisible();
   await expect(activeButton).toBeDisabled();
@@ -457,18 +483,14 @@ test("device activation preserves the previous assignment when the GGUF runtime 
   }, bindableInstalledModel.fileName);
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
-  await page
-    .getByRole("button", { name: "Not active · Activate on this device", exact: true })
-    .click();
+  await page.locator(".model-use-button.not-in-use").click();
 
   await expect(
     page.getByRole("status").filter({
       hasText: /The local model could not be loaded.*previous working model was left unchanged/u
     })
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Not active · Retry device activation", exact: true })
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry activation", exact: true })).toBeVisible();
   await expect.poll(() => readinessUpdates).toEqual([]);
 });
 
@@ -572,7 +594,7 @@ async function openModelLibrary(
   await expect(
     page
       .getByRole("button", {
-        name: /^(?:Predownload & install|Active on this device|Not active · Activate on this device)$/u
+        name: /^(?:Predownload & install|Active|Use with agent)$/u
       })
       .first()
   ).toBeVisible({ timeout: 15_000 });
