@@ -126,6 +126,13 @@ export function AgentProfileSurface({
   const [correctionCategory, setCorrectionCategory] =
     useState<AgentOwnerCorrection["category"]>("instruction");
   const [promoteCorrection, setPromoteCorrection] = useState(true);
+  const [contextSourceTitle, setContextSourceTitle] = useState("");
+  const [contextSourceType, setContextSourceType] =
+    useState<AgentContextSource["type"]>("owner_note");
+  const [contextSourceContent, setContextSourceContent] = useState("");
+  const [contextSourceSensitivity, setContextSourceSensitivity] =
+    useState<AgentContextSource["sensitivity"]>("internal");
+  const [contextSourceCustomerVisible, setContextSourceCustomerVisible] = useState(false);
   const [runtimeDetailsLoading, setRuntimeDetailsLoading] = useState(false);
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const [aiModels, setAiModels] = useState<AiModelSummary[]>([]);
@@ -225,6 +232,31 @@ export function AgentProfileSurface({
           ? "Correction saved and promoted into a new runtime version."
           : "Correction saved as bounded agent memory."
       );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    }
+  }
+
+  async function submitContextSource() {
+    const title = contextSourceTitle.trim();
+    const content = contextSourceContent.trim();
+    if (title.length === 0 || content.length === 0) return;
+    try {
+      await postJson<AgentContextSource>(
+        `/businesses/${business.id}/agent-runtime/context-sources`,
+        {
+          type: contextSourceType,
+          title,
+          content,
+          sensitivity: contextSourceSensitivity,
+          customerVisible: contextSourceCustomerVisible,
+          status: "active"
+        }
+      );
+      setContextSourceTitle("");
+      setContextSourceContent("");
+      await loadAgentRuntimeDetails();
+      setProfileMessage(`Context source "${title}" saved and authorized for retrieval.`);
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
     }
@@ -494,6 +526,19 @@ export function AgentProfileSurface({
           updateAgent={updateAgent}
           runtimeContextSources={runtimeContextSources}
           runtimeDetailsLoading={runtimeDetailsLoading}
+          contextSourceTitle={contextSourceTitle}
+          setContextSourceTitle={setContextSourceTitle}
+          contextSourceType={contextSourceType}
+          setContextSourceType={setContextSourceType}
+          contextSourceContent={contextSourceContent}
+          setContextSourceContent={setContextSourceContent}
+          contextSourceSensitivity={contextSourceSensitivity}
+          setContextSourceSensitivity={setContextSourceSensitivity}
+          contextSourceCustomerVisible={contextSourceCustomerVisible}
+          setContextSourceCustomerVisible={setContextSourceCustomerVisible}
+          pendingProfileAction={pendingProfileAction}
+          runProfileAction={runProfileAction}
+          submitContextSource={submitContextSource}
         />
 
         <AgentRetentionPanel
