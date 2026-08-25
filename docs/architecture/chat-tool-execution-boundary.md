@@ -10,21 +10,40 @@ written down anywhere. It complements, not replaces:
 - [`docs/architecture/client-first-inference.md`](client-first-inference.md) — provider routing,
   fallback order, and browser download mechanics.
 
-## Two pipelines, not one
+## Two pipelines, not one — plus a local-execution variant of the server one
 
-|                                | Server-mediated chat                                                           | Browser-local chat                                                                                                                 |
-| ------------------------------ | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Entry point                    | `POST /businesses/:id/runtime/turns` (`Cp2Store.createRuntimeTurn`)            | `generateBrowserAgentResponse` (`apps/web/src/browser-inference-session.ts`)                                                       |
-| Runs on                        | The API server, using the shop's activated model binding                       | Entirely in the browser tab, using a downloaded on-device model                                                                    |
-| Output shape                   | `RuntimeModelOutputParseResult`: `"response"` \| `"clarification"` \| `"tool"` | `BrowserGenerationResult`: `{ text: string, ... }` — no tool field exists                                                          |
-| Can execute a business action? | Yes, after `enforceAgentPolicy` and confirmation gating                        | **No** — there is no code path from a browser-local result into `executeRuntimeAction`; the type itself has no tool-proposal field |
-| Authorization                  | `requireAuthorizedSession`, tenant/role checks, per-tool policy                | None needed for execution, because none is possible; the result is just text rendered in the chat UI                               |
+> **Correction (this section was wrong from 2026-08-13 to the date of this edit):** the table
+> below originally claimed browser-local inference is "structurally incapable" of producing a
+> tool proposal because `BrowserGenerationResult` has no tool field. That is still true for the
+> plain conversational path, but `954e4c3` ("Enable browser GGUF tool handoff", 2026-08-13) added
+> a second browser-local path that this document never covered: when
+> `requestRequiresServerTool(message)` is true, the client still runs inference on-device
+> (`browser-webgpu` / `browser-wasm` / `native-llama-cpp`), but then submits the raw generated text
+> to the server as `RuntimeTurnBody.clientInferenceCompletion`
+> (`apps/web/src/hooks/useChatRuntimeState.ts`, `createClientInferenceModelRoute` in
+> `services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts`). The server parses that
+> text with the exact same `parseRuntimeModelOutput` used for a real server-model response, so it
+> **can** yield a `RuntimeToolProposal`. This does not weaken governance — the resulting proposal
+> still passes through the identical `enforceAgentPolicy` → confirmation-token → `executeRuntimeAction`
+> gate as any other proposal (see the paragraph after the table) — but the earlier "no code path
+> into `executeRuntimeAction`" claim was factually wrong for this case and is corrected here
+> instead of left standing.
 
-A model-proposed tool call is never trusted on its own anywhere in this system — see
-`docs/agent-context-instructions-personality.md` and the runtime-turn pipeline
-(`services/api/src/cp2/agent-business-runtime.ts`, `enforceAgentPolicy`) for the full
-policy/confirmation chain. The browser-local pipeline takes this one step further: it is
-_structurally_ incapable of proposing a tool at all, not merely policy-blocked from executing one.
+|                                | Server-mediated chat                                                           | Browser-local chat (plain)                                                           | Browser-local chat (tool-shaped request)                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Entry point                    | `POST /businesses/:id/runtime/turns` (`createRuntimeTurn`)                     | `generateBrowserAgentResponse` (`apps/web/src/browser-inference-session.ts`)           | Same on-device generation, then `runRoutedRuntimeTurn` submits `clientInferenceCompletion` to `POST /businesses/:id/runtime/turns` (`apps/web/src/hooks/useChatRuntimeState.ts`) |
+| Runs on                        | The API server, using the shop's activated model binding                       | Entirely in the browser tab, using a downloaded on-device model                        | Generation runs on-device; the server only parses/authorizes the reported output                                                                                                  |
+| Routing trigger                | Default when browser inference is unavailable/disabled                        | `requestRequiresServerTool(message)` is false and a local model is ready               | `requestRequiresServerTool(message)` is true and a local model is ready (`browser-inference-routing.ts`)                                                                          |
+| Output shape                   | `RuntimeModelOutputParseResult`: `"response"` \| `"clarification"` \| `"tool"` | `BrowserGenerationResult`: `{ text: string, ... }` — no tool field, rendered as-is      | The reported `outputText` is re-parsed server-side into the same `RuntimeModelOutputParseResult` union                                                                            |
+| Can execute a business action? | Yes, after `enforceAgentPolicy` and confirmation gating                        | **No** — no code path from this result into `executeRuntimeAction`                     | **Yes, after the same `enforceAgentPolicy` and confirmation gating** — verified by `requireReadyClientInferenceCompletion` first (the completion must match a `READY` device/browser assignment for that exact account+user+model+runtime, or it's rejected with `409 CLIENT_MODEL_ASSIGNMENT_NOT_READY`) |
+| Authorization                  | `requireAuthorizedSession`, tenant/role checks, per-tool policy                | None needed for execution, because none is possible                                    | Same as server-mediated chat, plus the device/browser-assignment match above                                                                                                      |
+
+A model-proposed tool call is never trusted on its own anywhere in this system regardless of which
+column produced it — see `docs/agent-context-instructions-personality.md` and the runtime-turn
+pipeline (`services/api/src/cp2/domains/agent-runtime/store.ts`, `enforceAgentPolicy`) for the full
+policy/confirmation chain. Only the middle column (plain browser-local chat, the common case for an
+ordinary question) is structurally incapable of proposing a tool at all; the right column is
+policy-blocked the same way server-mediated chat is, not structurally prevented.
 
 ## How a message gets routed between them
 
@@ -42,12 +61,17 @@ otherwise                     → route: "browser-local"
 
 `requestRequiresServerTool` is a keyword heuristic (`create|add|delete|remove|update|change|refund
 |pay|send|invite|sync|order|receipt`, case-insensitive). It is a _routing convenience_, not the
-safety boundary — it exists so obviously-actionable requests skip straight to the pipeline that can
-actually do something, saving a round trip. The actual safety boundary is the structural one above:
-even a message that slips past this heuristic and reaches the on-device model can only ever produce
-`{ text }`. The realistic residual risk of a heuristic miss is the on-device model **hallucinating**
+safety boundary — it exists so obviously-actionable requests are routed to the tool-capable path
+(the right column above) so a real action can actually happen. The actual safety boundary is the
+structural one from the table: a message the heuristic **misses** (falls through to "otherwise")
+takes the plain browser-local path, whose result type has no tool field, so it can only ever
+produce `{ text }` — it never reaches `clientInferenceCompletion` or `executeRuntimeAction` at all.
+The realistic residual risk of a heuristic miss is therefore the on-device model **hallucinating**
 a reply that claims an action happened ("I've added the product for you") when nothing did — a
-trust/UX problem to watch for in prompt design and user messaging, not a security hole.
+trust/UX problem to watch for in prompt design and user messaging, not a security hole. A heuristic
+_false positive_ (an ordinary question misrouted to the tool-capable path) carries no extra risk
+either, since that path still requires `enforceAgentPolicy` and confirmation before anything
+executes — at worst it costs one unnecessary round trip.
 
 ## The three model-selection layers
 
@@ -91,10 +115,20 @@ layer. There is no path to "chat is running on a model that was never confirmed 
   activation, browser activation, and absent bridges".
 - Real deployed-model round trip (opt-in, not run as part of this doc's review):
   `tests/live-render-model-runtime.test.ts`, gated behind `RUN_LIVE_MODEL_RUNTIME_TEST=true`.
-- Browser routing away from tool-shaped requests: `apps/web/src/browser-inference-routing.ts`
+- Browser routing to/away from tool-shaped requests: `apps/web/src/browser-inference-routing.ts`
   (`decideInferenceRoute`, `requestRequiresServerTool`).
-- Structural text-only browser output: `BrowserGenerationResult` in
-  `apps/web/src/browser-inference-types.ts`.
+- Structural text-only browser output (the plain, non-tool-shaped path only):
+  `BrowserGenerationResult` in `apps/web/src/browser-inference-types.ts`.
+- The tool-shaped path goes through the same policy/confirmation gate:
+  `tests/browser-inference-assignment.test.ts` — "accepts a ready browser model proposal only
+  through the canonical policy and confirmation pipeline" (asserts a `product.update`
+  client-completion proposal returns `needs_confirmation` and only executes after a separate
+  confirmation call); "rejects client model output that does not match a ready device assignment".
+  Coverage gap: every rejection test hits the "no assignment exists at all" branch of
+  `requireReadyClientInferenceCompletion` (`runtime-model-routing.ts`); no test yet forges a
+  completion with a mismatched `modelId`/`runtime`/`accountId` against an *existing* ready
+  assignment for the same device, and the `installationId` (installed-app) identity-check branch
+  has no test at all. Worth closing before this path sees more traffic.
 
 ## What this document is _not_ reporting as a gap
 
