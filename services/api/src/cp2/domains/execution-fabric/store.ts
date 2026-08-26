@@ -13,27 +13,29 @@ import type {
 } from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
+import type { Cp2Snapshot } from "../../store.js";
 
 /**
- * Standalone, additive persistence for the Phase 1 Execution Fabric entities
- * (docs/architecture/agent-execution-fabric-phase1.md). Deliberately NOT a Cp2Store domain slice
- * (unlike agent-runtime/messaging/etc.) - it is not imported by services/api/src/cp2/store.ts,
- * postgres-store.ts, or routes.ts anywhere. That is intentional for this phase ("sits next to the
- * current routing path, not in front of it yet"): wiring this into Cp2Store's unified
- * snapshot/hydration/deletion-propagation machinery, and giving it real session-authenticated HTTP
- * routes, is Phase 2 work, done at the same time as cutover.
+ * Persistence for the Execution Fabric entities (docs/architecture/agent-execution-fabric-phase1.md,
+ * -phase2.md, -phase2-5.md). A Cp2Store domain slice in the same sense as agent-runtime/messaging/
+ * etc. as of Phase 2.5: `Cp2Store.snapshot()`/`hydrateSnapshot()` include `modelPreferencesMap`/
+ * `runtimeHostsMap`/`runtimeModelInstallationsMap` via `clear()`/`restore()` below (see
+ * `store.ts`'s `hydrateSnapshot`), and `postgres-store.ts`'s generic `normalizedCollections`
+ * mechanism persists them to `cp2_model_preferences`/`cp2_runtime_hosts`/
+ * `cp2_runtime_model_installations` (migration 060) exactly like every other envelope-shaped
+ * domain - no bespoke SQL was written for this class; it participates in the same generic
+ * snapshot-diff-and-upsert machinery every other domain already uses.
  *
- * Persisted shape backed by migration 060_execution_fabric_entities.sql
- * (cp2_model_preferences, cp2_runtime_hosts, cp2_runtime_model_installations) - this class itself
- * is in-memory only for this phase, exactly like every other Cp2Store domain is in-memory-first
- * with a separate Postgres mapping layer; that Postgres mapping is Phase 2 work alongside the
- * Cp2Store wiring above, not duplicated ahead of time here.
+ * `executionHistory` deliberately stays in-memory-only (no getter/restore participation) - Phase 2
+ * only ever required it to be logged, not persisted ("not necessarily persisted, but at minimum
+ * logged"), and no migration exists for it; adding one was out of scope for Phase 2.5, which only
+ * covers the three entities migration 060 already has tables for.
  *
  * Callers pass already-authenticated identity (accountId/userId/tenantId) rather than a
  * sessionId - this store does not perform session/membership authentication itself, since doing
- * so would require importing Cp2Store's auth internals and create exactly the coupling this phase
- * is meant to avoid. A real HTTP route in front of this store (Phase 2) is responsible for
- * authenticating the caller before calling any method here.
+ * so would require importing Cp2Store's auth internals and create exactly the coupling Phase 1
+ * was meant to avoid. The real HTTP routes in front of this store (`agent-runtime/routes.ts`)
+ * authenticate the caller before calling any method here.
  */
 export class ExecutionFabricStore {
   private readonly modelPreferences = new Map<string, ModelPreferenceSummary>();
@@ -277,5 +279,41 @@ export class ExecutionFabricStore {
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
       .slice(0, limit)
       .map((record) => ({ ...record }));
+  }
+
+  // Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md). Exposed for
+  // Cp2Store.snapshot() the same way every other domain exposes its maps (e.g.
+  // AgentRuntimeDomain.agentModelBindingsMap) - `executionHistory` is deliberately not exposed
+  // here (see the class doc comment).
+  get modelPreferencesMap(): Map<string, ModelPreferenceSummary> {
+    return this.modelPreferences;
+  }
+
+  get runtimeHostsMap(): Map<string, RuntimeHostSummary> {
+    return this.runtimeHosts;
+  }
+
+  get runtimeModelInstallationsMap(): Map<string, RuntimeModelInstallationSummary> {
+    return this.runtimeModelInstallations;
+  }
+
+  clear(): void {
+    this.modelPreferences.clear();
+    this.runtimeHosts.clear();
+    this.runtimeModelInstallations.clear();
+    // executionHistory is intentionally left untouched by clear()/restore() - it never
+    // participates in snapshot/hydration (see the class doc comment).
+  }
+
+  restore(snapshot: Cp2Snapshot): void {
+    for (const preference of snapshot.modelPreferences ?? []) {
+      this.modelPreferences.set(preference.id, preference);
+    }
+    for (const host of snapshot.runtimeHosts ?? []) {
+      this.runtimeHosts.set(host.id, host);
+    }
+    for (const installation of snapshot.runtimeModelInstallations ?? []) {
+      this.runtimeModelInstallations.set(installation.id, installation);
+    }
   }
 }

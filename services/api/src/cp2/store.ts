@@ -190,7 +190,10 @@ import type {
   SyncRealtimeChangesAvailableEvent,
   SyncCollection,
   SyncPullPage,
-  UserSummary
+  UserSummary,
+  ModelPreferenceSummary,
+  RuntimeHostSummary,
+  RuntimeModelInstallationSummary
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import { ExecutionFabricStore } from "./domains/execution-fabric/store.js";
@@ -503,6 +506,11 @@ export interface Cp2Snapshot {
   agentModelAssignments?: AgentModelAssignmentSummary[];
   browserInferenceAssignments?: BrowserInferenceAssignmentSummary[];
   agentModelBindings?: AgentModelBindingSummary[];
+  // Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md). executionHistory is
+  // deliberately NOT here - it stays in-memory-only per Phase 2's own explicit scoping.
+  modelPreferences?: ModelPreferenceSummary[];
+  runtimeHosts?: RuntimeHostSummary[];
+  runtimeModelInstallations?: RuntimeModelInstallationSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -2848,6 +2856,72 @@ export class Cp2Store {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
     return this.executionFabricStore.listExecutionHistory(input.agentId, input.limit);
   }
+
+  /**
+   * Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md §2) - `RuntimeHost`/
+   * `RuntimeModelInstallation` create/read, exposed on Cp2Store the same way ModelPreference
+   * already is, so the entities named in scope for this phase have a real, testable, authorized
+   * path in and out of Postgres. Still no dedicated HTTP route (that remains Phase 3 scope per
+   * Phase 2's report) - these exist for direct Cp2Store callers (and this phase's own persistence
+   * tests) only. Authorized via a business session even though RuntimeHost itself is
+   * account-scoped, not business-scoped - `requireAuthorizedSession` is the only session-to-
+   * identity resolution this store has, and every current caller already has a businessId in
+   * hand.
+   */
+  registerRuntimeHost(input: {
+    sessionId: string | null;
+    businessId: string;
+    name: string;
+    trustLevel: Parameters<ExecutionFabricStore["registerRuntimeHost"]>[0]["trustLevel"];
+    declaredRuntimes: string[];
+    maxConcurrentJobs: number;
+    now?: Date;
+  }): ReturnType<ExecutionFabricStore["registerRuntimeHost"]> {
+    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    return this.executionFabricStore.registerRuntimeHost({
+      accountId: session.account.id,
+      ownerId: session.user.id,
+      name: input.name,
+      trustLevel: input.trustLevel,
+      declaredRuntimes: input.declaredRuntimes,
+      maxConcurrentJobs: input.maxConcurrentJobs,
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
+  }
+
+  getRuntimeHost(input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeHostId: string;
+  }): ReturnType<ExecutionFabricStore["getRuntimeHost"]> {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
+    return this.executionFabricStore.getRuntimeHost(input.runtimeHostId);
+  }
+
+  installRuntimeModel(input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeHostId: string;
+    modelId: string;
+    now?: Date;
+  }): ReturnType<ExecutionFabricStore["installRuntimeModel"]> {
+    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    return this.executionFabricStore.installRuntimeModel({
+      runtimeHostId: input.runtimeHostId,
+      accountId: session.account.id,
+      modelId: input.modelId,
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
+  }
+
+  listRuntimeModelInstallations(input: {
+    sessionId: string | null;
+    businessId: string;
+    runtimeHostId: string;
+  }): ReturnType<ExecutionFabricStore["listRuntimeModelInstallations"]> {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
+    return this.executionFabricStore.listRuntimeModelInstallations(input.runtimeHostId);
+  }
   getActiveAgentModelBinding(
     ...args: Parameters<AgentRuntimeDomain["getActiveAgentModelBinding"]>
   ): ReturnType<AgentRuntimeDomain["getActiveAgentModelBinding"]> {
@@ -5061,6 +5135,15 @@ export class Cp2Store {
       agentModelBindings: [...this.agentRuntimeDomain.agentModelBindingsMap.values()].map(
         cloneAgentModelBinding
       ),
+      modelPreferences: [...this.executionFabricStore.modelPreferencesMap.values()].map(
+        (preference) => ({ ...preference })
+      ),
+      runtimeHosts: [...this.executionFabricStore.runtimeHostsMap.values()].map((host) => ({
+        ...host
+      })),
+      runtimeModelInstallations: [
+        ...this.executionFabricStore.runtimeModelInstallationsMap.values()
+      ].map((installation) => ({ ...installation })),
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpTokensDomain.mcpAccessTokensMap.values()],
       productFieldSchemas: [...this.salesDomain.productFieldSchemasMap.values()],
@@ -5151,6 +5234,7 @@ export class Cp2Store {
     this.messagingDomain.clear();
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
+    this.executionFabricStore.clear();
     this.quarantinedBusinessIds.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
@@ -5229,6 +5313,7 @@ export class Cp2Store {
 
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
+    this.executionFabricStore.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {

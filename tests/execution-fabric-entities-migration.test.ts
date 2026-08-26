@@ -56,19 +56,19 @@ describe("execution fabric entities migration", () => {
     expect(sql).not.toContain("alter table");
   });
 
-  it("stays in-memory-only through Phase 2 - Cp2Store holds it, but postgres-store.ts still never persists it", async () => {
+  it("is wired into Cp2Store in-memory (Phase 2) and persisted through the generic normalized-store mechanism (Phase 2.5)", async () => {
     const store = await readFile("services/api/src/cp2/store.ts", "utf8");
     const postgresStore = await readFile("services/api/src/cp2/postgres-store.ts", "utf8");
 
-    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md) deliberately wires
-    // ExecutionFabricStore into Cp2Store in-memory, for the flagged "Use with Agent" ModelPreference
-    // write path - this replaces the Phase 1 assertion that it was completely unwired. Postgres
-    // persistence for the three tables below remains a known, explicitly scoped-out gap (a real
-    // ModelPreference write does not survive a process restart yet) rather than silently added as a
-    // side effect of the cutover - see the Phase 2 report.
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md) wired ExecutionFabricStore into
+    // Cp2Store in-memory, for the flagged "Use with Agent" ModelPreference write path. Phase 2.5
+    // (docs/architecture/agent-execution-fabric-phase2-5.md) closed the durability gap that left
+    // open by registering the same three tables in postgres-store.ts's generic
+    // `normalizedCollections` mechanism - the same one every other envelope-shaped Cp2Store domain
+    // already uses, with no bespoke SQL written for this domain specifically.
     expect(store).toContain("ExecutionFabricStore");
-    expect(postgresStore).not.toContain("cp2_model_preferences");
-    expect(postgresStore).not.toContain("cp2_runtime_hosts");
-    expect(postgresStore).not.toContain("cp2_runtime_model_installations");
+    expect(postgresStore).toContain("cp2_model_preferences");
+    expect(postgresStore).toContain("cp2_runtime_hosts");
+    expect(postgresStore).toContain("cp2_runtime_model_installations");
   });
 });

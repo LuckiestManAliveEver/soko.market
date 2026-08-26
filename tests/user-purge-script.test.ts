@@ -20,8 +20,12 @@ describe("registered-user purge script", () => {
       (match) => match[1]
     );
 
-    expect(plan.size).toBe(156);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(151);
+    // Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md) added cp2_model_preferences/
+    // cp2_runtime_hosts/cp2_runtime_model_installations to postgres-store.ts's normalizedCollections
+    // once ExecutionFabricStore became durable - each must be classified DELETE here too, or an
+    // account purge would silently leave that user's data behind.
+    expect(plan.size).toBe(159);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(154);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")
