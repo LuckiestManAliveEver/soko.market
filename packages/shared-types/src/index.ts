@@ -3780,3 +3780,93 @@ export interface AgentRuntimeReadiness {
   }>;
   checkedAt: string;
 }
+
+/**
+ * Execution Fabric (Phase 1, docs/architecture/agent-execution-fabric-phase1.md) - durable entity
+ * shapes for the standalone Execution Planner. None of these are read or written by the live
+ * chat/inference path yet; `decideInferenceRoute` (apps/web/src/browser-inference-routing.ts)
+ * keeps serving production traffic unchanged. Persisted by
+ * services/api/src/cp2/domains/execution-fabric/store.ts, a standalone store (not part of
+ * Cp2Store) backed by migration 060_execution_fabric_entities.sql.
+ */
+
+export type ModelExecutionPreference = "local-first" | "cloud-first" | "balanced";
+
+export type ModelQualityPreference = "fastest" | "balanced" | "best";
+
+export type ModelPreferenceScope =
+  | "system"
+  | "user"
+  | "agent"
+  | "conversation"
+  | "request";
+
+/**
+ * One model-selection preference record. `scope`/`scopeId` together identify which precedence
+ * level this record represents (see precedence.ts's fixed
+ * request > conversation > agent > user > system order) - a single agent can have at most one
+ * "agent"-scope preference, a single conversation at most one "conversation"-scope preference,
+ * and so on. This is a preference/ranking, distinct from BusinessAgentProfileSummary.modelId (a
+ * single unverified legacy pointer) and from AgentModelBindingSummary (a single verified server
+ * binding) - see the Phase 0 audit's §1/§6 for why neither existing field is a clean substitute.
+ */
+export interface ModelPreferenceSummary {
+  id: string;
+  tenantId: string;
+  scope: ModelPreferenceScope;
+  /** The agentId/conversationId/userId/"system" this preference applies to, per `scope`. */
+  scopeId: string;
+  preferredModelIds: string[];
+  fallbackModelIds: string[];
+  requiredCapabilities: string[];
+  executionPreference: ModelExecutionPreference;
+  qualityPreference: ModelQualityPreference;
+  allowCloudFallback: boolean;
+  maxCostPerRequest: number | null;
+  maxLatencyMs: number | null;
+  minimumContextWindow: number | null;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export type RuntimeHostTrustLevel = "owner-verified" | "unverified";
+
+/**
+ * Identity + declared capabilities only. Liveness (online/offline, last heartbeat) is
+ * deliberately NOT a field here or anywhere else persisted - it is derived at read time from
+ * OwnerNodeBroker.listPresence()/isReachable() (services/api/src/inference/owner-node-broker.ts),
+ * per docs/inference/owner-node.md:32 ("Do not create a PostgreSQL heartbeat row"). A RuntimeHost
+ * row can exist and be perfectly valid while its live presence is absent (host powered off,
+ * never connected yet, etc.) - that is expected, not an error state.
+ */
+export interface RuntimeHostSummary {
+  id: string;
+  accountId: string;
+  ownerId: string;
+  name: string;
+  trustLevel: RuntimeHostTrustLevel;
+  /** Matches OwnerNodeBroker's registration shape so a host record can be looked up by nodeId. */
+  brokerNodeId: string | null;
+  declaredRuntimes: string[];
+  maxConcurrentJobs: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RuntimeModelInstallationStatus = "installed" | "removed";
+
+/**
+ * One model installed on one RuntimeHost. `modelId` is expected to resolve through the reconciled
+ * ModelRegistry (packages/execution-planner/src/registry-reconciliation.ts), not either individual
+ * source registry directly.
+ */
+export interface RuntimeModelInstallationSummary {
+  id: string;
+  runtimeHostId: string;
+  accountId: string;
+  modelId: string;
+  status: RuntimeModelInstallationStatus;
+  installedAt: string;
+  updatedAt: string;
+}

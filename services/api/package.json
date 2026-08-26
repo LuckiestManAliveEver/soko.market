@@ -40,6 +40,7 @@
     "@simplewebauthn/server": "^13.0.0",
     "@soko/business-core": "workspace:*",
     "@soko/event-core": "workspace:*",
+    "@soko/execution-planner": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",
