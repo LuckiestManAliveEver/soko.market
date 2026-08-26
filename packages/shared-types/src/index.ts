@@ -31,6 +31,10 @@ export interface EnvironmentConfig {
   workspaceDeliveryMaxFileBytes: number;
   workspaceRoot: string;
   redisUrl: string;
+  /** Phase 2 execution-fabric cutover flag - defaults off in every environment, including
+   *  production, until the flagged planner path has been proven and enabled per-environment
+   *  (docs/architecture/agent-execution-fabric-phase2.md §1). */
+  executionFabricEnabled: boolean;
 }
 
 export type InferenceRuntime =
@@ -3869,4 +3873,26 @@ export interface RuntimeModelInstallationSummary {
   status: RuntimeModelInstallationStatus;
   installedAt: string;
   updatedAt: string;
+}
+
+export type ExecutionHistoryOutcome = "completed" | "failed" | "no_compatible_model";
+
+/**
+ * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §4). One append-only record per
+ * turn the flagged planner path actually selected for - never written on the flag-off/legacy path.
+ * Deliberately carries only ids and outcomes, never prompt content or message text, so it is safe
+ * to retain and inspect without becoming a second place chat content is stored.
+ */
+export interface ExecutionHistoryRecord {
+  executionId: string;
+  conversationId: string | null;
+  messageId: string | null;
+  agentId: string;
+  modelPreferenceId: string | null;
+  resolvedModelId: string | null;
+  runtimeHostId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  outcome: ExecutionHistoryOutcome;
+  fallbackDepth: number;
 }

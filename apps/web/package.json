@@ -16,6 +16,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@mlc-ai/web-llm": "0.2.84",
     "@simplewebauthn/browser": "^13.0.0",
+    "@soko/execution-planner": "workspace:*",
     "@soko/shared-types": "workspace:*",
     "@soko/sync-core": "workspace:*",
     "@soko/tool-core": "workspace:*",

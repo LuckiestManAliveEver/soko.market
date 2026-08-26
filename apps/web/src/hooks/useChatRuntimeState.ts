@@ -79,6 +79,8 @@ import { executeInferenceRoute } from "../inference/executor";
 import { readClientInferencePreferences } from "../inference/preferences";
 import { createRemoteInferenceProvider } from "../inference/remote-provider";
 import { decideClientInferenceRoute, defaultInferencePriority } from "../inference/router";
+import { executionFabricEnabled } from "../execution-fabric/feature-flag";
+import { planBrowserExecutionRoute } from "../execution-fabric/client-planner";
 import { downloadedAgentModelMustStayLocal } from "../inference/local-runtime-boundary";
 import { collectClientWorkspaceFileTransfers } from "../local-workspace-files";
 import { apiFetch, isRetryableApiRequestError, readApiBaseUrl } from "../lib/api";
@@ -789,7 +791,22 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           : ("local-only" as const)
     };
     let inferenceRoute: InferenceRouteDecision | null = null;
-    if (inferenceRequest !== null && clientInferenceFeatureFlags.clientFirst) {
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §8). Flag off (the default,
+    // including production): executionFabricEnabled is false, this block never runs, and
+    // `inferenceRoute` stays null exactly as it did before this phase - the existing
+    // decideClientInferenceRoute call below is completely unaffected. Flag on: the Execution
+    // Planner decides browser-local routing using the shopkeeper's already-selected local model;
+    // it only ever produces a route when a matching browser InferenceProvider genuinely exists in
+    // `inferenceProviders` (already built above, unchanged) - executeInferenceRoute (below,
+    // unchanged) then runs that exact same provider exactly as it always has.
+    if (executionFabricEnabled && inferenceRequest !== null) {
+      inferenceRoute = planBrowserExecutionRoute({
+        installedModels: listLocalAiModels(),
+        preferredModelId: browserState?.settings?.selectedModelId ?? null,
+        providers: inferenceProviders
+      });
+    }
+    if (inferenceRoute === null && inferenceRequest !== null && clientInferenceFeatureFlags.clientFirst) {
       inferenceRoute = await decideClientInferenceRoute({
         modelId: inferenceRequest.modelId,
         capabilities: inferenceCapabilities,

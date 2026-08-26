@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  ExecutionHistoryOutcome,
+  ExecutionHistoryRecord,
   ModelExecutionPreference,
   ModelPreferenceScope,
   ModelPreferenceSummary,
@@ -37,6 +39,7 @@ export class ExecutionFabricStore {
   private readonly modelPreferences = new Map<string, ModelPreferenceSummary>();
   private readonly runtimeHosts = new Map<string, RuntimeHostSummary>();
   private readonly runtimeModelInstallations = new Map<string, RuntimeModelInstallationSummary>();
+  private readonly executionHistory = new Map<string, ExecutionHistoryRecord>();
 
   createModelPreference(input: {
     tenantId: string;
@@ -213,5 +216,66 @@ export class ExecutionFabricStore {
           installation.runtimeHostId === runtimeHostId && installation.status === "installed"
       )
       .map((installation) => ({ ...installation }));
+  }
+
+  /**
+   * Opens one append-only execution-history record for a turn the flagged planner path is about
+   * to attempt (docs/architecture/agent-execution-fabric-phase2.md §4). Never called on the
+   * flag-off/legacy path - that path has no ExecutionPlan to record against.
+   */
+  startExecution(input: {
+    conversationId: string | null;
+    messageId: string | null;
+    agentId: string;
+    modelPreferenceId: string | null;
+    now?: Date;
+  }): ExecutionHistoryRecord {
+    const record: ExecutionHistoryRecord = {
+      executionId: randomUUID(),
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      agentId: input.agentId,
+      modelPreferenceId: input.modelPreferenceId,
+      resolvedModelId: null,
+      runtimeHostId: null,
+      startedAt: (input.now ?? new Date()).toISOString(),
+      completedAt: null,
+      outcome: "failed",
+      fallbackDepth: 0
+    };
+    this.executionHistory.set(record.executionId, record);
+    return { ...record };
+  }
+
+  completeExecution(input: {
+    executionId: string;
+    resolvedModelId: string | null;
+    runtimeHostId: string | null;
+    outcome: ExecutionHistoryOutcome;
+    fallbackDepth: number;
+    now?: Date;
+  }): ExecutionHistoryRecord {
+    const existing = this.executionHistory.get(input.executionId);
+    if (existing === undefined) {
+      throw new Cp2Error(404, "execution_history_not_found", "Execution history record was not found.");
+    }
+    const record: ExecutionHistoryRecord = {
+      ...existing,
+      resolvedModelId: input.resolvedModelId,
+      runtimeHostId: input.runtimeHostId,
+      outcome: input.outcome,
+      fallbackDepth: input.fallbackDepth,
+      completedAt: (input.now ?? new Date()).toISOString()
+    };
+    this.executionHistory.set(record.executionId, record);
+    return { ...record };
+  }
+
+  listExecutionHistory(agentId: string, limit = 50): ExecutionHistoryRecord[] {
+    return [...this.executionHistory.values()]
+      .filter((record) => record.agentId === agentId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+      .slice(0, limit)
+      .map((record) => ({ ...record }));
   }
 }

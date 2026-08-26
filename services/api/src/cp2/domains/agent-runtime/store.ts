@@ -143,6 +143,7 @@ import {
   createRuntimeModelRoute,
   requireReadyClientInferenceCompletion
 } from "./runtime-model-routing.js";
+import { createExecutionFabricRuntimeModelRoute } from "../execution-fabric/runtime-route.js";
 
 import { executeRuntimeCapability } from "./capabilities.js";
 import {
@@ -2498,7 +2499,15 @@ export class AgentRuntimeDomain {
             accountId: auth.account.id,
             userId: auth.user.id
           });
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3): this pre-gate predates the
+    // flagged planner path and assumes the legacy `activeBinding` is the only way a model can be
+    // "configured" - with the flag on, an agent-scoped ModelPreference is an equally valid
+    // configuration signal, and `createRuntimeModelRoute`'s planner branch already produces its
+    // own correct AGENT_MODEL_UNAVAILABLE (below, once `modelRoute.trace.status !== "available"`)
+    // when no candidate can execute. Skipping this early legacy-binding-specific gate when the
+    // flag is on defers entirely to that downstream handling instead of guessing here.
     if (
+      this.deps.executionFabricEnabled !== true &&
       this.deps.modelRuntimeAdapterResolver !== undefined &&
       activeBinding === null &&
       clientInferenceCompletion === null &&
@@ -2736,6 +2745,25 @@ export class AgentRuntimeDomain {
           executionTarget: activeBinding.executionTarget,
           runtimeErrorCode: modelRoute.trace.errorCode
         }
+      );
+    }
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §6): the check above is keyed on
+    // the legacy `activeBinding`, which the flagged planner path deliberately never creates - a
+    // ModelPreference, not a binding, is what "configures" a model now. Mirror the same
+    // fail-loud behavior for the flagged path using the trace's own error info instead of a
+    // binding's, rather than silently letting an unexecutable plan look like a normal empty reply.
+    if (
+      this.deps.executionFabricEnabled === true &&
+      activeBinding === null &&
+      modelRoute.trace !== null &&
+      modelRoute.trace.status !== "available"
+    ) {
+      throw new Cp2Error(
+        modelRoute.trace.status === "timeout" ? 504 : 503,
+        "AGENT_MODEL_UNAVAILABLE",
+        "The active agent model could not complete this message.",
+        true,
+        { runtimeErrorCode: modelRoute.trace.errorCode }
       );
     }
     appendTelemetry("intent.routed", "completed", null, null, {
@@ -3432,6 +3460,21 @@ export class AgentRuntimeDomain {
     trace: RuntimeModelTrace | null;
     recallCandidate: RecallCandidate | null;
   }> {
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). Flag off (the default,
+    // including in production): this branch is never taken, and the call below is byte-for-byte
+    // what this method did before Phase 2 existed. Flag on: the Execution Planner replaces the
+    // legacy single active-binding lookup entirely, but still executes through the exact same
+    // `modelRuntimeAdapterResolver`-backed adapters.
+    if (this.deps.executionFabricEnabled === true) {
+      return createExecutionFabricRuntimeModelRoute(
+        {
+          modelRuntimeAdapterResolver: this.deps.modelRuntimeAdapterResolver,
+          executionFabricStore: this.deps.executionFabricStore,
+          activeBinding: this.activeAgentModelBinding(input.shopRuntime.agentId)
+        },
+        input
+      );
+    }
     return createRuntimeModelRoute(
       {
         resolveRuntimeModelProvider: (runtime, modelId) =>

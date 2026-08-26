@@ -128,7 +128,8 @@ const cp2StoreOptions = {
   messageWebBaseUrl,
   workspaceDeliveryMaxFileBytes: config.workspaceDeliveryMaxFileBytes,
   ...(config.workspaceRoot === "" ? {} : { workspaceRoot: config.workspaceRoot }),
-  ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
+  ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors }),
+  executionFabricEnabled: config.executionFabricEnabled
 };
 
 const cp2Store = shouldUsePostgresStore

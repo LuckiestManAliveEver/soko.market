@@ -37,8 +37,10 @@ import type {
   ClientInferenceCompletion,
   InstalledAgentModelSummary,
   ModelCompatibilityStatus,
+  ModelExecutionPreference,
   ModelExecutionTarget,
   ModelInstallationStatus,
+  ModelQualityPreference,
   PreferredExecutionMode,
   RuntimeRecallEscalation
 } from "@soko/shared-types";
@@ -57,6 +59,7 @@ import {
   parseBoolean,
   parseIntegerString,
   parseIsoTimestamp,
+  parseNullableNumber,
   parseNullableString,
   parseOptionalString,
   parsePositiveInteger,
@@ -178,6 +181,23 @@ interface AgentModelActivationBody extends AgentModelTestBody {
 
 interface AiModelActivationBody {
   modelId?: string;
+}
+
+/**
+ * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3) - what the corrected
+ * "Use with Agent" UI action sends: a `ModelPreference` update, replacing the legacy
+ * device-specific permanent binding write.
+ */
+interface ModelPreferenceBody {
+  preferredModelIds?: unknown;
+  fallbackModelIds?: unknown;
+  requiredCapabilities?: unknown;
+  executionPreference?: string;
+  qualityPreference?: string;
+  allowCloudFallback?: boolean;
+  maxCostPerRequest?: number | null;
+  maxLatencyMs?: number | null;
+  minimumContextWindow?: number | null;
 }
 
 interface AgentProfileBody {
@@ -403,6 +423,61 @@ export function registerAgentRuntimeRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           modelId: parseString(request.body.modelId, "modelId")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3). One agent per business today
+  // (Phase 0 audit §1), so this is always the agent-scoped ModelPreference for `businessId` itself
+  // - `scopeId` matches `businessId` rather than a separate agentId. This is what "Use with Agent"
+  // now writes, replacing the legacy `POST /api/agents/:agentId/models/:modelId/activate` binding.
+  app.get(
+    "/businesses/:businessId/model-preference",
+    async (request: FastifyRequest<{ Params: BusinessParams }>, reply) => {
+      try {
+        return store.getModelPreference({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          scope: "agent",
+          scopeId: request.params.businessId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/businesses/:businessId/model-preference",
+    async (
+      request: FastifyRequest<{ Params: BusinessParams; Body: ModelPreferenceBody }>,
+      reply
+    ) => {
+      try {
+        return store.createModelPreference({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          scope: "agent",
+          scopeId: request.params.businessId,
+          preferredModelIds: parseStringArray(request.body.preferredModelIds, "preferredModelIds", 10),
+          fallbackModelIds: parseStringArray(request.body.fallbackModelIds, "fallbackModelIds", 10),
+          requiredCapabilities: parseStringArray(
+            request.body.requiredCapabilities,
+            "requiredCapabilities",
+            20
+          ),
+          executionPreference: parseModelExecutionPreference(request.body.executionPreference),
+          qualityPreference: parseModelQualityPreference(request.body.qualityPreference),
+          allowCloudFallback: parseBoolean(request.body.allowCloudFallback, "allowCloudFallback"),
+          maxCostPerRequest: parseNullableNumber(request.body.maxCostPerRequest ?? null, "maxCostPerRequest"),
+          maxLatencyMs: parseNullableNumber(request.body.maxLatencyMs ?? null, "maxLatencyMs"),
+          minimumContextWindow: parseNullableNumber(
+            request.body.minimumContextWindow ?? null,
+            "minimumContextWindow"
+          )
         });
       } catch (error) {
         return sendCp2Error(reply, error);
@@ -1407,6 +1482,16 @@ function parseAgentModelFallbackPolicy(value: unknown): AgentModelFallbackPolicy
     return value;
   }
   throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
+}
+
+function parseModelExecutionPreference(value: unknown): ModelExecutionPreference {
+  if (value === "local-first" || value === "cloud-first" || value === "balanced") return value;
+  throw new Cp2Error(400, "execution_preference_invalid", "Execution preference is invalid.");
+}
+
+function parseModelQualityPreference(value: unknown): ModelQualityPreference {
+  if (value === "fastest" || value === "balanced" || value === "best") return value;
+  throw new Cp2Error(400, "quality_preference_invalid", "Quality preference is invalid.");
 }
 
 function parseModelExecutionTarget(value: unknown): ModelExecutionTarget {

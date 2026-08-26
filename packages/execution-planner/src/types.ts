@@ -1,4 +1,6 @@
 import type {
+  InferenceChunk,
+  InferenceRequest,
   ModelExecutionPreference,
   ModelPreferenceScope,
   ModelQualityPreference,
@@ -165,4 +167,44 @@ export interface PlannerInput {
   constraints: PlannerConstraints;
   weights: PlannerWeights;
   requestOriginHostId?: string;
+}
+
+/**
+ * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md). Reused verbatim rather than
+ * inventing a second wire/event protocol: `RuntimeRequest` is `InferenceRequest` and `RuntimeEvent`
+ * is `InferenceChunk` - the one streaming shape every existing live runtime (browser-webgpu,
+ * browser-wasm, native-llama-cpp, owner-node, cloud-fallback) already produces
+ * (packages/shared-types/src/index.ts, consumed by apps/web/src/inference/executor.ts). A
+ * RuntimeAdapter wraps a specific ALREADY-EXISTING execution path (never a new execution
+ * capability) behind this one contract so a plan's selected candidate can be executed without the
+ * caller knowing which concrete runtime backs it.
+ */
+export type RuntimeRequest = InferenceRequest;
+export type RuntimeEvent = InferenceChunk;
+
+export interface RuntimeAdapter {
+  canExecute(plan: ExecutionPlan): Promise<boolean>;
+  execute(plan: ExecutionPlan, request: RuntimeRequest): AsyncIterable<RuntimeEvent>;
+  cancel?(runtimeSessionId: string): Promise<void>;
+}
+
+/**
+ * The full set of ways a plan can fail to be executable, spanning both planning time (every
+ * `CandidateRejectionReason` from filterCandidates) and two additional whole-plan/execution-time
+ * states that are not about any one candidate: `NO_COMPATIBLE_MODEL` (every candidate was
+ * rejected, or none were ever generated) and `EXECUTION_HOST_LOST` (a candidate was accepted and
+ * selected, but the adapter that was supposed to run it failed/disappeared at execution time -
+ * this can never be produced by the pure planner itself, only by a caller's adapter-execution
+ * loop after planning has finished).
+ */
+export type PlannerErrorCode =
+  | CandidateRejectionReason
+  | "NO_COMPATIBLE_MODEL"
+  | "NO_RUNTIME_HOST"
+  | "EXECUTION_HOST_LOST";
+
+export interface PlannerError {
+  code: PlannerErrorCode;
+  modelId: string | null;
+  hostId: string | "cloud" | null;
 }

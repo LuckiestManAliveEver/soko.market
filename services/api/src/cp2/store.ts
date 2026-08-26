@@ -193,6 +193,7 @@ import type {
   UserSummary
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
+import { ExecutionFabricStore } from "./domains/execution-fabric/store.js";
 import {
   createChannelGatewayFromEnvironment,
   type ChannelGateway
@@ -595,6 +596,8 @@ export interface Cp2StoreOptions {
   workspaceRoot?: string;
   workspaceDeliveryMaxFileBytes?: number;
   conversationAttachmentBlobStore?: ConversationAttachmentBlobStore;
+  /** Phase 2 execution-fabric cutover flag - see EnvironmentConfig.executionFabricEnabled. */
+  executionFabricEnabled?: boolean;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -991,7 +994,9 @@ export class Cp2Store {
         : { runtimeModelProviderResolver: this.options.runtimeModelProviderResolver }),
       ...(this.options.runtimeModelProvider === undefined
         ? {}
-        : { runtimeModelProvider: this.options.runtimeModelProvider })
+        : { runtimeModelProvider: this.options.runtimeModelProvider }),
+      executionFabricEnabled: this.options.executionFabricEnabled === true,
+      executionFabricStore: this.executionFabricStore
     });
   }
 
@@ -1031,6 +1036,12 @@ export class Cp2Store {
   // below. `mcpAccessTokens`/`mcpTokenIdByHash` deliberately stay here (see that domain's header
   // comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
+  // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md). Deliberately NOT part of the
+  // generic snapshot/restore/Postgres-persistence sweeps below - ExecutionFabricStore stays
+  // in-memory-only in this phase (same as Phase 1 left it); ModelPreference records written via
+  // the flagged "Use with Agent" path do not survive a process restart yet. This is a known,
+  // explicitly scoped gap (see the Phase 2 report), not an oversight.
+  private readonly executionFabricStore = new ExecutionFabricStore();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
@@ -2774,6 +2785,68 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["activateAiModel"]>
   ): ReturnType<AgentRuntimeDomain["activateAiModel"]> {
     return this.agentRuntimeDomain.activateAiModel(...args);
+  }
+
+  /**
+   * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3) - what "Use with Agent" now
+   * writes: a `ModelPreference` at the given scope, not a device-specific permanent binding.
+   * Session-authorized the same way every other agent-runtime write is (`membership:manage`),
+   * even though the underlying store call is plain and un-authenticated on its own (see
+   * ExecutionFabricStore's own header comment on why it does not authenticate itself).
+   */
+  createModelPreference(input: {
+    sessionId: string | null;
+    businessId: string;
+    scope: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["scope"];
+    scopeId: string;
+    preferredModelIds: string[];
+    fallbackModelIds: string[];
+    requiredCapabilities: string[];
+    executionPreference: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["executionPreference"];
+    qualityPreference: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["qualityPreference"];
+    allowCloudFallback: boolean;
+    maxCostPerRequest: number | null;
+    maxLatencyMs: number | null;
+    minimumContextWindow: number | null;
+    now?: Date;
+  }): ReturnType<ExecutionFabricStore["createModelPreference"]> {
+    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    return this.executionFabricStore.createModelPreference({
+      tenantId: input.businessId,
+      scope: input.scope,
+      scopeId: input.scopeId,
+      preferredModelIds: input.preferredModelIds,
+      fallbackModelIds: input.fallbackModelIds,
+      requiredCapabilities: input.requiredCapabilities,
+      executionPreference: input.executionPreference,
+      qualityPreference: input.qualityPreference,
+      allowCloudFallback: input.allowCloudFallback,
+      maxCostPerRequest: input.maxCostPerRequest,
+      maxLatencyMs: input.maxLatencyMs,
+      minimumContextWindow: input.minimumContextWindow,
+      updatedBy: session.user.id,
+      ...(input.now === undefined ? {} : { now: input.now })
+    });
+  }
+
+  getModelPreference(input: {
+    sessionId: string | null;
+    businessId: string;
+    scope: Parameters<ExecutionFabricStore["getModelPreference"]>[1];
+    scopeId: string;
+  }): ReturnType<ExecutionFabricStore["getModelPreference"]> {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
+    return this.executionFabricStore.getModelPreference(input.businessId, input.scope, input.scopeId);
+  }
+
+  listExecutionHistory(input: {
+    sessionId: string | null;
+    businessId: string;
+    agentId: string;
+    limit?: number;
+  }): ReturnType<ExecutionFabricStore["listExecutionHistory"]> {
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
+    return this.executionFabricStore.listExecutionHistory(input.agentId, input.limit);
   }
   getActiveAgentModelBinding(
     ...args: Parameters<AgentRuntimeDomain["getActiveAgentModelBinding"]>

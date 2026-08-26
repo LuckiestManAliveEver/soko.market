@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AiModelSummary, RuntimeModelDefinition } from "../packages/shared-types/src";
-import { reconcileModelRegistries } from "../packages/execution-planner/src/index";
+import {
+  EXECUTION_TARGET_CONFLICT_TIEBREAK,
+  reconcileModelRegistries
+} from "../packages/execution-planner/src/index";
 import { reconcileLiveModelRegistries } from "../services/api/src/cp2/domains/execution-fabric/registry-adapter";
 import { aiModelRegistry } from "../services/api/src/cp2/domains/agent-runtime/model-catalog";
 import { runtimeModels } from "../packages/shared-types/src/index";
@@ -115,6 +118,22 @@ describe("model registry reconciliation - synthetic data", () => {
     });
   });
 
+  it("resolves a genuine executionTarget conflict using the one named tiebreak constant, not arbitrarily", () => {
+    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). This test is written to
+    // fail the moment EXECUTION_TARGET_CONFLICT_TIEBREAK is flipped without updating this
+    // assertion - proving the tiebreak actually drives the resolved value, not just that a
+    // conflict is recorded (that is already covered by the "surfaces a genuine executionTarget
+    // conflict" test above).
+    const { models } = reconcileModelRegistries(
+      [aiModel({ id: "disputed-target", provider: "local" })],
+      [runtimeModel({ id: "disputed-target", executionTarget: "backend" })]
+    );
+    const resolved = models.find((model) => model.id === "disputed-target");
+    expect(resolved?.executionTarget).toBe(
+      EXECUTION_TARGET_CONFLICT_TIEBREAK === "trust-runtimeModels" ? "backend" : "local"
+    );
+  });
+
   it("is deterministic - identical input always reconciles to the same result", () => {
     const inputs: [AiModelSummary[], RuntimeModelDefinition[]] = [
       [aiModel({ id: "a" }), aiModel({ id: "b", provider: "openai" })],
@@ -147,7 +166,7 @@ describe("model registry reconciliation - real registries", () => {
     // provider: "ollama" / executionTarget: "backend" (a server-hosted model). This test would
     // fail (and should) the moment either registry is edited to actually agree.
     const sharedIds = ["qwen2.5-0.5b-android", "qwen2.5-1.5b-android", "smollm2-360m-android"];
-    const { conflicts } = reconcileLiveModelRegistries();
+    const { models, conflicts } = reconcileLiveModelRegistries();
     for (const id of sharedIds) {
       expect(aiModelRegistry.some((model) => model.id === id)).toBe(true);
       expect(Object.prototype.hasOwnProperty.call(runtimeModels, id)).toBe(true);
@@ -155,6 +174,12 @@ describe("model registry reconciliation - real registries", () => {
         (entry) => entry.modelId === id && entry.field === "executionTarget"
       );
       expect(conflict).toMatchObject({ aiModelRegistryValue: "local", runtimeModelsValue: "backend" });
+      // The tiebreak (§1) resolves each of these three real conflicts the same way the synthetic
+      // test above proves in isolation - trusting runtimeModels by default.
+      const resolved = models.find((model) => model.id === id);
+      expect(resolved?.executionTarget).toBe(
+        EXECUTION_TARGET_CONFLICT_TIEBREAK === "trust-runtimeModels" ? "backend" : "local"
+      );
     }
   });
 });
