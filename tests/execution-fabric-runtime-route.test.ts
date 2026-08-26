@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentModelBindingSummary, RuntimeModelPrompt } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
@@ -16,6 +16,90 @@ const secondaryModelId = "qwen2.5-1.5b-android";
  * unit test of the planner in isolation.
  */
 describe("execution fabric - flagged planner-driven chat routing (backend-hosted, end to end)", () => {
+  it("logs compact execution-plan summaries when a plan resolves and when one is rejected", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const resolvedStore = createCp2Store({
+      executionFabricEnabled: true,
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === primaryModelId && executionTarget === "backend"
+          ? healthyAdapter(primaryModelId)
+          : undefined
+    });
+    const resolvedApp = buildApi({ cp2: { store: resolvedStore } });
+    const rejectedStore = createCp2Store({ executionFabricEnabled: true });
+    const rejectedApp = buildApi({ cp2: { store: rejectedStore } });
+
+    try {
+      const resolvedOwner = await createOwnerBusiness(
+        resolvedApp,
+        "+254700003006",
+        "Resolved Log Shop"
+      );
+      await putJson(
+        resolvedApp,
+        `/businesses/${resolvedOwner.businessId}/model-preference`,
+        modelPreferencePayload([primaryModelId]),
+        resolvedOwner.cookie
+      );
+      await sendMessage(
+        resolvedApp,
+        resolvedOwner,
+        await firstConversationId(resolvedApp, resolvedOwner),
+        "resolved-log-0001"
+      );
+
+      const rejectedOwner = await createOwnerBusiness(
+        rejectedApp,
+        "+254700003007",
+        "Rejected Log Shop"
+      );
+      await putJson(
+        rejectedApp,
+        `/businesses/${rejectedOwner.businessId}/model-preference`,
+        {
+          ...modelPreferencePayload([primaryModelId]),
+          minimumContextWindow: 10_000_000
+        },
+        rejectedOwner.cookie
+      );
+      await sendMessage(
+        rejectedApp,
+        rejectedOwner,
+        await firstConversationId(rejectedApp, rejectedOwner),
+        "rejected-log-0001"
+      );
+
+      const prefix = "[execution-fabric] ";
+      const logPayloads = consoleLog.mock.calls
+        .map(([line]) => line)
+        .filter((line): line is string => typeof line === "string" && line.startsWith(prefix))
+        .map((line) => JSON.parse(line.slice(prefix.length)) as Record<string, unknown>);
+      const resolvedPayload = logPayloads.find((payload) => payload.outcome === "resolved");
+      const rejectedPayload = logPayloads.find(
+        (payload) => payload.outcome === "rejected" && "errorCode" in payload
+      );
+
+      expect(resolvedPayload).toEqual({
+        executionId: expect.any(String),
+        resolvedPrecedenceLevel: "agent",
+        candidateCount: expect.any(Number),
+        rejectedCount: expect.any(Number),
+        outcome: "resolved"
+      });
+      expect(rejectedPayload).toEqual({
+        executionId: expect.any(String),
+        resolvedPrecedenceLevel: "agent",
+        candidateCount: 0,
+        rejectedCount: expect.any(Number),
+        outcome: "rejected",
+        errorCode: expect.any(String)
+      });
+    } finally {
+      consoleLog.mockRestore();
+      await Promise.all([resolvedApp.close(), rejectedApp.close()]);
+    }
+  });
+
   it("writes a ModelPreference via 'Use with Agent', and the planner selects and executes it without creating a device-specific binding", async () => {
     const prompts: RuntimeModelPrompt[] = [];
     const adapter = healthyAdapter(primaryModelId, { prompts });

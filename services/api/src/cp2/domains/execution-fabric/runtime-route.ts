@@ -175,16 +175,26 @@ export async function createExecutionFabricRuntimeModelRoute(
   });
 
   const plan = planExecution(plannerInput);
+  const candidateCount = plan.alternatives.length + (plan.selected === null ? 0 : 1);
+  const executionPlanLog = {
+    executionId: history.executionId,
+    resolvedPrecedenceLevel: plan.resolvedPrecedenceLevel,
+    candidateCount,
+    rejectedCount: plan.rejected.length,
+    outcome: plan.selected === null ? "rejected" : "resolved"
+  };
 
   input.appendTelemetry("model.prompt_built", "completed", null, null, {
     executionFabric: true,
     resolvedPrecedenceLevel: plan.resolvedPrecedenceLevel,
-    candidateCount: plan.alternatives.length + (plan.selected === null ? 0 : 1),
+    candidateCount,
     rejectedCount: plan.rejected.length
   });
+  console.log(`[execution-fabric] ${JSON.stringify(executionPlanLog)}`);
 
   if (plan.selected === null) {
     const outcome = describePlannerOutcome(plan);
+    const errorCode = outcome?.code ?? "NO_COMPATIBLE_MODEL";
     state.executionFabricStore.completeExecution({
       executionId: history.executionId,
       resolvedModelId: null,
@@ -196,8 +206,9 @@ export async function createExecutionFabricRuntimeModelRoute(
     input.appendTelemetry("model.completed", "blocked", null, null, {
       provider: null,
       adapterStatus: "disabled",
-      errorCode: outcome?.code ?? "NO_COMPATIBLE_MODEL"
+      errorCode
     });
+    console.log(`[execution-fabric] ${JSON.stringify({ ...executionPlanLog, errorCode })}`);
     return {
       proposal: null,
       recallCandidate: null,
@@ -207,7 +218,7 @@ export async function createExecutionFabricRuntimeModelRoute(
         durationMs: null,
         fallbackUsed: true,
         outputKind: null,
-        errorCode: outcome?.code ?? "NO_COMPATIBLE_MODEL"
+        errorCode
       }
     };
   }
