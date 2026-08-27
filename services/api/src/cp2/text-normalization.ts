@@ -52,6 +52,97 @@ export function isSokoStorefrontId(value: string): boolean {
   return /^soko\.[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/iu.test(value.trim());
 }
 
+/**
+ * Reserved handles a store may never claim, whether via initial generation or the rename flow
+ * (docs/architecture/soko-id-slug-system.md). Derived from what's actually in this monorepo today
+ * - not a guessed list - so a change to real routing does not silently drift out of sync with
+ * this constant:
+ *   - `api` (services/api's own domain, render.yaml:23 `api.soko.market`) and `www` (an origin this
+ *     app already treats as canonical - see WEB_ORIGINS/AUTH_ALLOWED_REDIRECT_ORIGINS in
+ *     render.yaml/.env.example - even though no literal `www.soko.market` Render domain exists yet).
+ *   - Every top-level API path segment (grep `app.(get|post|put|delete|patch)("/<segment>`,
+ *     services/api/src/cp2/routes.ts / app.ts): auth, account, account-restoration, businesses,
+ *     logout, logout-all, roles, session, sessions, v1.
+ *   - Every top-level PWA route segment (apps/web/src/routes.ts): chat, marketplace, sell,
+ *     workspace, catalogue, products, shops, agent, agents, customers, suppliers, pos, invoices,
+ *     network, sync, runtime, payments, receipts, logistics, settings, beta, launch, reports,
+ *     notifications, signup, login, account-deletion, terms, privacy.
+ *   - `s`: the universal short-link prefix this same phase adds (`GET /s/:slug`) - a store must
+ *     never be able to claim the handle that would collide with that route itself.
+ *   - Generic infra/product conventions with no literal owner in this repo yet, but real enough
+ *     that a store claiming them would be confusing or actively break something the moment they
+ *     are wired up: admin, app, assets, cdn, docs, help, mail, staging, status, support.
+ */
+export const reservedSokoHandles: ReadonlySet<string> = new Set([
+  "api",
+  "www",
+  "auth",
+  "account",
+  "account-restoration",
+  "businesses",
+  "logout",
+  "logout-all",
+  "roles",
+  "session",
+  "sessions",
+  "v1",
+  "chat",
+  "marketplace",
+  "sell",
+  "workspace",
+  "catalogue",
+  "products",
+  "shops",
+  "agent",
+  "agents",
+  "customers",
+  "suppliers",
+  "pos",
+  "invoices",
+  "network",
+  "sync",
+  "runtime",
+  "payments",
+  "receipts",
+  "logistics",
+  "settings",
+  "beta",
+  "launch",
+  "reports",
+  "notifications",
+  "signup",
+  "login",
+  "account-deletion",
+  "terms",
+  "privacy",
+  "s",
+  "admin",
+  "app",
+  "assets",
+  "cdn",
+  "docs",
+  "help",
+  "mail",
+  "staging",
+  "status",
+  "support"
+]);
+
+export function isReservedSokoHandle(handle: string): boolean {
+  return reservedSokoHandles.has(handle.trim().toLowerCase());
+}
+
+/** DNS label / Telegram `start` param minimum this repo treats as a usable handle - below this,
+ *  callers fall back to a generated base (see Cp2Store.createGlobalShopId). */
+export const minimumSokoHandleLength = 2;
+
+/** DNS label maximum (RFC 1035) - documented here as the ceiling any handle must respect to also
+ *  work as a `{handle}.soko.market` subdomain label. `createSokoHandle`'s own auto-generation cap
+ *  below (48) already sits comfortably under this and is left unchanged - this constant exists for
+ *  the rename flow, where a merchant-supplied custom handle is validated against the real DNS
+ *  limit rather than the more conservative auto-generation cap. */
+export const maximumSokoHandleLength = 63;
+
 export function createSokoHandle(value: string): string {
   return value
     .normalize("NFKD")

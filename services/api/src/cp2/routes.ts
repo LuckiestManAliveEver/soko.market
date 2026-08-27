@@ -11,6 +11,7 @@ import type {
   InferenceRequest,
   OwnerInferenceNodeMessage
 } from "@soko/shared-types";
+import { getStoreLinks } from "@soko/shared-types";
 import { isSyncMutationType } from "@soko/sync-core";
 import {
   clearRefreshCookie,
@@ -106,6 +107,16 @@ export interface Cp2RouteOptions {
   receiptOCRProcessor?: ReceiptOCRProcessor;
   store?: Cp2Store;
   vapidPublicKey?: string;
+  /** Origin the web PWA is actually served from - used only to build the universal `/s/:slug`
+   *  redirect's absolute Location header (docs/architecture/soko-id-slug-system.md). Reuses the
+   *  same value/env var (`WEB_PUBLIC_URL`) services/api/src/index.ts already threads through for
+   *  message links, rather than introducing a second "where is the web app" setting. */
+  webPublicUrl?: string;
+  /** For `getStoreLinks()`'s `telegram` field in the rename endpoint's response - reuses
+   *  `TELEGRAM_BOT_USERNAME`, the same env var `TelegramChannelAdapter` already reads
+   *  (services/api/src/messaging/channel-gateway.ts). Empty string when Telegram isn't
+   *  configured, matching that adapter's own convention. */
+  telegramBotUsername?: string;
 }
 
 interface SyncPullQuery {
@@ -164,6 +175,10 @@ interface RoleCheckBody {
   businessId?: string;
   role?: string;
   permission?: string;
+}
+
+interface SokoIdRenameBody {
+  handle?: string;
 }
 
 interface SessionContextBody {
@@ -237,6 +252,8 @@ interface AccountRestorationParams {
 
 export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions = {}): Cp2Store {
   const store = options.store ?? createCp2Store();
+  const webPublicUrl = (options.webPublicUrl ?? "https://soko.market").replace(/\/+$/u, "");
+  const telegramBotUsername = options.telegramBotUsername ?? "";
   const receiptOCRProcessor = options.receiptOCRProcessor;
   const binaryUploadPipeline = options.binaryUploadPipeline;
   const githubModelCatalog =
@@ -1553,6 +1570,52 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
     }
   });
 
+  // Explicit merchant-initiated storefront id (sokoId) rename
+  // (docs/architecture/soko-id-slug-system.md). Pinned by default at creation - this is the only
+  // way it ever changes.
+  app.put(
+    "/businesses/:businessId/soko-id",
+    async (request: FastifyRequest<{ Params: BusinessParams; Body: SokoIdRenameBody }>, reply) => {
+      try {
+        const business = store.renameSokoId({
+          sessionId: readSessionCookie(request.headers.cookie),
+          businessId: request.params.businessId,
+          handle: parseString(request.body.handle, "handle")
+        });
+        return {
+          business,
+          links: getStoreLinks(business.sokoId, { webOrigin: webPublicUrl, telegramBotUsername })
+        };
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  // The channel-neutral fallback link (QR codes, flyers, anywhere the viewer's channel isn't
+  // known) - resolves through the same shared resolver every channel uses, never a duplicate
+  // lookup (docs/architecture/soko-id-slug-system.md).
+  app.get(
+    "/s/:slug",
+    async (request: FastifyRequest<{ Params: { slug: string } }>, reply) => {
+      const resolution = store.resolveBusinessBySokoId(request.params.slug);
+      if (resolution === null) {
+        return reply.code(404).send({
+          code: "storefront_not_found",
+          message: "This storefront link is no longer valid."
+        });
+      }
+      if (resolution.status === "stale") {
+        return reply.code(410).send({
+          code: "storefront_moved",
+          message: "This shop has moved to a new storefront link.",
+          redirectTo: publicAgentUrl(webPublicUrl, resolution.business.sokoId)
+        });
+      }
+      return reply.redirect(publicAgentUrl(webPublicUrl, resolution.business.sokoId), 302);
+    }
+  );
+
   app.put("/account/phone", async (request: FastifyRequest<{ Body: OwnerPhoneBody }>, reply) => {
     try {
       return store.updateOwnerPhone({
@@ -2068,6 +2131,15 @@ function parseLanguage(value: string | undefined) {
   }
 
   return value;
+}
+
+/** Mirrors apps/web/src/routes.ts's `publicAgent`/`routeId` exactly (`/agent/${encodeURIComponent(id)}`)
+ *  but as an absolute URL, since `GET /s/:slug` redirects across origins (api.soko.market ->
+ *  the web app's own origin) rather than within one - services/api cannot import the web app's
+ *  route module, so the same tiny path-building rule is replicated here rather than shared via a
+ *  new cross-package dependency for one string template. */
+function publicAgentUrl(webPublicUrl: string, sokoId: string): string {
+  return `${webPublicUrl}/agent/${encodeURIComponent(sokoId)}`;
 }
 
 function parseAccountDeletionBody(body: AccountDeletionBody | null | undefined) {

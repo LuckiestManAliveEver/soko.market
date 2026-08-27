@@ -15,7 +15,10 @@ import {
   destinationAccountKey,
   hashMatches,
   hashOtp,
+  isReservedSokoHandle,
   isSokoStorefrontId,
+  maximumSokoHandleLength,
+  minimumSokoHandleLength,
   normalizeOptionalBoundedText,
   normalizeRequiredBoundedText,
   createSokoHandle,
@@ -193,7 +196,9 @@ import type {
   UserSummary,
   ModelPreferenceSummary,
   RuntimeHostSummary,
-  RuntimeModelInstallationSummary
+  RuntimeModelInstallationSummary,
+  SokoIdHistorySummary,
+  SokoIdResolution
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import { ExecutionFabricStore } from "./domains/execution-fabric/store.js";
@@ -476,6 +481,7 @@ export interface Cp2Snapshot {
   deviceAccountBootstraps?: DeviceAccountBootstrapRecord[];
   deviceRecoveryCredentials?: DeviceRecoveryCredentialRecord[];
   businesses: BusinessSummary[];
+  sokoIdHistory?: SokoIdHistorySummary[];
   memberships: MembershipSummary[];
   sessionContexts: StoredSokoSessionContext[];
   conversations: ConversationSummary[];
@@ -1018,6 +1024,9 @@ export class Cp2Store {
   // the generic snapshot/restore/Postgres-persistence/account-deletion sweeps below.
   private readonly deviceBootstrapDomain: DeviceBootstrapDomain;
   private readonly businesses = new Map<string, BusinessSummary>();
+  // Retired sokoIds, in post-rename cooldown until releasedAt is set (see renameSokoId /
+  // releaseExpiredSokoIds / resolveBusinessBySokoId, docs/architecture/soko-id-slug-system.md).
+  private readonly sokoIdHistory = new Map<string, SokoIdHistorySummary>();
   private readonly memberships = new Map<string, MembershipSummary>();
   private readonly phoneUpdateAttemptsByAccount = new Map<string, number[]>();
   // Keyed by sessionContextKey(accountId, conversationId), not accountId alone - each conversation
@@ -5074,6 +5083,7 @@ export class Cp2Store {
         ...this.deviceBootstrapDomain.deviceRecoveryCredentialsMap.values()
       ],
       businesses: [...this.businesses.values()],
+      sokoIdHistory: [...this.sokoIdHistory.values()].map((entry) => ({ ...entry })),
       memberships: [...this.memberships.values()],
       sessionContexts: [...this.sessionContexts.values()],
       conversations: [...this.messagingDomain.conversationsMap.values()],
@@ -5228,6 +5238,7 @@ export class Cp2Store {
     this.userByAccount.clear();
     this.deviceBootstrapDomain.clear();
     this.businesses.clear();
+    this.sokoIdHistory.clear();
     this.memberships.clear();
     this.phoneUpdateAttemptsByAccount.clear();
     this.sessionContexts.clear();
@@ -5290,6 +5301,10 @@ export class Cp2Store {
 
     for (const business of snapshot.businesses) {
       this.businesses.set(business.id, business);
+    }
+
+    for (const entry of snapshot.sokoIdHistory ?? []) {
+      this.sokoIdHistory.set(entry.id, entry);
     }
 
     for (const membership of snapshot.memberships) {
@@ -8386,7 +8401,12 @@ export class Cp2Store {
         ? []
         : [createSokoHandle(input.ownerDisplayName)]),
       createSokoHandle(input.businessName)
-    ].filter((handle, index, handles) => handle.length > 0 && handles.indexOf(handle) === index);
+    ].filter(
+      (handle, index, handles) =>
+        handle.length >= minimumSokoHandleLength &&
+        !isReservedSokoHandle(handle) &&
+        handles.indexOf(handle) === index
+    );
 
     for (const handle of candidateHandles) {
       const candidate = `soko.${handle}`;
@@ -8409,9 +8429,118 @@ export class Cp2Store {
 
   private hasGlobalShopId(sokoId: string): boolean {
     const normalized = normalizeStorefrontLookupId(sokoId);
-    return [...this.businesses.values()].some(
-      (business) => normalizeStorefrontLookupId(business.sokoId) === normalized
+    if (
+      [...this.businesses.values()].some(
+        (business) => normalizeStorefrontLookupId(business.sokoId) === normalized
+      )
+    ) {
+      return true;
+    }
+    // A retired sokoId is unavailable for the duration of its cooldown (releasedAt === null) -
+    // see renameSokoId/releaseExpiredSokoIds. Once released, it's free to be claimed again.
+    return [...this.sokoIdHistory.values()].some(
+      (entry) =>
+        entry.releasedAt === null && normalizeStorefrontLookupId(entry.sokoId) === normalized
     );
+  }
+
+  /**
+   * The one shared resolver every channel (web storefront route, `GET /s/:sokoId`, Telegram
+   * `/start`) uses - docs/architecture/soko-id-slug-system.md. Returns `null` only when the id
+   * never existed and never will (not currently active, not anywhere in history either).
+   */
+  resolveBusinessBySokoId(sokoId: string): SokoIdResolution | null {
+    const normalized = normalizeStorefrontLookupId(sokoId);
+    const active = [...this.businesses.values()].find(
+      (business) =>
+        normalizeStorefrontLookupId(business.sokoId) === normalized &&
+        !this.quarantinedBusinessIds.has(business.id)
+    );
+    if (active !== undefined) return { status: "active", business: active };
+
+    const historical = [...this.sokoIdHistory.values()].find(
+      (entry) => normalizeStorefrontLookupId(entry.sokoId) === normalized
+    );
+    if (historical === undefined) return null;
+    const business = this.businesses.get(historical.businessId);
+    if (business === undefined || this.quarantinedBusinessIds.has(business.id)) return null;
+    return { status: "stale", business, redirectTo: business.sokoId };
+  }
+
+  /**
+   * Explicit merchant-initiated rename (docs/architecture/soko-id-slug-system.md). The old sokoId
+   * moves into history with `releasedAt: null` (in cooldown, still resolvable as "stale") rather
+   * than being deleted or made immediately available - `releaseExpiredSokoIds` is what eventually
+   * frees it. Rejects reserved handles, in-use handles, and anything currently in another store's
+   * cooldown window, the same way initial generation does.
+   */
+  renameSokoId(input: {
+    sessionId: string | null;
+    businessId: string;
+    handle: string;
+    now?: Date;
+  }): BusinessSummary {
+    const now = input.now ?? new Date();
+    this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage", now);
+    const business = this.requireBusiness(input.businessId);
+    const handle = input.handle.trim().toLowerCase();
+    if (
+      handle.length < minimumSokoHandleLength ||
+      handle.length > maximumSokoHandleLength ||
+      !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(handle)
+    ) {
+      throw new Cp2Error(
+        400,
+        "soko_id_invalid",
+        `A storefront id must be ${minimumSokoHandleLength}-${maximumSokoHandleLength} lowercase letters, numbers, or hyphens, and cannot start or end with a hyphen.`
+      );
+    }
+    if (isReservedSokoHandle(handle)) {
+      throw new Cp2Error(409, "soko_id_reserved", "This storefront id is reserved.");
+    }
+    const nextSokoId = `soko.${handle}`;
+    if (normalizeStorefrontLookupId(nextSokoId) === normalizeStorefrontLookupId(business.sokoId)) {
+      return { ...business };
+    }
+    if (this.hasGlobalShopId(nextSokoId)) {
+      throw new Cp2Error(409, "soko_id_taken", "This storefront id is already in use.");
+    }
+    const historyEntryId = randomUUID();
+    this.sokoIdHistory.set(historyEntryId, {
+      id: historyEntryId,
+      businessId: business.id,
+      sokoId: business.sokoId,
+      releasedAt: null,
+      createdAt: now.toISOString()
+    });
+    const updated: BusinessSummary = { ...business, sokoId: nextSokoId };
+    this.businesses.set(business.id, updated);
+    this.recordAuditEvent({
+      type: "business.soko_id_renamed",
+      aggregateType: "business",
+      aggregateId: business.id,
+      actorId: input.sessionId ?? "system",
+      occurredAt: now.toISOString(),
+      payload: { previousSokoId: business.sokoId, nextSokoId }
+    });
+    return updated;
+  }
+
+  /**
+   * Frees any retired sokoId whose cooldown has elapsed - called by the cooldown runner
+   * (services/api/src/cp2/sokoid-cooldown-runner.ts), never inline with a request. Idempotent:
+   * safe to call repeatedly, only ever advances `releasedAt` from null to a timestamp once.
+   */
+  releaseExpiredSokoIds(input: { cooldownMs: number; now?: Date }): number {
+    const now = input.now ?? new Date();
+    let released = 0;
+    for (const [id, entry] of this.sokoIdHistory) {
+      if (entry.releasedAt !== null) continue;
+      if (now.getTime() - Date.parse(entry.createdAt) < input.cooldownMs) continue;
+      this.sokoIdHistory.set(id, { ...entry, releasedAt: now.toISOString() });
+      released += 1;
+    }
+    return released;
   }
 }
 

@@ -27,6 +27,10 @@ import {
   startConnectedMailboxSyncRunner,
   type ConnectedMailboxSyncRunner
 } from "./cp2/connected-mailbox-sync-runner.js";
+import {
+  startSokoIdCooldownRunner,
+  type SokoIdCooldownRunner
+} from "./cp2/sokoid-cooldown-runner.js";
 import { createBinaryUploadPipelineFromEnvironment } from "./cp2/binary-upload-pipeline.js";
 import { createRateLimitRedisClient } from "./redis-client.js";
 import { createChannelGatewayFromEnvironment } from "./messaging/channel-gateway.js";
@@ -149,6 +153,8 @@ const apiOptions = {
   cp2: {
     store: cp2Store,
     emailProvider,
+    webPublicUrl: messageWebBaseUrl,
+    telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME?.trim() ?? "").replace(/^@/u, ""),
     ...(ownerNodeBroker === undefined ? {} : { ownerNodeBroker }),
     ...(binaryUploadPipeline === undefined ? {} : { binaryUploadPipeline }),
     ...(receiptOCRProcessor === undefined ? {} : { receiptOCRProcessor }),
@@ -177,10 +183,16 @@ const app = buildApi(
 let accountDeletionRunner: AccountDeletionRunner | null = null;
 let notificationDeliveryRunner: NotificationDeliveryRunner | null = null;
 let connectedMailboxSyncRunner: ConnectedMailboxSyncRunner | null = null;
+let sokoIdCooldownRunner: SokoIdCooldownRunner | null = null;
 const connectedMailboxSyncIntervalMs = readOptionalPositiveInteger(
   process.env.CONNECTED_MAILBOX_SYNC_INTERVAL_MS
 );
+const sokoIdCooldownIntervalMs = readOptionalPositiveInteger(
+  process.env.SOKO_ID_COOLDOWN_RUNNER_INTERVAL_MS
+);
+const sokoIdCooldownMs = readOptionalPositiveInteger(process.env.SOKO_ID_COOLDOWN_MS);
 app.addHook("onClose", async () => {
+  await sokoIdCooldownRunner?.stop();
   await connectedMailboxSyncRunner?.stop();
   await notificationDeliveryRunner?.stop();
   await accountDeletionRunner?.stop();
@@ -214,6 +226,20 @@ if (process.env.ENABLE_NOTIFICATION_DELIVERY_RUNNER !== "false") {
       }
     },
     onError: (error) => app.log.error({ error }, "Message notification delivery run failed.")
+  });
+}
+
+if (process.env.ENABLE_SOKO_ID_COOLDOWN_RUNNER !== "false") {
+  sokoIdCooldownRunner = startSokoIdCooldownRunner({
+    store: cp2Store,
+    ...(sokoIdCooldownIntervalMs === undefined ? {} : { intervalMs: sokoIdCooldownIntervalMs }),
+    ...(sokoIdCooldownMs === undefined ? {} : { cooldownMs: sokoIdCooldownMs }),
+    onResult: (released) => {
+      if (released > 0) {
+        app.log.info({ event: "soko_id_cooldown_released", released }, "Retired sokoIds released.");
+      }
+    },
+    onError: (error) => app.log.error({ error }, "SokoId cooldown run failed.")
   });
 }
 

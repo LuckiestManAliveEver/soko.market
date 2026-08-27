@@ -21,11 +21,12 @@ describe("registered-user purge script", () => {
     );
 
     // Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md) added cp2_model_preferences/
-    // cp2_runtime_hosts/cp2_runtime_model_installations to postgres-store.ts's normalizedCollections
-    // once ExecutionFabricStore became durable - each must be classified DELETE here too, or an
-    // account purge would silently leave that user's data behind.
-    expect(plan.size).toBe(159);
-    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(154);
+    // cp2_runtime_hosts/cp2_runtime_model_installations, and the canonical store slug system
+    // (docs/architecture/soko-id-slug-system.md) added cp2_soko_id_history, to postgres-store.ts's
+    // normalizedCollections - each must be classified DELETE here too, or an account purge would
+    // silently leave that user's data behind.
+    expect(plan.size).toBe(160);
+    expect([...plan.values()].filter((value) => value === "DELETE")).toHaveLength(155);
     expect(
       [...plan.entries()]
         .filter(([, classification]) => classification === "PRESERVE")

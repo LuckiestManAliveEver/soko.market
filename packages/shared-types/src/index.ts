@@ -1,6 +1,7 @@
 export type RuntimeName = "api" | "sync" | "ai-runtime" | "web";
 
 export * from "./phone-number.js";
+export * from "./store-links.js";
 
 export interface HealthResponse {
   service: RuntimeName;
@@ -232,6 +233,29 @@ export interface BusinessSummary {
   language: SupportedLanguage;
   sokoId: string;
 }
+
+/**
+ * One retired `sokoId` (docs/architecture/soko-id-slug-system.md). `releasedAt` is null while the
+ * handle is in its post-rename cooldown (unavailable to any store, resolvable to the business
+ * that used to hold it) and gets set once the cooldown job clears it, at which point the handle
+ * becomes available for anyone to claim again.
+ */
+export interface SokoIdHistorySummary {
+  id: string;
+  businessId: string;
+  sokoId: string;
+  releasedAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * The one shared result shape every channel (web storefront route, Telegram `/start`, any future
+ * channel adapter) resolves a `sokoId` to - never a second, channel-specific lookup. `null` means
+ * the id never existed and never will (not even in history).
+ */
+export type SokoIdResolution =
+  | { status: "active"; business: BusinessSummary }
+  | { status: "stale"; business: BusinessSummary; redirectTo: string };
 
 export interface MembershipSummary {
   id: string;
