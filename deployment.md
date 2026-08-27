@@ -268,10 +268,23 @@ If a proxied record causes errors, switch it back to DNS only and retest.
 Test the API:
 
 ```sh
+curl https://api.soko.market/
 curl https://api.soko.market/health
 ```
 
-Expected response shape:
+Expected root response:
+
+```json
+{
+  "service": "api",
+  "status": "ok",
+  "health": "/health",
+  "liveness": "/health/live",
+  "readiness": "/health/ready"
+}
+```
+
+Expected health response shape:
 
 ```json
 { "service": "api", "status": "ok", "timestamp": "..." }

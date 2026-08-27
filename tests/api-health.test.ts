@@ -2,6 +2,22 @@ import { describe, expect, it } from "vitest";
 import { buildApi } from "../services/api/src/app";
 
 describe("api health", () => {
+  it("returns API metadata from the public root instead of a route-not-found error", async () => {
+    const app = buildApi();
+    const response = await app.inject({ method: "GET", url: "/" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      service: "api",
+      status: "ok",
+      health: "/health",
+      liveness: "/health/live",
+      readiness: "/health/ready"
+    });
+
+    await app.close();
+  });
+
   it("returns an ok health response", async () => {
     const app = buildApi();
     const response = await app.inject({

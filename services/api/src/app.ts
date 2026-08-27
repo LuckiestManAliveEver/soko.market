@@ -251,6 +251,14 @@ export function buildApi(options: BuildApiOptions = {}) {
   });
 
   void app.register(async (routes) => {
+    routes.get("/", async () => ({
+      service: "api" as const,
+      status: "ok" as const,
+      health: "/health" as const,
+      liveness: "/health/live" as const,
+      readiness: "/health/ready" as const
+    }));
+
     routes.get(
       "/health",
       async (): Promise<
