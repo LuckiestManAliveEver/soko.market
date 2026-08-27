@@ -4210,6 +4210,62 @@ details.nested-form-section summary {
   min-width: 0;
 }
 
+.settings-group {
+  background: #f7f8f6;
+  border: 1px solid #e0e7df;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.settings-group-summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  list-style: none;
+  padding: 14px 16px;
+  user-select: none;
+}
+
+.settings-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-group-summary::after {
+  border-bottom: 2px solid #516258;
+  border-right: 2px solid #516258;
+  content: "";
+  flex-shrink: 0;
+  height: 8px;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  width: 8px;
+}
+
+.settings-group[open] > .settings-group-summary::after {
+  transform: rotate(-135deg);
+}
+
+.settings-group-title {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.settings-group-description {
+  color: #516258;
+  flex: 1;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.settings-group-body {
+  border-top: 1px solid #e0e7df;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
 .agent-catalog-heading,
 .agent-catalog-card-heading {
   align-items: start;

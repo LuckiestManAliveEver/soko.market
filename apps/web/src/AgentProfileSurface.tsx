@@ -11,6 +11,7 @@ import type {
 } from "@soko/shared-types";
 
 import { copyTextToClipboard } from "./misc-browser-utils";
+import { SettingsGroup } from "./SettingsGroup";
 import { SalesPricingEscalationPanel, VoiceAndCarePanel } from "./AgentPolicyPanels";
 import { AgentIdentityPanel } from "./AgentIdentityPanel";
 import { AgentReadinessPanel } from "./AgentReadinessPanel";
@@ -479,176 +480,196 @@ export function AgentProfileSurface({
         </div>
       </section>
 
-      <YourShopsPanel shops={shops} business={business} onSwitchBusiness={onSwitchBusiness} />
-
       <section className="agent-settings-grid">
-        <AgentIdentityPanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-          activeAiModelId={activeAiModelId}
-          activeInstalledModel={activeInstalledModel}
-          activeAiModel={activeAiModel}
-          deviceCapability={deviceCapability}
-          // Agent-runtime readiness describes Soko's bounded prompt/tool runtime. It does not
-          // prove that arbitrary repository source has a configured isolated backend adapter.
-          backendAvailable={false}
-        />
+        <SettingsGroup
+          title="Business"
+          description="Shops, storefront link, and runtime readiness"
+          defaultOpen
+        >
+          <YourShopsPanel shops={shops} business={business} onSwitchBusiness={onSwitchBusiness} />
 
-        <AgentReadinessPanel
-          business={business}
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          hasUnsavedRuntimeChanges={hasUnsavedRuntimeChanges}
-          runtimeReadiness={runtimeReadiness}
-          runtimeVersions={runtimeVersions}
-          runtimeDetailsLoading={runtimeDetailsLoading}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          rollbackAgentRuntime={rollbackAgentRuntime}
-        />
-
-        <VoiceAndCarePanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-        />
-
-        <SalesPricingEscalationPanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-        />
-
-        <AgentRuntimeAccessPanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-          runtimeContextSources={runtimeContextSources}
-          runtimeDetailsLoading={runtimeDetailsLoading}
-          contextSourceTitle={contextSourceTitle}
-          setContextSourceTitle={setContextSourceTitle}
-          contextSourceType={contextSourceType}
-          setContextSourceType={setContextSourceType}
-          contextSourceContent={contextSourceContent}
-          setContextSourceContent={setContextSourceContent}
-          contextSourceSensitivity={contextSourceSensitivity}
-          setContextSourceSensitivity={setContextSourceSensitivity}
-          contextSourceCustomerVisible={contextSourceCustomerVisible}
-          setContextSourceCustomerVisible={setContextSourceCustomerVisible}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          submitContextSource={submitContextSource}
-        />
-
-        <AgentRetentionPanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-          evaluationSummary={evaluationSummary}
-          correctionDraft={correctionDraft}
-          setCorrectionDraft={setCorrectionDraft}
-          correctionCategory={correctionCategory}
-          setCorrectionCategory={setCorrectionCategory}
-          promoteCorrection={promoteCorrection}
-          setPromoteCorrection={setPromoteCorrection}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          submitOwnerCorrection={submitOwnerCorrection}
-          ownerCorrections={ownerCorrections}
-          disableOwnerCorrection={disableOwnerCorrection}
-        />
-
-        <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
-          <AgentModelPanel
-            accountId={accountId}
+          <PublicStorefrontPanel
             business={business}
-            agent={agent}
+            storefrontUrl={storefrontUrl}
+            ownerLabel={ownerLabel}
+            draftAgent={draftAgent}
             isEditing={isEditing}
             updateAgent={updateAgent}
-            onAgentChange={onAgentChange}
-            ownerUser={ownerUser}
-            onEnsureRuntimeSession={onEnsureRuntimeSession}
-            profileMessage={profileMessage}
-            setProfileMessage={setProfileMessage}
-            pendingProfileAction={pendingProfileAction}
-            runProfileAction={runProfileAction}
             copyStorefrontValue={copyStorefrontValue}
-            aiModels={aiModels}
-            setAiModels={setAiModels}
-            localAiModels={localAiModels}
-            setLocalAiModels={setLocalAiModels}
-            activeAiModelId={activeAiModelId}
-            setActiveAiModelId={setActiveAiModelId}
-            agentModelAssignment={agentModelAssignment}
-            setAgentModelAssignment={setAgentModelAssignment}
-            deviceId={deviceId}
-            registerInstalledModel={registerInstalledModel}
           />
-        </Suspense>
 
-        <PublicStorefrontPanel
-          business={business}
-          storefrontUrl={storefrontUrl}
-          ownerLabel={ownerLabel}
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          updateAgent={updateAgent}
-          copyStorefrontValue={copyStorefrontValue}
-        />
-
-        <Suspense fallback={<div className="inline-loading-card">Opening account security…</div>}>
-          <IdentitySecurityPanel
-            accountId={accountId}
-            identityLevel={identityLevel}
+          <AgentReadinessPanel
             business={business}
-            oauthProviders={oauthProviders}
-            ownerUser={ownerUser}
-            registeredEmail={registeredEmail}
-            onAccountMerged={onAccountMerged}
-            onOwnerUserChange={onOwnerUserChange}
-            onIdentityLevelChange={onIdentityLevelChange}
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            hasUnsavedRuntimeChanges={hasUnsavedRuntimeChanges}
+            runtimeReadiness={runtimeReadiness}
+            runtimeVersions={runtimeVersions}
+            runtimeDetailsLoading={runtimeDetailsLoading}
             pendingProfileAction={pendingProfileAction}
             runProfileAction={runProfileAction}
-            profileMessage={profileMessage}
-            setProfileMessage={setProfileMessage}
+            rollbackAgentRuntime={rollbackAgentRuntime}
           />
-        </Suspense>
+        </SettingsGroup>
 
-        <NotificationsSessionsPanel
-          accountId={accountId}
-          businessId={business.id}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          setProfileMessage={setProfileMessage}
-          onEnableNotifications={onEnableNotifications}
-          onDisableNotifications={onDisableNotifications}
-          onLogout={onLogout}
-          onLogoutAll={onLogoutAll}
-          isLoggingOut={isLoggingOut}
-        />
+        <SettingsGroup
+          title="Agent behavior"
+          description="Identity, voice, sales policy, context, and memory"
+        >
+          <AgentIdentityPanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+            activeAiModelId={activeAiModelId}
+            activeInstalledModel={activeInstalledModel}
+            activeAiModel={activeAiModel}
+            deviceCapability={deviceCapability}
+            // Agent-runtime readiness describes Soko's bounded prompt/tool runtime. It does not
+            // prove that arbitrary repository source has a configured isolated backend adapter.
+            backendAvailable={false}
+          />
 
-        <DeleteAccountPanel
-          business={business}
-          pendingProfileAction={pendingProfileAction}
-          runProfileAction={runProfileAction}
-          setProfileMessage={setProfileMessage}
-          onScheduleAccountDeletion={onScheduleAccountDeletion}
-        />
+          <VoiceAndCarePanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+          />
 
-        <ProtectedContextFilesPanel
-          draftAgent={draftAgent}
-          isEditing={isEditing}
-          isSaving={isSaving}
-          updateAgent={updateAgent}
-          saveAgent={saveAgent}
-          contextPassword={contextPassword}
-          setContextPassword={setContextPassword}
-          contextUnlocked={contextUnlocked}
-          setContextUnlocked={setContextUnlocked}
-          contextUnlockError={contextUnlockError}
-          setContextUnlockError={setContextUnlockError}
-        />
+          <SalesPricingEscalationPanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+          />
+
+          <AgentRuntimeAccessPanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+            runtimeContextSources={runtimeContextSources}
+            runtimeDetailsLoading={runtimeDetailsLoading}
+            contextSourceTitle={contextSourceTitle}
+            setContextSourceTitle={setContextSourceTitle}
+            contextSourceType={contextSourceType}
+            setContextSourceType={setContextSourceType}
+            contextSourceContent={contextSourceContent}
+            setContextSourceContent={setContextSourceContent}
+            contextSourceSensitivity={contextSourceSensitivity}
+            setContextSourceSensitivity={setContextSourceSensitivity}
+            contextSourceCustomerVisible={contextSourceCustomerVisible}
+            setContextSourceCustomerVisible={setContextSourceCustomerVisible}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            submitContextSource={submitContextSource}
+          />
+
+          <AgentRetentionPanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            updateAgent={updateAgent}
+            evaluationSummary={evaluationSummary}
+            correctionDraft={correctionDraft}
+            setCorrectionDraft={setCorrectionDraft}
+            correctionCategory={correctionCategory}
+            setCorrectionCategory={setCorrectionCategory}
+            promoteCorrection={promoteCorrection}
+            setPromoteCorrection={setPromoteCorrection}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            submitOwnerCorrection={submitOwnerCorrection}
+            ownerCorrections={ownerCorrections}
+            disableOwnerCorrection={disableOwnerCorrection}
+          />
+        </SettingsGroup>
+
+        <SettingsGroup title="Model & inference" description="Which model runs this agent, and where">
+          <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
+            <AgentModelPanel
+              accountId={accountId}
+              business={business}
+              agent={agent}
+              isEditing={isEditing}
+              updateAgent={updateAgent}
+              onAgentChange={onAgentChange}
+              ownerUser={ownerUser}
+              onEnsureRuntimeSession={onEnsureRuntimeSession}
+              profileMessage={profileMessage}
+              setProfileMessage={setProfileMessage}
+              pendingProfileAction={pendingProfileAction}
+              runProfileAction={runProfileAction}
+              copyStorefrontValue={copyStorefrontValue}
+              aiModels={aiModels}
+              setAiModels={setAiModels}
+              localAiModels={localAiModels}
+              setLocalAiModels={setLocalAiModels}
+              activeAiModelId={activeAiModelId}
+              setActiveAiModelId={setActiveAiModelId}
+              agentModelAssignment={agentModelAssignment}
+              setAgentModelAssignment={setAgentModelAssignment}
+              deviceId={deviceId}
+              registerInstalledModel={registerInstalledModel}
+            />
+          </Suspense>
+        </SettingsGroup>
+
+        <SettingsGroup
+          title="Login & security"
+          description="Passkeys, recovery, devices, and notifications"
+        >
+          <Suspense fallback={<div className="inline-loading-card">Opening account security…</div>}>
+            <IdentitySecurityPanel
+              accountId={accountId}
+              identityLevel={identityLevel}
+              business={business}
+              oauthProviders={oauthProviders}
+              ownerUser={ownerUser}
+              registeredEmail={registeredEmail}
+              onAccountMerged={onAccountMerged}
+              onOwnerUserChange={onOwnerUserChange}
+              onIdentityLevelChange={onIdentityLevelChange}
+              pendingProfileAction={pendingProfileAction}
+              runProfileAction={runProfileAction}
+              profileMessage={profileMessage}
+              setProfileMessage={setProfileMessage}
+            />
+          </Suspense>
+
+          <NotificationsSessionsPanel
+            accountId={accountId}
+            businessId={business.id}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            setProfileMessage={setProfileMessage}
+            onEnableNotifications={onEnableNotifications}
+            onDisableNotifications={onDisableNotifications}
+            onLogout={onLogout}
+            onLogoutAll={onLogoutAll}
+            isLoggingOut={isLoggingOut}
+          />
+        </SettingsGroup>
+
+        <SettingsGroup title="Advanced" description="Protected context files and account deletion">
+          <ProtectedContextFilesPanel
+            draftAgent={draftAgent}
+            isEditing={isEditing}
+            isSaving={isSaving}
+            updateAgent={updateAgent}
+            saveAgent={saveAgent}
+            contextPassword={contextPassword}
+            setContextPassword={setContextPassword}
+            contextUnlocked={contextUnlocked}
+            setContextUnlocked={setContextUnlocked}
+            contextUnlockError={contextUnlockError}
+            setContextUnlockError={setContextUnlockError}
+          />
+
+          <DeleteAccountPanel
+            business={business}
+            pendingProfileAction={pendingProfileAction}
+            runProfileAction={runProfileAction}
+            setProfileMessage={setProfileMessage}
+            onScheduleAccountDeletion={onScheduleAccountDeletion}
+          />
+        </SettingsGroup>
       </section>
     </main>
   );
