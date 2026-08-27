@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { BusinessPermission, InvoiceInput, ProductInput } from "@soko/business-core";
 import { queryCatalogueProducts } from "@soko/business-core";
 import type {
-  AuthSessionView,
+  AuthenticatedActorView,
   BusinessSummary,
   BuyCheckoutItemInput,
   BuyFeedSummary,
@@ -61,8 +61,8 @@ export interface CommerceDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
-  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
+  ) => AuthenticatedActorView;
+  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthenticatedActorView;
   requireProduct: (businessId: string, productId: string) => ProductSummary;
   createProduct: (input: {
     sessionId: string | null;
@@ -1294,7 +1294,7 @@ export class CommerceDomain {
     );
   }
 
-  private trySession(sessionId: string | null, now: Date): AuthSessionView | null {
+  private trySession(sessionId: string | null, now: Date): AuthenticatedActorView | null {
     try {
       return this.deps.requirePinVerifiedSession(sessionId, now);
     } catch (error) {

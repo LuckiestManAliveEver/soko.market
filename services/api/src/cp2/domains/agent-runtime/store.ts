@@ -111,11 +111,7 @@ import {
 } from "@soko/tool-core";
 import { queryCatalogueProducts, roleCan, type BusinessPermission } from "@soko/business-core";
 import { Cp2Error } from "../../cp2-error.js";
-import {
-  asModelRuntimeError,
-  runtimeProviderFromAdapter,
-  type ModelRuntimeAdapter
-} from "../../../inference/model-runtime.js";
+import { asModelRuntimeError, type ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
 import { normalizeRequiredBoundedText } from "../../text-normalization.js";
 import {
   agentAudienceForBusinessRole,
@@ -143,6 +139,10 @@ import {
   createRuntimeModelRoute,
   requireReadyClientInferenceCompletion
 } from "./runtime-model-routing.js";
+import {
+  assertResolvedRuntimeAvailable,
+  resolveNativeRuntimeModelProvider
+} from "./native-runtime-routing.js";
 import { createExecutionFabricRuntimeModelRoute } from "../execution-fabric/runtime-route.js";
 
 import { executeRuntimeCapability } from "./capabilities.js";
@@ -521,6 +521,13 @@ export class AgentRuntimeDomain {
     }
 
     const removedAt = now.toISOString();
+    this.deps.deactivateRuntimeBinding({
+      businessId: input.businessId,
+      accountId: session.account.id,
+      agentId: input.agentId,
+      updatedBy: session.user.id,
+      now
+    });
     const inactive: AgentModelBindingSummary = {
       ...active,
       status: "inactive",
@@ -641,11 +648,26 @@ export class AgentRuntimeDomain {
         updatedBy: session.user.id
       };
       this.agentModelBindings.set(verified.id, verified);
+      const profile = this.currentAgentProfile(input.businessId, now);
+      const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
+        businessId: input.businessId,
+        accountId: session.account.id,
+        agentId: profile.agentId,
+        agentName: profile.name,
+        model,
+        executionTarget: input.executionTarget,
+        fallbackModel:
+          input.fallbackModelId === null
+            ? null
+            : this.requireCanonicalAiModel(input.fallbackModelId),
+        updatedBy: session.user.id,
+        checkedAt: health.checkedAt
+      });
       this.recordAgentModelBindingAudit(
         "agent_model.activation_reverified",
         verified,
         session.user.id,
-        { latencyMs: health.latencyMs }
+        { latencyMs: health.latencyMs, nativeRuntimeBindingId: nativeBinding.id }
       );
       input.onStage?.("binding_staged", Date.now() - startedAt);
       return { binding: cloneAgentModelBinding(verified), healthCheck: health };
@@ -747,6 +769,20 @@ export class AgentRuntimeDomain {
       this.agentModelBindings.set(active.id, active);
 
       const profile = this.currentAgentProfile(input.businessId, now);
+      const nativeBinding = this.deps.activateVerifiedRuntimeBinding({
+        businessId: input.businessId,
+        accountId: session.account.id,
+        agentId: profile.agentId,
+        agentName: profile.name,
+        model,
+        executionTarget: input.executionTarget,
+        fallbackModel:
+          input.fallbackModelId === null
+            ? null
+            : this.requireCanonicalAiModel(input.fallbackModelId),
+        updatedBy: session.user.id,
+        checkedAt: activatedAt
+      });
       const revised = {
         ...profile,
         modelId: input.modelId,
@@ -760,7 +796,7 @@ export class AgentRuntimeDomain {
         "agent_model.activation_succeeded",
         active,
         session.user.id,
-        { latencyMs: health.latencyMs }
+        { latencyMs: health.latencyMs, nativeRuntimeBindingId: nativeBinding.id }
       );
       input.onStage?.("binding_staged", Date.now() - startedAt);
       return { binding: cloneAgentModelBinding(active), healthCheck: health };
@@ -2486,9 +2522,10 @@ export class AgentRuntimeDomain {
     }
     const hashtagInvocation = parseRuntimeHashtagInvocation(input.message);
     const storedAgentProfile = this.currentAgentProfile(input.businessId, now);
-    const { activeBinding, activeModelId } = this.resolveActiveRuntimeModelId(
+    const { activeBinding, activeModelId, nativeResolution } = this.resolveActiveRuntimeModelId(
       input.businessId,
-      storedAgentProfile
+      storedAgentProfile,
+      input.conversationId
     );
     const clientInferenceCompletion =
       input.clientInferenceCompletion === undefined
@@ -2499,14 +2536,9 @@ export class AgentRuntimeDomain {
             accountId: auth.account.id,
             userId: auth.user.id
           });
-    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3): this pre-gate predates the
-    // flagged planner path and assumes the legacy `activeBinding` is the only way a model can be
-    // "configured" - with the flag on, an agent-scoped ModelPreference is an equally valid
-    // configuration signal, and `createRuntimeModelRoute`'s planner branch already produces its
-    // own correct AGENT_MODEL_UNAVAILABLE (below, once `modelRoute.trace.status !== "available"`)
-    // when no candidate can execute. Skipping this early legacy-binding-specific gate when the
-    // flag is on defers entirely to that downstream handling instead of guessing here.
+    // TODO(remove-after-fabric-migration): only non-conversation legacy calls retain this gate.
     if (
+      input.conversationId === undefined &&
       this.deps.executionFabricEnabled !== true &&
       this.deps.modelRuntimeAdapterResolver !== undefined &&
       activeBinding === null &&
@@ -2569,7 +2601,15 @@ export class AgentRuntimeDomain {
 
     appendTelemetry("turn.received", "completed", null, null, {
       messageLength: input.message.trim().length,
-      hasConfirmationToken: input.confirmationToken !== undefined
+      hasConfirmationToken: input.confirmationToken !== undefined,
+      runtimeBindingId: nativeResolution?.binding.id ?? activeBinding?.id ?? null,
+      runtimeAgentId: nativeResolution?.agent.id ?? storedAgentProfile.agentId,
+      selectedPrimaryModelId: nativeResolution?.primary.model.id ?? activeBinding?.modelId ?? null,
+      selectedActualModelId: nativeResolution?.selected.model.id ?? activeBinding?.modelId ?? null,
+      executionHostId: nativeResolution?.selected.host?.id ?? null,
+      modelInstallationId: nativeResolution?.selected.installation?.id ?? null,
+      fallbackUsed: nativeResolution?.fallbackUsed ?? false,
+      fallbackReason: nativeResolution?.fallbackReason ?? null
     });
 
     if (runtimeSession.turnCount >= maxRuntimeTurnsPerSession) {
@@ -2708,6 +2748,9 @@ export class AgentRuntimeDomain {
         ? clientInferenceCompletion === null
           ? await this.createRuntimeModelRoute({
               message: input.message,
+              ...(input.conversationId === undefined
+                ? {}
+                : { conversationId: input.conversationId }),
               ...(input.conversationHistory === undefined
                 ? {}
                 : { conversationHistory: input.conversationHistory }),
@@ -2747,11 +2790,9 @@ export class AgentRuntimeDomain {
         }
       );
     }
-    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §6): the check above is keyed on
-    // the legacy `activeBinding`, which the flagged planner path deliberately never creates - a
-    // ModelPreference, not a binding, is what "configures" a model now. Mirror the same
-    // fail-loud behavior for the flagged path using the trace's own error info instead of a
-    // binding's, rather than silently letting an unexecutable plan look like a normal empty reply.
+    assertResolvedRuntimeAvailable(nativeResolution, modelRoute.trace);
+    // TODO(remove-after-fabric-migration): fail loudly on the temporary Fabric rollback path,
+    // whose preferences do not create a legacy activeBinding.
     if (
       this.deps.executionFabricEnabled === true &&
       activeBinding === null &&
@@ -3184,20 +3225,28 @@ export class AgentRuntimeDomain {
   /** Shared by createRuntimeTurn and the public storefront agent reply path. */
   resolveActiveRuntimeModelId(
     businessId: string,
-    storedAgentProfile: BusinessAgentProfileSummary
-  ): { activeBinding: AgentModelBindingSummary | null; activeModelId: string } {
+    storedAgentProfile: BusinessAgentProfileSummary,
+    conversationId?: string
+  ): {
+    activeBinding: AgentModelBindingSummary | null;
+    activeModelId: string;
+    nativeResolution: ReturnType<AgentRuntimeDomainDeps["resolveNativeRuntimeBinding"]> | null;
+  } {
     const activeBinding = this.activeAgentModelBinding(storedAgentProfile.agentId);
+    const nativeResolution =
+      conversationId === undefined ? null : this.deps.resolveNativeRuntimeBinding(conversationId);
     const selectedCloudFallbackModelId = resolveDefaultDeviceModelId(
       this.activeAiModels.get(businessId)?.modelId ?? defaultAiModelId
     );
     const requestedModelId = storedAgentProfile.modelId;
     const activeModelId =
+      nativeResolution?.selected.model.id ??
       activeBinding?.modelId ??
       (this.deps.runtimeModelProviderResolver === undefined ||
       requestedModelId === selectedCloudFallbackModelId
         ? selectedCloudFallbackModelId
         : "sokoclaw-local");
-    return { activeBinding, activeModelId };
+    return { activeBinding, activeModelId, nativeResolution };
   }
 
   private recordAgentModelBindingAudit(
@@ -3409,36 +3458,31 @@ export class AgentRuntimeDomain {
   }
   resolveRuntimeModelProvider(
     shopRuntime: ShopAgentRuntime,
-    modelId: string
+    modelId: string,
+    conversationId?: string
   ): { provider: RuntimeModelProvider | undefined; binding: AgentModelBindingSummary | null } {
     const binding = this.activeAgentModelBinding(shopRuntime.agentId);
-    const adapter =
-      binding === null || this.deps.modelRuntimeAdapterResolver === undefined
-        ? undefined
-        : this.requireModelRuntimeAdapter({
-            modelId: binding.modelId,
-            executionTarget: binding.executionTarget,
-            agentId: binding.agentId,
-            businessId: binding.shopId
-          });
-    const provider =
-      adapter !== undefined && binding !== null
-        ? runtimeProviderFromAdapter({
-            adapter,
-            context: {
-              modelId: binding.modelId,
-              agentId: binding.agentId,
-              shopId: binding.shopId
-            }
-          })
-        : this.deps.runtimeModelProviderResolver === undefined
-          ? this.deps.runtimeModelProvider
-          : this.deps.runtimeModelProviderResolver(modelId);
-    return { provider, binding };
+    const nativeResolution =
+      conversationId === undefined ? null : this.deps.resolveNativeRuntimeBinding(conversationId);
+    return resolveNativeRuntimeModelProvider({
+      shopRuntime,
+      requestedModelId: modelId,
+      legacyBinding: binding,
+      nativeResolution,
+      requireAdapter: (adapterInput) => this.requireModelRuntimeAdapter(adapterInput),
+      adapterResolverConfigured: this.deps.modelRuntimeAdapterResolver !== undefined,
+      ...(this.deps.runtimeModelProvider === undefined
+        ? {}
+        : { runtimeModelProvider: this.deps.runtimeModelProvider }),
+      ...(this.deps.runtimeModelProviderResolver === undefined
+        ? {}
+        : { runtimeModelProviderResolver: this.deps.runtimeModelProviderResolver })
+    });
   }
 
   private async createRuntimeModelRoute(input: {
     conversationHistory?: RuntimeModelConversationMessage[];
+    conversationId?: string;
     message: string;
     modelId: string;
     context: RuntimeContextSummary;
@@ -3460,11 +3504,7 @@ export class AgentRuntimeDomain {
     trace: RuntimeModelTrace | null;
     recallCandidate: RecallCandidate | null;
   }> {
-    // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). Flag off (the default,
-    // including in production): this branch is never taken, and the call below is byte-for-byte
-    // what this method did before Phase 2 existed. Flag on: the Execution Planner replaces the
-    // legacy single active-binding lookup entirely, but still executes through the exact same
-    // `modelRuntimeAdapterResolver`-backed adapters.
+    // TODO(remove-after-fabric-migration): true is the rollback; false uses native bindings.
     if (this.deps.executionFabricEnabled === true) {
       return createExecutionFabricRuntimeModelRoute(
         {
@@ -3478,7 +3518,7 @@ export class AgentRuntimeDomain {
     return createRuntimeModelRoute(
       {
         resolveRuntimeModelProvider: (runtime, modelId) =>
-          this.resolveRuntimeModelProvider(runtime, modelId),
+          this.resolveRuntimeModelProvider(runtime, modelId, input.conversationId),
         modelRuntimeAdapterResolver: this.deps.modelRuntimeAdapterResolver
       },
       input

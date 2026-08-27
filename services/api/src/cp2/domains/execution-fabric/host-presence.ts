@@ -1,7 +1,5 @@
-import type {
-  RuntimeHostSummary,
-  RuntimeModelInstallationSummary
-} from "@soko/shared-types";
+// TODO(remove-after-fabric-migration): used only by legacy Fabric host reconciliation.
+import type { RuntimeHostSummary, RuntimeModelInstallationSummary } from "@soko/shared-types";
 import type { RuntimeHostCandidateInput } from "@soko/execution-planner";
 
 import type { OwnerNodeBroker } from "../../../inference/owner-node-broker.js";

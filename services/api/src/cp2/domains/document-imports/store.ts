@@ -27,7 +27,7 @@ import {
 } from "@soko/business-core";
 import type { BusinessEvent } from "@soko/event-core";
 import type {
-  AuthSessionView,
+  AuthenticatedActorView,
   DocumentImportConfirmResult,
   DocumentImportJobSummary,
   DocumentImportPreviewRow,
@@ -46,7 +46,7 @@ export interface DocumentImportDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   appendBusinessEvent: (event: BusinessEvent) => void;
   createSupplier: (input: {
     sessionId: string | null;

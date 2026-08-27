@@ -491,6 +491,8 @@ describe("frontend user guidance", () => {
     expect(mcpAccessTokensPanel).toContain("server_url");
     expect(mcpAccessTokensPanel).toContain("authorization_token");
     expect(mcpAccessTokensPanel).toContain("Copy API configuration");
+    expect(mcpAccessTokensPanel).toContain("30-day connection secret — shown only once");
+    expect(mcpAccessTokensPanel).not.toContain("One-time connection secret");
     expect(storefrontCareState).toContain("/storefront/customer-care");
     expect(storefrontCareState).toContain("/storefront/messages");
     expect(storefrontCareState).toContain("/storefront/orders");

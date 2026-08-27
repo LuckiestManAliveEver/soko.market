@@ -133,6 +133,7 @@ const cp2StoreOptions = {
   workspaceDeliveryMaxFileBytes: config.workspaceDeliveryMaxFileBytes,
   ...(config.workspaceRoot === "" ? {} : { workspaceRoot: config.workspaceRoot }),
   ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors }),
+  // TODO(remove-after-fabric-migration): temporary rollback wiring only.
   executionFabricEnabled: config.executionFabricEnabled
 };
 

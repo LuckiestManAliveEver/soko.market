@@ -60,6 +60,7 @@ interface CreateConversationBody {
   activeShopId?: string | null;
   recipient?: string | null;
   title?: string | null;
+  runtimeBindingId?: string | null;
 }
 
 interface ConversationParams {
@@ -248,7 +249,8 @@ export function registerMessagingRoutes(
           kind: parseConversationKind(request.body.kind),
           activeShopId: parseNullableString(request.body.activeShopId),
           recipient: parseNullableString(request.body.recipient),
-          title: parseNullableString(request.body.title)
+          title: parseNullableString(request.body.title),
+          runtimeBindingId: parseNullableString(request.body.runtimeBindingId)
         });
       } catch (error) {
         return sendCp2Error(reply, error);

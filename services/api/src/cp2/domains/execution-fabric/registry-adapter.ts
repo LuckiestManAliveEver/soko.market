@@ -1,5 +1,9 @@
+// TODO(remove-after-fabric-migration): used only by the rollback planner route.
 import { runtimeModels } from "@soko/shared-types";
-import { reconcileModelRegistries, type ModelRegistryReconciliation } from "@soko/execution-planner";
+import {
+  reconcileModelRegistries,
+  type ModelRegistryReconciliation
+} from "@soko/execution-planner";
 
 import { aiModelRegistry } from "../agent-runtime/model-catalog.js";
 

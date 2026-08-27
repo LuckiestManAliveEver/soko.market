@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   AccountSummary,
-  AuthSessionView,
+  AuthenticatedActorView,
   BusinessSummary,
   CatalogueQueryResult,
   ChannelProvider,
@@ -76,7 +76,7 @@ export interface SalesDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   recordAuditEvent: (input: {
     type: string;
     aggregateType: string;

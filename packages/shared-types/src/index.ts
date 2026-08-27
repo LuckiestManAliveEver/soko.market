@@ -314,6 +314,12 @@ export interface AuthSessionView {
   deviceRecoveryCredentialId?: string;
 }
 
+/** An authenticated account actor whose authority is not tied to a browser session. */
+export interface AuthenticatedActorView {
+  account: AccountSummary;
+  user: UserSummary;
+}
+
 export interface PasskeySummary {
   id: string;
   label: string;
@@ -784,6 +790,8 @@ export interface ConversationSummary {
   accountId: string;
   kind: ConversationKind;
   activeShopId: string | null;
+  /** Durable server-owned runtime selection. Never inferred from frontend state. */
+  runtimeBindingId: string | null;
   title?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2792,7 +2800,6 @@ export interface McpPrincipal {
   tokenId: string;
   accountId: string;
   userId: string;
-  sessionId: string;
   scopes: McpAccessScope[];
   shopId: string | null;
   expiresAt: string;
@@ -3822,12 +3829,7 @@ export type ModelExecutionPreference = "local-first" | "cloud-first" | "balanced
 
 export type ModelQualityPreference = "fastest" | "balanced" | "best";
 
-export type ModelPreferenceScope =
-  | "system"
-  | "user"
-  | "agent"
-  | "conversation"
-  | "request";
+export type ModelPreferenceScope = "system" | "user" | "agent" | "conversation" | "request";
 
 /**
  * One model-selection preference record. `scope`/`scopeId` together identify which precedence
@@ -3897,6 +3899,131 @@ export interface RuntimeModelInstallationSummary {
   status: RuntimeModelInstallationStatus;
   installedAt: string;
   updatedAt: string;
+}
+
+/** Native, database-backed runtime graph. Agents, models, and hosts are independent slots. */
+export type NativeRuntimeEntityStatus = "active" | "inactive";
+export type NativeRuntimeAvailabilityStatus = "available" | "unavailable";
+export type NativeRuntimeBindingStatus = "draft" | "active" | "inactive" | "failed";
+
+export interface NativeRuntimeAgentSummary {
+  id: string;
+  businessId: string | null;
+  accountId: string | null;
+  name: string;
+  provider: string;
+  packageRef: string | null;
+  version: string;
+  runtimeContractVersion: string;
+  capabilities: string[];
+  configuration: Record<string, unknown>;
+  status: NativeRuntimeEntityStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NativeRuntimeModelSummary {
+  id: string;
+  name: string;
+  provider: string;
+  providerModelId: string;
+  runtimeContractVersion: string;
+  capabilities: string[];
+  configuration: Record<string, unknown>;
+  status: NativeRuntimeEntityStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NativeExecutionHostSummary {
+  id: string;
+  businessId: string | null;
+  accountId: string | null;
+  type: string;
+  name: string;
+  endpoint: string | null;
+  status: NativeRuntimeAvailabilityStatus;
+  capabilities: string[];
+  configuration: Record<string, unknown>;
+  credentialReference: string | null;
+  lastKnownHealthyAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NativeModelInstallationSummary {
+  id: string;
+  modelId: string;
+  executionHostId: string;
+  status: NativeRuntimeAvailabilityStatus;
+  configuration: Record<string, unknown>;
+  lastKnownHealthyAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NativeRuntimeBindingSummary {
+  id: string;
+  businessId: string | null;
+  accountId: string | null;
+  agentId: string;
+  name: string;
+  status: NativeRuntimeBindingStatus;
+  isDefault: boolean;
+  configuration: Record<string, unknown>;
+  runtimeContractVersion: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface NativeRuntimeActivationInput {
+  businessId: string;
+  accountId: string;
+  agentId: string;
+  agentName: string;
+  model: AiModelSummary;
+  executionTarget: ModelExecutionTarget;
+  fallbackModel: AiModelSummary | null;
+  updatedBy: string;
+  checkedAt: string;
+}
+
+export interface NativeRuntimeBindingModelSummary {
+  id: string;
+  runtimeBindingId: string;
+  modelId: string;
+  /** Extensible role name: primary/fallback plus future verifier, vision, coding, etc. */
+  role: string;
+  priority: number;
+  executionHostId: string | null;
+  configuration: Record<string, unknown>;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResolvedNativeRuntimeModel {
+  bindingModel: NativeRuntimeBindingModelSummary;
+  model: NativeRuntimeModelSummary;
+  installation: NativeModelInstallationSummary | null;
+  host: NativeExecutionHostSummary | null;
+  available: boolean;
+  unavailabilityReason: string | null;
+}
+
+export interface ResolvedNativeRuntimeBinding {
+  conversationId: string;
+  usedGlobalDefault: boolean;
+  binding: NativeRuntimeBindingSummary;
+  agent: NativeRuntimeAgentSummary;
+  primary: ResolvedNativeRuntimeModel;
+  fallbacks: ResolvedNativeRuntimeModel[];
+  auxiliaries: Record<string, ResolvedNativeRuntimeModel[]>;
+  selected: ResolvedNativeRuntimeModel;
+  fallbackUsed: boolean;
+  fallbackReason: string | null;
+  configuration: Record<string, unknown>;
 }
 
 export type ExecutionHistoryOutcome = "completed" | "failed" | "no_compatible_model";

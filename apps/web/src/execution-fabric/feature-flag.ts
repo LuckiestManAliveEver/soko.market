@@ -1,4 +1,4 @@
-/**
+/** TODO(remove-after-fabric-migration): temporary rollback kill switch only.
  * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). Mirrors the simplest existing
  * client flag precedent (browser-model-registry.ts's `browserLocalInferenceDeploymentEnabled`) -
  * a single module-level constant read once from Vite's `import.meta.env`, defaulting to disabled

@@ -80,7 +80,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
     try {
       requireTrustedOrigin(request, allowedOrigins);
       const principal = authenticateBearer(request, options.store);
-      requireShopLinkBinding(request, principal);
+      requireShopLinkBinding(request, principal, options.store);
       const sessionId = stringHeader(request.headers["mcp-session-id"]);
       requireMcpSession(sessions, sessionId, principal);
       sessions.delete(sessionId);
@@ -96,7 +96,7 @@ export function registerMcpRoutes(app: FastifyInstance, options: McpRouteOptions
     try {
       requireTrustedOrigin(request, allowedOrigins);
       const principal = authenticateBearer(request, options.store);
-      requireShopLinkBinding(request, principal);
+      requireShopLinkBinding(request, principal, options.store);
       enforceRateLimit(rateWindows, principal.tokenId);
       if (rpc === null || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
         return reply.send(jsonRpcError(id, -32600, "Invalid Request"));
@@ -232,12 +232,12 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
     let result: unknown;
     if (name === "soko.list_shops") {
       requireScope(principal, "mcp:read");
-      result = store.listAccountShops({ sessionId: principal.sessionId });
+      result = store.listAccountShopsForMcp({ principal });
     } else if (name === "soko.get_sync_changes") {
       requireScope(principal, "mcp:read");
       const limit = optionalIntegerValue(args.limit, "limit");
-      result = store.pullSyncChanges({
-        sessionId: principal.sessionId,
+      result = store.pullSyncChangesForMcp({
+        principal,
         cursor: optionalStringValue(args.cursor, "cursor"),
         ...(limit === undefined ? {} : { limit })
       });
@@ -245,8 +245,8 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
       requireScope(principal, "mcp:read");
       const shopId = requiredShop(principal, args.shopId);
       const limit = optionalIntegerValue(args.limit, "limit");
-      result = store.queryCatalogue({
-        sessionId: principal.sessionId,
+      result = store.queryCatalogueForMcp({
+        principal,
         businessId: shopId,
         query: stringValue(args.query, "query"),
         ...(limit === undefined ? {} : { limit })
@@ -254,8 +254,8 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
     } else if (name === "soko.runtime_turn") {
       requireScope(principal, "mcp:act");
       const shopId = requiredShop(principal, args.shopId);
-      result = await store.createRuntimeTurn({
-        sessionId: principal.sessionId,
+      result = await store.createRuntimeTurnForMcp({
+        principal,
         businessId: shopId,
         message: stringValue(args.message, "message"),
         ...(args.runtimeSessionId === undefined
@@ -265,8 +265,8 @@ async function callMcpTool(store: Cp2Store, principal: McpPrincipal, params: unk
     } else if (name === "soko.confirm_runtime_action") {
       requireScope(principal, "mcp:act");
       const shopId = requiredShop(principal, args.shopId);
-      result = await store.createRuntimeTurn({
-        sessionId: principal.sessionId,
+      result = await store.createRuntimeTurnForMcp({
+        principal,
         businessId: shopId,
         runtimeSessionId: stringValue(args.runtimeSessionId, "runtimeSessionId"),
         confirmationToken: stringValue(args.confirmationToken, "confirmationToken"),
@@ -341,18 +341,19 @@ function requireScope(principal: McpPrincipal, scope: McpAccessScope): void {
   }
 }
 
-function requireShopLinkBinding(request: FastifyRequest, principal: McpPrincipal): void {
+function requireShopLinkBinding(
+  request: FastifyRequest,
+  principal: McpPrincipal,
+  store: Cp2Store
+): void {
   if (typeof request.query !== "object" || request.query === null) return;
   const shopId = (request.query as Record<string, unknown>).shopId;
   if (shopId === undefined) return;
-  // A null principal.shopId is an account-wide token, intentionally unbound to any single shop -
-  // see requiredShop() below, which grants it the same access for the actual tool calls.
-  if (
-    typeof shopId !== "string" ||
-    (principal.shopId !== null && principal.shopId !== shopId)
-  ) {
+  // Account-wide tokens may select a shop, but canonical membership checks still apply.
+  if (typeof shopId !== "string" || (principal.shopId !== null && principal.shopId !== shopId)) {
     throw new Cp2Error(403, "mcp_shop_forbidden", "MCP token is bound to another shop.");
   }
+  store.assertMcpShopAccess(principal, shopId);
 }
 
 function requiredShop(principal: McpPrincipal, value: unknown): string {

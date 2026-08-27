@@ -70,6 +70,7 @@ import type {
   AccountSummary,
   AuthChannel,
   AuthSessionView,
+  AuthenticatedActorView,
   BusinessSummary,
   CatalogueQueryResult,
   ChannelEndpointSummary,
@@ -201,7 +202,7 @@ export interface MessagingDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
   recordAuditEvent: (input: {
     type: string;
@@ -249,6 +250,11 @@ export interface MessagingDomainDeps {
     body: string;
     now: Date;
   }) => Promise<PublicStorefrontMessageSummary | null>;
+  assignRuntimeBinding: (input: {
+    accountId: string;
+    activeShopId: string | null;
+    requestedBindingId?: string | null;
+  }) => string;
   channelGateway: ChannelGateway;
   emailMailboxProviderClient: EmailMailboxProviderClient;
   pushNotificationSender?: (
@@ -468,7 +474,10 @@ export class MessagingDomain {
 
   restore(snapshot: Cp2Snapshot): void {
     for (const conversation of snapshot.conversations ?? []) {
-      this.conversations.set(conversation.id, conversation);
+      this.conversations.set(conversation.id, {
+        ...conversation,
+        runtimeBindingId: conversation.runtimeBindingId ?? null
+      });
     }
 
     for (const participant of snapshot.conversationParticipants ?? []) {
@@ -602,6 +611,7 @@ export class MessagingDomain {
     activeShopId: string | null;
     recipient?: string | null;
     title?: string | null;
+    runtimeBindingId?: string | null;
     now?: Date;
   }): ConversationView {
     const now = input.now ?? new Date();
@@ -637,6 +647,7 @@ export class MessagingDomain {
       activeShopId: input.activeShopId,
       recipientAccountId,
       title: input.title?.trim() || null,
+      ...(input.runtimeBindingId === undefined ? {} : { runtimeBindingId: input.runtimeBindingId }),
       now
     });
     this.deps.recordAuditEvent({
@@ -3702,6 +3713,7 @@ export class MessagingDomain {
     activeShopId: string | null;
     recipientAccountId?: string | null;
     title?: string | null;
+    runtimeBindingId?: string | null;
     now: Date;
   }): ConversationSummary {
     const conversation: ConversationSummary = {
@@ -3709,6 +3721,13 @@ export class MessagingDomain {
       accountId: input.accountId,
       kind: input.kind,
       activeShopId: input.activeShopId,
+      runtimeBindingId: this.deps.assignRuntimeBinding({
+        accountId: input.accountId,
+        activeShopId: input.activeShopId,
+        ...(input.runtimeBindingId === undefined
+          ? {}
+          : { requestedBindingId: input.runtimeBindingId })
+      }),
       title: input.title ?? null,
       createdAt: input.now.toISOString(),
       updatedAt: input.now.toISOString()

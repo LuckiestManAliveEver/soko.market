@@ -88,8 +88,6 @@ import {
 } from "./soko-application-shared";
 
 import { postJson, putJson, deleteJson, getJson } from "./api-helpers";
-import { executionFabricEnabled } from "./execution-fabric/feature-flag";
-import { ModelPreferencePanel } from "./execution-fabric/ModelPreferencePanel";
 import {
   formatDate,
   formatLatency,
@@ -1823,13 +1821,6 @@ export function AgentModelPanel({
                 ) : null}
               </div>
             </section>
-            {executionFabricEnabled ? (
-              <ModelPreferencePanel
-                businessId={business.id}
-                agentName={agent.name}
-                availableModels={serverBackendModels}
-              />
-            ) : null}
             <section aria-label="Cloud fallback models">
               <div className="section-subheading">
                 <h4>Cloud fallback models</h4>

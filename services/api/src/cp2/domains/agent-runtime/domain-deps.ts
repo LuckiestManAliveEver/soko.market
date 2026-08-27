@@ -1,6 +1,6 @@
 import type {
   AgentRouteSummary,
-  AuthSessionView,
+  AuthenticatedActorView,
   BuyCheckoutItemInput,
   BuyFeedSummary,
   ClientWorkspaceFileTransfer,
@@ -15,6 +15,9 @@ import type {
   LogisticsSummary,
   MembershipSummary,
   ModelExecutionTarget,
+  NativeRuntimeBindingSummary,
+  NativeRuntimeActivationInput,
+  ResolvedNativeRuntimeBinding,
   NotificationInbox,
   ProductFieldDefinition,
   ProductFieldSchemaSummary,
@@ -41,8 +44,8 @@ export interface AgentRuntimeDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
-  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
+  ) => AuthenticatedActorView;
+  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthenticatedActorView;
   recordAuditEvent: (input: {
     type: string;
     aggregateType: string;
@@ -287,6 +290,17 @@ export interface AgentRuntimeDomainDeps {
   invoices: Map<string, InvoiceSummary>;
   sessions: Map<string, SessionRecord>;
   businesses: Map<string, BusinessSummary>;
+  resolveNativeRuntimeBinding: (conversationId: string) => ResolvedNativeRuntimeBinding;
+  activateVerifiedRuntimeBinding: (
+    input: NativeRuntimeActivationInput
+  ) => NativeRuntimeBindingSummary;
+  deactivateRuntimeBinding: (input: {
+    businessId: string;
+    accountId: string;
+    agentId: string;
+    updatedBy: string;
+    now: Date;
+  }) => string | null;
   modelRuntimeAdapterResolver?: (input: {
     modelId: string;
     executionTarget: ModelExecutionTarget;

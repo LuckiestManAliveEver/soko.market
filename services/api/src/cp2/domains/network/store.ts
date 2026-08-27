@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AccountSummary,
   AgentRouteSummary,
-  AuthSessionView,
+  AuthenticatedActorView,
   BusinessSummary,
   ContactHashSummary,
   ExternalIdentitySummary,
@@ -64,7 +64,7 @@ import {
 } from "./shared.js";
 
 export interface NetworkDomainDeps {
-  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthSessionView;
+  requirePinVerifiedSession: (sessionId: string | null, now: Date) => AuthenticatedActorView;
   accounts: Map<string, AccountSummary>;
   userByAccount: Map<string, string>;
   memberships: Map<string, MembershipSummary>;

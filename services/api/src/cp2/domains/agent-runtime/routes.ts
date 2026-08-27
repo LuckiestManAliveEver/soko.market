@@ -430,6 +430,7 @@ export function registerAgentRuntimeRoutes(
     }
   );
 
+  // TODO(remove-after-fabric-migration): legacy preference API retained for rollback/backfill only.
   // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3). One agent per business today
   // (Phase 0 audit §1), so this is always the agent-scoped ModelPreference for `businessId` itself
   // - `scopeId` matches `businessId` rather than a separate agentId. This is what "Use with Agent"
@@ -462,7 +463,11 @@ export function registerAgentRuntimeRoutes(
           businessId: request.params.businessId,
           scope: "agent",
           scopeId: request.params.businessId,
-          preferredModelIds: parseStringArray(request.body.preferredModelIds, "preferredModelIds", 10),
+          preferredModelIds: parseStringArray(
+            request.body.preferredModelIds,
+            "preferredModelIds",
+            10
+          ),
           fallbackModelIds: parseStringArray(request.body.fallbackModelIds, "fallbackModelIds", 10),
           requiredCapabilities: parseStringArray(
             request.body.requiredCapabilities,
@@ -472,7 +477,10 @@ export function registerAgentRuntimeRoutes(
           executionPreference: parseModelExecutionPreference(request.body.executionPreference),
           qualityPreference: parseModelQualityPreference(request.body.qualityPreference),
           allowCloudFallback: parseBoolean(request.body.allowCloudFallback, "allowCloudFallback"),
-          maxCostPerRequest: parseNullableNumber(request.body.maxCostPerRequest ?? null, "maxCostPerRequest"),
+          maxCostPerRequest: parseNullableNumber(
+            request.body.maxCostPerRequest ?? null,
+            "maxCostPerRequest"
+          ),
           maxLatencyMs: parseNullableNumber(request.body.maxLatencyMs ?? null, "maxLatencyMs"),
           minimumContextWindow: parseNullableNumber(
             request.body.minimumContextWindow ?? null,

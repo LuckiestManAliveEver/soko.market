@@ -37,7 +37,7 @@ describe("capability-first architecture", () => {
   it("keeps MCP on the canonical runtime turn and passes all static boundaries", () => {
     const mcp = readFileSync("services/api/src/mcp/routes.ts", "utf8");
     const boundaries = readFileSync("scripts/check-boundaries.mjs", "utf8");
-    expect(mcp).toContain("store.createRuntimeTurn({");
+    expect(mcp).toContain("store.createRuntimeTurnForMcp({");
     expect(mcp).not.toMatch(/\.(?:createProduct|updateProduct|deleteProduct|createCustomer)\(/u);
     expect(boundaries).toContain("expected one createRuntimeTurn implementation");
     expect(boundaries).toContain("expected one runtimeToolRegistry");

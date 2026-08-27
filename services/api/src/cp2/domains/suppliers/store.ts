@@ -28,7 +28,7 @@ import {
 } from "@soko/business-core";
 import type { BusinessEvent } from "@soko/event-core";
 import type {
-  AuthSessionView,
+  AuthenticatedActorView,
   NetworkNodeSummary,
   NetworkSyncSourceSummary,
   PurchaseReceiptSummary,
@@ -73,7 +73,7 @@ export interface SupplierDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   appendBusinessEvent: (event: BusinessEvent) => void;
   requirePhonebookNode: (ownerUserId: string, networkNodeId: string) => NetworkNodeSummary;
   networkNodes: Map<string, NetworkNodeSummary>;

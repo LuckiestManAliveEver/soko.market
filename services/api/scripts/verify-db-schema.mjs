@@ -43,7 +43,7 @@ const expectedTables = new Map([
       "id",
       "account_id",
       "user_id",
-      "session_id",
+      "created_by_session_id",
       "token_hash",
       "name",
       "scopes",

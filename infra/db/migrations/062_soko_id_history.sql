@@ -16,7 +16,7 @@ create table if not exists cp2_soko_id_history (
   parent_id text,
   record jsonb not null,
   updated_at timestamp with time zone not null default now(),
-  constraint cp2_soko_id_history_soko_id_check (
+  constraint cp2_soko_id_history_soko_id_check check (
     record ? 'sokoId' and char_length(record ->> 'sokoId') between 1 and 60
   )
 );

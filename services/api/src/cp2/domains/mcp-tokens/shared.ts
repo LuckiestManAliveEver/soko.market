@@ -22,7 +22,8 @@ import type { McpAccessTokenSummary } from "@soko/shared-types";
 
 export interface McpAccessTokenRecord extends McpAccessTokenSummary {
   userId: string;
-  sessionId: string;
+  /** Immutable creation provenance only. Never an authentication or authorization dependency. */
+  createdBySessionId: string | null;
   tokenHash: string;
 }
 

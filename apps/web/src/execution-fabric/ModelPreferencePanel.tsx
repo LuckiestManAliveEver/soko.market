@@ -12,7 +12,7 @@ interface ModelPreferencePanelProps {
   availableModels: AiModelSummary[];
 }
 
-/**
+/** TODO(remove-after-fabric-migration)
  * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §5). The corrected "Use with Agent"
  * surface: writes a `ModelPreference` (PUT /businesses/:id/model-preference) instead of the legacy
  * device-specific permanent binding the "Use with agent" button above still writes. Deliberately a
@@ -26,7 +26,11 @@ interface ModelPreferencePanelProps {
  * other executable host yet (browser-local and backend/cloud are the only RuntimeAdapters that
  * exist; remote shop devices get a real adapter in Phase 3), so no other option is presented.
  */
-export function ModelPreferencePanel({ businessId, agentName, availableModels }: ModelPreferencePanelProps) {
+export function ModelPreferencePanel({
+  businessId,
+  agentName,
+  availableModels
+}: ModelPreferencePanelProps) {
   const [current, setCurrent] = useState<ModelPreferenceSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -99,8 +103,8 @@ export function ModelPreferencePanel({ businessId, agentName, availableModels }:
       <div className="section-subheading">
         <h4>Model preference</h4>
         <p>
-          Sets how {agentName} picks a model for each reply - this replaces choosing one fixed
-          model with a preference the Execution Planner resolves per turn.
+          Sets how {agentName} picks a model for each reply - this replaces choosing one fixed model
+          with a preference the Execution Planner resolves per turn.
         </p>
       </div>
       {loading ? (
@@ -123,10 +127,7 @@ export function ModelPreferencePanel({ businessId, agentName, availableModels }:
           </label>
           <label>
             Run on
-            <select
-              value={runOn}
-              onChange={(event) => setRunOn(event.target.value as RunOnChoice)}
-            >
+            <select value={runOn} onChange={(event) => setRunOn(event.target.value as RunOnChoice)}>
               <option value="automatic">Automatic</option>
               <option value="this-device">This device</option>
             </select>

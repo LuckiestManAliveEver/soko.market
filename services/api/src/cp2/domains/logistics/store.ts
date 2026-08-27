@@ -25,7 +25,7 @@ import {
   type LogisticsStatusInput
 } from "@soko/business-core";
 import type { BusinessEvent } from "@soko/event-core";
-import type { AuthSessionView, InvoiceSummary, LogisticsSummary } from "@soko/shared-types";
+import type { AuthenticatedActorView, InvoiceSummary, LogisticsSummary } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "../../cp2-error.js";
 
 export interface LogisticsDomainDeps {
@@ -34,7 +34,7 @@ export interface LogisticsDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   appendBusinessEvent: (event: BusinessEvent) => void;
   requireInvoice: (businessId: string, invoiceId: string) => InvoiceSummary;
 }

@@ -77,7 +77,7 @@ import {
 } from "@soko/business-core";
 import type { BusinessEvent } from "@soko/event-core";
 import type {
-  AuthSessionView,
+  AuthenticatedActorView,
   BetaAccessSummary,
   BetaDeviceTestSummary,
   BetaFeatureFlagKey,
@@ -107,7 +107,7 @@ export interface ComplianceDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   appendBusinessEvent: (event: BusinessEvent) => void;
 }
 

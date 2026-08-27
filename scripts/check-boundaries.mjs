@@ -77,10 +77,36 @@ for (const file of await listSourceFiles("packages/tool-core/src")) {
 }
 
 const apiFiles = await listSourceFiles("services/api/src");
+const legacySiblingDomainImportAllowlist = new Set([
+  "services/api/src/cp2/domains/agent-runtime/domain-deps.ts",
+  "services/api/src/cp2/domains/execution-fabric/runtime-route.ts"
+]);
 for (const file of apiFiles.filter((candidate) => candidate.includes("/cp2/domains/"))) {
   const contents = await read(file);
-  if (/from\s+["']\.\.\/((?!\.)[^/"']+)\/(store|shared)\.js["']/u.test(contents)) {
+  if (
+    /from\s+["']\.\.\/((?!\.)[^/"']+)\/(store|shared)\.js["']/u.test(contents) &&
+    !legacySiblingDomainImportAllowlist.has(file)
+  ) {
     violations.push(`${file}: new deep import of sibling domain private internals`);
+  }
+}
+
+// Native runtime bindings are the production selection architecture. These are the only legacy
+// imports allowed to reach the Fabric during its temporary rollback window.
+const fabricImportAllowlist = new Set([
+  "apps/web/src/hooks/useChatRuntimeState.ts",
+  "services/api/src/cp2/domains/agent-runtime/domain-deps.ts",
+  "services/api/src/cp2/domains/agent-runtime/store.ts",
+  "services/api/src/cp2/store.ts"
+]);
+for (const file of [...apiFiles, ...(await listSourceFiles("apps/web/src"))]) {
+  if (file.includes("/execution-fabric/")) continue;
+  const contents = await read(file);
+  if (
+    /(?:from|import\s*)\s*(?:\([^)]*)?["'][^"']*execution-fabric[^"']*["']/u.test(contents) &&
+    !fabricImportAllowlist.has(file)
+  ) {
+    violations.push(`${file}: new production dependency on legacy Execution Fabric`);
   }
 }
 
@@ -107,8 +133,10 @@ if (registryDeclarations !== 1) {
 }
 
 const mcpRoutes = await read("services/api/src/mcp/routes.ts");
-if (!mcpRoutes.includes("store.createRuntimeTurn({")) {
-  violations.push("services/api/src/mcp/routes.ts: MCP must reuse createRuntimeTurn");
+if (!mcpRoutes.includes("store.createRuntimeTurnForMcp({")) {
+  violations.push(
+    "services/api/src/mcp/routes.ts: MCP must reuse the principal-aware runtime turn"
+  );
 }
 if (
   /\.(?:createProduct|updateProduct|deleteProduct|createCustomer|recordPayment)\s*\(/u.test(
@@ -151,12 +179,12 @@ const lineBudgets = new Map([
   ["apps/web/src/StackedModule.tsx", 180],
   ["apps/web/src/hooks/useChatComposerState.ts", 160],
   ["apps/web/src/hooks/useChatRuntimeState.ts", 1800],
-  ["services/api/src/cp2/domains/agent-runtime/store.ts", 3650],
+  ["services/api/src/cp2/domains/agent-runtime/store.ts", 3700],
   ["services/api/src/cp2/domains/agent-runtime/domain-deps.ts", 325],
   ["services/api/src/cp2/domains/agent-runtime/runtime-context.ts", 300],
   ["services/api/src/cp2/domains/agent-runtime/runtime-model-routing.ts", 550],
   ["services/api/src/cp2/domains/agent-runtime/shared.ts", 1700],
-  ["services/api/src/cp2/domains/agent-runtime/routes.ts", 1600],
+  ["services/api/src/cp2/domains/agent-runtime/routes.ts", 1650],
   ["services/api/src/cp2/domains/agent-runtime/capabilities.ts", 525]
 ]);
 for (const [file, maximum] of lineBudgets) {

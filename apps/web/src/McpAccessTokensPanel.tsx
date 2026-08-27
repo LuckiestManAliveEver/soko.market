@@ -282,7 +282,7 @@ export function McpAccessTokensPanel({
               Copy shop link
             </button>
           </div>
-          <span>One-time connection secret</span>
+          <span>30-day connection secret — shown only once</span>
           <code>{newMcpAccessToken}</code>
           <span>{selectedModelLab.label} API configuration</span>
           <pre>

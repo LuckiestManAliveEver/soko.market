@@ -275,6 +275,60 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull()
 });
 
+const nativeEnvelopeColumns = () => ({
+  businessId: text("business_id"),
+  accountId: text("account_id"),
+  userId: text("user_id"),
+  parentId: text("parent_id"),
+  record: jsonb("record").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+export const nativeRuntimeAgents = pgTable("cp2_native_runtime_agents", {
+  entityId: text("entity_id").primaryKey(),
+  ...nativeEnvelopeColumns()
+});
+
+export const nativeRuntimeModels = pgTable("cp2_native_runtime_models", {
+  entityId: text("entity_id").primaryKey(),
+  ...nativeEnvelopeColumns()
+});
+
+export const nativeExecutionHosts = pgTable("cp2_native_execution_hosts", {
+  entityId: text("entity_id").primaryKey(),
+  ...nativeEnvelopeColumns()
+});
+
+export const nativeModelInstallations = pgTable("cp2_native_model_installations", {
+  entityId: text("entity_id").primaryKey(),
+  ...nativeEnvelopeColumns()
+});
+
+export const nativeRuntimeBindings = pgTable(
+  "cp2_native_runtime_bindings",
+  {
+    entityId: text("entity_id").primaryKey(),
+    ...nativeEnvelopeColumns()
+  },
+  (table) => ({
+    businessAgent: index("cp2_native_runtime_bindings_business_agent_idx").on(
+      table.businessId,
+      table.parentId
+    )
+  })
+);
+
+export const nativeRuntimeBindingModels = pgTable(
+  "cp2_native_runtime_binding_models",
+  {
+    entityId: text("entity_id").primaryKey(),
+    ...nativeEnvelopeColumns()
+  },
+  (table) => ({
+    binding: index("cp2_native_runtime_binding_models_binding_idx").on(table.parentId)
+  })
+);
+
 export const conversations = pgTable(
   "conversations",
   {
@@ -284,6 +338,9 @@ export const conversations = pgTable(
       .references(() => accounts.id),
     kind: text("kind").notNull(),
     activeShopId: uuid("active_shop_id").references(() => businesses.id),
+    runtimeBindingId: text("runtime_binding_id").references(() => nativeRuntimeBindings.entityId, {
+      onDelete: "restrict"
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull()
   },
@@ -405,9 +462,7 @@ export const mcpAccessTokens = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    sessionId: uuid("session_id")
-      .notNull()
-      .references(() => sessions.id, { onDelete: "cascade" }),
+    createdBySessionId: uuid("created_by_session_id"),
     tokenHash: text("token_hash").notNull(),
     name: text("name").notNull(),
     scopes: text("scopes").array().notNull(),

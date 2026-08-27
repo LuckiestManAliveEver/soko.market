@@ -26,7 +26,12 @@ export interface McpTokensDomainDeps {
     sessionId: string | null;
     now?: Date;
   }) => Array<{ business: BusinessSummary; membership: MembershipSummary }>;
-  getSession: (sessionId: string | null, now?: Date) => AuthSessionView | null;
+  requireIntegrationPrincipal: (input: {
+    accountId: string;
+    userId: string;
+    shopId: string | null;
+    now: Date;
+  }) => void;
 }
 
 export class McpTokensDomain {
@@ -50,7 +55,13 @@ export class McpTokensDomain {
 
   restore(snapshot: Cp2Snapshot): void {
     for (const token of snapshot.mcpAccessTokens ?? []) {
-      this.mcpAccessTokens.set(token.id, token);
+      const legacyToken = token as McpAccessTokenRecord & { sessionId?: string };
+      const restored: McpAccessTokenRecord = {
+        ...token,
+        createdBySessionId: token.createdBySessionId ?? legacyToken.sessionId ?? null
+      };
+      delete (restored as McpAccessTokenRecord & { sessionId?: string }).sessionId;
+      this.mcpAccessTokens.set(restored.id, restored);
       this.mcpTokenIdByHash.set(token.tokenHash, token.id);
     }
   }
@@ -104,15 +115,13 @@ export class McpTokensDomain {
         "MCP token lifetime must be between 60 seconds and 30 days."
       );
     }
-    const expiresAt = new Date(
-      Math.min(now.getTime() + expiresInSeconds * 1_000, Date.parse(session.session.expiresAt))
-    ).toISOString();
+    const expiresAt = new Date(now.getTime() + expiresInSeconds * 1_000).toISOString();
     const accessToken = `soko_mcp_${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
     const record: McpAccessTokenRecord = {
       id: randomUUID(),
       accountId: session.account.id,
       userId: session.user.id,
-      sessionId: session.session.id,
+      createdBySessionId: session.session.id,
       tokenHash: hashMcpAccessToken(accessToken),
       name,
       scopes,
@@ -178,20 +187,24 @@ export class McpTokensDomain {
     if (
       token === undefined ||
       token.revokedAt !== null ||
-      Date.parse(token.expiresAt) <= now.getTime() ||
-      this.deps.getSession(token.sessionId, now) === null
+      Date.parse(token.expiresAt) <= now.getTime()
     ) {
       throw new Cp2Error(401, "mcp_token_invalid", "MCP access token is invalid or expired.");
     }
     if (input.requiredScope !== undefined && !token.scopes.includes(input.requiredScope)) {
       throw new Cp2Error(403, "mcp_scope_forbidden", "MCP token lacks the required scope.");
     }
+    this.deps.requireIntegrationPrincipal({
+      accountId: token.accountId,
+      userId: token.userId,
+      shopId: token.shopId,
+      now
+    });
     token.lastUsedAt = now.toISOString();
     return {
       tokenId: token.id,
       accountId: token.accountId,
       userId: token.userId,
-      sessionId: token.sessionId,
       scopes: [...token.scopes],
       shopId: token.shopId,
       expiresAt: token.expiresAt

@@ -791,6 +791,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
           : ("local-only" as const)
     };
     let inferenceRoute: InferenceRouteDecision | null = null;
+    // TODO(remove-after-fabric-migration): the flag is a temporary client rollback kill switch.
     // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §8). Flag off (the default,
     // including production): executionFabricEnabled is false, this block never runs, and
     // `inferenceRoute` stays null exactly as it did before this phase - the existing
@@ -806,7 +807,11 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
         providers: inferenceProviders
       });
     }
-    if (inferenceRoute === null && inferenceRequest !== null && clientInferenceFeatureFlags.clientFirst) {
+    if (
+      inferenceRoute === null &&
+      inferenceRequest !== null &&
+      clientInferenceFeatureFlags.clientFirst
+    ) {
       inferenceRoute = await decideClientInferenceRoute({
         modelId: inferenceRequest.modelId,
         capabilities: inferenceCapabilities,

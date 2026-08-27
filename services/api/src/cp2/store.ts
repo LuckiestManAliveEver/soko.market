@@ -6,6 +6,7 @@ import {
   scryptSync,
   timingSafeEqual
 } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
 import { isAccountSyncCollection } from "@soko/shared-types";
@@ -97,6 +98,7 @@ import type {
   AccountDeletionRequestSummary,
   AuthChannel,
   AuthSessionView,
+  AuthenticatedActorView,
   BetaAccessSummary,
   BetaDeviceTestSummary,
   BetaFeatureFlagSummary,
@@ -138,6 +140,7 @@ import type {
   LaunchSettingsSummary,
   LogisticsSummary,
   MarketplaceIntroStateSummary,
+  McpPrincipal,
   MembershipSummary,
   ModelExecutionTarget,
   NetworkEdgeSummary,
@@ -197,11 +200,19 @@ import type {
   ModelPreferenceSummary,
   RuntimeHostSummary,
   RuntimeModelInstallationSummary,
+  NativeExecutionHostSummary,
+  NativeModelInstallationSummary,
+  NativeRuntimeAgentSummary,
+  NativeRuntimeBindingModelSummary,
+  NativeRuntimeBindingSummary,
+  NativeRuntimeModelSummary,
+  ResolvedNativeRuntimeBinding,
   SokoIdHistorySummary,
   SokoIdResolution
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
 import { ExecutionFabricStore } from "./domains/execution-fabric/store.js";
+import { NativeRuntimeBindingStore } from "./domains/native-runtime/store.js";
 import {
   createChannelGatewayFromEnvironment,
   type ChannelGateway
@@ -517,6 +528,12 @@ export interface Cp2Snapshot {
   modelPreferences?: ModelPreferenceSummary[];
   runtimeHosts?: RuntimeHostSummary[];
   runtimeModelInstallations?: RuntimeModelInstallationSummary[];
+  nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
+  nativeRuntimeModels?: NativeRuntimeModelSummary[];
+  nativeExecutionHosts?: NativeExecutionHostSummary[];
+  nativeModelInstallations?: NativeModelInstallationSummary[];
+  nativeRuntimeBindings?: NativeRuntimeBindingSummary[];
+  nativeRuntimeBindingModels?: NativeRuntimeBindingModelSummary[];
   syncChanges: SyncChange[];
   mcpAccessTokens: McpAccessTokenRecord[];
   productFieldSchemas: ProductFieldSchemaSummary[];
@@ -703,6 +720,7 @@ export class Cp2Store {
   private readonly channelGateway: ChannelGateway;
   private readonly emailMailboxProviderClient: EmailMailboxProviderClient;
   private readonly conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
+  private readonly mcpPrincipalContext = new AsyncLocalStorage<McpPrincipal>();
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
     this.channelGateway = options.channelGateway ?? createChannelGatewayFromEnvironment({});
@@ -713,7 +731,7 @@ export class Cp2Store {
     this.oauthDomain = new OAuthDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireBrowserAuthorizedSession(sessionId, businessId, permission, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       createAccount: (channel, destination, now) => this.createAccount(channel, destination, now),
       requireAccount: (accountId) => this.requireAccount(accountId),
@@ -784,7 +802,7 @@ export class Cp2Store {
       failedPinAttempts: this.failedPinAttempts
     });
     this.networkDomain = new NetworkDomain({
-      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+      requirePinVerifiedSession: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
       accounts: this.accounts,
       userByAccount: this.userByAccount,
       memberships: this.memberships,
@@ -793,7 +811,7 @@ export class Cp2Store {
     });
     this.salesDomain = new SalesDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requireAccount: (accountId) => this.requireAccount(accountId),
@@ -820,7 +838,7 @@ export class Cp2Store {
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       listAccountShops: (input) => this.listAccountShops(input),
-      getSession: (sessionId, now) => this.getSession(sessionId, now)
+      requireIntegrationPrincipal: (input) => this.requireIntegrationPrincipal(input)
     });
     this.passkeyDomain = new PasskeyDomain({
       requireAnySession: (sessionId, now) => this.requireAnySession(sessionId, now),
@@ -850,8 +868,8 @@ export class Cp2Store {
     });
     this.commerce = new CommerceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
-      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      requirePinVerifiedSession: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
       requireProduct: (businessId, productId) =>
         this.salesDomain.requireProduct(businessId, productId),
       createProduct: (input) => this.salesDomain.createProduct(input),
@@ -870,19 +888,19 @@ export class Cp2Store {
     });
     this.compliance = new ComplianceDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event)
     });
     this.logisticsDomain = new LogisticsDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requireInvoice: (businessId, invoiceId) =>
         this.salesDomain.requireInvoice(businessId, invoiceId)
     });
     this.supplierDomain = new SupplierDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       requirePhonebookNode: (ownerUserId, networkNodeId) =>
         this.networkDomain.requirePhonebookNode(ownerUserId, networkNodeId),
@@ -891,20 +909,20 @@ export class Cp2Store {
     });
     this.documentImportDomain = new DocumentImportDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       appendBusinessEvent: (event) => this.appendBusinessEvent(event),
       createSupplier: (input) => this.createSupplier(input),
       createProduct: (input) => this.createProduct(input)
     });
     this.notificationsDomain = new NotificationsDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       buildBusinessReport: (businessId, now) => this.buildBusinessReport(businessId, now)
     });
     this.messagingDomain = new MessagingDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       recordSyncChange: (input) => this.recordSyncChange(input),
@@ -920,6 +938,7 @@ export class Cp2Store {
       agentModelRecoveryGuidance: (businessId, error) =>
         this.agentRuntimeDomain.agentModelRecoveryGuidance(businessId, error),
       attemptPublicAgentReply: (input) => this.attemptPublicAgentReply(input),
+      assignRuntimeBinding: (input) => this.nativeRuntimeBindings.assignConversationBinding(input),
       channelGateway: this.channelGateway,
       emailMailboxProviderClient: this.emailMailboxProviderClient,
       ...(this.options.pushNotificationSender === undefined
@@ -950,8 +969,8 @@ export class Cp2Store {
     });
     this.agentRuntimeDomain = new AgentRuntimeDomain({
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
-        this.requireAuthorizedSession(sessionId, businessId, permission, now),
-      requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
+        this.requireAuthorizedActor(sessionId, businessId, permission, now),
+      requirePinVerifiedSession: (sessionId, now) => this.requireAuthenticatedActor(sessionId, now),
       recordAuditEvent: (input) => this.recordAuditEvent(input),
       requireMembership: (businessId, userId) => this.requireMembership(businessId, userId),
       requireBusiness: (businessId) => this.requireBusiness(businessId),
@@ -1000,6 +1019,54 @@ export class Cp2Store {
       invoices: this.salesDomain.invoicesMap,
       sessions: this.sessions,
       businesses: this.businesses,
+      resolveNativeRuntimeBinding: (conversationId) =>
+        this.nativeRuntimeBindings.resolveRuntimeBinding(
+          conversationId,
+          this.messagingDomain.conversationsMap
+        ),
+      activateVerifiedRuntimeBinding: (input) => {
+        const binding = this.nativeRuntimeBindings.activateVerifiedModel(input);
+        for (const [conversationId, conversation] of this.messagingDomain.conversationsMap) {
+          if (
+            conversation.accountId === input.accountId &&
+            (conversation.activeShopId === input.businessId || conversation.activeShopId === null)
+          ) {
+            this.messagingDomain.conversationsMap.set(conversationId, {
+              ...conversation,
+              runtimeBindingId: binding.id,
+              updatedAt: input.checkedAt
+            });
+          }
+        }
+        return binding;
+      },
+      deactivateRuntimeBinding: (input) => {
+        const bindingId = this.nativeRuntimeBindings.deactivateBusinessAgentBinding(
+          input.businessId,
+          input.agentId,
+          input.updatedBy,
+          input.now
+        );
+        if (bindingId !== null) {
+          for (const [conversationId, conversation] of this.messagingDomain.conversationsMap) {
+            if (
+              conversation.accountId === input.accountId &&
+              conversation.activeShopId === input.businessId &&
+              conversation.runtimeBindingId === bindingId
+            ) {
+              this.messagingDomain.conversationsMap.set(conversationId, {
+                ...conversation,
+                runtimeBindingId: this.nativeRuntimeBindings.assignConversationBinding({
+                  accountId: input.accountId,
+                  activeShopId: null
+                }),
+                updatedAt: input.now.toISOString()
+              });
+            }
+          }
+        }
+        return bindingId;
+      },
       ...(this.options.modelRuntimeAdapterResolver === undefined
         ? {}
         : { modelRuntimeAdapterResolver: this.options.modelRuntimeAdapterResolver }),
@@ -1059,6 +1126,7 @@ export class Cp2Store {
   // the flagged "Use with Agent" path do not survive a process restart yet. This is a known,
   // explicitly scoped gap (see the Phase 2 report), not an oversight.
   private readonly executionFabricStore = new ExecutionFabricStore();
+  private readonly nativeRuntimeBindings = new NativeRuntimeBindingStore();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly syncChanges: SyncChange[] = [];
   private readonly nextSyncSequenceByAccount = new Map<string, number>();
@@ -2482,6 +2550,115 @@ export class Cp2Store {
     return this.mcpTokensDomain.authenticateMcpAccessToken(...args);
   }
 
+  assertMcpShopAccess(principal: McpPrincipal, shopId: string, now = new Date()): void {
+    this.requireMcpBusinessAccess(principal, shopId, "business:read", now);
+  }
+
+  listAccountShopsForMcp(input: {
+    principal: McpPrincipal;
+    now?: Date;
+  }): Array<{ business: BusinessSummary; membership: MembershipSummary }> {
+    const now = input.now ?? new Date();
+    this.requireIntegrationPrincipal({ ...input.principal, now });
+    return [...this.memberships.values()]
+      .filter(
+        (membership) =>
+          membership.userId === input.principal.userId &&
+          (input.principal.shopId === null || membership.businessId === input.principal.shopId) &&
+          !this.quarantinedBusinessIds.has(membership.businessId)
+      )
+      .map((membership) => {
+        this.requireMcpBusinessAccess(input.principal, membership.businessId, "business:read", now);
+        const business = this.businesses.get(membership.businessId);
+        if (business === undefined) {
+          throw new Cp2Error(500, "business_missing", "Membership business state is inconsistent.");
+        }
+        return { business, membership };
+      });
+  }
+
+  pullSyncChangesForMcp(input: {
+    principal: McpPrincipal;
+    cursor: string | null;
+    limit?: number;
+    now?: Date;
+  }): SyncPullPage {
+    const now = input.now ?? new Date();
+    this.requireIntegrationPrincipal({ ...input.principal, now });
+    this.pruneExpiredSyncTombstones(now);
+    const accountId = input.principal.accountId;
+    const readableBusinessIds = new Set(
+      [...this.memberships.values()]
+        .filter(
+          (membership) =>
+            membership.userId === input.principal.userId &&
+            !this.quarantinedBusinessIds.has(membership.businessId)
+        )
+        .filter((membership) => roleCan(membership.role, "business:read"))
+        .map((membership) => membership.businessId)
+    );
+    const limit = Math.min(100, Math.max(1, input.limit ?? 50));
+    const changes = this.syncChanges
+      .filter(
+        (change) =>
+          change.accountId === accountId &&
+          (change.shopId === null || readableBusinessIds.has(change.shopId)) &&
+          (input.principal.shopId === null || change.shopId === input.principal.shopId)
+      )
+      .sort((left, right) => left.sequence - right.sequence);
+    const originCursor = syncOriginCursor(accountId);
+    let startIndex = 0;
+    if (input.cursor !== null && input.cursor !== originCursor) {
+      const cursorIndex = changes.findIndex((change) => change.cursor === input.cursor);
+      if (cursorIndex < 0) {
+        throw new Cp2Error(
+          409,
+          "sync_cursor_invalid",
+          "The sync cursor is invalid or has expired. Start a full account catch-up."
+        );
+      }
+      startIndex = cursorIndex + 1;
+    }
+    const pageChanges = changes.slice(startIndex, startIndex + limit);
+    return {
+      accountId,
+      fromCursor: input.cursor,
+      nextCursor: pageChanges.at(-1)?.cursor ?? input.cursor ?? originCursor,
+      changes: pageChanges,
+      hasMore: startIndex + pageChanges.length < changes.length,
+      serverTime: now.toISOString()
+    };
+  }
+
+  queryCatalogueForMcp(input: {
+    principal: McpPrincipal;
+    businessId: string;
+    query: string;
+    limit?: number;
+    now?: Date;
+  }): CatalogueQueryResult {
+    return this.mcpPrincipalContext.run(input.principal, () =>
+      this.salesDomain.queryCatalogue({
+        sessionId: null,
+        businessId: input.businessId,
+        query: input.query,
+        ...(input.limit === undefined ? {} : { limit: input.limit }),
+        ...(input.now === undefined ? {} : { now: input.now })
+      })
+    );
+  }
+
+  createRuntimeTurnForMcp(
+    input: Omit<Parameters<AgentRuntimeDomain["createRuntimeTurn"]>[0], "sessionId"> & {
+      principal: McpPrincipal;
+    }
+  ): ReturnType<AgentRuntimeDomain["createRuntimeTurn"]> {
+    const { principal, ...turn } = input;
+    return this.mcpPrincipalContext.run(principal, () =>
+      this.agentRuntimeDomain.createRuntimeTurn({ ...turn, sessionId: null })
+    );
+  }
+
   subscribeSyncChanges(input: {
     sessionId: string | null;
     listener: (event: SyncRealtimeChangesAvailableEvent) => void;
@@ -2819,15 +2996,23 @@ export class Cp2Store {
     preferredModelIds: string[];
     fallbackModelIds: string[];
     requiredCapabilities: string[];
-    executionPreference: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["executionPreference"];
-    qualityPreference: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["qualityPreference"];
+    executionPreference: Parameters<
+      ExecutionFabricStore["createModelPreference"]
+    >[0]["executionPreference"];
+    qualityPreference: Parameters<
+      ExecutionFabricStore["createModelPreference"]
+    >[0]["qualityPreference"];
     allowCloudFallback: boolean;
     maxCostPerRequest: number | null;
     maxLatencyMs: number | null;
     minimumContextWindow: number | null;
     now?: Date;
   }): ReturnType<ExecutionFabricStore["createModelPreference"]> {
-    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage"
+    );
     return this.executionFabricStore.createModelPreference({
       tenantId: input.businessId,
       scope: input.scope,
@@ -2853,7 +3038,19 @@ export class Cp2Store {
     scopeId: string;
   }): ReturnType<ExecutionFabricStore["getModelPreference"]> {
     this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
-    return this.executionFabricStore.getModelPreference(input.businessId, input.scope, input.scopeId);
+    return this.executionFabricStore.getModelPreference(
+      input.businessId,
+      input.scope,
+      input.scopeId
+    );
+  }
+
+  /** In-process, state-only resolver. It never performs a network probe. */
+  resolveRuntimeBinding(conversationId: string): ResolvedNativeRuntimeBinding {
+    return this.nativeRuntimeBindings.resolveRuntimeBinding(
+      conversationId,
+      this.messagingDomain.conversationsMap
+    );
   }
 
   listExecutionHistory(input: {
@@ -2886,7 +3083,11 @@ export class Cp2Store {
     maxConcurrentJobs: number;
     now?: Date;
   }): ReturnType<ExecutionFabricStore["registerRuntimeHost"]> {
-    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage"
+    );
     return this.executionFabricStore.registerRuntimeHost({
       accountId: session.account.id,
       ownerId: session.user.id,
@@ -2914,7 +3115,11 @@ export class Cp2Store {
     modelId: string;
     now?: Date;
   }): ReturnType<ExecutionFabricStore["installRuntimeModel"]> {
-    const session = this.requireAuthorizedSession(input.sessionId, input.businessId, "membership:manage");
+    const session = this.requireAuthorizedSession(
+      input.sessionId,
+      input.businessId,
+      "membership:manage"
+    );
     return this.executionFabricStore.installRuntimeModel({
       runtimeHostId: input.runtimeHostId,
       accountId: session.account.id,
@@ -5154,6 +5359,12 @@ export class Cp2Store {
       runtimeModelInstallations: [
         ...this.executionFabricStore.runtimeModelInstallationsMap.values()
       ].map((installation) => ({ ...installation })),
+      nativeRuntimeAgents: [...this.nativeRuntimeBindings.agentsMap.values()],
+      nativeRuntimeModels: [...this.nativeRuntimeBindings.modelsMap.values()],
+      nativeExecutionHosts: [...this.nativeRuntimeBindings.hostsMap.values()],
+      nativeModelInstallations: [...this.nativeRuntimeBindings.installationsMap.values()],
+      nativeRuntimeBindings: [...this.nativeRuntimeBindings.bindingsMap.values()],
+      nativeRuntimeBindingModels: [...this.nativeRuntimeBindings.bindingModelsMap.values()],
       syncChanges: [...this.syncChanges],
       mcpAccessTokens: [...this.mcpTokensDomain.mcpAccessTokensMap.values()],
       productFieldSchemas: [...this.salesDomain.productFieldSchemasMap.values()],
@@ -5246,6 +5457,7 @@ export class Cp2Store {
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
     this.executionFabricStore.clear();
+    this.nativeRuntimeBindings.clear();
     this.quarantinedBusinessIds.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
     this.nextSyncSequenceByAccount.clear();
@@ -5329,6 +5541,7 @@ export class Cp2Store {
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
     this.executionFabricStore.restore(snapshot);
+    this.nativeRuntimeBindings.restore(snapshot);
     this.salesDomain.restore(snapshot);
 
     for (const state of snapshot.marketplaceIntroStates ?? []) {
@@ -6783,7 +6996,95 @@ export class Cp2Store {
     return user;
   }
 
+  private requireIntegrationPrincipal(input: {
+    accountId: string;
+    userId: string;
+    shopId: string | null;
+    now: Date;
+  }): void {
+    const account = this.accounts.get(input.accountId);
+    const user = this.users.get(input.userId);
+    if (
+      account === undefined ||
+      user === undefined ||
+      user.accountId !== input.accountId ||
+      (account.status ?? "active") !== "active"
+    ) {
+      throw new Cp2Error(401, "mcp_token_invalid", "MCP access token is invalid or expired.");
+    }
+    this.requireAccountNotPendingDeletion(account.id, input.now);
+    if (input.shopId !== null) {
+      this.requireMcpBusinessAccess(input, input.shopId, "business:read", input.now);
+    }
+  }
+
+  private requireMcpBusinessAccess(
+    principal: Pick<McpPrincipal, "accountId" | "userId" | "shopId">,
+    businessId: string,
+    permission: BusinessPermission,
+    now: Date
+  ): AuthenticatedActorView {
+    const account = this.accounts.get(principal.accountId);
+    const user = this.users.get(principal.userId);
+    if (
+      account === undefined ||
+      user === undefined ||
+      user.accountId !== principal.accountId ||
+      (account.status ?? "active") !== "active"
+    ) {
+      throw new Cp2Error(401, "mcp_token_invalid", "MCP access token is invalid or expired.");
+    }
+    this.requireAccountNotPendingDeletion(account.id, now);
+    if (principal.shopId !== null && principal.shopId !== businessId) {
+      throw new Cp2Error(403, "mcp_shop_forbidden", "MCP token is bound to another shop.");
+    }
+    if (!this.businesses.has(businessId)) {
+      throw new Cp2Error(404, "business_not_found", "Business was not found.");
+    }
+    if (this.quarantinedBusinessIds.has(businessId)) {
+      throw new Cp2Error(410, "business_quarantined", "Business is in its 30-day restore window.");
+    }
+    const membership = this.requireMembership(businessId, user.id);
+    if (!roleCan(membership.role, permission)) {
+      throw new Cp2Error(403, "permission_denied", "Permission denied for this business.");
+    }
+    return { account, user };
+  }
+
+  private requireAuthorizedActor(
+    sessionId: string | null,
+    businessId: string,
+    permission: BusinessPermission,
+    now = new Date()
+  ): AuthenticatedActorView {
+    const principal = this.mcpPrincipalContext.getStore();
+    return principal === undefined
+      ? this.requireBrowserAuthorizedSession(sessionId, businessId, permission, now)
+      : this.requireMcpBusinessAccess(principal, businessId, permission, now);
+  }
+
+  private requireAuthenticatedActor(sessionId: string | null, now: Date): AuthenticatedActorView {
+    const principal = this.mcpPrincipalContext.getStore();
+    if (principal === undefined) {
+      return this.requirePinVerifiedSession(sessionId, now);
+    }
+    this.requireIntegrationPrincipal({ ...principal, now });
+    return {
+      account: this.accounts.get(principal.accountId)!,
+      user: this.users.get(principal.userId)!
+    };
+  }
+
   private requireAuthorizedSession(
+    sessionId: string | null,
+    businessId: string,
+    permission: BusinessPermission,
+    now = new Date()
+  ): AuthenticatedActorView {
+    return this.requireAuthorizedActor(sessionId, businessId, permission, now);
+  }
+
+  private requireBrowserAuthorizedSession(
     sessionId: string | null,
     businessId: string,
     permission: BusinessPermission,

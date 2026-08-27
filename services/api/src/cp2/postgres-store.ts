@@ -70,6 +70,12 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "modelPreferences", tableName: "cp2_model_preferences" },
   { key: "runtimeHosts", tableName: "cp2_runtime_hosts" },
   { key: "runtimeModelInstallations", tableName: "cp2_runtime_model_installations" },
+  { key: "nativeRuntimeAgents", tableName: "cp2_native_runtime_agents" },
+  { key: "nativeRuntimeModels", tableName: "cp2_native_runtime_models" },
+  { key: "nativeExecutionHosts", tableName: "cp2_native_execution_hosts" },
+  { key: "nativeModelInstallations", tableName: "cp2_native_model_installations" },
+  { key: "nativeRuntimeBindings", tableName: "cp2_native_runtime_bindings" },
+  { key: "nativeRuntimeBindingModels", tableName: "cp2_native_runtime_binding_models" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "productMedia", tableName: "product_media" },
@@ -2000,7 +2006,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: string;
     account_id: string;
     user_id: string;
-    session_id: string;
+    created_by_session_id: string | null;
     token_hash: string;
     name: string;
     scopes: Array<"mcp:read" | "mcp:act">;
@@ -2013,7 +2019,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     pool,
     "load MCP access tokens",
     `
-      select id, account_id, user_id, session_id, token_hash, name, scopes, shop_id,
+      select id, account_id, user_id, created_by_session_id, token_hash, name, scopes, shop_id,
              created_at, expires_at, last_used_at, revoked_at
       from mcp_access_tokens
       order by account_id, created_at, id
@@ -2023,7 +2029,7 @@ async function loadRelationalCoreSnapshot(pool: Pool, snapshot: Cp2Snapshot): Pr
     id: row.id,
     accountId: row.account_id,
     userId: row.user_id,
-    sessionId: row.session_id,
+    createdBySessionId: row.created_by_session_id,
     tokenHash: row.token_hash,
     name: row.name,
     scopes: row.scopes,
@@ -2332,7 +2338,10 @@ async function saveCollectionRecords(
           "sourceId",
           "eventId",
           "permissionId",
-          "runtimeHostId"
+          "runtimeHostId",
+          "executionHostId",
+          "agentId",
+          "runtimeBindingId"
         ]),
         JSON.stringify(record)
       ]
@@ -2849,7 +2858,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
     await client.query(
       `
         insert into mcp_access_tokens (
-          id, account_id, user_id, session_id, token_hash, name, scopes, shop_id,
+          id, account_id, user_id, created_by_session_id, token_hash, name, scopes, shop_id,
           created_at, expires_at, last_used_at, revoked_at
         )
         values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12)
@@ -2866,7 +2875,7 @@ async function saveRelationalCoreRecords(client: PoolClient, snapshot: Cp2Snapsh
         token.id,
         token.accountId,
         token.userId,
-        token.sessionId,
+        token.createdBySessionId,
         token.tokenHash,
         token.name,
         token.scopes,
@@ -3723,6 +3732,12 @@ function emptySnapshot(): Cp2Snapshot {
     modelPreferences: [],
     runtimeHosts: [],
     runtimeModelInstallations: [],
+    nativeRuntimeAgents: [],
+    nativeRuntimeModels: [],
+    nativeExecutionHosts: [],
+    nativeModelInstallations: [],
+    nativeRuntimeBindings: [],
+    nativeRuntimeBindingModels: [],
     syncChanges: [],
     mcpAccessTokens: [],
     productFieldSchemas: [],

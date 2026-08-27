@@ -28,8 +28,14 @@ import {
   type RuntimeToolProposal
 } from "@soko/tool-core";
 
-import { runtimeProviderFromAdapter, type ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
-import { assembleAgentInferenceMessage, type retrieveAgentContext } from "../../agent-business-runtime.js";
+import {
+  runtimeProviderFromAdapter,
+  type ModelRuntimeAdapter
+} from "../../../inference/model-runtime.js";
+import {
+  assembleAgentInferenceMessage,
+  type retrieveAgentContext
+} from "../../agent-business-runtime.js";
 import {
   parseRecallCandidateFromModelOutput,
   withRecallDistillationInstruction,
@@ -77,13 +83,16 @@ function modelPreferenceFromSummary(summary: ModelPreferenceSummary): ModelPrefe
  *  moment the flag flips on with no ModelPreference created yet), else the catalog default. Cloud
  *  fallback is only allowed by default when the legacy binding already explicitly permitted it -
  *  the flag must never grant a permission the shop had not already opted into. */
-function systemDefaultPreference(activeBinding: AgentModelBindingSummary | null): ModelPreferenceCandidate {
+function systemDefaultPreference(
+  activeBinding: AgentModelBindingSummary | null
+): ModelPreferenceCandidate {
   return {
     scope: "system",
     preferredModelIds: [activeBinding?.modelId ?? defaultAiModelId],
-    fallbackModelIds: activeBinding?.fallbackModelId === null || activeBinding?.fallbackModelId === undefined
-      ? []
-      : [activeBinding.fallbackModelId],
+    fallbackModelIds:
+      activeBinding?.fallbackModelId === null || activeBinding?.fallbackModelId === undefined
+        ? []
+        : [activeBinding.fallbackModelId],
     requiredCapabilities: [],
     executionPreference: "balanced",
     qualityPreference: "balanced",
@@ -102,7 +111,7 @@ function executionTargetForAdapterLookup(
   return null; // "local": never produced server-side (hosts is always [] here, see planExecution call below)
 }
 
-/**
+/** TODO(remove-after-fabric-migration)
  * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1/§2). The flagged replacement for
  * `createRuntimeModelRoute` (../agent-runtime/runtime-model-routing.ts), driven by the Execution
  * Planner instead of the legacy single active-binding lookup + hardcoded OpenAI-fallback branch.
@@ -156,7 +165,8 @@ export async function createExecutionFabricRuntimeModelRoute(
     precedence: {
       request: null,
       conversation: null,
-      agent: agentPreferenceSummary === null ? null : modelPreferenceFromSummary(agentPreferenceSummary),
+      agent:
+        agentPreferenceSummary === null ? null : modelPreferenceFromSummary(agentPreferenceSummary),
       user: null,
       system: systemDefaultPreference(state.activeBinding)
     },
@@ -226,7 +236,8 @@ export async function createExecutionFabricRuntimeModelRoute(
   const allowedTools = input.shopRuntime.skills
     .filter(
       (binding) =>
-        binding.enabled && !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
+        binding.enabled &&
+        !input.shopRuntime.instructions.restrictedActions.includes(binding.skillId)
     )
     .map((binding) => binding.skillId);
   const assembled = assembleAgentInferenceMessage({
@@ -237,12 +248,17 @@ export async function createExecutionFabricRuntimeModelRoute(
     allowedTools,
     memory: input.memory
   });
-  const prompt = buildRuntimeModelPrompt(assembled.message, input.context, input.conversationHistory, {
-    runtimeVersion: input.shopRuntime.version,
-    compiledInstructions: assembled.compiled,
-    retrievedContext: input.retrievedContext,
-    allowedTools
-  });
+  const prompt = buildRuntimeModelPrompt(
+    assembled.message,
+    input.context,
+    input.conversationHistory,
+    {
+      runtimeVersion: input.shopRuntime.version,
+      compiledInstructions: assembled.compiled,
+      retrievedContext: input.retrievedContext,
+      allowedTools
+    }
+  );
 
   const orderedCandidates = [plan.selected, ...plan.alternatives].sort(
     (left, right) => right.score - left.score
@@ -278,7 +294,11 @@ export async function createExecutionFabricRuntimeModelRoute(
 
     const recallEscalation: RecallEscalationSignal | null =
       index > 0 && input.recallEscalation !== undefined
-        ? { reason: "RUNTIME_UNAVAILABLE", localRuntime: "server-local", localModelId: orderedCandidates[0]!.modelId }
+        ? {
+            reason: "RUNTIME_UNAVAILABLE",
+            localRuntime: "server-local",
+            localModelId: orderedCandidates[0]!.modelId
+          }
         : candidate.executionTarget === "cloud" && input.recallEscalation !== undefined
           ? input.recallEscalation
           : null;

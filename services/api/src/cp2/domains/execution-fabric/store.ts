@@ -15,7 +15,7 @@ import type {
 import { Cp2Error } from "../../cp2-error.js";
 import type { Cp2Snapshot } from "../../store.js";
 
-/**
+/** TODO(remove-after-fabric-migration)
  * Persistence for the Execution Fabric entities (docs/architecture/agent-execution-fabric-phase1.md,
  * -phase2.md, -phase2-5.md). A Cp2Store domain slice in the same sense as agent-runtime/messaging/
  * etc. as of Phase 2.5: `Cp2Store.snapshot()`/`hydrateSnapshot()` include `modelPreferencesMap`/
@@ -202,7 +202,11 @@ export class ExecutionFabricStore {
   removeRuntimeModelInstallation(id: string, accountId: string, now: Date = new Date()): void {
     const installation = this.runtimeModelInstallations.get(id);
     if (installation === undefined || installation.accountId !== accountId) {
-      throw new Cp2Error(404, "runtime_model_installation_not_found", "Installation was not found.");
+      throw new Cp2Error(
+        404,
+        "runtime_model_installation_not_found",
+        "Installation was not found."
+      );
     }
     this.runtimeModelInstallations.set(id, {
       ...installation,
@@ -259,7 +263,11 @@ export class ExecutionFabricStore {
   }): ExecutionHistoryRecord {
     const existing = this.executionHistory.get(input.executionId);
     if (existing === undefined) {
-      throw new Cp2Error(404, "execution_history_not_found", "Execution history record was not found.");
+      throw new Cp2Error(
+        404,
+        "execution_history_not_found",
+        "Execution history record was not found."
+      );
     }
     const record: ExecutionHistoryRecord = {
       ...existing,

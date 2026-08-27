@@ -5,7 +5,13 @@ import { createCp2Store } from "../services/api/src/cp2/store";
 
 interface McpTokenResponse {
   accessToken: string;
-  token: { id: string; shopId: string | null; scopes: string[] };
+  token: {
+    id: string;
+    shopId: string | null;
+    scopes: string[];
+    createdAt: string;
+    expiresAt: string;
+  };
 }
 
 describe("CP23 MCP tool gateway", () => {
@@ -219,6 +225,19 @@ describe("CP23 MCP tool gateway", () => {
       "soko.get_sync_changes",
       "soko.query_catalogue"
     ]);
+    const readOnlyAction = await mcpPost(
+      app,
+      readOnlyToken.accessToken,
+      toolCall(20, "soko.runtime_turn", {
+        shopId: first.business.id,
+        message: "add product forbidden"
+      }),
+      String(readInitialized.headers["mcp-session-id"])
+    );
+    expect(readOnlyAction.json().result).toMatchObject({
+      isError: true,
+      structuredContent: { code: "mcp_scope_forbidden" }
+    });
     const catalogue = await mcpPost(
       app,
       readOnlyToken.accessToken,
@@ -331,6 +350,246 @@ describe("CP23 MCP tool gateway", () => {
       payload: JSON.stringify(initializeRequest())
     });
     expect(shopLinked.statusCode).toBe(200);
+
+    const otherCookie = await createSession(app, "254700000237");
+    const otherShop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "Unauthorized Account-Wide Shop", language: "en" },
+      otherCookie
+    );
+    const unauthorizedShopLink = await app.inject({
+      method: "POST",
+      url: `/mcp?shopId=${encodeURIComponent(otherShop.business.id)}`,
+      headers: {
+        authorization: `Bearer ${accountWideToken.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(unauthorizedShopLink.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("keeps the same credential and its tools valid across browser rotation and logout", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const cookies = await createSession(app, "254700000235");
+    await postJson(
+      app,
+      "/auth/pin/change",
+      { currentPin: "1234", pin: "6428", pinConfirmation: "6428" },
+      cookies
+    );
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "Rotation Independent Shop", language: "en" },
+      cookies
+    );
+    await postJson(
+      app,
+      `/businesses/${shop.business.id}/products`,
+      { name: "Rotation Tea", unit: "box", quantity: 4, sellingPrice: 320 },
+      cookies
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      {
+        name: "Thirty day independent token",
+        scopes: ["mcp:read", "mcp:act"],
+        shopId: shop.business.id,
+        expiresInSeconds: 2_592_000
+      },
+      cookies,
+      { origin: "http://localhost:5173" }
+    );
+    expect(Date.parse(token.token.expiresAt) - Date.parse(token.token.createdAt)).toBe(
+      2_592_000_000
+    );
+    const originalSession = store
+      .snapshot()
+      .sessions.find((session) => session.revokedAt === null)!;
+    expect(Date.parse(token.token.expiresAt)).toBeGreaterThan(
+      Date.parse(originalSession.expiresAt)
+    );
+    expect(store.authenticateMcpAccessToken({ accessToken: token.accessToken }).tokenId).toBe(
+      token.token.id
+    );
+
+    const refreshed = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: { cookie: cookies }
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(store.getSession(originalSession.id)).toBeNull();
+    expect(
+      store.snapshot().sessions.find((session) => session.id === originalSession.id)
+    ).toMatchObject({ revokedAt: expect.any(String), revocationReason: "rotated" });
+    expect(store.authenticateMcpAccessToken({ accessToken: token.accessToken }).tokenId).toBe(
+      token.token.id
+    );
+
+    const initialized = await app.inject({
+      method: "POST",
+      url: `/mcp?shopId=${encodeURIComponent(shop.business.id)}`,
+      headers: {
+        authorization: `Bearer ${token.accessToken}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream"
+      },
+      payload: JSON.stringify(initializeRequest())
+    });
+    expect(initialized.statusCode).toBe(200);
+    expect(initialized.headers["mcp-session-id"]).toEqual(expect.any(String));
+    const mcpSessionId = String(initialized.headers["mcp-session-id"]);
+    const initializedNotification = await mcpPost(
+      app,
+      token.accessToken,
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      mcpSessionId
+    );
+    expect(initializedNotification.statusCode).toBe(202);
+    const listed = await mcpPost(
+      app,
+      token.accessToken,
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      mcpSessionId
+    );
+    expect(listed.statusCode).toBe(200);
+    const shops = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(3, "soko.list_shops", {}),
+      mcpSessionId
+    );
+    expect(shops.json().result.structuredContent).toEqual([
+      expect.objectContaining({ business: expect.objectContaining({ id: shop.business.id }) })
+    ]);
+    const catalogue = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(4, "soko.query_catalogue", { shopId: shop.business.id, query: "tea" }),
+      mcpSessionId
+    );
+    expect(catalogue.json().result).toMatchObject({
+      isError: false,
+      structuredContent: { products: [expect.objectContaining({ sellingPrice: 320 })] }
+    });
+    const runtime = await mcpPost(
+      app,
+      token.accessToken,
+      toolCall(5, "soko.runtime_turn", {
+        shopId: shop.business.id,
+        message: "add product coffee"
+      }),
+      mcpSessionId
+    );
+    expect(runtime.json().result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        turn: { status: "completed", plan: { toolName: "product.create" } }
+      }
+    });
+
+    const loggedOut = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { cookie: extractCookie(refreshed.headers["set-cookie"]) }
+    });
+    expect(loggedOut.statusCode).toBe(200);
+    expect(store.authenticateMcpAccessToken({ accessToken: token.accessToken }).tokenId).toBe(
+      token.token.id
+    );
+    expect((await mcpPost(app, token.accessToken, initializeRequest())).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("revalidates persisted actor, account, membership, shop, expiry, and legacy provenance", async () => {
+    const store = createCp2Store();
+    const app = buildApi({ cp2: { store } });
+    const cookie = await createSession(app, "254700000236");
+    await postJson(
+      app,
+      "/auth/pin/change",
+      { currentPin: "1234", pin: "9814", pinConfirmation: "9814" },
+      cookie
+    );
+    const shop = await postJson<{ business: { id: string } }>(
+      app,
+      "/businesses",
+      { name: "Lifecycle Authorization Shop", language: "en" },
+      cookie
+    );
+    const token = await postJson<McpTokenResponse>(
+      app,
+      "/v1/mcp/tokens",
+      { name: "Persisted lifecycle token", scopes: ["mcp:read"], shopId: shop.business.id },
+      cookie,
+      { origin: "http://localhost:5173" }
+    );
+    const snapshot = store.snapshot();
+    expect(JSON.stringify(snapshot)).not.toContain(token.accessToken);
+    expect(snapshot.mcpAccessTokens[0]).toMatchObject({
+      tokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      createdBySessionId: expect.any(String)
+    });
+
+    const persisted = createCp2Store();
+    persisted.hydrateSnapshot({ ...snapshot, sessions: [] });
+    expect(persisted.authenticateMcpAccessToken({ accessToken: token.accessToken })).toMatchObject({
+      tokenId: token.token.id,
+      accountId: snapshot.accounts[0]?.id,
+      userId: snapshot.users[0]?.id
+    });
+
+    const legacyToken = {
+      ...snapshot.mcpAccessTokens[0]!,
+      sessionId: snapshot.mcpAccessTokens[0]!.createdBySessionId
+    } as (typeof snapshot.mcpAccessTokens)[number] & { sessionId: string | null };
+    delete (legacyToken as Partial<(typeof snapshot.mcpAccessTokens)[number]>).createdBySessionId;
+    const legacy = createCp2Store();
+    legacy.hydrateSnapshot({ ...snapshot, sessions: [], mcpAccessTokens: [legacyToken] });
+    expect(legacy.authenticateMcpAccessToken({ accessToken: token.accessToken }).tokenId).toBe(
+      token.token.id
+    );
+
+    expect(() =>
+      persisted.authenticateMcpAccessToken({
+        accessToken: token.accessToken,
+        now: new Date(token.token.expiresAt)
+      })
+    ).toThrowError(expect.objectContaining({ code: "mcp_token_invalid" }));
+
+    const withoutMembership = createCp2Store();
+    withoutMembership.hydrateSnapshot({ ...snapshot, memberships: [] });
+    expect(() =>
+      withoutMembership.authenticateMcpAccessToken({ accessToken: token.accessToken })
+    ).toThrowError(expect.objectContaining({ code: "membership_required" }));
+
+    const withoutShop = createCp2Store();
+    withoutShop.hydrateSnapshot({ ...snapshot, businesses: [] });
+    expect(() =>
+      withoutShop.authenticateMcpAccessToken({ accessToken: token.accessToken })
+    ).toThrowError(expect.objectContaining({ code: "business_not_found" }));
+
+    const withoutAccount = createCp2Store();
+    withoutAccount.hydrateSnapshot({ ...snapshot, accounts: [], users: [] });
+    expect(() =>
+      withoutAccount.authenticateMcpAccessToken({ accessToken: token.accessToken })
+    ).toThrowError(expect.objectContaining({ code: "mcp_token_invalid" }));
+
+    const suspendedAccount = createCp2Store();
+    suspendedAccount.hydrateSnapshot({
+      ...snapshot,
+      accounts: snapshot.accounts.map((account) => ({ ...account, status: "suspended" as const }))
+    });
+    expect(() =>
+      suspendedAccount.authenticateMcpAccessToken({ accessToken: token.accessToken })
+    ).toThrowError(expect.objectContaining({ code: "mcp_token_invalid" }));
     await app.close();
   });
 });
@@ -406,7 +665,7 @@ async function postJson<T = unknown>(
 }
 
 function extractCookie(header: string | string[] | number | undefined): string {
-  const value = Array.isArray(header) ? header[0] : header;
-  expect(typeof value).toBe("string");
-  return String(value).split(";")[0] ?? "";
+  const values = Array.isArray(header) ? header : [header];
+  expect(values.every((value) => typeof value === "string")).toBe(true);
+  return values.map((value) => String(value).split(";")[0] ?? "").join("; ");
 }

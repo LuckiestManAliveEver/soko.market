@@ -25,6 +25,34 @@ describe("agent model activation runtime", () => {
     });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700002001", "Kwa Jane");
+    const createdConversation = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        kind: "personal",
+        activeShopId: owner.businessId,
+        runtimeBindingId: "builtin:soko-default-runtime:v1"
+      })
+    });
+    expect(createdConversation.statusCode).toBe(200);
+    expect(createdConversation.json()).toMatchObject({
+      conversation: { runtimeBindingId: "builtin:soko-default-runtime:v1" }
+    });
+    const conversationId = createdConversation.json<{ conversation: { id: string } }>().conversation
+      .id;
+    const invalidConversation = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        kind: "personal",
+        activeShopId: owner.businessId,
+        runtimeBindingId: "missing-runtime-binding"
+      })
+    });
+    expect(invalidConversation.statusCode).toBe(400);
+    expect(invalidConversation.json()).toMatchObject({ code: "RUNTIME_BINDING_INVALID" });
 
     const test = await app.inject({
       method: "POST",
@@ -52,6 +80,17 @@ describe("agent model activation runtime", () => {
       lastVerificationStatus: "passed"
     });
     expect(activation.healthCheck.ok).toBe(true);
+    expect(store.resolveRuntimeBinding(conversationId)).toMatchObject({
+      conversationId,
+      binding: { businessId: owner.businessId, agentId: owner.businessId, status: "active" },
+      agent: { id: owner.businessId },
+      primary: {
+        model: { id: primaryModelId },
+        installation: { status: "available" },
+        host: { type: "backend", status: "available" }
+      },
+      selected: { model: { id: primaryModelId } }
+    });
 
     const restoredStore = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
@@ -65,6 +104,9 @@ describe("agent model activation runtime", () => {
       modelId: primaryModelId,
       status: "active"
     });
+    expect(restoredStore.resolveRuntimeBinding(conversationId).selected.model.id).toBe(
+      primaryModelId
+    );
 
     await app.close();
     await restoredApp.close();
@@ -368,7 +410,7 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("guides unconfigured agents to activate a model and approve a fallback within chat", async () => {
+  it("uses the persisted in-process global default for an otherwise unbound conversation", async () => {
     const store = createCp2Store({
       modelRuntimeAdapterResolver: () => healthyAdapter(primaryModelId)
     });
@@ -403,12 +445,12 @@ describe("agent model activation runtime", () => {
       agentMessage: {
         content: {
           type: "text",
-          text: expect.stringMatching(/Agent settings → Model[\s\S]*hosted fallback/iu)
+          text: expect.stringMatching(/Soko command/iu)
         }
       },
       processing: {
         status: "completed",
-        errorCode: "AGENT_MODEL_NOT_CONFIGURED"
+        errorCode: null
       }
     });
 

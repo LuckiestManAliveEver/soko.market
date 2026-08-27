@@ -39,7 +39,7 @@
 import { randomUUID } from "node:crypto";
 import type { BusinessPermission } from "@soko/business-core";
 import type {
-  AuthSessionView,
+  AuthenticatedActorView,
   BusinessNotificationStatus,
   BusinessNotificationSummary,
   BusinessReportSummary,
@@ -54,7 +54,7 @@ export interface NotificationsDomainDeps {
     businessId: string,
     permission: BusinessPermission,
     now?: Date
-  ) => AuthSessionView;
+  ) => AuthenticatedActorView;
   recordAuditEvent: (input: {
     type: string;
     aggregateType: string;
