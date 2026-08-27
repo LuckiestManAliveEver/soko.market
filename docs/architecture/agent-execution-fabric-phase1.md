@@ -16,14 +16,14 @@ zero runtime dependencies besides `@soko/shared-types`). Contains no network cal
 and no reference to any Express route, `Cp2Store`, or `OwnerNodeBroker` — every exported function
 takes already-fetched plain data and returns a plain result.
 
-| File | Purpose |
-|---|---|
-| [`types.ts`](../../packages/execution-planner/src/types.ts) | All planner types: `ModelPreferenceCandidate`, `PrecedenceInput`, `ReconciledModel`, `ModelRegistryConflict`, `RuntimeHostCandidateInput`, `CandidateRejectionReason`, `ExecutionCandidate`, `PlannerWeights` (+ `defaultPlannerWeights`), `ExecutionPlan`, `PlannerConstraints`, `PlannerInput`. |
-| [`precedence.ts`](../../packages/execution-planner/src/precedence.ts) | `resolveModelPreference()` — the one, central implementation of request > conversation > agent > user > system. |
-| [`registry-reconciliation.ts`](../../packages/execution-planner/src/registry-reconciliation.ts) | `reconcileModelRegistries()` — read-only merge of the two disagreeing model registries into one `ModelRegistry` view (§2 below). |
-| [`scoring.ts`](../../packages/execution-planner/src/scoring.ts) | `scoreCandidate()` — pure function of `(candidate, preference, weights, host)`; no magic numbers, every baseline table named. |
-| [`planner.ts`](../../packages/execution-planner/src/planner.ts) | `planExecution()` and each of its 8 named stages, individually exported. |
-| [`index.ts`](../../packages/execution-planner/src/index.ts) | Public re-exports. |
+| File                                                                                            | Purpose                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`types.ts`](../../packages/execution-planner/src/types.ts)                                     | All planner types: `ModelPreferenceCandidate`, `PrecedenceInput`, `ReconciledModel`, `ModelRegistryConflict`, `RuntimeHostCandidateInput`, `CandidateRejectionReason`, `ExecutionCandidate`, `PlannerWeights` (+ `defaultPlannerWeights`), `ExecutionPlan`, `PlannerConstraints`, `PlannerInput`. |
+| [`precedence.ts`](../../packages/execution-planner/src/precedence.ts)                           | `resolveModelPreference()` — the one, central implementation of request > conversation > agent > user > system.                                                                                                                                                                                   |
+| [`registry-reconciliation.ts`](../../packages/execution-planner/src/registry-reconciliation.ts) | `reconcileModelRegistries()` — read-only merge of the two disagreeing model registries into one `ModelRegistry` view (§2 below).                                                                                                                                                                  |
+| [`scoring.ts`](../../packages/execution-planner/src/scoring.ts)                                 | `scoreCandidate()` — pure function of `(candidate, preference, weights, host)`; no magic numbers, every baseline table named.                                                                                                                                                                     |
+| [`planner.ts`](../../packages/execution-planner/src/planner.ts)                                 | `planExecution()` and each of its 8 named stages, individually exported.                                                                                                                                                                                                                          |
+| [`index.ts`](../../packages/execution-planner/src/index.ts)                                     | Public re-exports.                                                                                                                                                                                                                                                                                |
 
 **New shared types** appended to `packages/shared-types/src/index.ts` (lines 3793–3872, after
 `AgentRuntimeReadiness`): `ModelExecutionPreference`, `ModelQualityPreference`,
@@ -33,11 +33,11 @@ takes already-fetched plain data and returns a plain result.
 **New server-side domain (not a `Cp2Store` slice): `services/api/src/cp2/domains/execution-fabric/`**
 (280 lines across 3 files) — the only place that touches real data sources on the server:
 
-| File | Purpose |
-|---|---|
-| [`registry-adapter.ts`](../../services/api/src/cp2/domains/execution-fabric/registry-adapter.ts) | `reconcileLiveModelRegistries()` — feeds the real `aiModelRegistry` and `runtimeModels` into the pure reconciliation function. The only file that imports both real registries for this purpose. |
-| [`store.ts`](../../services/api/src/cp2/domains/execution-fabric/store.ts) | `ExecutionFabricStore` — in-memory CRUD for `ModelPreferenceSummary`, `RuntimeHostSummary`, `RuntimeModelInstallationSummary`. Not imported by `cp2/store.ts`, `postgres-store.ts`, or `routes.ts` anywhere (verified by test, §4). |
-| [`host-presence.ts`](../../services/api/src/cp2/domains/execution-fabric/host-presence.ts) | `runtimeHostCandidateInput()` — bridges a durable `RuntimeHostSummary` with `OwnerNodeBroker.listPresence()` to produce the planner's `RuntimeHostCandidateInput`, computing `online` at call time and never persisting it. |
+| File                                                                                             | Purpose                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`registry-adapter.ts`](../../services/api/src/cp2/domains/execution-fabric/registry-adapter.ts) | `reconcileLiveModelRegistries()` — feeds the real `aiModelRegistry` and `runtimeModels` into the pure reconciliation function. The only file that imports both real registries for this purpose.                                    |
+| [`store.ts`](../../services/api/src/cp2/domains/execution-fabric/store.ts)                       | `ExecutionFabricStore` — in-memory CRUD for `ModelPreferenceSummary`, `RuntimeHostSummary`, `RuntimeModelInstallationSummary`. Not imported by `cp2/store.ts`, `postgres-store.ts`, or `routes.ts` anywhere (verified by test, §4). |
+| [`host-presence.ts`](../../services/api/src/cp2/domains/execution-fabric/host-presence.ts)       | `runtimeHostCandidateInput()` — bridges a durable `RuntimeHostSummary` with `OwnerNodeBroker.listPresence()` to produce the planner's `RuntimeHostCandidateInput`, computing `online` at call time and never persisting it.         |
 
 **New additive migration:** [`infra/db/migrations/060_execution_fabric_entities.sql`](../../infra/db/migrations/060_execution_fabric_entities.sql)
 (87 lines) creates `cp2_model_preferences`, `cp2_runtime_hosts`, `cp2_runtime_model_installations`
@@ -58,6 +58,7 @@ does **not** merge or migrate either underlying source — it is a read-only vie
 call, for the planner only.
 
 **Resolution logic** (`registry-reconciliation.ts:30-93`):
+
 - A model id present in only one source resolves with `sources: ["aiModelRegistry"]` or
   `sources: ["runtimeModels"]` and no conflict — a gap is not a conflict.
 - A model id present in **both** sources is checked on three fields — `executionTarget`,
@@ -76,8 +77,8 @@ produce a genuine `executionTarget` conflict: `aiModelRegistry` declares each `p
 model the platform itself hosts and calls over the network). These are not almost-the-same
 records — a caller trusting one source over the other would route the exact same model id to a
 completely different execution location. This is proven by a live test
-(`tests/execution-fabric-registry-reconciliation.test.ts`, *"confirms the three ids shared by both
-live registries produce a real executionTarget conflict"*) that calls the real
+(`tests/execution-fabric-registry-reconciliation.test.ts`, _"confirms the three ids shared by both
+live registries produce a real executionTarget conflict"_) that calls the real
 `reconcileLiveModelRegistries()`, not synthetic fixtures — it fails the moment either registry is
 edited to actually agree, which is intentional: it exists to catch silent drift, not just to pass
 once.
@@ -153,12 +154,12 @@ activation are three genuinely separate operations writing three separate tables
 at read time by `resolveActiveRuntimeModelId`. Phase 1's entities are designed to be the eventual
 target shape for those three operations, without changing any of them yet:
 
-| Phase 0 operation | Current table | Phase 1 target entity |
-|---|---|---|
-| (a) "Use with agent" — server-backend model binding | `cp2_agent_model_bindings` (`AgentModelBindingSummary`) | Would become: bind a `ModelPreference` at `scope: "agent"` naming that model as `preferredModelIds[0]` |
-| (b) "Activate on this device" — device-local GGUF readiness | `cp2_installed_agent_models` (`InstalledAgentModelSummary`) | Would become: `RuntimeModelInstallation` on a `RuntimeHost` representing that device |
-| (c) Cloud-fallback model activation | `cp2_active_ai_models` (`ActiveAiModelSummary`) | Would become: a `ModelPreference` with `allowCloudFallback: true` and the cloud model in `fallbackModelIds` |
-| — (no current equivalent) | — | `RuntimeHost` — the audit found no `devices` table or equivalent; this is genuinely net-new, not a migration target |
+| Phase 0 operation                                           | Current table                                               | Phase 1 target entity                                                                                               |
+| ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| (a) "Use with agent" — server-backend model binding         | `cp2_agent_model_bindings` (`AgentModelBindingSummary`)     | Would become: bind a `ModelPreference` at `scope: "agent"` naming that model as `preferredModelIds[0]`              |
+| (b) "Activate on this device" — device-local GGUF readiness | `cp2_installed_agent_models` (`InstalledAgentModelSummary`) | Would become: `RuntimeModelInstallation` on a `RuntimeHost` representing that device                                |
+| (c) Cloud-fallback model activation                         | `cp2_active_ai_models` (`ActiveAiModelSummary`)             | Would become: a `ModelPreference` with `allowCloudFallback: true` and the cloud model in `fallbackModelIds`         |
+| — (no current equivalent)                                   | —                                                           | `RuntimeHost` — the audit found no `devices` table or equivalent; this is genuinely net-new, not a migration target |
 
 This mapping is documentation only in this phase — none of (a), (b), (c) were touched, and no
 migration path between the legacy tables and the new ones was written. That cutover is Phase 2.
@@ -217,8 +218,8 @@ Coverage against the brief's required list:
 - **No existing routing behavior changed for live traffic.** `decideInferenceRoute` and
   `apps/web/src/browser-inference-routing.ts` were not modified. `ExecutionFabricStore` is not
   imported by `services/api/src/cp2/store.ts`, `postgres-store.ts`, or `routes.ts` — verified by a
-  dedicated test (`execution-fabric-entities-migration.test.ts`, *"is not yet wired into
-  Cp2Store/postgres-store.ts"*), not just asserted here.
+  dedicated test (`execution-fabric-entities-migration.test.ts`, _"is not yet wired into
+  Cp2Store/postgres-store.ts"_), not just asserted here.
 - **All must-pass §4 tests pass.** Confirmed above (§5) — 46/46, plus the full pre-existing suite
   unaffected (881/881, 29 pre-existing skips untouched).
 - **Model registry conflicts listed, not silently resolved.** The 3-id `executionTarget` conflict is
@@ -227,7 +228,7 @@ Coverage against the brief's required list:
 - **No persistent heartbeat/liveness column added anywhere.** `RuntimeHostSummary` and the
   `cp2_runtime_hosts` table carry `brokerNodeId` (an identity pointer) only; `online`/
   `lastHeartbeatAt` exist nowhere in the schema or the type, confirmed by both a unit test
-  (`execution-fabric-store.test.ts`, *"no liveness field"*) and a migration-content test
+  (`execution-fabric-store.test.ts`, _"no liveness field"_) and a migration-content test
   (`execution-fabric-entities-migration.test.ts`, asserting `last_heartbeat`/`online boolean`/
   `lastHeartbeatAt` are all absent from the SQL). Liveness is computed only in
   `host-presence.ts`'s `runtimeHostCandidateInput()`, from `OwnerNodeBroker.listPresence()`, at call

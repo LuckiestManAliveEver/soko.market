@@ -334,7 +334,10 @@ describe("execution planner scoring and selection", () => {
 
   it("local-first vs cloud-first policy changes which of two otherwise-equal candidates wins", () => {
     const localOption = localModel("local-option", { minimumMemoryGb: null });
-    const cloudOption = localModel("cloud-option", { executionTarget: "cloud", minimumMemoryGb: null });
+    const cloudOption = localModel("cloud-option", {
+      executionTarget: "cloud",
+      minimumMemoryGb: null
+    });
     const registry = [localOption, cloudOption];
     const oneHost = host({ installations: [installation("local-option")] });
     // Isolate the signal under test: zero every weight except `locality` (the one
@@ -447,7 +450,11 @@ describe("execution planner scoring and selection", () => {
       constraints: {}
     });
 
-    const preferenceHeavyWeights = { ...defaultPlannerWeights, modelPreferenceRank: 10, costPenalty: 0 };
+    const preferenceHeavyWeights = {
+      ...defaultPlannerWeights,
+      modelPreferenceRank: 10,
+      costPenalty: 0
+    };
     const preferenceHeavyScored = scoreCandidates(accepted, {
       preference: modelPreference,
       hosts: [],
@@ -458,7 +465,11 @@ describe("execution planner scoring and selection", () => {
     });
     expect(selectCandidate(preferenceHeavyScored)?.modelId).toBe("preferred-cloud");
 
-    const costHeavyWeights = { ...defaultPlannerWeights, modelPreferenceRank: 0.1, costPenalty: 20 };
+    const costHeavyWeights = {
+      ...defaultPlannerWeights,
+      modelPreferenceRank: 0.1,
+      costPenalty: 20
+    };
     const costHeavyScored = scoreCandidates(accepted, {
       preference: modelPreference,
       hosts: [],
@@ -526,7 +537,12 @@ describe("execution planner end-to-end (planExecution)", () => {
 
 describe("buildExecutionPlan / selectCandidate determinism", () => {
   it("selectCandidate breaks a score tie deterministically by hostId then modelId", () => {
-    const tiedWeights = { ...defaultPlannerWeights, modelPreferenceRank: 0, warmModel: 0, hostHealth: 0 };
+    const tiedWeights = {
+      ...defaultPlannerWeights,
+      modelPreferenceRank: 0,
+      warmModel: 0,
+      hostHealth: 0
+    };
     const candidates = scoreCandidates(
       [
         { hostId: "host-z", host: null, modelId: "model-a", model: localModel("model-a") },

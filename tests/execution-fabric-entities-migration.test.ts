@@ -3,10 +3,7 @@ import { describe, expect, it } from "vitest";
 
 describe("execution fabric entities migration", () => {
   it("adds three purely additive tables, following the existing normalized-store convention", async () => {
-    const sql = await readFile(
-      "infra/db/migrations/060_execution_fabric_entities.sql",
-      "utf8"
-    );
+    const sql = await readFile("infra/db/migrations/060_execution_fabric_entities.sql", "utf8");
 
     for (const table of [
       "cp2_model_preferences",
@@ -29,7 +26,9 @@ describe("execution fabric entities migration", () => {
     expect(sql).toContain("references cp2_accounts(entity_id) on delete cascade");
 
     // RuntimeModelInstallation belongs to a RuntimeHost via parent_id.
-    expect(sql).toContain("parent_id text references cp2_runtime_hosts(entity_id) on delete cascade");
+    expect(sql).toContain(
+      "parent_id text references cp2_runtime_hosts(entity_id) on delete cascade"
+    );
 
     // No persistent heartbeat/liveness column anywhere (docs/inference/owner-node.md:32) - only an
     // identity pointer (brokerNodeId) that a caller resolves against OwnerNodeBroker at read time.
@@ -43,10 +42,7 @@ describe("execution fabric entities migration", () => {
   });
 
   it("provides a scoped rollback for only the three new tables", async () => {
-    const sql = await readFile(
-      "infra/db/rollbacks/060_execution_fabric_entities.down.sql",
-      "utf8"
-    );
+    const sql = await readFile("infra/db/rollbacks/060_execution_fabric_entities.down.sql", "utf8");
 
     expect(sql).toContain("drop table if exists cp2_model_preferences");
     expect(sql).toContain("drop table if exists cp2_runtime_hosts");

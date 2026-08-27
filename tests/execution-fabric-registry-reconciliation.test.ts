@@ -173,7 +173,10 @@ describe("model registry reconciliation - real registries", () => {
       const conflict = conflicts.find(
         (entry) => entry.modelId === id && entry.field === "executionTarget"
       );
-      expect(conflict).toMatchObject({ aiModelRegistryValue: "local", runtimeModelsValue: "backend" });
+      expect(conflict).toMatchObject({
+        aiModelRegistryValue: "local",
+        runtimeModelsValue: "backend"
+      });
       // The tiebreak (§1) resolves each of these three real conflicts the same way the synthetic
       // test above proves in isolation - trusting runtimeModels by default.
       const resolved = models.find((model) => model.id === id);

@@ -14,7 +14,9 @@ describe("sokoId cooldown runner", () => {
 
     await expect(runner.runNow()).resolves.toBe(2);
     expect(releaseExpiredSokoIds).toHaveBeenCalledTimes(1);
-    expect(releaseExpiredSokoIds.mock.calls[0]?.[0]).toMatchObject({ cooldownMs: expect.any(Number) });
+    expect(releaseExpiredSokoIds.mock.calls[0]?.[0]).toMatchObject({
+      cooldownMs: expect.any(Number)
+    });
     expect(onResult).toHaveBeenCalledWith(2);
 
     await runner.stop();

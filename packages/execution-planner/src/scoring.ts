@@ -106,9 +106,14 @@ function localitySignal(input: {
   preferredHostId: string | undefined;
   executionPreference: ModelPreferenceCandidate["executionPreference"];
 }): number {
-  const sameOrigin = input.requestOriginHostId !== undefined && input.hostId === input.requestOriginHostId ? 1 : 0;
-  const preferredHost = input.preferredHostId !== undefined && input.hostId === input.preferredHostId ? 1 : 0;
-  const policyAlignment = executionPreferenceAlignment(input.executionPreference, input.executionTarget);
+  const sameOrigin =
+    input.requestOriginHostId !== undefined && input.hostId === input.requestOriginHostId ? 1 : 0;
+  const preferredHost =
+    input.preferredHostId !== undefined && input.hostId === input.preferredHostId ? 1 : 0;
+  const policyAlignment = executionPreferenceAlignment(
+    input.executionPreference,
+    input.executionTarget
+  );
   return Math.max(sameOrigin, preferredHost, policyAlignment);
 }
 

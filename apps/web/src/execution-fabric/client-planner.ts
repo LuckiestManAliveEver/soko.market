@@ -7,7 +7,11 @@ import {
   type ReconciledModel,
   type RuntimeHostCandidateInput
 } from "@soko/execution-planner";
-import type { InferenceProvider, InferenceRouteDecision, RuntimeModelInstallationSummary } from "@soko/shared-types";
+import type {
+  InferenceProvider,
+  InferenceRouteDecision,
+  RuntimeModelInstallationSummary
+} from "@soko/shared-types";
 import { defaultOfflineAiModels, type LocalAiModel } from "../ai-model-manager.js";
 
 /**
@@ -39,7 +43,8 @@ function reconciledModelsFromClientCatalog(): ReconciledModel[] {
 function thisDeviceHost(installedModels: LocalAiModel[]): RuntimeHostCandidateInput {
   const installations: RuntimeModelInstallationSummary[] = installedModels
     .filter(
-      (model) => model.installationStatus === "INSTALLED" && model.compatibilityStatus === "COMPATIBLE"
+      (model) =>
+        model.installationStatus === "INSTALLED" && model.compatibilityStatus === "COMPATIBLE"
     )
     .map((model) => ({
       id: model.id,

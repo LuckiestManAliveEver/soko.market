@@ -161,12 +161,7 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
     <main className="auth-onboarding" aria-busy={busy}>
       <section className="auth-onboarding-card" aria-labelledby="signup-title">
         <header className="auth-onboarding-header">
-          <button
-            className="auth-back-button"
-            type="button"
-            onClick={goBack}
-            aria-label="Back"
-          >
+          <button className="auth-back-button" type="button" onClick={goBack} aria-label="Back">
             <span aria-hidden="true">←</span>
           </button>
           <div className="auth-wordmark">

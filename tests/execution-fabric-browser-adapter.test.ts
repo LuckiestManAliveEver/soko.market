@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { InferenceChunk, InferenceProvider, InferenceRequest } from "../packages/shared-types/src";
+import type {
+  InferenceChunk,
+  InferenceProvider,
+  InferenceRequest
+} from "../packages/shared-types/src";
 import type { ModelPreferenceCandidate } from "../packages/execution-planner/src";
 import { createBrowserRuntimeAdapter } from "../apps/web/src/execution-fabric/browser-runtime-adapter";
-import { planBrowserExecution, planBrowserExecutionRoute } from "../apps/web/src/execution-fabric/client-planner";
+import {
+  planBrowserExecution,
+  planBrowserExecutionRoute
+} from "../apps/web/src/execution-fabric/client-planner";
 import type { LocalAiModel } from "../apps/web/src/ai-model-manager";
 
 const installedModelId = "smollm2-360m-android";
@@ -136,8 +143,20 @@ describe("execution fabric - browser-local planning and RuntimeAdapter", () => {
       preference: preference()
     });
     const expectedChunks: InferenceChunk[] = [
-      { requestId: "req-1", text: "mar", done: false, runtime: "browser-wasm", modelId: installedModelId },
-      { requestId: "req-1", text: "ket", done: true, runtime: "browser-wasm", modelId: installedModelId }
+      {
+        requestId: "req-1",
+        text: "mar",
+        done: false,
+        runtime: "browser-wasm",
+        modelId: installedModelId
+      },
+      {
+        requestId: "req-1",
+        text: "ket",
+        done: true,
+        runtime: "browser-wasm",
+        modelId: installedModelId
+      }
     ];
     const adapter = createBrowserRuntimeAdapter(fakeBrowserProvider(expectedChunks));
 
@@ -170,7 +189,10 @@ describe("execution fabric - browser-local planning and RuntimeAdapter", () => {
  * every branch is exercised here directly.
  */
 describe("execution fabric - planBrowserExecutionRoute (the useChatRuntimeState integration point)", () => {
-  function fakeProvider(runtime: "browser-webgpu" | "browser-wasm", id = runtime): InferenceProvider {
+  function fakeProvider(
+    runtime: "browser-webgpu" | "browser-wasm",
+    id = runtime
+  ): InferenceProvider {
     return {
       id,
       runtime,
@@ -206,7 +228,19 @@ describe("execution fabric - planBrowserExecutionRoute (the useChatRuntimeState 
     const route = planBrowserExecutionRoute({
       installedModels: [installedLocalModel()],
       preferredModelId: installedModelId,
-      providers: [{ id: "native-llama-cpp", runtime: "native-llama-cpp", async isAvailable() { return true; }, async supports() { return true; }, async *generate() {} }]
+      providers: [
+        {
+          id: "native-llama-cpp",
+          runtime: "native-llama-cpp",
+          async isAvailable() {
+            return true;
+          },
+          async supports() {
+            return true;
+          },
+          async *generate() {}
+        }
+      ]
     });
     expect(route).toBeNull();
   });

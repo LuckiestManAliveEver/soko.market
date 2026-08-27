@@ -45,7 +45,10 @@ describe("buy intent, marketplace, and guest browsing share one window", () => {
     expect(marketplaceModeCard).toContain("onSignUp={onSignUp}");
     const guestNoteBlock = marketplaceModeCard.slice(
       marketplaceModeCard.indexOf('<div className="guest-browsing-note">'),
-      marketplaceModeCard.indexOf("</div>", marketplaceModeCard.indexOf('<div className="guest-browsing-note">'))
+      marketplaceModeCard.indexOf(
+        "</div>",
+        marketplaceModeCard.indexOf('<div className="guest-browsing-note">')
+      )
     );
     expect(guestNoteBlock).toContain("onClick={onSignUp}");
     expect(statusResultCard).toContain("props.onSignUp !== undefined");

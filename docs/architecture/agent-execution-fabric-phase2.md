@@ -46,8 +46,8 @@ Used in exactly one place (`registry-reconciliation.ts:102-109`) to pick the mer
 server-verified registry) over `aiModelRegistry`'s on-device self-declaration. All other merged
 metadata (label/capabilities/contextWindow/minimumMemoryGb) still comes from `aiModelRegistry`
 regardless of the tiebreak, since the tiebreak only resolves the `executionTarget` disagreement,
-not a wholesale "which source wins" choice. Verified by two tests that assert the *actual resolved
-value*, not just that a conflict was recorded, and are written to fail the moment the constant
+not a wholesale "which source wins" choice. Verified by two tests that assert the _actual resolved
+value_, not just that a conflict was recorded, and are written to fail the moment the constant
 flips without an update: `tests/execution-fabric-registry-reconciliation.test.ts`, "resolves a
 genuine executionTarget conflict using the one named tiebreak constant, not arbitrarily" (synthetic
 data) and the extended "confirms the three ids shared by both live registries..." test (the real
@@ -57,11 +57,11 @@ data) and the extended "confirms the three ids shared by both live registries...
 
 Three planned, three wired live (backend and cloud server-side, browser-local client-side).
 
-| Adapter | Wraps (existing code, unchanged) | Where it's used |
-|---|---|---|
-| Backend/Ollama | `AgentRuntimeDomainDeps.modelRuntimeAdapterResolver` → `runtimeProviderFromAdapter` (`services/api/src/inference/model-runtime.ts:472`) → `ModelRuntimeAdapter.generate` (`createBackendModelAdapter`) | Live, server-side, in `createExecutionFabricRuntimeModelRoute` (§3) |
-| Cloud (OpenAI) | Same `modelRuntimeAdapterResolver`, resolved with `executionTarget: "openai"` → `createProviderModelAdapter`/`createCloudFallbackProvider` (`services/api/src/inference/cloud-fallback.ts`) | Live, server-side, same function - a candidate is just a candidate; the loop does not special-case cloud vs backend beyond the executionTarget→adapter-lookup mapping |
-| Browser/local | `createBrowserRuntimeAdapter` (`apps/web/src/execution-fabric/browser-runtime-adapter.ts`) wraps an existing `InferenceProvider` (the inline browser-webgpu/browser-wasm provider built in `apps/web/src/hooks/useChatRuntimeState.ts:573-651`, which itself wraps `generateBrowserAgentResponse`/the Web Inference Engine backend priority chain) | Live, client-side, via `planBrowserExecutionRoute` (§3) - the adapter itself is also directly tested in isolation (`tests/execution-fabric-browser-adapter.test.ts`) |
+| Adapter        | Wraps (existing code, unchanged)                                                                                                                                                                                                                                                                                                                   | Where it's used                                                                                                                                                       |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backend/Ollama | `AgentRuntimeDomainDeps.modelRuntimeAdapterResolver` → `runtimeProviderFromAdapter` (`services/api/src/inference/model-runtime.ts:472`) → `ModelRuntimeAdapter.generate` (`createBackendModelAdapter`)                                                                                                                                             | Live, server-side, in `createExecutionFabricRuntimeModelRoute` (§3)                                                                                                   |
+| Cloud (OpenAI) | Same `modelRuntimeAdapterResolver`, resolved with `executionTarget: "openai"` → `createProviderModelAdapter`/`createCloudFallbackProvider` (`services/api/src/inference/cloud-fallback.ts`)                                                                                                                                                        | Live, server-side, same function - a candidate is just a candidate; the loop does not special-case cloud vs backend beyond the executionTarget→adapter-lookup mapping |
+| Browser/local  | `createBrowserRuntimeAdapter` (`apps/web/src/execution-fabric/browser-runtime-adapter.ts`) wraps an existing `InferenceProvider` (the inline browser-webgpu/browser-wasm provider built in `apps/web/src/hooks/useChatRuntimeState.ts:573-651`, which itself wraps `generateBrowserAgentResponse`/the Web Inference Engine backend priority chain) | Live, client-side, via `planBrowserExecutionRoute` (§3) - the adapter itself is also directly tested in isolation (`tests/execution-fabric-browser-adapter.test.ts`)  |
 
 `RuntimeAdapter`/`RuntimeRequest`/`RuntimeEvent` (`packages/execution-planner/src/types.ts`):
 `RuntimeRequest` is `InferenceRequest` and `RuntimeEvent` is `InferenceChunk` verbatim — the one
@@ -89,7 +89,8 @@ runs instead, returning the identical `{ proposal, trace, recallCandidate }` sha
 orchestrating caller (`store.ts:2700`) needed zero changes.
 
 **What it does**, in order:
-1. Reads the agent-scoped `ModelPreference` (`ExecutionFabricStore.getModelPreference(businessId, "agent", businessId)`) if one was ever written via "Use with Agent" (§4); if none exists, falls back to a system-default preference seeded from the *legacy* active binding's model id (so flipping the flag on for a shop that has never touched the new UI does not change its resolved model out from under it).
+
+1. Reads the agent-scoped `ModelPreference` (`ExecutionFabricStore.getModelPreference(businessId, "agent", businessId)`) if one was ever written via "Use with Agent" (§4); if none exists, falls back to a system-default preference seeded from the _legacy_ active binding's model id (so flipping the flag on for a shop that has never touched the new UI does not change its resolved model out from under it).
 2. Builds the registry via `reconcileLiveModelRegistries()` (Phase 1, unchanged) — the tiebreak from §1 is already baked in.
 3. Calls `planExecution()` with `hosts: []` (§2).
 4. On `plan.selected === null`: records `outcome: "no_compatible_model"` in execution history and returns a trace that the existing caller already knows how to convert into a graceful, retryable, persisted chat reply (`AGENT_MODEL_UNAVAILABLE`) — see the fix below.
@@ -100,7 +101,7 @@ the end-to-end HTTP test, not by inspection alone):
 
 - `store.ts`'s `createRuntimeTurn` had a pre-gate (`AGENT_MODEL_NOT_CONFIGURED`) that fires whenever
   `modelRuntimeAdapterResolver !== undefined && activeBinding === null` — written before Phase 2
-  existed, on the assumption that the *only* way a model could be configured was the legacy
+  existed, on the assumption that the _only_ way a model could be configured was the legacy
   binding. Since "Use with Agent" now writes a `ModelPreference` instead of a binding (§4), this
   gate fired before the flagged path ever got a chance to run. Fixed by adding
   `this.deps.executionFabricEnabled !== true` to the gate's condition — deferring entirely to the
@@ -135,7 +136,7 @@ whichever browser `InferenceProvider` - webgpu or wasm - is actually present) is
 useChatRuntimeState integration point)" suite. Once it returns a route,
 **`executeInferenceRoute` (unmodified) runs it through the exact same, already-existing
 `InferenceProvider` the legacy path would have used** - the only thing this integration changes is
-*which decision function* picked the model, never how it executes.
+_which decision function_ picked the model, never how it executes.
 
 Honesty note: this closes what was, through most of this phase's development, an open follow-up
 (build the adapter and prove it in isolation, but don't touch the live hook without a browser to
@@ -144,18 +145,19 @@ first, specifically so the live-hook edit itself could stay a single, mechanical
 `if` branch rather than an unverifiable behavioral change - and by then verifying the entire
 pre-existing client inference test suite (`tests/client-first-inference.test.ts`,
 `tests/browser-inference-routing.test.ts`, `tests/frontend-*.test.ts`, `tests/chat-composer-actions.test.tsx`
+
 - 55 tests) still passes byte-for-byte unmodified with the flag off. What remains genuinely
-unverified is a live, interactive browser session actually exercising this branch with the flag on
-end-to-end in a real UI - this repo's tooling in this environment cannot run that, and it is named
-here rather than silently assumed.
+  unverified is a live, interactive browser session actually exercising this branch with the flag on
+  end-to-end in a real UI - this repo's tooling in this environment cannot run that, and it is named
+  here rather than silently assumed.
 
 ## 4. The "Use with Agent" / "Activate Model" flows — corrected
 
-| Legacy operation (Phase 0 §5) | Legacy table | Phase 2 replacement |
-|---|---|---|
-| (a) "Use with agent" — `activateServerBackendModel` (`AgentModelPanel.tsx:1073`) → `POST /api/agents/:agentId/models/:modelId/activate` → `cp2_agent_model_bindings` | `AgentModelBindingSummary` (device-independent, agent-permanent) | `PUT /businesses/:businessId/model-preference` → `Cp2Store.createModelPreference` → `ExecutionFabricStore` (in-memory) → a `ModelPreferenceSummary` at `scope: "agent"`. Verified by test that after this call, `GET /api/agents/:id/model-binding` still returns `null` - no legacy binding is ever created. |
-| (b) "Activate on this device" — `useModelWithAgent` → `synchronizeAgentModelAssignment` → `cp2_installed_agent_models`/`AgentModelAssignmentSummary` | Unchanged in this phase (§8) - browser-local "this device" execution planning is a client-only, ephemeral concern (`apps/web/src/execution-fabric/client-planner.ts`), not migrated onto `RuntimeHost`/`RuntimeModelInstallation` yet, since those model a genuinely different concept (a remote shop device) per Phase 1's own scoping. |
-| (c) Cloud-fallback activation — `PUT /businesses/:id/ai-model` → `ActiveAiModelSummary` | Unchanged in this phase - the new `ModelPreference.allowCloudFallback`/`fallbackModelIds` fields are the forward-looking replacement, but the legacy single-selector route is left alone since nothing in this phase's UI removes it. |
+| Legacy operation (Phase 0 §5)                                                                                                                                        | Legacy table                                                                                                                                                                                                                                                                                                                             | Phase 2 replacement                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) "Use with agent" — `activateServerBackendModel` (`AgentModelPanel.tsx:1073`) → `POST /api/agents/:agentId/models/:modelId/activate` → `cp2_agent_model_bindings` | `AgentModelBindingSummary` (device-independent, agent-permanent)                                                                                                                                                                                                                                                                         | `PUT /businesses/:businessId/model-preference` → `Cp2Store.createModelPreference` → `ExecutionFabricStore` (in-memory) → a `ModelPreferenceSummary` at `scope: "agent"`. Verified by test that after this call, `GET /api/agents/:id/model-binding` still returns `null` - no legacy binding is ever created. |
+| (b) "Activate on this device" — `useModelWithAgent` → `synchronizeAgentModelAssignment` → `cp2_installed_agent_models`/`AgentModelAssignmentSummary`                 | Unchanged in this phase (§8) - browser-local "this device" execution planning is a client-only, ephemeral concern (`apps/web/src/execution-fabric/client-planner.ts`), not migrated onto `RuntimeHost`/`RuntimeModelInstallation` yet, since those model a genuinely different concept (a remote shop device) per Phase 1's own scoping. |
+| (c) Cloud-fallback activation — `PUT /businesses/:id/ai-model` → `ActiveAiModelSummary`                                                                              | Unchanged in this phase - the new `ModelPreference.allowCloudFallback`/`fallbackModelIds` fields are the forward-looking replacement, but the legacy single-selector route is left alone since nothing in this phase's UI removes it.                                                                                                    |
 
 **Selecting an agent never triggers a model install/bind.** Confirmed both by construction (the
 new write path only fires from an explicit "Save preference" click in `ModelPreferencePanel.tsx`,
@@ -180,6 +182,7 @@ default everywhere - this component never mounts and the existing panel is pixel
 unchanged; verified by the existing frontend test suite passing unmodified (§7).
 
 Two controls, exactly matching the brief's scope (no more, no less):
+
 - **Model**: Automatic / Fast / Balanced / Best available / one specific model from the shop's
   existing backend catalog. "Automatic" and the quality tiers set `preferredModelIds` to the full
   catalog (letting the planner's scoring pick the best actually-installed/available one); a
@@ -268,6 +271,7 @@ added or removed) to reflect Phase 2's deliberate, documented change to Phase 1'
 into Cp2Store" state (§8's persistence note explains the nuance).
 
 Coverage against the brief's required §7 list:
+
 - **Flag off → unchanged**: the entire pre-existing suite, verbatim, above.
 - **Flag on → planner selects and a real adapter executes, end to end**: backend-hosted via real
   HTTP (`tests/execution-fabric-runtime-route.test.ts`, "writes a ModelPreference..."); browser-local

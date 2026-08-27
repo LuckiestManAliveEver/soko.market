@@ -61,7 +61,9 @@ describe("agent runtime access panel - context source creation", () => {
     );
     const root = createRoot(host);
     await act(async () =>
-      root.render(<Harness submitContextSource={submitContextSource} runProfileAction={runProfileAction} />)
+      root.render(
+        <Harness submitContextSource={submitContextSource} runProfileAction={runProfileAction} />
+      )
     );
 
     const saveButton = Array.from(host.querySelectorAll("button")).find(
@@ -137,7 +139,11 @@ describe("agent runtime access panel - context source creation", () => {
         title: "Structured business policy",
         status: "active",
         sensitivity: "internal",
-        accessRules: { audiences: ["owner", "staff"], requiredPermission: "business:read", customerVisible: false },
+        accessRules: {
+          audiences: ["owner", "staff"],
+          requiredPermission: "business:read",
+          customerVisible: false
+        },
         freshnessTimestamp: "2026-08-24T00:00:00.000Z",
         version: 1,
         retrievalMetadata: { keywords: [], sourceRecordId: null, content: "Some policy content" },

@@ -15,7 +15,9 @@ export function describePlannerOutcome(plan: ExecutionPlan): PlannerError | null
     return { code: "NO_COMPATIBLE_MODEL", modelId: null, hostId: null };
   }
 
-  const allHostOffline = plan.rejected.every((candidate) => candidate.rejectionReason === "HOST_OFFLINE");
+  const allHostOffline = plan.rejected.every(
+    (candidate) => candidate.rejectionReason === "HOST_OFFLINE"
+  );
   if (allHostOffline) {
     const first = plan.rejected[0]!;
     return { code: "NO_RUNTIME_HOST", modelId: first.modelId, hostId: first.hostId };

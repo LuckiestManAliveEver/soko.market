@@ -1,5 +1,9 @@
 import type { AiModelSummary, RuntimeModelDefinition } from "@soko/shared-types";
-import type { ModelRegistryConflict, ModelRegistryReconciliation, ReconciledModel } from "./types.js";
+import type {
+  ModelRegistryConflict,
+  ModelRegistryReconciliation,
+  ReconciledModel
+} from "./types.js";
 
 /**
  * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). For the 3 confirmed conflicting

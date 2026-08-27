@@ -290,7 +290,10 @@ describe("swappability invariants", () => {
       preference
     );
     expect(
-      owner.store.getAgentProfile({ sessionId: owner.auth.session.id, businessId: owner.businessId })
+      owner.store.getAgentProfile({
+        sessionId: owner.auth.session.id,
+        businessId: owner.businessId
+      })
     ).toEqual(beforeProfile);
   });
 
@@ -314,7 +317,10 @@ describe("swappability invariants", () => {
     });
 
     expect(
-      owner.store.getAgentProfile({ sessionId: owner.auth.session.id, businessId: owner.businessId })
+      owner.store.getAgentProfile({
+        sessionId: owner.auth.session.id,
+        businessId: owner.businessId
+      })
     ).toEqual(beforeProfile);
     expect(fabric.listRuntimeModelInstallations(secondDevice.id)).toEqual([]);
 

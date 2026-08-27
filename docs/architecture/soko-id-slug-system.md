@@ -26,18 +26,18 @@ against. Per direct confirmation from Julien, this phase **extends `sokoId` in p
 
 ## 2. What was added, mapped to the original deliverable list
 
-| Deliverable | Where |
-|---|---|
-| Migration for the history/cooldown table | `infra/db/migrations/062_soko_id_history.sql` + `infra/db/rollbacks/062_soko_id_history.down.sql` - `cp2_soko_id_history`, additive only, no change to any existing table (`business.sokoId` already existed and needed no schema change). |
-| `slugify()` + tests | Already existed as `createSokoHandle` (`services/api/src/cp2/text-normalization.ts`) - **unchanged**, since it already does everything the brief's `slugify()` asked for (NFKD normalize, strip marks, lowercase, collapse non-alnum runs to one hyphen, trim edge hyphens, 48-char cap - safely under the 63-char DNS limit). Tests: `tests/soko-id-slug-system.test.ts` ("createSokoHandle - the slugify function" suite), covering every case the brief named (`Mama's Kitchen`, `Café Nyayo`, `Duka la Simu #2`, all-symbols/empty, over-length, reserved-word). |
-| Reserved word blocklist | `reservedSokoHandles`/`isReservedSokoHandle` (`text-normalization.ts`) - derived from real routes found in this repo (every top-level `services/api` and `apps/web` path segment, `api`/`www`, and the new `s` short-link prefix itself), not guessed. |
-| Collision/disambiguation + tests | Already existed (numeric suffix, `createGlobalShopId`) - extended to also reject reserved handles and enforce a minimum length (`minimumSokoHandleLength = 2`), and to treat an in-cooldown history entry as unavailable. Tests: "sokoId generation and collisions" suite, including the literal "3rd Mama Mboga" case. |
-| `resolveStoreBySlug()` + tests | `Cp2Store.resolveBusinessBySokoId()` (`store.ts`) - the one shared resolver. Returns `{status:"active", business}` / `{status:"stale", business, redirectTo}` / `null`, exactly the brief's three-state contract (renamed to this codebase's vocabulary: `business` not `store`). Tests: "resolveBusinessBySokoId" suite - active, stale, released-then-reclaimed, never-existed. |
-| Web middleware wired to the resolver | See §4 - genuinely blocked on infra, not skipped silently. |
-| Telegram bot wired to the resolver | See §7.1 - deliberately not done this phase, with a precise reason and integration point named. |
-| `getStoreLinks()` | `packages/shared-types/src/store-links.ts` - pure, takes explicit `{webOrigin, telegramBotUsername}` rather than reading `process.env`/`window.location` itself, so it runs identically on the API and the web app. |
-| Rename endpoint + cooldown job | `PUT /businesses/:businessId/soko-id` (`services/api/src/cp2/routes.ts`) + `Cp2Store.renameSokoId()`; cooldown job is `services/api/src/cp2/sokoid-cooldown-runner.ts`, mirroring the existing `notification-delivery-runner.ts` pattern exactly (plain `setInterval`, no new scheduler infra). |
-| Migration/backfill plan | See §6 - there is nothing to backfill, confirmed rather than assumed. |
+| Deliverable                              | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Migration for the history/cooldown table | `infra/db/migrations/062_soko_id_history.sql` + `infra/db/rollbacks/062_soko_id_history.down.sql` - `cp2_soko_id_history`, additive only, no change to any existing table (`business.sokoId` already existed and needed no schema change).                                                                                                                                                                                                                                                                                                                           |
+| `slugify()` + tests                      | Already existed as `createSokoHandle` (`services/api/src/cp2/text-normalization.ts`) - **unchanged**, since it already does everything the brief's `slugify()` asked for (NFKD normalize, strip marks, lowercase, collapse non-alnum runs to one hyphen, trim edge hyphens, 48-char cap - safely under the 63-char DNS limit). Tests: `tests/soko-id-slug-system.test.ts` ("createSokoHandle - the slugify function" suite), covering every case the brief named (`Mama's Kitchen`, `Café Nyayo`, `Duka la Simu #2`, all-symbols/empty, over-length, reserved-word). |
+| Reserved word blocklist                  | `reservedSokoHandles`/`isReservedSokoHandle` (`text-normalization.ts`) - derived from real routes found in this repo (every top-level `services/api` and `apps/web` path segment, `api`/`www`, and the new `s` short-link prefix itself), not guessed.                                                                                                                                                                                                                                                                                                               |
+| Collision/disambiguation + tests         | Already existed (numeric suffix, `createGlobalShopId`) - extended to also reject reserved handles and enforce a minimum length (`minimumSokoHandleLength = 2`), and to treat an in-cooldown history entry as unavailable. Tests: "sokoId generation and collisions" suite, including the literal "3rd Mama Mboga" case.                                                                                                                                                                                                                                              |
+| `resolveStoreBySlug()` + tests           | `Cp2Store.resolveBusinessBySokoId()` (`store.ts`) - the one shared resolver. Returns `{status:"active", business}` / `{status:"stale", business, redirectTo}` / `null`, exactly the brief's three-state contract (renamed to this codebase's vocabulary: `business` not `store`). Tests: "resolveBusinessBySokoId" suite - active, stale, released-then-reclaimed, never-existed.                                                                                                                                                                                    |
+| Web middleware wired to the resolver     | See §4 - genuinely blocked on infra, not skipped silently.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Telegram bot wired to the resolver       | See §7.1 - deliberately not done this phase, with a precise reason and integration point named.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `getStoreLinks()`                        | `packages/shared-types/src/store-links.ts` - pure, takes explicit `{webOrigin, telegramBotUsername}` rather than reading `process.env`/`window.location` itself, so it runs identically on the API and the web app.                                                                                                                                                                                                                                                                                                                                                  |
+| Rename endpoint + cooldown job           | `PUT /businesses/:businessId/soko-id` (`services/api/src/cp2/routes.ts`) + `Cp2Store.renameSokoId()`; cooldown job is `services/api/src/cp2/sokoid-cooldown-runner.ts`, mirroring the existing `notification-delivery-runner.ts` pattern exactly (plain `setInterval`, no new scheduler infra).                                                                                                                                                                                                                                                                      |
+| Migration/backfill plan                  | See §6 - there is nothing to backfill, confirmed rather than assumed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## 3. The shared resolver and where it's used
 
@@ -48,7 +48,7 @@ against. Per direct confirmation from Julien, this phase **extends `sokoId` in p
 - Any future channel adapter (Telegram, WhatsApp) is expected to call it too - see §7.1 for why
   Telegram isn't wired yet.
 
-**What was *not* converged onto it, and why**: `requirePublicStorefrontBusiness`
+**What was _not_ converged onto it, and why**: `requirePublicStorefrontBusiness`
 (`services/api/src/cp2/storefront-access.ts`) is a pre-existing, separate, active-only lookup used
 by 5 internal call sites (`store.ts`, `sales/store.ts` ×2, `messaging/store.ts` ×2) for the
 already-established public storefront product/customer-care/order endpoints. It was **not**
@@ -71,7 +71,7 @@ with domain `soko.market` only; no wildcard custom domain is registered, and sta
 server-side Host-header middleware capability regardless. This is a genuine infra gap, not a code
 gap: closing it requires registering a wildcard custom domain in Render's dashboard (an operational
 step, not something committable from this repo) and deciding whether it should point at the static
-web service or at `soko-market-api` (a real Node service that *could* do Host-header routing and
+web service or at `soko-market-api` (a real Node service that _could_ do Host-header routing and
 302 to the real storefront path). `GET /s/:slug` (the universal fallback) is what actually resolves
 today, using only the existing single `soko.market`/`api.soko.market` domains - it is the correct
 thing to hand out in QR codes/flyers/etc. right now, not `getStoreLinks().web`.
@@ -138,14 +138,14 @@ touching many domain-store files) - two things worth stating plainly rather than
 
 1. **Telegram `/start` deep-link resolution is not wired up.** `TelegramChannelAdapter.normalizeInbound`
    (`services/api/src/messaging/channel-gateway.ts:524`) already parses `/start <param>` - but the
-   captured value (`linkToken`) is consumed by a *different*, security-sensitive, pre-existing
+   captured value (`linkToken`) is consumed by a _different_, security-sensitive, pre-existing
    feature: a per-customer, single-use, hashed, expiring channel-identity-link grant
    (`services/api/src/cp2/domains/messaging/store.ts:1877-1910`, `channelIdentityLinkGrants`) for
-   linking an *already-known* customer's Telegram account to an existing conversation - not for a
+   linking an _already-known_ customer's Telegram account to an existing conversation - not for a
    stranger discovering a business by its public handle. The existing token length constraint
    (`{16,200}` chars) doesn't reliably distinguish "real link token" from "sokoId handle" (handles
    can legitimately exceed 16 chars), so safely disambiguating the two at the parsing layer is a
-   real design decision, not a mechanical wiring change - and building a *new* "anonymous stranger
+   real design decision, not a mechanical wiring change - and building a _new_ "anonymous stranger
    starts a fresh conversation with business X" bootstrap flow (what a cold `/start <handle>` would
    actually need to do something more useful than an acknowledgement reply) is its own
    product-and-security-sensitive feature. Rather than rush a change into that specific
@@ -154,7 +154,7 @@ touching many domain-store files) - two things worth stating plainly rather than
    distinctly from `linkToken`, then in `messaging/store.ts`'s `ingestChannelWebhook` (right where
    the `grant === undefined` 401 currently throws), fall back to
    `store.resolveBusinessBySokoId(...)` before failing, and reply via the channel gateway's
-   `sendMessage` rather than creating a channel link. `getStoreLinks().telegram` (the *generation*
-   side) is done and tested; this is only the *receiving* side.
+   `sendMessage` rather than creating a channel link. `getStoreLinks().telegram` (the _generation_
+   side) is done and tested; this is only the _receiving_ side.
 2. **`getStoreLinks().web` (the `{handle}.soko.market` subdomain) doesn't resolve today** - see §4.
    Real infra work (a Render custom domain decision), not a code gap.

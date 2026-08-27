@@ -10,7 +10,12 @@ export interface SettingsGroupProps {
 /** Native `<details>`/`<summary>` - the same collapsible primitive already used ad hoc elsewhere
  *  in this app (AgentModelPanel's "Advanced routing", CatalogueNestedCard's "Advanced details") -
  *  reused here as a shared component instead of a fourth one-off copy. */
-export function SettingsGroup({ title, description, defaultOpen = false, children }: SettingsGroupProps) {
+export function SettingsGroup({
+  title,
+  description,
+  defaultOpen = false,
+  children
+}: SettingsGroupProps) {
   return (
     <details className="settings-group" open={defaultOpen}>
       <summary className="settings-group-summary">

@@ -1595,26 +1595,23 @@ export function registerCp2Routes(app: FastifyInstance, options: Cp2RouteOptions
   // The channel-neutral fallback link (QR codes, flyers, anywhere the viewer's channel isn't
   // known) - resolves through the same shared resolver every channel uses, never a duplicate
   // lookup (docs/architecture/soko-id-slug-system.md).
-  app.get(
-    "/s/:slug",
-    async (request: FastifyRequest<{ Params: { slug: string } }>, reply) => {
-      const resolution = store.resolveBusinessBySokoId(request.params.slug);
-      if (resolution === null) {
-        return reply.code(404).send({
-          code: "storefront_not_found",
-          message: "This storefront link is no longer valid."
-        });
-      }
-      if (resolution.status === "stale") {
-        return reply.code(410).send({
-          code: "storefront_moved",
-          message: "This shop has moved to a new storefront link.",
-          redirectTo: publicAgentUrl(webPublicUrl, resolution.business.sokoId)
-        });
-      }
-      return reply.redirect(publicAgentUrl(webPublicUrl, resolution.business.sokoId), 302);
+  app.get("/s/:slug", async (request: FastifyRequest<{ Params: { slug: string } }>, reply) => {
+    const resolution = store.resolveBusinessBySokoId(request.params.slug);
+    if (resolution === null) {
+      return reply.code(404).send({
+        code: "storefront_not_found",
+        message: "This storefront link is no longer valid."
+      });
     }
-  );
+    if (resolution.status === "stale") {
+      return reply.code(410).send({
+        code: "storefront_moved",
+        message: "This shop has moved to a new storefront link.",
+        redirectTo: publicAgentUrl(webPublicUrl, resolution.business.sokoId)
+      });
+    }
+    return reply.redirect(publicAgentUrl(webPublicUrl, resolution.business.sokoId), 302);
+  });
 
   app.put("/account/phone", async (request: FastifyRequest<{ Body: OwnerPhoneBody }>, reply) => {
     try {

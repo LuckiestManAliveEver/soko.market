@@ -44,22 +44,22 @@ This is a read-through-at-startup, write-through-after-every-mutation cache in f
 `Cp2Store`'s in-memory maps are always the live read path; Postgres is durability, not a query
 target. `ExecutionFabricStore` now replicates this exactly: it did **not** get a bespoke
 read-through cache of its own, because the rest of the store doesn't have one either — the in-memory
-maps it already had *are* the cache, and this phase only added the write-behind/read-at-startup
+maps it already had _are_ the cache, and this phase only added the write-behind/read-at-startup
 persistence layer around them, identically to every other domain.
 
 ## 2. What changed, file by file
 
-| File | Change |
-|---|---|
-| `services/api/src/cp2/store.ts:511-513` | Added `modelPreferences?`, `runtimeHosts?`, `runtimeModelInstallations?` to `Cp2Snapshot` (matching every other domain's optional array fields, e.g. `agentModelBindings?:` immediately above). |
-| `services/api/src/cp2/store.ts` (`snapshot()`, next to the `agentModelBindings:` line) | Three new lines building each array from `this.executionFabricStore.<x>Map.values()`, shallow-spread per item — the exact same defensive-copy convention `agentModelAssignments`/`browserInferenceAssignments` already use. |
-| `services/api/src/cp2/store.ts` (`hydrateSnapshot()`) | `this.executionFabricStore.clear()` added next to `this.agentRuntimeDomain.clear()`; `this.executionFabricStore.restore(snapshot)` added next to `this.agentRuntimeDomain.restore(snapshot)`. |
-| `services/api/src/cp2/domains/execution-fabric/store.ts` | Added `modelPreferencesMap`/`runtimeHostsMap`/`runtimeModelInstallationsMap` getters, `clear()`, `restore(snapshot: Cp2Snapshot)` — the identical shape `AgentRuntimeDomain` already exposes. **No existing method's signature changed.** `executionHistory` deliberately has no getter and is untouched by `clear()`/`restore()` (see §5). |
-| `services/api/src/cp2/postgres-store.ts:69-71` | Three new `normalizedCollections` entries: `{ key: "modelPreferences", tableName: "cp2_model_preferences" }` etc. |
-| `services/api/src/cp2/postgres-store.ts` (`emptySnapshot()`) | Three new `[]` defaults. |
-| `services/api/src/cp2/postgres-store.ts:2324-2334` | One real bug fix (below) — added `"runtimeHostId"` to the `parent_id` candidate list. |
-| `services/api/src/cp2/store.ts` (new methods) | `registerRuntimeHost`, `getRuntimeHost`, `installRuntimeModel`, `listRuntimeModelInstallations` — session-authorized `Cp2Store` pass-throughs mirroring the `createModelPreference`/`getModelPreference` pattern Phase 2 already added. These were missing entirely before this phase (only `ModelPreference` had a public `Cp2Store`-level path); added because §2 of this phase's brief explicitly scopes in "RuntimeHost create/read" and "RuntimeModelInstallation create/read," and there was no way to write or read either through the store's public surface, let alone test their persistence, without them. No HTTP route was added for either — that stays Phase 3 scope, unchanged from Phase 2's own decision. |
-| `scripts/purge-all-users.sql` | Three new `DELETE`-classified rows (below) — a real correctness gap this phase would otherwise have introduced. |
+| File                                                                                   | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `services/api/src/cp2/store.ts:511-513`                                                | Added `modelPreferences?`, `runtimeHosts?`, `runtimeModelInstallations?` to `Cp2Snapshot` (matching every other domain's optional array fields, e.g. `agentModelBindings?:` immediately above).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `services/api/src/cp2/store.ts` (`snapshot()`, next to the `agentModelBindings:` line) | Three new lines building each array from `this.executionFabricStore.<x>Map.values()`, shallow-spread per item — the exact same defensive-copy convention `agentModelAssignments`/`browserInferenceAssignments` already use.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `services/api/src/cp2/store.ts` (`hydrateSnapshot()`)                                  | `this.executionFabricStore.clear()` added next to `this.agentRuntimeDomain.clear()`; `this.executionFabricStore.restore(snapshot)` added next to `this.agentRuntimeDomain.restore(snapshot)`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `services/api/src/cp2/domains/execution-fabric/store.ts`                               | Added `modelPreferencesMap`/`runtimeHostsMap`/`runtimeModelInstallationsMap` getters, `clear()`, `restore(snapshot: Cp2Snapshot)` — the identical shape `AgentRuntimeDomain` already exposes. **No existing method's signature changed.** `executionHistory` deliberately has no getter and is untouched by `clear()`/`restore()` (see §5).                                                                                                                                                                                                                                                                                                                                                                                 |
+| `services/api/src/cp2/postgres-store.ts:69-71`                                         | Three new `normalizedCollections` entries: `{ key: "modelPreferences", tableName: "cp2_model_preferences" }` etc.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `services/api/src/cp2/postgres-store.ts` (`emptySnapshot()`)                           | Three new `[]` defaults.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `services/api/src/cp2/postgres-store.ts:2324-2334`                                     | One real bug fix (below) — added `"runtimeHostId"` to the `parent_id` candidate list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `services/api/src/cp2/store.ts` (new methods)                                          | `registerRuntimeHost`, `getRuntimeHost`, `installRuntimeModel`, `listRuntimeModelInstallations` — session-authorized `Cp2Store` pass-throughs mirroring the `createModelPreference`/`getModelPreference` pattern Phase 2 already added. These were missing entirely before this phase (only `ModelPreference` had a public `Cp2Store`-level path); added because §2 of this phase's brief explicitly scopes in "RuntimeHost create/read" and "RuntimeModelInstallation create/read," and there was no way to write or read either through the store's public surface, let alone test their persistence, without them. No HTTP route was added for either — that stays Phase 3 scope, unchanged from Phase 2's own decision. |
+| `scripts/purge-all-users.sql`                                                          | Three new `DELETE`-classified rows (below) — a real correctness gap this phase would otherwise have introduced.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ## 3. A real bug found and fixed: `parent_id` was silently never populated
 
@@ -128,19 +128,19 @@ assertions instead. That limitation is now closed for this phase's own tests.
 `tests/cp2-postgres-store.test.ts` already is — `describe.skip` unless
 `CP2_POSTGRES_TEST_DATABASE_URL` is set):
 
-- *"a ModelPreference written before a restart is still readable after one"* - the actual
+- _"a ModelPreference written before a restart is still readable after one"_ - the actual
   regression test for the bug this phase fixes. Creates a `PostgresCp2Store`, signs up, creates a
   business, writes a `ModelPreference`, flushes, **closes the store entirely**, then creates a
   **second, brand-new** `PostgresCp2Store` instance against the same database - a genuine
   process-boundary simulation of a Render redeploy, not a re-read of the same in-memory object -
   and asserts the preference reads back identical.
-- *"a RuntimeHost registered before a restart is still readable after one, with no liveness
-  field"* - same restart simulation, plus an explicit assertion that the record's own key set is
+- _"a RuntimeHost registered before a restart is still readable after one, with no liveness
+  field"_ - same restart simulation, plus an explicit assertion that the record's own key set is
   exactly `{id, accountId, ownerId, name, trustLevel, brokerNodeId, declaredRuntimes,
-  maxConcurrentJobs, createdAt, updatedAt}` - no `online`/`lastHeartbeatAt` reached the database,
+maxConcurrentJobs, createdAt, updatedAt}` - no `online`/`lastHeartbeatAt` reached the database,
   not merely absent from the TypeScript type.
-- *"a RuntimeModelInstallation registered before a restart is still readable after one, and its
-  parent_id column actually links it to its host"* - restart simulation plus a raw `pg` query
+- _"a RuntimeModelInstallation registered before a restart is still readable after one, and its
+  parent_id column actually links it to its host"_ - restart simulation plus a raw `pg` query
   directly against `cp2_runtime_model_installations.parent_id`, proving §3's fix works at the
   column level, not just through the application's own read path (which would have passed even with
   a silently-null `parent_id`, since nothing reads that column back through `ExecutionFabricStore`
@@ -158,6 +158,7 @@ Test Files  1 passed (1)
 **Every existing Phase 1/Phase 2 `ExecutionFabricStore` test still passes unmodified**
 (`tests/execution-fabric-store.test.ts`, `tests/execution-fabric-runtime-route.test.ts`,
 `tests/execution-fabric-registry-reconciliation.test.ts`, `tests/execution-fabric-browser-adapter.test.ts`)
+
 - they exercise `ExecutionFabricStore`/`createCp2Store()` (the in-memory constructor) directly and
   never touch Postgres, so they were never at risk from this phase's change and needed zero
   modification. One assertion in `tests/execution-fabric-entities-migration.test.ts` was
@@ -175,8 +176,8 @@ Test Files  1 failed | 195 passed | 1 skipped (197)
      Tests  1 failed | 928 passed | 1 skipped (930)
 ```
 
-The one failure, `tests/cp2-postgres-store.test.ts`'s *"persists API state in normalized Postgres
-tables across store restarts"*, is a **pre-existing bug unrelated to this phase**, found only
+The one failure, `tests/cp2-postgres-store.test.ts`'s _"persists API state in normalized Postgres
+tables across store restarts"_, is a **pre-existing bug unrelated to this phase**, found only
 because this is the first session with a real Postgres available to run it at all. Traced to its
 exact cause: the test calls `POST /auth/pin/signup` (which, per `store.ts:1492`'s `pin_already_set`
 check, already sets a PIN as part of signup) and then immediately calls `POST /auth/pin/setup`

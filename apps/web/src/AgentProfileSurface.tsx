@@ -581,7 +581,10 @@ export function AgentProfileSurface({
           />
         </SettingsGroup>
 
-        <SettingsGroup title="Model & inference" description="Which model runs this agent, and where">
+        <SettingsGroup
+          title="Model & inference"
+          description="Which model runs this agent, and where"
+        >
           <Suspense fallback={<div className="inline-loading-card">Opening model settings…</div>}>
             <AgentModelPanel
               accountId={accountId}

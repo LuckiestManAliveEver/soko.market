@@ -198,10 +198,7 @@ export interface RuntimeAdapter {
  * loop after planning has finished).
  */
 export type PlannerErrorCode =
-  | CandidateRejectionReason
-  | "NO_COMPATIBLE_MODEL"
-  | "NO_RUNTIME_HOST"
-  | "EXECUTION_HOST_LOST";
+  CandidateRejectionReason | "NO_COMPATIBLE_MODEL" | "NO_RUNTIME_HOST" | "EXECUTION_HOST_LOST";
 
 export interface PlannerError {
   code: PlannerErrorCode;

@@ -126,9 +126,7 @@ export function AgentRuntimeAccessPanel({
           <select
             value={contextSourceSensitivity}
             onChange={(event) =>
-              setContextSourceSensitivity(
-                event.target.value as AgentContextSource["sensitivity"]
-              )
+              setContextSourceSensitivity(event.target.value as AgentContextSource["sensitivity"])
             }
           >
             <option value="public">Public</option>

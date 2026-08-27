@@ -111,7 +111,12 @@ describe("execution fabric - flagged planner-driven chat routing (backend-hosted
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700003001", "Planner Shop");
 
-    await putJson(app, `/businesses/${owner.businessId}/model-preference`, modelPreferencePayload([primaryModelId]), owner.cookie);
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/model-preference`,
+      modelPreferencePayload([primaryModelId]),
+      owner.cookie
+    );
 
     const conversationId = await firstConversationId(app, owner);
     const response = await sendMessage(app, owner, conversationId, "reply-msg-0001");
@@ -144,7 +149,12 @@ describe("execution fabric - flagged planner-driven chat routing (backend-hosted
     const owner = await createOwnerBusiness(app, "+254700003002", "Fallback Shop");
 
     const preferencePayload = modelPreferencePayload([primaryModelId, secondaryModelId]);
-    await putJson(app, `/businesses/${owner.businessId}/model-preference`, preferencePayload, owner.cookie);
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/model-preference`,
+      preferencePayload,
+      owner.cookie
+    );
     const before = await getJson<Record<string, unknown>>(
       app,
       `/businesses/${owner.businessId}/model-preference`,
@@ -177,7 +187,12 @@ describe("execution fabric - flagged planner-driven chat routing (backend-hosted
     });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700003003", "Multi-Device Shop");
-    await putJson(app, `/businesses/${owner.businessId}/model-preference`, modelPreferencePayload([primaryModelId]), owner.cookie);
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/model-preference`,
+      modelPreferencePayload([primaryModelId]),
+      owner.cookie
+    );
     const conversationId = await firstConversationId(app, owner);
 
     const firstDeviceResponse = await sendMessage(app, owner, conversationId, "device-a-0001", {
@@ -207,7 +222,12 @@ describe("execution fabric - flagged planner-driven chat routing (backend-hosted
     });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700003004", "Idempotent Shop");
-    await putJson(app, `/businesses/${owner.businessId}/model-preference`, modelPreferencePayload([primaryModelId]), owner.cookie);
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/model-preference`,
+      modelPreferencePayload([primaryModelId]),
+      owner.cookie
+    );
     const conversationId = await firstConversationId(app, owner);
 
     const first = await sendMessage(app, owner, conversationId, "retry-msg-0001");
@@ -228,7 +248,12 @@ describe("execution fabric - flagged planner-driven chat routing (backend-hosted
     });
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700003005", "No Adapter Shop");
-    await putJson(app, `/businesses/${owner.businessId}/model-preference`, modelPreferencePayload([primaryModelId]), owner.cookie);
+    await putJson(
+      app,
+      `/businesses/${owner.businessId}/model-preference`,
+      modelPreferencePayload([primaryModelId]),
+      owner.cookie
+    );
     const conversationId = await firstConversationId(app, owner);
 
     const response = await sendMessage(app, owner, conversationId, "no-adapter-0001");
@@ -372,7 +397,11 @@ async function createOwnerBusiness(
   };
 }
 
-async function getJson<T>(app: ReturnType<typeof buildApi>, url: string, cookie: string): Promise<T> {
+async function getJson<T>(
+  app: ReturnType<typeof buildApi>,
+  url: string,
+  cookie: string
+): Promise<T> {
   const response = await app.inject({ method: "GET", url, headers: { cookie } });
   expect(response.statusCode).toBe(200);
   return response.json<T>();

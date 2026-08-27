@@ -16,12 +16,12 @@ disagree.**
   the agent profile itself (`services/api/src/cp2/domains/agent-runtime/shared.ts:145`,
   inherited from `BusinessAgentProfileInput`). It is read/written through the
   ordinary profile save path (`PUT /businesses/:businessId/agent-profile`) and
-  is the *legacy* coupling — a simple "this is the model this agent's owner
+  is the _legacy_ coupling — a simple "this is the model this agent's owner
   picked," with no verification that the model actually works.
 - `AgentModelBindingSummary` (`packages/shared-types/src/index.ts:1050-1070`,
   persisted as `cp2_agent_model_bindings`, migration
   `infra/db/migrations/040_agent_model_runtime_bindings.sql`) is the newer,
-  *authoritative* coupling for server-side execution. It is created only by
+  _authoritative_ coupling for server-side execution. It is created only by
   `Cp2Store.activateAgentModel` (`services/api/src/cp2/domains/agent-runtime/store.ts`,
   reached via `POST /api/agents/:agentId/models/:modelId/activate`), which
   first runs a real adapter health check
@@ -34,13 +34,13 @@ disagree.**
   verified `AgentModelBindingSummary` and only falls back to the profile's
   plain `modelId` string, or the cloud-fallback `activeAiModels` selection, if
   no binding exists. So the two coupling mechanisms are not the same fact
-  represented twice — one is a resolution *fallback chain*, and the profile's
+  represented twice — one is a resolution _fallback chain_, and the profile's
   `modelId` field can point at a model nobody has verified works.
 
-**Agent ↔ device — implicit, and only for the *local-execution* case.**
+**Agent ↔ device — implicit, and only for the _local-execution_ case.**
 
 There is no `agent.deviceId` field anywhere. An agent has no device identity
-of its own. What exists instead is device-scoped *assignment* records that
+of its own. What exists instead is device-scoped _assignment_ records that
 each separately reference both an agent (via `businessId`/`agentId`, which
 are the literal same string value in this codebase's current "one agent per
 business" model — confirmed at `apps/web/src/AgentModelPanel.tsx:157`,
@@ -51,7 +51,7 @@ business" model — confirmed at `apps/web/src/AgentModelPanel.tsx:157`,
 - `AgentModelAssignmentSummary.deviceId`
   (`packages/shared-types/src/index.ts:1128-1144`) — one row per
   (business, device) pair, tracking whether an installed native/GGUF model on
-  *this specific device* has been tested and is ready.
+  _this specific device_ has been tested and is ready.
 - `BrowserInferenceAssignmentSummary.deviceId`
   (`packages/shared-types/src/index.ts:970-990`) — the parallel record for
   browser-tab (WebGPU/WASM) inference, one per (business, device).
@@ -61,7 +61,7 @@ Both are looked up by a composite key function
 `browserInferenceAssignmentKey(businessId, deviceId)`,
 `services/api/src/cp2/domains/agent-runtime/store.ts`), not by a device
 foreign key into a `devices` table — because no such table exists (see §3).
-The coupling is therefore: *implicit*, expressed only through matching string
+The coupling is therefore: _implicit_, expressed only through matching string
 keys across otherwise-independent maps/tables, and only ever describes "is
 this device ready to run this agent's chosen local model," never "this agent
 belongs to this device."
@@ -86,7 +86,7 @@ the conversation.**
 
 `ConversationMessageSummary` (`packages/shared-types/src/index.ts:764-799`)
 has no `modelId`, `provider`, or `runtime` field of any kind — its `provider`
-field is a *messaging channel* (SMS/email/WhatsApp), unrelated to AI model
+field is a _messaging channel_ (SMS/email/WhatsApp), unrelated to AI model
 identity. The record of which model actually answered a turn lives entirely
 on a separate, parallel object: `RuntimeTurnSummary.model: RuntimeModelTrace | null`
 (`packages/shared-types/src/index.ts:3372-3391`), persisted in the
@@ -112,7 +112,7 @@ which session mapped to which conversation. This binding should be treated as
 `PUT /businesses/:businessId/agent-profile`. A companion append-only
 `cp2_agent_runtime_versions` table (same migration 039) records immutable
 snapshots on every material change (`recordAgentRuntimeVersion`), giving the
-agent profile a version history — but the *model binding* is versioned
+agent profile a version history — but the _model binding_ is versioned
 separately (see below), not as part of this same version record.
 
 **Model registry — two, not one, and they disagree on at least one field
@@ -128,7 +128,7 @@ until reconciled by a workaround.**
    cross-referenced prior audit) — a second, independently-declared catalogue
    used by parts of the browser/local-inference path.
    `contextCharacterBudgetForModel` (`services/api/src/cp2/domains/agent-runtime/store.ts`)
-   checks `runtimeModels` *first*, then falls back to `aiModelRegistry` — an
+   checks `runtimeModels` _first_, then falls back to `aiModelRegistry` — an
    explicit acknowledgment in the code itself that these are two registries
    requiring a resolution order, not one source of truth.
 
@@ -149,7 +149,7 @@ server-mediated chat regardless of which model is chosen (see
 
 **Routing/selection logic.**
 
-- Model *identity* resolution: `Cp2Store.resolveActiveRuntimeModelId`
+- Model _identity_ resolution: `Cp2Store.resolveActiveRuntimeModelId`
   (`services/api/src/cp2/domains/agent-runtime/store.ts:3157`) — binding, then
   profile `modelId`, then cloud fallback, in that order.
 - Provider/adapter resolution: `Cp2Store.resolveRuntimeModelProvider` and
@@ -181,16 +181,16 @@ practical effect (routing tool-shaped requests away from models/paths that
 can't safely execute one) through a different, simpler mechanism with a
 different name.
 
-**Chat/context pipeline — model identity resolved *before* context retrieval;
-context *sizing* depends on the already-resolved model; actual model
-invocation happens *after* context assembly.** Traced precisely in
+**Chat/context pipeline — model identity resolved _before_ context retrieval;
+context _sizing_ depends on the already-resolved model; actual model
+invocation happens _after_ context assembly.** Traced precisely in
 `Cp2Store.createRuntimeTurn` (`services/api/src/cp2/domains/agent-runtime/store.ts`):
 
 1. Line 2488 — `resolveActiveRuntimeModelId` (which model/binding will
    answer this turn — decided first).
 2. Line 2671 — `retrieveAgentContext` is called, with `characterBudget` at
    line 2677 computed via `contextCharacterBudgetForModel(runtimeModelId)` —
-   i.e. *how much* context to pack is parameterized by the model chosen in
+   i.e. _how much_ context to pack is parameterized by the model chosen in
    step 1, even though context selection itself (which sources, by
    relevance/audience) doesn't depend on the model.
 3. Line 2700 — `createRuntimeModelRoute` (the actual provider call) runs
@@ -226,8 +226,8 @@ only in-memory.** `services/api/src/inference/owner-node-broker.ts` implements
 heartbeat-expiry `expire()` — but its presence map
 (`InferenceNodePresence`, `packages/shared-types/src/index.ts:149-159`) is a
 plain in-process `Map`, not backed by any table. Per its own documentation
-(`docs/inference/owner-node.md`): *"Do not create a PostgreSQL heartbeat
-row"* — this is a deliberate, stated design choice, not an oversight, and it
+(`docs/inference/owner-node.md`): _"Do not create a PostgreSQL heartbeat
+row"_ — this is a deliberate, stated design choice, not an oversight, and it
 means this presence concept does not survive a restart or scale across
 multiple API instances today.
 
@@ -248,11 +248,11 @@ Per `docs/inference/soko-web-inference-engine.md`:
   choices) are stored in **IndexedDB**, keyed by a coarse profile (browser
   family/version, mobile/desktop class, device tier, backend, logical
   processor count) — explicitly local to that browser.
-- The doc's own "Deliberately deferred" section states outright: *"Cross-device
+- The doc's own "Deliberately deferred" section states outright: _"Cross-device
   checkpoint storage... Task checkpoints remain local in IndexedDB. They are
   not uploaded to PostgreSQL or object storage. Cross-device recovery
   requires separate encryption, tenant authorization, retention, deletion,
-  and object-storage work."*
+  and object-storage work."_
 
 **Direct answer for the deliverable checklist: the Web Inference Engine chain
 is a single-browser, single-session concept today, with zero cross-device
@@ -275,7 +275,7 @@ Two caveats that matter for a later phase, not resolved here:
 
 - It is **process-local/in-memory only** (see §3) — not yet safe across
   multiple API instances without a Redis-backed (or similar) redesign.
-- It is scoped specifically to *inference job routing* for one tenant's
+- It is scoped specifically to _inference job routing_ for one tenant's
   registered nodes. Repurposing it as a general-purpose "any runtime host,
   any purpose" presence channel is a scope change to an existing system, not
   a drop-in reuse of infrastructure built for that purpose.
@@ -304,9 +304,9 @@ active binding for that agent inactive (enforced by the partial unique
 index, §1) → also revises the agent profile's `runtimeVersion` and records a
 new `cp2_agent_runtime_versions` entry. On health-check failure, the prior
 active binding is left untouched (confirmed by
-`docs/render-neon-model-runtime-audit.md`: *"a persistence failure restored
-the last database snapshot"* / *"preserved the previous active binding on a
-failed replacement"*). Removal is the mirror operation:
+`docs/render-neon-model-runtime-audit.md`: _"a persistence failure restored
+the last database snapshot"_ / _"preserved the previous active binding on a
+failed replacement"_). Removal is the mirror operation:
 `removeServerBackendModelFromAgent` (`AgentModelPanel.tsx:1135`) →
 `DELETE /api/agents/:agentId/model-binding` → marks the binding row inactive
 (does not delete it).
@@ -342,15 +342,15 @@ turn.
 
 ## 6. Schema mapping table
 
-| Existing entity | Closest target concept | Notes |
-|---|---|---|
-| `BusinessAgentProfileSummary` / `cp2_agent_profiles` (`agent-runtime/shared.ts:165`) | Agent | One profile per business; carries the legacy plain `modelId` field alongside structured personality/instructions/skills. |
-| `aiModelRegistry` (`agent-runtime/store.ts`, code-defined) **and** `runtimeModels` (`shared-types/src/index.ts:606`) | ModelRegistry | Two independent, only-partially-reconciled registries (§2) — not a single source of truth today. |
-| `BusinessAgentProfileSummary.modelId` (plain field) **and** `ActiveAiModelSummary` (cloud fallback, `cp2_active_ai_models`) | ModelPreference | Neither is a clean match: the profile field is an unverified legacy pointer; the cloud-fallback record is a single last-resort selector, not a general preference-ranking concept. |
-| — | RuntimeHost | No current equivalent. The owner-node broker's in-memory `InferenceNodePresence` (§3/§4) is the closest *behavior* (registration + heartbeat), but it is transient, tenant-scoped to inference-job routing, and not a persisted, general-purpose host entity. |
-| `InstalledAgentModelSummary` / `cp2_installed_agent_models` | RuntimeModelInstallation | Reasonably close match already — one row per (account, user, device, model), tracking file identity, checksum, and installation/compatibility status. |
-| `RuntimeSessionSummary` / `runtimeSessions` map (`shared-types/src/index.ts:3360`) | RuntimeSession | Close match on the surface (session with turn count and status), but scoped only to (business, user) — no device, host, or conversation reference stored on it (§1). |
-| — | ExecutionPlan | No current equivalent, as expected. `RuntimePlannedAction` (`shared-types/src/index.ts`, part of `RuntimeTurnSummary.plan`) is a same-turn *tool-invocation* plan (which tool, what input, confirmation state) — a different kind of "plan" than routing a request to a runtime/model, and should not be treated as a precedent for that concept. |
+| Existing entity                                                                                                             | Closest target concept   | Notes                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BusinessAgentProfileSummary` / `cp2_agent_profiles` (`agent-runtime/shared.ts:165`)                                        | Agent                    | One profile per business; carries the legacy plain `modelId` field alongside structured personality/instructions/skills.                                                                                                                                                                                                                          |
+| `aiModelRegistry` (`agent-runtime/store.ts`, code-defined) **and** `runtimeModels` (`shared-types/src/index.ts:606`)        | ModelRegistry            | Two independent, only-partially-reconciled registries (§2) — not a single source of truth today.                                                                                                                                                                                                                                                  |
+| `BusinessAgentProfileSummary.modelId` (plain field) **and** `ActiveAiModelSummary` (cloud fallback, `cp2_active_ai_models`) | ModelPreference          | Neither is a clean match: the profile field is an unverified legacy pointer; the cloud-fallback record is a single last-resort selector, not a general preference-ranking concept.                                                                                                                                                                |
+| —                                                                                                                           | RuntimeHost              | No current equivalent. The owner-node broker's in-memory `InferenceNodePresence` (§3/§4) is the closest _behavior_ (registration + heartbeat), but it is transient, tenant-scoped to inference-job routing, and not a persisted, general-purpose host entity.                                                                                     |
+| `InstalledAgentModelSummary` / `cp2_installed_agent_models`                                                                 | RuntimeModelInstallation | Reasonably close match already — one row per (account, user, device, model), tracking file identity, checksum, and installation/compatibility status.                                                                                                                                                                                             |
+| `RuntimeSessionSummary` / `runtimeSessions` map (`shared-types/src/index.ts:3360`)                                          | RuntimeSession           | Close match on the surface (session with turn count and status), but scoped only to (business, user) — no device, host, or conversation reference stored on it (§1).                                                                                                                                                                              |
+| —                                                                                                                           | ExecutionPlan            | No current equivalent, as expected. `RuntimePlannedAction` (`shared-types/src/index.ts`, part of `RuntimeTurnSummary.plan`) is a same-turn _tool-invocation_ plan (which tool, what input, confirmation state) — a different kind of "plan" than routing a request to a runtime/model, and should not be treated as a precedent for that concept. |
 
 ## 7. Known recent regressions relevant to this area — `connectTimeout`
 
@@ -370,7 +370,7 @@ concepts exist in that file, not one unified budget:
 - Configuration source: `config.backendInferenceConnectTimeoutMs`
   (`services/api/src/index.ts:68`, `services/api/scripts/run-ai-eval.ts:46`).
 
-I did not find, in this file or its callers, a *separate* end-to-end request
+I did not find, in this file or its callers, a _separate_ end-to-end request
 timeout distinct from `connectTimeoutMs` that the task's phrasing ("a single
 unified timeout budget") implies should exist — meaning I cannot confirm from
 the code alone whether "one unified budget" is the current intended state or
