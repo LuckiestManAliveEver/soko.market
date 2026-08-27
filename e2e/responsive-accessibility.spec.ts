@@ -49,6 +49,7 @@ test("secondary modules preserve the conversation URL and browser history", asyn
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Account and agent settings" });
   await expect(settingsDialog).toBeVisible();
+  await settingsDialog.locator(".settings-group-title", { hasText: "Agent behavior" }).click();
   await expect(
     settingsDialog.getByLabel("Open-source agent catalogue", { exact: true })
   ).toBeVisible();
@@ -270,6 +271,7 @@ test("account deletion requires DELETE, PIN, acknowledgement, and signs out", as
   });
 
   await page.goto("/settings");
+  await page.locator(".settings-group-title", { hasText: "Advanced" }).click();
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
   await page.getByRole("button", { name: "Delete entire account" }).click();
   await page.getByLabel("Type DELETE to confirm").fill("DELETE");
@@ -301,6 +303,7 @@ test("shop deletion Continue and Quarantine buttons call the backend", async ({ 
   });
 
   await page.goto("/settings");
+  await page.locator(".settings-group-title", { hasText: "Advanced" }).click();
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
   await page.getByRole("button", { name: "Delete this shop", exact: true }).click();
   await page.getByLabel("Type the shop ID to continue").fill("soko.janes-market");
@@ -482,6 +485,7 @@ test("device activation preserves the previous assignment when the GGUF runtime 
     await writable.close();
   }, bindableInstalledModel.fileName);
   await page.getByRole("button", { name: "Account and agent settings" }).click();
+  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await page.getByRole("button", { name: "Open model library" }).click();
   await page.locator(".model-use-button.not-in-use").click();
 
@@ -589,6 +593,7 @@ async function openModelLibrary(
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
+  await page.locator(".settings-group-title", { hasText: "Model & inference" }).click();
   await expect(page.getByRole("heading", { name: "Android model library" })).toBeVisible();
   await page.getByRole("button", { name: "Open model library" }).click();
   await expect(
