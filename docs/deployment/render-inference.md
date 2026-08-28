@@ -3,8 +3,10 @@
 ## Production rule
 
 Render is not a local-model runtime. `render.yaml` provisions no Ollama/private inference service,
-model disk, model downloader, or `BACKEND_INFERENCE_*` connection. Downloaded OSS agent manifests
-and model weights stay on the user's device, and WebGPU/WASM inference runs in the browser worker.
+model disk, model downloader, or `BACKEND_INFERENCE_*` connection. The API stores verified OSS
+agent manifests and account backup copies of GGUF files in the existing Neon database, but Render
+never loads or executes those files. Device inference still runs from a private local copy; the
+separate WebGPU/WASM browser-model cache remains device-local and runs in the browser worker.
 
 The Render API remains the authenticated control plane for sessions, business data, message
 persistence, and governed tool execution. For a tool request, the browser may send its completed

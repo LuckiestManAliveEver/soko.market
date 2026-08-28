@@ -40,7 +40,8 @@ import type {
   ModelExecutionTarget,
   ModelInstallationStatus,
   PreferredExecutionMode,
-  RuntimeRecallEscalation
+  RuntimeRecallEscalation,
+  OssAgentSummary
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
 import { type Cp2Store, isSupportedLanguage, readSessionCookie } from "../../store.js";
@@ -113,6 +114,19 @@ interface InstalledModelValidationBody {
   installationStatus?: unknown;
   compatibilityStatus?: unknown;
   validationError?: unknown;
+}
+
+interface InstalledAgentManifestBody {
+  agent?: unknown;
+  installedAt?: unknown;
+}
+
+interface ModelArtifactChunkParams extends InstalledModelParams {
+  chunkIndex: string;
+}
+
+interface ModelArtifactChunkBody {
+  contentBase64?: unknown;
 }
 
 interface AgentModelQuery {
@@ -267,6 +281,35 @@ export function registerAgentRuntimeRoutes(
   githubAgentCatalog: GitHubAgentCatalog,
   huggingFaceAgentCatalog: HuggingFaceAgentCatalog
 ): void {
+  app.get("/v1/oss-agents/installed", async (request, reply) => {
+    try {
+      return {
+        manifests: await store.listAccountOssAgentManifests({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/v1/oss-agents/installed",
+    async (request: FastifyRequest<{ Body: InstalledAgentManifestBody }>, reply) => {
+      try {
+        return await store.installAccountOssAgentManifest({
+          sessionId: readSessionCookie(request.headers.cookie),
+          agent: parseOssAgentSummary(request.body.agent),
+          ...(request.body.installedAt === undefined
+            ? {}
+            : { installedAt: parseIsoTimestamp(request.body.installedAt, "installedAt") })
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
   app.get(
     "/v1/ai-models",
     async (request: FastifyRequest<{ Querystring: AiModelSearchQuery }>, reply) => {
@@ -348,6 +391,88 @@ export function registerAgentRuntimeRoutes(
           sessionId: readSessionCookie(request.headers.cookie),
           model: parseInstalledModelBody(request.body)
         });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get("/v1/model-artifacts", async (request, reply) => {
+    try {
+      return {
+        artifacts: await store.listAccountModelArtifacts({
+          sessionId: readSessionCookie(request.headers.cookie)
+        })
+      };
+    } catch (error) {
+      return sendCp2Error(reply, error);
+    }
+  });
+
+  app.post(
+    "/v1/model-artifacts",
+    async (request: FastifyRequest<{ Body: InstalledModelBody }>, reply) => {
+      try {
+        return await store.beginAccountModelArtifact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          model: parseInstalledModelBody(request.body)
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.put(
+    "/v1/model-artifacts/:installationId/chunks/:chunkIndex",
+    async (
+      request: FastifyRequest<{
+        Params: ModelArtifactChunkParams;
+        Body: ModelArtifactChunkBody;
+      }>,
+      reply
+    ) => {
+      try {
+        const encoded = parseString(request.body.contentBase64, "contentBase64");
+        if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) {
+          throw new Cp2Error(400, "model_artifact_chunk_invalid", "Model chunk is invalid.");
+        }
+        return await store.putAccountModelArtifactChunk({
+          sessionId: readSessionCookie(request.headers.cookie),
+          artifactId: request.params.installationId,
+          chunkIndex: Number(parseIntegerString(request.params.chunkIndex, "chunkIndex")),
+          bytes: Buffer.from(encoded, "base64")
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.post(
+    "/v1/model-artifacts/:installationId/complete",
+    async (request: FastifyRequest<{ Params: InstalledModelParams }>, reply) => {
+      try {
+        return await store.completeAccountModelArtifact({
+          sessionId: readSessionCookie(request.headers.cookie),
+          artifactId: request.params.installationId
+        });
+      } catch (error) {
+        return sendCp2Error(reply, error);
+      }
+    }
+  );
+
+  app.get(
+    "/v1/model-artifacts/:installationId/chunks/:chunkIndex",
+    async (request: FastifyRequest<{ Params: ModelArtifactChunkParams }>, reply) => {
+      try {
+        const bytes = await store.getAccountModelArtifactChunk({
+          sessionId: readSessionCookie(request.headers.cookie),
+          artifactId: request.params.installationId,
+          chunkIndex: Number(parseIntegerString(request.params.chunkIndex, "chunkIndex"))
+        });
+        return { contentBase64: bytes.toString("base64") };
       } catch (error) {
         return sendCp2Error(reply, error);
       }
@@ -1340,6 +1465,65 @@ function parseInstalledModelBody(
         ? null
         : parseIsoTimestamp(body.lastVerifiedAt, "lastVerifiedAt"),
     validationError: parseNullableString(body.validationError)
+  };
+}
+
+function parseOssAgentSummary(value: unknown): OssAgentSummary {
+  const agent = parseRequestBody(value);
+  const id = parseString(agent.id, "agent.id");
+  if (!isAgentDefinitionId(id) || id === "builtin:shopkeeper") {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent manifest ID is invalid.");
+  }
+  const source = agent.source;
+  if (source !== "github" && source !== "huggingface") {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent manifest source is invalid.");
+  }
+  const runtime = agent.runtime;
+  if (
+    runtime !== "docker" &&
+    runtime !== "gradio" &&
+    runtime !== "javascript" &&
+    runtime !== "python" &&
+    runtime !== "typescript" &&
+    runtime !== "unknown"
+  ) {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent runtime is invalid.");
+  }
+  const executionMode = agent.executionMode;
+  if (executionMode !== "hosted-api" && executionMode !== "backend-adapter") {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent execution mode is invalid.");
+  }
+  const minimumDeviceTier = agent.minimumDeviceTier;
+  if (
+    minimumDeviceTier !== "low" &&
+    minimumDeviceTier !== "medium" &&
+    minimumDeviceTier !== "high"
+  ) {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent device tier is invalid.");
+  }
+  const popularity = agent.popularity;
+  if (!Number.isSafeInteger(popularity) || (popularity as number) < 0) {
+    throw new Cp2Error(400, "agent_manifest_invalid", "Agent popularity is invalid.");
+  }
+  return {
+    id,
+    label: parseString(agent.label, "agent.label"),
+    description: parseString(agent.description, "agent.description"),
+    source,
+    sourceId: parseString(agent.sourceId, "agent.sourceId"),
+    sourceUrl: parseString(agent.sourceUrl, "agent.sourceUrl"),
+    license: parseString(agent.license, "agent.license"),
+    licenseUrl: parseString(agent.licenseUrl, "agent.licenseUrl"),
+    licenseVerified: parseBoolean(agent.licenseVerified, "agent.licenseVerified"),
+    runtime,
+    executionMode,
+    minimumDeviceTier,
+    minimumMemoryGb: parsePositiveInteger(agent.minimumMemoryGb, "agent.minimumMemoryGb"),
+    requiresGpu: parseBoolean(agent.requiresGpu, "agent.requiresGpu"),
+    popularity: popularity as number,
+    capabilities: parseStringArray(agent.capabilities, "agent.capabilities", 40),
+    updatedAt:
+      agent.updatedAt === null ? null : parseIsoTimestamp(agent.updatedAt, "agent.updatedAt")
   };
 }
 

@@ -1,5 +1,6 @@
 import type {
   AgentModelRuntimeBackend,
+  CloudModelArtifactSummary,
   ModelCompatibilityStatus,
   ModelInstallationStatus
 } from "@soko/shared-types";
@@ -444,6 +445,65 @@ export async function readLocalAiModelFile(model: LocalAiModel): Promise<File> {
     throw new Error("The selected OPFS artifact is not a valid GGUF model.");
   }
   return file;
+}
+
+export async function restoreCloudModelArtifact(
+  artifact: CloudModelArtifactSummary,
+  readChunk: (chunkIndex: number) => Promise<Uint8Array>,
+  onProgress: (progress: ModelTransferProgress) => void
+): Promise<LocalAiModel> {
+  if (artifact.status !== "READY" || !artifact.commercialUseAllowed) {
+    throw new Error("This account model artifact is not ready for device use.");
+  }
+  await ensureStorageAvailable(artifact.fileSizeBytes);
+  await navigator.storage.persist?.();
+  const directory = await openModelDirectory();
+  const storageKey = `${artifact.id}.gguf`;
+  let nextChunkIndex = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (nextChunkIndex >= artifact.chunkCount) {
+        controller.close();
+        return;
+      }
+      try {
+        const index = nextChunkIndex;
+        const bytes = await readChunk(index);
+        const expected =
+          index === artifact.chunkCount - 1
+            ? artifact.fileSizeBytes - index * artifact.chunkSizeBytes
+            : artifact.chunkSizeBytes;
+        if (bytes.byteLength !== expected) {
+          throw new Error("The account model artifact contains an invalid chunk.");
+        }
+        nextChunkIndex += 1;
+        controller.enqueue(bytes);
+      } catch (error) {
+        controller.error(error);
+      }
+    }
+  });
+  await streamToDeviceFile(directory, storageKey, stream, artifact.fileSizeBytes, onProgress, true);
+  const restored = {
+    ...createInstalledModelRecord({
+      modelId: artifact.modelId,
+      label: artifact.displayName,
+      provider: artifact.provider,
+      repositoryId: artifact.repositoryId,
+      fileName: storageKey,
+      fileSizeBytes: artifact.fileSizeBytes,
+      license: artifact.license,
+      storedAt: new Date().toISOString()
+    }),
+    storageKey,
+    quantization: artifact.quantization,
+    architecture: artifact.architecture,
+    parameterCount: artifact.parameterCount,
+    contextLength: artifact.contextLength,
+    checksum: artifact.checksum
+  } satisfies LocalAiModel;
+  saveLocalModel(restored);
+  return restored;
 }
 
 async function openModelDirectory(): Promise<FileSystemDirectoryHandle> {

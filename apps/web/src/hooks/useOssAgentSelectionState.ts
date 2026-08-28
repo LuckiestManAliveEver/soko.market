@@ -6,11 +6,8 @@ import { getJson, putJson } from "../api-helpers";
 import { applyOssAgent, rankOssAgentsForDevice, selectLeastMemoryOssAgent } from "../agent-catalog";
 import { buildAgentProfileUpdate } from "../agent-profile-payload";
 import { getOrCreateDeviceModelScopeId, inspectDeviceModelCapability } from "../ai-model-manager";
-import {
-  installOssAgentManifest,
-  linkInstalledOssAgent,
-  readDeviceOssAgentBinding
-} from "../oss-agent-installation";
+import { linkInstalledOssAgent, readDeviceOssAgentBinding } from "../oss-agent-installation";
+import { hydrateAccountOssAgentManifests, installOssAgentForAccount } from "../account-ai-assets";
 import { agentSettingsFromBusinessProfile } from "../owner-app-bootstrap";
 import type {
   ActiveBusiness,
@@ -71,17 +68,25 @@ export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): 
           completed = true;
           return;
         }
-        const separator = profile.agentDefinitionId.indexOf(":");
-        const source = profile.agentDefinitionId.slice(0, separator);
-        const sourceId = profile.agentDefinitionId.slice(separator + 1);
-        const catalogue = await getJson<OssAgentSearchResult>(
-          `/v1/oss-agents/${source}?search=${encodeURIComponent(sourceId)}`
-        );
-        const selected = catalogue.agents.find(
-          (candidate) => candidate.id === profile.agentDefinitionId && candidate.licenseVerified
-        );
+        const accountManifests = await hydrateAccountOssAgentManifests().catch(() => []);
+        let selected = accountManifests.find(
+          (manifest) => manifest.agent.id === profile.agentDefinitionId
+        )?.agent;
+        if (selected === undefined) {
+          const separator = profile.agentDefinitionId.indexOf(":");
+          const source = profile.agentDefinitionId.slice(0, separator);
+          const sourceId = profile.agentDefinitionId.slice(separator + 1);
+          const catalogue = await getJson<OssAgentSearchResult>(
+            `/v1/oss-agents/${source}?search=${encodeURIComponent(sourceId)}`
+          );
+          selected = catalogue.agents.find(
+            (candidate) => candidate.id === profile.agentDefinitionId && candidate.licenseVerified
+          );
+        }
         if (selected !== undefined) {
-          installOssAgentManifest(selected);
+          if (!accountManifests.some((manifest) => manifest.agent.id === selected.id)) {
+            await installOssAgentForAccount(selected);
+          }
           linkInstalledOssAgent({
             businessId: business.id,
             deviceId,
@@ -111,7 +116,7 @@ export function useOssAgentSelectionState(deps: UseOssAgentSelectionStateDeps): 
       );
       if (selected === null) return;
 
-      installOssAgentManifest(selected.agent);
+      await installOssAgentForAccount(selected.agent);
       const nextAgent = applyOssAgent(
         agentSettingsFromBusinessProfile(profile, business),
         selected.agent

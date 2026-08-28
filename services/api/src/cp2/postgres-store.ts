@@ -14,6 +14,15 @@ import {
   type PasskeyCeremonyRecord
 } from "./store.js";
 import type { ConversationAttachmentBlobStore } from "./conversation-attachment-blob-store.js";
+import {
+  assertArtifactChunk,
+  modelArtifactFromInstallation,
+  type AccountAiAssetStore
+} from "./account-ai-asset-store.js";
+import type {
+  CloudModelArtifactSummary,
+  InstalledOssAgentManifestSummary
+} from "@soko/shared-types";
 import type { ConversationAttachmentRecord } from "./workspace-file-delivery.js";
 
 type SnapshotCollectionKey = keyof Cp2Snapshot;
@@ -401,6 +410,7 @@ export interface PostgresStoreHealth {
 
 const requiredMigrationFilename = "051_single_identity_single_store.sql";
 const requiredAttachmentBlobMigrationFilename = "059_conversation_attachment_blob_storage.sql";
+const requiredAccountAiAssetsMigrationFilename = "066_account_ai_assets.sql";
 const realtimeChannel = "soko_sync_changes";
 const defaultPersistenceQueueWarningThresholdMs = 10_000;
 const defaultPersistenceRetryInitialDelayMs = 2_000;
@@ -452,7 +462,8 @@ export async function createPostgresCp2Store(
         ? {}
         : { accountDeletionProcessors: options.accountDeletionProcessors }),
       conversationAttachmentBlobStore:
-        options.conversationAttachmentBlobStore ?? createPostgresAttachmentBlobStore(pool)
+        options.conversationAttachmentBlobStore ?? createPostgresAttachmentBlobStore(pool),
+      accountAiAssetStore: options.accountAiAssetStore ?? createPostgresAccountAiAssetStore(pool)
     });
     savedSnapshot = await loadNormalizedSnapshot(pool);
   } catch (error) {
@@ -1163,6 +1174,16 @@ async function assertDatabaseMigrated(pool: Pool): Promise<void> {
   if (attachmentBlobMigration.rows[0]?.applied !== true) {
     throw new Error(
       `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredAttachmentBlobMigrationFilename}.`
+    );
+  }
+
+  const accountAiAssetsMigration = await pool.query<{ applied: boolean }>(
+    "select exists(select 1 from soko_schema_migrations where filename = $1) as applied",
+    [requiredAccountAiAssetsMigrationFilename]
+  );
+  if (accountAiAssetsMigration.rows[0]?.applied !== true) {
+    throw new Error(
+      `Database migrations are not up to date. Run "pnpm db:migrate" before starting the API. Missing ${requiredAccountAiAssetsMigrationFilename}.`
     );
   }
 
@@ -2148,6 +2169,157 @@ function createPostgresAttachmentBlobStore(pool: Pool): ConversationAttachmentBl
       await pool.query("delete from cp2_conversation_attachment_blobs where storage_key = $1", [
         storageKey
       ]);
+    }
+  };
+}
+
+function createPostgresAccountAiAssetStore(pool: Pool): AccountAiAssetStore {
+  const readArtifact = async (
+    artifactId: string,
+    accountId: string,
+    userId: string
+  ): Promise<CloudModelArtifactSummary | null> => {
+    const result = await pool.query<{
+      metadata: CloudModelArtifactSummary;
+      status: CloudModelArtifactSummary["status"];
+      completed_at: Date | string | null;
+    }>(
+      `select metadata, status, completed_at
+       from cp2_model_artifacts
+       where artifact_id = $1 and account_id = $2 and user_id = $3`,
+      [artifactId, accountId, userId]
+    );
+    const row = result.rows[0];
+    if (row === undefined) return null;
+    return {
+      ...row.metadata,
+      status: row.status,
+      completedAt: row.completed_at === null ? null : timestampToIso(row.completed_at)
+    };
+  };
+
+  return {
+    async putAgentManifest(input) {
+      await pool.query(
+        `insert into cp2_installed_oss_agent_manifests
+           (account_id, user_id, agent_definition_id, manifest, installed_at, updated_at)
+         values ($1, $2, $3, $4::jsonb, $5, now())
+         on conflict (account_id, user_id, agent_definition_id) do update set
+           manifest = excluded.manifest,
+           installed_at = excluded.installed_at,
+           updated_at = now()`,
+        [input.accountId, input.userId, input.agent.id, JSON.stringify(input), input.installedAt]
+      );
+    },
+    async listAgentManifests(accountId, userId) {
+      const result = await pool.query<{ manifest: InstalledOssAgentManifestSummary }>(
+        `select manifest
+         from cp2_installed_oss_agent_manifests
+         where account_id = $1 and user_id = $2
+         order by installed_at desc`,
+        [accountId, userId]
+      );
+      return result.rows.map((row) => row.manifest);
+    },
+    async beginModelArtifact({ accountId, userId, model, now }) {
+      const artifact = modelArtifactFromInstallation(accountId, userId, model, now);
+      await pool.query(
+        `delete from cp2_model_artifacts
+         where account_id = $1 and user_id = $2 and model_id = $3 and status = 'UPLOADING'`,
+        [accountId, userId, model.modelId]
+      );
+      await pool.query(
+        `insert into cp2_model_artifacts
+           (artifact_id, account_id, user_id, model_id, metadata, file_size_bytes,
+            chunk_size_bytes, chunk_count, status, created_at, completed_at, updated_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, 'UPLOADING', $9, null, now())`,
+        [
+          artifact.id,
+          accountId,
+          userId,
+          artifact.modelId,
+          JSON.stringify(artifact),
+          artifact.fileSizeBytes,
+          artifact.chunkSizeBytes,
+          artifact.chunkCount,
+          now
+        ]
+      );
+      return artifact;
+    },
+    async putModelArtifactChunk(input) {
+      const artifact = await readArtifact(input.artifactId, input.accountId, input.userId);
+      if (artifact === null) throw new Error("Cloud model artifact was not found.");
+      if (artifact.status !== "UPLOADING") throw new Error("Cloud model upload is not active.");
+      assertArtifactChunk(artifact, input.chunkIndex, input.bytes);
+      await pool.query(
+        `insert into cp2_model_artifact_chunks (artifact_id, chunk_index, content, updated_at)
+         values ($1, $2, $3, now())
+         on conflict (artifact_id, chunk_index) do update set
+           content = excluded.content,
+           updated_at = now()`,
+        [input.artifactId, input.chunkIndex, input.bytes]
+      );
+    },
+    async completeModelArtifact(input) {
+      const artifact = await readArtifact(input.artifactId, input.accountId, input.userId);
+      if (artifact === null) throw new Error("Cloud model artifact was not found.");
+      const result = await pool.query<{ chunk_count: string; stored_bytes: string }>(
+        `select count(*)::text as chunk_count,
+                coalesce(sum(octet_length(content)), 0)::text as stored_bytes
+         from cp2_model_artifact_chunks
+         where artifact_id = $1`,
+        [artifact.id]
+      );
+      const row = result.rows[0];
+      if (
+        Number(row?.chunk_count ?? 0) !== artifact.chunkCount ||
+        Number(row?.stored_bytes ?? 0) !== artifact.fileSizeBytes
+      ) {
+        throw new Error("The cloud model upload is incomplete.");
+      }
+      await pool.query(
+        `update cp2_model_artifacts
+         set status = 'READY', completed_at = $4, updated_at = now()
+         where artifact_id = $1 and account_id = $2 and user_id = $3`,
+        [artifact.id, input.accountId, input.userId, input.now]
+      );
+      await pool.query(
+        `delete from cp2_model_artifacts
+         where account_id = $1 and user_id = $2 and model_id = $3
+           and status = 'READY' and artifact_id <> $4`,
+        [input.accountId, input.userId, artifact.modelId, artifact.id]
+      );
+      return { ...artifact, status: "READY", completedAt: input.now };
+    },
+    async listModelArtifacts(accountId, userId) {
+      const result = await pool.query<{
+        metadata: CloudModelArtifactSummary;
+        completed_at: Date | string;
+      }>(
+        `select metadata, completed_at
+         from cp2_model_artifacts
+         where account_id = $1 and user_id = $2 and status = 'READY'
+         order by completed_at desc`,
+        [accountId, userId]
+      );
+      return result.rows.map((row) => ({
+        ...row.metadata,
+        status: "READY",
+        completedAt: timestampToIso(row.completed_at)
+      }));
+    },
+    async getModelArtifactChunk(input) {
+      const result = await pool.query<{ content: Buffer }>(
+        `select chunk.content
+         from cp2_model_artifact_chunks chunk
+         join cp2_model_artifacts artifact on artifact.artifact_id = chunk.artifact_id
+         where chunk.artifact_id = $1 and chunk.chunk_index = $2
+           and artifact.account_id = $3 and artifact.user_id = $4 and artifact.status = 'READY'`,
+        [input.artifactId, input.chunkIndex, input.accountId, input.userId]
+      );
+      const content = result.rows[0]?.content;
+      return content === undefined ? null : Buffer.from(content);
     }
   };
 }

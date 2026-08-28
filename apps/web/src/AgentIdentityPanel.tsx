@@ -4,7 +4,8 @@ import type { OssAgentSearchResult, OssAgentSummary } from "@soko/shared-types";
 import type { DeviceModelCapability, LocalAiModel } from "./ai-model-manager";
 import { applyOssAgent, rankOssAgentsForDevice } from "./agent-catalog";
 import { getJson } from "./api-helpers";
-import { installOssAgentManifest, listInstalledOssAgentManifests } from "./oss-agent-installation";
+import { listInstalledOssAgentManifests } from "./oss-agent-installation";
+import { hydrateAccountOssAgentManifests, installOssAgentForAccount } from "./account-ai-assets";
 import type { AgentSettings, AiModelSummary } from "./soko-application-shared";
 
 export interface AgentIdentityPanelProps {
@@ -45,13 +46,36 @@ export function AgentIdentityPanel({
     const query = search?.trim();
     const suffix = query ? `?search=${encodeURIComponent(query)}` : "";
     try {
-      const [github, huggingFace] = await Promise.all([
-        getJson<OssAgentSearchResult>(`/v1/oss-agents/github${suffix}`),
-        getJson<OssAgentSearchResult>(`/v1/oss-agents/huggingface${suffix}`)
+      const [github, huggingFace, accountManifests] = await Promise.all([
+        getJson<OssAgentSearchResult>(`/v1/oss-agents/github${suffix}`).catch(() => ({
+          agents: [],
+          status: "unavailable" as const,
+          connection: "public" as const,
+          message: "GitHub discovery is unavailable."
+        })),
+        getJson<OssAgentSearchResult>(`/v1/oss-agents/huggingface${suffix}`).catch(() => ({
+          agents: [],
+          status: "unavailable" as const,
+          connection: "public" as const,
+          message: "Hugging Face discovery is unavailable."
+        })),
+        hydrateAccountOssAgentManifests().catch(() => [])
       ]);
       const merged = new Map<string, OssAgentSummary>();
-      for (const item of [...huggingFace.agents, ...github.agents]) merged.set(item.id, item);
+      for (const item of [
+        ...accountManifests.map((manifest) => manifest.agent),
+        ...huggingFace.agents,
+        ...github.agents
+      ]) {
+        merged.set(item.id, item);
+      }
       setAgents([...merged.values()]);
+      setInstalledAgentIds(
+        new Set([
+          ...listInstalledOssAgentManifests().map((manifest) => manifest.agent.id),
+          ...accountManifests.map((manifest) => manifest.agent.id)
+        ])
+      );
       setCatalogueMessage(`${huggingFace.message} ${github.message}`);
     } catch {
       setAgents([]);
@@ -66,15 +90,15 @@ export function AgentIdentityPanel({
     void loadOssAgents(agentSearch);
   }
 
-  function downloadAndSelectAgent(definition: OssAgentSummary) {
+  async function downloadAndSelectAgent(definition: OssAgentSummary) {
     try {
-      installOssAgentManifest(definition);
+      await installOssAgentForAccount(definition);
       setInstalledAgentIds(
         new Set(listInstalledOssAgentManifests().map((manifest) => manifest.agent.id))
       );
       updateAgent(applyOssAgent(draftAgent, definition));
       setCatalogueMessage(
-        `${definition.label}'s verified manifest is downloaded. Save to link it to this shop's chat.`
+        `${definition.label}'s verified manifest is saved to your account and this device. Save to link it to this shop's chat.`
       );
     } catch (error) {
       setCatalogueMessage(error instanceof Error ? error.message : "The manifest was not saved.");
@@ -158,7 +182,7 @@ export function AgentIdentityPanel({
                 type="button"
                 disabled={!isEditing || status === "unavailable" || (selected && installed)}
                 aria-pressed={selected}
-                onClick={() => downloadAndSelectAgent(definition)}
+                onClick={() => void downloadAndSelectAgent(definition)}
               >
                 {selected && installed
                   ? "Selected"

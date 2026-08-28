@@ -9,7 +9,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { BusinessEvent } from "@soko/event-core";
-import { isAccountSyncCollection } from "@soko/shared-types";
+import { isAccountSyncCollection, isAgentDefinitionId } from "@soko/shared-types";
 import { Cp2Error, assertValid } from "./cp2-error.js";
 import { roundMoney } from "./money.js";
 import {
@@ -62,8 +62,15 @@ import {
   cloneInstalledAgentModel,
   contextCharacterBudgetForModel,
   publicAgentReplyText,
+  normalizeInstalledAgentModel,
   type BusinessAgentProfileSummary
 } from "./domains/agent-runtime/shared.js";
+import {
+  copyAgentManifest,
+  createMemoryAccountAiAssetStore,
+  modelArtifactChunkSizeBytes,
+  type AccountAiAssetStore
+} from "./account-ai-asset-store.js";
 import { SalesDomain } from "./domains/sales/store.js";
 import { type ProductMediaRecord } from "./domains/sales/shared.js";
 import { McpTokensDomain } from "./domains/mcp-tokens/store.js";
@@ -133,6 +140,9 @@ import type {
   E2eeDeviceSummary,
   InventoryMovementSummary,
   InstalledAgentModelSummary,
+  InstalledOssAgentManifestSummary,
+  CloudModelArtifactSummary,
+  OssAgentSummary,
   InvoiceSummary,
   LaunchChecklistItemSummary,
   LaunchIncidentSummary,
@@ -618,6 +628,7 @@ export interface Cp2StoreOptions {
   workspaceRoot?: string;
   workspaceDeliveryMaxFileBytes?: number;
   conversationAttachmentBlobStore?: ConversationAttachmentBlobStore;
+  accountAiAssetStore?: AccountAiAssetStore;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -709,6 +720,7 @@ export class Cp2Store {
   private readonly channelGateway: ChannelGateway;
   private readonly emailMailboxProviderClient: EmailMailboxProviderClient;
   private readonly conversationAttachmentBlobStore: ConversationAttachmentBlobStore;
+  private readonly accountAiAssetStore: AccountAiAssetStore;
   private readonly mcpPrincipalContext = new AsyncLocalStorage<McpPrincipal>();
 
   constructor(private readonly options: Cp2StoreOptions = {}) {
@@ -717,6 +729,7 @@ export class Cp2Store {
       options.emailMailboxProviderClient ?? createEmailMailboxProviderClient({});
     this.conversationAttachmentBlobStore =
       options.conversationAttachmentBlobStore ?? createMemoryConversationAttachmentBlobStore();
+    this.accountAiAssetStore = options.accountAiAssetStore ?? createMemoryAccountAiAssetStore();
     this.oauthDomain = new OAuthDomain({
       requirePinVerifiedSession: (sessionId, now) => this.requirePinVerifiedSession(sessionId, now),
       requireAuthorizedSession: (sessionId, businessId, permission, now) =>
@@ -2998,6 +3011,132 @@ export class Cp2Store {
     ...args: Parameters<AgentRuntimeDomain["listInstalledAgentModels"]>
   ): ReturnType<AgentRuntimeDomain["listInstalledAgentModels"]> {
     return this.agentRuntimeDomain.listInstalledAgentModels(...args);
+  }
+
+  async installAccountOssAgentManifest(input: {
+    sessionId: string | null;
+    agent: OssAgentSummary;
+    installedAt?: string;
+    now?: Date;
+  }): Promise<InstalledOssAgentManifestSummary> {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    assertSafeAccountAgentManifest(input.agent);
+    const manifest = copyAgentManifest({
+      accountId: session.account.id,
+      userId: session.user.id,
+      agent: input.agent,
+      installedAt: input.installedAt ?? now.toISOString()
+    });
+    await this.accountAiAssetStore.putAgentManifest(manifest);
+    return manifest;
+  }
+
+  async listAccountOssAgentManifests(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): Promise<InstalledOssAgentManifestSummary[]> {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return this.accountAiAssetStore.listAgentManifests(session.account.id, session.user.id);
+  }
+
+  async beginAccountModelArtifact(input: {
+    sessionId: string | null;
+    model: Omit<InstalledAgentModelSummary, "accountId" | "userId">;
+    now?: Date;
+  }): Promise<CloudModelArtifactSummary> {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    const model = normalizeInstalledAgentModel(input.model, session.account.id, session.user.id);
+    if (model.installationStatus !== "INSTALLED" || !model.commercialUseAllowed) {
+      throw new Cp2Error(
+        409,
+        "model_artifact_not_usable",
+        "Only a completed, commercially usable model installation can be saved to the account."
+      );
+    }
+    return this.accountAiAssetStore.beginModelArtifact({
+      accountId: session.account.id,
+      userId: session.user.id,
+      model,
+      now: now.toISOString()
+    });
+  }
+
+  async putAccountModelArtifactChunk(input: {
+    sessionId: string | null;
+    artifactId: string;
+    chunkIndex: number;
+    bytes: Buffer;
+    now?: Date;
+  }): Promise<{ stored: true }> {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    if (input.bytes.byteLength > modelArtifactChunkSizeBytes) {
+      throw new Cp2Error(413, "model_artifact_chunk_too_large", "The model chunk is too large.");
+    }
+    try {
+      await this.accountAiAssetStore.putModelArtifactChunk({
+        artifactId: input.artifactId,
+        accountId: session.account.id,
+        userId: session.user.id,
+        chunkIndex: input.chunkIndex,
+        bytes: input.bytes
+      });
+    } catch (error) {
+      throw accountAiAssetError(error);
+    }
+    return { stored: true };
+  }
+
+  async completeAccountModelArtifact(input: {
+    sessionId: string | null;
+    artifactId: string;
+    now?: Date;
+  }): Promise<CloudModelArtifactSummary> {
+    const now = input.now ?? new Date();
+    const session = this.requirePinVerifiedSession(input.sessionId, now);
+    try {
+      return await this.accountAiAssetStore.completeModelArtifact({
+        artifactId: input.artifactId,
+        accountId: session.account.id,
+        userId: session.user.id,
+        now: now.toISOString()
+      });
+    } catch (error) {
+      throw accountAiAssetError(error);
+    }
+  }
+
+  async listAccountModelArtifacts(input: {
+    sessionId: string | null;
+    now?: Date;
+  }): Promise<CloudModelArtifactSummary[]> {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    return this.accountAiAssetStore.listModelArtifacts(session.account.id, session.user.id);
+  }
+
+  async getAccountModelArtifactChunk(input: {
+    sessionId: string | null;
+    artifactId: string;
+    chunkIndex: number;
+    now?: Date;
+  }): Promise<Buffer> {
+    const session = this.requirePinVerifiedSession(input.sessionId, input.now ?? new Date());
+    try {
+      const bytes = await this.accountAiAssetStore.getModelArtifactChunk({
+        artifactId: input.artifactId,
+        accountId: session.account.id,
+        userId: session.user.id,
+        chunkIndex: input.chunkIndex
+      });
+      if (bytes === null) {
+        throw new Cp2Error(404, "model_artifact_chunk_not_found", "Model chunk was not found.");
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof Cp2Error) throw error;
+      throw accountAiAssetError(error);
+    }
   }
   registerInstalledAgentModel(
     ...args: Parameters<AgentRuntimeDomain["registerInstalledAgentModel"]>
@@ -8674,6 +8813,43 @@ export class Cp2Store {
 
 export function createCp2Store(options: Cp2StoreOptions = {}): Cp2Store {
   return new Cp2Store(options);
+}
+
+function assertSafeAccountAgentManifest(agent: OssAgentSummary): void {
+  const expectedHost = agent.source === "github" ? "github.com" : "huggingface.co";
+  const expectedPath =
+    agent.source === "github" ? `/${agent.sourceId}` : `/spaces/${agent.sourceId}`;
+  let sourceUrl: URL;
+  try {
+    sourceUrl = new URL(agent.sourceUrl);
+  } catch {
+    throw new Cp2Error(400, "agent_manifest_invalid", "The agent manifest source is invalid.");
+  }
+  if (
+    !agent.licenseVerified ||
+    !isAgentDefinitionId(agent.id) ||
+    agent.id === "builtin:shopkeeper" ||
+    agent.id !== `${agent.source}:${agent.sourceId}` ||
+    sourceUrl.protocol !== "https:" ||
+    sourceUrl.hostname !== expectedHost ||
+    sourceUrl.pathname.replace(/\/$/, "") !== expectedPath
+  ) {
+    throw new Cp2Error(
+      400,
+      "agent_manifest_invalid",
+      "Only a license-verified GitHub or Hugging Face agent manifest can be saved."
+    );
+  }
+}
+
+function accountAiAssetError(error: unknown): Cp2Error {
+  const message = error instanceof Error ? error.message : "Account AI asset operation failed.";
+  const notFound = message.includes("not found");
+  return new Cp2Error(
+    notFound ? 404 : 409,
+    notFound ? "account_ai_asset_not_found" : "account_ai_asset_incomplete",
+    message
+  );
 }
 
 function deduplicateDeletionSubjects(subjects: AccountDeletionSubject[]): AccountDeletionSubject[] {

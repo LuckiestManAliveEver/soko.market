@@ -1588,7 +1588,7 @@ export function useChatRuntimeState(deps: UseChatRuntimeStateDeps) {
 
     if (downloadedAgentAndModelActive && !isHashtagRuntimeCall) {
       await appendAgentMessage(
-        "The downloaded agent and model stay on this device, but no browser inference runtime could process this message. Check the local model and try again."
+        "The runnable model copy stays on this device, but no browser inference runtime could process this message. Check the local model and try again; the account copy remains available for restore."
       );
       setStatusMessage("Local browser inference unavailable · No server inference used");
       return;

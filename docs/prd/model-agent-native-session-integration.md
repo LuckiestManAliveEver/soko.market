@@ -71,6 +71,8 @@ state machine:
 
 - `apps/web/src/ai-model-manager.ts` is the canonical GGUF installation manager. Model bytes use
   OPFS (`navigator.storage.getDirectory`) when available; metadata is device-scoped in localStorage.
+  Completed online installs also use the account AI asset API to keep an authenticated, chunked
+  GGUF copy in Neon so another signed-in device can restore its own OPFS installation.
 - It validates trusted manifest data, format/architecture/quantization, expected size, checksum,
   storage handle, license, memory estimate, runtime backend, and installation state.
 - Browser ONNX inference is separate by artifact/runtime type, not a duplicate GGUF registry:
@@ -78,6 +80,9 @@ state machine:
   `soko-browser-inference` IndexedDB metadata/state.
 - `infra/db/migrations/035_agent_model_assignments.sql` persists CP2 installed-model and assignment
   summaries. They describe a device installation; they do not prove that OPFS bytes still exist.
+  `infra/db/migrations/066_account_ai_assets.sql` separately persists account agent manifests and
+  chunked GGUF artifacts; a ready artifact is recoverable, but is not itself a runnable device
+  installation.
 
 ## 5. Agent state
 

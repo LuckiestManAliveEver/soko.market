@@ -9,7 +9,8 @@ import type {
   BrowserInferenceAssignmentSummary,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
-  InstalledAgentModelSummary
+  InstalledAgentModelSummary,
+  CloudModelArtifactSummary
 } from "@soko/shared-types";
 
 import {
@@ -102,6 +103,11 @@ import { getErrorMessage } from "./chat-message-plumbing";
 import { isDownloadableCatalogModel } from "./agent-model-panel-utils";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
 import { modelLifecycleActionLabel, resolveModelLifecycleState } from "./model-lifecycle";
+import {
+  listAccountModelArtifacts,
+  restoreAccountModelToDevice,
+  uploadLocalModelToAccount
+} from "./account-ai-assets";
 
 export interface AgentModelPanelProps {
   accountId: string;
@@ -215,6 +221,9 @@ export function AgentModelPanel({
       message: "Hugging Face model discovery has not run yet."
     });
   const [modelTransfers, setModelTransfers] = useState<Record<string, ModelTransferProgress>>({});
+  const [accountModelArtifacts, setAccountModelArtifacts] = useState<CloudModelArtifactSummary[]>(
+    []
+  );
   const [customLicenseConfirmed, setCustomLicenseConfirmed] = useState(false);
   const customModelInput = useRef<HTMLInputElement>(null);
 
@@ -259,10 +268,11 @@ export function AgentModelPanel({
     setProfileMessage("Opening model settings…");
     try {
       const initialSearch = new URLSearchParams(location.search).get("ai_search") ?? "";
-      const [browserState, capability, syncedAssignment] = await Promise.all([
+      const [browserState, capability, syncedAssignment, artifacts] = await Promise.all([
         loadBrowserInferenceState(accountId, business.id),
         inspectDeviceModelCapability(),
         loadSyncedBrowserInferenceAssignment(business.id).catch(() => null),
+        listAccountModelArtifacts().catch(() => []),
         loadAiModels(initialSearch)
       ]);
       setBrowserInferenceState(browserState);
@@ -274,6 +284,7 @@ export function AgentModelPanel({
           ""
       );
       setDeviceCapability(capability);
+      setAccountModelArtifacts(artifacts);
       setModelLibraryLoaded(true);
       setProfileMessage("Model settings ready.");
       if (navigator.onLine && browserState.settings !== null) {
@@ -536,9 +547,21 @@ export function AgentModelPanel({
       });
       const verified = await validateLocalAiModel(installed, deviceCapability);
       setLocalAiModels(listLocalAiModels());
-      if (navigator.onLine) await registerInstalledModel(verified);
+      if (navigator.onLine) {
+        setProfileMessage(`Saving ${model.label} to your account's Neon storage…`);
+        const artifact = await uploadLocalModelToAccount(verified, (progress) => {
+          setModelTransfers((current) => ({ ...current, [model.id]: progress }));
+        });
+        setAccountModelArtifacts((current) => [
+          artifact,
+          ...current.filter((candidate) => candidate.id !== artifact.id)
+        ]);
+        await registerInstalledModel(verified);
+      }
       setProfileMessage(
-        "Installed on this device. Choose ‘Activate on this device’ to run a readiness check and attach it locally."
+        navigator.onLine
+          ? "Installed on this device. Choose ‘Activate on this device’ when ready. A copy is saved to your account for another device to restore."
+          : "Installed locally while offline. Reconnect and download it again to save a cross-device copy."
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -567,9 +590,45 @@ export function AgentModelPanel({
       });
       const verified = await validateLocalAiModel(model, deviceCapability);
       setLocalAiModels(listLocalAiModels());
-      if (navigator.onLine) await registerInstalledModel(verified);
+      if (navigator.onLine) {
+        setProfileMessage(`Saving ${file.name} to your account's Neon storage…`);
+        const artifact = await uploadLocalModelToAccount(verified, (progress) => {
+          setModelTransfers((current) => ({ ...current, [transferId]: progress }));
+        });
+        setAccountModelArtifacts((current) => [
+          artifact,
+          ...current.filter((candidate) => candidate.id !== artifact.id)
+        ]);
+        await registerInstalledModel(verified);
+      }
       setProfileMessage(
-        "Installed on this device. Choose ‘Activate on this device’ to run a readiness check and attach it locally."
+        navigator.onLine
+          ? "Installed on this device. Choose ‘Activate on this device’ when ready. A copy is saved to your account for another device to restore."
+          : "Installed locally while offline. Reconnect to save a cross-device copy."
+      );
+    } catch (error) {
+      setProfileMessage(getErrorMessage(error));
+    } finally {
+      setModelTransfers((current) => {
+        const next = { ...current };
+        delete next[transferId];
+        return next;
+      });
+    }
+  }
+
+  async function restoreAccountModel(artifact: CloudModelArtifactSummary) {
+    const transferId = `account:${artifact.id}`;
+    try {
+      setProfileMessage(`Restoring ${artifact.displayName} from your account…`);
+      const restored = await restoreAccountModelToDevice(artifact, (progress) => {
+        setModelTransfers((current) => ({ ...current, [transferId]: progress }));
+      });
+      const verified = await validateLocalAiModel(restored, deviceCapability);
+      await registerInstalledModel(verified);
+      setLocalAiModels(listLocalAiModels());
+      setProfileMessage(
+        `${artifact.displayName} is restored on this device. You can now activate it for the agent.`
       );
     } catch (error) {
       setProfileMessage(getErrorMessage(error));
@@ -1745,6 +1804,56 @@ export function AgentModelPanel({
           </div>
         ) : (
           <>
+            <section aria-label="Account model storage">
+              <div className="section-subheading">
+                <h4>Available from your account</h4>
+                <p>
+                  These GGUF files are stored in your existing Neon database. Restore a private
+                  device copy before running local inference; the account copy remains available to
+                  your other signed-in devices.
+                </p>
+              </div>
+              <div className="ai-model-catalog">
+                {accountModelArtifacts
+                  .filter(
+                    (artifact) => !localAiModels.some((model) => model.modelId === artifact.modelId)
+                  )
+                  .map((artifact) => {
+                    const transfer = modelTransfers[`account:${artifact.id}`];
+                    const compatible =
+                      deviceCapability === null ||
+                      canRunCatalogModel(deviceCapability, null, artifact.fileSizeBytes);
+                    return (
+                      <article className="ai-model-card" key={`account:${artifact.id}`}>
+                        <div>
+                          <p className="eyebrow">Neon account storage · Ready</p>
+                          <h4>{artifact.displayName}</h4>
+                          <small>
+                            {formatModelBytes(artifact.fileSizeBytes)} · {artifact.license} · saved{" "}
+                            {artifact.completedAt === null
+                              ? "recently"
+                              : formatDate(artifact.completedAt)}
+                          </small>
+                        </div>
+                        <div className="ai-model-card-actions">
+                          <button
+                            type="button"
+                            disabled={!compatible || transfer !== undefined}
+                            onClick={() => void restoreAccountModel(artifact)}
+                          >
+                            {transfer === undefined
+                              ? "Restore to this device"
+                              : `Restoring ${transfer.percent}%`}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                {accountModelArtifacts.length === 0 ? (
+                  <p>No account-saved models yet. Installing a model below saves the GGUF here.</p>
+                ) : null}
+              </div>
+            </section>
             <section aria-label="Soko backend models">
               <div className="section-subheading">
                 <h4>Soko backend models</h4>
@@ -2124,8 +2233,9 @@ export function AgentModelPanel({
               <div>
                 <h4>Add a custom AI model</h4>
                 <p>
-                  High-capability devices can import a local GGUF file. Soko does not upload or
-                  verify custom model licenses.
+                  High-capability devices can import a GGUF file. Soko saves an account copy in Neon
+                  after your license confirmation, but does not independently verify custom model
+                  licenses.
                 </p>
               </div>
               <label className="license-confirmation">

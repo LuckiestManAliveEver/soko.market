@@ -14,7 +14,10 @@ permits commercial use subject to the license's notice and attribution terms.
 
 Model files are streamed to the browser's origin-private file system. The download manager checks
 for working storage, requests persistent storage, reports progress, and removes partial files after
-a failed transfer. No model weights pass through the Soko API.
+a failed transfer. After a successful online install, the browser uploads the GGUF through
+authenticated 4 MiB chunks to the account's existing Neon/Postgres database. Neon keeps one ready
+copy per account user and model; superseded and incomplete copies are removed. Local inference
+still runs only from a device-private copy, never directly from the database.
 
 The agent AI model dropdown separates models that are installed on the current phone from catalog
 models that still require a download. A catalog model cannot be activated until its GGUF weights
@@ -50,7 +53,8 @@ one-time download with visible progress.
 
 The web/PWA build does not silently bundle these large weight files or download them without the
 merchant's action. In the interface, “installed on this phone” means the merchant has completed the
-one-time predownload into origin-private storage on that Android device.
+predownload into origin-private storage on that Android device. “Available from your account” means
+an authenticated Neon copy can be restored to another signed-in device.
 
 The Android model library searches both the curated Soko registry and public GitHub releases:
 
@@ -81,11 +85,11 @@ separately and never detaches, replaces, or rewrites the downloaded model assign
 
 ## Device-switch and resource fallback
 
-A local installation belongs to one device; selecting it must not imply that its GGUF file exists
-on another phone. When a signed-in device has no runnable copy, the API still returns a
-`LOCAL_FIRST` assignment for the preferred downloaded model and marks that the installation is
-missing on this device. It never converts the assignment into `CLOUD_ONLY` and never selects an
-OpenAI model from environment defaults.
+A runnable installation still belongs to one device; selecting it must not imply that its GGUF is
+already present on another phone. The other phone can restore the account's Neon copy from the
+model library, after which Soko validates and registers a new device-scoped installation. Until
+then, the API marks the local installation missing. It never runs GGUF inference inside Neon,
+converts the assignment into `CLOUD_ONLY`, or selects an OpenAI model from environment defaults.
 
 If the merchant previously selected an OpenAI fallback, a new device can display a separate
 consent prompt before any chat context is sent to it. Declining keeps OpenAI off and preserves the

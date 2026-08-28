@@ -1157,6 +1157,47 @@ export interface InstalledAgentModelSummary {
   validationError: string | null;
 }
 
+/** A verified OSS-agent manifest saved to an account rather than one browser's localStorage. */
+export interface InstalledOssAgentManifestSummary {
+  manifestVersion: 1;
+  accountId: string;
+  userId: string;
+  agent: OssAgentSummary;
+  installedAt: string;
+}
+
+export type CloudModelArtifactStatus = "UPLOADING" | "READY" | "FAILED";
+
+/**
+ * Account-scoped GGUF metadata. The artifact bytes are stored in bounded Postgres chunks and are
+ * copied into a device's private model directory before local inference.
+ */
+export interface CloudModelArtifactSummary {
+  id: string;
+  accountId: string;
+  userId: string;
+  sourceInstallationId: string;
+  modelId: string;
+  displayName: string;
+  provider: InstalledAgentModelSummary["provider"];
+  repositoryId: string | null;
+  filename: string;
+  format: "GGUF";
+  quantization: string | null;
+  architecture: string | null;
+  parameterCount: number | null;
+  contextLength: number | null;
+  fileSizeBytes: number;
+  checksum: string | null;
+  license: string;
+  commercialUseAllowed: boolean;
+  chunkSizeBytes: number;
+  chunkCount: number;
+  status: CloudModelArtifactStatus;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 export interface AgentModelAssignmentSummary {
   agentId: string;
   businessId: string;
