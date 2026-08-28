@@ -699,6 +699,13 @@ async function expectInteractiveControlsInsideViewport(page: Page, root: Locator
 async function installApiMocks(page: Page): Promise<void> {
   let accountDeleted = false;
   let agentProfile = { ...mockAgentProfile };
+  let installedOssAgentManifests: Array<{
+    manifestVersion: 1;
+    accountId: string;
+    userId: string;
+    agent: unknown;
+    installedAt: string;
+  }> = [];
   await page.route("http://127.0.0.1:4000/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
@@ -763,6 +770,26 @@ async function installApiMocks(page: Page): Promise<void> {
         issues: [],
         checkedAt: "2026-07-15T12:00:00.000Z"
       });
+    }
+    // installOssAgentForAccount/hydrateAccountOssAgentManifests (account-ai-assets.ts) call the
+    // real backend contract (services/api/src/cp2/domains/agent-runtime/routes.ts): POST returns
+    // the manifest directly, GET returns { manifests }. Without this, the request 404s, the
+    // useOssAgentSelectionState bootstrap effect swallows the failure, and the first-run
+    // auto-install of the lowest-memory OSS agent silently never happens.
+    if (path === "/v1/oss-agents/installed" && method === "GET") {
+      return json({ manifests: installedOssAgentManifests });
+    }
+    if (path === "/v1/oss-agents/installed" && method === "POST") {
+      const body = route.request().postDataJSON() as { agent: unknown };
+      const manifest = {
+        manifestVersion: 1 as const,
+        accountId: "responsive-account",
+        userId: "responsive-user",
+        agent: body.agent,
+        installedAt: "2026-07-15T00:00:00.000Z"
+      };
+      installedOssAgentManifests = [...installedOssAgentManifests, manifest];
+      return json(manifest);
     }
     if (path === "/v1/oss-agents/github") {
       return json({
