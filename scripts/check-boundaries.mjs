@@ -85,9 +85,19 @@ for (const file of apiFiles.filter((candidate) => candidate.includes("/cp2/domai
 }
 
 // Native bindings are the only production selection architecture. Fabric must not re-enter source.
+// Mirrors scripts/check-retired-runtime-references.mjs's allowlist: the single production file
+// sanctioned to name retired Execution Fabric terminology (see its own header comment), so this
+// sweep must not flag it for doing exactly what it exists to do.
+const allowlistedFabricFilePattern = /\/cp2\/retired-execution-fabric-tables\.(?:d\.ts|ts|js)$/u;
+// The sanctioned filename itself contains the substring "execution-fabric" (e.g. import
+// specifiers like "./cp2/retired-execution-fabric-tables.js"). Referencing the allowlisted file
+// by name is not a reintroduction of the terminology, so strip that filename before testing.
+const sanctionedFabricFileName = "retired-execution-fabric-tables";
 for (const file of [...apiFiles, ...(await listSourceFiles("apps/web/src"))]) {
+  if (allowlistedFabricFilePattern.test(file)) continue;
   const contents = await read(file);
-  if (/execution[ -]fabric|execution-planner/iu.test(contents)) {
+  const scannableContents = contents.replaceAll(sanctionedFabricFileName, "");
+  if (/execution[ -]fabric|execution-planner/iu.test(scannableContents)) {
     violations.push(`${file}: retired Execution Fabric terminology or dependency`);
   }
 }
