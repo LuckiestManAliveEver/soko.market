@@ -105,10 +105,16 @@ export function AgentIdentityPanel({
     }
   }
 
+  // An unavailable agent (unverified license, or a repository needing a backend adapter this
+  // deployment doesn't have) is hidden entirely rather than shown disabled - it can't be
+  // downloaded or used here, so listing it just invites a dead-end tap. An already-downloaded
+  // agent stays listed even if it would now rank unavailable, so it can still be managed/removed.
   const agentOptions =
     deviceCapability === null
       ? []
-      : rankOssAgentsForDevice({ agents, capability: deviceCapability, backendAvailable });
+      : rankOssAgentsForDevice({ agents, capability: deviceCapability, backendAvailable }).filter(
+          (option) => option.status !== "unavailable" || installedAgentIds.has(option.agent.id)
+        );
 
   return (
     <div className="record-form">

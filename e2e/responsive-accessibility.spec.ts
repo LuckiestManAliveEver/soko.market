@@ -60,6 +60,39 @@ test("secondary modules preserve the conversation URL and browser history", asyn
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toHaveCount(0);
 });
 
+test("the agent catalogue hides an unavailable agent instead of listing it disabled", async ({
+  page
+}) => {
+  const unavailableAgent = {
+    ...mockOssAgent,
+    id: "github:example/unlicensed-agent",
+    label: "Unlicensed Agent",
+    sourceId: "example/unlicensed-agent",
+    source: "github",
+    licenseVerified: false,
+    executionMode: "repository"
+  };
+  await page.route("**/v1/oss-agents/github**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        agents: [unavailableAgent],
+        status: "available",
+        connection: "public",
+        message: "GitHub connected."
+      })
+    })
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Account and agent settings" });
+  await settingsDialog.locator(".settings-group-title", { hasText: "Agent behavior" }).click();
+  await expect(settingsDialog.getByText("Retail Agent", { exact: true })).toBeVisible();
+  await expect(settingsDialog.getByText("Unlicensed Agent", { exact: true })).toHaveCount(0);
+});
+
 test("first run downloads the lowest-memory OSS agent and links it to chat", async ({ page }) => {
   await page.setExtraHTTPHeaders({ "x-soko-test-agent-bootstrap": "true" });
   await page.goto("/");

@@ -2130,9 +2130,22 @@ export function AgentModelPanel({
 
             <div className="ai-model-catalog">
               {visibleAiModels
-                .filter(
-                  (model) => isDownloadableCatalogModel(model) && model.license === "Apache-2.0"
-                )
+                .filter((model) => {
+                  if (!isDownloadableCatalogModel(model) || model.license !== "Apache-2.0") {
+                    return false;
+                  }
+                  // A model already installed on this device stays listed regardless of current
+                  // compatibility (so it can still be managed/removed) - only a model nobody has
+                  // downloaded here yet is hidden once it's known this device can't run it.
+                  const alreadyInstalled = localAiModels.some(
+                    (candidate) => candidate.modelId === model.id
+                  );
+                  if (alreadyInstalled) return true;
+                  return (
+                    deviceCapability === null ||
+                    canRunCatalogModel(deviceCapability, model.minimumMemoryGb, model.fileSizeBytes)
+                  );
+                })
                 .map((model) => {
                   const localModel = localAiModels.find(
                     (candidate) => candidate.modelId === model.id
