@@ -33,6 +33,16 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "sokoIdHistory", tableName: "cp2_soko_id_history" },
   { key: "memberships", tableName: "cp2_memberships" },
   { key: "sessionContexts", tableName: "cp2_session_contexts" },
+  // Native runtime tables must persist before cp2_conversations: its generated
+  // runtime_binding_id column carries a foreign key into cp2_native_runtime_bindings, so a
+  // conversation rebound to a binding created in this same flush (e.g. "Use with agent"
+  // activation) would violate that constraint if bindings were written afterward.
+  { key: "nativeRuntimeAgents", tableName: "cp2_native_runtime_agents" },
+  { key: "nativeRuntimeModels", tableName: "cp2_native_runtime_models" },
+  { key: "nativeExecutionHosts", tableName: "cp2_native_execution_hosts" },
+  { key: "nativeModelInstallations", tableName: "cp2_native_model_installations" },
+  { key: "nativeRuntimeBindings", tableName: "cp2_native_runtime_bindings" },
+  { key: "nativeRuntimeBindingModels", tableName: "cp2_native_runtime_binding_models" },
   { key: "conversations", tableName: "cp2_conversations" },
   { key: "conversationParticipants", tableName: "cp2_conversation_participants" },
   { key: "conversationMessages", tableName: "cp2_conversation_messages" },
@@ -67,12 +77,6 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
   { key: "browserInferenceAssignments", tableName: "cp2_browser_inference_assignments" },
   { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
-  { key: "nativeRuntimeAgents", tableName: "cp2_native_runtime_agents" },
-  { key: "nativeRuntimeModels", tableName: "cp2_native_runtime_models" },
-  { key: "nativeExecutionHosts", tableName: "cp2_native_execution_hosts" },
-  { key: "nativeModelInstallations", tableName: "cp2_native_model_installations" },
-  { key: "nativeRuntimeBindings", tableName: "cp2_native_runtime_bindings" },
-  { key: "nativeRuntimeBindingModels", tableName: "cp2_native_runtime_binding_models" },
   { key: "productFieldSchemas", tableName: "cp2_product_field_schemas" },
   { key: "products", tableName: "cp2_products" },
   { key: "productMedia", tableName: "product_media" },
@@ -2332,9 +2336,12 @@ async function saveCollectionRecords(
           "sourceId",
           "eventId",
           "permissionId",
+          // runtimeBindingId must win over executionHostId: a native runtime binding-model role
+          // carries both fields, but its parent_id foreign key (and record check constraint)
+          // point at the binding, not the host it happens to route to.
+          "runtimeBindingId",
           "executionHostId",
-          "agentId",
-          "runtimeBindingId"
+          "agentId"
         ]),
         JSON.stringify(record)
       ]

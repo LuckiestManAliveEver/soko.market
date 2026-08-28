@@ -356,7 +356,8 @@ describePostgres("CP2 Postgres store", () => {
     const store = await createPostgresCp2Store({ databaseUrl: databaseUrl ?? "" });
     const app = buildApi({ cp2: { store } });
     const { business, sessionCookie } = await createOwnerBusiness(app, uniquePhone);
-    await postJson(app, "/auth/pin/setup", { pin: "6138" }, sessionCookie);
+    // createOwnerBusiness's /auth/pin/signup already sets the account's PIN; a second
+    // /auth/pin/setup call here is redundant and now correctly rejected as pin_already_set.
     const mcpToken = await postJson<McpTokenResponse>(
       app,
       "/v1/mcp/tokens",
