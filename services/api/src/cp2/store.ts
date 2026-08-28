@@ -3688,10 +3688,21 @@ export class Cp2Store {
       "customer",
       activeModelId
     );
-    const { provider } = this.agentRuntimeDomain.resolveRuntimeModelProvider(
-      shopRuntime,
-      activeModelId
-    );
+    // resolveRuntimeModelProvider can throw (RUNTIME_NOT_CONFIGURED, NO_COMPATIBLE_EXECUTION_TARGET,
+    // BROWSER_RUNTIME_DISABLED, BRIDGE_UNAVAILABLE, ...) rather than returning `provider: undefined`
+    // whenever no execution target can be resolved for this business - every one of those is just
+    // another shape of "no model provider" for this function's documented always-degrade-to-null
+    // contract, same as the `provider === undefined` case below.
+    let provider: RuntimeModelProvider | undefined;
+    try {
+      ({ provider } = this.agentRuntimeDomain.resolveRuntimeModelProvider(
+        shopRuntime,
+        activeModelId
+      ));
+    } catch (error) {
+      if (error instanceof Cp2Error) return null;
+      throw error;
+    }
     if (provider === undefined) return null;
 
     const parserResult = parseMerchantCommand(body);

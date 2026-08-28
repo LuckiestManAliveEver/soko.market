@@ -141,7 +141,8 @@ import {
 } from "./runtime-model-routing.js";
 import {
   assertResolvedRuntimeAvailable,
-  resolveNativeRuntimeModelProvider
+  resolveNativeRuntimeModelProvider,
+  type ExecutionTargetResolutionSource
 } from "./native-runtime-routing.js";
 import { executeRuntimeCapability } from "./capabilities.js";
 import {
@@ -377,7 +378,21 @@ export class AgentRuntimeDomain {
             ).includes(compactSearch))
         );
       })
-      .map((model) => ({ ...model, capabilities: [...model.capabilities] }));
+      .map((model) => ({
+        ...model,
+        capabilities: [...model.capabilities],
+        runtimeAvailability: {
+          backend:
+            this.deps.modelRuntimeAdapterResolver?.({
+              modelId: model.id,
+              executionTarget: "backend",
+              agentId: "model-catalog",
+              shopId: "model-catalog"
+            }) === undefined
+              ? "unconfigured"
+              : "configured"
+        }
+      }));
   }
 
   getActiveAiModel(input: {
@@ -3175,9 +3190,9 @@ export class AgentRuntimeDomain {
     if (adapter === undefined) {
       throw new Cp2Error(
         503,
-        "RUNTIME_UNAVAILABLE",
-        "The selected model runtime is not configured or currently available.",
-        true,
+        "RUNTIME_NOT_CONFIGURED",
+        "The selected model runtime is not configured for this deployment.",
+        false,
         { modelId: input.modelId, executionTarget: input.executionTarget }
       );
     }
@@ -3435,7 +3450,12 @@ export class AgentRuntimeDomain {
     shopRuntime: ShopAgentRuntime,
     modelId: string,
     conversationId?: string
-  ): { provider: RuntimeModelProvider | undefined; binding: AgentModelBindingSummary | null } {
+  ): {
+    provider: RuntimeModelProvider | undefined;
+    binding: AgentModelBindingSummary | null;
+    executionTarget: ModelExecutionTarget | undefined;
+    resolutionSource: ExecutionTargetResolutionSource | null;
+  } {
     const binding = this.activeAgentModelBinding(shopRuntime.agentId);
     const nativeResolution =
       conversationId === undefined ? null : this.deps.resolveNativeRuntimeBinding(conversationId);

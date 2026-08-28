@@ -3,6 +3,7 @@ import type {
   AgentModelBindingSummary,
   BrowserInferenceAssignmentSummary,
   ClientInferenceCompletion,
+  ModelExecutionTarget,
   RuntimeContextSummary,
   RuntimeModelCompletionResult,
   RuntimeModelConversationMessage,
@@ -34,6 +35,7 @@ import {
   type RecallEscalationSignal
 } from "../../recall-distillation.js";
 import type { AgentRuntimeDomainDeps } from "./domain-deps.js";
+import type { ExecutionTargetResolutionSource } from "./native-runtime-routing.js";
 import {
   agentModelAssignmentKey,
   browserInferenceAssignmentKey,
@@ -51,7 +53,12 @@ interface RuntimeModelRouteState {
   resolveRuntimeModelProvider: (
     runtime: ShopAgentRuntime,
     modelId: string
-  ) => { provider: RuntimeModelProvider | undefined; binding: AgentModelBindingSummary | null };
+  ) => {
+    provider: RuntimeModelProvider | undefined;
+    binding: AgentModelBindingSummary | null;
+    executionTarget: ModelExecutionTarget | undefined;
+    resolutionSource: ExecutionTargetResolutionSource | null;
+  };
   modelRuntimeAdapterResolver: AgentRuntimeDomainDeps["modelRuntimeAdapterResolver"];
 }
 
@@ -203,7 +210,12 @@ export async function createRuntimeModelRoute(
   trace: RuntimeModelTrace | null;
   recallCandidate: RecallCandidate | null;
 }> {
-  const { provider, binding } = state.resolveRuntimeModelProvider(input.shopRuntime, input.modelId);
+  const {
+    provider,
+    binding,
+    executionTarget: nativeExecutionTarget,
+    resolutionSource
+  } = state.resolveRuntimeModelProvider(input.shopRuntime, input.modelId);
 
   if (provider === undefined) {
     if (binding !== null) {
@@ -215,7 +227,8 @@ export async function createRuntimeModelRoute(
         {
           bindingId: binding.id,
           modelId: binding.modelId,
-          executionTarget: binding.executionTarget
+          executionTarget: nativeExecutionTarget ?? null,
+          resolutionSource
         }
       );
     }
@@ -250,7 +263,7 @@ export async function createRuntimeModelRoute(
   });
   const clientCloudEscalation =
     input.recallEscalation !== undefined &&
-    (binding?.executionTarget === "openai" || provider.name === "openai")
+    (nativeExecutionTarget === "openai" || provider.name === "openai")
       ? input.recallEscalation
       : null;
   const prompt = buildRuntimeModelPrompt(
@@ -272,7 +285,8 @@ export async function createRuntimeModelRoute(
   input.appendTelemetry("model.prompt_built", "completed", null, null, {
     provider: provider.name,
     bindingId: binding?.id ?? null,
-    executionTarget: binding?.executionTarget ?? null,
+    executionTarget: nativeExecutionTarget ?? null,
+    resolutionSource,
     allowedToolCount: prompt.allowedTools.length,
     modelProfile: input.modelId,
     messageLength: input.message.trim().length,
@@ -288,7 +302,7 @@ export async function createRuntimeModelRoute(
   let fallbackUsed = false;
   let fallbackReason: string | null = null;
   let resolvedModelId = binding?.modelId ?? input.modelId;
-  let resolvedExecutionTarget = binding?.executionTarget;
+  let resolvedExecutionTarget: ModelExecutionTarget | undefined = nativeExecutionTarget;
   let recallEscalation: RecallEscalationSignal | null = clientCloudEscalation;
 
   try {
@@ -296,7 +310,8 @@ export async function createRuntimeModelRoute(
       provider: provider.name,
       bindingId: binding?.id ?? null,
       modelId: input.modelId,
-      executionTarget: binding?.executionTarget ?? null
+      executionTarget: resolvedExecutionTarget ?? null,
+      resolutionSource
     });
     completion = await provider.complete(prompt);
   } catch {
@@ -327,7 +342,7 @@ export async function createRuntimeModelRoute(
           : {
               bindingId: binding.id,
               modelId: binding.modelId,
-              executionTarget: binding.executionTarget
+              executionTarget: resolvedExecutionTarget ?? binding.executionTarget
             })
       }
     };

@@ -76,6 +76,7 @@ A `"draft"` binding is a first-class, valid, resolvable state - not an error:
 | `RUNTIME_MODEL_CAPABILITY_MISMATCH` | Model doesn't declare a capability the agent requires                                       | `validateCapabilityMatch`, used by `resolveRole` and `activateGlobalDefaultModel`                                                                                                                                               |
 | `RUNTIME_CONTRACT_INCOMPATIBLE`     | Agent/model/binding runtime **contract version** mismatch (distinct from a capability gap)  | `validateCompatibility`, `validateBindingStructure`                                                                                                                                                                             |
 | `RUNTIME_DEFAULT_MISSING`           | No unique global default binding exists at all (deeper corruption than "unconfigured")      | `requireGlobalDefault`                                                                                                                                                                                                          |
+| `NO_COMPATIBLE_EXECUTION_TARGET`    | Neither the native resolution nor a legacy binding declares where the model runs            | `resolveExecutionTarget` (`agent-runtime/native-runtime-routing.ts`)                                                                                                                                                            |
 
 None of these fail application startup. `services/api/src/index.ts` no longer health-checks any
 model provider before calling `app.listen` - see the acceptance-criteria boot proof below.
@@ -89,6 +90,29 @@ propagate - both call sites already treat a `null` native resolution as "fall ba
 `cp2_agent_model_bindings` path" (they did before this change too, for the `conversationId ===
 undefined` case), so an unconfigured or unavailable native binding degrades to that same existing,
 already-tested fallback instead of throwing an uncaught 500 out of a chat request.
+
+**No implicit `"backend"` default.** `resolveNativeRuntimeModelProvider` (same file) used to fall
+back a missing execution target to `"backend"` when neither the native resolution nor a legacy
+binding declared one - manufacturing a dependency on a backend inference host that may not even be
+configured in this deployment, and surfacing as a confusing adapter-unreachable error instead of a
+clear "nothing is configured" one. It now calls `resolveExecutionTarget`, which resolves a target
+from, in order: the native resolution's declared `configuration.executionTarget`; failing that, the
+`type` of the concrete, already-available execution host backing the native resolution's selected
+model (still a genuine explicit signal recovered from durable state, not a guess, since a *selected*
+candidate is only ever the one that resolved `available: true`); failing that, the legacy binding's
+`executionTarget`. If none of those exist, it throws `NO_COMPATIBLE_EXECUTION_TARGET` rather than
+guessing. `services/api/src/cp2/store.ts`'s `attemptPublicAgentReply` (the anonymous storefront
+reply path, which is documented to always degrade to `null` rather than throw) now also catches any
+`Cp2Error` from `resolveRuntimeModelProvider`, since that call can throw before ever returning
+`provider: undefined` whenever `modelRuntimeAdapterResolver` is configured (the production case).
+
+The strict resolve-or-throw behavior only applies when `modelRuntimeAdapterResolver` is configured
+(`adapterResolverConfigured: true`, always true in production per `services/api/src/index.ts`) -
+that's the only case where the resolved target is actually used to route to a real adapter. When it
+is not configured (a handful of tests that drive `runtimeModelProvider`/`runtimeModelProviderResolver`
+directly, bypassing the adapter system entirely), the target is resolved best-effort for
+observability only and never blocks routing - there is nothing to protect against manufacturing a
+network dependency over, since no adapter lookup happens in that shape at all.
 
 ## Model swap
 
