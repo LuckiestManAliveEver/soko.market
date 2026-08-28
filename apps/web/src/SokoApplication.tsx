@@ -77,7 +77,7 @@ import { useNotificationsState } from "./hooks/useNotificationsState";
 import { useOssAgentSelectionState } from "./hooks/useOssAgentSelectionState";
 import { useViewRefreshRegistry } from "./hooks/useViewRefresh";
 import { surfaceForShellView } from "./cross-device-session-context";
-import { clearPersistentApiRequestCache } from "./api-request-cache";
+import { clearPersistentApiRequestCache, subscribeToApiMutations } from "./api-request-cache";
 import { detectCapabilitySettings } from "./capability-profile";
 import { markNavigationCommitted, startNavigationMeasurement } from "./performance";
 import { likelyNextOwnerViews, prefetchOwnerView, scheduleIdleOwnerPrefetch } from "./prefetch";
@@ -153,6 +153,20 @@ const AgentProfileSurface = lazy(() =>
   import("./AgentProfileSurface").then((module) => ({ default: module.AgentProfileSurface }))
 );
 
+function shouldRefreshBusinessDomains(path: string, businessId: string): boolean {
+  const businessMutation = path.match(/^\/businesses\/([^/]+)\/([^/]+)/);
+  if (businessMutation !== null) {
+    const [, mutatedBusinessId, resource] = businessMutation;
+    return mutatedBusinessId === businessId && resource !== "runtime";
+  }
+
+  return (
+    path === "/network" ||
+    path.startsWith("/v1/oss-agents/installed") ||
+    path.startsWith("/v1/model-artifacts")
+  );
+}
+
 export function OwnerApp() {
   const installPrompt = useInstallPrompt();
   const capabilitySettingsRef = useRef(detectCapabilitySettings());
@@ -222,7 +236,7 @@ export function OwnerApp() {
   );
   const { hasPending, isPending, runAction } = useAsyncActions();
   const domainResetRegistry = useDomainResetRegistry();
-  const { registerRefresh, refreshersFor } = useViewRefreshRegistry();
+  const { allRefreshers, registerRefresh, refreshersFor } = useViewRefreshRegistry();
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2eeIdentity | null>(null);
@@ -1317,6 +1331,25 @@ export function OwnerApp() {
       window.removeEventListener("online", refreshWhenOnline);
     };
   }, [business?.id, session?.account.id, setupComplete, view]);
+
+  useEffect(() => {
+    if (!setupComplete || business === null) return;
+    const businessId = business.id;
+    let refreshTimer: number | null = null;
+
+    const unsubscribe = subscribeToApiMutations((path) => {
+      if (!shouldRefreshBusinessDomains(path, businessId) || refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void Promise.allSettled(allRefreshers().map((refresh) => refresh(businessId)));
+      }, 50);
+    });
+
+    return () => {
+      unsubscribe();
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    };
+  }, [business?.id, setupComplete]);
 
   useEffect(() => {
     if (!setupComplete || business === null) return;

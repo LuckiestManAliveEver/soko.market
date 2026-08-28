@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { InvoicePaymentSummary, PaymentMethod } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { RecordPaymentResponse } from "./soko-application-shared";
@@ -22,6 +23,10 @@ export default function PaymentManagementCard(props: {
   businessId: string;
   customerName?: string;
 }) {
+  const paymentSummariesPath = `/businesses/${props.businessId}/payment-summaries`;
+  const paymentsPath = `/businesses/${props.businessId}/payments`;
+  const invoicesPath = `/businesses/${props.businessId}/invoices`;
+  const mutationRevision = useApiMutationRevision(paymentSummariesPath, paymentsPath, invoicesPath);
   const { isPending, runAction } = useAsyncActions();
   const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -32,7 +37,7 @@ export default function PaymentManagementCard(props: {
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<InvoicePaymentSummary[]>(`/businesses/${props.businessId}/payment-summaries`)
+    void getJson<InvoicePaymentSummary[]>(paymentSummariesPath)
       .then((loaded) => {
         if (cancelled) return;
         const unpaid = loaded.filter((summary) => summary.status !== "paid");
@@ -55,7 +60,7 @@ export default function PaymentManagementCard(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.businessId, props.customerName]);
+  }, [mutationRevision, paymentSummariesPath, props.customerName]);
 
   async function record() {
     if (invoiceId === "") {

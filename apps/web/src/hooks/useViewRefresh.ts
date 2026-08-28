@@ -25,5 +25,9 @@ export function useViewRefreshRegistry() {
     return matches;
   }
 
-  return { registerRefresh, refreshersFor };
+  function allRefreshers(): RefreshFn[] {
+    return [...registry.current.values()].map((registration) => registration.fn);
+  }
+
+  return { allRefreshers, registerRefresh, refreshersFor };
 }

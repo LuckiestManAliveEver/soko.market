@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { InvoiceSummary, ProductSummary } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { ConfirmInvoiceResponse } from "./soko-application-shared";
@@ -17,6 +18,9 @@ export default function InvoiceManagementCard(props: {
   businessId: string;
   customerName?: string;
 }) {
+  const productsPath = `/businesses/${props.businessId}/products`;
+  const invoicesPath = `/businesses/${props.businessId}/invoices`;
+  const mutationRevision = useApiMutationRevision(productsPath, invoicesPath);
   const { isPending, runAction } = useAsyncActions();
   const [products, setProducts] = useState<ProductSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -28,7 +32,7 @@ export default function InvoiceManagementCard(props: {
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<ProductSummary[]>(`/businesses/${props.businessId}/products`)
+    void getJson<ProductSummary[]>(productsPath)
       .then((loaded) => {
         if (cancelled) return;
         setProducts(loaded);
@@ -44,7 +48,7 @@ export default function InvoiceManagementCard(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.businessId]);
+  }, [productsPath, mutationRevision]);
 
   async function saveDraft() {
     if (customerName.trim().length === 0) {

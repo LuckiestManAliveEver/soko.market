@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CustomerSummary } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, patchJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 
@@ -25,6 +26,8 @@ function draftFromCustomer(customer: CustomerSummary): CustomerDraft {
 // Self-contained generated-surface card for the customers domain (Phase 4c), mirroring
 // ProductManagementCard/SupplierManagementCard's shape. See docs/frontend/frontend.md Phase 4c.
 export default function CustomerManagementCard(props: { businessId: string; customerId?: string }) {
+  const customersPath = `/businesses/${props.businessId}/customers`;
+  const mutationRevision = useApiMutationRevision(customersPath);
   const { isPending, runAction } = useAsyncActions();
   const [customers, setCustomers] = useState<CustomerSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -35,7 +38,7 @@ export default function CustomerManagementCard(props: { businessId: string; cust
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<CustomerSummary[]>(`/businesses/${props.businessId}/customers`)
+    void getJson<CustomerSummary[]>(customersPath)
       .then((loaded) => {
         if (cancelled) return;
         setCustomers(loaded);
@@ -49,7 +52,7 @@ export default function CustomerManagementCard(props: { businessId: string; cust
     return () => {
       cancelled = true;
     };
-  }, [props.businessId]);
+  }, [customersPath, mutationRevision]);
 
   function draftFor(customerId: string, customer: CustomerSummary): CustomerDraft {
     return drafts[customerId] ?? draftFromCustomer(customer);

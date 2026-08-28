@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { deleteJson, getJson, patchJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { SupplierBusinessCardSummary, SupplierSummary } from "./soko-application-shared";
@@ -27,6 +28,8 @@ function draftFromSupplier(supplier: SupplierBusinessCardSummary): SupplierDraft
 // useSuppliersState, which needs loadReports/registerReset/registerRefresh tied to sibling hooks
 // in SokoApplication.tsx. See docs/frontend/frontend.md Phase 4b.
 export default function SupplierManagementCard(props: { businessId: string; supplierId?: string }) {
+  const suppliersPath = `/businesses/${props.businessId}/suppliers`;
+  const mutationRevision = useApiMutationRevision(suppliersPath);
   const { isPending, runAction } = useAsyncActions();
   const [suppliers, setSuppliers] = useState<SupplierBusinessCardSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -37,7 +40,7 @@ export default function SupplierManagementCard(props: { businessId: string; supp
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<SupplierBusinessCardSummary[]>(`/businesses/${props.businessId}/suppliers`)
+    void getJson<SupplierBusinessCardSummary[]>(suppliersPath)
       .then((loaded) => {
         if (cancelled) return;
         setSuppliers(loaded);
@@ -51,7 +54,7 @@ export default function SupplierManagementCard(props: { businessId: string; supp
     return () => {
       cancelled = true;
     };
-  }, [props.businessId]);
+  }, [suppliersPath, mutationRevision]);
 
   function draftFor(supplierId: string, supplier: SupplierBusinessCardSummary): SupplierDraft {
     return drafts[supplierId] ?? draftFromSupplier(supplier);

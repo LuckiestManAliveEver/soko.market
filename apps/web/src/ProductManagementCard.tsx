@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ProductSummary } from "@soko/shared-types";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { deleteJson, getJson, patchJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type { StockAdjustmentResponse } from "./soko-application-shared";
@@ -39,6 +40,8 @@ function draftFromProduct(product: ProductSummary): ProductDraft {
 // reusing useProductsState/ProductSurface, which need 8 injected deps tied to sibling hooks in
 // SokoApplication.tsx. See docs/frontend/frontend.md Phase 4a for why.
 export default function ProductManagementCard(props: { businessId: string; productId?: string }) {
+  const productsPath = `/businesses/${props.businessId}/products`;
+  const mutationRevision = useApiMutationRevision(productsPath);
   const { isPending, runAction } = useAsyncActions();
   const [products, setProducts] = useState<ProductSummary[] | null>(null);
   const [message, setMessage] = useState("");
@@ -50,7 +53,7 @@ export default function ProductManagementCard(props: { businessId: string; produ
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<ProductSummary[]>(`/businesses/${props.businessId}/products`)
+    void getJson<ProductSummary[]>(productsPath)
       .then((loaded) => {
         if (cancelled) return;
         setProducts(loaded);
@@ -64,7 +67,7 @@ export default function ProductManagementCard(props: { businessId: string; produ
     return () => {
       cancelled = true;
     };
-  }, [props.businessId]);
+  }, [productsPath, mutationRevision]);
 
   function draftFor(productId: string, product: ProductSummary): ProductDraft {
     return drafts[productId] ?? draftFromProduct(product);

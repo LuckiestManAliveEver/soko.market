@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAsyncActions } from "./hooks/useAsyncActions";
+import { useApiMutationRevision } from "./hooks/useApiMutationRevision";
 import { getJson, patchJson, postJson } from "./api-helpers";
 import { getUserFacingErrorMessage } from "./user-facing-error";
 import type {
@@ -19,13 +20,15 @@ function draftName(draft: DocumentImportJobSummary["rows"][number]["mapped"]): s
 // inline instead of requiring a trip to the permanent page first. See
 // docs/frontend/frontend.md Phase 4f.
 export default function ImportManagementCard(props: { businessId: string; importJobId?: string }) {
+  const importsPath = `/businesses/${props.businessId}/imports`;
+  const mutationRevision = useApiMutationRevision(importsPath);
   const { isPending, runAction } = useAsyncActions();
   const [job, setJob] = useState<DocumentImportJobSummary | null>(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    void getJson<DocumentImportJobSummary[]>(`/businesses/${props.businessId}/imports`)
+    void getJson<DocumentImportJobSummary[]>(importsPath)
       .then((jobs) => {
         if (cancelled) return;
         const matched =
@@ -44,7 +47,7 @@ export default function ImportManagementCard(props: { businessId: string; import
     return () => {
       cancelled = true;
     };
-  }, [props.businessId, props.importJobId]);
+  }, [importsPath, mutationRevision, props.importJobId]);
 
   async function toggleRow(rowNumber: number, selected: boolean) {
     if (job === null) return;

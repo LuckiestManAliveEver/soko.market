@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearApiRequestCache,
   getCachedJson,
-  invalidateApiCacheForMutation
+  invalidateApiCacheForMutation,
+  subscribeToApiMutations
 } from "../apps/web/src/api-request-cache";
+import { catalogueRepository, clearAllLocalData } from "../apps/web/src/local-data-repository";
 import { likelyNextOwnerViews } from "../apps/web/src/prefetch";
 
-afterEach(() => {
+afterEach(async () => {
   clearApiRequestCache();
+  await clearAllLocalData();
   vi.unstubAllGlobals();
 });
 
@@ -127,6 +130,24 @@ describe("frontend navigation performance contracts", () => {
     await getCachedJson("/businesses/business-1/agent-profile");
 
     expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("clears persistent business data and notifies mounted surfaces after a mutation", async () => {
+    const productsPath = "/businesses/business-1/products";
+    const repository = catalogueRepository<string[]>("business:business-1");
+    const listener = vi.fn();
+    const unsubscribe = subscribeToApiMutations(listener);
+    await repository.writeCached(productsPath, ["Old product"]);
+
+    await invalidateApiCacheForMutation(`${productsPath}/product-1?source=editor`);
+
+    expect(await repository.readCached(productsPath)).toMatchObject({
+      status: "empty",
+      value: null
+    });
+    expect(listener).toHaveBeenCalledWith(`${productsPath}/product-1`);
+
+    unsubscribe();
   });
 });
 

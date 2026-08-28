@@ -14,6 +14,7 @@ interface CacheEntry {
 
 const responseCache = new Map<string, CacheEntry>();
 const defaultStaleTimeMs = 30_000;
+const mutationListeners = new Set<(path: string) => void>();
 
 export interface CachedGetOptions<T = unknown> {
   force?: boolean;
@@ -62,7 +63,7 @@ export async function getCachedJson<TResponse>(
   return entry.inFlight as Promise<TResponse>;
 }
 
-export function invalidateApiCacheForMutation(path: string): void {
+export async function invalidateApiCacheForMutation(path: string): Promise<void> {
   const normalized = path.split("?")[0] ?? path;
   const businessRoot = normalized.match(/^(\/businesses\/[^/]+)/)?.[1];
   const businessResource = normalized.match(/^(\/businesses\/[^/]+\/[^/]+)/)?.[1];
@@ -73,6 +74,7 @@ export function invalidateApiCacheForMutation(path: string): void {
     const cachePath = key.split("?")[0] ?? key;
     const invalid =
       cachePath === normalized ||
+      (businessRoot !== undefined && cachePath.startsWith(`${businessRoot}/`)) ||
       (businessResource !== undefined && cachePath.startsWith(businessResource)) ||
       (modelSelectionChanged &&
         businessRoot !== undefined &&
@@ -85,6 +87,36 @@ export function invalidateApiCacheForMutation(path: string): void {
 
     if (invalid) responseCache.delete(key);
   }
+
+  try {
+    const policy = persistentPolicy(normalized);
+    if (businessRoot !== undefined) {
+      const businessId = businessRoot.slice("/businesses/".length);
+      await createLocalDataRepository("workspace", `business:${businessId}`).clearForLogout();
+    } else if (policy !== null) {
+      await createLocalDataRepository(policy.domain, policy.scope).invalidate();
+    } else if (
+      normalized.startsWith("/v1/messages") ||
+      normalized.startsWith("/v1/conversations")
+    ) {
+      await createLocalDataRepository("conversation", "account").invalidate();
+    }
+  } catch {
+    // The server mutation already succeeded. A browser cache failure must not report it as failed.
+  }
+
+  for (const listener of mutationListeners) {
+    try {
+      listener(normalized);
+    } catch {
+      // Keep one mounted surface from preventing the rest from receiving the mutation.
+    }
+  }
+}
+
+export function subscribeToApiMutations(listener: (path: string) => void): () => void {
+  mutationListeners.add(listener);
+  return () => mutationListeners.delete(listener);
 }
 
 export function clearApiRequestCache(): void {
