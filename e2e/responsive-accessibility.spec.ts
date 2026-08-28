@@ -60,6 +60,34 @@ test("secondary modules preserve the conversation URL and browser history", asyn
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toHaveCount(0);
 });
 
+test("a stale agent-profile chunk reloads once and reopens settings instead of going blank", async ({
+  page
+}) => {
+  let rejectedProfileChunk = false;
+  await page.route("**/src/AgentProfileSurface.tsx", async (route) => {
+    if (!rejectedProfileChunk) {
+      rejectedProfileChunk = true;
+      await route.fulfill({ status: 404, contentType: "text/plain", body: "Old chunk removed" });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Account and agent settings" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible({
+    timeout: 30_000
+  });
+  await expect(page.getByText("Business", { exact: true })).toBeVisible();
+  expect(rejectedProfileChunk).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("soko.lazy-module-recovery.v1.agent-profile"))
+    )
+    .toBeNull();
+});
+
 test("the agent catalogue hides an unavailable agent instead of listing it disabled", async ({
   page
 }) => {

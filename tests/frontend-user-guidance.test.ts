@@ -442,7 +442,7 @@ describe("frontend user guidance", () => {
     expect(deleteAccountPanel).toContain("Delete entire account");
     expect(deleteAccountPanel).toContain("Delete account and associated data");
     expect(complianceSurface).not.toContain("<h3>Delete account</h3>");
-    expect(application).toContain('accountDeletionIntent ? "agent"');
+    expect(application).toMatch(/accountDeletionIntent\s+\? "agent"/);
     expect(application).toContain("await resetClientToStartup(");
     expect(readinessState).toContain(
       "Account deactivated and deletion scheduled. You have been returned to startup."

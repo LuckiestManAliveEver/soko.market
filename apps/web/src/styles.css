@@ -57,6 +57,27 @@ button:disabled {
   padding: 14px;
 }
 
+.lazy-module-error {
+  align-content: center;
+  background: #fff8f4;
+  border: 1px solid #e1b7a4;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  min-height: 180px;
+  padding: 20px;
+  text-align: center;
+}
+
+.lazy-module-error p {
+  color: #6f4b3b;
+  margin: 0;
+}
+
+.lazy-module-error button {
+  justify-self: center;
+}
+
 .visually-hidden {
   height: 1px;
   margin: -1px;

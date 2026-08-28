@@ -88,6 +88,7 @@ import { clearMessagingOutbox } from "./messaging/outbox";
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
 import { IdentityNetworkOnboardingCard } from "./IdentityNetworkOnboardingCard";
+import { LazyModuleErrorBoundary } from "./LazyModuleErrorBoundary";
 import { clearDeviceRecoveryCredential } from "./device-recovery";
 import type { RememberedAccount } from "./PhoneFirstAuthentication";
 
@@ -148,10 +149,14 @@ import { renderOwnerWorkspace, type OwnerWorkspaceBindings } from "./OwnerWorksp
 
 import { BuildIdentity, NativeLaunchScreen } from "./BuildIdentity";
 import { OwnerCoreProvider, type OwnerCoreState } from "./hooks/OwnerCoreContext";
+import { hasPendingLazyModuleRecovery, loadLazyModuleWithRecovery } from "./lazy-module-recovery";
 export { PublicStorefrontChat } from "./PublicStorefrontChat";
 
+const agentProfileModuleKey = "agent-profile";
 const AgentProfileSurface = lazy(() =>
-  import("./AgentProfileSurface").then((module) => ({ default: module.AgentProfileSurface }))
+  loadLazyModuleWithRecovery(agentProfileModuleKey, () => import("./AgentProfileSurface")).then(
+    (module) => ({ default: module.AgentProfileSurface })
+  )
 );
 
 function shouldRefreshBusinessDomains(path: string, businessId: string): boolean {
@@ -212,7 +217,11 @@ export function OwnerApp() {
   );
   const [statusMessage, setStatusMessage] = useState("Checking session");
   const [view, setView] = useState<ShellView>(
-    accountDeletionIntent ? "agent" : (initialOwnerRoute?.view ?? "chat")
+    accountDeletionIntent
+      ? "agent"
+      : hasPendingLazyModuleRecovery(agentProfileModuleKey)
+        ? "agent"
+        : (initialOwnerRoute?.view ?? "chat")
   );
   const [mode, setMode] = useState<SokoMode>(initialOwnerRoute?.mode ?? readStoredSokoMode());
   // Memoized so OwnerCoreContext consumers only re-render when one of these four pieces of state
@@ -2064,49 +2073,56 @@ export function OwnerApp() {
                 onPlatformHandoff={recordPlatformHandoff}
               >
                 {view === "agent" && business !== null ? (
-                  <Suspense fallback={<NativeLaunchScreen message="Opening agent settings…" />}>
-                    <AgentProfileSurface
-                      agent={agentSettings}
-                      accountId={session?.account.id ?? ""}
-                      identityLevel={session?.account.identityLevel ?? "device"}
-                      business={business}
-                      oauthProviders={oauthProviders}
-                      ownerLabel={userLabel}
-                      ownerUser={session?.user ?? null}
-                      registeredEmail={
-                        session?.user.emailAddress ??
-                        (session?.account.primaryAuthChannel === "email"
-                          ? session.account.primaryAuthDestination
-                          : null)
-                      }
-                      storefrontUrl={publicStorefrontUrl}
-                      shops={sokoSessionContext?.shops ?? []}
-                      onSwitchBusiness={switchActiveBusiness}
-                      onAgentChange={setAgentSettings}
-                      onIdentityLevelChange={(identityLevel) =>
-                        setSession((current) =>
-                          current === null
-                            ? current
-                            : { ...current, account: { ...current.account, identityLevel } }
-                        )
-                      }
-                      onAccountMerged={(response) => {
-                        acceptAuthenticatedSession(response);
-                        setStatusMessage("Accounts joined after identity verification.");
-                      }}
-                      onOwnerUserChange={(user) =>
-                        setSession((current) => (current === null ? current : { ...current, user }))
-                      }
-                      onBack={returnToChat}
-                      onEnableNotifications={requestMessagingNotifications}
-                      onDisableNotifications={disableMessagingNotifications}
-                      onEnsureRuntimeSession={() => ensureRuntimeSession(setRuntimeSessionId)}
-                      onLogout={() => void runAction("logout", logout)}
-                      onLogoutAll={() => void runAction("logout-all", () => logout(true))}
-                      onScheduleAccountDeletion={scheduleAccountDeletion}
-                      isLoggingOut={isPending("logout") || isPending("logout-all")}
-                    />
-                  </Suspense>
+                  <LazyModuleErrorBoundary
+                    moduleKey={agentProfileModuleKey}
+                    label="Account and agent settings"
+                  >
+                    <Suspense fallback={<NativeLaunchScreen message="Opening agent settings…" />}>
+                      <AgentProfileSurface
+                        agent={agentSettings}
+                        accountId={session?.account.id ?? ""}
+                        identityLevel={session?.account.identityLevel ?? "device"}
+                        business={business}
+                        oauthProviders={oauthProviders}
+                        ownerLabel={userLabel}
+                        ownerUser={session?.user ?? null}
+                        registeredEmail={
+                          session?.user.emailAddress ??
+                          (session?.account.primaryAuthChannel === "email"
+                            ? session.account.primaryAuthDestination
+                            : null)
+                        }
+                        storefrontUrl={publicStorefrontUrl}
+                        shops={sokoSessionContext?.shops ?? []}
+                        onSwitchBusiness={switchActiveBusiness}
+                        onAgentChange={setAgentSettings}
+                        onIdentityLevelChange={(identityLevel) =>
+                          setSession((current) =>
+                            current === null
+                              ? current
+                              : { ...current, account: { ...current.account, identityLevel } }
+                          )
+                        }
+                        onAccountMerged={(response) => {
+                          acceptAuthenticatedSession(response);
+                          setStatusMessage("Accounts joined after identity verification.");
+                        }}
+                        onOwnerUserChange={(user) =>
+                          setSession((current) =>
+                            current === null ? current : { ...current, user }
+                          )
+                        }
+                        onBack={returnToChat}
+                        onEnableNotifications={requestMessagingNotifications}
+                        onDisableNotifications={disableMessagingNotifications}
+                        onEnsureRuntimeSession={() => ensureRuntimeSession(setRuntimeSessionId)}
+                        onLogout={() => void runAction("logout", logout)}
+                        onLogoutAll={() => void runAction("logout-all", () => logout(true))}
+                        onScheduleAccountDeletion={scheduleAccountDeletion}
+                        isLoggingOut={isPending("logout") || isPending("logout-all")}
+                      />
+                    </Suspense>
+                  </LazyModuleErrorBoundary>
                 ) : (
                   renderOwnerWorkspace(ownerWorkspaceBindings)
                 )}
