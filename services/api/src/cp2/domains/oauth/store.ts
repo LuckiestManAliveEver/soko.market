@@ -12,6 +12,7 @@ import type {
 import type { BusinessPermission } from "@soko/business-core";
 import {
   assertOAuthSecretMatches,
+  decryptOAuthToken,
   encryptOAuthToken,
   hashOAuthSecret,
   type OAuthProfile,
@@ -93,6 +94,46 @@ export class OAuthDomain {
 
   get oauthSessionsMap(): Map<string, OAuthSessionRecord> {
     return this.oauthSessions;
+  }
+
+  getConnectedProviderAccess(input: {
+    sessionId: string | null;
+    provider: OAuthProvider;
+    requiredScope?: string;
+    now?: Date;
+  }): { accessToken: string; scope: string | null } {
+    const now = input.now ?? new Date();
+    const session = this.deps.requirePinVerifiedSession(input.sessionId, now);
+    const identity = [...this.userIdentities.values()].find(
+      (candidate) =>
+        candidate.accountId === session.account.id && candidate.provider === input.provider
+    );
+
+    if (identity?.encryptedAccessToken === null || identity?.encryptedAccessToken === undefined) {
+      throw new Cp2Error(409, "network_provider_not_connected", "Connect this provider first.");
+    }
+    if (
+      input.requiredScope !== undefined &&
+      !identity.scope?.split(/\s+/).includes(input.requiredScope)
+    ) {
+      throw new Cp2Error(
+        409,
+        "provider_permission_required",
+        "Reconnect this provider and approve contact access."
+      );
+    }
+    if (identity.tokenExpiresAt !== null && Date.parse(identity.tokenExpiresAt) <= now.getTime()) {
+      throw new Cp2Error(
+        409,
+        "provider_token_expired",
+        "Provider access expired. Reconnect the provider to continue."
+      );
+    }
+
+    return {
+      accessToken: decryptOAuthToken(identity.encryptedAccessToken),
+      scope: identity.scope
+    };
   }
 
   clear(): void {

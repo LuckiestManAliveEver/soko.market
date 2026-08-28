@@ -151,7 +151,7 @@ export function useAuthState(deps: UseAuthStateDeps) {
       });
       sessionStorage.removeItem(pendingOAuthStorageKey);
       navigateToBrowserUrl(routes.marketplace, { replace: true });
-      await completeOAuthSession(response, pendingOAuth.provider);
+      await completeOAuthSession(response, pendingOAuth.provider, pendingOAuth.purpose);
     } catch (error) {
       sessionStorage.removeItem(pendingOAuthStorageKey);
       navigateToBrowserUrl(routes.marketplace, { replace: true });
@@ -199,20 +199,29 @@ export function useAuthState(deps: UseAuthStateDeps) {
     setStatusMessage("Authentication complete");
   }
 
-  async function completeOAuthSession(response: SessionResponse, provider: SocialSignupProvider) {
+  async function completeOAuthSession(
+    response: SessionResponse,
+    provider: SocialSignupProvider,
+    purpose: "identity" | "contacts" = "identity"
+  ) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     acceptAuthenticatedSession(response);
     let networkStatus = "";
 
-    try {
-      const graph = await postJson<NetworkGraphSummary>(
-        `/network/providers/${encodeURIComponent(provider)}/sync`,
-        {}
-      );
-      setNetworkGraph(graph);
-      networkStatus = " Network source connected.";
-    } catch (error) {
-      networkStatus = ` Network sync needs attention: ${getErrorMessage(error)}`;
+    if (provider === "google" && purpose !== "contacts") {
+      networkStatus =
+        " Google identity linked; contacts remain private until you choose to import them.";
+    } else {
+      try {
+        const graph = await postJson<NetworkGraphSummary>(
+          `/network/providers/${encodeURIComponent(provider)}/sync`,
+          {}
+        );
+        setNetworkGraph(graph);
+        networkStatus = " Network source connected.";
+      } catch (error) {
+        networkStatus = ` Network sync needs attention: ${getErrorMessage(error)}`;
+      }
     }
 
     if (business !== null) {
@@ -367,7 +376,10 @@ export function useAuthState(deps: UseAuthStateDeps) {
     await ensureAuthenticatedSession();
   }
 
-  async function authenticateSocialProfile(provider: SocialSignupProvider) {
+  async function authenticateSocialProfile(
+    provider: SocialSignupProvider,
+    purpose: "identity" | "contacts" = "identity"
+  ) {
     const selectedProvider = socialSignupProviders.find((item) => item.id === provider);
     const providerConfig = oauthProviders.find((item) => item.id === provider);
 
@@ -384,11 +396,13 @@ export function useAuthState(deps: UseAuthStateDeps) {
     try {
       const response = await postJson<OAuthStartResponse>("/auth/oauth/start", {
         provider,
+        purpose,
         redirectUri: `${window.location.origin}${routes.oauthCallback}`
       });
       const pendingOAuth: PendingOAuthLogin = {
         csrfToken: response.csrfToken,
         provider: response.provider,
+        purpose,
         state: response.state
       };
       sessionStorage.setItem(pendingOAuthStorageKey, JSON.stringify(pendingOAuth));

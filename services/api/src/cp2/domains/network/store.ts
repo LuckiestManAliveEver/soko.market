@@ -273,6 +273,8 @@ export class NetworkDomain {
         displayName: profile.name,
         degree: 1,
         kind: "external_social",
+        phone: profile.phone,
+        email: profile.email,
         providerSubject: profile.providerSubject ?? profile.handle ?? profile.name,
         handle: profile.handle,
         now
@@ -305,6 +307,8 @@ export class NetworkDomain {
           displayName: normalizedConnection.name,
           degree: 2,
           kind: "external_social",
+          phone: normalizedConnection.phone,
+          email: normalizedConnection.email,
           providerSubject:
             normalizedConnection.providerSubject ??
             normalizedConnection.handle ??

@@ -263,6 +263,7 @@ export function isOAuthProviderConfigured(provider: OAuthProviderConfig): boolea
 export function createOAuthStartPayload(input: {
   provider: OAuthProviderConfig;
   redirectUri: string;
+  scopes?: string[];
 }): OAuthStartPayload {
   const state = createOpaqueToken();
   const csrfToken = createOpaqueToken();
@@ -273,7 +274,7 @@ export function createOAuthStartPayload(input: {
   url.searchParams.set("client_id", getOAuthClientId(input.provider));
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", input.provider.scopes.join(" "));
+  url.searchParams.set("scope", (input.scopes ?? input.provider.scopes).join(" "));
   url.searchParams.set("state", state);
 
   if (input.provider.pkce) {
@@ -283,6 +284,12 @@ export function createOAuthStartPayload(input: {
 
   if (input.provider.id === "apple") {
     url.searchParams.set("response_mode", "form_post");
+  }
+
+  if (input.provider.id === "google" && input.scopes !== undefined) {
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("include_granted_scopes", "true");
+    url.searchParams.set("prompt", "consent");
   }
 
   return {

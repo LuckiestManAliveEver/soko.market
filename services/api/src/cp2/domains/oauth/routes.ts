@@ -18,6 +18,7 @@ import {
   listOAuthProviders,
   parseOAuthProvider
 } from "../../oauth.js";
+import { googleContactsScope } from "../../google-contacts.js";
 import {
   parseOptionalString,
   parseString,
@@ -29,6 +30,7 @@ import {
 interface OAuthStartBody {
   provider?: string;
   redirectUri?: string;
+  purpose?: "identity" | "contacts";
 }
 
 interface OAuthStartParams {
@@ -121,10 +123,25 @@ export function registerOAuthRoutes(
 
   function startOAuthSession(
     request: FastifyRequest,
-    input: { provider?: unknown; redirectUri?: string | undefined }
+    input: { provider?: unknown; redirectUri?: string | undefined; purpose?: unknown }
   ) {
     const provider = parseOAuthProvider(input.provider);
     const providerConfig = getOAuthProviderConfig(provider);
+    const purpose = input.purpose === undefined ? "identity" : input.purpose;
+
+    if (purpose !== "identity" && purpose !== "contacts") {
+      throw new Cp2Error(400, "oauth_purpose_invalid", "OAuth purpose is not supported.");
+    }
+    if (purpose === "contacts" && provider !== "google") {
+      throw new Cp2Error(
+        400,
+        "oauth_purpose_invalid",
+        "Contact access is only available for Google."
+      );
+    }
+    if (purpose === "contacts" && readSessionCookie(request.headers.cookie) === null) {
+      throw new Cp2Error(401, "authentication_required", "Sign in before connecting contacts.");
+    }
 
     if (!providerConfig.enabled) {
       throw new Cp2Error(403, "oauth_provider_disabled", "Social login is disabled.");
@@ -153,7 +170,10 @@ export function registerOAuthRoutes(
     );
     const startPayload = createOAuthStartPayload({
       provider: providerConfig,
-      redirectUri
+      redirectUri,
+      ...(purpose === "contacts"
+        ? { scopes: [...new Set([...providerConfig.scopes, googleContactsScope])] }
+        : {})
     });
     return store.beginOAuthSession({
       accountSessionId: readSessionCookie(request.headers.cookie),

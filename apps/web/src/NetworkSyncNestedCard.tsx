@@ -31,7 +31,10 @@ export function NetworkSyncNestedCard({
   oauthProvidersLoaded: boolean;
   onBack: () => void;
   onDisconnectSource: (sourceId: string) => void;
-  onOAuthProvider: (provider: SocialSignupProvider) => Promise<void>;
+  onOAuthProvider: (
+    provider: SocialSignupProvider,
+    purpose?: "identity" | "contacts"
+  ) => Promise<void>;
   onPhoneContactsSync: (
     selectedContacts: ContactPickerContact[]
   ) => Promise<NetworkGraphSummary | null>;
@@ -141,7 +144,10 @@ export function NetworkSyncNestedCard({
       return;
     }
 
-    await onOAuthProvider(provider.oauthProvider);
+    await onOAuthProvider(
+      provider.oauthProvider,
+      provider.oauthProvider === "google" ? "contacts" : "identity"
+    );
   }
 
   function selectAllVisibleContacts() {

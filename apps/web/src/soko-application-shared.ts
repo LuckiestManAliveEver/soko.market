@@ -248,6 +248,7 @@ export interface OAuthProvidersResponse {
 export interface PendingOAuthLogin {
   csrfToken: string;
   provider: SocialSignupProvider;
+  purpose?: "identity" | "contacts";
   state: string;
 }
 
@@ -444,6 +445,7 @@ export interface NetworkNodeSummary {
   kind?: "soko_user" | "soko_shop" | "external_contact" | "external_social";
   displayName: string;
   degree: NetworkNodeDegree;
+  sourceId: string | null;
   sourceType: "owner" | "phone_contact" | "social";
   sourcePlatform: string | null;
   sokoUserId?: string | null;
@@ -1695,7 +1697,7 @@ export const networkSyncProviders: Array<{
   {
     id: "google",
     label: "Google Contacts",
-    detail: "Connect your Google identity",
+    detail: "Import with read-only Google Contacts permission",
     icon: "G",
     oauthProvider: "google"
   },

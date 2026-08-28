@@ -141,9 +141,12 @@ export function useNetworkState(deps: UseNetworkStateDeps) {
 
   async function syncSocialNetwork(
     provider: SocialSignupProvider,
-    authenticateSocialProfile: (provider: SocialSignupProvider) => Promise<void>
+    authenticateSocialProfile: (
+      provider: SocialSignupProvider,
+      purpose?: "identity" | "contacts"
+    ) => Promise<void>
   ) {
-    await authenticateSocialProfile(provider);
+    await authenticateSocialProfile(provider, provider === "google" ? "contacts" : "identity");
   }
 
   // targetNodeId stays the first parameter to match the existing SokoApplication.tsx call site

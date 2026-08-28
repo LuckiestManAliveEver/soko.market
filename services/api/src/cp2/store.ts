@@ -1250,6 +1250,11 @@ export class Cp2Store {
   ): ReturnType<OAuthDomain["getOAuthExchangeData"]> {
     return this.oauthDomain.getOAuthExchangeData(...args);
   }
+  getConnectedProviderAccess(
+    ...args: Parameters<OAuthDomain["getConnectedProviderAccess"]>
+  ): ReturnType<OAuthDomain["getConnectedProviderAccess"]> {
+    return this.oauthDomain.getConnectedProviderAccess(...args);
+  }
   completeOAuthCallback(
     ...args: Parameters<OAuthDomain["completeOAuthCallback"]>
   ): ReturnType<OAuthDomain["completeOAuthCallback"]> {

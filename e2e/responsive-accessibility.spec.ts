@@ -129,6 +129,106 @@ test("first run downloads the lowest-memory OSS agent and links it to chat", asy
     .toBe(mockOssAgent.id);
 });
 
+test("prompts to link an email, then offers Gmail contacts as the first network source", async ({
+  page
+}) => {
+  // Overrides installApiMocks' defaults for this test only (page.route handlers added later take
+  // precedence): a verified Gmail address already linked, Google configured, and no seed network
+  // yet - the exact state where IdentityNetworkOnboardingCard should show "Add your first
+  // contacts" with an enabled "Import Google Contacts" button.
+  const verifiedGmailSession = {
+    account: {
+      id: "responsive-account",
+      primaryAuthChannel: "phone",
+      primaryAuthDestination: "+254700000900"
+    },
+    user: {
+      id: "responsive-user",
+      displayName: "Jane Owner",
+      language: "en",
+      emailAddress: "jane.owner@gmail.com",
+      emailVerificationStatus: "verified"
+    },
+    session: { expiresAt: "2099-01-01T00:00:00.000Z" }
+  };
+  await page.route("**/session", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(verifiedGmailSession)
+    })
+  );
+  await page.route("**/auth/bootstrap", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(verifiedGmailSession)
+    })
+  );
+  await page.route("**/auth/oauth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        providers: [
+          {
+            id: "google",
+            displayName: "Google",
+            configured: true,
+            enabled: true,
+            implemented: true,
+            scopes: ["openid", "email", "profile"]
+          }
+        ]
+      })
+    })
+  );
+  await page.route("**/network", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ownerUserId: "responsive-user",
+        generatedAt: "2026-07-15T00:00:00.000Z",
+        nodes: [],
+        edges: [],
+        sources: []
+      })
+    })
+  );
+  let oauthStartBody: Record<string, unknown> | null = null;
+  await page.route("**/auth/oauth/start", (route) => {
+    oauthStartBody = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authorizationUrl: "http://127.0.0.1:5173/#mock-google-consent",
+        csrfToken: "mock-csrf",
+        expiresAt: "2026-07-15T00:10:00.000Z",
+        provider: "google",
+        state: "mock-state"
+      })
+    });
+  });
+
+  await page.goto("/");
+  const card = page.locator(".identity-network-onboarding");
+  await expect(card.getByRole("heading", { name: "Add your first contacts" })).toBeVisible();
+  await expect(card.getByText("jane.owner@gmail.com", { exact: false })).toBeVisible();
+
+  const importButton = card.getByRole("button", { name: "Import Google Contacts" });
+  await expect(importButton).toBeEnabled();
+  await importButton.click();
+
+  await expect
+    .poll(() => oauthStartBody)
+    .toMatchObject({
+      provider: "google",
+      purpose: "contacts"
+    });
+});
+
 test("workspace dialog traps focus, restores dismissed cards, and closes with Escape", async ({
   page
 }) => {

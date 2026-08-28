@@ -87,6 +87,7 @@ import { clearMessagingOutbox } from "./messaging/outbox";
 
 import { AppIcon } from "./AppIcon";
 import { AuthenticationActionMessage } from "./AuthenticationActionMessage";
+import { IdentityNetworkOnboardingCard } from "./IdentityNetworkOnboardingCard";
 import { clearDeviceRecoveryCredential } from "./device-recovery";
 import type { RememberedAccount } from "./PhoneFirstAuthentication";
 
@@ -1854,6 +1855,17 @@ export function OwnerApp() {
             />
           ) : (
             <main className="chat-workspace-shell">
+              {session !== null ? (
+                <IdentityNetworkOnboardingCard
+                  session={session}
+                  graph={networkGraph}
+                  oauthProviders={oauthProviders}
+                  oauthProvidersLoaded={oauthProvidersLoaded}
+                  onSessionChange={acceptAuthenticatedSession}
+                  onGoogleContacts={authenticateSocialProfile}
+                  onPhoneContactsSync={syncSelectedNetworkPhoneContacts}
+                />
+              ) : null}
               {deviceCloudFallbackModelId !== null ? (
                 <section
                   className="device-model-fallback-notice"

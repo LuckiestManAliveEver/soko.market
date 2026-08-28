@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApi } from "../services/api/src/app";
 import { createContactHash, createCp2Store } from "../services/api/src/cp2/store";
+import { googleContactsScope } from "../services/api/src/cp2/google-contacts";
 import type { AgentRouteSummary, NetworkGraphSummary } from "../packages/shared-types/src";
 
 interface CreateBusinessResponse {
@@ -10,6 +11,10 @@ interface CreateBusinessResponse {
 }
 
 describe("Network Sync Graph", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("hashes contact identifiers deterministically without returning raw values", () => {
     expect(createContactHash("phone", "+254 700-000-301")).toBe(
       createContactHash("phone", "254700000301")
@@ -230,9 +235,29 @@ describe("Network Sync Graph", () => {
         emailVerified: true,
         displayName: "Network Owner"
       },
-      tokens: {},
+      tokens: {
+        accessToken: "google-network-access-token",
+        scope: googleContactsScope,
+        expiresIn: 3_600
+      },
       linkAccountId: account?.id
     });
+    // getConnectedProviderAccess (services/api/src/cp2/domains/oauth/store.ts) is real and
+    // requires an actual stored, unexpired, scoped access token before the route will call the
+    // real Google People API - fetchGoogleContacts (services/api/src/cp2/google-contacts.ts) has
+    // no injectable fetch at the route layer, so global fetch is stubbed for just this call.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("people.googleapis.com")) {
+          return new Response(JSON.stringify({ connections: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+        throw new Error(`Unexpected fetch in test: ${String(input)}`);
+      })
+    );
 
     const first = await postJson<NetworkGraphSummary>(
       app,
@@ -243,7 +268,7 @@ describe("Network Sync Graph", () => {
     expect(first.sources.filter((source) => source.status === "active")).toEqual([
       expect.objectContaining({
         sourcePlatform: "google",
-        displayName: "Google network",
+        displayName: "Google Contacts",
         importedCount: 0
       })
     ]);

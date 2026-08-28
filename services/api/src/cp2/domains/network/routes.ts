@@ -7,6 +7,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { SocialNetworkProvider } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
+import { fetchGoogleContacts, googleContactsScope } from "../../google-contacts.js";
 import {
   type Cp2Store,
   type PhoneContactNetworkInput,
@@ -110,10 +111,23 @@ export function registerNetworkRoutes(app: FastifyInstance, store: Cp2Store): vo
     "/network/providers/:provider/sync",
     async (request: FastifyRequest<{ Params: NetworkProviderSyncParams }>, reply) => {
       try {
-        return store.syncConnectedSocialProvider({
-          sessionId: readSessionCookie(request.headers.cookie),
-          provider: parseNetworkSocialProvider(request.params.provider)
-        });
+        const sessionId = readSessionCookie(request.headers.cookie);
+        const provider = parseNetworkSocialProvider(request.params.provider);
+        if (provider === "google") {
+          const credential = store.getConnectedProviderAccess({
+            sessionId,
+            provider: "google",
+            requiredScope: googleContactsScope
+          });
+          const profiles = await fetchGoogleContacts({ accessToken: credential.accessToken });
+          return store.syncSocialNetwork({
+            sessionId,
+            provider,
+            profiles,
+            sourceName: "Google Contacts"
+          });
+        }
+        return store.syncConnectedSocialProvider({ sessionId, provider });
       } catch (error) {
         return sendCp2Error(reply, error);
       }

@@ -1418,6 +1418,66 @@ button:disabled {
   font-size: 13px;
 }
 
+.identity-network-onboarding {
+  background: linear-gradient(135deg, #f1f8f3, #fffaf0);
+  border: 1px solid #c9dccd;
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  margin: 12px;
+  padding: 16px;
+  position: relative;
+}
+
+.identity-network-onboarding h2,
+.identity-network-onboarding p {
+  margin: 0;
+}
+
+.identity-network-email-form,
+.identity-network-email-form label,
+.identity-network-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.identity-network-email-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 0.6fr) auto;
+}
+
+.identity-network-email-form label {
+  color: #23342a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.identity-network-email-form input {
+  background: #ffffff;
+  border: 1px solid #b8cbbd;
+  border-radius: 8px;
+  min-height: 42px;
+  padding: 9px 10px;
+}
+
+.identity-network-actions {
+  grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
+}
+
+.identity-network-dismiss {
+  background: transparent;
+  color: #516258;
+  justify-self: start;
+  min-height: auto;
+  padding: 2px 0;
+  text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+  .identity-network-email-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .setup-error {
   color: #a12622;
   font-size: 13px;
