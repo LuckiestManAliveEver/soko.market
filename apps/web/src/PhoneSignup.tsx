@@ -185,7 +185,7 @@ export default function PhoneSignup({ onAuthenticated, onLogIn, onCancel }: Prop
             <p className="eyebrow">CREATE YOUR ACCOUNT</p>
             <h1 id="signup-title">
               {stage === "phone"
-                ? "Start with your phone"
+                ? "Connect with your market"
                 : stage === "profile"
                   ? "Finish your profile"
                   : "Secure your account"}

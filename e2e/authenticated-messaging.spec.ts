@@ -40,7 +40,7 @@ test("messaging is locked until the visitor chooses signup or login", async ({ p
 
   await page.getByTestId("welcome-signup-button").click();
   await expect(page).toHaveURL(/\/signup$/u);
-  await expect(page.getByRole("heading", { name: "Start with your phone" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connect with your market" })).toBeVisible();
   await page.getByRole("button", { name: "Continue to marketplace as guest" }).click();
   await expect(welcome).toBeVisible();
 

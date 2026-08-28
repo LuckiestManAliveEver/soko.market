@@ -17,7 +17,7 @@ describe("progressive onboarding UI", () => {
     expect(applicationSource).toContain("<PhoneSignup");
     expect(applicationSource).not.toContain("ProgressiveAuthentication");
     expect(applicationSource).not.toContain('authenticationView === "continue"');
-    expect(signupSource).toContain("Start with your phone");
+    expect(signupSource).toContain("Connect with your market");
     expect(signupSource).toContain("Continue to marketplace as guest");
     expect(styles).not.toContain("progressive-auth");
     expect(styles).not.toContain("signup-video");

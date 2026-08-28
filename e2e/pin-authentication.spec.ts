@@ -108,7 +108,7 @@ test("signs up with a profile and later logs in from the welcome message", async
 
   await page.getByTestId("welcome-signup-button").click();
   await expect(page).toHaveURL(/\/signup$/u);
-  await expect(page.getByRole("heading", { name: "Start with your phone" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connect with your market" })).toBeVisible();
   await page.getByLabel("Phone number", { exact: true }).fill("712345678");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect.poll(() => signupStartCount).toBe(1);
