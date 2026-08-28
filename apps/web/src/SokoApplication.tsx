@@ -26,8 +26,6 @@ import {
   clearBrowserInferenceAccountData
 } from "./browser-inference-session";
 
-import { readClientInferencePreferences } from "./inference/preferences";
-
 import { ensureE2eeIdentity, type E2eeIdentity } from "./e2ee";
 import {
   authenticationRoute,
@@ -801,20 +799,7 @@ export function OwnerApp() {
     initialCountryCode,
     registerReset: domainResetRegistry.registerReset
   });
-  const {
-    deviceCloudFallbackModelId,
-    setDeviceCloudFallbackModelId,
-    restoreDeviceModelForLaunch,
-    findSelectedCloudFallback,
-    enableDeviceCloudFallback,
-    declineDeviceCloudFallback
-  } = useAgentModelState({
-    business,
-    session,
-    setAgentSettings,
-    setStatusMessage,
-    registerReset: domainResetRegistry.registerReset
-  });
+  const { restoreDeviceModelForLaunch } = useAgentModelState();
 
   useEffect(() => {
     function openAuthenticationFromHash() {
@@ -1180,33 +1165,12 @@ export function OwnerApp() {
         });
 
       void restoreDeviceModelForLaunch(businessId)
-        .then(async (restoredAssignment) => {
+        .then((restoredAssignment) => {
           const modelId = restoredAssignment.modelId;
           if (cancelled) return;
           if (modelId !== null) {
             setAgentSettings((current) => ({ ...current, model: modelId }));
           }
-          if (
-            restoredAssignment.activeModelInstallationId !== null &&
-            restoredAssignment.readinessStatus === "READY"
-          ) {
-            return;
-          }
-
-          const fallbackModelId = await findSelectedCloudFallback(businessId);
-          if (cancelled || fallbackModelId === null) return;
-          const preferences = readClientInferencePreferences(accountId, businessId);
-          if (preferences.cloudConsent) {
-            setAgentSettings((current) => ({ ...current, model: fallbackModelId }));
-            setStatusMessage(
-              "This device has no ready downloaded model, so your explicitly selected backend fallback is available."
-            );
-            return;
-          }
-          setDeviceCloudFallbackModelId(fallbackModelId);
-          setStatusMessage(
-            "No downloaded model is ready on this device. Download one, or explicitly allow your selected backend fallback."
-          );
         })
         .catch((error) => {
           if (cancelled) return;
@@ -1262,15 +1226,6 @@ export function OwnerApp() {
         );
         if (!result.success) {
           setStatusMessage(`${result.message} Your account remains signed in.`);
-          void findSelectedCloudFallback(businessId).then((fallbackModelId) => {
-            if (cancelled || fallbackModelId === null) return;
-            const preferences = readClientInferencePreferences(accountId, businessId);
-            if (preferences.cloudConsent) {
-              setAgentSettings((current) => ({ ...current, model: fallbackModelId }));
-            } else {
-              setDeviceCloudFallbackModelId(fallbackModelId);
-            }
-          });
         }
       });
     }
@@ -1874,40 +1829,6 @@ export function OwnerApp() {
                   onGoogleContacts={authenticateSocialProfile}
                   onPhoneContactsSync={syncSelectedNetworkPhoneContacts}
                 />
-              ) : null}
-              {deviceCloudFallbackModelId !== null ? (
-                <section
-                  className="device-model-fallback-notice"
-                  aria-labelledby="device-model-fallback-title"
-                >
-                  <div>
-                    <strong id="device-model-fallback-title">
-                      Use your selected backend fallback here?
-                    </strong>
-                    <p>
-                      This device does not have a ready copy of your preferred local model. Soko can
-                      use the hosted backend model you explicitly selected while leaving the
-                      downloaded model on the other device unchanged.
-                    </p>
-                  </div>
-                  <div className="device-model-fallback-actions">
-                    <button type="button" onClick={enableDeviceCloudFallback}>
-                      Allow backend fallback here
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      onClick={declineDeviceCloudFallback}
-                    >
-                      Keep backend fallback off
-                    </button>
-                  </div>
-                  <small>
-                    The backend fallback model receives chat context only after this explicit
-                    approval and only when no downloaded model is ready on this device. You can turn
-                    it off in Agent settings.
-                  </small>
-                </section>
               ) : null}
               <ChatSurface
                 chatDraft={chatDraft}

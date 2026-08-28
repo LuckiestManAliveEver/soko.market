@@ -1,7 +1,6 @@
 export interface ClientInferencePreferences {
   nativePermission: boolean;
   ownerNodeAllowed: boolean;
-  cloudConsent: boolean;
 }
 
 const storageKey = "soko.client-inference-preferences.v1";
@@ -70,15 +69,13 @@ function normalizePreferences(value: unknown): ClientInferencePreferences {
       : {};
   return {
     nativePermission: record.nativePermission === true,
-    ownerNodeAllowed: record.ownerNodeAllowed === true,
-    cloudConsent: record.cloudConsent === true
+    ownerNodeAllowed: record.ownerNodeAllowed === true
   };
 }
 
 function defaultPreferences(): ClientInferencePreferences {
   return {
     nativePermission: false,
-    ownerNodeAllowed: false,
-    cloudConsent: false
+    ownerNodeAllowed: false
   };
 }

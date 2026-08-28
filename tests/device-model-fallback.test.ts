@@ -18,7 +18,6 @@ describe("device model fallback", () => {
       activeModelInstallationId: null,
       modelId: "openai-fast",
       preferredExecutionMode: "CLOUD_ONLY",
-      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "READY",
       runtimeBackend: "CLOUD",
       lastSuccessfulInferenceAt: null,
@@ -31,15 +30,13 @@ describe("device model fallback", () => {
       activeModelInstallationId: null,
       modelId: null,
       preferredExecutionMode: "LOCAL_FIRST",
-      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "ATTACHED",
       runtimeBackend: null,
       lastErrorCode: "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE"
     });
   });
 
-  it("uses OpenAI only after explicit server-side fallback selection and ignores per-turn model spoofing", async () => {
-    vi.stubEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", "true");
+  it("uses OpenAI only after explicit server-side model activation and ignores per-turn model spoofing", async () => {
     vi.stubEnv("INFERENCE_CLOUD_PROVIDER", "openai");
     vi.stubEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", "openai-fast,openai-reasoning");
     vi.stubEnv("OPENAI_API_KEY", "test-server-key");
@@ -115,7 +112,6 @@ describe("device model fallback", () => {
       deviceId: "device-a",
       installationId: "device-a-qwen",
       preferredExecutionMode: "LOCAL_FIRST",
-      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "READY",
       lastSuccessfulInferenceAt: "2026-07-21T00:01:00.000Z",
       lastErrorCode: null
@@ -185,7 +181,7 @@ describe("device model fallback", () => {
     });
     expect(resolvedModelIds).toContain("openai-fast");
     expect(turn.turn).toMatchObject({
-      model: { provider: "openai", status: "available", fallbackUsed: false },
+      model: { provider: "openai", status: "available" },
       response: "Cloud fallback handled the request."
     });
 
@@ -208,8 +204,7 @@ describe("device model fallback", () => {
     expect(resolvedModelIds).toEqual(["openai-fast"]);
     expect(spoofedLocalSelection.turn.model).toMatchObject({
       provider: "openai",
-      status: "available",
-      fallbackUsed: false
+      status: "available"
     });
   }, 15_000);
 });

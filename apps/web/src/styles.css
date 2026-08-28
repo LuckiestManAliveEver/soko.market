@@ -170,39 +170,6 @@ button:disabled {
   text-underline-offset: 2px;
 }
 
-.device-model-fallback-notice {
-  background: #ffffff;
-  border: 1px solid #b9d5c2;
-  border-radius: 14px;
-  box-shadow: 0 16px 42px rgb(23 63 43 / 20%);
-  display: grid;
-  gap: 10px;
-  left: 50%;
-  max-width: min(92vw, 620px);
-  padding: 16px;
-  position: fixed;
-  top: 112px;
-  transform: translateX(-50%);
-  width: 100%;
-  z-index: 55;
-}
-
-.device-model-fallback-notice p,
-.device-model-fallback-notice small {
-  color: #526359;
-  margin: 4px 0 0;
-}
-
-.device-model-fallback-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.device-model-fallback-actions button {
-  min-height: 44px;
-}
-
 .authentication-required-link {
   color: inherit;
   cursor: pointer;

@@ -393,7 +393,6 @@ export async function testAgentModelRuntime(
 export function buildLocalAgentPrompt(input: {
   role: string;
   instructions: string;
-  relevantRecall?: string;
   message: string;
   recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
   availableTools?: RuntimeToolName[];
@@ -410,7 +409,6 @@ export function buildLocalAgentPrompt(input: {
           "Respond directly, briefly, and accurately. Do not claim to have used tools you cannot access."
         ]
       : [renderRuntimeModelOutputInstructions(input.availableTools)]),
-    ...(input.relevantRecall === undefined ? [] : [input.relevantRecall]),
     ...(history.length === 0 ? [] : [`Recent conversation:\n${history}`]),
     `User: ${input.message}`,
     "Assistant:"

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeModelPrompt } from "../packages/shared-types/src";
-import { createCloudFallbackProvider } from "../services/api/src/inference/cloud-fallback";
+import { createOpenAiProvider } from "../services/api/src/inference/openai-provider";
 
-describe("cloud fallback policy", () => {
+describe("OpenAI provider", () => {
   it("is absent unless enabled, keyed, and allow-listed", () => {
     const base = {
       enabled: true,
@@ -14,10 +14,10 @@ describe("cloud fallback policy", () => {
       monthlyTokenBudget: 1_000,
       timeoutMs: 1_000
     };
-    expect(createCloudFallbackProvider({ ...base, enabled: false })).toBeUndefined();
-    expect(createCloudFallbackProvider({ ...base, apiKey: "" })).toBeUndefined();
-    expect(createCloudFallbackProvider({ ...base, modelAllowlist: [] })).toBeUndefined();
-    expect(createCloudFallbackProvider(base)).toBeDefined();
+    expect(createOpenAiProvider({ ...base, enabled: false })).toBeUndefined();
+    expect(createOpenAiProvider({ ...base, apiKey: "" })).toBeUndefined();
+    expect(createOpenAiProvider({ ...base, modelAllowlist: [] })).toBeUndefined();
+    expect(createOpenAiProvider(base)).toBeDefined();
     expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
   });
 
@@ -31,7 +31,7 @@ describe("cloud fallback policy", () => {
               content: [
                 {
                   type: "output_text",
-                  text: '{"type":"response","message":"Cloud fallback completed."}'
+                  text: '{"type":"response","message":"OpenAI completion succeeded."}'
                 }
               ]
             }
@@ -40,7 +40,7 @@ describe("cloud fallback policy", () => {
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
-    const provider = createCloudFallbackProvider({
+    const provider = createOpenAiProvider({
       enabled: true,
       apiKey: "server-secret",
       model: "gpt-test",
@@ -60,7 +60,7 @@ describe("cloud fallback policy", () => {
       });
       expect(result).toMatchObject({
         status: "available",
-        outputText: '{"type":"response","message":"Cloud fallback completed."}',
+        outputText: '{"type":"response","message":"OpenAI completion succeeded."}',
         errorCode: null
       });
     } finally {

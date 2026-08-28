@@ -55,15 +55,22 @@ test("workspace and model settings do not replace the authenticated shell", asyn
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole("button", { name: "Open model library" }).click();
-  await expect(page.getByLabel("Backend fallback models", { exact: true })).toBeVisible({
+  await expect(page.getByLabel("Account model storage", { exact: true })).toBeVisible({
     timeout: 30_000
   });
+  await expect(page.getByLabel("Soko backend models", { exact: true })).toHaveCount(0);
 
   expect(await page.locator(".app-frame").getAttribute("data-shell-instance")).toBe(shellId);
 });
 
 test("backend model activation survives reload and can be removed", async ({ page }) => {
   test.setTimeout(60_000);
+  await page.route("http://127.0.0.1:4000/v1/ai-models", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ models: [configuredBackendModel] })
+    })
+  );
   await page.goto("/sell");
   await page.getByRole("button", { name: "Account and agent settings" }).click();
   await expect(page.getByRole("dialog", { name: "Account and agent settings" })).toBeVisible();
@@ -89,6 +96,27 @@ test("backend model activation survives reload and can be removed", async ({ pag
   ).toBeVisible();
 });
 
+const configuredBackendModel = {
+  id: "qwen2.5-0.5b-android",
+  label: "Qwen2.5 0.5B (Android recommended)",
+  provider: "local",
+  description: "Configured backend model fixture.",
+  capabilities: ["chat", "tool-routing", "multilingual"],
+  available: true,
+  source: "huggingface",
+  format: "GGUF",
+  license: "Apache-2.0",
+  licenseUrl: null,
+  modelCardUrl: null,
+  downloadUrl: null,
+  fileName: null,
+  fileSizeBytes: null,
+  minimumMemoryGb: null,
+  recommended: true,
+  contextWindow: 32_768,
+  runtimeAvailability: { backend: "configured" }
+};
+
 async function clickToSecondPaint(page: Page, label: string): Promise<number> {
   return page.getByRole("button", { name: label, exact: true }).evaluate(async (button) => {
     const startedAt = performance.now();
@@ -108,7 +136,7 @@ async function installDelayedApi(page: Page): Promise<void> {
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
-    if (url.pathname === "/auth/bootstrap") {
+    if (url.pathname === "/auth/bootstrap" || url.pathname === "/session") {
       return json({
         account: { id: "performance-account" },
         user: { id: "performance-user", displayName: "Performance Owner", language: "en" },
@@ -118,6 +146,37 @@ async function installDelayedApi(page: Page): Promise<void> {
     if (url.pathname === "/auth/oauth/providers") return json({ providers: [] });
     if (url.pathname === "/v1/marketplace-intro") {
       return json({ completedAt: "2026-07-26T00:00:00.000Z" });
+    }
+    if (url.pathname === "/v1/session/context") {
+      return json({
+        accountId: "performance-account",
+        userId: "performance-user",
+        sessionId: "performance-session",
+        conversationId: "performance-conversation",
+        activeShopId: "performance-shop",
+        agentId: "performance-shop",
+        activeModelId: "qwen2.5-0.5b-android",
+        mode: "seller",
+        activeSurface: "conversation",
+        permissions: ["membership:manage"],
+        sessionVersion: 1,
+        shops: [
+          {
+            business: {
+              id: "performance-shop",
+              name: "Performance Shop",
+              language: "en",
+              sokoId: "254P12345678"
+            },
+            membership: {
+              id: "performance-membership",
+              businessId: "performance-shop",
+              userId: "performance-user",
+              role: "owner"
+            }
+          }
+        ]
+      });
     }
     if (url.pathname === "/roles/check") return json({ allowed: true, role: "owner" });
     if (url.pathname === "/health") return json({ status: "ok" });
@@ -160,13 +219,10 @@ async function installDelayedApi(page: Page): Promise<void> {
         status: "active",
         executionTarget: "backend",
         executionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         permissions: {
           allowInstalledApp: false,
-          allowRemoteShopDevice: false,
-          allowBackendFallback: false
+          allowRemoteShopDevice: false
         },
-        fallbackModelId: null,
         activatedAt: "2026-08-14T00:00:00.000Z",
         verifiedAt: "2026-08-14T00:00:00.000Z",
         lastVerificationStatus: "passed",

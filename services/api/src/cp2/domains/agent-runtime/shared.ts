@@ -74,7 +74,6 @@ import type {
   AgentMemoryPolicy,
   AgentModelBindingPermissions,
   AgentModelBindingSummary,
-  AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
   AgentModelRuntimeBackend,
   AgentPersonality,
@@ -229,14 +228,12 @@ export function buildRuntimeModelPrompt(
 
 export function modelTraceFromCompletion(
   completion: RuntimeModelCompletionResult,
-  fallbackUsed: boolean,
   outputKind: RuntimeModelTrace["outputKind"]
 ): RuntimeModelTrace {
   return {
     provider: completion.provider,
     status: completion.status,
     durationMs: completion.durationMs,
-    fallbackUsed,
     outputKind,
     errorCode: completion.errorCode,
     ...(typeof completion.metadata.providerModelId === "string"
@@ -453,7 +450,7 @@ export {
   documentUploadContextScript,
   defaultBusinessAgentContextScripts,
   configuredCloudModelIds,
-  configuredCloudFallbackAvailable,
+  configuredOpenAiModelsAvailable,
   openaiFastContextWindow,
   openaiReasoningContextWindow,
   aiModelRegistry,
@@ -1248,10 +1245,8 @@ export function validateAgentModelBindingConfiguration(
     executionTarget: ModelExecutionTarget;
     executionMode: PreferredExecutionMode;
     permissions: AgentModelBindingPermissions;
-    fallbackModelId: string | null;
   },
-  model: AiModelSummary,
-  registry: AiModelSummary[]
+  model: AiModelSummary
 ): void {
   if (model.source === "hosted" && input.executionTarget !== "openai") {
     throw new Cp2Error(
@@ -1286,22 +1281,6 @@ export function validateAgentModelBindingConfiguration(
       403,
       "POLICY_DENIED",
       "Remote shop-device inference is not permitted by this binding."
-    );
-  }
-  if (input.permissions.allowBackendFallback) {
-    const fallback = registry.find((candidate) => candidate.id === input.fallbackModelId);
-    if (fallback === undefined || fallback.source !== "hosted" || !fallback.available) {
-      throw new Cp2Error(
-        400,
-        "BACKEND_FALLBACK_MODEL_REQUIRED",
-        "Select an available hosted model before enabling backend fallback."
-      );
-    }
-  } else if (input.fallbackModelId !== null) {
-    throw new Cp2Error(
-      400,
-      "MODEL_CONFIGURATION_INVALID",
-      "A fallback model cannot be saved while backend fallback is disabled."
     );
   }
 }
@@ -1354,6 +1333,7 @@ export function isUnavailableRuntimeCode(code: string | null): boolean {
     code !== null &&
     [
       "RUNTIME_UNAVAILABLE",
+      "RUNTIME_NOT_CONFIGURED",
       "INFERENCE_DISABLED",
       "INFERENCE_SERVICE_UNREACHABLE",
       "INFERENCE_ENGINE_UNREACHABLE",
@@ -1364,42 +1344,6 @@ export function isUnavailableRuntimeCode(code: string | null): boolean {
       "MODEL_STORAGE_NOT_DURABLE"
     ].includes(code)
   );
-}
-
-export function qualifiesForModelFallback(
-  policy: AgentModelFallbackPolicy,
-  errorCode: string | null
-): boolean {
-  if (policy === "NEVER" || errorCode === null) return false;
-  if (
-    [
-      "UNAUTHENTICATED",
-      "UNAUTHORISED",
-      "CROSS_TENANT_ACCESS",
-      "INVALID_REQUEST",
-      "POLICY_DENIED",
-      "TOOL_CONFIRMATION_REQUIRED",
-      "MALFORMED_MODEL_OUTPUT",
-      "MODEL_RESPONSE_PARSE_FAILED"
-    ].includes(errorCode)
-  ) {
-    return false;
-  }
-  if (policy === "WHEN_CONTEXT_EXCEEDED") {
-    return ["UNSUPPORTED_CONTEXT_LENGTH", "CONTEXT_LIMIT_EXCEEDED"].includes(errorCode);
-  }
-  if (policy === "WHEN_LOCAL_UNAVAILABLE") {
-    return ["RUNTIME_UNAVAILABLE", "MODEL_NOT_LOADED", "DEVICE_OFFLINE"].includes(errorCode);
-  }
-  return [
-    "RUNTIME_UNAVAILABLE",
-    "MODEL_NOT_LOADED",
-    "DEVICE_OFFLINE",
-    "INFERENCE_TIMEOUT",
-    "OUT_OF_MEMORY",
-    "UNSUPPORTED_CONTEXT_LENGTH",
-    "CONTEXT_LIMIT_EXCEEDED"
-  ].includes(errorCode);
 }
 
 export function normalizeInstalledAgentModel(
@@ -1573,19 +1517,6 @@ export function normalizeExecutionMode(mode: PreferredExecutionMode): PreferredE
   throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
 }
 
-export function normalizeFallbackPolicy(
-  policy: AgentModelFallbackPolicy
-): AgentModelFallbackPolicy {
-  if (
-    policy === "NEVER" ||
-    policy === "WHEN_LOCAL_UNAVAILABLE" ||
-    policy === "WHEN_LOCAL_FAILS" ||
-    policy === "WHEN_CONTEXT_EXCEEDED"
-  ) {
-    return policy;
-  }
-  throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
-}
 
 export function ensureRequiredAgentContextScripts(scripts: string[]): string[] {
   if (scripts.some((script) => script.includes("script: document_upload_guardrails"))) {

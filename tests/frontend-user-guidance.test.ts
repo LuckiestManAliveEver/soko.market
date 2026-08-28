@@ -243,9 +243,9 @@ describe("frontend user guidance", () => {
     expect(render).toContain("- key: GITHUB_TOKEN");
     expect(render).toContain("- key: HF_TOKEN");
     expect(render).not.toContain("LOCAL_MODEL_");
-    expect(render).toContain("- key: INFERENCE_CLIENT_FIRST");
+    expect(render).toContain("- key: VITE_INFERENCE_CLIENT_FIRST");
     expect(render).toContain("- key: INFERENCE_OWNER_NODE_ENABLED");
-    expect(render).toContain("- key: INFERENCE_CLOUD_FALLBACK_ENABLED");
+    expect(render).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");
   });
 
   it("removes Firebase phone OTP and completes staged phone signup without SMS", () => {

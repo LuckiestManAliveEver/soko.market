@@ -95,7 +95,7 @@ describe("Render Blueprint", () => {
     expect(api).toContain('BACKEND_INFERENCE_REQUIRED\n        value: "false"');
 
     expect(blueprint).toContain('INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');
-    expect(blueprint).toContain('INFERENCE_CLOUD_FALLBACK_ENABLED\n        value: "true"');
+    expect(blueprint).not.toContain("INFERENCE_CLOUD_FALLBACK_ENABLED");
     expect(blueprint).toContain("INFERENCE_JOB_SIGNING_SECRET\n        generateValue: true");
     expect(production).toContain('VITE_INFERENCE_NATIVE_BRIDGE_ENABLED\n        value: "true"');
     expect(production).toContain('VITE_INFERENCE_OWNER_NODE_ENABLED\n        value: "true"');

@@ -333,14 +333,11 @@ function legacyBinding(overrides: Partial<AgentModelBindingSummary> = {}): Agent
     modelId,
     status: "active",
     executionMode: "LOCAL_FIRST",
-    fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
     executionTarget: "backend",
     permissions: {
       allowInstalledApp: false,
-      allowRemoteShopDevice: false,
-      allowBackendFallback: false
+      allowRemoteShopDevice: false
     },
-    fallbackModelId: null,
     activatedAt: "2026-01-01T00:00:00.000Z",
     lastVerifiedAt: "2026-01-01T00:00:00.000Z",
     lastVerificationStatus: "passed",

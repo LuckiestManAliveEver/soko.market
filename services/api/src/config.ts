@@ -138,9 +138,7 @@ export function readEnvironment(): EnvironmentConfig {
     backendInferenceModelId,
     backendInferenceRequired: booleanFromEnv("BACKEND_INFERENCE_REQUIRED", false),
     inferenceServiceToken,
-    inferenceClientFirst: booleanFromEnv("INFERENCE_CLIENT_FIRST", true),
     inferenceOwnerNodeEnabled: booleanFromEnv("INFERENCE_OWNER_NODE_ENABLED", false),
-    inferenceCloudFallbackEnabled: booleanFromEnv("INFERENCE_CLOUD_FALLBACK_ENABLED", false),
     inferenceCloudProvider: readCloudProvider(),
     inferenceCloudModelAllowlist: stringListFromEnv("INFERENCE_CLOUD_MODEL_ALLOWLIST", []),
     inferenceCloudMonthlyTokenBudget: numberFromEnv(

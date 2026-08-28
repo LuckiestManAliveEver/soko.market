@@ -1,6 +1,5 @@
 import type {
   AgentModelAssignmentSummary,
-  AgentModelFallbackPolicy,
   AgentModelReadinessResult,
   PreferredExecutionMode
 } from "@soko/shared-types";
@@ -15,7 +14,6 @@ export interface DeviceAgentModelAssignment {
   activeModelInstallationId: string | null;
   modelId: string | null;
   preferredExecutionMode: PreferredExecutionMode;
-  fallbackPolicy: AgentModelFallbackPolicy;
   readinessStatus: "ATTACHED" | "LOADING" | "READY" | "FAILED";
   runtimeBackend: LocalAiModel["runtimeBackend"] | null;
   runtimeSessionId: string | null;
@@ -52,7 +50,6 @@ export function createPendingDeviceAssignment(input: {
   deviceId: string;
   installation: LocalAiModel;
   preferredExecutionMode: PreferredExecutionMode;
-  fallbackPolicy: AgentModelFallbackPolicy;
   runtimeSessionId?: string | null;
   syncStatus?: "SYNCED" | "PENDING";
 }): DeviceAgentModelAssignment {
@@ -64,7 +61,6 @@ export function createPendingDeviceAssignment(input: {
     modelId: input.installation.modelId,
     preferredExecutionMode:
       input.preferredExecutionMode === "CLOUD_ONLY" ? "LOCAL_FIRST" : input.preferredExecutionMode,
-    fallbackPolicy: input.fallbackPolicy,
     readinessStatus: "LOADING",
     runtimeBackend: input.installation.runtimeBackend,
     runtimeSessionId: input.runtimeSessionId ?? null,
@@ -103,7 +99,6 @@ export function assignmentFromServer(
       legacyCloudPrimary || assignment.preferredExecutionMode === "CLOUD_ONLY"
         ? "LOCAL_FIRST"
         : assignment.preferredExecutionMode,
-    fallbackPolicy: assignment.fallbackPolicy,
     readinessStatus: legacyCloudPrimary ? "ATTACHED" : assignment.readinessStatus,
     runtimeBackend: legacyCloudPrimary ? null : assignment.runtimeBackend,
     runtimeSessionId: null,
@@ -149,10 +144,6 @@ function isDeviceAgentModelAssignment(value: unknown): value is DeviceAgentModel
     (assignment.preferredExecutionMode === "LOCAL_ONLY" ||
       assignment.preferredExecutionMode === "LOCAL_FIRST" ||
       assignment.preferredExecutionMode === "CLOUD_ONLY") &&
-    (assignment.fallbackPolicy === "NEVER" ||
-      assignment.fallbackPolicy === "WHEN_LOCAL_UNAVAILABLE" ||
-      assignment.fallbackPolicy === "WHEN_LOCAL_FAILS" ||
-      assignment.fallbackPolicy === "WHEN_CONTEXT_EXCEEDED") &&
     (assignment.readinessStatus === "ATTACHED" ||
       assignment.readinessStatus === "LOADING" ||
       assignment.readinessStatus === "READY" ||

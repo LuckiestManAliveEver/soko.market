@@ -1,13 +1,14 @@
 /**
  * Periodic eval (CLAUDE.md's "paid, quality-measuring, threshold" test lane - not a pre-commit
  * gate test) for the *model-fallback* path: merchant messages that miss every deterministic
- * context-script rule and reach a real model call through createRuntimeTurn.
+ * context-script rule and reach a real model call through createRuntimeTurn. "Model-fallback" here
+ * means falling back from the deterministic context-script layer to a real model call - it has
+ * nothing to do with the (removed) automatic local-to-cloud escalation feature; see
+ * docs/architecture/provider-neutral-runtime.md.
  *
- * Reuses the exact production model-adapter wiring from src/index.ts (local backend inference
- * first, cloud fallback second, gated by the same env vars) rather than inventing a parallel
- * path - see that file for the canonical wiring this mirrors. Nothing here calls Claude Code or
- * any tool outside this codebase's own inference stack; the judge step uses the same local-first/
- * cloud-fallback chain as the thing it's judging.
+ * Reuses the exact production backend-adapter wiring from src/index.ts rather than inventing a
+ * parallel path - see that file for the canonical wiring this mirrors. Nothing here calls Claude
+ * Code or any tool outside this codebase's own inference stack.
  *
  * Run: pnpm --filter @soko/api eval:ai   (or `pnpm eval:ai` from the repo root)
  * Exits 0 with a report on pass >= threshold, non-zero otherwise. Skips (exit 0, no report) with
@@ -48,17 +49,11 @@ async function main() {
       })
     : undefined;
 
-  const cloudFallbackAvailable =
-    config.inferenceCloudFallbackEnabled &&
-    config.inferenceCloudProvider === "openai" &&
-    (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0;
-
-  if (backendAdapter === undefined && !cloudFallbackAvailable) {
+  if (backendAdapter === undefined) {
     console.log(
-      "No model backend is configured (BACKEND_INFERENCE_ENABLED and cloud fallback are both " +
-        "off) - skipping the AI eval. Set BACKEND_INFERENCE_ENABLED=true with a running " +
-        "services/ai-runtime instance, or INFERENCE_CLOUD_FALLBACK_ENABLED=true with " +
-        "OPENAI_API_KEY, to run this."
+      "No model backend is configured (BACKEND_INFERENCE_ENABLED is off) - skipping the AI " +
+        "eval. Set BACKEND_INFERENCE_ENABLED=true with a running services/ai-runtime instance " +
+        "to run this."
     );
     return;
   }

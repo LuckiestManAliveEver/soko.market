@@ -86,8 +86,6 @@ export function buildShopAgentRuntime(
         (downloadableAiModelIdPattern.test(modelId) ? "device" : "deterministic"),
       executionMode:
         activeBinding?.executionMode ?? assignment?.preferredExecutionMode ?? "LOCAL_FIRST",
-      fallbackPolicy:
-        activeBinding?.fallbackPolicy ?? assignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
       deviceAssignmentId: assignment?.activeModelInstallationId ?? null
     },
     version: profile.runtimeVersion,

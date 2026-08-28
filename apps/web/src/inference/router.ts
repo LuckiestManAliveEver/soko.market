@@ -10,8 +10,7 @@ export const defaultInferencePriority: InferenceRuntime[] = [
   "native-llama-cpp",
   "browser-webgpu",
   "browser-wasm",
-  "owner-node",
-  "cloud-fallback"
+  "owner-node"
 ];
 
 export interface InferenceRouteInput {
@@ -20,7 +19,6 @@ export interface InferenceRouteInput {
   providers: InferenceProvider[];
   policy: InferenceRoutingPolicy;
   nativePermission: boolean;
-  cloudConsent: boolean;
   modelMinimumMemoryClass?: "low" | "medium" | "high";
   modelApproximateSizeBytes?: number;
   providerHealth?: Partial<Record<string, "healthy" | "degraded" | "unavailable">>;
@@ -116,15 +114,6 @@ async function rejectionReason(
   ) {
     return "owner-node routing is unavailable or disallowed";
   }
-  if (
-    runtime === "cloud-fallback" &&
-    (!input.policy.allowCloudFallback ||
-      input.policy.privacyMode !== "cloud-with-consent" ||
-      !input.capabilities.online ||
-      !input.cloudConsent)
-  ) {
-    return "paid cloud fallback is disabled or lacks explicit consent";
-  }
   if (!(await provider.isAvailable().catch(() => false))) return "provider is unavailable";
   if (!(await provider.supports(input.modelId).catch(() => false))) {
     return "model is not supported";
@@ -155,8 +144,6 @@ function routeReason(
         : "WebAssembly is available as the CPU fallback.";
     case "owner-node":
       return "The authenticated shop-owner device is reachable.";
-    case "cloud-fallback":
-      return "The tenant enabled cloud fallback and the user explicitly consented.";
   }
 }
 

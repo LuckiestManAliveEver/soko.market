@@ -42,13 +42,10 @@ describe.skipIf(!enabled)("live Render and Neon model runtime", () => {
         shopId,
         executionTarget: "backend",
         executionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         permissions: {
           allowInstalledApp: false,
-          allowRemoteShopDevice: false,
-          allowBackendFallback: false
-        },
-        fallbackModelId: null
+          allowRemoteShopDevice: false
+        }
       }
     );
     expect(activation.response.ok).toBe(true);

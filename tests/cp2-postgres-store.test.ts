@@ -514,13 +514,10 @@ describePostgres("CP2 Postgres store", () => {
         shopId: business.id,
         executionTarget: "backend",
         executionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         permissions: {
           allowInstalledApp: false,
-          allowRemoteShopDevice: false,
-          allowBackendFallback: false
-        },
-        fallbackModelId: null
+          allowRemoteShopDevice: false
+        }
       },
       sessionCookie
     );
@@ -678,7 +675,6 @@ describePostgres("CP2 Postgres store", () => {
         deviceId,
         installationId: installedModel.id,
         preferredExecutionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: "ATTACHED",
         lastSuccessfulInferenceAt: null,
         lastErrorCode: null

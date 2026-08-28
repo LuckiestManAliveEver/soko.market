@@ -78,8 +78,11 @@ export const configuredCloudModelIds = new Set(
     .map((value) => value.trim())
     .filter((value) => value.length > 0)
 );
-export const configuredCloudFallbackAvailable =
-  process.env.INFERENCE_CLOUD_FALLBACK_ENABLED?.trim().toLowerCase() === "true" &&
+// Mirrors the enabled-gate services/api/src/index.ts actually uses to register the OpenAI
+// provider: a deliberately configured cloud provider plus a present API key. Not "fallback" -
+// these are explicit, selectable catalog models (see docs/architecture/provider-neutral-runtime.md
+// "OpenAI's role now"), never an automatic retry when some other target fails.
+export const configuredOpenAiModelsAvailable =
   process.env.INFERENCE_CLOUD_PROVIDER?.trim().toLowerCase() === "openai" &&
   (process.env.OPENAI_API_KEY?.trim().length ?? 0) > 0;
 // The exact hosted model behind each cloud profile is operator-configured (OPENAI_FAST_MODEL /
@@ -253,7 +256,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     description: "Fast hosted reasoning for connected shops.",
     capabilities: ["chat", "tool-routing"],
     available:
-      configuredCloudFallbackAvailable &&
+      configuredOpenAiModelsAvailable &&
       (configuredCloudModelIds.has("openai-fast") ||
         configuredCloudModelIds.has(process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini")),
     source: "hosted",
@@ -275,7 +278,7 @@ export const aiModelRegistry: AiModelSummary[] = [
     description: "Higher-reasoning hosted profile for complex business tasks.",
     capabilities: ["chat", "reasoning", "tool-routing"],
     available:
-      configuredCloudFallbackAvailable &&
+      configuredOpenAiModelsAvailable &&
       (configuredCloudModelIds.has("openai-reasoning") ||
         configuredCloudModelIds.has(process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2")),
     source: "hosted",

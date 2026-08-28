@@ -146,12 +146,15 @@ OpenAI is exactly one optional cloud provider. `render.yaml`'s `OPENAI_API_KEY` 
 `OPENAI_FAST_MODEL` / `OPENAI_REASONING_MODEL` / `INFERENCE_CLOUD_PROVIDER` /
 `INFERENCE_CLOUD_MODEL_ALLOWLIST` were already not required by Render itself (`OPENAI_API_KEY` is
 `sync: false`, safe to leave blank); the only place that ever turned an absent key into a hard
-failure was the deleted startup health check. With the key blank, `createCloudFallbackProvider`
-(`services/api/src/inference/cloud-fallback.ts`) simply never registers an OpenAI adapter - the
+failure was the deleted startup health check. With the key blank, `createOpenAiProvider`
+(`services/api/src/inference/openai-provider.ts`) simply never registers an OpenAI adapter - the
 same optional-registration pattern `BACKEND_INFERENCE_ENABLED=false` already used for the backend
 adapter, now applied uniformly. The `openai-fast` / `openai-reasoning` catalog models, their
 execution host, and their installation (seeded by migration 065, left alone by migration 067)
 remain in the database as a legitimate, selectable option - not as required infrastructure.
+This adapter (renamed from `createCloudFallbackProvider`/`cloud-fallback.ts` when the automatic
+local-to-cloud escalation feature was removed - see "No implicit `"backend"` default" above) now
+backs only explicit, deliberately-configured OpenAI model selection, never an automatic retry.
 
 ## Forward migration
 
@@ -184,7 +187,9 @@ default is accepted as a valid production state, not a failure.
 ## Boot proof
 
 Ran the real compiled artifact directly, in production mode, with `OPENAI_API_KEY` unset,
-`INFERENCE_CLOUD_FALLBACK_ENABLED` unset (default), no local model, no owner node:
+`INFERENCE_CLOUD_FALLBACK_ENABLED` unset (default at the time; this env var was later removed
+entirely along with the automatic local-to-cloud escalation feature - see "No implicit `"backend"`
+default" above), no local model, no owner node:
 
 ```
 $ NODE_ENV=production DATABASE_URL=... REDIS_URL=... node services/api/dist/index.js

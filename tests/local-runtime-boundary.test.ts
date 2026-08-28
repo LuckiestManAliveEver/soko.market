@@ -39,12 +39,8 @@ describe("downloaded agent/model inference boundary", () => {
   it("excludes remote providers and server inference from the downloaded runtime path", () => {
     const chatRuntime = readFileSync("apps/web/src/hooks/useChatRuntimeState.ts", "utf8");
 
-    expect(chatRuntime).toContain("cloudModel !== null && !downloadedAgentAndModelActive");
     expect(chatRuntime).toContain(
       "clientInferenceFeatureFlags.ownerNode && !localOnly && !downloadedAgentAndModelActive"
-    );
-    expect(chatRuntime).toContain(
-      "clientInferenceFeatureFlags.cloudFallback && !localOnly && !downloadedAgentAndModelActive"
     );
     expect(chatRuntime).toContain(
       "!shouldResolveClientInference && !downloadedAgentAndModelActive"

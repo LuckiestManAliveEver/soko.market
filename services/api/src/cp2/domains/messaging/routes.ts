@@ -544,8 +544,7 @@ export function registerMessagingRoutes(
               shopId: businessId,
               bindingId: modelTrace.bindingId,
               modelId: modelTrace.modelId ?? null,
-              executionTarget: modelTrace.executionTarget ?? null,
-              fallbackReason: modelTrace.fallbackReason ?? null
+              executionTarget: modelTrace.executionTarget ?? null
             },
             "Agent model route selected."
           );
@@ -582,8 +581,6 @@ export function registerMessagingRoutes(
               null,
             provider: processed.runtime?.turn.model?.provider ?? null,
             executionTarget: processed.runtime?.turn.model?.executionTarget ?? null,
-            fallbackUsed: processed.runtime?.turn.model?.fallbackUsed ?? false,
-            fallbackReason: processed.runtime?.turn.model?.fallbackReason ?? null,
             processingStage:
               processed.processing.status === "completed"
                 ? "assistant_persisted"

@@ -4,7 +4,6 @@ export type InferenceUserState =
   | "not-enough-storage"
   | "shop-device-offline"
   | "network-unavailable"
-  | "cloud-fallback-disabled"
   | "request-timed-out"
   | "inference-unavailable";
 
@@ -21,7 +20,6 @@ export function mapInferenceError(error: unknown): InferenceUserState {
   if (/STORAGE|QUOTA|OUT_OF_MEMORY/i.test(code + message)) return "not-enough-storage";
   if (/OWNER_NODE|SHOP DEVICE/i.test(code + message)) return "shop-device-offline";
   if (/OFFLINE|NETWORK/i.test(code + message)) return "network-unavailable";
-  if (/CLOUD.*DISABLED|CONSENT/i.test(code + message)) return "cloud-fallback-disabled";
   if (/TIMEOUT|TIMED OUT/i.test(code + message)) return "request-timed-out";
   return "inference-unavailable";
 }

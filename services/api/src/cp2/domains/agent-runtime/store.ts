@@ -69,7 +69,6 @@ import type {
   AgentModelBindingPermissions,
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
-  AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
   AgentOwnerCorrection,
   AgentRuntimeReadiness,
@@ -89,7 +88,6 @@ import type {
   RuntimeModelProvider,
   RuntimeModelTrace,
   RuntimePlannedAction,
-  RuntimeRecallEscalation,
   RuntimeSessionSummary,
   RuntimeTelemetryEvent,
   RuntimeToolName,
@@ -118,14 +116,6 @@ import {
   enforceAgentPolicy,
   retrieveAgentContext
 } from "../../agent-business-runtime.js";
-import {
-  decideRecallPersistence,
-  parseRecallEntry,
-  recallSearchText,
-  serializeRecallEntry,
-  type RecallCandidate,
-  type RecallEntry
-} from "../../recall-distillation.js";
 import type { CustomerRuntimeCapabilityRecord } from "../../domain-contracts.js";
 import type { Cp2Snapshot } from "../../store.js";
 import type { AgentRuntimeDomainDeps } from "./domain-deps.js";
@@ -186,7 +176,6 @@ import {
   normalizeBrowserRuntimeContract,
   normalizeBusinessAgentProfile,
   normalizeExecutionMode,
-  normalizeFallbackPolicy,
   normalizeInstalledAgentModel,
   normalizeModelCatalogSearch,
   resolveDefaultDeviceModelId,
@@ -600,9 +589,7 @@ export class AgentRuntimeDomain {
     modelId: string;
     executionTarget: ModelExecutionTarget;
     executionMode: PreferredExecutionMode;
-    fallbackPolicy: AgentModelFallbackPolicy;
     permissions: AgentModelBindingPermissions;
-    fallbackModelId: string | null;
     signal?: AbortSignal;
     onStage?: (stage: string, elapsedMs: number) => void;
     now?: Date;
@@ -619,7 +606,7 @@ export class AgentRuntimeDomain {
     this.requireBusinessAgent(input.businessId, input.agentId, now);
     input.onStage?.("agent_resolved", Date.now() - startedAt);
     const model = this.requireCanonicalAiModel(input.modelId);
-    validateAgentModelBindingConfiguration(input, model, aiModelRegistry);
+    validateAgentModelBindingConfiguration(input, model);
     input.onStage?.("model_resolved", Date.now() - startedAt);
     const existingActive = this.activeAgentModelBinding(input.agentId);
     if (
@@ -627,12 +614,8 @@ export class AgentRuntimeDomain {
       existingActive.modelId === input.modelId &&
       existingActive.executionTarget === input.executionTarget &&
       existingActive.executionMode === normalizeExecutionMode(input.executionMode) &&
-      existingActive.fallbackPolicy === normalizeFallbackPolicy(input.fallbackPolicy) &&
-      existingActive.fallbackModelId === input.fallbackModelId &&
       existingActive.permissions.allowInstalledApp === input.permissions.allowInstalledApp &&
-      existingActive.permissions.allowRemoteShopDevice ===
-        input.permissions.allowRemoteShopDevice &&
-      existingActive.permissions.allowBackendFallback === input.permissions.allowBackendFallback
+      existingActive.permissions.allowRemoteShopDevice === input.permissions.allowRemoteShopDevice
     ) {
       input.onStage?.("runtime_probe_started", Date.now() - startedAt);
       const health = healthSummary(
@@ -664,10 +647,7 @@ export class AgentRuntimeDomain {
         agentName: profile.name,
         model,
         executionTarget: input.executionTarget,
-        fallbackModel:
-          input.fallbackModelId === null
-            ? null
-            : this.requireCanonicalAiModel(input.fallbackModelId),
+        fallbackModel: null,
         updatedBy: session.user.id,
         checkedAt: health.checkedAt
       });
@@ -700,10 +680,8 @@ export class AgentRuntimeDomain {
       modelId: input.modelId,
       status: "verifying",
       executionMode: normalizeExecutionMode(input.executionMode),
-      fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
       executionTarget: input.executionTarget,
       permissions: { ...input.permissions },
-      fallbackModelId: input.fallbackModelId,
       activatedAt: null,
       lastVerifiedAt: null,
       lastVerificationStatus: null,
@@ -784,10 +762,7 @@ export class AgentRuntimeDomain {
         agentName: profile.name,
         model,
         executionTarget: input.executionTarget,
-        fallbackModel:
-          input.fallbackModelId === null
-            ? null
-            : this.requireCanonicalAiModel(input.fallbackModelId),
+        fallbackModel: null,
         updatedBy: session.user.id,
         checkedAt: activatedAt
       });
@@ -1003,7 +978,6 @@ export class AgentRuntimeDomain {
       activeModelInstallationId: null,
       modelId,
       preferredExecutionMode: "LOCAL_FIRST",
-      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "ATTACHED",
       runtimeBackend: null,
       lastSuccessfulInferenceAt: null,
@@ -1019,7 +993,6 @@ export class AgentRuntimeDomain {
     deviceId: string;
     installationId: string;
     preferredExecutionMode: PreferredExecutionMode;
-    fallbackPolicy: AgentModelFallbackPolicy;
     readinessStatus: AgentModelReadinessStatus;
     lastSuccessfulInferenceAt: string | null;
     lastErrorCode: string | null;
@@ -1069,7 +1042,6 @@ export class AgentRuntimeDomain {
       activeModelInstallationId: installation.id,
       modelId: installation.modelId,
       preferredExecutionMode: normalizeExecutionMode(input.preferredExecutionMode),
-      fallbackPolicy: normalizeFallbackPolicy(input.fallbackPolicy),
       readinessStatus: input.readinessStatus,
       runtimeBackend: installation.runtimeBackend,
       lastSuccessfulInferenceAt:
@@ -1098,8 +1070,7 @@ export class AgentRuntimeDomain {
         deviceId: installation.deviceId,
         runtimeBackend: installation.runtimeBackend,
         readinessStatus: assignment.readinessStatus,
-        preferredExecutionMode: assignment.preferredExecutionMode,
-        fallbackPolicy: assignment.fallbackPolicy
+        preferredExecutionMode: assignment.preferredExecutionMode
       }
     });
     if (assignment.readinessStatus === "READY") {
@@ -1826,130 +1797,6 @@ export class AgentRuntimeDomain {
     return cloneAgentContextSource(source);
   }
 
-  private persistRecallCandidate(input: {
-    businessId: string;
-    candidate: RecallCandidate;
-    profile: BusinessAgentProfileSummary;
-    now: Date;
-    appendTelemetry: (
-      state: RuntimeTelemetryEvent["state"],
-      status: RuntimeTelemetryEvent["status"],
-      toolName: RuntimeToolName | null,
-      risk: RuntimePlannedAction["risk"] | null,
-      metadata?: RuntimeTelemetryEvent["metadata"]
-    ) => void;
-  }): void {
-    if (!input.profile.memoryPolicy.reusableWorkflowMemoryEnabled) {
-      input.appendTelemetry("recall.candidate_rejected", "completed", null, null, {
-        reason: "reusable_workflow_memory_disabled"
-      });
-      return;
-    }
-    const nowIso = input.now.toISOString();
-    const retentionBoundary =
-      input.now.getTime() - input.profile.memoryPolicy.retentionDays * 24 * 60 * 60 * 1000;
-    const activeSources = [...this.agentContextSources.values()].filter(
-      (source) =>
-        source.shopId === input.businessId &&
-        source.type === "recall" &&
-        source.status === "active" &&
-        source.deletedAt === null
-    );
-    for (const source of activeSources) {
-      if (Date.parse(source.updatedAt) < retentionBoundary) {
-        this.agentContextSources.set(source.id, {
-          ...source,
-          status: "archived",
-          updatedAt: nowIso,
-          deletedAt: nowIso
-        });
-      }
-    }
-    const existing = activeSources
-      .filter((source) => Date.parse(source.updatedAt) >= retentionBoundary)
-      .map((source) => ({
-        source,
-        entry: parseRecallEntry(source.retrievalMetadata.content ?? "")
-      }))
-      .filter(
-        (item): item is { source: AgentContextSource; entry: RecallEntry } => item.entry !== null
-      );
-    const decision = decideRecallPersistence({
-      candidate: input.candidate,
-      existing: existing.map((item) => item.entry),
-      now: nowIso,
-      createId: randomUUID
-    });
-    input.appendTelemetry("recall.deduplicated", "completed", null, null, {
-      outcome: decision.outcome,
-      existingCount: existing.length,
-      replacedEntryId: decision.replacedEntryId
-    });
-    if (decision.outcome === "IGNORE" || decision.entry === null) return;
-
-    if (decision.replacedEntryId !== null) {
-      const replaced = existing.find((item) => item.entry.id === decision.replacedEntryId)?.source;
-      if (replaced !== undefined) {
-        this.agentContextSources.set(replaced.id, {
-          ...replaced,
-          status: "archived",
-          updatedAt: nowIso,
-          deletedAt: nowIso
-        });
-      }
-    }
-    const content = serializeRecallEntry(decision.entry);
-    const source: AgentContextSource = {
-      id: randomUUID(),
-      tenantId: input.businessId,
-      shopId: input.businessId,
-      type: "recall",
-      title: `recall.md — ${decision.entry.title}`,
-      status: "active",
-      sensitivity: "internal",
-      accessRules: {
-        audiences: ["owner", "staff"],
-        requiredPermission: "business:read",
-        customerVisible: false
-      },
-      freshnessTimestamp: nowIso,
-      version: decision.entry.version,
-      retrievalMetadata: {
-        keywords: contextKeywords(recallSearchText(decision.entry)),
-        sourceRecordId: decision.entry.id,
-        content
-      },
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      deletedAt: null
-    };
-    this.agentContextSources.set(source.id, source);
-
-    const retained = [...this.agentContextSources.values()]
-      .filter(
-        (candidate) =>
-          candidate.shopId === input.businessId &&
-          candidate.type === "recall" &&
-          candidate.status === "active" &&
-          candidate.deletedAt === null
-      )
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    for (const overflow of retained.slice(input.profile.memoryPolicy.maximumItemsPerScope)) {
-      this.agentContextSources.set(overflow.id, {
-        ...overflow,
-        status: "archived",
-        updatedAt: nowIso,
-        deletedAt: nowIso
-      });
-    }
-    input.appendTelemetry("recall.persisted", "completed", null, null, {
-      outcome: decision.outcome,
-      recallId: decision.entry.id,
-      version: decision.entry.version,
-      retainedCount: Math.min(retained.length, input.profile.memoryPolicy.maximumItemsPerScope)
-    });
-  }
-
   listAgentOwnerCorrections(input: {
     sessionId: string | null;
     businessId: string;
@@ -2107,67 +1954,6 @@ export class AgentRuntimeDomain {
     });
   }
 
-  recordRecallEffectiveness(input: {
-    sessionId: string | null;
-    businessId: string;
-    sourceIds: string[];
-    outcome: "local_success" | "cloud_fallback";
-    localRuntime: RuntimeRecallEscalation["localRuntime"];
-    modelId: string;
-    now?: Date;
-  }): AgentEvaluationEvent {
-    const now = input.now ?? new Date();
-    this.deps.requireAuthorizedSession(input.sessionId, input.businessId, "business:read", now);
-    if (input.sourceIds.length === 0 || input.sourceIds.length > 3) {
-      throw new Cp2Error(
-        400,
-        "recall_effectiveness_invalid",
-        "Recall effectiveness requires between one and three source IDs."
-      );
-    }
-    const sourceIds = [...new Set(input.sourceIds)];
-    const validSourceIds = new Set(
-      [...this.agentContextSources.values()]
-        .filter(
-          (source) =>
-            source.shopId === input.businessId &&
-            source.type === "recall" &&
-            source.status === "active" &&
-            source.deletedAt === null
-        )
-        .map((source) => source.id)
-    );
-    if (!sourceIds.every((sourceId) => validSourceIds.has(sourceId))) {
-      throw new Cp2Error(
-        400,
-        "recall_effectiveness_invalid",
-        "Recall effectiveness source IDs must identify active recall for this shop."
-      );
-    }
-    const profile = this.currentAgentProfile(input.businessId, now);
-    return this.recordAgentEvaluationEvent({
-      businessId: input.businessId,
-      runtimeVersion: profile.runtimeVersion,
-      modelId: normalizeRequiredBoundedText(input.modelId, "recall model ID", 180),
-      eventType: "recall_effectiveness",
-      outcome: input.outcome === "local_success" ? "success" : "partial",
-      score: input.outcome === "local_success" ? 1 : 0,
-      reason:
-        input.outcome === "local_success"
-          ? "Relevant recall accompanied a successful local inference."
-          : "Relevant recall was present but the request still required cloud fallback.",
-      metadata: {
-        recallCount: sourceIds.length,
-        recallSourceIds: sourceIds.join(","),
-        localRuntime: input.localRuntime,
-        outcome: input.outcome
-      },
-      sessionId: null,
-      messageId: null,
-      now
-    });
-  }
-
   getAgentEvaluationSummary(input: {
     sessionId: string | null;
     businessId: string;
@@ -2204,22 +1990,17 @@ export class AgentRuntimeDomain {
         "To continue:",
         "1. Open Agent settings → Model.",
         "2. Test an available model, then activate it for this agent.",
-        "3. To keep chat available during model outages, select a hosted fallback, approve cloud fallback access, and activate the configuration.",
-        "4. Return here and send your message again."
+        "3. Return here and send your message again."
       ].join("\n");
     }
 
     const modelName =
       aiModelRegistry.find((model) => model.id === binding.modelId)?.label ?? binding.modelId;
-    const approvedFallbackConfigured =
-      binding.permissions.allowBackendFallback && binding.fallbackModelId !== null;
     return [
       `I couldn’t reach ${modelName}, but your message is saved.`,
       "To continue:",
       "1. Retry in a moment, or open Agent settings → Model and run the model test.",
-      approvedFallbackConfigured
-        ? "2. An approved fallback is configured but did not produce a reply. Test it or select another approved fallback, then reactivate the configuration."
-        : "2. Configure an approved fallback by selecting an available hosted model, approving cloud fallback access, and reactivating the model configuration.",
+      "2. If it keeps failing, activate a different available model for this agent.",
       "3. Return here and send your message again.",
       `Reference: ${error.code}.`
     ].join("\n");
@@ -2497,7 +2278,6 @@ export class AgentRuntimeDomain {
     message: string;
     conversationHistory?: RuntimeModelConversationMessage[];
     confirmationToken?: string;
-    recallEscalation?: RuntimeRecallEscalation;
     clientInferenceCompletion?: ClientInferenceCompletion;
     now?: Date;
   }): Promise<RuntimeTurnResult> {
@@ -2731,13 +2511,6 @@ export class AgentRuntimeDomain {
       intent: parserResult.intent,
       characterBudget: contextCharacterBudgetForModel(runtimeModelId)
     });
-    const retrievedRecallCount = retrievedContext.filter((item) => item.type === "recall").length;
-    if (retrievedRecallCount > 0) {
-      appendTelemetry("recall.retrieved", "completed", null, null, {
-        count: retrievedRecallCount,
-        intent: parserResult.intent
-      });
-    }
     const runtimeMemory = shopRuntime.memory.ownerCorrectionsEnabled
       ? this.ownerCorrectionsForBusiness(input.businessId)
           .filter((correction) => correction.status === "active")
@@ -2767,16 +2540,12 @@ export class AgentRuntimeDomain {
               shopRuntime,
               retrievedContext,
               memory: runtimeMemory,
-              intent: parserResult.intent,
-              ...(input.recallEscalation === undefined
-                ? {}
-                : { recallEscalation: input.recallEscalation })
+              intent: parserResult.intent
             })
           : this.createClientInferenceModelRoute(clientInferenceCompletion, appendTelemetry)
         : {
             proposal: null,
-            trace: null,
-            recallCandidate: null
+            trace: null
           };
     if (
       activeBinding !== null &&
@@ -2917,34 +2686,6 @@ export class AgentRuntimeDomain {
     }
 
     const status = runtimeStatusFromPlan(plan, verification);
-    if (retrievedRecallCount > 0 && modelRoute.trace?.status === "available") {
-      appendTelemetry("recall.applied", status, plan.toolName, plan.risk, {
-        count: retrievedRecallCount,
-        advisoryOnly: true,
-        cloudFallbackUsed: modelRoute.trace.fallbackUsed
-      });
-    }
-    if (modelRoute.recallCandidate !== null) {
-      if (status === "completed" && verification.ok) {
-        try {
-          this.persistRecallCandidate({
-            businessId: input.businessId,
-            candidate: modelRoute.recallCandidate,
-            profile: storedAgentProfile,
-            now,
-            appendTelemetry
-          });
-        } catch {
-          appendTelemetry("recall.persistence_failed", "completed", plan.toolName, plan.risk, {
-            isolated: true
-          });
-        }
-      } else {
-        appendTelemetry("recall.candidate_rejected", status, plan.toolName, plan.risk, {
-          reason: "cloud_result_not_successful"
-        });
-      }
-    }
     appendTelemetry("response.generated", status, plan.toolName, plan.risk, {
       actionId: plan.id
     });
@@ -3442,7 +3183,6 @@ export class AgentRuntimeDomain {
   ): {
     proposal: RuntimeToolProposal;
     trace: RuntimeModelTrace;
-    recallCandidate: null;
   } {
     return createClientInferenceModelRoute(completion, appendTelemetry);
   }
@@ -3485,7 +3225,6 @@ export class AgentRuntimeDomain {
     retrievedContext: ReturnType<typeof retrieveAgentContext>;
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
-    recallEscalation?: RuntimeRecallEscalation;
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
@@ -3497,13 +3236,11 @@ export class AgentRuntimeDomain {
   }): Promise<{
     proposal: ReturnType<typeof createRuntimeToolProposal> | null;
     trace: RuntimeModelTrace | null;
-    recallCandidate: RecallCandidate | null;
   }> {
     return createRuntimeModelRoute(
       {
         resolveRuntimeModelProvider: (runtime, modelId) =>
-          this.resolveRuntimeModelProvider(runtime, modelId, input.conversationId),
-        modelRuntimeAdapterResolver: this.deps.modelRuntimeAdapterResolver
+          this.resolveRuntimeModelProvider(runtime, modelId, input.conversationId)
       },
       input
     );
@@ -3593,8 +3330,7 @@ export class AgentRuntimeDomain {
         metadata: {
           intent: input.turn.parserIntent,
           toolName: input.turn.plan.toolName,
-          status: input.turn.status,
-          modelFallback: input.turn.model?.fallbackUsed ?? false
+          status: input.turn.status
         },
         sessionId: input.turn.sessionId,
         messageId: null,

@@ -73,24 +73,23 @@ preview, and verification timestamp.
   "shopId": "shop-id",
   "executionTarget": "backend",
   "executionMode": "LOCAL_FIRST",
-  "fallbackPolicy": "WHEN_LOCAL_UNAVAILABLE",
   "permissions": {
     "allowInstalledApp": false,
-    "allowRemoteShopDevice": false,
-    "allowOpenAIFallback": false
-  },
-  "fallbackModelId": null
+    "allowRemoteShopDevice": false
+  }
 }
 ```
 
 The API authenticates the owner, verifies shop-agent ownership and the canonical model, validates
-route permissions, runs real inference, and only then changes the active binding.
+route permissions, runs real inference, and only then changes the active binding. There is no
+automatic escalation to another model on failure - a failed model surfaces a routing error;
+activating a different model is a deliberate follow-up action, not something the API does for you.
 
 `GET /api/agents/:agentId/model-binding?shopId=:shopId` returns the canonical reload-safe state.
 
 `DELETE /api/agents/:agentId/model-binding?shopId=:shopId` idempotently removes the active binding.
 It returns `{ binding: null }`, keeps the historical row as `inactive` for auditability, and does
-not remove device-local model files or change the independently configured cloud fallback.
+not remove device-local model files.
 
 ## Adapter contract
 
@@ -108,14 +107,16 @@ HTTP failures, empty output, malformed output, and provider-model identity misma
 
 The existing OpenAI provider is adapted without exposing its credential to the browser.
 
-## Chat routing and fallback
+## Chat routing
 
 Normal server agent chat:
 
 1. authenticates the account and resolves the shop;
 2. loads the single active verified binding;
 3. loads the agent profile, personality, instructions, context, memory, and enabled skills;
-4. resolves the adapter from the saved model and execution target;
+4. resolves the execution target and adapter deterministically from the saved model and binding -
+   see `resolveExecutionTarget` in `services/api/src/cp2/domains/agent-runtime/
+   native-runtime-routing.ts` and docs/architecture/provider-neutral-runtime.md;
 5. performs inference;
 6. parses the typed response/tool proposal;
 7. applies role, policy, and confirmation gates;
@@ -123,17 +124,13 @@ Normal server agent chat:
 9. returns internal model/binding/target/latency metadata.
 
 An unbound agent returns `AGENT_MODEL_NOT_CONFIGURED`. An unavailable bound adapter returns
-`AGENT_MODEL_UNAVAILABLE`.
+`AGENT_MODEL_UNAVAILABLE`. There is no automatic escalation to another model or provider on
+failure - a failed model surfaces one of those errors and the request ends there. Explicitly
+activating OpenAI (or any other model) for the agent is the only way it is ever used; it is a
+deliberate configuration choice, never something the API falls back to on its own.
 
-OpenAI fallback requires all of:
-
-- an explicitly saved fallback model;
-- `allowOpenAIFallback: true`;
-- an enabled server provider and allowlisted model;
-- a qualifying primary failure under the saved fallback policy.
-
-Authentication, authorization, tenant, invalid request, policy, confirmation, and malformed-output
-failures never qualify.
+Authentication, authorization, tenant, invalid request, policy, and confirmation failures all
+surface as their own distinct errors, same as any other request.
 
 ## Local runtime limitations
 
@@ -157,16 +154,16 @@ Frontend build-time:
 - `VITE_INFERENCE_CLIENT_FIRST`
 - `VITE_INFERENCE_NATIVE_BRIDGE_ENABLED`
 - `VITE_INFERENCE_OWNER_NODE_ENABLED`
-- `VITE_INFERENCE_CLOUD_FALLBACK_ENABLED`
 
 Server runtime:
 
 - existing `INFERENCE_OWNER_NODE_*` and `INFERENCE_CLOUD_*` settings
-- `OPENAI_API_KEY` only when explicitly enabling allowlisted OpenAI fallback
+- `OPENAI_API_KEY` only when explicitly activating an OpenAI model for an agent
 
 The generic `BACKEND_INFERENCE_*` and `INFERENCE_SERVICE_TOKEN` settings remain available for a
 deliberately self-hosted runtime, but the production Render Blueprint does not set them or
-provision such a service. Paid fallback is not enabled by these binding changes.
+provision such a service. Paid OpenAI usage is not enabled by these binding changes; it requires
+someone to explicitly activate an OpenAI model for the agent.
 
 ## Local verification
 
@@ -182,11 +179,11 @@ provision such a service. Paid fallback is not enabled by these binding changes.
 
 ## Render verification
 
-Render is the control plane and optional consent-gated OpenAI proxy. It does not host the
-downloaded model or configure `BACKEND_INFERENCE_BASE_URL`. Verify browser WebGPU/WASM inference
-on the target device, then confirm that structured tool proposals are authorized by the API
-without server-side regeneration. Keep OpenAI fallback unavailable unless the API key, allowlist,
-selected fallback model, and owner permission are all intentionally configured.
+Render is the control plane and optional OpenAI proxy for explicitly-activated OpenAI models. It
+does not host the downloaded model or configure `BACKEND_INFERENCE_BASE_URL`. Verify browser
+WebGPU/WASM inference on the target device, then confirm that structured tool proposals are
+authorized by the API without server-side regeneration. Keep OpenAI unselected unless the API key,
+allowlist, and owner activation are all intentionally configured.
 
 ## Troubleshooting
 

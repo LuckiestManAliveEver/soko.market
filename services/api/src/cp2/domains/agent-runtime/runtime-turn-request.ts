@@ -1,8 +1,4 @@
-import type {
-  ClientInferenceCompletion,
-  ClientWorkspaceFileTransfer,
-  RuntimeRecallEscalation
-} from "@soko/shared-types";
+import type { ClientInferenceCompletion, ClientWorkspaceFileTransfer } from "@soko/shared-types";
 
 import { Cp2Error } from "../../cp2-error.js";
 import { parseNumber, parseRequestBody, parseString } from "../../route-helpers.js";
@@ -13,7 +9,6 @@ export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): 
   conversationId?: string;
   message: string;
   confirmationToken?: string;
-  recallEscalation?: RuntimeRecallEscalation;
   clientInferenceCompletion?: ClientInferenceCompletion;
 } {
   const record = parseRequestBody(body);
@@ -29,10 +24,6 @@ export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): 
     record.confirmationToken === undefined || record.confirmationToken === null
       ? undefined
       : parseString(record.confirmationToken, "confirmationToken");
-  const recallEscalation =
-    record.recallEscalation === undefined || record.recallEscalation === null
-      ? undefined
-      : parseRuntimeRecallEscalation(record.recallEscalation);
   const clientInferenceCompletion =
     record.clientInferenceCompletion === undefined || record.clientInferenceCompletion === null
       ? undefined
@@ -45,7 +36,6 @@ export function parseRuntimeTurnBody(body: RuntimeTurnBody | null | undefined): 
     ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(confirmationToken === undefined ? {} : { confirmationToken }),
-    ...(recallEscalation === undefined ? {} : { recallEscalation }),
     ...(clientInferenceCompletion === undefined ? {} : { clientInferenceCompletion })
   };
 }
@@ -145,35 +135,4 @@ function parseOptionalClientTokenCount(value: unknown, field: string): number | 
     throw new Cp2Error(400, "client_inference_usage_invalid", `${field} is invalid.`);
   }
   return count;
-}
-
-export function parseRuntimeRecallEscalation(value: unknown): RuntimeRecallEscalation {
-  const record = parseRequestBody(value);
-  const localRuntime = parseString(record.localRuntime, "recallEscalation.localRuntime");
-  if (
-    localRuntime !== "browser-webgpu" &&
-    localRuntime !== "browser-wasm" &&
-    localRuntime !== "native-llama-cpp" &&
-    localRuntime !== "owner-node" &&
-    localRuntime !== "server-local"
-  ) {
-    throw new Cp2Error(
-      400,
-      "recall_escalation_invalid",
-      "recallEscalation.localRuntime is not supported."
-    );
-  }
-  const reason = parseString(record.reason, "recallEscalation.reason");
-  if (reason.length > 80 || !/^[A-Za-z0-9_.-]+$/u.test(reason)) {
-    throw new Cp2Error(
-      400,
-      "recall_escalation_invalid",
-      "recallEscalation.reason must be a bounded reason code."
-    );
-  }
-  const localModelId =
-    record.localModelId === undefined || record.localModelId === null
-      ? undefined
-      : parseString(record.localModelId, "recallEscalation.localModelId").slice(0, 120);
-  return { localRuntime, reason, ...(localModelId === undefined ? {} : { localModelId }) };
 }

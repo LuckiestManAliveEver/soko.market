@@ -3271,11 +3271,6 @@ export class Cp2Store {
   ): ReturnType<AgentRuntimeDomain["submitAgentFeedback"]> {
     return this.agentRuntimeDomain.submitAgentFeedback(...args);
   }
-  recordRecallEffectiveness(
-    ...args: Parameters<AgentRuntimeDomain["recordRecallEffectiveness"]>
-  ): ReturnType<AgentRuntimeDomain["recordRecallEffectiveness"]> {
-    return this.agentRuntimeDomain.recordRecallEffectiveness(...args);
-  }
   getAgentEvaluationSummary(
     ...args: Parameters<AgentRuntimeDomain["getAgentEvaluationSummary"]>
   ): ReturnType<AgentRuntimeDomain["getAgentEvaluationSummary"]> {

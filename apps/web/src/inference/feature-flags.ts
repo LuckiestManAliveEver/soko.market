@@ -4,7 +4,6 @@ export interface ClientInferenceFeatureFlags {
   browserWasm: boolean;
   nativeBridge: boolean;
   ownerNode: boolean;
-  cloudFallback: boolean;
   maximumFallbacks: number;
 }
 
@@ -18,7 +17,6 @@ export function readClientInferenceFeatureFlags(
     browserWasm: clientFirst && environment.VITE_INFERENCE_BROWSER_WASM_ENABLED !== "false",
     nativeBridge: clientFirst && environment.VITE_INFERENCE_NATIVE_BRIDGE_ENABLED === "true",
     ownerNode: clientFirst && environment.VITE_INFERENCE_OWNER_NODE_ENABLED === "true",
-    cloudFallback: clientFirst && environment.VITE_INFERENCE_CLOUD_FALLBACK_ENABLED === "true",
     maximumFallbacks: positiveInteger(environment.VITE_INFERENCE_MAX_FALLBACKS, 3)
   };
 }

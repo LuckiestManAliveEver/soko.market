@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   AgentModelActivationResult,
   AgentModelBindingSummary,
-  AiModelSummary,
   ModelExecutionTarget,
   RuntimeModelPrompt
 } from "../packages/shared-types/src";
 import { buildApi } from "../services/api/src/app";
 import { createCp2Store } from "../services/api/src/cp2/store";
-import { validateAgentModelBindingConfiguration } from "../services/api/src/cp2/domains/agent-runtime/shared";
 import {
   createBackendModelAdapter,
   ModelRuntimeError,
@@ -19,6 +17,28 @@ const primaryModelId = "qwen2.5-0.5b-android";
 const replacementModelId = "qwen2.5-1.5b-android";
 
 describe("agent model activation runtime", () => {
+  it("advertises backend execution only when the model has a configured adapter", () => {
+    const withoutBackend = createCp2Store();
+    const withBackend = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === primaryModelId && executionTarget === "backend"
+          ? healthyAdapter(primaryModelId)
+          : undefined
+    });
+
+    expect(
+      withoutBackend.listAiModels().find((model) => model.id === primaryModelId)
+        ?.runtimeAvailability
+    ).toMatchObject({ backend: "unconfigured" });
+    expect(
+      withBackend.listAiModels().find((model) => model.id === primaryModelId)?.runtimeAvailability
+    ).toMatchObject({ backend: "configured" });
+    expect(
+      withBackend.listAiModels().find((model) => model.id === replacementModelId)
+        ?.runtimeAvailability
+    ).toMatchObject({ backend: "unconfigured" });
+  });
+
   it("tests real adapter output, activates a canonical binding, and survives hydration", async () => {
     const adapter = healthyAdapter(primaryModelId);
     const store = createCp2Store({
@@ -437,8 +457,7 @@ describe("agent model activation runtime", () => {
             bindingId: activation.binding.id,
             modelId: primaryModelId,
             executionTarget: "backend",
-            status: "available",
-            fallbackUsed: false
+            status: "available"
           }
         }
       }
@@ -462,7 +481,7 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("persists retry and approved-fallback guidance in chat when the active model is unavailable", async () => {
+  it("persists retry-and-reactivate guidance in chat when the active model is unavailable", async () => {
     const adapter = failingGenerationAdapter(primaryModelId, "INFERENCE_TIMEOUT");
     const store = createCp2Store({
       modelRuntimeAdapterResolver: ({ modelId }) =>
@@ -506,7 +525,7 @@ describe("agent model activation runtime", () => {
       agentMessage: {
         content: {
           type: "text",
-          text: expect.stringMatching(/retry[\s\S]*configure an approved fallback/iu)
+          text: expect.stringMatching(/retry[\s\S]*activate a different available model/iu)
         }
       },
       runtime: null,
@@ -523,7 +542,7 @@ describe("agent model activation runtime", () => {
       persisted.messages.find(
         (message) => message.clientMessageId === `agent-reply-${responseBody.id}`
       )?.content.text
-    ).toMatch(/approved fallback/iu);
+    ).toMatch(/activate a different available model/iu);
 
     await app.close();
   });
@@ -648,6 +667,15 @@ describe("agent model activation runtime", () => {
     expect(crossShopRemoval.statusCode).toBe(403);
     expect(await getBinding(app, first)).toMatchObject({ id: active.binding.id });
 
+    const unconfiguredBackend = await app.inject({
+      method: "POST",
+      url: `/api/agents/${first.businessId}/models/${replacementModelId}/test`,
+      headers: jsonHeaders(first.cookie),
+      payload: JSON.stringify({ shopId: first.businessId, executionTarget: "backend" })
+    });
+    expect(unconfiguredBackend.statusCode).toBe(503);
+    expect(unconfiguredBackend.json()).toMatchObject({ code: "RUNTIME_NOT_CONFIGURED" });
+
     for (const [executionTarget, code, statusCode] of [
       ["browser-local", "BROWSER_RUNTIME_DISABLED", 409],
       ["installed-app", "BRIDGE_UNAVAILABLE", 503]
@@ -672,130 +700,6 @@ describe("agent model activation runtime", () => {
     await app.close();
   });
 
-  it("uses an explicitly permitted fallback only after a qualifying primary failure", async () => {
-    const initialStore = createCp2Store({
-      modelRuntimeAdapterResolver: ({ modelId }) =>
-        modelId === primaryModelId ? healthyAdapter(primaryModelId) : undefined
-    });
-    const initialApp = buildApi({ cp2: { store: initialStore } });
-    const owner = await createOwnerBusiness(initialApp, "+254700002006", "Fallback Shop");
-    await activate(initialApp, owner, primaryModelId);
-    const snapshot = initialStore.snapshot();
-    const binding = snapshot.agentModelBindings?.find((candidate) => candidate.status === "active");
-    if (binding === undefined) throw new Error("Expected an active binding.");
-    binding.permissions.allowBackendFallback = true;
-    binding.fallbackModelId = "openai-fast";
-    binding.fallbackPolicy = "WHEN_LOCAL_FAILS";
-
-    const fallback = healthyAdapter("openai-fast", { executionTarget: "openai" });
-    const fallbackGenerate = vi.spyOn(fallback, "generate");
-    const store = createCp2Store({
-      modelRuntimeAdapterResolver: ({ modelId }) =>
-        modelId === primaryModelId
-          ? failingGenerationAdapter(primaryModelId, "INFERENCE_TIMEOUT")
-          : modelId === "openai-fast"
-            ? fallback
-            : undefined
-    });
-    store.hydrateSnapshot(snapshot);
-    const app = buildApi({ cp2: { store } });
-
-    const turn = await app.inject({
-      method: "POST",
-      url: `/businesses/${owner.businessId}/runtime/turns`,
-      headers: jsonHeaders(owner.cookie),
-      payload: JSON.stringify({ message: "Reply with market" })
-    });
-    expect(turn.statusCode).toBe(200);
-    expect(turn.json()).toMatchObject({
-      turn: {
-        response: "market",
-        model: {
-          bindingId: binding.id,
-          modelId: "openai-fast",
-          executionTarget: "openai",
-          fallbackUsed: true,
-          fallbackReason: "INFERENCE_TIMEOUT"
-        }
-      }
-    });
-    expect(fallbackGenerate).toHaveBeenCalledOnce();
-
-    await initialApp.close();
-    await app.close();
-  });
-});
-
-describe("backend fallback model slot is a swappable placeholder, not hardcoded to one vendor", () => {
-  const localPrimaryModel: AiModelSummary = {
-    id: "local-primary-model",
-    label: "Local primary model",
-    provider: "local",
-    description: "A downloaded on-device model used as the primary runtime.",
-    capabilities: ["chat"],
-    available: true,
-    source: "huggingface",
-    format: "GGUF",
-    license: null,
-    licenseUrl: null,
-    modelCardUrl: null,
-    downloadUrl: null,
-    fileName: null,
-    fileSizeBytes: null,
-    minimumMemoryGb: null,
-    recommended: false,
-    contextWindow: null
-  };
-
-  function activationInput(fallbackModelId: string | null, allowBackendFallback: boolean) {
-    return {
-      modelId: localPrimaryModel.id,
-      executionTarget: "backend" as ModelExecutionTarget,
-      executionMode: "LOCAL_FIRST" as const,
-      permissions: {
-        allowInstalledApp: false,
-        allowRemoteShopDevice: false,
-        allowBackendFallback
-      },
-      fallbackModelId
-    };
-  }
-
-  it("accepts a hosted fallback model whose provider is not OpenAI", () => {
-    // Simulates a future non-OpenAI hosted provider: the gate must key off `source === "hosted"`,
-    // not the vendor identity, or a second hosted provider could never be selected as a fallback.
-    const alternateHostedModel: AiModelSummary = {
-      ...localPrimaryModel,
-      id: "alternate-hosted-fallback",
-      label: "Alternate hosted fallback",
-      provider: "local",
-      source: "hosted",
-      format: "remote"
-    };
-
-    expect(() =>
-      validateAgentModelBindingConfiguration(
-        activationInput(alternateHostedModel.id, true),
-        localPrimaryModel,
-        [alternateHostedModel]
-      )
-    ).not.toThrow();
-  });
-
-  it("still rejects a fallback that is not hosted, regardless of provider", () => {
-    const nonHostedModel: AiModelSummary = {
-      ...localPrimaryModel,
-      id: "not-hosted-fallback"
-    };
-
-    expect(() =>
-      validateAgentModelBindingConfiguration(
-        activationInput(nonHostedModel.id, true),
-        localPrimaryModel,
-        [nonHostedModel]
-      )
-    ).toThrowError(expect.objectContaining({ code: "BACKEND_FALLBACK_MODEL_REQUIRED" }));
-  });
 });
 
 describe("backend model adapter", () => {
@@ -1084,13 +988,10 @@ function activationPayload(shopId: string) {
     shopId,
     executionTarget: "backend" as ModelExecutionTarget,
     executionMode: "LOCAL_FIRST",
-    fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
     permissions: {
       allowInstalledApp: false,
-      allowRemoteShopDevice: false,
-      allowBackendFallback: false
-    },
-    fallbackModelId: null
+      allowRemoteShopDevice: false
+    }
   };
 }
 

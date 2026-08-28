@@ -15,19 +15,20 @@ proposal.
 
 ## Cloud models
 
-The only model inference Render may perform is an explicitly enabled cloud-provider request. The
-current provider boundary requires all of the following:
+The only model inference Render may perform is an explicitly selected cloud-provider model. There
+is no automatic local-to-cloud escalation ("cloud fallback") anywhere in this codebase - see
+docs/architecture/provider-neutral-runtime.md, "No implicit `"backend"` default". The current
+provider boundary requires all of the following:
 
-- `INFERENCE_CLIENT_FIRST=true`;
-- `INFERENCE_CLOUD_FALLBACK_ENABLED=true`;
 - `INFERENCE_CLOUD_PROVIDER=openai`;
 - an allow-listed cloud model;
 - a server-only provider key; and
-- explicit user consent and model selection in the client.
+- the shop owner explicitly activating that model for their agent (native runtime
+  `ModelExecutionTarget: "openai"`, or the legacy `/api/agents/:agentId/models/:modelId/activate`
+  route) - there is no separate "cloud consent" toggle; activating the model is the consent.
 
-The browser deployment may keep `VITE_INFERENCE_CLOUD_FALLBACK_ENABLED=false` to make cloud routing
-unavailable to users. No prompt is sent to the cloud merely because a browser model is slow,
-unavailable, or fails.
+No prompt is ever sent to the cloud merely because a browser or backend model is slow, unavailable,
+or fails - a failed model surfaces a routing error instead of silently retrying elsewhere.
 
 ## Enforcement
 

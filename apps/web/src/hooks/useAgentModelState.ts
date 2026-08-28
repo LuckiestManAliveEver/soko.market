@@ -1,5 +1,3 @@
-import { useState, type Dispatch, type SetStateAction } from "react";
-
 import type { AgentModelAssignmentSummary } from "@soko/shared-types";
 
 import {
@@ -11,30 +9,8 @@ import {
 import { getOrCreateDeviceModelScopeId, listLocalAiModels } from "../ai-model-manager";
 import { installedModelRequest } from "../agent-model-panel-utils";
 import { getJson, postJson, putJson } from "../api-helpers";
-import {
-  readClientInferencePreferences,
-  saveClientInferencePreferences
-} from "../inference/preferences";
-import {
-  clientInferenceFeatureFlags,
-  type ActiveAiModelSummary,
-  type ActiveBusiness,
-  type AgentSettings,
-  type AiModelSummary,
-  type SessionResponse
-} from "../soko-application-shared";
 
-interface UseAgentModelStateDeps {
-  business: ActiveBusiness | null;
-  session: SessionResponse | null;
-  setAgentSettings: Dispatch<SetStateAction<AgentSettings>>;
-  setStatusMessage: (message: string) => void;
-  registerReset: (domainKey: string, fn: () => void) => void;
-}
-
-export function useAgentModelState(deps: UseAgentModelStateDeps) {
-  const [deviceCloudFallbackModelId, setDeviceCloudFallbackModelId] = useState<string | null>(null);
-
+export function useAgentModelState() {
   async function restoreDeviceModelForLaunch(
     businessId: string
   ): Promise<DeviceAgentModelAssignment> {
@@ -62,7 +38,6 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
             deviceId,
             installationId: localAssignment.activeModelInstallationId,
             preferredExecutionMode: localAssignment.preferredExecutionMode,
-            fallbackPolicy: localAssignment.fallbackPolicy,
             readinessStatus: localAssignment.readinessStatus,
             lastSuccessfulInferenceAt: localAssignment.lastSuccessfulInferenceAt,
             lastErrorCode: localAssignment.lastErrorCode
@@ -100,57 +75,7 @@ export function useAgentModelState(deps: UseAgentModelStateDeps) {
     return restoredAssignment;
   }
 
-  async function findSelectedCloudFallback(businessId: string): Promise<string | null> {
-    if (!navigator.onLine || !clientInferenceFeatureFlags.cloudFallback) return null;
-    const [registry, selectedFallback] = await Promise.all([
-      getJson<{ models: AiModelSummary[] }>("/v1/ai-models").catch(() => ({ models: [] })),
-      getJson<ActiveAiModelSummary>(`/businesses/${businessId}/ai-model`).catch(() => null)
-    ]);
-    const cloudModel = registry.models.find(
-      (model) =>
-        model.id === selectedFallback?.modelId && model.available && model.source === "hosted"
-    );
-    return cloudModel?.id ?? null;
-  }
-
-  function enableDeviceCloudFallback() {
-    if (deps.session === null || deps.business === null || deviceCloudFallbackModelId === null)
-      return;
-    const preferences = readClientInferencePreferences(deps.session.account.id, deps.business.id);
-    saveClientInferencePreferences(deps.session.account.id, deps.business.id, {
-      ...preferences,
-      cloudConsent: true
-    });
-    deps.setAgentSettings((current) => ({ ...current, model: deviceCloudFallbackModelId }));
-    setDeviceCloudFallbackModelId(null);
-    deps.setStatusMessage(
-      "The explicitly selected backend model is enabled only as a fallback on this device."
-    );
-  }
-
-  function declineDeviceCloudFallback() {
-    setDeviceCloudFallbackModelId(null);
-    const localModelId =
-      deps.business === null
-        ? "sokoclaw-local"
-        : (readDeviceAgentModelAssignment(deps.business.id, getOrCreateDeviceModelScopeId())
-            ?.modelId ?? "sokoclaw-local");
-    deps.setAgentSettings((current) => ({ ...current, model: localModelId }));
-    deps.setStatusMessage(
-      "The backend fallback remains off. Downloaded-model-first routing is unchanged."
-    );
-  }
-
-  deps.registerReset("agent-model", () => {
-    setDeviceCloudFallbackModelId(null);
-  });
-
   return {
-    deviceCloudFallbackModelId,
-    setDeviceCloudFallbackModelId,
-    restoreDeviceModelForLaunch,
-    findSelectedCloudFallback,
-    enableDeviceCloudFallback,
-    declineDeviceCloudFallback
+    restoreDeviceModelForLaunch
   };
 }

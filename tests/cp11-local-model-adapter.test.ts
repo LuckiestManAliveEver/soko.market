@@ -83,7 +83,6 @@ interface RuntimeTurnResponse {
     model: {
       provider: string | null;
       status: string;
-      fallbackUsed: boolean;
       outputKind: string | null;
       errorCode: string | null;
     } | null;
@@ -403,7 +402,6 @@ describe("CP11 local model adapter", () => {
       model: {
         provider: null,
         status: "disabled",
-        fallbackUsed: true,
         outputKind: null,
         errorCode: "model_provider_unconfigured"
       },
@@ -473,7 +471,6 @@ describe("CP11 local model adapter", () => {
       model: {
         provider: "test",
         status: "available",
-        fallbackUsed: false,
         outputKind: "response"
       },
       response: "The agent processed this chat message."
@@ -711,7 +708,6 @@ describe("CP11 local model adapter", () => {
       model: {
         provider: "test",
         status: "available",
-        fallbackUsed: false,
         outputKind: "tool"
       },
       plan: {
@@ -790,7 +786,6 @@ describe("CP11 local model adapter", () => {
     expect(proposed.turn).toMatchObject({
       status: "needs_confirmation",
       model: {
-        fallbackUsed: false,
         outputKind: "tool"
       },
       plan: {
@@ -840,7 +835,6 @@ describe("CP11 local model adapter", () => {
       status: "completed",
       model: {
         status: "unavailable",
-        fallbackUsed: true,
         errorCode: "llama_not_running"
       },
       plan: {
@@ -853,7 +847,6 @@ describe("CP11 local model adapter", () => {
       status: "completed",
       model: {
         status: "timeout",
-        fallbackUsed: true,
         errorCode: "timeout"
       },
       plan: {
@@ -865,8 +858,7 @@ describe("CP11 local model adapter", () => {
     expect(malformed.turn).toMatchObject({
       status: "completed",
       model: {
-        status: "malformed",
-        fallbackUsed: true
+        status: "malformed"
       },
       plan: {
         toolName: "products.list"
@@ -878,7 +870,6 @@ describe("CP11 local model adapter", () => {
       status: "completed",
       model: {
         status: "error",
-        fallbackUsed: true,
         errorCode: "provider_exception"
       },
       plan: {

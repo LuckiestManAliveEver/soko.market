@@ -10,7 +10,6 @@ import type {
   RuntimeModelProvider,
   RuntimeModelTrace,
   RuntimePlannedAction,
-  RuntimeRecallEscalation,
   RuntimeTelemetryEvent,
   RuntimeToolName,
   RuntimeTurnSummary,
@@ -23,25 +22,16 @@ import {
 } from "@soko/tool-core";
 
 import { Cp2Error } from "../../cp2-error.js";
-import { runtimeProviderFromAdapter } from "../../../inference/model-runtime.js";
 import {
   assembleAgentInferenceMessage,
   type retrieveAgentContext
 } from "../../agent-business-runtime.js";
-import {
-  parseRecallCandidateFromModelOutput,
-  withRecallDistillationInstruction,
-  type RecallCandidate,
-  type RecallEscalationSignal
-} from "../../recall-distillation.js";
-import type { AgentRuntimeDomainDeps } from "./domain-deps.js";
 import type { ExecutionTargetResolutionSource } from "./native-runtime-routing.js";
 import {
   agentModelAssignmentKey,
   browserInferenceAssignmentKey,
   buildRuntimeModelPrompt,
-  modelTraceFromCompletion,
-  qualifiesForModelFallback
+  modelTraceFromCompletion
 } from "./shared.js";
 
 interface ClientInferenceAssignmentState {
@@ -59,7 +49,6 @@ interface RuntimeModelRouteState {
     executionTarget: ModelExecutionTarget | undefined;
     resolutionSource: ExecutionTargetResolutionSource | null;
   };
-  modelRuntimeAdapterResolver: AgentRuntimeDomainDeps["modelRuntimeAdapterResolver"];
 }
 
 export function requireReadyClientInferenceCompletion(
@@ -133,7 +122,6 @@ export function createClientInferenceModelRoute(
 ): {
   proposal: RuntimeToolProposal;
   trace: RuntimeModelTrace;
-  recallCandidate: null;
 } {
   appendTelemetry("model.inference_started", "completed", null, null, {
     provider: completion.runtime,
@@ -164,12 +152,10 @@ export function createClientInferenceModelRoute(
   });
   return {
     proposal: parsed.output.proposal,
-    recallCandidate: null,
     trace: {
       provider: completion.runtime === "native-llama-cpp" ? "llama.cpp" : "browser",
       status: "available",
       durationMs: completion.durationMs,
-      fallbackUsed: false,
       outputKind: parsed.output.kind,
       errorCode: null,
       modelId: completion.modelId,
@@ -195,7 +181,6 @@ export async function createRuntimeModelRoute(
     retrievedContext: ReturnType<typeof retrieveAgentContext>;
     memory: string[];
     intent: RuntimeTurnSummary["parserIntent"];
-    recallEscalation?: RuntimeRecallEscalation;
     now: Date;
     appendTelemetry: (
       state: RuntimeTelemetryEvent["state"],
@@ -208,7 +193,6 @@ export async function createRuntimeModelRoute(
 ): Promise<{
   proposal: ReturnType<typeof createRuntimeToolProposal> | null;
   trace: RuntimeModelTrace | null;
-  recallCandidate: RecallCandidate | null;
 }> {
   const {
     provider,
@@ -234,12 +218,10 @@ export async function createRuntimeModelRoute(
     }
     return {
       proposal: null,
-      recallCandidate: null,
       trace: {
         provider: null,
         status: "disabled",
         durationMs: null,
-        fallbackUsed: true,
         outputKind: null,
         errorCode: "model_provider_unconfigured"
       }
@@ -261,18 +243,8 @@ export async function createRuntimeModelRoute(
     allowedTools,
     memory: input.memory
   });
-  const clientCloudEscalation =
-    input.recallEscalation !== undefined &&
-    (nativeExecutionTarget === "openai" || provider.name === "openai")
-      ? input.recallEscalation
-      : null;
   const prompt = buildRuntimeModelPrompt(
-    clientCloudEscalation === null
-      ? assembled.message
-      : withRecallDistillationInstruction(assembled.message, {
-          intent: input.intent,
-          escalation: clientCloudEscalation
-        }),
+    assembled.message,
     input.context,
     input.conversationHistory,
     {
@@ -299,18 +271,13 @@ export async function createRuntimeModelRoute(
   });
 
   let completion: RuntimeModelCompletionResult;
-  let fallbackUsed = false;
-  let fallbackReason: string | null = null;
-  let resolvedModelId = binding?.modelId ?? input.modelId;
-  let resolvedExecutionTarget: ModelExecutionTarget | undefined = nativeExecutionTarget;
-  let recallEscalation: RecallEscalationSignal | null = clientCloudEscalation;
 
   try {
     input.appendTelemetry("model.inference_started", "completed", null, null, {
       provider: provider.name,
       bindingId: binding?.id ?? null,
       modelId: input.modelId,
-      executionTarget: resolvedExecutionTarget ?? null,
+      executionTarget: nativeExecutionTarget ?? null,
       resolutionSource
     });
     completion = await provider.complete(prompt);
@@ -321,20 +288,13 @@ export async function createRuntimeModelRoute(
       durationMs: 0,
       errorCode: "provider_exception"
     });
-    input.appendTelemetry("model.fallback", "completed", null, null, {
-      provider: provider.name,
-      adapterStatus: "error",
-      errorCode: "provider_exception"
-    });
 
     return {
       proposal: null,
-      recallCandidate: null,
       trace: {
         provider: provider.name,
         status: "error",
         durationMs: 0,
-        fallbackUsed: true,
         outputKind: null,
         errorCode: "provider_exception",
         ...(binding === null
@@ -342,7 +302,7 @@ export async function createRuntimeModelRoute(
           : {
               bindingId: binding.id,
               modelId: binding.modelId,
-              executionTarget: resolvedExecutionTarget ?? binding.executionTarget
+              executionTarget: nativeExecutionTarget ?? binding.executionTarget
             })
       }
     };
@@ -361,92 +321,18 @@ export async function createRuntimeModelRoute(
     }
   );
 
-  if (
-    binding !== null &&
-    completion.status !== "available" &&
-    binding.permissions.allowBackendFallback &&
-    binding.fallbackModelId !== null &&
-    qualifiesForModelFallback(binding.fallbackPolicy, completion.errorCode)
-  ) {
-    const fallbackAdapter = state.modelRuntimeAdapterResolver?.({
-      modelId: binding.fallbackModelId,
-      executionTarget: "openai",
-      agentId: binding.agentId,
-      shopId: binding.shopId
-    });
-    if (fallbackAdapter !== undefined) {
-      fallbackReason = completion.errorCode ?? "RUNTIME_UNAVAILABLE";
-      input.appendTelemetry("model.fallback", "completed", null, null, {
-        provider: fallbackAdapter.provider,
-        bindingId: binding.id,
-        fallbackReason,
-        modelId: binding.fallbackModelId,
-        executionTarget: "openai"
-      });
-      const fallbackProvider = runtimeProviderFromAdapter({
-        adapter: fallbackAdapter,
-        context: {
-          modelId: binding.fallbackModelId,
-          agentId: binding.agentId,
-          shopId: binding.shopId
-        }
-      });
-      const serverFallbackEscalation: RecallEscalationSignal = {
-        reason: fallbackReason,
-        localRuntime: "server-local",
-        localModelId: binding.modelId
-      };
-      const fallbackCompletion = await fallbackProvider.complete({
-        ...prompt,
-        message: withRecallDistillationInstruction(assembled.message, {
-          intent: input.intent,
-          escalation: serverFallbackEscalation
-        })
-      });
-      input.appendTelemetry(
-        "model.fallback_completed",
-        fallbackCompletion.status === "available" ? "completed" : "blocked",
-        null,
-        null,
-        {
-          provider: fallbackCompletion.provider,
-          bindingId: binding.id,
-          fallbackReason,
-          adapterStatus: fallbackCompletion.status,
-          errorCode: fallbackCompletion.errorCode
-        }
-      );
-      if (fallbackCompletion.status === "available") {
-        completion = fallbackCompletion;
-        fallbackUsed = true;
-        resolvedModelId = binding.fallbackModelId;
-        resolvedExecutionTarget = "openai";
-        recallEscalation = serverFallbackEscalation;
-      }
-    }
-  }
-
   if (completion.status !== "available" || completion.outputText === null) {
-    input.appendTelemetry("model.fallback", "completed", null, null, {
-      provider: completion.provider,
-      adapterStatus: completion.status,
-      errorCode: completion.errorCode
-    });
-
     return {
       proposal: null,
-      recallCandidate: null,
       trace: {
-        ...modelTraceFromCompletion(completion, true, null),
+        ...modelTraceFromCompletion(completion, null),
         ...(binding === null
           ? {}
           : {
               bindingId: binding.id,
-              modelId: resolvedModelId,
-              executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-              fallbackReason
-            }),
-        fallbackUsed: binding === null ? true : fallbackUsed
+              modelId: binding.modelId,
+              executionTarget: nativeExecutionTarget ?? binding.executionTarget
+            })
       }
     };
   }
@@ -454,65 +340,35 @@ export async function createRuntimeModelRoute(
   const parsed = parseRuntimeModelOutput(completion.outputText);
 
   if (!parsed.ok || parsed.output === null) {
-    input.appendTelemetry("model.fallback", "completed", null, null, {
-      provider: completion.provider,
-      adapterStatus: "malformed",
-      errorCode: "MODEL_RESPONSE_PARSE_FAILED"
-    });
-
     return {
       proposal: null,
-      recallCandidate: null,
       trace: {
         provider: completion.provider,
         status: "malformed",
         durationMs: completion.durationMs,
-        fallbackUsed: binding === null ? true : fallbackUsed,
         outputKind: null,
         errorCode: "MODEL_RESPONSE_PARSE_FAILED",
         ...(binding === null
           ? {}
           : {
               bindingId: binding.id,
-              modelId: resolvedModelId,
-              executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-              fallbackReason
+              modelId: binding.modelId,
+              executionTarget: nativeExecutionTarget ?? binding.executionTarget
             })
       }
     };
   }
 
-  const recallResult =
-    recallEscalation === null
-      ? null
-      : parseRecallCandidateFromModelOutput(completion.outputText, {
-          intent: input.intent,
-          fallbackReason: recallEscalation.reason
-        });
-  if (recallResult?.candidate !== null && recallResult?.candidate !== undefined) {
-    input.appendTelemetry("recall.candidate_generated", "completed", null, null, {
-      taskType: recallResult.candidate.taskType,
-      confidence: recallResult.candidate.confidence,
-      localRuntime: recallEscalation?.localRuntime ?? null
-    });
-  } else if (recallResult !== null && recallResult.reason !== "candidate_omitted") {
-    input.appendTelemetry("recall.candidate_rejected", "completed", null, null, {
-      reason: recallResult.reason,
-      localRuntime: recallEscalation?.localRuntime ?? null
-    });
-  }
   return {
     proposal: parsed.output.proposal,
-    recallCandidate: recallResult?.candidate ?? null,
     trace: {
-      ...modelTraceFromCompletion(completion, fallbackUsed, parsed.output.kind),
+      ...modelTraceFromCompletion(completion, parsed.output.kind),
       ...(binding === null
         ? {}
         : {
             bindingId: binding.id,
-            modelId: resolvedModelId,
-            executionTarget: resolvedExecutionTarget ?? binding.executionTarget,
-            fallbackReason
+            modelId: binding.modelId,
+            executionTarget: nativeExecutionTarget ?? binding.executionTarget
           })
     }
   };

@@ -4,7 +4,7 @@ import type {
   RuntimeModelProvider
 } from "@soko/shared-types";
 
-export interface CloudFallbackOptions {
+export interface OpenAiProviderOptions {
   enabled: boolean;
   apiKey: string;
   model: string;
@@ -18,9 +18,12 @@ export interface CloudFallbackOptions {
   circuitResetMs?: number;
 }
 
-export function createCloudFallbackProvider(
-  options: CloudFallbackOptions
-): RuntimeModelProvider | undefined {
+/**
+ * Adapter for explicit, deliberately-configured OpenAI models (ModelExecutionTarget "openai") -
+ * never invoked as an automatic retry when some other target fails. See "OpenAI's role now" in
+ * docs/architecture/provider-neutral-runtime.md.
+ */
+export function createOpenAiProvider(options: OpenAiProviderOptions): RuntimeModelProvider | undefined {
   const apiKey = options.apiKey.trim();
   const model = options.model.trim();
   const allowed = new Set(options.modelAllowlist);
@@ -196,7 +199,7 @@ function result(
     outputText,
     durationMs: Date.now() - startedAt,
     errorCode,
-    metadata: { endpointHost: "api.openai.com", model, runtime: "cloud-fallback" }
+    metadata: { endpointHost: "api.openai.com", model, runtime: "openai" }
   };
 }
 

@@ -29,11 +29,10 @@ const capabilities: DeviceInferenceCapabilities = {
 };
 
 const policy: InferenceRoutingPolicy = {
-  priority: ["native-llama-cpp", "browser-webgpu", "browser-wasm", "owner-node", "cloud-fallback"],
+  priority: ["native-llama-cpp", "browser-webgpu", "browser-wasm", "owner-node"],
   maximumFallbacks: 2,
   allowNativeBridge: true,
   allowOwnerNode: true,
-  allowCloudFallback: false,
   requireCachedBrowserModelWhenOffline: true,
   privacyMode: "tenant-devices"
 };
@@ -67,8 +66,7 @@ describe("client-first inference", () => {
         provider("owner", "owner-node")
       ],
       policy,
-      nativePermission: false,
-      cloudConsent: false
+      nativePermission: false
     });
 
     expect(route).toMatchObject({
@@ -93,8 +91,7 @@ describe("client-first inference", () => {
         priority: ["owner-node", "browser-wasm"],
         maximumFallbacks: 1
       },
-      nativePermission: false,
-      cloudConsent: false
+      nativePermission: false
     });
 
     expect(route.providerId).toBe("owner");
@@ -108,8 +105,7 @@ describe("client-first inference", () => {
       capabilities: { ...capabilities, webgpu: false, online: false },
       providers: [wasm],
       policy,
-      nativePermission: false,
-      cloudConsent: false
+      nativePermission: false
     });
     expect(route.runtime).toBe("browser-wasm");
 
@@ -119,22 +115,7 @@ describe("client-first inference", () => {
         capabilities: { ...capabilities, webgpu: false, online: false },
         providers: [wasm],
         policy,
-        nativePermission: false,
-        cloudConsent: false
-      })
-    ).rejects.toBeInstanceOf(InferenceUnavailableError);
-  });
-
-  it("never selects cloud without both tenant policy and user consent", async () => {
-    const cloud = provider("cloud", "cloud-fallback");
-    await expect(
-      decideClientInferenceRoute({
-        modelId: "model",
-        capabilities,
-        providers: [cloud],
-        policy: { ...policy, allowCloudFallback: true, privacyMode: "cloud-with-consent" },
-        nativePermission: false,
-        cloudConsent: false
+        nativePermission: false
       })
     ).rejects.toBeInstanceOf(InferenceUnavailableError);
   });
@@ -145,8 +126,7 @@ describe("client-first inference", () => {
       browserWebGpu: false,
       browserWasm: false,
       nativeBridge: false,
-      ownerNode: false,
-      cloudFallback: false
+      ownerNode: false
     });
     expect(
       readClientInferenceFeatureFlags({
@@ -154,7 +134,7 @@ describe("client-first inference", () => {
         VITE_INFERENCE_BROWSER_WEBGPU_ENABLED: "true",
         VITE_INFERENCE_BROWSER_WASM_ENABLED: "true"
       })
-    ).toMatchObject({ browserWebGpu: true, browserWasm: true, cloudFallback: false });
+    ).toMatchObject({ browserWebGpu: true, browserWasm: true });
   });
 
   it("returns a safe unavailable native provider when no installed bridge exists", async () => {

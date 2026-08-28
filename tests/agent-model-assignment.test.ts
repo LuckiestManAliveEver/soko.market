@@ -62,7 +62,6 @@ describe("agent model assignments", () => {
       deviceId: "device-a",
       installationId: "valid-model",
       preferredExecutionMode: "LOCAL_ONLY",
-      fallbackPolicy: "NEVER",
       readinessStatus: "READY",
       lastSuccessfulInferenceAt: "2026-07-19T00:01:00.000Z",
       lastErrorCode: null
@@ -72,8 +71,7 @@ describe("agent model assignments", () => {
 
     expect(assignment).toMatchObject({
       activeModelInstallationId: "valid-model",
-      preferredExecutionMode: "LOCAL_ONLY",
-      fallbackPolicy: "NEVER"
+      preferredExecutionMode: "LOCAL_ONLY"
     });
     expect(store.getActiveAiModel({ sessionId: auth.session.id, businessId }).modelId).toBe(
       cloudFallbackBeforeBinding.modelId
@@ -115,7 +113,6 @@ describe("agent model assignments", () => {
         deviceId: "device-a",
         installationId: installation?.id ?? "missing",
         preferredExecutionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: "READY",
         lastSuccessfulInferenceAt: "2026-07-19T00:01:00.000Z",
         lastErrorCode: null
@@ -147,7 +144,6 @@ describe("agent model assignments", () => {
         deviceId: "device-a",
         installationId: "private-model",
         preferredExecutionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: "READY",
         lastSuccessfulInferenceAt: "2026-07-19T00:01:00.000Z",
         lastErrorCode: null
@@ -211,7 +207,6 @@ describe("agent model assignments", () => {
       deviceId: "device-a",
       installationId: "untested-model",
       preferredExecutionMode: "LOCAL_FIRST",
-      fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
       readinessStatus: "LOADING",
       lastSuccessfulInferenceAt: null,
       lastErrorCode: null
@@ -241,7 +236,6 @@ describe("agent model assignments", () => {
         deviceId: "device-a",
         installationId: "untested-ready-model",
         preferredExecutionMode: "LOCAL_FIRST",
-        fallbackPolicy: "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: "READY",
         lastSuccessfulInferenceAt: null,
         lastErrorCode: null

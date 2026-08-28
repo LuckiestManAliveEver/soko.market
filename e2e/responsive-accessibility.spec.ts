@@ -307,40 +307,6 @@ test("existing shops keep cards out of the chat until the launcher opens them", 
   await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
 });
 
-test("a switched device offers the hosted default without silently granting consent", async ({
-  page
-}) => {
-  await page.setExtraHTTPHeaders({ "x-soko-test-device-switch": "true" });
-  await page.goto("/sell");
-
-  const fallback = page.getByRole("region", {
-    name: "Use your selected backend fallback here?"
-  });
-  await expect(fallback).toBeVisible({ timeout: 15_000 });
-  const beforeConsent = await page.evaluate(() =>
-    localStorage.getItem("soko.client-inference-preferences.v1")
-  );
-  expect(beforeConsent).toBeNull();
-
-  await fallback.getByRole("button", { name: "Allow backend fallback here" }).click();
-  await expect(fallback).toBeHidden();
-  await expect(
-    page.getByText(
-      "The explicitly selected backend model is enabled only as a fallback on this device."
-    )
-  ).toBeVisible();
-  const preferences = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("soko.client-inference-preferences.v1") ?? "[]")
-  );
-  expect(preferences).toEqual([
-    expect.objectContaining({
-      accountId: "responsive-account",
-      businessId: "responsive-certification-shop",
-      cloudConsent: true
-    })
-  ]);
-});
-
 test("SMS handoff confirms cost, normalizes the recipient, and preserves the draft", async ({
   page
 }) => {
@@ -978,7 +944,6 @@ async function installApiMocks(page: Page): Promise<void> {
       });
     }
     if (path.endsWith("/agent-model")) {
-      const switchedDevice = route.request().headers()["x-soko-test-device-switch"] === "true";
       const localModelButtons =
         route.request().headers()["x-soko-test-local-model-buttons"] === "true";
       const modelBinding = route.request().headers()["x-soko-test-model-binding"] === "true";
@@ -987,7 +952,6 @@ async function installApiMocks(page: Page): Promise<void> {
           ? (route.request().postDataJSON() as {
               installationId: string;
               preferredExecutionMode: string;
-              fallbackPolicy: string;
               readinessStatus: string;
               lastSuccessfulInferenceAt: string | null;
               lastErrorCode: string | null;
@@ -1006,36 +970,21 @@ async function installApiMocks(page: Page): Promise<void> {
           ? "qwen2.5-0.5b-android"
           : localModelButtons
             ? "qwen2.5-0.5b-android"
-            : switchedDevice
-              ? "openai-fast"
-              : "sokoclaw-local",
+            : "sokoclaw-local",
         preferredExecutionMode:
           bindingBody?.preferredExecutionMode ?? (localModelButtons ? "LOCAL_FIRST" : "CLOUD_ONLY"),
-        fallbackPolicy: bindingBody?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
         readinessStatus: bindingBody?.readinessStatus ?? "READY",
-        runtimeBackend:
-          bindingBody || localModelButtons
-            ? "LLAMA_CPP_ANDROID"
-            : switchedDevice
-              ? "CLOUD"
-              : "OLLAMA",
+        runtimeBackend: bindingBody || localModelButtons ? "LLAMA_CPP_ANDROID" : "OLLAMA",
         lastSuccessfulInferenceAt:
           bindingBody?.lastSuccessfulInferenceAt ??
           (localModelButtons ? "2026-07-21T23:59:00.000Z" : null),
-        lastErrorCode:
-          bindingBody?.lastErrorCode ??
-          (switchedDevice ? "PREFERRED_MODEL_NOT_INSTALLED_ON_DEVICE" : null),
+        lastErrorCode: bindingBody?.lastErrorCode ?? null,
         updatedAt: "2026-07-21T00:00:00.000Z",
         updatedBy: "responsive-user"
       });
     }
     if (path.endsWith("/ai-model")) {
-      return json({
-        modelId:
-          route.request().headers()["x-soko-test-device-switch"] === "true"
-            ? "openai-fast"
-            : "qwen2.5-0.5b-android"
-      });
+      return json({ modelId: "qwen2.5-0.5b-android" });
     }
     if (path.endsWith("/social-accounts")) return json({ accounts: [] });
     if (path.endsWith("/shop-deletion/preview")) {

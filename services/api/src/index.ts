@@ -1,7 +1,7 @@
 import type { RuntimeModelProvider, RuntimeModelProviderName } from "@soko/shared-types";
 import { buildApi } from "./app.js";
 import { readEnvironment } from "./config.js";
-import { createCloudFallbackProvider } from "./inference/cloud-fallback.js";
+import { createOpenAiProvider } from "./inference/openai-provider.js";
 import {
   createBackendModelAdapter,
   createProviderModelAdapter,
@@ -46,11 +46,8 @@ for (const [modelId, model, maxOutputTokens, timeoutMs] of [
   ["openai-fast", process.env.OPENAI_FAST_MODEL?.trim() || "gpt-5-mini", 256, 15_000],
   ["openai-reasoning", process.env.OPENAI_REASONING_MODEL?.trim() || "gpt-5.2", 512, 30_000]
 ] as const) {
-  const provider = createCloudFallbackProvider({
-    enabled:
-      config.inferenceClientFirst &&
-      config.inferenceCloudFallbackEnabled &&
-      config.inferenceCloudProvider === "openai",
+  const provider = createOpenAiProvider({
+    enabled: config.inferenceCloudProvider === "openai",
     apiKey: openAiApiKey,
     model,
     modelId,

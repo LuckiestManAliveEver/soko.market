@@ -16,7 +16,7 @@ describe("frontend model activation contracts", () => {
     const activation = sourceBetween(
       agentModelPanel,
       "async function useModelWithAgent",
-      "async function useBackendModelWithAgent"
+      "async function testServerBackendModel"
     );
     const binding = sourceBetween(
       agentModelPanel,
@@ -46,28 +46,15 @@ describe("frontend model activation contracts", () => {
     );
   });
 
-  it("sets a cloud fallback without detaching the downloaded model", () => {
-    const activation = sourceBetween(
-      agentModelPanel,
-      "async function useBackendModelWithAgent",
-      "async function testServerBackendModel"
-    );
-
-    expect(activation).toContain("await onEnsureRuntimeSession()");
-    expect(activation).toContain("/businesses/${business.id}/ai-model");
-    expect(activation).toContain("if (activated.modelId !== model.id)");
-    expect(activation).toContain("setCloudFallbackModelId(activated.modelId)");
-    expect(activation).toContain("hasReadyLocalModel");
-    expect(activation).toContain("lastSuccessfulInferenceAt !== null");
-    expect(activation).not.toContain("await deleteJson");
-    expect(activation).not.toContain("getModelRuntime().unload");
-    expect(activation).not.toContain("updateAgent({ model: activated.modelId })");
-    expect(activation).not.toContain("onAgentChange({ ...agent, model: activated.modelId })");
-    expect(activation).toContain("inferencePreferences.cloudConsent");
-    expect(agentModelPanel).toContain('aria-label="Backend fallback models"');
-    expect(agentModelPanel).toContain('"Set as fallback"');
-    expect(agentModelPanel).toContain('"Default fallback"');
+  it("never reintroduces the removed automatic local-to-cloud escalation UI", () => {
+    expect(agentModelPanel).not.toContain("useBackendModelWithAgent");
+    expect(agentModelPanel).not.toContain("cloudFallbackModelId");
+    expect(agentModelPanel).not.toContain("inferencePreferences.cloudConsent");
+    expect(agentModelPanel).not.toContain('aria-label="Backend fallback models"');
+    expect(agentModelPanel).not.toContain('"Set as fallback"');
+    expect(agentModelPanel).not.toContain('"Default fallback"');
     expect(agentModelPanel).not.toContain('<option value="CLOUD_ONLY">Cloud only</option>');
+    expect(agentModelPanel).not.toContain("fallbackPolicy");
   });
 
   it("uses the provider-neutral route in the actual chat send path", () => {
@@ -86,10 +73,8 @@ describe("frontend model activation contracts", () => {
     expect(chat).toContain("availableRuntimeTools");
     expect(chat).toContain("generateBrowserAgentResponse");
     expect(chat).toContain("createRemoteInferenceProvider");
-    expect(chat).toContain('runtime: "cloud-fallback"');
     expect(chat).toContain("readClientInferencePreferences");
     expect(chat).toContain("localInstallation?.modelId");
-    expect(chat).toContain("selectedCloudFallback?.modelId");
     expect(chat).toContain("const canonicalRuntimeAgentId = business?.id ?? null");
     expect(chat).toContain("agentId: canonicalRuntimeAgentId ?? business.id");
     expect(chat).not.toContain("agentId: agentSettings.globalAgentId");
@@ -182,7 +167,7 @@ describe("frontend model activation contracts", () => {
     const activation = sourceBetween(
       agentModelPanel,
       "async function useModelWithAgent",
-      "async function useBackendModelWithAgent"
+      "async function testServerBackendModel"
     );
 
     expect(activation).toContain("modelActivationCoordinator.current.activeModelId() === model.id");

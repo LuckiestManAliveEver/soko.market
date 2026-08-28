@@ -300,7 +300,6 @@ export function AgentProfileSurface({
               deviceId,
               installationId: installation.id,
               preferredExecutionMode: local.preferredExecutionMode,
-              fallbackPolicy: local.fallbackPolicy,
               readinessStatus: local.readinessStatus,
               lastSuccessfulInferenceAt: local.lastSuccessfulInferenceAt,
               lastErrorCode: local.lastErrorCode

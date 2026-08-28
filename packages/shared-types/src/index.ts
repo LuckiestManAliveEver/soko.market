@@ -21,9 +21,7 @@ export interface EnvironmentConfig {
   backendInferenceModelId: string;
   backendInferenceRequired: boolean;
   inferenceServiceToken: string;
-  inferenceClientFirst: boolean;
   inferenceOwnerNodeEnabled: boolean;
-  inferenceCloudFallbackEnabled: boolean;
   inferenceCloudProvider: "" | "openai";
   inferenceCloudModelAllowlist: string[];
   inferenceCloudMonthlyTokenBudget: number;
@@ -34,8 +32,7 @@ export interface EnvironmentConfig {
   redisUrl: string;
 }
 
-export type InferenceRuntime =
-  "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node" | "cloud-fallback";
+export type InferenceRuntime = "browser-webgpu" | "browser-wasm" | "native-llama-cpp" | "owner-node";
 
 export interface InferenceMessage {
   role: "system" | "user" | "assistant";
@@ -130,21 +127,13 @@ export interface InferenceRouteDecision {
   fallbackProviderIds: string[];
 }
 
-/** Privacy-bounded signal that an authorized cloud turn follows a failed local attempt. */
-export interface RuntimeRecallEscalation {
-  reason: string;
-  localRuntime: Exclude<InferenceRuntime, "cloud-fallback"> | "server-local";
-  localModelId?: string;
-}
-
 export interface InferenceRoutingPolicy {
   priority: InferenceRuntime[];
   maximumFallbacks: number;
   allowNativeBridge: boolean;
   allowOwnerNode: boolean;
-  allowCloudFallback: boolean;
   requireCachedBrowserModelWhenOffline: boolean;
-  privacyMode: "local-only" | "tenant-devices" | "cloud-with-consent";
+  privacyMode: "local-only" | "tenant-devices";
 }
 
 export interface InferenceNodePresence {
@@ -911,6 +900,11 @@ export interface AiModelSummary {
   minimumMemoryGb: number | null;
   recommended: boolean;
   /**
+   * Deployment-specific execution targets backed by a configured runtime adapter. Catalogue
+   * availability alone does not imply that a model can run on every target.
+   */
+  runtimeAvailability?: Partial<Record<ModelExecutionTarget, "configured" | "unconfigured">>;
+  /**
    * Declared context window in tokens, used to budget retrieved agent context for this model.
    * `null` for models with no fixed, centrally-knowable window: a deterministic non-LLM fallback,
    * or a native bridge model chosen by an installed app that the server cannot introspect.
@@ -956,9 +950,6 @@ export type AgentModelRuntimeBackend =
   "LLAMA_CPP_ANDROID" | "LLAMA_CPP_BROWSER" | "OLLAMA" | "CLOUD";
 
 export type PreferredExecutionMode = "LOCAL_ONLY" | "LOCAL_FIRST" | "CLOUD_ONLY";
-
-export type AgentModelFallbackPolicy =
-  "NEVER" | "WHEN_LOCAL_UNAVAILABLE" | "WHEN_LOCAL_FAILS" | "WHEN_CONTEXT_EXCEEDED";
 
 export type AgentModelReadinessStatus = "ATTACHED" | "LOADING" | "READY" | "FAILED";
 
@@ -1076,7 +1067,6 @@ export function resolveRuntimeModel(modelId: string): RuntimeModelDefinition | n
 export interface AgentModelBindingPermissions {
   allowInstalledApp: boolean;
   allowRemoteShopDevice: boolean;
-  allowBackendFallback: boolean;
 }
 
 export interface AgentModelBindingSummary {
@@ -1087,10 +1077,8 @@ export interface AgentModelBindingSummary {
   modelId: string;
   status: AgentModelBindingStatus;
   executionMode: PreferredExecutionMode;
-  fallbackPolicy: AgentModelFallbackPolicy;
   executionTarget: ModelExecutionTarget;
   permissions: AgentModelBindingPermissions;
-  fallbackModelId: string | null;
   activatedAt: string | null;
   lastVerifiedAt: string | null;
   lastVerificationStatus: "passed" | "failed" | null;
@@ -1207,7 +1195,6 @@ export interface AgentModelAssignmentSummary {
   activeModelInstallationId: string | null;
   modelId: string | null;
   preferredExecutionMode: PreferredExecutionMode;
-  fallbackPolicy: AgentModelFallbackPolicy;
   readinessStatus: AgentModelReadinessStatus;
   runtimeBackend: AgentModelRuntimeBackend | null;
   lastSuccessfulInferenceAt: string | null;
@@ -3318,6 +3305,7 @@ const inferenceErrorCategoryByCode: Record<string, RuntimeInferenceErrorCategory
   INFERENCE_SERVICE_UNREACHABLE: "ENGINE_UNREACHABLE",
   INFERENCE_ENGINE_UNREACHABLE: "ENGINE_UNREACHABLE",
   RUNTIME_UNAVAILABLE: "ENGINE_UNREACHABLE",
+  RUNTIME_NOT_CONFIGURED: "MODEL_UNAVAILABLE",
   MODEL_NOT_INSTALLED: "MODEL_NOT_INSTALLED",
   MODEL_LOADING: "MODEL_LOADING",
   MODEL_NOT_CONFIGURED: "MODEL_UNAVAILABLE",
@@ -3385,7 +3373,6 @@ export interface RuntimeModelTrace {
   provider: RuntimeModelProviderName | null;
   status: RuntimeModelAdapterStatus;
   durationMs: number | null;
-  fallbackUsed: boolean;
   outputKind: "tool" | "clarification" | "response" | null;
   errorCode: string | null;
   bindingId?: string;
@@ -3395,7 +3382,6 @@ export interface RuntimeModelTrace {
   promptTokens?: number;
   completionTokens?: number;
   executionTarget?: ModelExecutionTarget;
-  fallbackReason?: string | null;
 }
 
 export interface RuntimePlannedAction {
@@ -3711,7 +3697,6 @@ export interface AgentModelBinding {
   modelId: string;
   provider: string;
   executionMode: PreferredExecutionMode;
-  fallbackPolicy: AgentModelFallbackPolicy;
   deviceAssignmentId: string | null;
 }
 
@@ -3779,7 +3764,6 @@ export type AgentEvaluationEventType =
   | "hallucinated_product_or_price"
   | "invalid_discount_attempt"
   | "customer_satisfaction"
-  | "recall_effectiveness"
   | "owner_feedback";
 
 export interface AgentEvaluationEvent {

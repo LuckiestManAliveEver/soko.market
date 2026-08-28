@@ -5,7 +5,6 @@ import type {
   AgentModelAssignmentSummary,
   AgentModelBindingRemovalResult,
   AgentModelBindingSummary,
-  AgentModelFallbackPolicy,
   BrowserInferenceAssignmentSummary,
   ModelRuntimeHealthSummary,
   PreferredExecutionMode,
@@ -100,7 +99,11 @@ import {
 import { isAgentModel } from "./owner-app-bootstrap";
 import { normalizeSearchText } from "./agent-command-engine";
 import { getErrorMessage } from "./chat-message-plumbing";
-import { isDownloadableCatalogModel } from "./agent-model-panel-utils";
+import {
+  applyDeploymentRuntimeAvailability,
+  isDownloadableCatalogModel
+} from "./agent-model-panel-utils";
+import { backendModelRuntimeStatusMessage } from "./backend-model-runtime-status";
 import { McpAccessTokensPanel } from "./McpAccessTokensPanel";
 import { modelLifecycleActionLabel, resolveModelLifecycleState } from "./model-lifecycle";
 import {
@@ -174,7 +177,6 @@ export function AgentModelPanel({
       }
     >
   >({});
-  const [cloudFallbackModelId, setCloudFallbackModelId] = useState<string | null>(null);
   const [activatingModelId, setActivatingModelId] = useState<string | null>(null);
   const [testingBackendModelId, setTestingBackendModelId] = useState<string | null>(null);
   const [failedActivationModelId, setFailedActivationModelId] = useState<string | null>(null);
@@ -435,25 +437,31 @@ export function AgentModelPanel({
         githubRegistry.models,
         huggingFaceRegistry.models
       );
-      const allModels = mergeAiModelCatalogs(
-        offlineDefaults,
-        mergeAiModelCatalogs(registry.models, externalRegistry)
-      );
-      const visibleModels = mergeAiModelCatalogs(
-        offlineDefaults.filter((model) =>
-          normalizedSearch.length === 0
-            ? true
-            : normalizeSearchText(
-                `${model.label} ${model.description} ${model.capabilities.join(" ")}`
-              ).includes(normalizeSearchText(normalizedSearch))
-        ),
+      const allModels = applyDeploymentRuntimeAvailability(
         mergeAiModelCatalogs(
-          searchResults?.models ?? registry.models,
+          offlineDefaults,
+          mergeAiModelCatalogs(registry.models, externalRegistry)
+        ),
+        registry.models
+      );
+      const visibleModels = applyDeploymentRuntimeAvailability(
+        mergeAiModelCatalogs(
+          offlineDefaults.filter((model) =>
+            normalizedSearch.length === 0
+              ? true
+              : normalizeSearchText(
+                  `${model.label} ${model.description} ${model.capabilities.join(" ")}`
+                ).includes(normalizeSearchText(normalizedSearch))
+          ),
           mergeAiModelCatalogs(
-            githubSearchResults?.models ?? githubRegistry.models,
-            huggingFaceSearchResults?.models ?? huggingFaceRegistry.models
+            searchResults?.models ?? registry.models,
+            mergeAiModelCatalogs(
+              githubSearchResults?.models ?? githubRegistry.models,
+              huggingFaceSearchResults?.models ?? huggingFaceRegistry.models
+            )
           )
-        )
+        ),
+        registry.models
       );
       const deviceSelection = readDeviceAgentModelAssignment(business.id, deviceId);
       const effectiveModelId =
@@ -462,13 +470,6 @@ export function AgentModelPanel({
       setVisibleAiModels(visibleModels);
       setActiveAiModelId(effectiveModelId);
       setActiveAgentModelBinding(canonicalBinding.binding);
-      setCloudFallbackModelId(
-        allModels.some(
-          (model) => model.id === active.modelId && model.available && model.source === "hosted"
-        )
-          ? active.modelId
-          : null
-      );
       setGitHubModelDiscovery(githubSearchResults ?? githubRegistry);
       setHuggingFaceModelDiscovery(huggingFaceSearchResults ?? huggingFaceRegistry);
       if (!isEditing && isAgentModel(effectiveModelId)) {
@@ -697,7 +698,6 @@ export function AgentModelPanel({
         deviceId,
         installationId: assignment.activeModelInstallationId,
         preferredExecutionMode: assignment.preferredExecutionMode,
-        fallbackPolicy: assignment.fallbackPolicy,
         readinessStatus: assignment.readinessStatus,
         lastSuccessfulInferenceAt: assignment.lastSuccessfulInferenceAt,
         lastErrorCode: assignment.lastErrorCode
@@ -914,7 +914,6 @@ export function AgentModelPanel({
         deviceId,
         installation: verified,
         preferredExecutionMode: previous?.preferredExecutionMode ?? "LOCAL_ONLY",
-        fallbackPolicy: previous?.fallbackPolicy ?? "NEVER",
         runtimeSessionId,
         syncStatus: apiReachable ? "SYNCED" : "PENDING"
       });
@@ -1014,67 +1013,6 @@ export function AgentModelPanel({
     }
   }
 
-  async function useBackendModelWithAgent(model: AiModelSummary) {
-    if (modelRuntimeBusyRef.current || !model.available) return;
-    if (model.source !== "hosted") {
-      setProfileMessage("Only configured hosted models can be selected as backend fallbacks.");
-      return;
-    }
-    if (!inferencePreferences.cloudConsent) {
-      setProfileMessage(
-        "Enable explicit backend fallback consent before selecting a hosted model."
-      );
-      return;
-    }
-    const hasReadyLocalModel =
-      agentModelAssignment?.activeModelInstallationId !== null &&
-      agentModelAssignment?.activeModelInstallationId !== undefined &&
-      agentModelAssignment.readinessStatus === "READY" &&
-      agentModelAssignment.lastSuccessfulInferenceAt !== null &&
-      agentModelAssignment.runtimeBackend !== "CLOUD";
-    if (!hasReadyLocalModel) {
-      setProfileMessage(
-        "Download, connect, and test a GGUF model before selecting a backend fallback."
-      );
-      return;
-    }
-    if (!navigator.onLine) {
-      setModelActivationState("offline_blocked");
-      setProfileMessage("Connect to the internet to activate this model.");
-      return;
-    }
-
-    modelRuntimeBusyRef.current = true;
-    setModelRuntimeBusy(true);
-    setActivatingModelId(model.id);
-    try {
-      if (!(await activationApiReachable())) {
-        setModelActivationState("offline_blocked");
-        setProfileMessage("Connect to the internet to activate this model.");
-        return;
-      }
-      setProfileMessage(`Setting ${model.label} as the backend fallback…`);
-      await onEnsureRuntimeSession();
-      const activated = await putJson<ActiveAiModelSummary>(`/businesses/${business.id}/ai-model`, {
-        modelId: model.id
-      });
-      if (activated.modelId !== model.id) {
-        throw new Error("The backend did not activate the selected model.");
-      }
-
-      setCloudFallbackModelId(activated.modelId);
-      setProfileMessage(
-        `${model.label} is the explicit backend fallback. The downloaded llama.cpp model remains connected and always runs first.`
-      );
-    } catch (error) {
-      setProfileMessage(getErrorMessage(error));
-    } finally {
-      modelRuntimeBusyRef.current = false;
-      setActivatingModelId(null);
-      setModelRuntimeBusy(false);
-    }
-  }
-
   async function testServerBackendModel(model: AiModelSummary) {
     if (modelRuntimeBusyRef.current || !navigator.onLine) {
       setProfileMessage("Connect to the internet to test the backend model.");
@@ -1136,8 +1074,6 @@ export function AgentModelPanel({
     setModelActivationState("validating");
     try {
       setProfileMessage(`Verifying and activating ${model.label} for ${agent.name}…`);
-      const allowBackendFallback =
-        inferencePreferences.cloudConsent && cloudFallbackModelId !== null;
       const result = await postJson<AgentModelActivationResult>(
         `/api/agents/${encodeURIComponent(
           canonicalRuntimeAgentId
@@ -1146,13 +1082,10 @@ export function AgentModelPanel({
           shopId: business.id,
           executionTarget: "backend",
           executionMode: "LOCAL_FIRST",
-          fallbackPolicy: agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE",
           permissions: {
             allowInstalledApp: inferencePreferences.nativePermission,
-            allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed,
-            allowBackendFallback
-          },
-          fallbackModelId: allowBackendFallback ? cloudFallbackModelId : null
+            allowRemoteShopDevice: inferencePreferences.ownerNodeAllowed
+          }
         },
         { timeoutMs: backendModelProbeRequestTimeoutMs }
       );
@@ -1212,7 +1145,7 @@ export function AgentModelPanel({
       if (result.binding !== null || result.agentId !== canonicalRuntimeAgentId) {
         throw new Error("The backend did not remove the active model binding.");
       }
-      const fallbackModelId = cloudFallbackModelId ?? "sokoclaw-local";
+      const fallbackModelId = "sokoclaw-local";
       setActiveAgentModelBinding(null);
       setActiveAiModelId(fallbackModelId);
       updateAgent({ model: fallbackModelId });
@@ -1283,7 +1216,7 @@ export function AgentModelPanel({
       updateAgent({ model: fallbackModelId });
       onAgentChange({ ...agent, model: fallbackModelId });
       setProfileMessage(
-        "The downloaded model was removed. Download and test another GGUF model to reconnect the agent; the cloud selection remains fallback-only."
+        "The downloaded model was removed. Download and test another GGUF model to reconnect the agent."
       );
     } finally {
       modelRuntimeBusyRef.current = false;
@@ -1292,7 +1225,7 @@ export function AgentModelPanel({
   }
 
   async function updateAgentModelPolicy(
-    patch: Partial<Pick<DeviceAgentModelAssignment, "preferredExecutionMode" | "fallbackPolicy">>
+    patch: Partial<Pick<DeviceAgentModelAssignment, "preferredExecutionMode">>
   ) {
     if (agentModelAssignment === null) return;
     const next = { ...agentModelAssignment, ...patch, updatedAt: new Date().toISOString() };
@@ -1305,7 +1238,6 @@ export function AgentModelPanel({
           deviceId,
           installationId: next.activeModelInstallationId,
           preferredExecutionMode: next.preferredExecutionMode,
-          fallbackPolicy: next.fallbackPolicy,
           readinessStatus: next.readinessStatus,
           lastSuccessfulInferenceAt: next.lastSuccessfulInferenceAt,
           lastErrorCode: next.lastErrorCode
@@ -1325,6 +1257,11 @@ export function AgentModelPanel({
           (model) => model.id === agentModelAssignment.activeModelInstallationId
         ) ?? null);
   const activeAiModel = aiModels.find((model) => model.id === activeAiModelId);
+  const activeBackendBinding =
+    activeAgentModelBinding?.status === "active" &&
+    activeAgentModelBinding.executionTarget === "backend";
+  const activeBackendConfigured =
+    activeBackendBinding && activeAiModel?.runtimeAvailability?.backend === "configured";
   const bestFitModels =
     deviceCapability === null
       ? []
@@ -1336,18 +1273,9 @@ export function AgentModelPanel({
   const offlineStarterInstalled =
     offlineStarter !== undefined &&
     localAiModels.some((localModel) => localModel.modelId === offlineStarter.id);
-  const cloudFallbackModel = aiModels.find((model) => model.id === cloudFallbackModelId);
-  const backendModels = visibleAiModels.filter(
-    (model) => model.source === "hosted" && model.format === "remote"
-  );
   const serverBackendModels = visibleAiModels.filter(
-    (model) =>
-      model.id === "qwen2.5-0.5b-android" || model.capabilities.includes("backend-inference")
+    (model) => model.runtimeAvailability?.backend === "configured"
   );
-  const hasReadyLocalModel =
-    activeInstalledModel !== null &&
-    agentModelAssignment?.readinessStatus === "READY" &&
-    agentModelAssignment.lastSuccessfulInferenceAt !== null;
   const orderedInstalledModels = [...localAiModels].sort((left, right) => {
     const leftCompatible = left.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
     const rightCompatible = right.compatibilityStatus === "COMPATIBLE" ? 0 : 1;
@@ -1398,20 +1326,38 @@ export function AgentModelPanel({
                 ? "Not verified"
                 : `Verified ${formatDate(activeAgentModelBinding.lastVerifiedAt)}`}
             </small>
+            {activeBackendBinding && !activeBackendConfigured ? (
+              <small role="status">
+                Backend inference is no longer configured for this deployment. Remove this binding
+                or switch to an available model.
+              </small>
+            ) : null}
             <div className="ai-model-card-actions">
-              <button
-                className="secondary"
-                type="button"
-                disabled={activeAgentModelBinding === null || modelRuntimeBusy}
-                onClick={() => {
-                  const model = aiModels.find(
-                    (candidate) => candidate.id === activeAgentModelBinding?.modelId
-                  );
-                  if (model !== undefined) void testServerBackendModel(model);
-                }}
-              >
-                Test model
-              </button>
+              {!activeBackendBinding || activeBackendConfigured ? (
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={activeAgentModelBinding === null || modelRuntimeBusy}
+                  onClick={() => {
+                    const model = aiModels.find(
+                      (candidate) => candidate.id === activeAgentModelBinding?.modelId
+                    );
+                    if (model !== undefined) void testServerBackendModel(model);
+                  }}
+                >
+                  Test model
+                </button>
+              ) : null}
+              {activeBackendBinding && activeAiModel !== undefined ? (
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={modelRuntimeBusy}
+                  onClick={() => void removeServerBackendModelFromAgent(activeAiModel)}
+                >
+                  Remove from agent
+                </button>
+              ) : null}
               <button type="button" onClick={() => void openModelLibrary()}>
                 Switch model
               </button>
@@ -1451,7 +1397,6 @@ export function AgentModelPanel({
                 ? "Not yet"
                 : formatDate(agentModelAssignment.lastSuccessfulInferenceAt)}
             </small>
-            <small>Cloud fallback: {cloudFallbackModel?.label ?? "Not configured"}</small>
           </article>
         )}
         <McpAccessTokensPanel
@@ -1611,22 +1556,6 @@ export function AgentModelPanel({
               Prompts may be relayed only to an authenticated device registered for this shop and
               model.
             </small>
-            <label className="browser-model-toggle">
-              <input
-                type="checkbox"
-                checked={inferencePreferences.cloudConsent}
-                disabled={!clientInferenceFeatureFlags.cloudFallback || modelRuntimeBusy}
-                onChange={(event) =>
-                  updateInferencePreferences({ cloudConsent: event.target.checked })
-                }
-              />
-              Allow explicitly selected backend fallback
-            </label>
-            <small>
-              Off by default. The selected hosted backend model is swappable at any time and is used
-              only after you select an available fallback model and the downloaded model cannot
-              process the request. API credentials remain server-only.
-            </small>
           </section>
           <label>
             Execution mode
@@ -1641,23 +1570,6 @@ export function AgentModelPanel({
             >
               <option value="LOCAL_ONLY">Local only</option>
               <option value="LOCAL_FIRST">Local first</option>
-            </select>
-          </label>
-          <label>
-            Fallback policy
-            <select
-              value={agentModelAssignment?.fallbackPolicy ?? "WHEN_LOCAL_UNAVAILABLE"}
-              disabled={agentModelAssignment === null || modelRuntimeBusy}
-              onChange={(event) =>
-                void updateAgentModelPolicy({
-                  fallbackPolicy: event.target.value as AgentModelFallbackPolicy
-                }).catch((error) => setProfileMessage(getErrorMessage(error)))
-              }
-            >
-              <option value="NEVER">Never</option>
-              <option value="WHEN_LOCAL_UNAVAILABLE">When local is unavailable</option>
-              <option value="WHEN_LOCAL_FAILS">When local fails</option>
-              <option value="WHEN_CONTEXT_EXCEEDED">When context is exceeded</option>
             </select>
           </label>
         </details>
@@ -1851,136 +1763,81 @@ export function AgentModelPanel({
                 ) : null}
               </div>
             </section>
-            <section aria-label="Soko backend models">
-              <div className="section-subheading">
-                <h4>Soko backend models</h4>
-                <p>
-                  Available means the deployed runtime passed a real model probe. Active means this
-                  agent has a persisted binding that passed real backend inference.
-                </p>
-              </div>
-              <div className="ai-model-catalog">
-                {serverBackendModels.map((model) => {
-                  const activeForAgent =
-                    activeAgentModelBinding?.status === "active" &&
-                    activeAgentModelBinding.modelId === model.id &&
-                    activeAgentModelBinding.executionTarget === "backend";
-                  const runtime = serverBackendRuntime[model.id];
-                  const runtimeLabel =
-                    runtime?.status === "available"
-                      ? "Available"
-                      : runtime?.status === "unavailable"
-                        ? "Unavailable"
-                        : "Not verified";
-                  return (
-                    <article className="ai-model-card" key={`backend:${model.id}`}>
-                      <div>
-                        <p className="eyebrow">
-                          Backend · {activeForAgent ? `Active for ${agent.name}` : runtimeLabel}
-                        </p>
-                        <h4>{model.label}</h4>
-                        <p>{model.description}</p>
-                        <small>{model.capabilities.join(" · ")}</small>
-                        {runtime?.status === "unavailable" ? (
-                          <small role="status">
-                            {runtime.errorCode === "MODEL_NOT_INSTALLED"
-                              ? "Model not installed on the inference service."
-                              : "Backend model unavailable. The Soko inference service cannot currently be reached."}
-                          </small>
-                        ) : runtime?.status === "available" ? (
-                          <small>Model verified in {formatLatency(runtime.latencyMs ?? 0)}.</small>
-                        ) : null}
-                      </div>
-                      <div className="ai-model-card-actions">
-                        <button
-                          className="secondary"
-                          type="button"
-                          disabled={modelRuntimeBusy}
-                          onClick={() => void testServerBackendModel(model)}
-                        >
-                          {testingBackendModelId === model.id ? "Testing…" : "Test model"}
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={activeForAgent}
-                          disabled={modelRuntimeBusy}
-                          onClick={() =>
-                            void (activeForAgent
-                              ? removeServerBackendModelFromAgent(model)
-                              : activateServerBackendModel(model))
-                          }
-                        >
-                          {activeForAgent
-                            ? activatingModelId === model.id
-                              ? "Removing…"
-                              : "Remove from agent"
-                            : activatingModelId === model.id
-                              ? "Activating…"
-                              : "Use with agent"}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-                {serverBackendModels.length === 0 ? (
-                  <p>No server-managed backend model matches this search.</p>
-                ) : null}
-              </div>
-            </section>
-            <section aria-label="Backend fallback models">
-              <div className="section-subheading">
-                <h4>Backend fallback models</h4>
-                <p>
-                  A hosted backend model is optional and off by default, and swappable for any other
-                  configured hosted model at any time. It can be selected only after a downloaded
-                  GGUF model is connected and tested, and is used only when local inference cannot
-                  run under your fallback policy.
-                </p>
-              </div>
-              <div className="ai-model-catalog">
-                {backendModels.map((model) => (
-                  <article className="ai-model-card" key={model.id}>
-                    <div>
-                      <p className="eyebrow">
-                        {model.source === "hosted" ? "Hosted" : "Server runtime"} ·{" "}
-                        {model.available ? "Available" : "Not configured"}
-                      </p>
-                      <h4>{model.label}</h4>
-                      <p>{model.description}</p>
-                      <small>{model.capabilities.join(" · ")}</small>
-                    </div>
-                    <div className="ai-model-card-actions">
-                      <button
-                        type="button"
-                        disabled={
-                          !model.available ||
-                          modelRuntimeBusy ||
-                          !hasReadyLocalModel ||
-                          !inferencePreferences.cloudConsent ||
-                          cloudFallbackModelId === model.id
-                        }
-                        title={
-                          model.available
-                            ? undefined
-                            : "Configure this inference provider on the backend first."
-                        }
-                        onClick={() => void useBackendModelWithAgent(model)}
-                      >
-                        {cloudFallbackModelId === model.id
-                          ? "Default fallback"
-                          : activatingModelId === model.id
-                            ? "Activating…"
-                            : model.available
-                              ? "Set as fallback"
-                              : "Unavailable"}
-                      </button>
-                    </div>
-                  </article>
-                ))}
-                {backendModels.length === 0 ? <p>No backend models match this search.</p> : null}
-              </div>
-            </section>
-
+            {serverBackendModels.length > 0 ? (
+              <section aria-label="Soko backend models">
+                <div className="section-subheading">
+                  <h4>Soko backend models</h4>
+                  <p>
+                    Available means the deployed runtime passed a real model probe. Active means
+                    this agent has a persisted binding that passed real backend inference.
+                  </p>
+                </div>
+                <div className="ai-model-catalog">
+                  {serverBackendModels.map((model) => {
+                    const activeForAgent =
+                      activeAgentModelBinding?.status === "active" &&
+                      activeAgentModelBinding.modelId === model.id &&
+                      activeAgentModelBinding.executionTarget === "backend";
+                    const runtime = serverBackendRuntime[model.id];
+                    const runtimeLabel =
+                      runtime?.status === "available"
+                        ? "Available"
+                        : runtime?.status === "unavailable"
+                          ? "Unavailable"
+                          : "Not verified";
+                    return (
+                      <article className="ai-model-card" key={`backend:${model.id}`}>
+                        <div>
+                          <p className="eyebrow">
+                            Backend · {activeForAgent ? `Active for ${agent.name}` : runtimeLabel}
+                          </p>
+                          <h4>{model.label}</h4>
+                          <p>{model.description}</p>
+                          <small>{model.capabilities.join(" · ")}</small>
+                          {runtime?.status === "unavailable" ? (
+                            <small role="status">
+                              {backendModelRuntimeStatusMessage(runtime.errorCode)}
+                            </small>
+                          ) : runtime?.status === "available" ? (
+                            <small>
+                              Model verified in {formatLatency(runtime.latencyMs ?? 0)}.
+                            </small>
+                          ) : null}
+                        </div>
+                        <div className="ai-model-card-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            disabled={modelRuntimeBusy}
+                            onClick={() => void testServerBackendModel(model)}
+                          >
+                            {testingBackendModelId === model.id ? "Testing…" : "Test model"}
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={activeForAgent}
+                            disabled={modelRuntimeBusy}
+                            onClick={() =>
+                              void (activeForAgent
+                                ? removeServerBackendModelFromAgent(model)
+                                : activateServerBackendModel(model))
+                            }
+                          >
+                            {activeForAgent
+                              ? activatingModelId === model.id
+                                ? "Removing…"
+                                : "Remove from agent"
+                              : activatingModelId === model.id
+                                ? "Activating…"
+                                : "Use with agent"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
             <section
               className={`offline-starter-card ${offlineStarterInstalled ? "installed" : ""}`}
               aria-label="Offline starter model"

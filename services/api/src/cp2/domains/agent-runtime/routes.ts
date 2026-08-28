@@ -2,8 +2,8 @@
  * Twelfth domain slice of in-process modularization for services/api/src/cp2/routes.ts (see
  * docs/architecture/routes-modularization-roadmap.md). Owns the AI-model catalogue/installation
  * routes, agent-model bindings, browser-inference assignments, agent profile/runtime metadata
- * (context sources, owner corrections, feedback, recall effectiveness), and runtime
- * sessions/turns - everything that calls into `domains/agent-runtime/store.ts`'s
+ * (context sources, owner corrections, feedback), and runtime sessions/turns - everything that
+ * calls into `domains/agent-runtime/store.ts`'s
  * `AgentRuntimeDomain` on the store.ts side, which this file's routes were already delegating to
  * before this extraction.
  *
@@ -25,7 +25,6 @@ import type {
   AgentInstructions,
   AgentMemoryPolicy,
   AgentModelBindingPermissions,
-  AgentModelFallbackPolicy,
   AgentModelReadinessStatus,
   AgentModelRuntimeBackend,
   AgentOwnerCorrection,
@@ -40,7 +39,6 @@ import type {
   ModelExecutionTarget,
   ModelInstallationStatus,
   PreferredExecutionMode,
-  RuntimeRecallEscalation,
   OssAgentSummary
 } from "@soko/shared-types";
 import { Cp2Error } from "../../cp2-error.js";
@@ -52,7 +50,7 @@ import type { HuggingFaceAgentCatalog } from "../../huggingface-agent-catalog.js
 import type { BusinessAgentProfileInput } from "./shared.js";
 import { defaultAgentDefinitionId, isAgentDefinitionId } from "@soko/shared-types";
 import { runtimeToolRegistry } from "@soko/tool-core";
-import { parseRuntimeRecallEscalation, parseRuntimeTurnBody } from "./runtime-turn-request.js";
+import { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 export { parseRuntimeTurnBody } from "./runtime-turn-request.js";
 import {
   parseBoolean,
@@ -137,7 +135,6 @@ interface AgentModelAssignmentBody {
   deviceId?: unknown;
   installationId?: unknown;
   preferredExecutionMode?: unknown;
-  fallbackPolicy?: unknown;
   readinessStatus?: unknown;
   lastSuccessfulInferenceAt?: unknown;
   lastErrorCode?: unknown;
@@ -185,9 +182,7 @@ interface AgentModelTestBody {
 
 interface AgentModelActivationBody extends AgentModelTestBody {
   executionMode?: unknown;
-  fallbackPolicy?: unknown;
   permissions?: unknown;
-  fallbackModelId?: unknown;
 }
 
 interface AiModelActivationBody {
@@ -262,15 +257,7 @@ export interface RuntimeTurnBody {
   conversationId?: string;
   message?: string;
   confirmationToken?: string;
-  recallEscalation?: RuntimeRecallEscalation;
   clientInferenceCompletion?: ClientInferenceCompletion;
-}
-
-interface RecallEffectivenessBody {
-  sourceIds?: unknown;
-  outcome?: unknown;
-  localRuntime?: unknown;
-  modelId?: unknown;
 }
 
 export function registerAgentRuntimeRoutes(
@@ -566,7 +553,6 @@ export function registerAgentRuntimeRoutes(
           deviceId: parseString(request.body.deviceId, "deviceId"),
           installationId: parseString(request.body.installationId, "installationId"),
           preferredExecutionMode: parsePreferredExecutionMode(request.body.preferredExecutionMode),
-          fallbackPolicy: parseAgentModelFallbackPolicy(request.body.fallbackPolicy),
           readinessStatus: parseAgentModelReadinessStatus(request.body.readinessStatus),
           lastSuccessfulInferenceAt: parseNullableString(request.body.lastSuccessfulInferenceAt),
           lastErrorCode: parseNullableString(request.body.lastErrorCode)
@@ -858,9 +844,7 @@ export function registerAgentRuntimeRoutes(
           modelId,
           executionTarget,
           executionMode: parsePreferredExecutionMode(request.body.executionMode),
-          fallbackPolicy: parseAgentModelFallbackPolicy(request.body.fallbackPolicy),
           permissions: parseAgentModelBindingPermissions(request.body.permissions),
-          fallbackModelId: parseNullableString(request.body.fallbackModelId),
           signal: requestAbort.signal,
           onStage: (stage, elapsedMs) => {
             request.log.info(
@@ -1099,25 +1083,6 @@ export function registerAgentRuntimeRoutes(
       try {
         const body = parseAgentFeedbackBody(request.body);
         return store.submitAgentFeedback({
-          sessionId: readSessionCookie(request.headers.cookie),
-          businessId: request.params.businessId,
-          ...body
-        });
-      } catch (error) {
-        return sendCp2Error(reply, error);
-      }
-    }
-  );
-
-  app.post(
-    "/businesses/:businessId/agent-runtime/recall/effectiveness",
-    async (
-      request: FastifyRequest<{ Params: BusinessParams; Body: RecallEffectivenessBody }>,
-      reply
-    ) => {
-      try {
-        const body = parseRecallEffectivenessBody(request.body);
-        return store.recordRecallEffectiveness({
           sessionId: readSessionCookie(request.headers.cookie),
           businessId: request.params.businessId,
           ...body
@@ -1405,33 +1370,6 @@ function parseStructuredArray<T>(value: unknown, name: string, maximumItems: num
   return value.map((item) => parseRequestBody(item) as unknown as T);
 }
 
-function parseRecallEffectivenessBody(body: RecallEffectivenessBody | null | undefined): {
-  sourceIds: string[];
-  outcome: "local_success" | "cloud_fallback";
-  localRuntime: RuntimeRecallEscalation["localRuntime"];
-  modelId: string;
-} {
-  const record = parseRequestBody(body);
-  const outcome = parseString(record.outcome, "outcome");
-  if (outcome !== "local_success" && outcome !== "cloud_fallback") {
-    throw new Cp2Error(
-      400,
-      "recall_effectiveness_invalid",
-      "Recall effectiveness outcome is not supported."
-    );
-  }
-  const localRuntime = parseRuntimeRecallEscalation({
-    reason: "effectiveness",
-    localRuntime: record.localRuntime
-  }).localRuntime;
-  return {
-    sourceIds: parseStringArray(record.sourceIds, "sourceIds", 3),
-    outcome,
-    localRuntime,
-    modelId: parseString(record.modelId, "modelId")
-  };
-}
-
 function parseInstalledModelBody(
   body: InstalledModelBody
 ): Omit<InstalledAgentModelSummary, "accountId" | "userId"> {
@@ -1581,18 +1519,6 @@ function parsePreferredExecutionMode(value: unknown): PreferredExecutionMode {
   throw new Cp2Error(400, "execution_mode_invalid", "Execution mode is invalid.");
 }
 
-function parseAgentModelFallbackPolicy(value: unknown): AgentModelFallbackPolicy {
-  if (
-    value === "NEVER" ||
-    value === "WHEN_LOCAL_UNAVAILABLE" ||
-    value === "WHEN_LOCAL_FAILS" ||
-    value === "WHEN_CONTEXT_EXCEEDED"
-  ) {
-    return value;
-  }
-  throw new Cp2Error(400, "fallback_policy_invalid", "Fallback policy is invalid.");
-}
-
 function parseModelExecutionTarget(value: unknown): ModelExecutionTarget {
   if (
     value === "backend" ||
@@ -1613,10 +1539,6 @@ function parseAgentModelBindingPermissions(value: unknown): AgentModelBindingPer
     allowRemoteShopDevice: parseBoolean(
       permissions.allowRemoteShopDevice,
       "permissions.allowRemoteShopDevice"
-    ),
-    allowBackendFallback: parseBoolean(
-      permissions.allowBackendFallback,
-      "permissions.allowBackendFallback"
     )
   };
 }
