@@ -25,6 +25,9 @@ describe("workspace.deliver conversation integration", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "soko-conversation-batch-"));
     temporaryRoots.push(workspaceRoot);
     const store = createCp2Store({ workspaceRoot, workspaceDeliveryMaxFileBytes: 1_000_000 });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const cookie = await createAccountSession(app, "254700000900");
     const business = await createBusiness(app, cookie, "Workspace Batch Shop");
@@ -91,6 +94,9 @@ describe("workspace.deliver conversation integration", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "soko-conversation-workspaces-"));
     temporaryRoots.push(workspaceRoot);
     const store = createCp2Store({ workspaceRoot, workspaceDeliveryMaxFileBytes: 1_000_000 });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const ownerCookie = await createAccountSession(app, "254700000901");
     const business = await createBusiness(app, ownerCookie, "Workspace Cards Shop");
@@ -217,6 +223,9 @@ describe("workspace.deliver conversation integration", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "soko-conversation-workspaces-"));
     temporaryRoots.push(workspaceRoot);
     const store = createCp2Store({ workspaceRoot });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const cookie = await createAccountSession(app, "254700000903");
     const business = await createBusiness(app, cookie, "Retry Cards Shop");
@@ -296,6 +305,9 @@ describe("workspace.deliver conversation integration", () => {
       workspaceRoot,
       conversationAttachmentBlobStore: blobStore
     });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const cookie = await createAccountSession(app, "254700000904");
     const business = await createBusiness(app, cookie, "Atomic Storage Shop");

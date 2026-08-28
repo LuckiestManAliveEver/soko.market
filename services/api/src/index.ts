@@ -15,6 +15,7 @@ import {
 import { readAccountDeletionProcessors } from "./cp2/account-deletion-processors.js";
 import { createPostgresCp2Store } from "./cp2/postgres-store.js";
 import { createCp2Store } from "./cp2/store.js";
+import { builtinRuntimeModelId } from "./cp2/domains/native-runtime/store.js";
 import { createWebPushSender, readWebPushConfiguration } from "./cp2/push.js";
 import { createEmailProviderFromEnvironment } from "./cp2/email-provider.js";
 import { createReceiptOCRProcessorFromEnvironment } from "./cp2/receipt-ocr-provider.js";
@@ -132,9 +133,7 @@ const cp2StoreOptions = {
   messageWebBaseUrl,
   workspaceDeliveryMaxFileBytes: config.workspaceDeliveryMaxFileBytes,
   ...(config.workspaceRoot === "" ? {} : { workspaceRoot: config.workspaceRoot }),
-  ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors }),
-  // TODO(remove-after-fabric-migration): temporary rollback wiring only.
-  executionFabricEnabled: config.executionFabricEnabled
+  ...(accountDeletionProcessors.length === 0 ? {} : { accountDeletionProcessors })
 };
 
 const cp2Store = shouldUsePostgresStore
@@ -143,6 +142,27 @@ const cp2Store = shouldUsePostgresStore
       ...cp2StoreOptions
     })
   : createCp2Store(cp2StoreOptions);
+if (process.env.NODE_ENV === "production") {
+  const defaultAdapter = modelRuntimeAdapters.get(`openai:${builtinRuntimeModelId}`);
+  if (defaultAdapter === undefined) {
+    throw new Error(
+      `The global generative runtime ${builtinRuntimeModelId} is not configured. ` +
+        "Enable the OpenAI provider, allow the model, and configure OPENAI_API_KEY."
+    );
+  }
+  const health = await defaultAdapter.healthCheck({
+    agentId: "builtin:soko-agent:v1",
+    shopId: "global-default",
+    modelId: builtinRuntimeModelId
+  });
+  if (!health.available) {
+    throw new Error(
+      `The global generative runtime ${builtinRuntimeModelId} failed activation: ${health.errorCode ?? "MODEL_HEALTH_CHECK_FAILED"}.`
+    );
+  }
+  cp2Store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
+  if (isFlushableStore(cp2Store)) await cp2Store.flush();
+}
 const apiOptions = {
   allowedCorsOrigins: config.allowedCorsOrigins,
   bodyLimit: Math.max(

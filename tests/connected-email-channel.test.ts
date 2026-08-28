@@ -195,6 +195,10 @@ describe("connected email channel", () => {
       emailMailboxProviderClient: provider,
       runtimeModelProvider: runtimeProvider
     });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the injected
+    // provider is actually reachable.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createOwner(app, "owner@example.com", "Email Shop");
     const customer = await createCustomer(app, owner, "Brian", "brian@example.com");

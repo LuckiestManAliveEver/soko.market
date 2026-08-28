@@ -68,6 +68,10 @@ describe("Android native SMS channel", () => {
       }
     };
     const store = createCp2Store({ runtimeModelProvider: provider });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the injected
+    // provider is actually reachable.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createAndroidOwner(app, "+254700000783", "Inbound Shop", "1783");
     await registerReadyDevice(app, owner.cookie);

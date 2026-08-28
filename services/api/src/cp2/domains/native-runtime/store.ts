@@ -19,11 +19,13 @@ import { Cp2Error } from "../../cp2-error.js";
 
 export const nativeRuntimeContractVersion = "1";
 export const builtinRuntimeAgentId = "builtin:soko-agent:v1";
-export const builtinRuntimeModelId = "sokoclaw-local";
+export const builtinRuntimeModelId = "openai-fast";
 export const globalDefaultRuntimeBindingId = "builtin:soko-default-runtime:v1";
 
-const builtinRuntimeHostId = stableUuid("native-runtime-host:in-process");
-const builtinRuntimeInstallationId = stableUuid("native-runtime-installation:sokoclaw-local");
+const builtinRuntimeHostId = stableUuid("native-runtime-host:global:openai");
+const builtinRuntimeInstallationId = stableUuid(
+  "native-runtime-installation:openai-fast:global-openai"
+);
 const builtinPrimaryRoleId = stableUuid("native-runtime-role:global-default:primary");
 
 export interface NativeRuntimeSnapshot {
@@ -49,66 +51,62 @@ export class NativeRuntimeBindingStore {
 
   ensureGlobalDefault(now: Date = new Date()): NativeRuntimeBindingSummary {
     const timestamp = now.toISOString();
-    if (!this.agents.has(builtinRuntimeAgentId)) {
-      this.agents.set(builtinRuntimeAgentId, {
-        id: builtinRuntimeAgentId,
-        businessId: null,
-        accountId: null,
-        name: "Soko built-in agent",
-        provider: "soko",
-        packageRef: null,
-        version: "1",
-        runtimeContractVersion: nativeRuntimeContractVersion,
-        capabilities: ["deterministic-tools", "mcp"],
-        configuration: { requiredModelCapabilities: [] },
-        status: "active",
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
-    if (!this.models.has(builtinRuntimeModelId)) {
-      this.models.set(builtinRuntimeModelId, {
-        id: builtinRuntimeModelId,
-        name: "Soko deterministic compatibility fallback",
-        provider: "soko",
-        providerModelId: builtinRuntimeModelId,
-        runtimeContractVersion: nativeRuntimeContractVersion,
-        capabilities: ["tool-routing", "offline"],
-        configuration: { executionTarget: "backend", deterministic: true },
-        status: "active",
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
-    if (!this.hosts.has(builtinRuntimeHostId)) {
-      this.hosts.set(builtinRuntimeHostId, {
-        id: builtinRuntimeHostId,
-        businessId: null,
-        accountId: null,
-        type: "in-process",
-        name: "Soko API process",
-        endpoint: null,
-        status: "available",
-        capabilities: ["backend", "deterministic-tools"],
-        configuration: {},
-        credentialReference: null,
-        lastKnownHealthyAt: timestamp,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
-    if (!this.installations.has(builtinRuntimeInstallationId)) {
-      this.installations.set(builtinRuntimeInstallationId, {
-        id: builtinRuntimeInstallationId,
-        modelId: builtinRuntimeModelId,
-        executionHostId: builtinRuntimeHostId,
-        status: "available",
-        configuration: {},
-        lastKnownHealthyAt: timestamp,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
+    const existingAgent = this.agents.get(builtinRuntimeAgentId);
+    this.agents.set(builtinRuntimeAgentId, {
+      id: builtinRuntimeAgentId,
+      businessId: null,
+      accountId: null,
+      name: "Soko built-in agent",
+      provider: "soko",
+      packageRef: null,
+      version: "1",
+      runtimeContractVersion: nativeRuntimeContractVersion,
+      capabilities: ["tools", "mcp"],
+      configuration: { requiredModelCapabilities: ["chat", "tool-routing"] },
+      status: "active",
+      createdAt: existingAgent?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    });
+    const existingModel = this.models.get(builtinRuntimeModelId);
+    this.models.set(builtinRuntimeModelId, {
+      id: builtinRuntimeModelId,
+      name: "OpenAI fast",
+      provider: "openai",
+      providerModelId: builtinRuntimeModelId,
+      runtimeContractVersion: nativeRuntimeContractVersion,
+      capabilities: ["chat", "tool-routing"],
+      configuration: { executionTarget: "openai", activationRequired: true },
+      status: "active",
+      createdAt: existingModel?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    });
+    const existingHost = this.hosts.get(builtinRuntimeHostId);
+    this.hosts.set(builtinRuntimeHostId, {
+      id: builtinRuntimeHostId,
+      businessId: null,
+      accountId: null,
+      type: "openai",
+      name: "OpenAI hosted runtime",
+      endpoint: null,
+      status: "unavailable",
+      capabilities: ["openai", "chat", "tool-routing"],
+      configuration: { executionTarget: "openai", activationRequired: true },
+      credentialReference: "env:OPENAI_API_KEY",
+      lastKnownHealthyAt: null,
+      createdAt: existingHost?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    });
+    const existingInstallation = this.installations.get(builtinRuntimeInstallationId);
+    this.installations.set(builtinRuntimeInstallationId, {
+      id: builtinRuntimeInstallationId,
+      modelId: builtinRuntimeModelId,
+      executionHostId: builtinRuntimeHostId,
+      status: "unavailable",
+      configuration: { activationRequired: true },
+      lastKnownHealthyAt: null,
+      createdAt: existingInstallation?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    });
     const existing = this.bindings.get(globalDefaultRuntimeBindingId);
     if (existing === undefined) {
       this.bindings.set(globalDefaultRuntimeBindingId, {
@@ -119,26 +117,50 @@ export class NativeRuntimeBindingStore {
         name: "Soko default runtime",
         status: "active",
         isDefault: true,
-        configuration: { source: "repository-default" },
+        configuration: { source: "repository-default", activationRequired: true },
         runtimeContractVersion: nativeRuntimeContractVersion,
         createdAt: timestamp,
         updatedAt: timestamp,
         updatedBy: "system"
       });
-      this.bindingModels.set(builtinPrimaryRoleId, {
-        id: builtinPrimaryRoleId,
-        runtimeBindingId: globalDefaultRuntimeBindingId,
-        modelId: builtinRuntimeModelId,
-        role: "primary",
-        priority: 0,
-        executionHostId: builtinRuntimeHostId,
-        configuration: {},
-        enabled: true,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
     }
+    const existingRole = this.bindingModels.get(builtinPrimaryRoleId);
+    this.bindingModels.set(builtinPrimaryRoleId, {
+      id: builtinPrimaryRoleId,
+      runtimeBindingId: globalDefaultRuntimeBindingId,
+      modelId: builtinRuntimeModelId,
+      role: "primary",
+      priority: 0,
+      executionHostId: builtinRuntimeHostId,
+      configuration: { activationRequired: true },
+      enabled: true,
+      createdAt: existingRole?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    });
     return this.bindings.get(globalDefaultRuntimeBindingId) as NativeRuntimeBindingSummary;
+  }
+
+  activateVerifiedGlobalDefault(checkedAt: string): NativeRuntimeBindingSummary {
+    const host = this.hosts.get(builtinRuntimeHostId);
+    const installation = this.installations.get(builtinRuntimeInstallationId);
+    if (host === undefined || installation === undefined) {
+      throw new Cp2Error(503, "RUNTIME_DEFAULT_MISSING", "Global runtime topology is incomplete.");
+    }
+    this.hosts.set(host.id, {
+      ...host,
+      status: "available",
+      configuration: { ...host.configuration, verifiedAt: checkedAt },
+      lastKnownHealthyAt: checkedAt,
+      updatedAt: checkedAt
+    });
+    this.installations.set(installation.id, {
+      ...installation,
+      status: "available",
+      configuration: { ...installation.configuration, verifiedAt: checkedAt },
+      lastKnownHealthyAt: checkedAt,
+      updatedAt: checkedAt
+    });
+    return this.requireGlobalDefault();
   }
 
   activateVerifiedModel(input: NativeRuntimeActivationInput): NativeRuntimeBindingSummary {
@@ -320,11 +342,17 @@ export class NativeRuntimeBindingStore {
     return this.resolveBinding(binding, conversationId, false);
   }
 
-  private resolveBinding(
-    binding: NativeRuntimeBindingSummary,
-    conversationId: string,
-    usedGlobalDefault: boolean
-  ): ResolvedNativeRuntimeBinding {
+  // Structural validity only: binding/agent are active, contract versions line up, and exactly
+  // one primary role is enabled. Deliberately does not resolve installation/host availability -
+  // assigning a binding to a conversation (or simply opening one) must not fail just because a
+  // model happens to be unreachable right now. That is a turn-time concern, checked separately by
+  // resolveBinding below, so a temporarily unavailable model never blocks viewing or continuing a
+  // conversation's history from another device signed into the same account.
+  private validateBindingStructure(binding: NativeRuntimeBindingSummary): {
+    agent: NativeRuntimeAgentSummary;
+    primaryRole: NativeRuntimeBindingModelSummary;
+    enabledRoles: NativeRuntimeBindingModelSummary[];
+  } {
     if (binding.status !== "active") {
       throw new Cp2Error(409, "RUNTIME_BINDING_INACTIVE", "Runtime binding is not active.");
     }
@@ -346,7 +374,20 @@ export class NativeRuntimeBindingStore {
         "An active runtime binding must have exactly one enabled primary model."
       );
     }
-    const primary = this.resolveRole(agent, primaryRoles[0] as NativeRuntimeBindingModelSummary);
+    return {
+      agent,
+      primaryRole: primaryRoles[0] as NativeRuntimeBindingModelSummary,
+      enabledRoles
+    };
+  }
+
+  private resolveBinding(
+    binding: NativeRuntimeBindingSummary,
+    conversationId: string,
+    usedGlobalDefault: boolean
+  ): ResolvedNativeRuntimeBinding {
+    const { agent, primaryRole, enabledRoles } = this.validateBindingStructure(binding);
+    const primary = this.resolveRole(agent, primaryRole);
     const fallbacks = enabledRoles
       .filter((role) => role.role === "fallback")
       .sort(compareRoles)
@@ -489,7 +530,7 @@ export class NativeRuntimeBindingStore {
         "Runtime binding belongs to another shop."
       );
     }
-    this.resolveBinding(binding, "assignment-validation", binding.isDefault);
+    this.validateBindingStructure(binding);
     return binding;
   }
 

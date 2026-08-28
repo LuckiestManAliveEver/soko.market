@@ -424,6 +424,10 @@ describe("CP11 local model adapter", () => {
       });
     });
     const store = createCp2Store({ runtimeModelProvider: provider });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the injected
+    // provider is actually reachable.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inboxResponse = await app.inject({
@@ -493,7 +497,7 @@ describe("CP11 local model adapter", () => {
     await app.close();
   });
 
-  it("persists a deterministic agent reply when the model provider is unavailable", async () => {
+  it("persists an honest unavailable-model notice, not a fabricated reply, and retries idempotently", async () => {
     let completionCount = 0;
     const provider = createTestModelProvider(async () => {
       completionCount += 1;
@@ -513,6 +517,10 @@ describe("CP11 local model adapter", () => {
       });
     });
     const store = createCp2Store({ runtimeModelProvider: provider });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the injected
+    // provider is actually reachable.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inbox = await app.inject({
@@ -542,25 +550,19 @@ describe("CP11 local model adapter", () => {
       failureCode: null,
       processing: {
         status: "completed",
-        errorCode: null,
-        retryable: false
+        errorCode: "AGENT_MODEL_UNAVAILABLE",
+        retryable: true
       },
-      runtime: {
-        turn: {
-          model: {
-            status: "unavailable",
-            fallbackUsed: true,
-            errorCode: "MODEL_PROVIDER_UNREACHABLE"
-          }
-        }
-      },
+      runtime: null,
       agentMessage: {
         author: "agent"
       }
     });
+    // No fabricated model output: the persisted reply is an honest, actionable notice, not a
+    // canned answer standing in for a real completion.
     expect(completed.agentMessage.content).toMatchObject({
       type: "text",
-      text: completed.runtime?.turn.response
+      text: expect.stringMatching(/can.?t use a working model/iu)
     });
     expect(store.snapshot().conversationMessages).toHaveLength(2);
 
@@ -589,6 +591,10 @@ describe("CP11 local model adapter", () => {
       });
     });
     const store = createCp2Store({ runtimeModelProvider: provider });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the injected
+    // provider is actually reachable.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const { businessId, sessionCookie } = await createOwnerBusiness(app);
     const inbox = await app.inject({

@@ -197,9 +197,6 @@ import type {
   SyncCollection,
   SyncPullPage,
   UserSummary,
-  ModelPreferenceSummary,
-  RuntimeHostSummary,
-  RuntimeModelInstallationSummary,
   NativeExecutionHostSummary,
   NativeModelInstallationSummary,
   NativeRuntimeAgentSummary,
@@ -211,7 +208,6 @@ import type {
   SokoIdResolution
 } from "@soko/shared-types";
 import { type ModelRuntimeAdapter } from "../inference/model-runtime.js";
-import { ExecutionFabricStore } from "./domains/execution-fabric/store.js";
 import { NativeRuntimeBindingStore } from "./domains/native-runtime/store.js";
 import {
   createChannelGatewayFromEnvironment,
@@ -523,11 +519,6 @@ export interface Cp2Snapshot {
   agentModelAssignments?: AgentModelAssignmentSummary[];
   browserInferenceAssignments?: BrowserInferenceAssignmentSummary[];
   agentModelBindings?: AgentModelBindingSummary[];
-  // Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md). executionHistory is
-  // deliberately NOT here - it stays in-memory-only per Phase 2's own explicit scoping.
-  modelPreferences?: ModelPreferenceSummary[];
-  runtimeHosts?: RuntimeHostSummary[];
-  runtimeModelInstallations?: RuntimeModelInstallationSummary[];
   nativeRuntimeAgents?: NativeRuntimeAgentSummary[];
   nativeRuntimeModels?: NativeRuntimeModelSummary[];
   nativeExecutionHosts?: NativeExecutionHostSummary[];
@@ -627,8 +618,6 @@ export interface Cp2StoreOptions {
   workspaceRoot?: string;
   workspaceDeliveryMaxFileBytes?: number;
   conversationAttachmentBlobStore?: ConversationAttachmentBlobStore;
-  /** Phase 2 execution-fabric cutover flag - see EnvironmentConfig.executionFabricEnabled. */
-  executionFabricEnabled?: boolean;
 }
 
 export interface NetworkInviteDeliveryInput {
@@ -1075,9 +1064,7 @@ export class Cp2Store {
         : { runtimeModelProviderResolver: this.options.runtimeModelProviderResolver }),
       ...(this.options.runtimeModelProvider === undefined
         ? {}
-        : { runtimeModelProvider: this.options.runtimeModelProvider }),
-      executionFabricEnabled: this.options.executionFabricEnabled === true,
-      executionFabricStore: this.executionFabricStore
+        : { runtimeModelProvider: this.options.runtimeModelProvider })
     });
   }
 
@@ -1120,12 +1107,6 @@ export class Cp2Store {
   // below. `mcpAccessTokens`/`mcpTokenIdByHash` deliberately stay here (see that domain's header
   // comment for why).
   private readonly agentRuntimeDomain: AgentRuntimeDomain;
-  // Phase 2 (docs/architecture/agent-execution-fabric-phase2.md). Deliberately NOT part of the
-  // generic snapshot/restore/Postgres-persistence sweeps below - ExecutionFabricStore stays
-  // in-memory-only in this phase (same as Phase 1 left it); ModelPreference records written via
-  // the flagged "Use with Agent" path do not survive a process restart yet. This is a known,
-  // explicitly scoped gap (see the Phase 2 report), not an oversight.
-  private readonly executionFabricStore = new ExecutionFabricStore();
   private readonly nativeRuntimeBindings = new NativeRuntimeBindingStore();
   private readonly quarantinedBusinessIds = new Set<string>();
   private readonly syncChanges: SyncChange[] = [];
@@ -2981,70 +2962,6 @@ export class Cp2Store {
     return this.agentRuntimeDomain.activateAiModel(...args);
   }
 
-  /**
-   * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §3) - what "Use with Agent" now
-   * writes: a `ModelPreference` at the given scope, not a device-specific permanent binding.
-   * Session-authorized the same way every other agent-runtime write is (`membership:manage`),
-   * even though the underlying store call is plain and un-authenticated on its own (see
-   * ExecutionFabricStore's own header comment on why it does not authenticate itself).
-   */
-  createModelPreference(input: {
-    sessionId: string | null;
-    businessId: string;
-    scope: Parameters<ExecutionFabricStore["createModelPreference"]>[0]["scope"];
-    scopeId: string;
-    preferredModelIds: string[];
-    fallbackModelIds: string[];
-    requiredCapabilities: string[];
-    executionPreference: Parameters<
-      ExecutionFabricStore["createModelPreference"]
-    >[0]["executionPreference"];
-    qualityPreference: Parameters<
-      ExecutionFabricStore["createModelPreference"]
-    >[0]["qualityPreference"];
-    allowCloudFallback: boolean;
-    maxCostPerRequest: number | null;
-    maxLatencyMs: number | null;
-    minimumContextWindow: number | null;
-    now?: Date;
-  }): ReturnType<ExecutionFabricStore["createModelPreference"]> {
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage"
-    );
-    return this.executionFabricStore.createModelPreference({
-      tenantId: input.businessId,
-      scope: input.scope,
-      scopeId: input.scopeId,
-      preferredModelIds: input.preferredModelIds,
-      fallbackModelIds: input.fallbackModelIds,
-      requiredCapabilities: input.requiredCapabilities,
-      executionPreference: input.executionPreference,
-      qualityPreference: input.qualityPreference,
-      allowCloudFallback: input.allowCloudFallback,
-      maxCostPerRequest: input.maxCostPerRequest,
-      maxLatencyMs: input.maxLatencyMs,
-      minimumContextWindow: input.minimumContextWindow,
-      updatedBy: session.user.id,
-      ...(input.now === undefined ? {} : { now: input.now })
-    });
-  }
-
-  getModelPreference(input: {
-    sessionId: string | null;
-    businessId: string;
-    scope: Parameters<ExecutionFabricStore["getModelPreference"]>[1];
-    scopeId: string;
-  }): ReturnType<ExecutionFabricStore["getModelPreference"]> {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
-    return this.executionFabricStore.getModelPreference(
-      input.businessId,
-      input.scope,
-      input.scopeId
-    );
-  }
-
   /** In-process, state-only resolver. It never performs a network probe. */
   resolveRuntimeBinding(conversationId: string): ResolvedNativeRuntimeBinding {
     return this.nativeRuntimeBindings.resolveRuntimeBinding(
@@ -3053,89 +2970,10 @@ export class Cp2Store {
     );
   }
 
-  listExecutionHistory(input: {
-    sessionId: string | null;
-    businessId: string;
-    agentId: string;
-    limit?: number;
-  }): ReturnType<ExecutionFabricStore["listExecutionHistory"]> {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
-    return this.executionFabricStore.listExecutionHistory(input.agentId, input.limit);
+  activateVerifiedGlobalRuntimeDefault(checkedAt: string): NativeRuntimeBindingSummary {
+    return this.nativeRuntimeBindings.activateVerifiedGlobalDefault(checkedAt);
   }
 
-  /**
-   * Phase 2.5 (docs/architecture/agent-execution-fabric-phase2-5.md §2) - `RuntimeHost`/
-   * `RuntimeModelInstallation` create/read, exposed on Cp2Store the same way ModelPreference
-   * already is, so the entities named in scope for this phase have a real, testable, authorized
-   * path in and out of Postgres. Still no dedicated HTTP route (that remains Phase 3 scope per
-   * Phase 2's report) - these exist for direct Cp2Store callers (and this phase's own persistence
-   * tests) only. Authorized via a business session even though RuntimeHost itself is
-   * account-scoped, not business-scoped - `requireAuthorizedSession` is the only session-to-
-   * identity resolution this store has, and every current caller already has a businessId in
-   * hand.
-   */
-  registerRuntimeHost(input: {
-    sessionId: string | null;
-    businessId: string;
-    name: string;
-    trustLevel: Parameters<ExecutionFabricStore["registerRuntimeHost"]>[0]["trustLevel"];
-    declaredRuntimes: string[];
-    maxConcurrentJobs: number;
-    now?: Date;
-  }): ReturnType<ExecutionFabricStore["registerRuntimeHost"]> {
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage"
-    );
-    return this.executionFabricStore.registerRuntimeHost({
-      accountId: session.account.id,
-      ownerId: session.user.id,
-      name: input.name,
-      trustLevel: input.trustLevel,
-      declaredRuntimes: input.declaredRuntimes,
-      maxConcurrentJobs: input.maxConcurrentJobs,
-      ...(input.now === undefined ? {} : { now: input.now })
-    });
-  }
-
-  getRuntimeHost(input: {
-    sessionId: string | null;
-    businessId: string;
-    runtimeHostId: string;
-  }): ReturnType<ExecutionFabricStore["getRuntimeHost"]> {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
-    return this.executionFabricStore.getRuntimeHost(input.runtimeHostId);
-  }
-
-  installRuntimeModel(input: {
-    sessionId: string | null;
-    businessId: string;
-    runtimeHostId: string;
-    modelId: string;
-    now?: Date;
-  }): ReturnType<ExecutionFabricStore["installRuntimeModel"]> {
-    const session = this.requireAuthorizedSession(
-      input.sessionId,
-      input.businessId,
-      "membership:manage"
-    );
-    return this.executionFabricStore.installRuntimeModel({
-      runtimeHostId: input.runtimeHostId,
-      accountId: session.account.id,
-      modelId: input.modelId,
-      ...(input.now === undefined ? {} : { now: input.now })
-    });
-  }
-
-  listRuntimeModelInstallations(input: {
-    sessionId: string | null;
-    businessId: string;
-    runtimeHostId: string;
-  }): ReturnType<ExecutionFabricStore["listRuntimeModelInstallations"]> {
-    this.requireAuthorizedSession(input.sessionId, input.businessId, "business:read");
-    return this.executionFabricStore.listRuntimeModelInstallations(input.runtimeHostId);
-  }
   getActiveAgentModelBinding(
     ...args: Parameters<AgentRuntimeDomain["getActiveAgentModelBinding"]>
   ): ReturnType<AgentRuntimeDomain["getActiveAgentModelBinding"]> {
@@ -5350,15 +5188,6 @@ export class Cp2Store {
       agentModelBindings: [...this.agentRuntimeDomain.agentModelBindingsMap.values()].map(
         cloneAgentModelBinding
       ),
-      modelPreferences: [...this.executionFabricStore.modelPreferencesMap.values()].map(
-        (preference) => ({ ...preference })
-      ),
-      runtimeHosts: [...this.executionFabricStore.runtimeHostsMap.values()].map((host) => ({
-        ...host
-      })),
-      runtimeModelInstallations: [
-        ...this.executionFabricStore.runtimeModelInstallationsMap.values()
-      ].map((installation) => ({ ...installation })),
       nativeRuntimeAgents: [...this.nativeRuntimeBindings.agentsMap.values()],
       nativeRuntimeModels: [...this.nativeRuntimeBindings.modelsMap.values()],
       nativeExecutionHosts: [...this.nativeRuntimeBindings.hostsMap.values()],
@@ -5456,7 +5285,6 @@ export class Cp2Store {
     this.messagingDomain.clear();
     this.marketplaceIntroStates.clear();
     this.agentRuntimeDomain.clear();
-    this.executionFabricStore.clear();
     this.nativeRuntimeBindings.clear();
     this.quarantinedBusinessIds.clear();
     this.syncChanges.splice(0, this.syncChanges.length);
@@ -5540,7 +5368,6 @@ export class Cp2Store {
 
     this.messagingDomain.restore(snapshot);
     this.agentRuntimeDomain.restore(snapshot);
-    this.executionFabricStore.restore(snapshot);
     this.nativeRuntimeBindings.restore(snapshot);
     this.salesDomain.restore(snapshot);
 

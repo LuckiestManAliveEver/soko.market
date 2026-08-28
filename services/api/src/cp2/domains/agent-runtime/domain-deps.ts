@@ -36,7 +36,6 @@ import type { BusinessPermission, InvoiceInput, PaymentInput } from "@soko/busin
 
 import type { ModelRuntimeAdapter } from "../../../inference/model-runtime.js";
 import type { SessionRecord } from "../../store.js";
-import type { ExecutionFabricStore } from "../execution-fabric/store.js";
 
 export interface AgentRuntimeDomainDeps {
   requireAuthorizedSession: (
@@ -309,12 +308,4 @@ export interface AgentRuntimeDomainDeps {
   }) => ModelRuntimeAdapter | undefined;
   runtimeModelProviderResolver?: (modelId: string) => RuntimeModelProvider | undefined;
   runtimeModelProvider?: RuntimeModelProvider;
-  /**
-   * Phase 2 (docs/architecture/agent-execution-fabric-phase2.md §1). When true,
-   * `createRuntimeModelRoute` is driven by the Execution Planner instead of the legacy active
-   * binding lookup; when false or absent, behavior is byte-for-byte the pre-Phase-2 path. Always
-   * present alongside `executionFabricStore` - Cp2Store threads both together.
-   */
-  executionFabricEnabled?: boolean;
-  executionFabricStore: ExecutionFabricStore;
 }

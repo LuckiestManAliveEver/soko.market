@@ -35,6 +35,28 @@ guards. A deferred constraint trigger requires exactly one enabled primary befor
 binding transaction commits. Existing `cp2_runtime_sessions` and `cp2_runtime_turns` already
 provide runtime-instance lifecycle, so no duplicate runtime-instance table was added.
 
+## Assignment is not resolution
+
+Agent and model are independent, swappable slots, not a hardcoded pairing baked into the
+conversation. Assigning a binding to a conversation (creating the conversation, or an explicit
+`runtimeBindingId`) only validates that the binding is structurally sound: it is active, its agent
+is active, contract versions match, and it has exactly one enabled primary role. It does not check
+whether that primary's installation and host currently report available - a business's model being
+briefly unreachable must never block opening or continuing a conversation, only generating a new
+reply. Full availability resolution, including the fallback search, happens only at turn time, in
+`resolveRuntimeBinding`.
+
+Because the binding lives on the conversation row in Postgres, not on any device, swapping the
+active agent or model (the "Use with agent" flow, `POST /api/agents/:id/models/:modelId/activate`)
+changes what a conversation will use for its _next_ turn without touching its message history, and
+without requiring the swap and the next message to come from the same device. Any authenticated
+session for the account sees the same conversation, the same messages, and the same binding.
+`tests/model-activation-runtime.test.ts`'s "continues the same conversation with full history from
+a second device session after swapping the active model" exercises this directly: it opens a
+conversation and sends a message on one session, swaps the active model, sends the next message
+from a second session signed in with the same credentials, and asserts all four messages (both
+replies, from both models) persist in one conversation.
+
 ## Availability and compatibility
 
 Resolution performs no HTTP requests. A candidate is available only when:
@@ -56,11 +78,17 @@ constraints and are never copied into binding configuration.
 
 ## Default and activation
 
-The global default is the existing `builtin:soko-agent:v1` plus `sokoclaw-local` on the in-process
-API host. This is the only repository runtime that works without assuming an optional OpenAI key,
-backend inference deployment, browser capability, or installed device. It is deliberately not Pi,
-SmolLM, or Qwen. Qwen remains the catalog's recommended downloadable/backend model and becomes a
-business binding only after its real adapter health check passes.
+The global default is `builtin:soko-agent:v1` plus the repository-supported `openai-fast`
+generative model. Its host and installation are seeded as `unavailable`; a database row is not
+treated as proof that inference works. On every production process start, the existing OpenAI
+adapter performs a live completion health check. Only a successful probe marks the host and
+installation `available` and persists `lastKnownHealthyAt`. A missing adapter, key, allowlist entry,
+or failed probe stops production startup instead of falling back to deterministic protected-agent
+behavior or fabricating a language-model response.
+
+Development and test stores therefore have an explicit unavailable global model until a test or
+caller invokes verified activation. Business-specific Qwen, browser, installed-app, owner-node,
+and OpenAI bindings continue to activate only after their existing adapter health checks pass.
 
 The existing “Use with agent” API now writes both the legacy rollback record and the native graph
 in the same CP2 snapshot transaction, then rebinds the account's shop/agent conversations. Removing
@@ -68,25 +96,44 @@ the model deactivates the native binding and returns affected conversations to t
 New conversations accept an authorized explicit binding or receive the active shop binding/global
 default on the server.
 
-## Fabric migration and backfill
+## Retired selection architecture and backfill
 
-`EXECUTION_FABRIC_ENABLED` remains a temporary rollback kill switch. Native resolution is the
-default production path. Legacy files are marked `TODO(remove-after-fabric-migration)`, and the
-boundary check rejects new Fabric imports outside the fixed rollback allowlist.
+Migration `065_retire_execution_fabric.sql` permanently removes the old preference, host, and
+installation tables after preserving their information in the native graph. Legacy host and
+installation rows become native `unavailable` records because the old persisted state did not
+contain durable liveness proof. Every legacy preference becomes an inactive synthetic agent plus a
+draft binding with ordered model roles and the original policy fields in configuration. This is a
+lossless, deterministic archive: it requires no operator choice and cannot accidentally become an
+executable binding.
 
-Run the backfill after migration:
+The former server domain, browser adapter, planner package, preference endpoints, environment
+flags, snapshot collections, and tests have been deleted. The boundary check now rejects any new
+production source containing retired selection dependencies or terminology. Historical migration
+`060_execution_fabric_entities.sql` remains unchanged so a new database can replay its history
+before migration 065 archives and removes it.
+
+The compatibility command remains safe both before and after migration 065 (retired source tables
+are treated as already archived):
 
 ```bash
 pnpm db:backfill-native-runtime --dry-run
 pnpm db:backfill-native-runtime
 ```
 
-The script maps only active, successfully verified legacy bindings because those records prove a
-model/target health observation. Stable IDs and upserts make it idempotent. Agent-scoped Fabric
-preferences without a verified binding are reported as ambiguous: they do not prove an execution
-host or installation, so the script refuses to guess. Non-agent preferences and inactive/unverified
-bindings are reported as skipped; multiple active bindings are reported as conflicts. Apply mode
-refuses to run while ambiguous mappings or conflicts remain.
+The compatibility script maps active, successfully verified legacy agent-model bindings as active
+native bindings. It archives every old preference scope as a draft binding and maps all old hosts
+and installations as unavailable native records. Stable IDs and upserts make it idempotent. It
+still reports genuine conflicts such as multiple active verified bindings for one agent, but the
+old preference/host/installation shapes no longer produce ambiguous mappings or require operator
+resolution.
+
+## Database verification
+
+`db:verify-schema` runs in a read-only transaction and checks all migration checksums, constraints,
+indexes, the absence of retired tables, and the unique `openai-fast` global default. The production
+Render build runs it immediately after migrations with `REQUIRE_NEON_DATABASE=true`; verification
+fails unless the connection is an actual Neon hostname. Local Postgres remains useful for migration
+replay, but it can no longer satisfy the production database gate.
 
 ## Observability
 

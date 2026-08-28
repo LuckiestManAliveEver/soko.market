@@ -34,16 +34,21 @@ describe("native runtime binding resolver", () => {
     expect(resolved.selected.model.id).toBe("model-primary");
   });
 
-  it("uses the global default when a legacy conversation has no binding", () => {
+  it("uses the verified generative global default when a legacy conversation has no binding", () => {
     const store = new NativeRuntimeBindingStore();
     const conversation = conversationRecord(null);
+    expect(() =>
+      store.resolveRuntimeBinding(conversation.id, new Map([[conversation.id, conversation]]))
+    ).toThrowError(expect.objectContaining({ code: "RUNTIME_MODELS_UNAVAILABLE" }));
+    store.activateVerifiedGlobalDefault(timestamp);
     const resolved = store.resolveRuntimeBinding(
       conversation.id,
       new Map([[conversation.id, conversation]])
     );
     expect(resolved.usedGlobalDefault).toBe(true);
     expect(resolved.binding.id).toBe(globalDefaultRuntimeBindingId);
-    expect(resolved.selected.model.id).toBe("sokoclaw-local");
+    expect(resolved.selected.model.id).toBe("openai-fast");
+    expect(resolved.selected.host?.lastKnownHealthyAt).toBe(timestamp);
   });
 
   it("returns an explicit error when no global default exists", () => {

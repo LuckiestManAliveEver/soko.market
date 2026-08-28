@@ -485,6 +485,10 @@ describe("browser inference database assignment", () => {
 
   it("delivers a browser workspace file through the authenticated runtime and conversation", async () => {
     const store = createCp2Store({ modelRuntimeAdapterResolver: () => undefined });
+    // Global default model/host are seeded unavailable until a verified health check runs (see
+    // services/api/src/index.ts's production startup gate); mirror that here so the resolver has
+    // an available candidate to route to (the client supplies its own browser completion).
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700001436");
     await putJson(

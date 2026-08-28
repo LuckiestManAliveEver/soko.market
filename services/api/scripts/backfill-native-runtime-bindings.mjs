@@ -98,18 +98,124 @@ export function planNativeRuntimeBackfill(input) {
 
   for (const envelope of input.modelPreferences ?? []) {
     const preference = envelope.record ?? envelope;
-    if (preference.scope !== "agent") {
-      skipped.push({ source: "model-preference", id: preference.id, reason: "non-agent-scope" });
-      continue;
+    const timestamp = preference.updatedAt ?? preference.createdAt ?? new Date(0).toISOString();
+    const accountId = envelope.account_id ?? envelope.accountId ?? null;
+    const businessId = envelope.business_id ?? envelope.businessId ?? preference.tenantId ?? null;
+    const agentId = `native:retired-preference-agent:${preference.id}`;
+    const bindingId = `native:retired-preference:${preference.id}`;
+    const preferred = uniqueStrings(preference.preferredModelIds);
+    const fallback = uniqueStrings(preference.fallbackModelIds).filter(
+      (modelId) => !preferred.includes(modelId)
+    );
+    actions.push(
+      action("agent", agentId, {
+        id: agentId,
+        businessId,
+        accountId,
+        name: `Retired ${preference.scope} preference holder`,
+        provider: "soko-migrated-preference",
+        packageRef: null,
+        version: "1",
+        runtimeContractVersion: "1",
+        capabilities: [],
+        configuration: {
+          requiredModelCapabilities: uniqueStrings(preference.requiredCapabilities)
+        },
+        status: "inactive",
+        createdAt: preference.createdAt ?? timestamp,
+        updatedAt: timestamp
+      }),
+      action("binding", bindingId, {
+        id: bindingId,
+        businessId,
+        accountId,
+        agentId,
+        name: "Archived Execution Fabric preference",
+        status: "draft",
+        isDefault: false,
+        configuration: {
+          source: "retired-execution-fabric-preference",
+          legacyPreferenceId: preference.id,
+          legacyScope: preference.scope,
+          legacyScopeId: preference.scopeId,
+          executionPreference: preference.executionPreference ?? null,
+          qualityPreference: preference.qualityPreference ?? null,
+          allowCloudFallback: preference.allowCloudFallback ?? false,
+          maxCostPerRequest: preference.maxCostPerRequest ?? null,
+          maxLatencyMs: preference.maxLatencyMs ?? null,
+          minimumContextWindow: preference.minimumContextWindow ?? null
+        },
+        runtimeContractVersion: "1",
+        createdAt: preference.createdAt ?? timestamp,
+        updatedAt: timestamp,
+        updatedBy: preference.updatedBy ?? "migration"
+      })
+    );
+    const orderedModels = [...preferred, ...fallback];
+    for (const [index, modelId] of orderedModels.entries()) {
+      const role = index === 0 ? "primary" : "fallback";
+      const priority = role === "primary" ? 0 : index - 1;
+      actions.push(
+        modelAction(modelId, "retired-fabric", timestamp),
+        roleAction(bindingId, modelId, role, priority, null, timestamp)
+      );
     }
-    if (activeByAgent.has(preference.scopeId)) continue;
-    ambiguous.push({
-      source: "model-preference",
-      id: preference.id,
-      scopeId: preference.scopeId,
-      modelIds: [...(preference.preferredModelIds ?? []), ...(preference.fallbackModelIds ?? [])],
-      reason: "preference-does-not-identify-a-verified-installation-or-execution-host"
-    });
+    if (orderedModels.length === 0) {
+      skipped.push({
+        source: "model-preference",
+        id: preference.id,
+        reason: "archived-without-model-roles"
+      });
+    }
+  }
+
+  for (const envelope of input.runtimeHosts ?? []) {
+    const host = envelope.record ?? envelope;
+    const timestamp = host.updatedAt ?? host.createdAt ?? new Date(0).toISOString();
+    actions.push(
+      action("host", host.id, {
+        id: host.id,
+        businessId: envelope.business_id ?? envelope.businessId ?? null,
+        accountId: envelope.account_id ?? envelope.accountId ?? host.accountId ?? null,
+        type: "retired-fabric-host",
+        name: host.name ?? "Retired Execution Fabric host",
+        endpoint: null,
+        status: "unavailable",
+        capabilities: uniqueStrings(host.declaredRuntimes),
+        configuration: {
+          source: "retired-execution-fabric-host",
+          legacyTrustLevel: host.trustLevel ?? null,
+          legacyBrokerNodeId: host.brokerNodeId ?? null,
+          legacyMaxConcurrentJobs: host.maxConcurrentJobs ?? null
+        },
+        credentialReference: null,
+        lastKnownHealthyAt: null,
+        createdAt: host.createdAt ?? timestamp,
+        updatedAt: timestamp
+      })
+    );
+  }
+
+  for (const envelope of input.runtimeModelInstallations ?? []) {
+    const installation = envelope.record ?? envelope;
+    const timestamp =
+      installation.updatedAt ?? installation.installedAt ?? new Date(0).toISOString();
+    actions.push(
+      modelAction(installation.modelId, "retired-fabric", timestamp),
+      action("installation", installation.id, {
+        id: installation.id,
+        modelId: installation.modelId,
+        executionHostId: installation.runtimeHostId,
+        status: "unavailable",
+        configuration: {
+          source: "retired-execution-fabric-installation",
+          legacyStatus: installation.status ?? null
+        },
+        lastKnownHealthyAt: null,
+        createdAt: installation.installedAt ?? timestamp,
+        updatedAt: timestamp
+      })
+    );
   }
 
   const deduped = new Map();
@@ -119,6 +225,10 @@ export function planNativeRuntimeBackfill(input) {
 
 function action(kind, id, record) {
   return { kind, id, record };
+}
+
+function uniqueStrings(value) {
+  return [...new Set(Array.isArray(value) ? value.filter((item) => typeof item === "string") : [])];
 }
 
 function modelAction(modelId, executionTarget, timestamp) {
@@ -193,11 +303,32 @@ function stableUuid(value) {
 }
 
 async function readSources(client) {
-  const [bindings, preferences] = await Promise.all([
-    client.query("select record from cp2_agent_model_bindings order by entity_id"),
-    client.query("select record from cp2_model_preferences order by entity_id")
+  const bindings = await client.query(
+    "select record, business_id, account_id from cp2_agent_model_bindings order by entity_id"
+  );
+  const preferences = await readRetiredSource(client, "cp2_model_preferences");
+  const runtimeHosts = await readRetiredSource(client, "cp2_runtime_hosts");
+  const runtimeModelInstallations = await readRetiredSource(
+    client,
+    "cp2_runtime_model_installations"
+  );
+  return {
+    agentModelBindings: bindings.rows,
+    modelPreferences: preferences,
+    runtimeHosts,
+    runtimeModelInstallations
+  };
+}
+
+async function readRetiredSource(client, tableName) {
+  const exists = await client.query("select to_regclass($1) as table_name", [
+    `public.${tableName}`
   ]);
-  return { agentModelBindings: bindings.rows, modelPreferences: preferences.rows };
+  if (exists.rows[0]?.table_name === null) return [];
+  const records = await client.query(
+    `select record, business_id, account_id from ${tableName} order by entity_id`
+  );
+  return records.rows;
 }
 
 const tableForKind = {
@@ -240,7 +371,9 @@ async function applyPlan(client, plan) {
         ]
       );
     }
-    for (const item of plan.actions.filter((candidate) => candidate.kind === "binding")) {
+    for (const item of plan.actions.filter(
+      (candidate) => candidate.kind === "binding" && candidate.record.status === "active"
+    )) {
       await client.query(
         `update cp2_conversations set record = jsonb_set(record, '{runtimeBindingId}', to_jsonb($1::text), true)
          where business_id = $2 and account_id = $3`,
@@ -279,8 +412,9 @@ async function main() {
   if (!databaseUrl) throw new Error("DATABASE_URL is required.");
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  const client = await pool.connect();
   try {
-    const plan = planNativeRuntimeBackfill(await readSources(pool));
+    const plan = planNativeRuntimeBackfill(await readSources(client));
     console.log(formatBackfillReport(plan, dryRun));
     if (dryRun) return;
     if (plan.conflicts.length > 0 || plan.ambiguous.length > 0) {
@@ -288,8 +422,9 @@ async function main() {
         "Backfill has conflicts or ambiguous mappings; resolve them before applying."
       );
     }
-    await applyPlan(pool, plan);
+    await applyPlan(client, plan);
   } finally {
+    client.release();
     await pool.end();
   }
 }

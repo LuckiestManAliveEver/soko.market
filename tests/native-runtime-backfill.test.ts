@@ -55,7 +55,7 @@ describe("native runtime backfill", () => {
     );
   });
 
-  it("reports Fabric preferences that cannot prove a host or installation", () => {
+  it("archives Fabric preferences deterministically without claiming availability", () => {
     const plan = planNativeRuntimeBackfill({
       modelPreferences: [
         {
@@ -69,13 +69,65 @@ describe("native runtime backfill", () => {
         }
       ]
     });
-    expect(plan.actions).toEqual([]);
-    expect(plan.ambiguous).toEqual([
-      expect.objectContaining({
-        id: "preference-1",
-        reason: "preference-does-not-identify-a-verified-installation-or-execution-host"
-      })
-    ]);
+    expect(plan.ambiguous).toEqual([]);
+    expect(plan.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent",
+          id: "native:retired-preference-agent:preference-1",
+          record: expect.objectContaining({ status: "inactive" })
+        }),
+        expect.objectContaining({
+          kind: "binding",
+          id: "native:retired-preference:preference-1",
+          record: expect.objectContaining({ status: "draft" })
+        }),
+        expect.objectContaining({
+          kind: "role",
+          record: expect.objectContaining({
+            modelId: "smollm2-360m-android",
+            role: "primary",
+            executionHostId: null
+          })
+        })
+      ])
+    );
+  });
+
+  it("migrates Fabric hosts and installations as unavailable until native verification", () => {
+    const plan = planNativeRuntimeBackfill({
+      runtimeHosts: [
+        {
+          account_id: "account-1",
+          record: { id: "host-1", name: "Owner node", declaredRuntimes: ["ollama"] }
+        }
+      ],
+      runtimeModelInstallations: [
+        {
+          record: {
+            id: "installation-1",
+            modelId: "model-1",
+            runtimeHostId: "host-1"
+          }
+        }
+      ]
+    });
+
+    expect(plan.ambiguous).toEqual([]);
+    expect(plan.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "host",
+          id: "host-1",
+          record: expect.objectContaining({ status: "unavailable", accountId: "account-1" })
+        }),
+        expect.objectContaining({
+          kind: "installation",
+          id: "installation-1",
+          record: expect.objectContaining({ status: "unavailable", modelId: "model-1" })
+        })
+      ])
+    );
   });
 
   it("reports conflicting active legacy bindings and dry-run output is mutation-free", () => {

@@ -20,6 +20,13 @@ if (databaseUrl === null) {
   console.error("DATABASE_URL or DIRECT_DATABASE_URL is required to verify the database schema.");
   process.exit(1);
 }
+const databaseHostname = new URL(databaseUrl).hostname.toLowerCase();
+const isNeonDatabase =
+  databaseHostname.endsWith(".neon.tech") || databaseHostname.endsWith(".neon.database");
+if (process.env.REQUIRE_NEON_DATABASE === "true" && !isNeonDatabase) {
+  console.error("REQUIRE_NEON_DATABASE=true, but the configured database is not a Neon host.");
+  process.exit(1);
+}
 
 const expectedTables = new Map([
   [
@@ -181,6 +188,48 @@ try {
     );
   }
 
+  const retiredRuntimeTables = await client.query(`
+    select table_name
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name in (
+        'cp2_model_preferences',
+        'cp2_runtime_hosts',
+        'cp2_runtime_model_installations'
+      )
+    order by table_name
+  `);
+  if (retiredRuntimeTables.rows.length > 0) {
+    throw new Error(
+      `Retired runtime tables remain: ${retiredRuntimeTables.rows
+        .map((row) => row.table_name)
+        .join(", ")}`
+    );
+  }
+
+  const globalRuntime = await client.query(`
+    select b.entity_id as binding_id,
+           b.record ->> 'status' as binding_status,
+           bm.record ->> 'modelId' as model_id,
+           m.record ->> 'provider' as provider,
+           bm.record ->> 'executionHostId' as execution_host_id
+    from cp2_native_runtime_bindings b
+    join cp2_native_runtime_binding_models bm on bm.parent_id = b.entity_id
+    join cp2_native_runtime_models m on m.entity_id = bm.record ->> 'modelId'
+    where b.record ->> 'isDefault' = 'true'
+      and b.record ->> 'status' = 'active'
+      and bm.record ->> 'role' = 'primary'
+      and (bm.record ->> 'enabled')::boolean
+  `);
+  if (
+    globalRuntime.rows.length !== 1 ||
+    globalRuntime.rows[0]?.model_id !== "openai-fast" ||
+    globalRuntime.rows[0]?.provider !== "openai" ||
+    globalRuntime.rows[0]?.execution_host_id === null
+  ) {
+    throw new Error("The active global runtime is not the unique OpenAI generative default.");
+  }
+
   await client.query("commit");
   console.log(
     JSON.stringify(
@@ -189,7 +238,10 @@ try {
         mode: "read-only",
         migrations: migrationFilenames,
         databaseName: connection.rows[0]?.database_name,
-        databaseUser: connection.rows[0]?.database_user
+        databaseUser: connection.rows[0]?.database_user,
+        databaseProvider: isNeonDatabase ? "neon" : "other",
+        globalRuntimeModel: globalRuntime.rows[0]?.model_id,
+        retiredRuntimeTables: "absent"
       },
       null,
       2

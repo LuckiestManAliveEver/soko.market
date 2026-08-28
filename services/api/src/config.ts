@@ -151,9 +151,7 @@ export function readEnvironment(): EnvironmentConfig {
     inferenceJobTimeoutMs: numberFromEnv("INFERENCE_JOB_TIMEOUT_MS", 120_000),
     workspaceDeliveryMaxFileBytes: numberFromEnv("WORKSPACE_DELIVERY_MAX_FILE_BYTES", 10_000_000),
     workspaceRoot: stringFromEnv("SOKO_WORKSPACE_ROOT", "").trim(),
-    redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379"),
-    // TODO(remove-after-fabric-migration): temporary rollback kill switch; native bindings are default.
-    executionFabricEnabled: booleanFromEnv("EXECUTION_FABRIC_ENABLED", false)
+    redisUrl: stringFromEnv("REDIS_URL", "redis://127.0.0.1:6379")
   };
 }
 

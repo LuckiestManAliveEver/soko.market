@@ -67,9 +67,6 @@ const normalizedCollections: NormalizedCollection[] = [
   { key: "agentModelAssignments", tableName: "cp2_agent_model_assignments" },
   { key: "browserInferenceAssignments", tableName: "cp2_browser_inference_assignments" },
   { key: "agentModelBindings", tableName: "cp2_agent_model_bindings" },
-  { key: "modelPreferences", tableName: "cp2_model_preferences" },
-  { key: "runtimeHosts", tableName: "cp2_runtime_hosts" },
-  { key: "runtimeModelInstallations", tableName: "cp2_runtime_model_installations" },
   { key: "nativeRuntimeAgents", tableName: "cp2_native_runtime_agents" },
   { key: "nativeRuntimeModels", tableName: "cp2_native_runtime_models" },
   { key: "nativeExecutionHosts", tableName: "cp2_native_execution_hosts" },
@@ -271,6 +268,7 @@ const mutatingMethodNames = new Set([
   "finalizeShopDeletion",
   "activateAiModel",
   "activateAgentModel",
+  "activateVerifiedGlobalRuntimeDefault",
   "removeAgentModelBinding",
   "assignAgentModel",
   "upsertBrowserInferenceAssignment",
@@ -2328,17 +2326,12 @@ async function saveCollectionRecords(
         firstText(record, ["businessId", "shopId", "tenantId"]),
         firstText(record, ["accountId", "buyerAccountId"]),
         firstText(record, ["userId", "ownerUserId", "actorId", "postedBy"]),
-        // "runtimeHostId" (Phase 2.5): cp2_runtime_model_installations.parent_id references
-        // cp2_runtime_hosts(entity_id) on delete cascade (migration 060) - without this, the
-        // column would silently stay null for every installation row and the cascade-delete
-        // relationship the migration declares would never actually apply to any row.
         firstText(record, [
           "invoiceId",
           "importJobId",
           "sourceId",
           "eventId",
           "permissionId",
-          "runtimeHostId",
           "executionHostId",
           "agentId",
           "runtimeBindingId"
@@ -3729,9 +3722,6 @@ function emptySnapshot(): Cp2Snapshot {
     agentModelAssignments: [],
     browserInferenceAssignments: [],
     agentModelBindings: [],
-    modelPreferences: [],
-    runtimeHosts: [],
-    runtimeModelInstallations: [],
     nativeRuntimeAgents: [],
     nativeRuntimeModels: [],
     nativeExecutionHosts: [],

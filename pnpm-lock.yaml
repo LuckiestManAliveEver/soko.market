@@ -83,9 +83,6 @@ importers:
       '@simplewebauthn/browser':
         specifier: ^13.0.0
         version: 13.3.0
-      '@soko/execution-planner':
-        specifier: workspace:*
-        version: link:../../packages/execution-planner
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -131,12 +128,6 @@ importers:
         version: link:../tool-core
 
   packages/event-core:
-    dependencies:
-      '@soko/shared-types':
-        specifier: workspace:*
-        version: link:../shared-types
-
-  packages/execution-planner:
     dependencies:
       '@soko/shared-types':
         specifier: workspace:*
@@ -211,9 +202,6 @@ importers:
       '@soko/event-core':
         specifier: workspace:*
         version: link:../../packages/event-core
-      '@soko/execution-planner':
-        specifier: workspace:*
-        version: link:../../packages/execution-planner
       '@soko/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

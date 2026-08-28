@@ -250,6 +250,122 @@ describe("agent model activation runtime", () => {
     await restoredApp.close();
   });
 
+  it("continues the same conversation with full history from a second device session after swapping the active model", async () => {
+    const responseByModel: Record<string, string> = {
+      [primaryModelId]: "Reply from model A.",
+      [replacementModelId]: "Reply from model B."
+    };
+    const store = createCp2Store({
+      modelRuntimeAdapterResolver: ({ modelId }) =>
+        modelId === primaryModelId || modelId === replacementModelId
+          ? {
+              ...healthyAdapter(modelId),
+              async generate() {
+                return {
+                  text: JSON.stringify({ type: "response", message: responseByModel[modelId] }),
+                  modelId,
+                  provider: "test",
+                  executionTarget: "backend",
+                  latencyMs: 8
+                };
+              }
+            }
+          : undefined
+    });
+    const app = buildApi({ cp2: { store } });
+    const contact = "+254700002099";
+    const owner = await createOwnerBusiness(app, contact, "Multi-Device Swap Shop");
+    await activate(app, owner, primaryModelId);
+
+    const conversations = await getJson<{ conversations: Array<{ id: string }> }>(
+      app,
+      "/v1/conversations",
+      owner.cookie
+    );
+    const conversationId = conversations.conversations[0]?.id;
+    expect(conversationId).toBeTruthy();
+
+    const firstTurn = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: jsonHeaders(owner.cookie),
+      payload: JSON.stringify({
+        conversationId,
+        clientMessageId: "swap-history-0001",
+        content: { type: "text", text: "Hello from device one." },
+        clientTimestamp: new Date().toISOString(),
+        agent: { businessId: owner.businessId, message: "Hello from device one." }
+      })
+    });
+    expect(firstTurn.statusCode).toBe(200);
+    expect(firstTurn.json()).toMatchObject({
+      conversationId,
+      agentMessage: { content: { text: expect.stringMatching(/Reply from model A/u) } }
+    });
+
+    // A different device signs in with the same phone/PIN - a genuinely separate session, not
+    // the one that opened the conversation.
+    const secondLogin = await app.inject({
+      method: "POST",
+      url: "/auth/pin/login",
+      headers: jsonHeaders(),
+      payload: JSON.stringify({ method: "phone", contact, pin: "1234" })
+    });
+    expect(secondLogin.statusCode).toBe(200);
+    const secondDeviceCookie = sessionCookie(secondLogin.headers["set-cookie"]);
+    expect(secondDeviceCookie).not.toBe(owner.cookie);
+
+    const historyOnSecondDevice = await getJson<{
+      messages: Array<{ content: { text?: string } }>;
+    }>(app, `/v1/conversations/${conversationId}`, secondDeviceCookie);
+    expect(historyOnSecondDevice.messages.map((message) => message.content.text)).toEqual(
+      expect.arrayContaining(["Hello from device one.", "Reply from model A."])
+    );
+
+    // Swap the active model - the binding is a business-level slot, not tied to whichever
+    // device happened to open the conversation.
+    const swap = await activate(app, owner, replacementModelId);
+    expect(swap.binding).toMatchObject({ modelId: replacementModelId, status: "active" });
+
+    const secondTurn = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: jsonHeaders(secondDeviceCookie),
+      payload: JSON.stringify({
+        conversationId,
+        clientMessageId: "swap-history-0002",
+        content: { type: "text", text: "Hello from device two, after the swap." },
+        clientTimestamp: new Date().toISOString(),
+        agent: {
+          businessId: owner.businessId,
+          message: "Hello from device two, after the swap."
+        }
+      })
+    });
+    expect(secondTurn.statusCode).toBe(200);
+    expect(secondTurn.json()).toMatchObject({
+      conversationId,
+      agentMessage: { content: { text: expect.stringMatching(/Reply from model B/u) } }
+    });
+
+    const finalHistory = await getJson<{
+      messages: Array<{ content: { text?: string } }>;
+    }>(app, `/v1/conversations/${conversationId}`, owner.cookie);
+    // Every message from both models and both devices survives the swap in one conversation -
+    // no new conversation was created and nothing was dropped.
+    expect(finalHistory.messages.map((message) => message.content.text)).toEqual(
+      expect.arrayContaining([
+        "Hello from device one.",
+        "Reply from model A.",
+        "Hello from device two, after the swap.",
+        "Reply from model B."
+      ])
+    );
+    expect(finalHistory.messages).toHaveLength(4);
+
+    await app.close();
+  });
+
   it("routes agent chat through the active binding with shop instructions and records metadata", async () => {
     const prompts: RuntimeModelPrompt[] = [];
     const adapter = healthyAdapter(primaryModelId, { prompts });
@@ -412,8 +528,15 @@ describe("agent model activation runtime", () => {
 
   it("uses the persisted in-process global default for an otherwise unbound conversation", async () => {
     const store = createCp2Store({
-      modelRuntimeAdapterResolver: () => healthyAdapter(primaryModelId)
+      modelRuntimeAdapterResolver: ({ modelId, executionTarget }) =>
+        modelId === "openai-fast" && executionTarget === "openai"
+          ? healthyAdapter("openai-fast", { executionTarget: "openai" })
+          : undefined
     });
+    // Mirrors production startup (services/api/src/index.ts): the global default's model and
+    // host are seeded unavailable until a live health check verifies them, so an unbound
+    // conversation only resolves once that verification has actually happened.
+    store.activateVerifiedGlobalRuntimeDefault(new Date().toISOString());
     const app = buildApi({ cp2: { store } });
     const owner = await createOwnerBusiness(app, "+254700002008", "Configuration Guidance Shop");
     const conversations = await getJson<{ conversations: Array<{ id: string }> }>(
@@ -445,7 +568,7 @@ describe("agent model activation runtime", () => {
       agentMessage: {
         content: {
           type: "text",
-          text: expect.stringMatching(/Soko command/iu)
+          text: expect.stringMatching(/market/iu)
         }
       },
       processing: {

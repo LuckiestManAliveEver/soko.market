@@ -143,8 +143,6 @@ import {
   assertResolvedRuntimeAvailable,
   resolveNativeRuntimeModelProvider
 } from "./native-runtime-routing.js";
-import { createExecutionFabricRuntimeModelRoute } from "../execution-fabric/runtime-route.js";
-
 import { executeRuntimeCapability } from "./capabilities.js";
 import {
   createRuntimeDocumentImportProposal,
@@ -2536,10 +2534,8 @@ export class AgentRuntimeDomain {
             accountId: auth.account.id,
             userId: auth.user.id
           });
-    // TODO(remove-after-fabric-migration): only non-conversation legacy calls retain this gate.
     if (
       input.conversationId === undefined &&
-      this.deps.executionFabricEnabled !== true &&
       this.deps.modelRuntimeAdapterResolver !== undefined &&
       activeBinding === null &&
       clientInferenceCompletion === null &&
@@ -2791,22 +2787,6 @@ export class AgentRuntimeDomain {
       );
     }
     assertResolvedRuntimeAvailable(nativeResolution, modelRoute.trace);
-    // TODO(remove-after-fabric-migration): fail loudly on the temporary Fabric rollback path,
-    // whose preferences do not create a legacy activeBinding.
-    if (
-      this.deps.executionFabricEnabled === true &&
-      activeBinding === null &&
-      modelRoute.trace !== null &&
-      modelRoute.trace.status !== "available"
-    ) {
-      throw new Cp2Error(
-        modelRoute.trace.status === "timeout" ? 504 : 503,
-        "AGENT_MODEL_UNAVAILABLE",
-        "The active agent model could not complete this message.",
-        true,
-        { runtimeErrorCode: modelRoute.trace.errorCode }
-      );
-    }
     appendTelemetry("intent.routed", "completed", null, null, {
       intent: parserResult.intent,
       confidence: parserResult.confidence,
@@ -3504,17 +3484,6 @@ export class AgentRuntimeDomain {
     trace: RuntimeModelTrace | null;
     recallCandidate: RecallCandidate | null;
   }> {
-    // TODO(remove-after-fabric-migration): true is the rollback; false uses native bindings.
-    if (this.deps.executionFabricEnabled === true) {
-      return createExecutionFabricRuntimeModelRoute(
-        {
-          modelRuntimeAdapterResolver: this.deps.modelRuntimeAdapterResolver,
-          executionFabricStore: this.deps.executionFabricStore,
-          activeBinding: this.activeAgentModelBinding(input.shopRuntime.agentId)
-        },
-        input
-      );
-    }
     return createRuntimeModelRoute(
       {
         resolveRuntimeModelProvider: (runtime, modelId) =>

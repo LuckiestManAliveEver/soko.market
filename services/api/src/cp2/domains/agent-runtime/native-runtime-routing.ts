@@ -38,12 +38,9 @@ export function resolveNativeRuntimeModelProvider(input: {
   const agentId = nativeResolution?.agent.id ?? legacyBinding?.agentId ?? shopRuntime.agentId;
   const shopId =
     nativeResolution?.binding.businessId ?? legacyBinding?.shopId ?? shopRuntime.shopId;
-  const isBuiltIn =
-    modelId === "sokoclaw-local" && nativeResolution?.selected.host?.type === "in-process";
-  const adapter =
-    !input.adapterResolverConfigured || isBuiltIn
-      ? undefined
-      : input.requireAdapter({ modelId, executionTarget, agentId, businessId: shopId });
+  const adapter = !input.adapterResolverConfigured
+    ? undefined
+    : input.requireAdapter({ modelId, executionTarget, agentId, businessId: shopId });
   const provider =
     adapter === undefined
       ? input.runtimeModelProviderResolver === undefined
@@ -57,12 +54,7 @@ export function assertResolvedRuntimeAvailable(
   resolution: ResolvedNativeRuntimeBinding | null,
   trace: RuntimeModelTrace | null
 ): void {
-  if (
-    resolution === null ||
-    resolution.selected.model.id === "sokoclaw-local" ||
-    trace === null ||
-    trace.status === "available"
-  ) {
+  if (resolution === null || trace === null || trace.status === "available") {
     return;
   }
   throw new Cp2Error(

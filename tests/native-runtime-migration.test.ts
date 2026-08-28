@@ -23,4 +23,24 @@ describe("native runtime binding migration", () => {
     expect(migration).toContain("builtin:soko-default-runtime:v1");
     expect(rollback).toContain("drop table if exists cp2_native_runtime_binding_models");
   });
+
+  it("archives retired rows, drops their tables, and installs an unverified generative default", async () => {
+    const migration = await readFile(
+      new URL("../infra/db/migrations/065_retire_execution_fabric.sql", import.meta.url),
+      "utf8"
+    );
+    const verifier = await readFile(
+      new URL("../services/api/scripts/verify-db-schema.mjs", import.meta.url),
+      "utf8"
+    );
+    expect(migration).toContain("'status', 'unavailable'");
+    expect(migration).toContain("'status', 'draft'");
+    expect(migration).toContain("drop table cp2_model_preferences");
+    expect(migration).toContain("drop table cp2_runtime_hosts");
+    expect(migration).toContain("drop table cp2_runtime_model_installations");
+    expect(migration).toContain("'openai-fast'");
+    expect(migration).toContain("'activationRequired', true");
+    expect(verifier).toContain('process.env.REQUIRE_NEON_DATABASE === "true"');
+    expect(verifier).toContain("Retired runtime tables remain");
+  });
 });

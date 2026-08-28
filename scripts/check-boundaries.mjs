@@ -77,36 +77,18 @@ for (const file of await listSourceFiles("packages/tool-core/src")) {
 }
 
 const apiFiles = await listSourceFiles("services/api/src");
-const legacySiblingDomainImportAllowlist = new Set([
-  "services/api/src/cp2/domains/agent-runtime/domain-deps.ts",
-  "services/api/src/cp2/domains/execution-fabric/runtime-route.ts"
-]);
 for (const file of apiFiles.filter((candidate) => candidate.includes("/cp2/domains/"))) {
   const contents = await read(file);
-  if (
-    /from\s+["']\.\.\/((?!\.)[^/"']+)\/(store|shared)\.js["']/u.test(contents) &&
-    !legacySiblingDomainImportAllowlist.has(file)
-  ) {
+  if (/from\s+["']\.\.\/((?!\.)[^/"']+)\/(store|shared)\.js["']/u.test(contents)) {
     violations.push(`${file}: new deep import of sibling domain private internals`);
   }
 }
 
-// Native runtime bindings are the production selection architecture. These are the only legacy
-// imports allowed to reach the Fabric during its temporary rollback window.
-const fabricImportAllowlist = new Set([
-  "apps/web/src/hooks/useChatRuntimeState.ts",
-  "services/api/src/cp2/domains/agent-runtime/domain-deps.ts",
-  "services/api/src/cp2/domains/agent-runtime/store.ts",
-  "services/api/src/cp2/store.ts"
-]);
+// Native bindings are the only production selection architecture. Fabric must not re-enter source.
 for (const file of [...apiFiles, ...(await listSourceFiles("apps/web/src"))]) {
-  if (file.includes("/execution-fabric/")) continue;
   const contents = await read(file);
-  if (
-    /(?:from|import\s*)\s*(?:\([^)]*)?["'][^"']*execution-fabric[^"']*["']/u.test(contents) &&
-    !fabricImportAllowlist.has(file)
-  ) {
-    violations.push(`${file}: new production dependency on legacy Execution Fabric`);
+  if (/execution[ -]fabric|execution-planner/iu.test(contents)) {
+    violations.push(`${file}: retired Execution Fabric terminology or dependency`);
   }
 }
 

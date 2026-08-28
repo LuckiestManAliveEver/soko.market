@@ -426,7 +426,7 @@ export function createProviderModelAdapter(input: {
         const ok =
           completion.status === "available" &&
           completion.outputText !== null &&
-          completion.outputText.includes("SOKO_MODEL_OK");
+          completion.outputText.trim().length > 0;
         return {
           available: ok,
           modelId: context.modelId,
